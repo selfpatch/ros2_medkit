@@ -4,6 +4,7 @@ FROM ubuntu:24.04
 ENV ROS_DISTRO=jazzy
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
+ENV HADOLINT_VERSION=v2.14.0
 
 # Args
 ARG USERNAME=devuser
@@ -15,8 +16,6 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     locales \
     build-essential \
     cmake \
-    git \
-    zsh \
     python3-pip \
     python3-venv \
     python3-dev \
@@ -48,15 +47,8 @@ RUN apt-get update && apt-get install -y \
     python3-rosdep \
     && rm -rf /var/lib/apt/lists/*
 
-# Initialize rosdep
-RUN rosdep init && rosdep update
-
-# Install hadolint v2.14.0 for Dockerfile linting
-RUN wget -O /usr/local/bin/hadolint https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64 && \
-    chmod +x /usr/local/bin/hadolint
-
 # Install additional Python tools via pip
-RUN pip3 install --break-system-packages \
+RUN pip install --break-system-packages \
     vcstool \
     setuptools \
     pytest \
@@ -76,10 +68,15 @@ RUN pip3 install --break-system-packages \
     sphinx-rtd-theme \
     myst-parser
 
+# Install hadolint for Dockerfile linting
+RUN wget -O /usr/local/bin/hadolint https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-Linux-x86_64 && \
+    chmod +x /usr/local/bin/hadolint
+
 # Create non-root user
-RUN userdel -r ubuntu || true \
-    && groupdel ubuntu || true
-RUN groupadd --gid ${USER_GID} ${USERNAME} && \
+# Remove existing user/group with the same UID/GID if they exist
+RUN if id -u ${USER_UID} &>/dev/null; then userdel -r "$(id -un ${USER_UID})" 2>/dev/null || true; fi && \
+    if getent group ${USER_GID} &>/dev/null; then groupdel "$(getent group ${USER_GID} | cut -d: -f1)" 2>/dev/null || true; fi && \
+    groupadd --gid ${USER_GID} ${USERNAME} && \
     useradd --uid ${USER_UID} --gid ${USER_GID} -m ${USERNAME} && \
     usermod -aG sudo ${USERNAME} && \
     echo "${USERNAME} ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} && \
