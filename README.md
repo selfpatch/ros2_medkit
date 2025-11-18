@@ -1,13 +1,13 @@
-# DiagTree
+# ros2_diag_tree
 
 Modern, SOVD-compatible diagnostics for ROS 2 robots, built around an entity tree
 (Area / Component / Function / App) for runtime discovery, health modeling, and troubleshooting.
 
-## What is DiagTree?
+## What is ros2_diag_tree?
 
-DiagTree is an experiment in **modern diagnostics for ROS 2–based systems**.
+ros2_diag_tree is an experiment in **modern diagnostics for ROS 2–based systems**.
 
-Instead of hardcoding knowledge about every node, topic, or ECU, DiagTree models a robot
+Instead of hardcoding knowledge about every node, topic, or ECU, ros2_diag_tree models a robot
 as a **diagnostic entity tree**:
 
 - **Area** – physical or logical domain (e.g. `base`, `arm`, `safety`, `navigation`)
