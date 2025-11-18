@@ -32,6 +32,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     gnupg2 \
     yq \
     ca-certificates \
+    clang-format \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 
