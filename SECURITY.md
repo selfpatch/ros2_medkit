@@ -11,7 +11,7 @@ Security vulnerabilities are taken seriously. I appreciate your efforts to respo
 Instead, please report them using one of the following methods:
 
 1. **Preferred: GitHub Security Advisories** (recommended)
-   - Go to the [Security tab](https://github.com/bburda/ros2_diag_tree/security/advisories/new) of this repository
+   - Go to the [Security tab](https://github.com/bburda/ros2_medkit/security/advisories/new) of this repository
    - Click "Report a vulnerability"
    - Fill out the form with details about the vulnerability
 
@@ -51,19 +51,19 @@ Please allow reasonable time to investigate and address the vulnerability before
 | ------- | ------------------ |
 | main    | :white_check_mark: |
 
-**Note:** As ros2_diag_tree is currently in early development, security updates will be applied to the `main` branch. Once stable releases are available, this section will be updated with specific version support information.
+**Note:** As ros2_medkit is currently in early development, security updates will be applied to the `main` branch. Once stable releases are available, this section will be updated with specific version support information.
 
 ## Security Best Practices
 
-When using ros2_diag_tree in your ROS 2 system:
+When using ros2_medkit in your ROS 2 system:
 
-- Keep your ROS 2 distribution and ros2_diag_tree up to date
+- Keep your ROS 2 distribution and ros2_medkit up to date
 - Follow ROS 2 security best practices
 - Properly configure access controls for diagnostic data
 - Review and audit diagnostic configurations regularly
 
 ## Questions?
 
-If you have questions about this security policy or the security of ros2_diag_tree, please open an issue in the repository.
+If you have questions about this security policy or the security of ros2_medkit, please open an issue in the repository.
 
-Thank you for helping keep ros2_diag_tree and its users safe!
+Thank you for helping keep ros2_medkit and its users safe!

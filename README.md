@@ -1,15 +1,15 @@
-# ros2_diag_tree
+# ros2_medkit
 
-[![CI](https://github.com/bburda/ros2_diag_tree/actions/workflows/ci.yml/badge.svg)](https://github.com/bburda/ros2_diag_tree/actions/workflows/ci.yml)
+[![CI](https://github.com/bburda/ros2_medkit/actions/workflows/ci.yml/badge.svg)](https://github.com/bburda/ros2_medkit/actions/workflows/ci.yml)
 
 Modern, SOVD-compatible diagnostics for ROS 2 robots, built around an entity tree
 (Area / Component / Function / App) for runtime discovery, health modeling, and troubleshooting.
 
-## What is ros2_diag_tree?
+## What is ros2_medkit?
 
-ros2_diag_tree is an experiment in **modern diagnostics for ROS 2–based systems**.
+ros2_medkit is an experiment in **modern diagnostics for ROS 2–based systems**.
 
-Instead of hardcoding knowledge about every node, topic, or ECU, ros2_diag_tree models a robot
+Instead of hardcoding knowledge about every node, topic, or ECU, ros2_medkit models a robot
 as a **diagnostic entity tree**:
 
 - **Area** – physical or logical domain (e.g. `base`, `arm`, `safety`, `navigation`)

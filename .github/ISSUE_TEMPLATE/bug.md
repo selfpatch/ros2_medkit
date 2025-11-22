@@ -24,7 +24,7 @@ What you expected to happen.
 What actually happened, including any error messages or stack traces.
 
 ### Environment
-- ros2_diag_tree version:
+- ros2_medkit version:
 - ROS 2 distro:
 - OS:
 

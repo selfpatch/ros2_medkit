@@ -1,6 +1,6 @@
-# ros2_diag_tree_gateway
+# ros2_medkit_gateway
 
-HTTP gateway node for the ros2_diag_tree diagnostics system.
+HTTP gateway node for the ros2_medkit diagnostics system.
 
 ## Overview
 
@@ -14,13 +14,13 @@ This package provides an HTTP server that exposes diagnostic information from th
 ## Building
 
 ```bash
-colcon build --packages-select ros2_diag_tree_gateway
+colcon build --packages-select ros2_medkit_gateway
 ```
 
 ## Running
 
 ```bash
-ros2 run ros2_diag_tree_gateway gateway_node
+ros2 run ros2_medkit_gateway gateway_node
 ```
 
 ### Parameters
@@ -31,7 +31,7 @@ ros2 run ros2_diag_tree_gateway gateway_node
 ### Example with custom port
 
 ```bash
-ros2 run ros2_diag_tree_gateway gateway_node --ros-args -p port:=9090
+ros2 run ros2_medkit_gateway gateway_node --ros-args -p port:=9090
 ```
 
 ## Dependencies

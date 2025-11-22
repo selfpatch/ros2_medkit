@@ -78,7 +78,7 @@ private:
           (void)req;  // Unused parameter
 
           nlohmann::json info_json = {
-              {"service", "ros2_diag_tree_gateway"},
+              {"service", "ros2_medkit_gateway"},
               {"version", VERSION},
               {"endpoints", nlohmann::json::array({"/health", "/"})}};
 

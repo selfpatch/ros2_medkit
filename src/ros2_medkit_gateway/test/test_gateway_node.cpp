@@ -92,7 +92,7 @@ private:
           (void)req;
 
           nlohmann::json info_json = {
-              {"service", "ros2_diag_tree_gateway"},
+              {"service", "ros2_medkit_gateway"},
               {"version", VERSION},
               {"endpoints", nlohmann::json::array({"/health", "/"})}};
 
@@ -153,7 +153,7 @@ TEST_F(TestGatewayNode, test_root_endpoint) {
 
   // Parse and verify JSON
   auto json_response = nlohmann::json::parse(res->body);
-  EXPECT_EQ(json_response["service"], "ros2_diag_tree_gateway");
+  EXPECT_EQ(json_response["service"], "ros2_medkit_gateway");
   EXPECT_EQ(json_response["version"], "0.1.0");
   EXPECT_TRUE(json_response.contains("endpoints"));
   EXPECT_TRUE(json_response["endpoints"].is_array());

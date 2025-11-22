@@ -1,6 +1,6 @@
 # Pull Request
 
-<!-- Thank you for contributing to ros2_diag_tree! Please fill out this template to help us review your PR. -->
+<!-- Thank you for contributing to ros2_medkit! Please fill out this template to help us review your PR. -->
 
 ## Description
 

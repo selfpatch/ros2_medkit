@@ -1,5 +1,5 @@
 {
-  "name": "ROS2 ros2_diag_tree Development",
+  "name": "ROS2 ros2_medkit Development",
   "build": {
     "dockerfile": "Dockerfile",
     "context": "..",
