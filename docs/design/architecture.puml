@@ -1,13 +1,12 @@
 @startuml ros2_medkit_gateway_architecture
 
-!theme plain
 skinparam linetype ortho
 skinparam classAttributeIconSize 0
 
 title ROS 2 Medkit Gateway - Class Architecture
 
 package "ROS 2 Framework" {
-    class rclcpp::Node {
+    class "rclcpp::Node" {
         +get_node_names()
         +get_topic_names_and_types()
         +get_service_names_and_types()
@@ -61,7 +60,7 @@ package "External Libraries" {
 ' Relationships
 
 ' Inheritance
-GatewayNode -up-|> rclcpp::Node : extends
+GatewayNode -up-|> "rclcpp::Node" : extends
 
 ' Composition (Gateway owns these)
 GatewayNode *-down-> DiscoveryManager : owns
@@ -69,7 +68,7 @@ GatewayNode *-down-> RESTServer : owns
 GatewayNode *-down-> EntityCache : owns
 
 ' Discovery Manager uses Node interface
-DiscoveryManager --> rclcpp::Node : uses
+DiscoveryManager --> "rclcpp::Node" : uses
 
 ' REST Server references Gateway
 RESTServer --> GatewayNode : uses
@@ -90,3 +89,4 @@ Area ..> JSON : serializes to
 Component ..> JSON : serializes to
 
 @enduml
+

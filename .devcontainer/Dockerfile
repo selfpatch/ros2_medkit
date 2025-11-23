@@ -33,6 +33,8 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     yq \
     ca-certificates \
     clang-format \
+    graphviz \
+    plantuml \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -67,6 +69,9 @@ RUN pip install --break-system-packages \
     pytest-rerunfailures \
     sphinx \
     sphinx-rtd-theme \
+    sphinx-needs \
+    sphinxcontrib-plantuml \
+    sphinx-autobuild \
     myst-parser
 
 # Install hadolint for Dockerfile linting

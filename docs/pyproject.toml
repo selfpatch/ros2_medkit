@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ros2-medkit-docs"
+version = "0.1.0"
+description = "Documentation for ROS 2 Medkit"
+authors = [{ name = "bburda", email = "bartoszburda93@gmail.com" }]
+requires-python = ">=3.12"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "sphinx>=5.0",
+    "sphinx-needs>=1.0",
+    "sphinx-rtd-theme",
+    "sphinxcontrib-plantuml",
+]
+
+[project.optional-dependencies]
+dev = ["sphinx-autobuild"]
+
