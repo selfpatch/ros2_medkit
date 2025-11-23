@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "ROS 2 Medkit Gateway API",
-    "description": "Minimal collection: GET / and GET /areas endpoints only",
+    "description": "Collection for ROS 2 Medkit Gateway REST API endpoints",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -41,6 +41,24 @@
               ]
             },
             "description": "List all discovered areas (powertrain, chassis, body, root)"
+          },
+          "response": []
+        },
+        {
+          "name": "GET List Components",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components"
+              ]
+            },
+            "description": "List all discovered components across all areas. Returns component metadata including id, namespace, fqn, type, and parent area."
           },
           "response": []
         }

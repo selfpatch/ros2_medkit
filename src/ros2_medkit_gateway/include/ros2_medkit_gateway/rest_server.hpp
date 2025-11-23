@@ -40,6 +40,7 @@ private:
     void handle_health(const httplib::Request& req, httplib::Response& res);
     void handle_root(const httplib::Request& req, httplib::Response& res);
     void handle_list_areas(const httplib::Request& req, httplib::Response& res);
+    void handle_list_components(const httplib::Request& req, httplib::Response& res);
 
     GatewayNode* node_;
     std::string host_;

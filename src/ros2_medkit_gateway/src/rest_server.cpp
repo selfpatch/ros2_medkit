@@ -46,6 +46,11 @@ void RESTServer::setup_routes() {
     server_->Get("/areas", [this](const httplib::Request& req, httplib::Response& res) {
         handle_list_areas(req, res);
     });
+
+    // Components
+    server_->Get("/components", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_list_components(req, res);
+    });
 }
 
 void RESTServer::start() {
@@ -126,6 +131,32 @@ void RESTServer::handle_list_areas(const httplib::Request& req, httplib::Respons
             "application/json"
         );
         RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_list_areas: %s", e.what());
+    }
+}
+
+void RESTServer::handle_list_components(const httplib::Request& req, httplib::Response& res) {
+    (void)req;  // Unused parameter
+
+    try {
+        const auto cache = node_->get_entity_cache();
+
+        json components_json = json::array();
+        for (const auto& component : cache.components) {
+            components_json.push_back(component.to_json());
+        }
+
+        res.set_content(components_json.dump(2), "application/json");
+    } catch (const std::exception& e) {
+        res.status = 500;
+        res.set_content(
+            json{{"error", "Internal server error"}}.dump(),
+            "application/json"
+        );
+        RCLCPP_ERROR(
+            rclcpp::get_logger("rest_server"),
+            "Error in handle_list_components: %s",
+            e.what()
+        );
     }
 }
 

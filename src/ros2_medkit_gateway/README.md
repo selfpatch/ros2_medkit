@@ -14,11 +14,75 @@ The ROS 2 Medkit Gateway exposes ROS 2 system information and data through a RES
 
 ## Endpoints
 
-Current available endpoints:
+### Discovery Endpoints
 
 - `GET /health` - Health check endpoint (returns healthy status)
 - `GET /` - Gateway status and version information
 - `GET /areas` - List all discovered areas (powertrain, chassis, body, root)
+- `GET /components` - List all discovered components across all areas
+
+### API Reference
+
+#### GET /areas
+
+Lists all discovered areas in the system.
+
+**Example:**
+```bash
+curl http://localhost:8080/areas
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "powertrain",
+    "namespace": "/powertrain",
+    "type": "Area"
+  },
+  {
+    "id": "chassis",
+    "namespace": "/chassis",
+    "type": "Area"
+  }
+]
+```
+
+#### GET /components
+
+Lists all discovered components across all areas.
+
+**Example:**
+```bash
+curl http://localhost:8080/components
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "temp_sensor",
+    "namespace": "/powertrain/engine",
+    "fqn": "/powertrain/engine/temp_sensor",
+    "type": "Component",
+    "area": "powertrain"
+  },
+  {
+    "id": "rpm_sensor",
+    "namespace": "/powertrain/engine",
+    "fqn": "/powertrain/engine/rpm_sensor",
+    "type": "Component",
+    "area": "powertrain"
+  }
+]
+```
+
+**Response Fields:**
+- `id` - Component name (node name)
+- `namespace` - ROS 2 namespace where the component is running
+- `fqn` - Fully qualified name (namespace + node name)
+- `type` - Always "Component"
+- `area` - Parent area this component belongs to
 
 ## Quick Start
 

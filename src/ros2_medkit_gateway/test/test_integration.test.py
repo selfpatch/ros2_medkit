@@ -178,7 +178,31 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('root', area_ids)
         print(f'✓ Areas test passed: {len(areas)} areas discovered')
 
-    def test_21_automotive_areas_discovery(self):
+    def test_03_list_components(self):
+        """Test GET /components returns all discovered components."""
+        components = self._get_json('/components')
+        self.assertIsInstance(components, list)
+        # Should have at least 7 demo nodes + gateway node
+        self.assertGreaterEqual(len(components), 7)
+
+        # Verify response structure - all components should have required fields
+        for component in components:
+            self.assertIn('id', component)
+            self.assertIn('namespace', component)
+            self.assertIn('fqn', component)
+            self.assertIn('type', component)
+            self.assertIn('area', component)
+            self.assertEqual(component['type'], 'Component')
+
+        # Verify some expected component IDs are present
+        component_ids = [comp['id'] for comp in components]
+        self.assertIn('temp_sensor', component_ids)
+        self.assertIn('rpm_sensor', component_ids)
+        self.assertIn('pressure_sensor', component_ids)
+
+        print(f'✓ Components test passed: {len(components)} components discovered')
+
+    def test_04_automotive_areas_discovery(self):
         """Test that automotive areas are properly discovered."""
         areas = self._get_json('/areas')
         area_ids = [area['id'] for area in areas]

@@ -9,6 +9,7 @@ This folder contains Postman collections for testing the ROS 2 Medkit Gateway RE
 Includes below endpoints:
 - ✅ GET `/` - Gateway info
 - ✅ GET `/areas` - List all areas
+- ✅ GET `/components` - List all components
 
 ## Quick Start
 
@@ -48,6 +49,10 @@ ros2 launch ros2_medkit_gateway demo_nodes.launch.py
 5. Click **"GET List Areas"**
 6. Click **Send**
 7. You should see areas: `[{"id": "powertrain", ...}, {"id": "chassis", ...}, ...]`
+
+8. Click **"GET List Components"**
+9. Click **Send**
+10. You should see components: `[{"id": "temp_sensor", "namespace": "/powertrain/engine", ...}, ...]`
 
 ## API Variables
 
