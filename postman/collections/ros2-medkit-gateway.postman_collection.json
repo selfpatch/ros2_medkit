@@ -61,6 +61,26 @@
             "description": "List all discovered components across all areas. Returns component metadata including id, namespace, fqn, type, and parent area."
           },
           "response": []
+        },
+        {
+          "name": "GET Area Components",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/areas/powertrain/components",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "areas",
+                "powertrain",
+                "components"
+              ]
+            },
+            "description": "List components within a specific area. Returns 404 if area doesn't exist. Change 'powertrain' to other areas like 'chassis', 'body', etc."
+          },
+          "response": []
         }
       ]
     }

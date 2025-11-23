@@ -20,7 +20,7 @@ The `architecture.puml` file contains a PlantUML class diagram showing the relat
    - Extracts the entity hierarchy from the ROS 2 graph
 
 3. **RESTServer** - Provides the HTTP/REST API
-   - Serves endpoints: `/health`, `/`, `/areas`
+   - Serves endpoints: `/health`, `/`, `/areas`, `/components`, `/areas/{area_id}/components`
    - Retrieves cached entities from the GatewayNode
    - Runs on configurable host and port
 

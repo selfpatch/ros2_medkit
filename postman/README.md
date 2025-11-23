@@ -10,6 +10,7 @@ Includes below endpoints:
 - ✅ GET `/` - Gateway info
 - ✅ GET `/areas` - List all areas
 - ✅ GET `/components` - List all components
+- ✅ GET `/areas/{area_id}/components` - List components in specific area
 
 ## Quick Start
 
@@ -53,6 +54,10 @@ ros2 launch ros2_medkit_gateway demo_nodes.launch.py
 8. Click **"GET List Components"**
 9. Click **Send**
 10. You should see components: `[{"id": "temp_sensor", "namespace": "/powertrain/engine", ...}, ...]`
+
+11. Click **"GET Area Components"**
+12. Click **Send**
+13. You should see only powertrain components: `[{"id": "temp_sensor", "area": "powertrain", ...}, ...]`
 
 ## API Variables
 
