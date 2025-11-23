@@ -51,6 +51,11 @@ void RESTServer::setup_routes() {
     server_->Get("/components", [this](const httplib::Request& req, httplib::Response& res) {
         handle_list_components(req, res);
     });
+
+    // Area components
+    server_->Get(R"(/areas/([^/]+)/components)", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_area_components(req, res);
+    });
 }
 
 void RESTServer::start() {
@@ -155,6 +160,65 @@ void RESTServer::handle_list_components(const httplib::Request& req, httplib::Re
         RCLCPP_ERROR(
             rclcpp::get_logger("rest_server"),
             "Error in handle_list_components: %s",
+            e.what()
+        );
+    }
+}
+
+void RESTServer::handle_area_components(const httplib::Request& req, httplib::Response& res) {
+    try {
+        // Extract area_id from URL path
+        if (req.matches.size() < 2) {
+            res.status = 400;
+            res.set_content(
+                json{{"error", "Invalid request"}}.dump(),
+                "application/json"
+            );
+            return;
+        }
+
+        std::string area_id = req.matches[1];
+        const auto cache = node_->get_entity_cache();
+
+        // Check if area exists
+        bool area_exists = false;
+        for (const auto& area : cache.areas) {
+            if (area.id == area_id) {
+                area_exists = true;
+                break;
+            }
+        }
+
+        if (!area_exists) {
+            res.status = 404;
+            res.set_content(
+                json{
+                    {"error", "Area not found"},
+                    {"area_id", area_id}
+                }.dump(2),
+                "application/json"
+            );
+            return;
+        }
+
+        // Filter components by area
+        json components_json = json::array();
+        for (const auto& component : cache.components) {
+            if (component.area == area_id) {
+                components_json.push_back(component.to_json());
+            }
+        }
+
+        res.set_content(components_json.dump(2), "application/json");
+    } catch (const std::exception& e) {
+        res.status = 500;
+        res.set_content(
+            json{{"error", "Internal server error"}}.dump(),
+            "application/json"
+        );
+        RCLCPP_ERROR(
+            rclcpp::get_logger("rest_server"),
+            "Error in handle_area_components: %s",
             e.what()
         );
     }

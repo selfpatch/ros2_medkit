@@ -212,3 +212,36 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.assertIn(expected, area_ids)
 
         print(f'✓ All automotive areas discovered: {area_ids}')
+
+    def test_05_area_components_success(self):
+        """Test GET /areas/{area_id}/components returns components for valid area."""
+        # Test powertrain area
+        components = self._get_json('/areas/powertrain/components')
+        self.assertIsInstance(components, list)
+        self.assertGreater(len(components), 0)
+
+        # All components should belong to powertrain area
+        for component in components:
+            self.assertEqual(component['area'], 'powertrain')
+            self.assertIn('id', component)
+            self.assertIn('namespace', component)
+
+        # Verify expected powertrain components
+        component_ids = [comp['id'] for comp in components]
+        self.assertIn('temp_sensor', component_ids)
+        self.assertIn('rpm_sensor', component_ids)
+
+        print(f'✓ Area components test passed: {len(components)} components in powertrain')
+
+    def test_06_area_components_nonexistent_error(self):
+        """Test GET /areas/{area_id}/components returns 404 for nonexistent area."""
+        response = requests.get(f'{self.BASE_URL}/areas/nonexistent/components', timeout=5)
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Area not found')
+        self.assertIn('area_id', data)
+        self.assertEqual(data['area_id'], 'nonexistent')
+
+        print('✓ Nonexistent area error test passed')

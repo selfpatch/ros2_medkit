@@ -20,6 +20,7 @@ The ROS 2 Medkit Gateway exposes ROS 2 system information and data through a RES
 - `GET /` - Gateway status and version information
 - `GET /areas` - List all discovered areas (powertrain, chassis, body, root)
 - `GET /components` - List all discovered components across all areas
+- `GET /areas/{area_id}/components` - List components within a specific area
 
 ### API Reference
 
@@ -83,6 +84,56 @@ curl http://localhost:8080/components
 - `fqn` - Fully qualified name (namespace + node name)
 - `type` - Always "Component"
 - `area` - Parent area this component belongs to
+
+#### GET /areas/{area_id}/components
+
+Lists all components within a specific area.
+
+**Example (Success):**
+```bash
+curl http://localhost:8080/areas/powertrain/components
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "id": "temp_sensor",
+    "namespace": "/powertrain/engine",
+    "fqn": "/powertrain/engine/temp_sensor",
+    "type": "Component",
+    "area": "powertrain"
+  },
+  {
+    "id": "rpm_sensor",
+    "namespace": "/powertrain/engine",
+    "fqn": "/powertrain/engine/rpm_sensor",
+    "type": "Component",
+    "area": "powertrain"
+  }
+]
+```
+
+**Example (Error - Area Not Found):**
+```bash
+curl http://localhost:8080/areas/nonexistent/components
+```
+
+**Response (404 Not Found):**
+```json
+{
+  "error": "Area not found",
+  "area_id": "nonexistent"
+}
+```
+
+**URL Parameters:**
+- `area_id` - Area identifier (e.g., `powertrain`, `chassis`, `body`)
+
+**Use Cases:**
+- Filter components by domain (only show powertrain components)
+- Hierarchical navigation (select area → view its components)
+- Area-specific health checks
 
 ## Quick Start
 
