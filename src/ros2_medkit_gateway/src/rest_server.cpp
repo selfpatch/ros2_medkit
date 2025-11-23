@@ -171,7 +171,7 @@ void RESTServer::handle_area_components(const httplib::Request& req, httplib::Re
         if (req.matches.size() < 2) {
             res.status = 400;
             res.set_content(
-                json{{"error", "Invalid request"}}.dump(),
+                json{{"error", "Invalid request"}}.dump(2),
                 "application/json"
             );
             return;
