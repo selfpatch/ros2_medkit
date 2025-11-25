@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/ros2_cli_wrapper.hpp"
 
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <array>
@@ -43,6 +44,15 @@ std::string ROS2CLIWrapper::exec(const std::string& command) {
 
     while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
         result += buffer.data();
+    }
+
+    // Check command exit status (release prevents double-close in deleter)
+    int exit_code = pclose(pipe.release());
+    if (exit_code != 0) {
+        throw std::runtime_error(
+            "Command failed with exit code " + std::to_string(WEXITSTATUS(exit_code)) +
+            ": " + command
+        );
     }
 
     return result;
