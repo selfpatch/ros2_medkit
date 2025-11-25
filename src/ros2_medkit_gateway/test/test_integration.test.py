@@ -272,7 +272,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print('✓ Nonexistent area error test passed')
 
     def test_07_component_data_powertrain_engine(self):
-        """Test GET /components/{component_id}/data for engine component."""
+        """
+        Test GET /components/{component_id}/data for engine component.
+
+        @verifies REQ_INTEROP_018
+        """
         # Get data from temp_sensor component (powertrain/engine)
         data = self._get_json('/components/temp_sensor/data')
         self.assertIsInstance(data, list)
@@ -287,7 +291,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print(f'✓ Engine component data test passed: {len(data)} topics')
 
     def test_08_component_data_chassis_brakes(self):
-        """Test GET /components/{component_id}/data for brakes component."""
+        """
+        Test GET /components/{component_id}/data for brakes component.
+
+        @verifies REQ_INTEROP_018
+        """
         # Get data from pressure_sensor component (chassis/brakes)
         data = self._get_json('/components/pressure_sensor/data')
         self.assertIsInstance(data, list)
@@ -301,7 +309,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print(f'✓ Brakes component data test passed: {len(data)} topics')
 
     def test_09_component_data_body_door(self):
-        """Test GET /components/{component_id}/data for door component."""
+        """
+        Test GET /components/{component_id}/data for door component.
+
+        @verifies REQ_INTEROP_018
+        """
         # Get data from status_sensor component (body/door/front_left)
         data = self._get_json('/components/status_sensor/data')
         self.assertIsInstance(data, list)
@@ -315,7 +327,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print(f'✓ Door component data test passed: {len(data)} topics')
 
     def test_10_component_data_structure(self):
-        """Test GET /components/{component_id}/data response structure."""
+        """
+        Test GET /components/{component_id}/data response structure.
+
+        @verifies REQ_INTEROP_018
+        """
         data = self._get_json('/components/temp_sensor/data')
         self.assertIsInstance(data, list, 'Response should be an array')
 
@@ -336,7 +352,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print('✓ Component data structure test passed')
 
     def test_11_component_nonexistent_error(self):
-        """Test GET /components/{component_id}/data returns 404 for nonexistent component."""
+        """
+        Test GET /components/{component_id}/data returns 404 for nonexistent component.
+
+        @verifies REQ_INTEROP_018
+        """
         response = requests.get(
             f'{self.BASE_URL}/components/nonexistent_component/data',
             timeout=5
@@ -357,6 +377,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         Verifies that components with no topics return an empty array.
         The calibration component typically has only services, no topics.
+
+        @verifies REQ_INTEROP_018
         """
         # Or test with a component that we know has no publishing topics
         # For now, we'll verify that any component returns an array (even if empty)
