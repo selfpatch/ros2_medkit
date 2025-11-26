@@ -1,7 +1,8 @@
-Specifications
-==============
+API Specification
+=================
 
-This section details the functional requirements for each subsystem of ros2_medkit.
+This section details the standard API endpoints that ros2_medkit implements
+for diagnostic interoperability.
 
 .. toctree::
    :maxdepth: 1

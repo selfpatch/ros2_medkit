@@ -1,6 +1,7 @@
 # ros2_medkit
 
-[![CI](https://github.com/bburda/ros2_medkit/actions/workflows/ci.yml/badge.svg)](https://github.com/bburda/ros2_medkit/actions/workflows/ci.yml)
+[![CI](https://github.com/selfpatch/ros2_medkit/actions/workflows/ci.yml/badge.svg)](https://github.com/selfpatch/ros2_medkit/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://selfpatch.github.io/ros2_medkit/)
 
 Modern, SOVD-compatible diagnostics for ROS 2 robots, built around an entity tree
 (Area / Component / Function / App) for runtime discovery, health modeling, and troubleshooting.
@@ -24,8 +25,12 @@ so the same concepts can be used across robots, vehicles, and other embedded sys
 
 > **Early prototype / work in progress**
 >
-> This is a personal open source project to explore diagnostic patterns for ROS 2.
-> APIs, architecture, and naming may change at any time.
+> This is an open source project exploring diagnostic patterns for ROS 2.
+> APIs, architecture, and naming may change as the project evolves.
+
+See the [Roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html) for planned
+milestones, or check [GitHub Milestones](https://github.com/selfpatch/ros2_medkit/milestones)
+for current progress.
 
 ## Target Use Cases
 

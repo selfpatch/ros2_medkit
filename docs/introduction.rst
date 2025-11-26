@@ -28,8 +28,11 @@ Status
 
 **Early prototype / work in progress**
 
-This is a personal open source project to explore diagnostic patterns for ROS 2.
-APIs, architecture, and naming may change at any time.
+This is an open source project exploring diagnostic patterns for ROS 2.
+APIs, architecture, and naming may change as the project evolves.
+
+The current focus is on covering the SOVD API surface to enable early integration
+and compliance validation. See the :doc:`roadmap` for planned milestones and priorities.
 
 Target Use Cases
 ----------------
