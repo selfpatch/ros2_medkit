@@ -152,7 +152,8 @@ Main Components
    - Handles timeout and error cases gracefully
    - Returns topic data as JSON with metadata (topic name, timestamp, data)
    - Configurable timeout per topic (default: 3 seconds for slow publishers)
-   - Sequential topic sampling with planned parallel sampling improvement
+   - Parallel topic sampling with configurable concurrency limit (``max_parallel_topic_samples``, default: 10)
+   - Batched processing to bound resource usage while improving performance
 
 5. **ROS2CLIWrapper** - Executes ROS 2 CLI commands safely
    - Wraps ``popen()`` with RAII for exception safety during command execution

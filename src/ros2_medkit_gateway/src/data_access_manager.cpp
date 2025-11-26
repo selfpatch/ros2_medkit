@@ -13,23 +13,36 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/data_access_manager.hpp"
+#include <algorithm>
 #include <chrono>
-#include <sstream>
 #include <cmath>
+#include <future>
+#include <sstream>
 
 namespace ros2_medkit_gateway {
 
 DataAccessManager::DataAccessManager(rclcpp::Node* node)
     : node_(node),
       cli_wrapper_(std::make_unique<ROS2CLIWrapper>()),
-      output_parser_(std::make_unique<OutputParser>())
+      output_parser_(std::make_unique<OutputParser>()),
+      max_parallel_samples_(node->declare_parameter<int>("max_parallel_topic_samples", 10))
 {
+    // Validate max_parallel_samples_ against allowed range [1, 50]
+    if (max_parallel_samples_ < 1 || max_parallel_samples_ > 50) {
+        RCLCPP_WARN(node_->get_logger(),
+                    "max_parallel_topic_samples (%d) out of valid range (1-50), using default: 10",
+                    max_parallel_samples_);
+        max_parallel_samples_ = 10;
+    }
+
     if (!cli_wrapper_->is_command_available("ros2")) {
         RCLCPP_ERROR(node_->get_logger(), "ROS 2 CLI not found!");
         throw std::runtime_error("ros2 command not available");
     }
 
-    RCLCPP_INFO(node_->get_logger(), "DataAccessManager initialized (CLI-based)");
+    RCLCPP_INFO(node_->get_logger(),
+                "DataAccessManager initialized (CLI-based, max_parallel_samples=%d)",
+                max_parallel_samples_);
 }
 
 json DataAccessManager::get_topic_sample(
@@ -142,20 +155,47 @@ json DataAccessManager::get_component_data(
         return result;
     }
 
-    // Get data from each topic
-    // TODO(mfaferek93): Implement parallel topic sampling to improve performance
-    // Current sequential approach: N topics × timeout = long response time
-    // Future: Use threads/async to sample topics in parallel
-    for (const auto& topic : topics) {
-        try {
-            json topic_data = get_topic_sample(topic, timeout_sec);
-            result.push_back(topic_data);
-        } catch (const std::exception& e) {
-            RCLCPP_WARN(node_->get_logger(),
-                       "Failed to get data from topic '%s': %s",
-                       topic.c_str(),
-                       e.what());
-            // Continue with other topics
+    // Get data from each topic using batched parallel sampling
+    // Process topics in batches to limit concurrent operations
+    RCLCPP_INFO(node_->get_logger(),
+                "Sampling %zu topics in parallel (batch size: %d)",
+                topics.size(),
+                max_parallel_samples_);
+
+    for (size_t i = 0; i < topics.size(); i += max_parallel_samples_) {
+        // Calculate batch size (handle last batch which may be smaller)
+        size_t batch_size = std::min(
+            static_cast<size_t>(max_parallel_samples_),
+            topics.size() - i
+        );
+
+        // Launch async tasks for this batch
+        std::vector<std::future<json>> futures;
+        futures.reserve(batch_size);
+
+        for (size_t j = 0; j < batch_size; ++j) {
+            const auto& topic = topics[i + j];
+            futures.push_back(std::async(
+                std::launch::async,
+                [this, topic, timeout_sec]() -> json {
+                    return get_topic_sample(topic, timeout_sec);
+                }
+            ));
+        }
+
+        // Collect results from this batch
+        for (size_t j = 0; j < batch_size; ++j) {
+            const auto& topic = topics[i + j];
+            try {
+                json topic_data = futures[j].get();
+                result.push_back(topic_data);
+            } catch (const std::exception& e) {
+                RCLCPP_WARN(node_->get_logger(),
+                           "Failed to get data from topic '%s': %s",
+                           topic.c_str(),
+                           e.what());
+                // Continue with other topics
+            }
         }
     }
 

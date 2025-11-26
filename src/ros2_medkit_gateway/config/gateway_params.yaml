@@ -24,3 +24,9 @@ ros2_medkit_gateway:
     # How often to discover ROS 2 nodes and update the cache
     # Valid range: 100-60000 (0.1s to 60s)
     refresh_interval_ms: 2000
+
+    # Data Access Configuration
+    # Maximum number of concurrent topic samples when fetching component data
+    # Higher values improve response time but use more system resources
+    # Valid range: 1-50
+    max_parallel_topic_samples: 10

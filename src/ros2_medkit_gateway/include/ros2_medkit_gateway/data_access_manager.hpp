@@ -59,6 +59,7 @@ private:
     rclcpp::Node* node_;
     std::unique_ptr<ROS2CLIWrapper> cli_wrapper_;
     std::unique_ptr<OutputParser> output_parser_;
+    int max_parallel_samples_;
 };
 
 }  // namespace ros2_medkit_gateway
