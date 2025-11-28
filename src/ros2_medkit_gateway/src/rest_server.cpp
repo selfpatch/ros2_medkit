@@ -19,6 +19,7 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 using json = nlohmann::json;
+using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 
@@ -83,20 +84,17 @@ void RESTServer::stop() {
     }
 }
 
-bool RESTServer::validate_entity_id(
-    const std::string& entity_id,
-    std::string& error_message
+std::expected<void, std::string> RESTServer::validate_entity_id(
+    const std::string& entity_id
 ) const {
     // Check for empty string
     if (entity_id.empty()) {
-        error_message = "Entity ID cannot be empty";
-        return false;
+        return std::unexpected("Entity ID cannot be empty");
     }
 
     // Check length (reasonable limit to prevent abuse)
     if (entity_id.length() > 256) {
-        error_message = "Entity ID too long (max 256 characters)";
-        return false;
+        return std::unexpected("Entity ID too long (max 256 characters)");
     }
 
     // Validate characters according to ROS 2 naming conventions
@@ -120,14 +118,14 @@ bool RESTServer::validate_entity_id(
             } else {
                 char_repr = std::string(1, c);
             }
-            error_message = "Entity ID contains invalid character: '" +
-                          char_repr +
-                          "'. Only alphanumeric and underscore are allowed";
-            return false;
+            return std::unexpected(
+                "Entity ID contains invalid character: '" + char_repr +
+                "'. Only alphanumeric and underscore are allowed"
+            );
         }
     }
 
-    return true;
+    return {};
 }
 
 void RESTServer::handle_health(const httplib::Request& req, httplib::Response& res) {
@@ -141,7 +139,7 @@ void RESTServer::handle_health(const httplib::Request& req, httplib::Response& r
 
         res.set_content(response.dump(2), "application/json");
     } catch (const std::exception& e) {
-        res.status = 500;
+        res.status = StatusCode::InternalServerError_500;
         res.set_content(
             json{{"error", "Internal server error"}}.dump(),
             "application/json"
@@ -162,7 +160,7 @@ void RESTServer::handle_root(const httplib::Request& req, httplib::Response& res
 
         res.set_content(response.dump(2), "application/json");
     } catch (const std::exception& e) {
-        res.status = 500;
+        res.status = StatusCode::InternalServerError_500;
         res.set_content(
             json{{"error", "Internal server error"}}.dump(),
             "application/json"
@@ -184,7 +182,7 @@ void RESTServer::handle_list_areas(const httplib::Request& req, httplib::Respons
 
         res.set_content(areas_json.dump(2), "application/json");
     } catch (const std::exception& e) {
-        res.status = 500;
+        res.status = StatusCode::InternalServerError_500;
         res.set_content(
             json{{"error", "Internal server error"}}.dump(),
             "application/json"
@@ -206,7 +204,7 @@ void RESTServer::handle_list_components(const httplib::Request& req, httplib::Re
 
         res.set_content(components_json.dump(2), "application/json");
     } catch (const std::exception& e) {
-        res.status = 500;
+        res.status = StatusCode::InternalServerError_500;
         res.set_content(
             json{{"error", "Internal server error"}}.dump(),
             "application/json"
@@ -223,7 +221,7 @@ void RESTServer::handle_area_components(const httplib::Request& req, httplib::Re
     try {
         // Extract area_id from URL path
         if (req.matches.size() < 2) {
-            res.status = 400;
+            res.status = StatusCode::BadRequest_400;
             res.set_content(
                 json{{"error", "Invalid request"}}.dump(2),
                 "application/json"
@@ -234,13 +232,13 @@ void RESTServer::handle_area_components(const httplib::Request& req, httplib::Re
         std::string area_id = req.matches[1];
 
         // Validate area_id
-        std::string validation_error;
-        if (!validate_entity_id(area_id, validation_error)) {
-            res.status = 400;
+        auto validation_result = validate_entity_id(area_id);
+        if (!validation_result) {
+            res.status = StatusCode::BadRequest_400;
             res.set_content(
                 json{
                     {"error", "Invalid area ID"},
-                    {"details", validation_error},
+                    {"details", validation_result.error()},
                     {"area_id", area_id}
                 }.dump(2),
                 "application/json"
@@ -260,7 +258,7 @@ void RESTServer::handle_area_components(const httplib::Request& req, httplib::Re
         }
 
         if (!area_exists) {
-            res.status = 404;
+            res.status = StatusCode::NotFound_404;
             res.set_content(
                 json{
                     {"error", "Area not found"},
@@ -281,7 +279,7 @@ void RESTServer::handle_area_components(const httplib::Request& req, httplib::Re
 
         res.set_content(components_json.dump(2), "application/json");
     } catch (const std::exception& e) {
-        res.status = 500;
+        res.status = StatusCode::InternalServerError_500;
         res.set_content(
             json{{"error", "Internal server error"}}.dump(),
             "application/json"
@@ -299,7 +297,7 @@ void RESTServer::handle_component_data(const httplib::Request& req, httplib::Res
     try {
         // Extract component_id from URL path
         if (req.matches.size() < 2) {
-            res.status = 400;
+            res.status = StatusCode::BadRequest_400;
             res.set_content(
                 json{{"error", "Invalid request"}}.dump(2),
                 "application/json"
@@ -310,13 +308,13 @@ void RESTServer::handle_component_data(const httplib::Request& req, httplib::Res
         component_id = req.matches[1];
 
         // Validate component_id
-        std::string validation_error;
-        if (!validate_entity_id(component_id, validation_error)) {
-            res.status = 400;
+        auto validation_result = validate_entity_id(component_id);
+        if (!validation_result) {
+            res.status = StatusCode::BadRequest_400;
             res.set_content(
                 json{
                     {"error", "Invalid component ID"},
-                    {"details", validation_error},
+                    {"details", validation_result.error()},
                     {"component_id", component_id}
                 }.dump(2),
                 "application/json"
@@ -339,7 +337,7 @@ void RESTServer::handle_component_data(const httplib::Request& req, httplib::Res
         }
 
         if (!component_found) {
-            res.status = 404;
+            res.status = StatusCode::NotFound_404;
             res.set_content(
                 json{
                     {"error", "Component not found"},
@@ -356,7 +354,7 @@ void RESTServer::handle_component_data(const httplib::Request& req, httplib::Res
 
         res.set_content(component_data.dump(2), "application/json");
     } catch (const std::exception& e) {
-        res.status = 500;
+        res.status = StatusCode::InternalServerError_500;
         res.set_content(
             json{
                 {"error", "Failed to retrieve component data"},

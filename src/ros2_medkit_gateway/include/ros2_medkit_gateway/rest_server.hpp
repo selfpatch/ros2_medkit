@@ -16,6 +16,7 @@
 
 #include <httplib.h>
 
+#include <expected>
 #include <memory>
 #include <string>
 
@@ -45,7 +46,7 @@ private:
     void handle_component_data(const httplib::Request& req, httplib::Response& res);
 
     // Helper methods
-    bool validate_entity_id(const std::string& entity_id, std::string& error_message) const;
+    std::expected<void, std::string> validate_entity_id(const std::string& entity_id) const;
 
     GatewayNode* node_;
     std::string host_;

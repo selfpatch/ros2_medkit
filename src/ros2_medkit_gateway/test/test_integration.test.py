@@ -220,7 +220,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print(f'✓ Components test passed: {len(components)} components discovered')
 
     def test_04_automotive_areas_discovery(self):
-        """Test that automotive areas are properly discovered."""
+        """
+        Test that automotive areas are properly discovered.
+
+        @verifies REQ_INTEROP_003
+        """
         areas = self._get_json('/areas')
         area_ids = [area['id'] for area in areas]
 
@@ -257,7 +261,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         )
 
     def test_06_area_components_nonexistent_error(self):
-        """Test GET /areas/{area_id}/components returns 404 for nonexistent area."""
+        """
+        Test GET /areas/{area_id}/components returns 404 for nonexistent area.
+
+        @verifies REQ_INTEROP_006
+        """
         response = requests.get(
             f'{self.BASE_URL}/areas/nonexistent/components', timeout=5
         )
@@ -388,7 +396,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print(f'✓ Component with no topics test passed: {len(data)} topics')
 
     def test_13_invalid_component_id_special_chars(self):
-        """Test GET /components/{component_id}/data rejects special characters."""
+        """
+        Test GET /components/{component_id}/data rejects special characters.
+
+        @verifies REQ_INTEROP_018
+        """
         # Test various invalid characters
         invalid_ids = [
             'component;drop',  # SQL injection attempt
@@ -419,7 +431,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print('✓ Invalid component ID special characters test passed')
 
     def test_14_invalid_area_id_special_chars(self):
-        """Test GET /areas/{area_id}/components rejects special characters."""
+        """
+        Test GET /areas/{area_id}/components rejects special characters.
+
+        @verifies REQ_INTEROP_006
+        """
         # Test various invalid characters
         # Note: Forward slash is handled by URL routing, not validation
         invalid_ids = [
@@ -448,7 +464,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print('✓ Invalid area ID special characters test passed')
 
     def test_15_valid_ids_with_underscores(self):
-        """Test that valid IDs with underscores are accepted (ROS 2 naming)."""
+        """
+        Test that valid IDs with underscores are accepted (ROS 2 naming).
+
+        @verifies REQ_INTEROP_018
+        """
         # While these IDs don't exist in the test environment,
         # they should pass validation and return 404 (not 400)
         valid_ids = [
@@ -473,7 +493,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print('✓ Valid IDs with underscores test passed')
 
     def test_16_invalid_ids_with_hyphens(self):
-        """Test that IDs with hyphens are rejected (not allowed in ROS 2 names)."""
+        """
+        Test that IDs with hyphens are rejected (not allowed in ROS 2 names).
+
+        @verifies REQ_INTEROP_018
+        """
         invalid_ids = [
             'component-name',
             'component-name-123',
