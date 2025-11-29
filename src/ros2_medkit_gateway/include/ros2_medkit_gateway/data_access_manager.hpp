@@ -48,6 +48,21 @@ public:
         double timeout_sec = 3.0
     );
 
+    /**
+     * @brief Publish data to a specific topic
+     * @param topic_path Full topic path (e.g., /chassis/brakes/command)
+     * @param msg_type ROS 2 message type (e.g., std_msgs/msg/Float32)
+     * @param data JSON data to publish
+     * @param timeout_sec Timeout for the publish operation
+     * @return JSON with publish status
+     */
+    json publish_to_topic(
+        const std::string& topic_path,
+        const std::string& msg_type,
+        const json& data,
+        double timeout_sec = 5.0
+    );
+
 private:
     /**
      * @brief Find all topics under a given namespace

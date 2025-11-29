@@ -207,4 +207,52 @@ json DataAccessManager::get_component_data(
     return result;
 }
 
+json DataAccessManager::publish_to_topic(
+    const std::string& topic_path,
+    const std::string& msg_type,
+    const json& data,
+    double timeout_sec
+) {
+    try {
+        // Convert JSON data to YAML string for ros2 topic pub
+        // The data should be in YAML format like: "{data: 50.0}"
+        std::string yaml_data = data.dump();
+
+        std::ostringstream cmd;
+        cmd << "timeout " << static_cast<int>(std::ceil(timeout_sec)) << "s "
+            << "ros2 topic pub --once "
+            << ROS2CLIWrapper::escape_shell_arg(topic_path) << " "
+            << ROS2CLIWrapper::escape_shell_arg(msg_type) << " "
+            << ROS2CLIWrapper::escape_shell_arg(yaml_data);
+
+        RCLCPP_INFO(node_->get_logger(), "Executing: %s", cmd.str().c_str());
+
+        std::string output = cli_wrapper_->exec(cmd.str());
+
+        RCLCPP_INFO(node_->get_logger(),
+                    "Published to topic '%s' with type '%s'",
+                    topic_path.c_str(),
+                    msg_type.c_str());
+
+        json result = {
+            {"topic", topic_path},
+            {"type", msg_type},
+            {"status", "published"},
+            {"timestamp", std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count()}
+        };
+
+        return result;
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(node_->get_logger(),
+                    "Failed to publish to topic '%s': %s",
+                    topic_path.c_str(),
+                    e.what());
+        throw std::runtime_error(
+            "Failed to publish to topic '" + topic_path + "': " + e.what()
+        );
+    }
+}
+
 }  // namespace ros2_medkit_gateway
