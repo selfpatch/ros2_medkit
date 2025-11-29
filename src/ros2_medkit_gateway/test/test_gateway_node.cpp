@@ -95,13 +95,14 @@ private:
               {"name", "ROS 2 Medkit Gateway"},
               {"version", VERSION},
               {"endpoints", nlohmann::json::array({
-                  "/health",
-                  "/version-info",
-                  "/areas",
-                  "/components",
-                  "/areas/{area_id}/components",
-                  "/components/{component_id}/data",
-                  "/components/{component_id}/data/{topic_name}"
+                  "GET /health",
+                  "GET /version-info",
+                  "GET /areas",
+                  "GET /components",
+                  "GET /areas/{area_id}/components",
+                  "GET /components/{component_id}/data",
+                  "GET /components/{component_id}/data/{topic_name}",
+                  "PUT /components/{component_id}/data/{topic_name}"
               })},
               {"capabilities", {
                   {"discovery", true},
@@ -172,7 +173,7 @@ TEST_F(TestGatewayNode, test_root_endpoint) {
   EXPECT_EQ(json_response["version"], "0.1.0");
   EXPECT_TRUE(json_response.contains("endpoints"));
   EXPECT_TRUE(json_response["endpoints"].is_array());
-  EXPECT_EQ(json_response["endpoints"].size(), 7);
+  EXPECT_EQ(json_response["endpoints"].size(), 8);
   EXPECT_TRUE(json_response.contains("capabilities"));
   EXPECT_TRUE(json_response["capabilities"]["discovery"]);
   EXPECT_TRUE(json_response["capabilities"]["data_access"]);

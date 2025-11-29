@@ -187,6 +187,66 @@
             "description": "Read brake pressure topic data from the pressure_sensor component."
           },
           "response": []
+        },
+        {
+          "name": "PUT Publish Brake Command",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"std_msgs/msg/Float32\",\n  \"data\": {\n    \"data\": 50.0\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/components/actuator/data/command",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "actuator",
+                "data",
+                "command"
+              ]
+            },
+            "description": "Publish data to a component topic (REQ_INTEROP_020). Request body must contain 'type' (ROS 2 message type) and 'data' (message payload). Returns publish confirmation with topic, type, status, and timestamp."
+          },
+          "response": []
+        },
+        {
+          "name": "PUT Publish Temperature Value",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"sensor_msgs/msg/Temperature\",\n  \"data\": {\n    \"temperature\": 85.5,\n    \"variance\": 0.1\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/data/temperature",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "data",
+                "temperature"
+              ]
+            },
+            "description": "Publish temperature data to the temp_sensor component. Example of publishing sensor_msgs/msg/Temperature type."
+          },
+          "response": []
         }
       ]
     }

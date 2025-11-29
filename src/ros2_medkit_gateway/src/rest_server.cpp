@@ -78,6 +78,11 @@ void RESTServer::setup_routes() {
     server_->Get(R"(/components/([^/]+)/data$)", [this](const httplib::Request& req, httplib::Response& res) {
         handle_component_data(req, res);
     });
+
+    // Component topic publish (PUT)
+    server_->Put(R"(/components/([^/]+)/data/([^/]+)$)", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_component_topic_publish(req, res);
+    });
 }
 
 void RESTServer::start() {
@@ -170,13 +175,14 @@ void RESTServer::handle_root(const httplib::Request& req, httplib::Response& res
             {"name", "ROS 2 Medkit Gateway"},
             {"version", "0.1.0"},
             {"endpoints", json::array({
-                "/health",
-                "/version-info",
-                "/areas",
-                "/components",
-                "/areas/{area_id}/components",
-                "/components/{component_id}/data",
-                "/components/{component_id}/data/{topic_name}"
+                "GET /health",
+                "GET /version-info",
+                "GET /areas",
+                "GET /components",
+                "GET /areas/{area_id}/components",
+                "GET /components/{component_id}/data",
+                "GET /components/{component_id}/data/{topic_name}",
+                "PUT /components/{component_id}/data/{topic_name}"
             })},
             {"capabilities", {
                 {"discovery", true},
@@ -539,6 +545,175 @@ void RESTServer::handle_component_topic_data(const httplib::Request& req, httpli
         RCLCPP_ERROR(
             rclcpp::get_logger("rest_server"),
             "Error in handle_component_topic_data for component '%s', topic '%s': %s",
+            component_id.c_str(),
+            topic_name.c_str(),
+            e.what()
+        );
+    }
+}
+
+void RESTServer::handle_component_topic_publish(
+    const httplib::Request& req,
+    httplib::Response& res
+) {
+    std::string component_id;
+    std::string topic_name;
+    try {
+        // Extract component_id and topic_name from URL path
+        if (req.matches.size() < 3) {
+            res.status = StatusCode::BadRequest_400;
+            res.set_content(
+                json{{"error", "Invalid request"}}.dump(2),
+                "application/json"
+            );
+            return;
+        }
+
+        component_id = req.matches[1];
+        topic_name = req.matches[2];
+
+        // Validate component_id
+        auto component_validation = validate_entity_id(component_id);
+        if (!component_validation) {
+            res.status = StatusCode::BadRequest_400;
+            res.set_content(
+                json{
+                    {"error", "Invalid component ID"},
+                    {"details", component_validation.error()},
+                    {"component_id", component_id}
+                }.dump(2),
+                "application/json"
+            );
+            return;
+        }
+
+        // Validate topic_name
+        auto topic_validation = validate_entity_id(topic_name);
+        if (!topic_validation) {
+            res.status = StatusCode::BadRequest_400;
+            res.set_content(
+                json{
+                    {"error", "Invalid topic name"},
+                    {"details", topic_validation.error()},
+                    {"topic_name", topic_name}
+                }.dump(2),
+                "application/json"
+            );
+            return;
+        }
+
+        // Parse request body
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (const json::parse_error& e) {
+            res.status = StatusCode::BadRequest_400;
+            res.set_content(
+                json{
+                    {"error", "Invalid JSON in request body"},
+                    {"details", e.what()}
+                }.dump(2),
+                "application/json"
+            );
+            return;
+        }
+
+        // Validate required fields: type and data
+        if (!body.contains("type") || !body["type"].is_string()) {
+            res.status = StatusCode::BadRequest_400;
+            res.set_content(
+                json{
+                    {"error", "Missing or invalid 'type' field"},
+                    {"details", "Request body must contain 'type' string field"}
+                }.dump(2),
+                "application/json"
+            );
+            return;
+        }
+
+        if (!body.contains("data")) {
+            res.status = StatusCode::BadRequest_400;
+            res.set_content(
+                json{
+                    {"error", "Missing 'data' field"},
+                    {"details", "Request body must contain 'data' field"}
+                }.dump(2),
+                "application/json"
+            );
+            return;
+        }
+
+        std::string msg_type = body["type"].get<std::string>();
+        json data = body["data"];
+
+        // Validate message type format (e.g., std_msgs/msg/Float32)
+        if (msg_type.find('/') == std::string::npos) {
+            res.status = StatusCode::BadRequest_400;
+            res.set_content(
+                json{
+                    {"error", "Invalid message type format"},
+                    {"details", "Message type should be in format: package/msg/Type"},
+                    {"type", msg_type}
+                }.dump(2),
+                "application/json"
+            );
+            return;
+        }
+
+        const auto cache = node_->get_entity_cache();
+
+        // Find component in cache
+        std::string component_namespace;
+        bool component_found = false;
+
+        for (const auto& component : cache.components) {
+            if (component.id == component_id) {
+                component_namespace = component.namespace_path;
+                component_found = true;
+                break;
+            }
+        }
+
+        if (!component_found) {
+            res.status = StatusCode::NotFound_404;
+            res.set_content(
+                json{
+                    {"error", "Component not found"},
+                    {"component_id", component_id}
+                }.dump(2),
+                "application/json"
+            );
+            return;
+        }
+
+        // Construct full topic path
+        std::string full_topic_path = (component_namespace == "/")
+            ? "/" + topic_name
+            : component_namespace + "/" + topic_name;
+
+        // Publish data using DataAccessManager
+        auto data_access_mgr = node_->get_data_access_manager();
+        json result = data_access_mgr->publish_to_topic(full_topic_path, msg_type, data);
+
+        // Add component info to result
+        result["component_id"] = component_id;
+        result["topic_name"] = topic_name;
+
+        res.set_content(result.dump(2), "application/json");
+    } catch (const std::exception& e) {
+        res.status = StatusCode::InternalServerError_500;
+        res.set_content(
+            json{
+                {"error", "Failed to publish to topic"},
+                {"details", e.what()},
+                {"component_id", component_id},
+                {"topic_name", topic_name}
+            }.dump(2),
+            "application/json"
+        );
+        RCLCPP_ERROR(
+            rclcpp::get_logger("rest_server"),
+            "Error in handle_component_topic_publish for component '%s', topic '%s': %s",
             component_id.c_str(),
             topic_name.c_str(),
             e.what()
