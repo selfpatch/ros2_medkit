@@ -132,10 +132,14 @@ def generate_test_description():
     )
 
 
+# API version prefix - must match rest_server.cpp
+API_BASE_PATH = '/api/v1'
+
+
 class TestROS2MedkitGatewayIntegration(unittest.TestCase):
     """Integration tests for ROS 2 Medkit Gateway REST API and discovery."""
 
-    BASE_URL = 'http://localhost:8080'
+    BASE_URL = f'http://localhost:8080{API_BASE_PATH}'
     # Wait for cache refresh + safety margin
     # Must be kept in sync with gateway_params.yaml refresh_interval_ms (2000ms)
     # Need to wait for at least 2 refresh cycles to ensure all demo nodes are discovered
@@ -151,7 +155,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         max_retries = 5
         for i in range(max_retries):
             try:
-                response = requests.get(f'{cls.BASE_URL}/', timeout=1)
+                response = requests.get(f'{cls.BASE_URL}/health', timeout=1)
                 if response.status_code == 200:
                     return
             except requests.exceptions.RequestException:
@@ -182,11 +186,15 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Verify endpoints list
         self.assertIsInstance(data['endpoints'], list)
-        self.assertIn('GET /health', data['endpoints'])
-        self.assertIn('GET /version-info', data['endpoints'])
-        self.assertIn('GET /areas', data['endpoints'])
-        self.assertIn('GET /components', data['endpoints'])
-        self.assertIn('PUT /components/{component_id}/data/{topic_name}', data['endpoints'])
+        self.assertIn('GET /api/v1/health', data['endpoints'])
+        self.assertIn('GET /api/v1/version-info', data['endpoints'])
+        self.assertIn('GET /api/v1/areas', data['endpoints'])
+        self.assertIn('GET /api/v1/components', data['endpoints'])
+        self.assertIn('PUT /api/v1/components/{component_id}/data/{topic_name}', data['endpoints'])
+
+        # Verify api_base field
+        self.assertIn('api_base', data)
+        self.assertEqual(data['api_base'], API_BASE_PATH)
 
         # Verify capabilities
         self.assertIn('discovery', data['capabilities'])

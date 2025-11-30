@@ -2,16 +2,20 @@
 
 This folder contains Postman collections for testing the ROS 2 Medkit Gateway REST API.
 
+## API Base Path
+
+All endpoints are prefixed with `/api/v1` for API versioning.
+
 ## Current Collection:
 
 **Collection:** `ros2-medkit-gateway.postman_collection.json`
 
 Includes below endpoints:
-- ✅ GET `/` - Gateway info
-- ✅ GET `/areas` - List all areas
-- ✅ GET `/components` - List all components
-- ✅ GET `/areas/{area_id}/components` - List components in specific area
-- ✅ GET `/components/{component_id}/data` - Read all topic data from a component
+- ✅ GET `/api/v1/` - Gateway info
+- ✅ GET `/api/v1/areas` - List all areas
+- ✅ GET `/api/v1/components` - List all components
+- ✅ GET `/api/v1/areas/{area_id}/components` - List components in specific area
+- ✅ GET `/api/v1/components/{component_id}/data` - Read all topic data from a component
 
 ## Quick Start
 

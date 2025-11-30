@@ -26,6 +26,9 @@
 using namespace std::chrono_literals;
 using httplib::StatusCode;
 
+// API version prefix - must match rest_server.cpp
+static constexpr const char * API_BASE_PATH = "/api/v1";
+
 class TestGatewayNode : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -55,9 +58,10 @@ class TestGatewayNode : public ::testing::Test {
     const auto start = std::chrono::steady_clock::now();
     const auto timeout = std::chrono::seconds(5);
     httplib::Client client(server_host_, server_port_);
+    const std::string health_endpoint = std::string(API_BASE_PATH) + "/health";
 
     while (std::chrono::steady_clock::now() - start < timeout) {
-      if (auto res = client.Get("/health")) {
+      if (auto res = client.Get(health_endpoint)) {
         if (res->status == StatusCode::OK_200) {
           return;
         }
@@ -79,7 +83,7 @@ class TestGatewayNode : public ::testing::Test {
 TEST_F(TestGatewayNode, test_health_endpoint) {
   auto client = create_client();
 
-  auto res = client.Get("/health");
+  auto res = client.Get(std::string(API_BASE_PATH) + "/health");
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, StatusCode::OK_200);
@@ -95,7 +99,7 @@ TEST_F(TestGatewayNode, test_root_endpoint) {
   // @verifies REQ_INTEROP_010
   auto client = create_client();
 
-  auto res = client.Get("/");
+  auto res = client.Get(std::string(API_BASE_PATH) + "/");
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, StatusCode::OK_200);
@@ -115,7 +119,7 @@ TEST_F(TestGatewayNode, test_version_info_endpoint) {
   // @verifies REQ_INTEROP_001
   auto client = create_client();
 
-  auto res = client.Get("/version-info");
+  auto res = client.Get(std::string(API_BASE_PATH) + "/version-info");
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, StatusCode::OK_200);
@@ -131,7 +135,7 @@ TEST_F(TestGatewayNode, test_list_areas_endpoint) {
   // @verifies REQ_INTEROP_003
   auto client = create_client();
 
-  auto res = client.Get("/areas");
+  auto res = client.Get(std::string(API_BASE_PATH) + "/areas");
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, StatusCode::OK_200);
@@ -145,7 +149,7 @@ TEST_F(TestGatewayNode, test_list_components_endpoint) {
   // @verifies REQ_INTEROP_003
   auto client = create_client();
 
-  auto res = client.Get("/components");
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components");
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, StatusCode::OK_200);

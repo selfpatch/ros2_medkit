@@ -14,28 +14,30 @@ The ROS 2 Medkit Gateway exposes ROS 2 system information and data through a RES
 
 ## Endpoints
 
+All endpoints are prefixed with `/api/v1` for API versioning.
+
 ### Discovery Endpoints
 
-- `GET /health` - Health check endpoint (returns healthy status)
-- `GET /` - Gateway status and version information
-- `GET /areas` - List all discovered areas (powertrain, chassis, body, root)
-- `GET /components` - List all discovered components across all areas
-- `GET /areas/{area_id}/components` - List components within a specific area
+- `GET /api/v1/health` - Health check endpoint (returns healthy status)
+- `GET /api/v1/` - Gateway status and version information
+- `GET /api/v1/areas` - List all discovered areas (powertrain, chassis, body, root)
+- `GET /api/v1/components` - List all discovered components across all areas
+- `GET /api/v1/areas/{area_id}/components` - List components within a specific area
 
 ### Component Data Endpoints
 
-- `GET /components/{component_id}/data` - Read all topic data from a component
-- `GET /components/{component_id}/data/{topic_name}` - Read specific topic data from a component
+- `GET /api/v1/components/{component_id}/data` - Read all topic data from a component
+- `GET /api/v1/components/{component_id}/data/{topic_name}` - Read specific topic data from a component
 
 ### API Reference
 
-#### GET /areas
+#### GET /api/v1/areas
 
 Lists all discovered areas in the system.
 
 **Example:**
 ```bash
-curl http://localhost:8080/areas
+curl http://localhost:8080/api/v1/areas
 ```
 
 **Response:**
@@ -54,13 +56,13 @@ curl http://localhost:8080/areas
 ]
 ```
 
-#### GET /components
+#### GET /api/v1/components
 
 Lists all discovered components across all areas.
 
 **Example:**
 ```bash
-curl http://localhost:8080/components
+curl http://localhost:8080/api/v1/components
 ```
 
 **Response:**
@@ -90,13 +92,13 @@ curl http://localhost:8080/components
 - `type` - Always "Component"
 - `area` - Parent area this component belongs to
 
-#### GET /areas/{area_id}/components
+#### GET /api/v1/areas/{area_id}/components
 
 Lists all components within a specific area.
 
 **Example (Success):**
 ```bash
-curl http://localhost:8080/areas/powertrain/components
+curl http://localhost:8080/api/v1/areas/powertrain/components
 ```
 
 **Response (200 OK):**
@@ -121,7 +123,7 @@ curl http://localhost:8080/areas/powertrain/components
 
 **Example (Error - Area Not Found):**
 ```bash
-curl http://localhost:8080/areas/nonexistent/components
+curl http://localhost:8080/api/v1/areas/nonexistent/components
 ```
 
 **Response (404 Not Found):**
@@ -142,13 +144,13 @@ curl http://localhost:8080/areas/nonexistent/components
 
 ### Component Data Read Endpoints
 
-#### GET /components/{component_id}/data
+#### GET /api/v1/components/{component_id}/data
 
 Read all topic data from a specific component.
 
 **Example:**
 ```bash
-curl http://localhost:8080/components/temp_sensor/data
+curl http://localhost:8080/api/v1/components/temp_sensor/data
 ```
 
 **Response (200 OK):**
@@ -167,7 +169,7 @@ curl http://localhost:8080/components/temp_sensor/data
 
 **Example (Error - Component Not Found):**
 ```bash
-curl http://localhost:8080/components/nonexistent/data
+curl http://localhost:8080/api/v1/components/nonexistent/data
 ```
 
 **Response (404 Not Found):**
@@ -203,13 +205,13 @@ curl http://localhost:8080/components/nonexistent/data
 - Response time scales with batch count: `ceil(topics / batch_size) × timeout`
 - 3-second timeout per topic to accommodate slow-publishing topics
 
-#### GET /components/{component_id}/data/{topic_name}
+#### GET /api/v1/components/{component_id}/data/{topic_name}
 
 Read data from a specific topic within a component.
 
 **Example:**
 ```bash
-curl http://localhost:8080/components/temp_sensor/data/temperature
+curl http://localhost:8080/api/v1/components/temp_sensor/data/temperature
 ```
 
 **Response (200 OK):**
@@ -226,7 +228,7 @@ curl http://localhost:8080/components/temp_sensor/data/temperature
 
 **Example (Error - Topic Not Found):**
 ```bash
-curl http://localhost:8080/components/temp_sensor/data/nonexistent
+curl http://localhost:8080/api/v1/components/temp_sensor/data/nonexistent
 ```
 
 **Response (404 Not Found):**
@@ -240,7 +242,7 @@ curl http://localhost:8080/components/temp_sensor/data/nonexistent
 
 **Example (Error - Component Not Found):**
 ```bash
-curl http://localhost:8080/components/nonexistent/data/temperature
+curl http://localhost:8080/api/v1/components/nonexistent/data/temperature
 ```
 
 **Response (404 Not Found):**
@@ -253,7 +255,7 @@ curl http://localhost:8080/components/nonexistent/data/temperature
 
 **Example (Error - Invalid Topic Name):**
 ```bash
-curl http://localhost:8080/components/temp_sensor/data/invalid-name
+curl http://localhost:8080/api/v1/components/temp_sensor/data/invalid-name
 ```
 
 **Response (400 Bad Request):**
@@ -315,7 +317,7 @@ ros2 launch ros2_medkit_gateway demo_nodes.launch.py
 
 **Test the API:**
 ```bash
-curl http://localhost:8080/areas
+curl http://localhost:8080/api/v1/areas
 ```
 
 ## Configuration

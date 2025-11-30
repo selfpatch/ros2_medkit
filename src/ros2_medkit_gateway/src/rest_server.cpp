@@ -27,6 +27,14 @@ using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 
+// API version prefix for all endpoints
+static constexpr const char * API_BASE_PATH = "/api/v1";
+
+// Helper to build versioned endpoint path
+inline std::string api_path(const std::string & endpoint) {
+  return std::string(API_BASE_PATH) + endpoint;
+}
+
 RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config)
   : node_(node), host_(host), port_(port), cors_config_(cors_config) {
   server_ = std::make_unique<httplib::Server>();
@@ -65,49 +73,53 @@ RESTServer::~RESTServer() {
 
 void RESTServer::setup_routes() {
   // Health check
-  server_->Get("/health", [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Get(api_path("/health").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
     handle_health(req, res);
   });
 
   // Root - server capabilities and entry points (REQ_INTEROP_010)
-  server_->Get("/", [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Get(api_path("/").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
     handle_root(req, res);
   });
 
   // Version info (REQ_INTEROP_001)
-  server_->Get("/version-info", [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Get(api_path("/version-info").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
     handle_version_info(req, res);
   });
 
   // Areas
-  server_->Get("/areas", [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Get(api_path("/areas").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
     handle_list_areas(req, res);
   });
 
   // Components
-  server_->Get("/components", [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Get(api_path("/components").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
     handle_list_components(req, res);
   });
 
   // Area components
-  server_->Get(R"(/areas/([^/]+)/components)", [this](const httplib::Request & req, httplib::Response & res) {
-    handle_area_components(req, res);
-  });
+  server_->Get((api_path("/areas") + R"(/([^/]+)/components)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_area_components(req, res);
+               });
 
   // Component topic data (specific topic) - register before general route
-  server_->Get(R"(/components/([^/]+)/data/([^/]+)$)", [this](const httplib::Request & req, httplib::Response & res) {
-    handle_component_topic_data(req, res);
-  });
+  server_->Get((api_path("/components") + R"(/([^/]+)/data/([^/]+)$)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_component_topic_data(req, res);
+               });
 
   // Component data (all topics)
-  server_->Get(R"(/components/([^/]+)/data$)", [this](const httplib::Request & req, httplib::Response & res) {
-    handle_component_data(req, res);
-  });
+  server_->Get((api_path("/components") + R"(/([^/]+)/data$)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_component_data(req, res);
+               });
 
   // Component topic publish (PUT)
-  server_->Put(R"(/components/([^/]+)/data/([^/]+)$)", [this](const httplib::Request & req, httplib::Response & res) {
-    handle_component_topic_publish(req, res);
-  });
+  server_->Put((api_path("/components") + R"(/([^/]+)/data/([^/]+)$)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_component_topic_publish(req, res);
+               });
 }
 
 void RESTServer::start() {
@@ -179,14 +191,15 @@ void RESTServer::handle_root(const httplib::Request & req, httplib::Response & r
   (void)req;  // Unused parameter
 
   try {
-    json response = {
-        {"name", "ROS 2 Medkit Gateway"},
-        {"version", "0.1.0"},
-        {"endpoints", json::array({"GET /health", "GET /version-info", "GET /areas", "GET /components",
-                                   "GET /areas/{area_id}/components", "GET /components/{component_id}/data",
-                                   "GET /components/{component_id}/data/{topic_name}",
-                                   "PUT /components/{component_id}/data/{topic_name}"})},
-        {"capabilities", {{"discovery", true}, {"data_access", true}}}};
+    json response = {{"name", "ROS 2 Medkit Gateway"},
+                     {"version", "0.1.0"},
+                     {"api_base", API_BASE_PATH},
+                     {"endpoints", json::array({"GET /api/v1/health", "GET /api/v1/version-info", "GET /api/v1/areas",
+                                                "GET /api/v1/components", "GET /api/v1/areas/{area_id}/components",
+                                                "GET /api/v1/components/{component_id}/data",
+                                                "GET /api/v1/components/{component_id}/data/{topic_name}",
+                                                "PUT /api/v1/components/{component_id}/data/{topic_name}"})},
+                     {"capabilities", {{"discovery", true}, {"data_access", true}}}};
 
     res.set_content(response.dump(2), "application/json");
   } catch (const std::exception & e) {

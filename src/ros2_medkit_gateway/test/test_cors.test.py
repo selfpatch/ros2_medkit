@@ -42,6 +42,8 @@ GATEWAY_PORT_WITH_CREDS = 8086  # CORS with credentials enabled
 ALLOWED_ORIGIN = 'http://localhost:5173'
 ALLOWED_ORIGIN_2 = 'http://localhost:3000'
 DISALLOWED_ORIGIN = 'http://evil.com'
+# API version prefix - must match rest_server.cpp
+API_BASE_PATH = '/api/v1'
 
 
 def generate_test_description():
@@ -96,8 +98,8 @@ def generate_test_description():
 class TestCorsIntegration(unittest.TestCase):
     """CORS integration tests."""
 
-    BASE_URL_NO_CREDS = f'http://{GATEWAY_HOST}:{GATEWAY_PORT_NO_CREDS}'
-    BASE_URL_WITH_CREDS = f'http://{GATEWAY_HOST}:{GATEWAY_PORT_WITH_CREDS}'
+    BASE_URL_NO_CREDS = f'http://{GATEWAY_HOST}:{GATEWAY_PORT_NO_CREDS}{API_BASE_PATH}'
+    BASE_URL_WITH_CREDS = f'http://{GATEWAY_HOST}:{GATEWAY_PORT_WITH_CREDS}{API_BASE_PATH}'
 
     @classmethod
     def setUpClass(cls):
