@@ -27,8 +27,27 @@ using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 
-RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port) : node_(node), host_(host), port_(port) {
+RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config)
+  : node_(node), host_(host), port_(port), cors_config_(cors_config) {
   server_ = std::make_unique<httplib::Server>();
+
+  // Set up pre-routing handler for CORS (only if enabled)
+  if (cors_config_.enabled) {
+    server_->set_pre_routing_handler([this](const httplib::Request & req, httplib::Response & res) {
+      std::string origin = req.get_header_value("Origin");
+      if (!origin.empty() && is_origin_allowed(origin)) {
+        set_cors_headers(res, origin);
+      }
+
+      // Handle preflight OPTIONS requests
+      if (req.method == "OPTIONS") {
+        res.status = 204;  // No Content
+        return httplib::Server::HandlerResponse::Handled;
+      }
+      return httplib::Server::HandlerResponse::Unhandled;
+    });
+  }
+
   setup_routes();
 }
 
@@ -562,6 +581,57 @@ void RESTServer::handle_component_topic_publish(const httplib::Request & req, ht
                  "Error in handle_component_topic_publish for component '%s', topic '%s': %s", component_id.c_str(),
                  topic_name.c_str(), e.what());
   }
+}
+
+void RESTServer::set_cors_headers(httplib::Response & res, const std::string & origin) const {
+  res.set_header("Access-Control-Allow-Origin", origin);
+
+  // Build methods string from config
+  std::string methods_str;
+  for (const auto & method : cors_config_.allowed_methods) {
+    if (!methods_str.empty()) {
+      methods_str += ", ";
+    }
+    methods_str += method;
+  }
+  if (!methods_str.empty()) {
+    res.set_header("Access-Control-Allow-Methods", methods_str);
+  }
+
+  // Build headers string from config
+  std::string headers_str;
+  for (const auto & header : cors_config_.allowed_headers) {
+    if (!headers_str.empty()) {
+      headers_str += ", ";
+    }
+    headers_str += header;
+  }
+  if (!headers_str.empty()) {
+    res.set_header("Access-Control-Allow-Headers", headers_str);
+  }
+
+  // Set credentials header if enabled
+  if (cors_config_.allow_credentials) {
+    res.set_header("Access-Control-Allow-Credentials", "true");
+  }
+
+  // Set max age
+  res.set_header("Access-Control-Max-Age", std::to_string(cors_config_.max_age_seconds));
+}
+
+bool RESTServer::is_origin_allowed(const std::string & origin) const {
+  // If no origins configured, allow all (for development)
+  if (cors_config_.allowed_origins.empty()) {
+    return true;
+  }
+
+  // Check if origin matches any allowed origin
+  for (const auto & allowed : cors_config_.allowed_origins) {
+    if (allowed == "*" || allowed == origin) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace ros2_medkit_gateway
