@@ -21,7 +21,9 @@
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <thread>
+#include <vector>
 
+#include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/data_access_manager.hpp"
 #include "ros2_medkit_gateway/discovery_manager.hpp"
 #include "ros2_medkit_gateway/models.hpp"
@@ -54,6 +56,7 @@ class GatewayNode : public rclcpp::Node {
   std::string server_host_;
   int server_port_;
   int refresh_interval_ms_;
+  CorsConfig cors_config_;
 
   // Managers
   std::unique_ptr<DiscoveryManager> discovery_mgr_;

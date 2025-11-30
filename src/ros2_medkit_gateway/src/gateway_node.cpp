@@ -27,11 +27,28 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("server.host", "127.0.0.1");
   declare_parameter("server.port", 8080);
   declare_parameter("refresh_interval_ms", 2000);
+  declare_parameter("cors.allowed_origins", std::vector<std::string>{});
+  declare_parameter("cors.allowed_methods", std::vector<std::string>{"GET", "OPTIONS"});
+  declare_parameter("cors.allowed_headers", std::vector<std::string>{"Content-Type", "Accept"});
+  declare_parameter("cors.allow_credentials", false);
+  declare_parameter("cors.max_age_seconds", 86400);
 
   // Get parameter values
   server_host_ = get_parameter("server.host").as_string();
   server_port_ = get_parameter("server.port").as_int();
   refresh_interval_ms_ = get_parameter("refresh_interval_ms").as_int();
+
+  // Get CORS configuration
+  cors_config_.allowed_origins = get_parameter("cors.allowed_origins").as_string_array();
+  cors_config_.allowed_methods = get_parameter("cors.allowed_methods").as_string_array();
+  cors_config_.allowed_headers = get_parameter("cors.allowed_headers").as_string_array();
+  cors_config_.allow_credentials = get_parameter("cors.allow_credentials").as_bool();
+  cors_config_.max_age_seconds = get_parameter("cors.max_age_seconds").as_int();
+
+  // CORS is enabled if any origins are configured or if methods/headers are non-default
+  // Treat missing/empty config as disabled for security
+  cors_config_.enabled = !cors_config_.allowed_origins.empty() || !cors_config_.allowed_methods.empty() ||
+                         !cors_config_.allowed_headers.empty();
 
   // Validate port range
   if (server_port_ < 1024 || server_port_ > 65535) {
@@ -61,6 +78,33 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   RCLCPP_INFO(get_logger(), "Configuration: REST API at %s:%d, refresh interval: %dms", server_host_.c_str(),
               server_port_, refresh_interval_ms_);
 
+  if (cors_config_.enabled) {
+    std::string origins_str;
+    for (const auto & origin : cors_config_.allowed_origins) {
+      if (!origins_str.empty()) {
+        origins_str += ", ";
+      }
+      origins_str += origin;
+    }
+    if (origins_str.empty()) {
+      origins_str = "* (all)";
+    }
+
+    std::string methods_str;
+    for (const auto & method : cors_config_.allowed_methods) {
+      if (!methods_str.empty()) {
+        methods_str += ", ";
+      }
+      methods_str += method;
+    }
+
+    RCLCPP_INFO(get_logger(), "CORS enabled - origins: [%s], methods: [%s], credentials: %s, max_age: %ds",
+                origins_str.c_str(), methods_str.c_str(), cors_config_.allow_credentials ? "true" : "false",
+                cors_config_.max_age_seconds);
+  } else {
+    RCLCPP_INFO(get_logger(), "CORS: disabled (no configuration provided)");
+  }
+
   // Initialize managers
   discovery_mgr_ = std::make_unique<DiscoveryManager>(this);
   data_access_mgr_ = std::make_unique<DataAccessManager>(this);
@@ -72,8 +116,8 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   refresh_timer_ =
       create_wall_timer(std::chrono::milliseconds(refresh_interval_ms_), std::bind(&GatewayNode::refresh_cache, this));
 
-  // Start REST server with configured host and port
-  rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_);
+  // Start REST server with configured host, port and CORS
+  rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_);
   start_rest_server();
 
   RCLCPP_INFO(get_logger(), "ROS 2 Medkit Gateway ready on %s:%d", server_host_.c_str(), server_port_);

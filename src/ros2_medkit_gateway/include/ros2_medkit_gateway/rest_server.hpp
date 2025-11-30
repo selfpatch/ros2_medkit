@@ -20,6 +20,9 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
+
+#include "ros2_medkit_gateway/config.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -27,7 +30,7 @@ class GatewayNode;
 
 class RESTServer {
  public:
-  RESTServer(GatewayNode * node, const std::string & host, int port);
+  RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config = {});
   ~RESTServer();
 
   void start();
@@ -49,10 +52,13 @@ class RESTServer {
 
   // Helper methods
   std::expected<void, std::string> validate_entity_id(const std::string & entity_id) const;
+  void set_cors_headers(httplib::Response & res, const std::string & origin) const;
+  bool is_origin_allowed(const std::string & origin) const;
 
   GatewayNode * node_;
   std::string host_;
   int port_;
+  CorsConfig cors_config_;
   std::unique_ptr<httplib::Server> server_;
 };
 

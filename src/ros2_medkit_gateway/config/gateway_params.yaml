@@ -25,6 +25,32 @@ ros2_medkit_gateway:
     # Valid range: 100-60000 (0.1s to 60s)
     refresh_interval_ms: 2000
 
+    # CORS Configuration
+    # Cross-Origin Resource Sharing settings for browser-based clients
+    # If cors section is missing or empty, CORS handling is disabled
+    cors:
+      # List of allowed origins
+      # Examples: ["http://localhost:5173", "https://example.com"]
+      # Use ["*"] to allow all origins (not recommended for production)
+      # Empty list with other settings = allow all origins
+      allowed_origins: []
+
+      # Allowed HTTP methods for CORS requests
+      # Default: ["GET", "OPTIONS"]
+      allowed_methods: ["GET", "OPTIONS"]
+
+      # Allowed headers in CORS requests
+      # Use ["*"] to allow all headers
+      allowed_headers: ["Content-Type", "Accept"]
+
+      # Whether to allow credentials (cookies, authorization headers)
+      # When true, allowed_origins cannot be ["*"]
+      allow_credentials: false
+
+      # How long (in seconds) browsers should cache preflight response
+      # Default: 86400 (24 hours)
+      max_age_seconds: 86400
+
     # Data Access Configuration
     # Maximum number of concurrent topic samples when fetching component data
     # Higher values improve response time but use more system resources
