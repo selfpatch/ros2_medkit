@@ -324,11 +324,26 @@ The gateway can be configured via parameters in `config/gateway_params.yaml` or 
 
 ### Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `server.host` | string | `127.0.0.1` | Host to bind the REST server (`127.0.0.1` for localhost, `0.0.0.0` for all interfaces) |
-| `server.port` | int | `8080` | Port for the REST API (range: 1024-65535) |
-| `refresh_interval_ms` | int | `2000` | Cache refresh interval in milliseconds (range: 100-60000) |
+#### Server Configuration
+
+| Parameter                    | Type   | Default     | Description                                                                            |
+| ---------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------- |
+| `server.host`                | string | `127.0.0.1` | Host to bind the REST server (`127.0.0.1` for localhost, `0.0.0.0` for all interfaces) |
+| `server.port`                | int    | `8080`      | Port for the REST API (range: 1024-65535)                                              |
+| `refresh_interval_ms`        | int    | `2000`      | Cache refresh interval in milliseconds (range: 100-60000)                              |
+| `max_parallel_topic_samples` | int    | `10`        | Max concurrent topic samples when fetching data (range: 1-50)                          |
+
+#### CORS Configuration
+
+Cross-Origin Resource Sharing (CORS) settings for browser-based clients. CORS is **enabled automatically** when `allowed_origins` is not empty.
+
+| Parameter                | Type     | Default                      | Description                                                                         |
+| ------------------------ | -------- | ---------------------------- | ----------------------------------------------------------------------------------- |
+| `cors.allowed_origins`   | string[] | `[]`                         | List of allowed origins (e.g., `["http://localhost:5173"]`). Empty = CORS disabled. |
+| `cors.allowed_methods`   | string[] | `["GET", "PUT", "OPTIONS"]`  | HTTP methods allowed for CORS requests                                              |
+| `cors.allowed_headers`   | string[] | `["Content-Type", "Accept"]` | Headers allowed in CORS requests                                                    |
+| `cors.allow_credentials` | bool     | `false`                      | Allow credentials (cookies, auth headers). Cannot be `true` with wildcard origin.   |
+| `cors.max_age_seconds`   | int      | `86400`                      | How long browsers cache preflight response (24 hours default)                       |
 
 ### Configuration Examples
 
@@ -341,6 +356,28 @@ ros2 run ros2_medkit_gateway gateway_node --ros-args -p server.port:=9090
 ```bash
 ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0
 ```
+
+**Enable CORS for local development:**
+```yaml
+cors:
+  allowed_origins: ["http://localhost:5173", "http://localhost:3000"]
+  allowed_methods: ["GET", "PUT", "OPTIONS"]
+  allowed_headers: ["Content-Type", "Accept"]
+  allow_credentials: false
+  max_age_seconds: 86400
+```
+
+**Enable CORS for production (specific domain):**
+```yaml
+cors:
+  allowed_origins: ["https://dashboard.example.com"]
+  allowed_methods: ["GET", "OPTIONS"]
+  allowed_headers: ["Content-Type", "Accept", "Authorization"]
+  allow_credentials: true
+  max_age_seconds: 86400
+```
+
+> ⚠️ **Security Note:** Using `["*"]` as `allowed_origins` is not recommended for production. When `allow_credentials` is `true`, wildcard origins are rejected at startup.
 
 ## Architecture
 
@@ -366,15 +403,15 @@ The gateway organizes nodes into "areas" based on their namespace:
 
 The package includes demo automotive nodes for testing:
 
-| Node | Namespace | Description |
-|------|-----------|-------------|
-| `temp_sensor` | `/powertrain/engine` | Engine temperature sensor |
-| `rpm_sensor` | `/powertrain/engine` | Engine RPM sensor |
-| `pressure_sensor` | `/chassis/brakes` | Brake pressure sensor |
-| `status_sensor` | `/body/door/front_left` | Door status sensor |
-| `actuator` | `/chassis/brakes` | Brake actuator |
-| `controller` | `/body/lights` | Light controller |
-| `calibration` | `/powertrain/engine` | Calibration service |
+| Node              | Namespace               | Description               |
+| ----------------- | ----------------------- | ------------------------- |
+| `temp_sensor`     | `/powertrain/engine`    | Engine temperature sensor |
+| `rpm_sensor`      | `/powertrain/engine`    | Engine RPM sensor         |
+| `pressure_sensor` | `/chassis/brakes`       | Brake pressure sensor     |
+| `status_sensor`   | `/body/door/front_left` | Door status sensor        |
+| `actuator`        | `/chassis/brakes`       | Brake actuator            |
+| `controller`      | `/body/lights`          | Light controller          |
+| `calibration`     | `/powertrain/engine`    | Calibration service       |
 
 **Launch all demo nodes:**
 ```bash
@@ -385,10 +422,10 @@ ros2 launch ros2_medkit_gateway demo_nodes.launch.py
 
 Component and topic names in URLs use double underscore (`__`) as a namespace separator:
 
-| ROS 2 Name | URL Encoding |
-|------------|--------------|
-| `/powertrain/engine` | `powertrain__engine` |
-| `/chassis/brakes` | `chassis__brakes` |
+| ROS 2 Name              | URL Encoding             |
+| ----------------------- | ------------------------ |
+| `/powertrain/engine`    | `powertrain__engine`     |
+| `/chassis/brakes`       | `chassis__brakes`        |
 | `/body/door/front_left` | `body__door__front_left` |
 
 **Example:**
