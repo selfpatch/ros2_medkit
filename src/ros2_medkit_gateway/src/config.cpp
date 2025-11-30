@@ -45,7 +45,7 @@ CorsConfigBuilder & CorsConfigBuilder::with_max_age(int seconds) {
   return *this;
 }
 
-CorsConfig && CorsConfigBuilder::build() {
+CorsConfig CorsConfigBuilder::build() {
   // Enable CORS only if origins are configured
   config_.enabled = !config_.allowed_origins.empty();
 

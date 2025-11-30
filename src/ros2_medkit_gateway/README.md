@@ -377,7 +377,7 @@ cors:
   max_age_seconds: 86400
 ```
 
-> ⚠️ **Security Note:** Using `["*"]` as `allowed_origins` is not recommended for production. When `allow_credentials` is `true`, wildcard origins are rejected at startup.
+> ⚠️ **Security Note:** Using `["*"]` as `allowed_origins` is not recommended for production. When `allow_credentials` is `true`, wildcard origins will cause the application to fail to start with an exception.
 
 ## Architecture
 

@@ -54,7 +54,7 @@ class CorsConfigBuilder {
   CorsConfigBuilder & with_headers(std::vector<std::string> headers);
   CorsConfigBuilder & with_credentials(bool credentials);
   CorsConfigBuilder & with_max_age(int seconds);
-  CorsConfig && build();
+  CorsConfig build();
 
  private:
   CorsConfig config_;

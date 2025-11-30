@@ -42,12 +42,14 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
       }
 
       // Handle preflight OPTIONS requests
-      // Only set Max-Age and return 204 for allowed origins
+      // Return 204 for allowed origins, 403 for disallowed (prevents endpoint discovery)
       if (req.method == "OPTIONS") {
         if (origin_allowed) {
           res.set_header("Access-Control-Max-Age", std::to_string(cors_config_.max_age_seconds));
+          res.status = StatusCode::NoContent_204;
+        } else {
+          res.status = StatusCode::Forbidden_403;
         }
-        res.status = StatusCode::NoContent_204;
         return httplib::Server::HandlerResponse::Handled;
       }
       return httplib::Server::HandlerResponse::Unhandled;

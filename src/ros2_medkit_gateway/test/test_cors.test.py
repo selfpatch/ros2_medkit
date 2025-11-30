@@ -185,7 +185,7 @@ class TestCorsIntegration(unittest.TestCase):
         )
 
     def test_04_preflight_disallowed_origin_no_cors_headers(self):
-        """Test preflight from disallowed origin gets no CORS headers."""
+        """Test preflight from disallowed origin returns 403 Forbidden."""
         response = requests.options(
             f'{self.BASE_URL_NO_CREDS}/health',
             headers={
@@ -194,15 +194,15 @@ class TestCorsIntegration(unittest.TestCase):
             },
             timeout=5
         )
-        # Returns 204 but without CORS headers
-        self.assertEqual(response.status_code, 204)
+        # Returns 403 Forbidden for disallowed origins (prevents endpoint discovery)
+        self.assertEqual(response.status_code, 403)
         self.assertIsNone(
             response.headers.get('Access-Control-Allow-Origin'),
             'CORS headers should NOT be set for disallowed origin'
         )
         self.assertIsNone(
             response.headers.get('Access-Control-Max-Age'),
-            'Max-Age should NOT be set for disallowed origin (prevents caching)'
+            'Max-Age should NOT be set for disallowed origin'
         )
 
     def test_05_cors_on_put_endpoint(self):
