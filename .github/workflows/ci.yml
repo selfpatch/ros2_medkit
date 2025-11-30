@@ -23,6 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
+          sudo apt-get install -y clang-format clang-tidy
           rosdep update
           rosdep install --from-paths src --ignore-src -r -y
 
@@ -33,12 +34,21 @@ jobs:
             --cmake-args -DCMAKE_BUILD_TYPE=Release \
             --event-handlers console_direct+
 
-      - name: Run tests
+      - name: Run linters (clang-format, clang-tidy, etc.)
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          colcon test --return-code-on-test-failure \
+            --ctest-args -L linter \
+            --event-handlers console_direct+
+
+      - name: Run unit and integration tests
         timeout-minutes: 15
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           colcon test --return-code-on-test-failure \
+            --ctest-args -LE linter \
             --event-handlers console_direct+
 
       - name: Show test results
