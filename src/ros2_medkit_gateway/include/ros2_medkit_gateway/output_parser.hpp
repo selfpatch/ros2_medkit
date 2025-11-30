@@ -14,26 +14,26 @@
 
 #pragma once
 
-#include <string>
+#include <yaml-cpp/yaml.h>  // NOLINT(build/include_order)
 
 #include <nlohmann/json.hpp>
-#include <yaml-cpp/yaml.h>  // NOLINT(build/include_order)
+#include <string>
 
 namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
 
 class OutputParser {
-public:
-    OutputParser() = default;
+ public:
+  OutputParser() = default;
 
-    /**
-     * @brief Parse YAML string to JSON
-     */
-    json parse_yaml(const std::string& yaml_str);
+  /**
+   * @brief Parse YAML string to JSON
+   */
+  json parse_yaml(const std::string & yaml_str);
 
-private:
-    json yaml_to_json(const YAML::Node& node);
+ private:
+  json yaml_to_json(const YAML::Node & node);
 };
 
 }  // namespace ros2_medkit_gateway

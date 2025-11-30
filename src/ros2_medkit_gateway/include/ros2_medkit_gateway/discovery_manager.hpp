@@ -14,26 +14,25 @@
 
 #pragma once
 
+#include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <vector>
-
-#include <rclcpp/rclcpp.hpp>
 
 #include "ros2_medkit_gateway/models.hpp"
 
 namespace ros2_medkit_gateway {
 
 class DiscoveryManager {
-public:
-    explicit DiscoveryManager(rclcpp::Node* node);
+ public:
+  explicit DiscoveryManager(rclcpp::Node * node);
 
-    std::vector<Area> discover_areas();
-    std::vector<Component> discover_components();
+  std::vector<Area> discover_areas();
+  std::vector<Component> discover_components();
 
-private:
-    std::string extract_area_from_namespace(const std::string& ns);
+ private:
+  std::string extract_area_from_namespace(const std::string & ns);
 
-    rclcpp::Node* node_;
+  rclcpp::Node * node_;
 };
 
 }  // namespace ros2_medkit_gateway

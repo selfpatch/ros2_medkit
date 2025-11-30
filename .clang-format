@@ -1,78 +1,99 @@
 ---
-BasedOnStyle:  Google
-ColumnLimit:    120
+BasedOnStyle: Google
+Language: Cpp
+
+ColumnLimit: 120
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
 MaxEmptyLinesToKeep: 1
-SortIncludes: false
 
-Standard:        Auto
-IndentWidth:     2
-TabWidth:        2
-UseTab:          Never
-AccessModifierOffset: -2
-ConstructorInitializerIndentWidth: 2
-NamespaceIndentation: None
-ContinuationIndentWidth: 4
-IndentCaseLabels: true
-IndentFunctionDeclarationAfterType: false
+Standard: c++17
 
-AlignEscapedNewlinesLeft: false
-AlignTrailingComments: true
+# Pointers & References - ROS 2 style (spaces around * and &)
+DerivePointerAlignment: false
+PointerAlignment: Middle
+ReferenceAlignment: Middle
 
-AllowAllParametersOfDeclarationOnNextLine: false
-ExperimentalAutoDetectBinPacking: false
-ObjCSpaceBeforeProtocolList: true
-Cpp11BracedListStyle: false
-
-AllowShortBlocksOnASingleLine: true
-AllowShortIfStatementsOnASingleLine: false
-AllowShortLoopsOnASingleLine: false
-AllowShortFunctionsOnASingleLine: None
-AllowShortCaseLabelsOnASingleLine: false
-
-AlwaysBreakTemplateDeclarations: true
-AlwaysBreakBeforeMultilineStrings: false
-BreakBeforeBinaryOperators: false
-BreakBeforeTernaryOperators: false
-BreakConstructorInitializersBeforeComma: true
-
-BinPackParameters: true
-ConstructorInitializerAllOnOneLineOrOnePerLine: true
-DerivePointerBinding: false
-PointerBindsToType: true
-
-PenaltyExcessCharacter: 50
-PenaltyBreakBeforeFirstCallParameter: 30
-PenaltyBreakComment: 1000
-PenaltyBreakFirstLessLess: 10
-PenaltyBreakString: 100
-PenaltyReturnTypeOnItsOwnLine: 50
-
-SpacesBeforeTrailingComments: 2
-SpacesInParentheses: false
-SpacesInAngles:  false
-SpaceInEmptyParentheses: false
-SpacesInCStyleCastParentheses: false
+# Spaces
+SpaceBeforeParens: ControlStatements
+SpacesInAngles: false
 SpaceAfterCStyleCast: false
-SpaceAfterControlStatementKeyword: true
 SpaceBeforeAssignmentOperators: true
 
-# Configure each individual brace in BraceWrapping
-BreakBeforeBraces: Custom
+# Templates
+AlwaysBreakTemplateDeclarations: Yes
 
-# Qualifiers (const, volatile, static, etc)
+# Binary/Ternary operators
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+
+# Constructor initializers (modern syntax - replaces deprecated options)
+BreakConstructorInitializers: BeforeComma
+ConstructorInitializerIndentWidth: 2
+PackConstructorInitializers: NextLine
+
+# Short statements
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortLambdasOnASingleLine: Empty
+
+# Braces
+InsertBraces: true
+BraceWrapping:
+  AfterCaseLabel: false
+  AfterClass: false
+  AfterControlStatement: Never
+  AfterEnum: false
+  AfterFunction: false
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeCatch: false
+  BeforeElse: false
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+
+# Comments
+AlignTrailingComments: true
+SpacesBeforeTrailingComments: 2
+ReflowComments: true
+
+# Includes - ROS 2 friendly
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+IncludeCategories:
+  - Regex: '^<.*>'
+    Priority: 1
+  - Regex: '^"rclcpp/.*"'
+    Priority: 2
+  - Regex: '^".*"'
+    Priority: 3
+
+# Qualifiers
 QualifierAlignment: Custom
 QualifierOrder: ['static', 'inline', 'constexpr', 'const', 'volatile', 'type']
 
-# Control of individual brace wrapping cases
-BraceWrapping:
-    AfterCaseLabel: true
-    AfterClass: true
-    AfterControlStatement: true
-    AfterEnum: true
-    AfterFunction: true
-    AfterNamespace: true
-    AfterStruct: true
-    AfterUnion: true
-    BeforeCatch: true
-    BeforeElse: true
-    IndentBraces: false
+# Modern C++ options
+InsertNewlineAtEOF: true
+SeparateDefinitionBlocks: Leave
+EmptyLineAfterAccessModifier: Never
+EmptyLineBeforeAccessModifier: LogicalBlock
+
+# Alignment
+AlignAfterOpenBracket: Align
+AlignOperands: Align
+AlignEscapedNewlines: Left
+
+# Penalties (prefer breaking at certain places)
+PenaltyBreakBeforeFirstCallParameter: 19
+PenaltyBreakComment: 300
+PenaltyBreakFirstLessLess: 120
+PenaltyBreakString: 1000
+PenaltyExcessCharacter: 1000000
+PenaltyReturnTypeOnItsOwnLine: 60

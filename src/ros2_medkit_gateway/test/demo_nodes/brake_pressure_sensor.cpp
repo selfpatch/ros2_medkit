@@ -15,46 +15,40 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/float32.hpp>
 
-class BrakePressureSensor : public rclcpp::Node
-{
-public:
-    BrakePressureSensor()
-        : Node("brake_pressure_sensor")
-    {
-        pressure_pub_ = this->create_publisher<std_msgs::msg::Float32>("pressure", 10);
+class BrakePressureSensor : public rclcpp::Node {
+ public:
+  BrakePressureSensor() : Node("brake_pressure_sensor") {
+    pressure_pub_ = this->create_publisher<std_msgs::msg::Float32>("pressure", 10);
 
-        timer_ = this->create_wall_timer(
-            std::chrono::milliseconds(500),
-            std::bind(&BrakePressureSensor::publish_data, this));
+    timer_ =
+        this->create_wall_timer(std::chrono::milliseconds(500), std::bind(&BrakePressureSensor::publish_data, this));
 
-        RCLCPP_INFO(this->get_logger(), "Brake pressure sensor started");
+    RCLCPP_INFO(this->get_logger(), "Brake pressure sensor started");
+  }
+
+ private:
+  void publish_data() {
+    current_pressure_ += 5.0;
+    if (current_pressure_ > 100.0) {
+      current_pressure_ = 0.0;
     }
 
-private:
-    void publish_data()
-    {
-        current_pressure_ += 5.0;
-        if (current_pressure_ > 100.0) {
-            current_pressure_ = 0.0;
-        }
+    auto pressure_msg = std_msgs::msg::Float32();
+    pressure_msg.data = current_pressure_;
 
-        auto pressure_msg = std_msgs::msg::Float32();
-        pressure_msg.data = current_pressure_;
+    pressure_pub_->publish(pressure_msg);
 
-        pressure_pub_->publish(pressure_msg);
+    RCLCPP_INFO(this->get_logger(), "Brake Pressure: %.1f bar", current_pressure_);
+  }
 
-        RCLCPP_INFO(this->get_logger(), "Brake Pressure: %.1f bar", current_pressure_);
-    }
-
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pressure_pub_;
-    rclcpp::TimerBase::SharedPtr timer_;
-    double current_pressure_ = 0.0;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pressure_pub_;
+  rclcpp::TimerBase::SharedPtr timer_;
+  double current_pressure_ = 0.0;
 };
 
-int main(int argc, char** argv)
-{
-    rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<BrakePressureSensor>());
-    rclcpp::shutdown();
-    return 0;
+int main(int argc, char ** argv) {
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<BrakePressureSensor>());
+  rclcpp::shutdown();
+  return 0;
 }

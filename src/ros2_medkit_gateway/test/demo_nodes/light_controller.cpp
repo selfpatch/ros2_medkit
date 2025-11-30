@@ -23,60 +23,49 @@
  */
 
 #include <chrono>
-
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
 
 using namespace std::chrono_literals;
 
-class LightController : public rclcpp::Node
-{
-public:
-    LightController() : Node("light_controller"), light_on_(false)
-    {
-        // Subscribe to command topic
-        cmd_sub_ = this->create_subscription<std_msgs::msg::Bool>(
-            "command", 10,
-            std::bind(&LightController::command_callback, this, std::placeholders::_1)
-        );
+class LightController : public rclcpp::Node {
+ public:
+  LightController() : Node("light_controller"), light_on_(false) {
+    // Subscribe to command topic
+    cmd_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+        "command", 10, std::bind(&LightController::command_callback, this, std::placeholders::_1));
 
-        // Publish status topic
-        status_pub_ = this->create_publisher<std_msgs::msg::Bool>("status", 10);
+    // Publish status topic
+    status_pub_ = this->create_publisher<std_msgs::msg::Bool>("status", 10);
 
-        // Timer to periodically publish status
-        timer_ = this->create_wall_timer(
-            100ms,
-            std::bind(&LightController::timer_callback, this)
-        );
+    // Timer to periodically publish status
+    timer_ = this->create_wall_timer(100ms, std::bind(&LightController::timer_callback, this));
 
-        RCLCPP_INFO(this->get_logger(), "Light controller started");
-    }
+    RCLCPP_INFO(this->get_logger(), "Light controller started");
+  }
 
-private:
-    void command_callback(const std_msgs::msg::Bool::SharedPtr msg)
-    {
-        light_on_ = msg->data;
-        RCLCPP_INFO(this->get_logger(), "Light command: %s", light_on_ ? "ON" : "OFF");
-    }
+ private:
+  void command_callback(const std_msgs::msg::Bool::SharedPtr msg) {
+    light_on_ = msg->data;
+    RCLCPP_INFO(this->get_logger(), "Light command: %s", light_on_ ? "ON" : "OFF");
+  }
 
-    void timer_callback()
-    {
-        // Publish current status
-        auto msg = std_msgs::msg::Bool();
-        msg.data = light_on_;
-        status_pub_->publish(msg);
-    }
+  void timer_callback() {
+    // Publish current status
+    auto msg = std_msgs::msg::Bool();
+    msg.data = light_on_;
+    status_pub_->publish(msg);
+  }
 
-    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr cmd_sub_;
-    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr status_pub_;
-    rclcpp::TimerBase::SharedPtr timer_;
-    bool light_on_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr cmd_sub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr status_pub_;
+  rclcpp::TimerBase::SharedPtr timer_;
+  bool light_on_;
 };
 
-int main(int argc, char * argv[])
-{
-    rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<LightController>());
-    rclcpp::shutdown();
-    return 0;
+int main(int argc, char * argv[]) {
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<LightController>());
+  rclcpp::shutdown();
+  return 0;
 }

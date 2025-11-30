@@ -21,26 +21,32 @@ namespace ros2_medkit_gateway {
 
 /// Exception thrown when a topic is not available or times out
 class TopicNotAvailableException : public std::runtime_error {
-public:
-    explicit TopicNotAvailableException(const std::string& topic)
-        : std::runtime_error("Topic not available: " + topic), topic_(topic) {}
+ public:
+  explicit TopicNotAvailableException(const std::string & topic)
+    : std::runtime_error("Topic not available: " + topic), topic_(topic) {
+  }
 
-    const std::string& topic() const noexcept { return topic_; }
+  const std::string & topic() const noexcept {
+    return topic_;
+  }
 
-private:
-    std::string topic_;
+ private:
+  std::string topic_;
 };
 
 /// Exception thrown when a required command (e.g., ros2 CLI) is not available
 class CommandNotAvailableException : public std::runtime_error {
-public:
-    explicit CommandNotAvailableException(const std::string& command)
-        : std::runtime_error("Command not available: " + command), command_(command) {}
+ public:
+  explicit CommandNotAvailableException(const std::string & command)
+    : std::runtime_error("Command not available: " + command), command_(command) {
+  }
 
-    const std::string& command() const noexcept { return command_; }
+  const std::string & command() const noexcept {
+    return command_;
+  }
 
-private:
-    std::string command_;
+ private:
+  std::string command_;
 };
 
 }  // namespace ros2_medkit_gateway

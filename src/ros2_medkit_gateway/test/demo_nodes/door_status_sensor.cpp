@@ -16,49 +16,42 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 
-class DoorStatusSensor : public rclcpp::Node
-{
-public:
-    DoorStatusSensor()
-        : Node("door_status_sensor")
-    {
-        is_open_pub_ = this->create_publisher<std_msgs::msg::Bool>("is_open", 10);
-        state_pub_ = this->create_publisher<std_msgs::msg::String>("state", 10);
+class DoorStatusSensor : public rclcpp::Node {
+ public:
+  DoorStatusSensor() : Node("door_status_sensor") {
+    is_open_pub_ = this->create_publisher<std_msgs::msg::Bool>("is_open", 10);
+    state_pub_ = this->create_publisher<std_msgs::msg::String>("state", 10);
 
-        timer_ = this->create_wall_timer(
-            std::chrono::seconds(2),
-            std::bind(&DoorStatusSensor::publish_data, this));
+    timer_ = this->create_wall_timer(std::chrono::seconds(2), std::bind(&DoorStatusSensor::publish_data, this));
 
-        RCLCPP_INFO(this->get_logger(), "Door status sensor started");
-    }
+    RCLCPP_INFO(this->get_logger(), "Door status sensor started");
+  }
 
-private:
-    void publish_data()
-    {
-        // Toggle door state
-        is_open_ = !is_open_;
+ private:
+  void publish_data() {
+    // Toggle door state
+    is_open_ = !is_open_;
 
-        auto is_open_msg = std_msgs::msg::Bool();
-        is_open_msg.data = is_open_;
-        is_open_pub_->publish(is_open_msg);
+    auto is_open_msg = std_msgs::msg::Bool();
+    is_open_msg.data = is_open_;
+    is_open_pub_->publish(is_open_msg);
 
-        auto state_msg = std_msgs::msg::String();
-        state_msg.data = is_open_ ? "open" : "closed";
-        state_pub_->publish(state_msg);
+    auto state_msg = std_msgs::msg::String();
+    state_msg.data = is_open_ ? "open" : "closed";
+    state_pub_->publish(state_msg);
 
-        RCLCPP_INFO(this->get_logger(), "Door: %s", state_msg.data.c_str());
-    }
+    RCLCPP_INFO(this->get_logger(), "Door: %s", state_msg.data.c_str());
+  }
 
-    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr is_open_pub_;
-    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
-    rclcpp::TimerBase::SharedPtr timer_;
-    bool is_open_ = false;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr is_open_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
+  rclcpp::TimerBase::SharedPtr timer_;
+  bool is_open_ = false;
 };
 
-int main(int argc, char** argv)
-{
-    rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<DoorStatusSensor>());
-    rclcpp::shutdown();
-    return 0;
+int main(int argc, char ** argv) {
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<DoorStatusSensor>());
+  rclcpp::shutdown();
+  return 0;
 }

@@ -13,15 +13,16 @@
 // limitations under the License.
 
 #include <rclcpp/rclcpp.hpp>
+
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
-int main(int argc, char** argv) {
-    rclcpp::init(argc, argv);
+int main(int argc, char ** argv) {
+  rclcpp::init(argc, argv);
 
-    auto node = std::make_shared<ros2_medkit_gateway::GatewayNode>();
+  auto node = std::make_shared<ros2_medkit_gateway::GatewayNode>();
 
-    rclcpp::spin(node);
+  rclcpp::spin(node);
 
-    rclcpp::shutdown();
-    return 0;
+  rclcpp::shutdown();
+  return 0;
 }

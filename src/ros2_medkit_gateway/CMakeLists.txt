@@ -3,6 +3,7 @@ project(ros2_medkit_gateway)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -63,8 +64,13 @@ install(DIRECTORY launch config
 if(BUILD_TESTING)
   # Linting and code quality checks
   find_package(ament_lint_auto REQUIRED)
-  # Exclude uncrustify since we use clang-format
-  list(APPEND AMENT_LINT_AUTO_EXCLUDE ament_cmake_uncrustify)
+
+  # Use custom clang-format and clang-tidy configs from repo root
+  set(ament_cmake_clang_format_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-format")
+  set(ament_cmake_clang_tidy_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-tidy")
+
+  # Exclude uncrustify (conflicts with clang-format) and cpplint (conflicts with clang-format include order)
+  list(APPEND AMENT_LINT_AUTO_EXCLUDE ament_cmake_uncrustify ament_cmake_cpplint)
   ament_lint_auto_find_test_dependencies()
 
   # Add GTest

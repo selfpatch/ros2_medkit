@@ -13,14 +13,13 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <httplib.h>  // NOLINT(build/include_order)
 
 #include <chrono>
 #include <memory>
-#include <thread>
-
-#include <httplib.h>  // NOLINT(build/include_order)
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <thread>
 
 using namespace std::chrono_literals;
 
@@ -28,10 +27,9 @@ static constexpr char VERSION[] = "0.1.0";
 
 // Simple GatewayNode class for testing
 class GatewayNode : public rclcpp::Node {
-public:
+ public:
   GatewayNode()
-      : Node("gateway_node"), http_server_(std::make_unique<httplib::Server>()),
-        node_name_(this->get_name()) {
+    : Node("gateway_node"), http_server_(std::make_unique<httplib::Server>()), node_name_(this->get_name()) {
     this->declare_parameter<int>("port", 8080);
     this->declare_parameter<std::string>("host", "0.0.0.0");
 
@@ -40,8 +38,9 @@ public:
 
     setup_endpoints();
 
-    server_thread_ =
-        std::thread([this]() { http_server_->listen(host_.c_str(), port_); });
+    server_thread_ = std::thread([this]() {
+      http_server_->listen(host_.c_str(), port_);
+    });
 
     // Wait for the server to be ready by polling
     wait_for_server_ready();
@@ -54,16 +53,19 @@ public:
     }
   }
 
-  int get_port() const { return port_; }
-  std::string get_host() const { return host_; }
+  int get_port() const {
+    return port_;
+  }
+  std::string get_host() const {
+    return host_;
+  }
 
-private:
+ private:
   void wait_for_server_ready() {
     const auto start = std::chrono::steady_clock::now();
     const auto timeout = std::chrono::seconds(2);
     httplib::Client client(host_.c_str(), port_);
-    while (std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now() - start) < timeout) {
+    while (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start) < timeout) {
       if (auto res = client.Get("/health")) {
         if (res->status == 200) {
           return;
@@ -75,44 +77,30 @@ private:
   }
 
   void setup_endpoints() {
-    http_server_->Get(
-        "/health", [this](const httplib::Request &req, httplib::Response &res) {
-          (void)req;
+    http_server_->Get("/health", [this](const httplib::Request & req, httplib::Response & res) {
+      (void)req;
 
-          nlohmann::json health_json = {{"status", "ok"},
-                                        {"node", node_name_},
-                                        {"timestamp", this->now().seconds()}};
+      nlohmann::json health_json = {{"status", "ok"}, {"node", node_name_}, {"timestamp", this->now().seconds()}};
 
-          res.set_content(health_json.dump(), "application/json");
-          res.status = 200;
-        });
+      res.set_content(health_json.dump(), "application/json");
+      res.status = 200;
+    });
 
-    http_server_->Get(
-        "/", [this](const httplib::Request &req, httplib::Response &res) {
-          (void)req;
+    http_server_->Get("/", [this](const httplib::Request & req, httplib::Response & res) {
+      (void)req;
 
-          nlohmann::json info_json = {
-              {"name", "ROS 2 Medkit Gateway"},
-              {"version", VERSION},
-              {"endpoints", nlohmann::json::array({
-                  "GET /health",
-                  "GET /version-info",
-                  "GET /areas",
-                  "GET /components",
-                  "GET /areas/{area_id}/components",
-                  "GET /components/{component_id}/data",
-                  "GET /components/{component_id}/data/{topic_name}",
-                  "PUT /components/{component_id}/data/{topic_name}"
-              })},
-              {"capabilities", {
-                  {"discovery", true},
-                  {"data_access", true}
-              }}
-          };
+      nlohmann::json info_json = {
+          {"name", "ROS 2 Medkit Gateway"},
+          {"version", VERSION},
+          {"endpoints", nlohmann::json::array({"GET /health", "GET /version-info", "GET /areas", "GET /components",
+                                               "GET /areas/{area_id}/components", "GET /components/{component_id}/data",
+                                               "GET /components/{component_id}/data/{topic_name}",
+                                               "PUT /components/{component_id}/data/{topic_name}"})},
+          {"capabilities", {{"discovery", true}, {"data_access", true}}}};
 
-          res.set_content(info_json.dump(), "application/json");
-          res.status = 200;
-        });
+      res.set_content(info_json.dump(), "application/json");
+      res.status = 200;
+    });
   }
 
   std::unique_ptr<httplib::Server> http_server_;
@@ -123,10 +111,14 @@ private:
 };
 
 class TestGatewayNode : public ::testing::Test {
-protected:
-  static void SetUpTestSuite() { rclcpp::init(0, nullptr); }
+ protected:
+  static void SetUpTestSuite() {
+    rclcpp::init(0, nullptr);
+  }
 
-  static void TearDownTestSuite() { rclcpp::shutdown(); }
+  static void TearDownTestSuite() {
+    rclcpp::shutdown();
+  }
 };
 
 TEST_F(TestGatewayNode, test_health_endpoint) {
@@ -179,7 +171,7 @@ TEST_F(TestGatewayNode, test_root_endpoint) {
   EXPECT_TRUE(json_response["capabilities"]["data_access"]);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

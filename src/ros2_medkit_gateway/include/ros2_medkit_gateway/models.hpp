@@ -14,51 +14,41 @@
 
 #pragma once
 
-#include <string>
-#include <vector>
 #include <chrono>
 #include <nlohmann/json.hpp>
+#include <string>
+#include <vector>
 
 namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
 
 struct Area {
-    std::string id;
-    std::string namespace_path;
-    std::string type = "Area";
+  std::string id;
+  std::string namespace_path;
+  std::string type = "Area";
 
-    json to_json() const {
-        return {
-            {"id", id},
-            {"namespace", namespace_path},
-            {"type", type}
-        };
-    }
+  json to_json() const {
+    return {{"id", id}, {"namespace", namespace_path}, {"type", type}};
+  }
 };
 
 struct Component {
-    std::string id;
-    std::string namespace_path;
-    std::string fqn;
-    std::string type = "Component";
-    std::string area;
+  std::string id;
+  std::string namespace_path;
+  std::string fqn;
+  std::string type = "Component";
+  std::string area;
 
-    json to_json() const {
-        return {
-            {"id", id},
-            {"namespace", namespace_path},
-            {"fqn", fqn},
-            {"type", type},
-            {"area", area}
-        };
-    }
+  json to_json() const {
+    return {{"id", id}, {"namespace", namespace_path}, {"fqn", fqn}, {"type", type}, {"area", area}};
+  }
 };
 
 struct EntityCache {
-    std::vector<Area> areas;
-    std::vector<Component> components;
-    std::chrono::system_clock::time_point last_update;
+  std::vector<Area> areas;
+  std::vector<Component> components;
+  std::chrono::system_clock::time_point last_update;
 };
 
 }  // namespace ros2_medkit_gateway

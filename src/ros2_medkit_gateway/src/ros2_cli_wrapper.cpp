@@ -27,60 +27,60 @@ namespace ros2_medkit_gateway {
 
 // Custom deleter for FILE* from popen
 struct PipeDeleter {
-    void operator()(FILE* fp) const {
-        if (fp) pclose(fp);
+  void operator()(FILE * fp) const {
+    if (fp) {
+      pclose(fp);
     }
+  }
 };
 
-std::string ROS2CLIWrapper::exec(const std::string& command) {
-    std::array<char, 128> buffer;
-    std::string result;
+std::string ROS2CLIWrapper::exec(const std::string & command) {
+  std::array<char, 128> buffer;
+  std::string result;
 
-    std::unique_ptr<FILE, PipeDeleter> pipe(popen(command.c_str(), "r"));
+  std::unique_ptr<FILE, PipeDeleter> pipe(popen(command.c_str(), "r"));
 
-    if (!pipe) {
-        throw std::runtime_error("Failed to execute command: " + command);
-    }
+  if (!pipe) {
+    throw std::runtime_error("Failed to execute command: " + command);
+  }
 
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
-        result += buffer.data();
-    }
+  while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+    result += buffer.data();
+  }
 
-    // Check command exit status (release prevents double-close in deleter)
-    int exit_code = pclose(pipe.release());
-    if (exit_code != 0) {
-        throw std::runtime_error(
-            "Command failed with exit code " + std::to_string(WEXITSTATUS(exit_code)) +
-            ": " + command
-        );
-    }
+  // Check command exit status (release prevents double-close in deleter)
+  int exit_code = pclose(pipe.release());
+  if (exit_code != 0) {
+    throw std::runtime_error("Command failed with exit code " + std::to_string(WEXITSTATUS(exit_code)) + ": " +
+                             command);
+  }
 
-    return result;
+  return result;
 }
 
-bool ROS2CLIWrapper::is_command_available(const std::string& command) {
-    // Search in PATH for the command using access() instead of system()
-    // This avoids shell execution and potential command injection
-    const char* path_env = std::getenv("PATH");
-    if (!path_env) {
-        return false;
-    }
-
-    std::string path(path_env);
-    std::istringstream ss(path);
-    std::string dir;
-
-    while (std::getline(ss, dir, ':')) {
-        if (dir.empty()) {
-            continue;
-        }
-        std::string full_path = dir + "/" + command;
-        if (access(full_path.c_str(), X_OK) == 0) {
-            return true;
-        }
-    }
-
+bool ROS2CLIWrapper::is_command_available(const std::string & command) {
+  // Search in PATH for the command using access() instead of system()
+  // This avoids shell execution and potential command injection
+  const char * path_env = std::getenv("PATH");
+  if (!path_env) {
     return false;
+  }
+
+  std::string path(path_env);
+  std::istringstream ss(path);
+  std::string dir;
+
+  while (std::getline(ss, dir, ':')) {
+    if (dir.empty()) {
+      continue;
+    }
+    std::string full_path = std::string(dir).append("/").append(command);
+    if (access(full_path.c_str(), X_OK) == 0) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // TODO(mfaferek93): Improve command injection protection
@@ -89,17 +89,17 @@ bool ROS2CLIWrapper::is_command_available(const std::string& command) {
 //   1. Add input validation: whitelist ROS 2 naming conventions (alphanumeric, /, _)
 //   2. Reject topic names with suspicious characters
 //   3. Use fork/exec or posix_spawn instead of shell execution (best solution)
-std::string ROS2CLIWrapper::escape_shell_arg(const std::string& arg) {
-    std::string escaped = "'";
-    for (char c : arg) {
-        if (c == '\'') {
-            escaped += "'\\''";
-        } else {
-            escaped += c;
-        }
+std::string ROS2CLIWrapper::escape_shell_arg(const std::string & arg) {
+  std::string escaped = "'";
+  for (char c : arg) {
+    if (c == '\'') {
+      escaped += "'\\''";
+    } else {
+      escaped += c;
     }
-    escaped += "'";
-    return escaped;
+  }
+  escaped += "'";
+  return escaped;
 }
 
 }  // namespace ros2_medkit_gateway

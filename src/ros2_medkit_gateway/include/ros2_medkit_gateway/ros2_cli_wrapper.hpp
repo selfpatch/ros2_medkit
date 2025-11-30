@@ -14,29 +14,29 @@
 
 #pragma once
 
-#include <string>
 #include <stdexcept>
+#include <string>
 
 namespace ros2_medkit_gateway {
 
 class ROS2CLIWrapper {
-public:
-    ROS2CLIWrapper() = default;
+ public:
+  ROS2CLIWrapper() = default;
 
-    /**
-     * @brief Execute shell command and return stdout
-     */
-    std::string exec(const std::string& command);
+  /**
+   * @brief Execute shell command and return stdout
+   */
+  std::string exec(const std::string & command);
 
-    /**
-     * @brief Check if command exists in PATH
-     */
-    bool is_command_available(const std::string& command);
+  /**
+   * @brief Check if command exists in PATH
+   */
+  bool is_command_available(const std::string & command);
 
-    /**
-     * @brief Escape shell arguments
-     */
-    static std::string escape_shell_arg(const std::string& arg);
+  /**
+   * @brief Escape shell arguments
+   */
+  static std::string escape_shell_arg(const std::string & arg);
 };
 
 }  // namespace ros2_medkit_gateway

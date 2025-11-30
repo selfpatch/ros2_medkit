@@ -13,84 +13,83 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/discovery_manager.hpp"
+
 #include <algorithm>
 #include <set>
 
 namespace ros2_medkit_gateway {
 
-DiscoveryManager::DiscoveryManager(rclcpp::Node* node)
-    : node_(node)
-{
+DiscoveryManager::DiscoveryManager(rclcpp::Node * node) : node_(node) {
 }
 
 std::vector<Area> DiscoveryManager::discover_areas() {
-    // Extract unique areas from namespaces
-    std::set<std::string> area_set;
+  // Extract unique areas from namespaces
+  std::set<std::string> area_set;
 
-    // Get node graph interface
-    auto node_graph = node_->get_node_graph_interface();
+  // Get node graph interface
+  auto node_graph = node_->get_node_graph_interface();
 
-    // Iterate through all nodes to find namespaces
-    auto names_and_namespaces = node_graph->get_node_names_and_namespaces();
+  // Iterate through all nodes to find namespaces
+  auto names_and_namespaces = node_graph->get_node_names_and_namespaces();
 
-    for (const auto& name_and_ns : names_and_namespaces) {
-        std::string ns = name_and_ns.second;
-        std::string area = extract_area_from_namespace(ns);
-        area_set.insert(area);
-    }
+  for (const auto & name_and_ns : names_and_namespaces) {
+    std::string ns = name_and_ns.second;
+    std::string area = extract_area_from_namespace(ns);
+    area_set.insert(area);
+  }
 
-    // Convert set to vector of Area structs
-    std::vector<Area> areas;
-    for (const auto& area_name : area_set) {
-        Area area;
-        area.id = area_name;
-        area.namespace_path = (area_name == "root") ? "/" : "/" + area_name;
-        areas.push_back(area);
-    }
+  // Convert set to vector of Area structs
+  std::vector<Area> areas;
+  for (const auto & area_name : area_set) {
+    Area area;
+    area.id = area_name;
+    area.namespace_path = (area_name == "root") ? "/" : "/" + area_name;
+    areas.push_back(area);
+  }
 
-    return areas;
+  return areas;
 }
 
 std::vector<Component> DiscoveryManager::discover_components() {
-    std::vector<Component> components;
+  std::vector<Component> components;
 
-    auto node_graph = node_->get_node_graph_interface();
-    auto names_and_namespaces = node_graph->get_node_names_and_namespaces();
+  auto node_graph = node_->get_node_graph_interface();
+  auto names_and_namespaces = node_graph->get_node_names_and_namespaces();
 
-    for (const auto& name_and_ns : names_and_namespaces) {
-        const auto& name = name_and_ns.first;
-        const auto& ns = name_and_ns.second;
+  for (const auto & name_and_ns : names_and_namespaces) {
+    const auto & name = name_and_ns.first;
+    const auto & ns = name_and_ns.second;
 
-        Component comp;
-        comp.id = name;
-        comp.namespace_path = ns;
-        comp.fqn = (ns == "/") ? "/" + name : ns + "/" + name;
-        comp.area = extract_area_from_namespace(ns);
+    Component comp;
+    comp.id = name;
+    comp.namespace_path = ns;
+    comp.fqn = (ns == "/") ? std::string("/").append(name) : std::string(ns).append("/").append(name);
+    comp.area = extract_area_from_namespace(ns);
 
-        components.push_back(comp);
-    }
+    components.push_back(comp);
+  }
 
-    return components;
+  return components;
 }
 
-std::string DiscoveryManager::extract_area_from_namespace(const std::string& ns) {
-    if (ns == "/" || ns.empty()) {
-        return "root";
-    }
+std::string DiscoveryManager::extract_area_from_namespace(const std::string & ns) {
+  if (ns == "/" || ns.empty()) {
+    return "root";
+  }
 
-    // Remove leading slash
-    std::string cleaned = ns;
-    if (cleaned[0] == '/') {
-        cleaned = cleaned.substr(1);
-    }
+  // Remove leading slash
+  std::string cleaned = ns;
+  if (cleaned[0] == '/') {
+    cleaned = cleaned.substr(1);
+  }
 
-    // Get first segment
-    auto pos = cleaned.find('/');
-    if (pos != std::string::npos) {
-        return cleaned.substr(0, pos);
-    }
+  // Get first segment
+  auto pos = cleaned.find('/');
+  if (pos != std::string::npos) {
+    return cleaned.substr(0, pos);
+  }
 
-    return cleaned;
+  return cleaned;
 }
 
 }  // namespace ros2_medkit_gateway
