@@ -38,26 +38,15 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   server_port_ = get_parameter("server.port").as_int();
   refresh_interval_ms_ = get_parameter("refresh_interval_ms").as_int();
 
-  // Get CORS configuration
-  cors_config_.allowed_origins = get_parameter("cors.allowed_origins").as_string_array();
-  cors_config_.allowed_methods = get_parameter("cors.allowed_methods").as_string_array();
-  cors_config_.allowed_headers = get_parameter("cors.allowed_headers").as_string_array();
-  cors_config_.allow_credentials = get_parameter("cors.allow_credentials").as_bool();
-  cors_config_.max_age_seconds = get_parameter("cors.max_age_seconds").as_int();
-
-  // CORS is enabled only if allowed_origins is configured
-  // Treat missing/empty origins as disabled for security
-  cors_config_.enabled = !cors_config_.allowed_origins.empty();
-
-  // Validate CORS configuration: credentials cannot be used with wildcard origin
-  if (cors_config_.enabled && cors_config_.allow_credentials) {
-    for (const auto & origin : cors_config_.allowed_origins) {
-      if (origin == "*") {
-        RCLCPP_ERROR(get_logger(), "CORS: allow_credentials cannot be true when allowed_origins contains '*'");
-        throw std::runtime_error("Invalid CORS configuration");
-      }
-    }
-  }
+  // Build CORS configuration using builder pattern
+  // Throws std::invalid_argument if configuration is invalid
+  cors_config_ = CorsConfigBuilder()
+                     .with_origins(get_parameter("cors.allowed_origins").as_string_array())
+                     .with_methods(get_parameter("cors.allowed_methods").as_string_array())
+                     .with_headers(get_parameter("cors.allowed_headers").as_string_array())
+                     .with_credentials(get_parameter("cors.allow_credentials").as_bool())
+                     .with_max_age(get_parameter("cors.max_age_seconds").as_int())
+                     .build();
 
   // Validate port range
   if (server_port_ < 1024 || server_port_ > 65535) {
@@ -94,9 +83,6 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
         origins_str += ", ";
       }
       origins_str += origin;
-    }
-    if (origins_str.empty()) {
-      origins_str = "* (all)";
     }
 
     std::string methods_str;

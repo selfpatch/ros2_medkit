@@ -30,7 +30,7 @@ class GatewayNode;
 
 class RESTServer {
  public:
-  RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config = {});
+  RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config);
   ~RESTServer();
 
   void start();
@@ -59,10 +59,6 @@ class RESTServer {
   std::string host_;
   int port_;
   CorsConfig cors_config_;
-
-  // Pre-built CORS header values (built once in constructor for performance)
-  std::string cors_methods_header_;
-  std::string cors_headers_header_;
 
   std::unique_ptr<httplib::Server> server_;
 };

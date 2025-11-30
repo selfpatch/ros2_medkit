@@ -29,6 +29,35 @@ struct CorsConfig {
   std::vector<std::string> allowed_headers;
   bool allow_credentials{false};
   int max_age_seconds{86400};
+
+  // Pre-built header values for performance
+  std::string methods_header;
+  std::string headers_header;
+};
+
+/**
+ * @brief Builder for CorsConfig with fluent interface
+ *
+ * Usage:
+ *   auto config = CorsConfigBuilder()
+ *       .with_origins({"http://localhost:5173"})
+ *       .with_methods({"GET", "PUT", "OPTIONS"})
+ *       .with_headers({"Content-Type", "Accept"})
+ *       .with_credentials(true)
+ *       .with_max_age(3600)
+ *       .build();
+ */
+class CorsConfigBuilder {
+ public:
+  CorsConfigBuilder & with_origins(std::vector<std::string> origins);
+  CorsConfigBuilder & with_methods(std::vector<std::string> methods);
+  CorsConfigBuilder & with_headers(std::vector<std::string> headers);
+  CorsConfigBuilder & with_credentials(bool credentials);
+  CorsConfigBuilder & with_max_age(int seconds);
+  CorsConfig && build();
+
+ private:
+  CorsConfig config_;
 };
 
 }  // namespace ros2_medkit_gateway

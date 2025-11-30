@@ -31,33 +31,23 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   : node_(node), host_(host), port_(port), cors_config_(cors_config) {
   server_ = std::make_unique<httplib::Server>();
 
-  // Pre-build CORS header strings once (performance optimization)
-  for (const auto & method : cors_config_.allowed_methods) {
-    if (!cors_methods_header_.empty()) {
-      cors_methods_header_ += ", ";
-    }
-    cors_methods_header_ += method;
-  }
-  for (const auto & header : cors_config_.allowed_headers) {
-    if (!cors_headers_header_.empty()) {
-      cors_headers_header_ += ", ";
-    }
-    cors_headers_header_ += header;
-  }
-
   // Set up pre-routing handler for CORS (only if enabled)
   if (cors_config_.enabled) {
     server_->set_pre_routing_handler([this](const httplib::Request & req, httplib::Response & res) {
       std::string origin = req.get_header_value("Origin");
-      if (!origin.empty() && is_origin_allowed(origin)) {
+      bool origin_allowed = !origin.empty() && is_origin_allowed(origin);
+
+      if (origin_allowed) {
         set_cors_headers(res, origin);
       }
 
       // Handle preflight OPTIONS requests
+      // Only set Max-Age and return 204 for allowed origins
       if (req.method == "OPTIONS") {
-        // Set Max-Age only for preflight responses
-        res.set_header("Access-Control-Max-Age", std::to_string(cors_config_.max_age_seconds));
-        res.status = 204;  // No Content
+        if (origin_allowed) {
+          res.set_header("Access-Control-Max-Age", std::to_string(cors_config_.max_age_seconds));
+        }
+        res.status = StatusCode::NoContent_204;
         return httplib::Server::HandlerResponse::Handled;
       }
       return httplib::Server::HandlerResponse::Unhandled;
@@ -602,12 +592,12 @@ void RESTServer::handle_component_topic_publish(const httplib::Request & req, ht
 void RESTServer::set_cors_headers(httplib::Response & res, const std::string & origin) const {
   res.set_header("Access-Control-Allow-Origin", origin);
 
-  // Use pre-built header strings (built once in constructor)
-  if (!cors_methods_header_.empty()) {
-    res.set_header("Access-Control-Allow-Methods", cors_methods_header_);
+  // Use pre-built header strings from CorsConfig
+  if (!cors_config_.methods_header.empty()) {
+    res.set_header("Access-Control-Allow-Methods", cors_config_.methods_header);
   }
-  if (!cors_headers_header_.empty()) {
-    res.set_header("Access-Control-Allow-Headers", cors_headers_header_);
+  if (!cors_config_.headers_header.empty()) {
+    res.set_header("Access-Control-Allow-Headers", cors_config_.headers_header);
   }
 
   // Set credentials header if enabled
@@ -617,12 +607,10 @@ void RESTServer::set_cors_headers(httplib::Response & res, const std::string & o
 }
 
 bool RESTServer::is_origin_allowed(const std::string & origin) const {
-  // If no origins configured, allow all (for development)
-  if (cors_config_.allowed_origins.empty()) {
-    return true;
-  }
-
   // Check if origin matches any allowed origin
+  // Note: Wildcard "*" is allowed here but credentials+wildcard is blocked at startup
+  // (see gateway_node.cpp validation). When wildcard is used, we echo back the actual
+  // origin for security, as browsers require exact origin match with credentials.
   for (const auto & allowed : cors_config_.allowed_origins) {
     if (allowed == "*" || allowed == origin) {
       return true;

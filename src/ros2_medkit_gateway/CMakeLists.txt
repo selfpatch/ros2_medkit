@@ -30,6 +30,7 @@ include_directories(include)
 # Gateway node executable
 add_executable(gateway_node
   src/main.cpp
+  src/config.cpp
   src/gateway_node.cpp
   src/rest_server.cpp
   src/discovery_manager.cpp
