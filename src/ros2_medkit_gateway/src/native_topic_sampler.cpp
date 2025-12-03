@@ -26,6 +26,7 @@
 #include <rclcpp/serialized_message.hpp>
 
 #include "ros2_medkit_gateway/output_parser.hpp"
+#include "ros2_medkit_gateway/ros2_cli_wrapper.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -158,30 +159,44 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
 
   try {
     // Use ros2 topic echo with the standard approach but shorter timeout
-    // We import the CLI wrapper dynamically to avoid circular dependencies
+    // Note: timeout_sec is rounded up to integer seconds (minimum 1s) for GNU timeout command
     std::ostringstream cmd;
     int timeout_int = std::max(1, static_cast<int>(std::ceil(timeout_sec)));
-    cmd << "timeout " << timeout_int << "s ros2 topic echo '" << topic_name << "' --once --no-arr 2>/dev/null";
+    // Use escape_shell_arg to prevent command injection
+    cmd << "timeout " << timeout_int << "s ros2 topic echo " << ROS2CLIWrapper::escape_shell_arg(topic_name)
+        << " --once --no-arr 2>/dev/null";
 
-    // Execute command
-    std::array<char, 128> buffer;
-    std::string output;
-    FILE * pipe = popen(cmd.str().c_str(), "r");
+    // Execute command with RAII pipe management to prevent resource leaks
+    auto pipe_closer = [](FILE * f) {
+      if (f) {
+        pclose(f);
+      }
+    };
+    std::unique_ptr<FILE, decltype(pipe_closer)> pipe(popen(cmd.str().c_str(), "r"), pipe_closer);
+
     if (!pipe) {
       RCLCPP_WARN(node_->get_logger(), "Failed to execute CLI command for topic '%s'", topic_name.c_str());
       result.has_data = false;
       return result;
     }
 
-    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+    // Use larger buffer for better performance with large messages
+    std::array<char, 4096> buffer;
+    std::string output;
+    output.reserve(4096);  // Pre-allocate for typical message sizes
+
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
       output += buffer.data();
     }
-    int exit_code = pclose(pipe);
+
+    // Get exit code - release pipe to get exit code before RAII cleanup
+    int exit_code = pclose(pipe.release());
 
     // Check for success (exit code 0 and non-empty output without warnings)
     if (exit_code == 0 && !output.empty() && output.find("WARNING") == std::string::npos) {
       result.data = parse_message_yaml(output);
-      if (!result.data->is_null()) {
+      // Check if result.data has a value AND is not null
+      if (result.data && !result.data->is_null()) {
         result.has_data = true;
         RCLCPP_DEBUG(node_->get_logger(), "Sampled data from topic '%s'", topic_name.c_str());
       }
@@ -202,13 +217,16 @@ std::vector<TopicSampleResult> NativeTopicSampler::sample_topics_parallel(const 
   std::vector<TopicSampleResult> results;
   results.reserve(topic_names.size());
 
+  // Query graph once for all topics (optimization suggested by mfaferek93)
+  auto all_topic_info = node_->get_topic_names_and_types();
+
   // Separate topics into those with publishers (need sampling) and without (immediate return)
   std::vector<std::string> active_topics;
   std::vector<TopicSampleResult> immediate_results;
 
   for (const auto & topic_name : topic_names) {
-    auto info = get_topic_info(topic_name);
-    if (!info) {
+    auto it = all_topic_info.find(topic_name);
+    if (it == all_topic_info.end()) {
       // Topic not found
       TopicSampleResult res;
       res.topic_name = topic_name;
@@ -217,21 +235,28 @@ std::vector<TopicSampleResult> NativeTopicSampler::sample_topics_parallel(const 
           std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
               .count();
       immediate_results.push_back(res);
-    } else if (info->publisher_count == 0) {
-      // No publishers - return metadata immediately
-      TopicSampleResult res;
-      res.topic_name = topic_name;
-      res.message_type = info->type;
-      res.publisher_count = info->publisher_count;
-      res.subscriber_count = info->subscriber_count;
-      res.has_data = false;
-      res.timestamp_ns =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
-              .count();
-      immediate_results.push_back(res);
     } else {
-      // Has publishers - need to sample
-      active_topics.push_back(topic_name);
+      // Get type from cached info
+      std::string msg_type = it->second.empty() ? "" : it->second[0];
+      size_t pub_count = node_->count_publishers(topic_name);
+      size_t sub_count = node_->count_subscribers(topic_name);
+
+      if (pub_count == 0) {
+        // No publishers - return metadata immediately
+        TopicSampleResult res;
+        res.topic_name = topic_name;
+        res.message_type = msg_type;
+        res.publisher_count = pub_count;
+        res.subscriber_count = sub_count;
+        res.has_data = false;
+        res.timestamp_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        immediate_results.push_back(res);
+      } else {
+        // Has publishers - need to sample
+        active_topics.push_back(topic_name);
+      }
     }
   }
 

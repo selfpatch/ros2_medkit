@@ -56,8 +56,8 @@ struct TopicSampleResult {
  * This class provides fast topic discovery and sampling using native rclcpp APIs
  * instead of shelling out to ros2 CLI commands. Key benefits:
  * - No process spawn overhead (~100ms per CLI call saved)
- * - No dependency on GNU timeout command
- * - Faster timeout detection for idle topics
+ * - Requires GNU timeout command only for topics with active publishers
+ * - Faster timeout detection for idle topics (return instantly)
  * - Publisher count check before attempting to sample (skip idle topics immediately)
  *
  * Usage:

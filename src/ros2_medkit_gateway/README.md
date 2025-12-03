@@ -341,7 +341,7 @@ The gateway always uses native rclcpp APIs for topic discovery and sampling. Thi
 
 - **Instant metadata for idle topics**: Topics without publishers return immediately with metadata (type, schema) instead of waiting for a 3-second timeout
 - **Faster discovery**: Uses `node->get_topic_names_and_types()` instead of `ros2 topic list`
-- **No external dependencies**: Works without GNU `timeout` command (useful in containers)
+- **Reduced external dependencies**: Native APIs for discovery and idle topics. GNU `timeout` is still required for sampling topics with active publishers (install `coreutils` in containers if needed)
 - **Better responsiveness**: Robots waiting for commands (many idle topics) respond instantly
 
 CLI is only used for publishing (`ros2 topic pub`), as native publishing requires compile-time type knowledge.
