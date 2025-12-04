@@ -28,7 +28,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("server.port", 8080);
   declare_parameter("refresh_interval_ms", 2000);
   declare_parameter("cors.allowed_origins", std::vector<std::string>{});
-  declare_parameter("cors.allowed_methods", std::vector<std::string>{"GET", "PUT", "OPTIONS"});
+  declare_parameter("cors.allowed_methods", std::vector<std::string>{"GET", "PUT", "POST", "OPTIONS"});
   declare_parameter("cors.allowed_headers", std::vector<std::string>{"Content-Type", "Accept"});
   declare_parameter("cors.allow_credentials", false);
   declare_parameter("cors.max_age_seconds", 86400);
@@ -103,6 +103,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   // Initialize managers
   discovery_mgr_ = std::make_unique<DiscoveryManager>(this);
   data_access_mgr_ = std::make_unique<DataAccessManager>(this);
+  operation_mgr_ = std::make_unique<OperationManager>(this, discovery_mgr_.get());
 
   // Initial discovery
   refresh_cache();
@@ -130,6 +131,14 @@ EntityCache GatewayNode::get_entity_cache() const {
 
 DataAccessManager * GatewayNode::get_data_access_manager() const {
   return data_access_mgr_.get();
+}
+
+OperationManager * GatewayNode::get_operation_manager() const {
+  return operation_mgr_.get();
+}
+
+DiscoveryManager * GatewayNode::get_discovery_manager() const {
+  return discovery_mgr_.get();
 }
 
 void GatewayNode::refresh_cache() {

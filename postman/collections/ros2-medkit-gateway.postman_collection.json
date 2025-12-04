@@ -249,6 +249,270 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "Operations",
+      "item": [
+        {
+          "name": "Sync Operations (Services)",
+          "item": [
+            {
+              "name": "GET List Component Operations",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components"
+                  ]
+                },
+                "description": "List all components with their available operations. Each component includes an 'operations' array showing available services (kind: 'service') and actions (kind: 'action') with their types and paths."
+              },
+              "response": []
+            },
+            {
+              "name": "POST Call Calibrate Service",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/components/calibration/operations/calibrate",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "calibration",
+                    "operations",
+                    "calibrate"
+                  ]
+                },
+                "description": "Call a ROS 2 service operation on a component. This example calls the std_srvs/srv/Trigger calibrate service. The service type is auto-discovered from the component's registered services. Response includes success status and service response data."
+              },
+              "response": []
+            },
+            {
+              "name": "POST Call Service with Type Override",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"type\": \"std_srvs/srv/Trigger\",\n  \"request\": {}\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/components/calibration/operations/calibrate",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "calibration",
+                    "operations",
+                    "calibrate"
+                  ]
+                },
+                "description": "Call a ROS 2 service with explicit type override. Use 'type' field to specify the service type (e.g., 'std_srvs/srv/Trigger') and 'request' field for the service request data. Useful when the service type cannot be auto-discovered."
+              },
+              "response": []
+            },
+            {
+              "name": "POST Call Service (Error - Not Found)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/components/calibration/operations/nonexistent",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "calibration",
+                    "operations",
+                    "nonexistent"
+                  ]
+                },
+                "description": "Example of calling a non-existent operation. Returns 500 error with 'Service not found' message."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Async Operations (Actions) - TODO",
+          "item": [
+            {
+              "name": "POST Start Action (send_goal)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"goal\": {\n    \"order\": 10\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/components/calibration/operations/long_calibration",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "calibration",
+                    "operations",
+                    "long_calibration"
+                  ]
+                },
+                "description": "[NOT YET IMPLEMENTED] Start an async action operation. For actions, POST starts the action and returns a goal_id for tracking progress. Response includes goal_id and status."
+              },
+              "response": []
+            },
+            {
+              "name": "GET Action Status",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components/calibration/operations/long_calibration/status?goal_id=abc123",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "calibration",
+                    "operations",
+                    "long_calibration",
+                    "status"
+                  ],
+                  "query": [
+                    {
+                      "key": "goal_id",
+                      "value": "abc123"
+                    }
+                  ]
+                },
+                "description": "[NOT YET IMPLEMENTED] Get the current status of a running action. Returns status (pending, executing, succeeded, canceled, aborted) and progress information."
+              },
+              "response": []
+            },
+            {
+              "name": "GET Action Feedback",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components/calibration/operations/long_calibration/feedback?goal_id=abc123",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "calibration",
+                    "operations",
+                    "long_calibration",
+                    "feedback"
+                  ],
+                  "query": [
+                    {
+                      "key": "goal_id",
+                      "value": "abc123"
+                    }
+                  ]
+                },
+                "description": "[NOT YET IMPLEMENTED] Get feedback from a running action. Returns the latest feedback message published by the action server with progress updates."
+              },
+              "response": []
+            },
+            {
+              "name": "GET Action Result",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components/calibration/operations/long_calibration/result?goal_id=abc123",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "calibration",
+                    "operations",
+                    "long_calibration",
+                    "result"
+                  ],
+                  "query": [
+                    {
+                      "key": "goal_id",
+                      "value": "abc123"
+                    }
+                  ]
+                },
+                "description": "[NOT YET IMPLEMENTED] Get the final result of a completed action. Returns the action result once the action has finished (succeeded, canceled, or aborted)."
+              },
+              "response": []
+            },
+            {
+              "name": "DELETE Cancel Action",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components/calibration/operations/long_calibration?goal_id=abc123",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "calibration",
+                    "operations",
+                    "long_calibration"
+                  ],
+                  "query": [
+                    {
+                      "key": "goal_id",
+                      "value": "abc123"
+                    }
+                  ]
+                },
+                "description": "[NOT YET IMPLEMENTED] Cancel a running action. Sends cancel request to the action server. Returns confirmation of cancellation request."
+              },
+              "response": []
+            }
+          ]
+        }
+      ]
     }
   ]
 }

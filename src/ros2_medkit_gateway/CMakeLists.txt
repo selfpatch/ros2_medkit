@@ -47,6 +47,7 @@ add_library(gateway_lib STATIC
   src/data_access_manager.cpp
   src/type_introspection.cpp
   src/native_topic_sampler.cpp
+  src/operation_manager.cpp
 )
 
 ament_target_dependencies(gateway_lib

@@ -956,3 +956,214 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('json', data['error'].lower())
 
         print('✓ Publish invalid JSON body test passed')
+
+    # ========== POST /components/{component_id}/operations/{operation_name} tests ==========
+
+    def test_31_operation_call_calibrate_service(self):
+        """
+        Test POST /components/{component_id}/operations/{operation_name} calls a service.
+
+        @verifies REQ_INTEROP_021
+        """
+        response = requests.post(
+            f'{self.BASE_URL}/components/calibration/operations/calibrate',
+            json={},
+            timeout=15
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('status', data)
+        self.assertEqual(data['status'], 'success')
+        self.assertIn('component_id', data)
+        self.assertEqual(data['component_id'], 'calibration')
+        self.assertIn('operation', data)
+        self.assertEqual(data['operation'], 'calibrate')
+        self.assertIn('response', data)
+
+        # Verify service response structure (std_srvs/srv/Trigger response)
+        self.assertIn('success', data['response'])
+        self.assertIn('message', data['response'])
+        self.assertIsInstance(data['response']['success'], bool)
+        self.assertIsInstance(data['response']['message'], str)
+
+        print(f'✓ Operation call calibrate service test passed: {data["response"]}')
+
+    def test_32_operation_call_nonexistent_operation(self):
+        """
+        Test POST /components/{component_id}/operations/{operation_name} returns error for unknown operation.
+
+        @verifies REQ_INTEROP_021
+        """
+        response = requests.post(
+            f'{self.BASE_URL}/components/calibration/operations/nonexistent_op',
+            json={},
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 500)
+
+        data = response.json()
+        self.assertIn('status', data)
+        self.assertEqual(data['status'], 'error')
+        self.assertIn('error', data)
+        self.assertIn('nonexistent_op', data['error'])
+
+        print('✓ Operation call nonexistent operation test passed')
+
+    def test_33_operation_call_nonexistent_component(self):
+        """
+        Test POST /components/{component_id}/operations/{operation_name} returns 404 for unknown component.
+
+        @verifies REQ_INTEROP_021
+        """
+        response = requests.post(
+            f'{self.BASE_URL}/components/nonexistent_component/operations/calibrate',
+            json={},
+            timeout=5
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Component not found')
+        self.assertEqual(data['component_id'], 'nonexistent_component')
+
+        print('✓ Operation call nonexistent component test passed')
+
+    def test_34_operation_call_invalid_component_id(self):
+        """
+        Test POST /components/{component_id}/operations/{operation_name} rejects invalid component ID.
+
+        @verifies REQ_INTEROP_021
+        """
+        invalid_ids = [
+            'component;drop',
+            'component<script>',
+            'component-name',
+        ]
+
+        for invalid_id in invalid_ids:
+            response = requests.post(
+                f'{self.BASE_URL}/components/{invalid_id}/operations/calibrate',
+                json={},
+                timeout=5
+            )
+            self.assertEqual(
+                response.status_code,
+                400,
+                f'Expected 400 for component_id: {invalid_id}'
+            )
+
+            data = response.json()
+            self.assertIn('error', data)
+            self.assertEqual(data['error'], 'Invalid component ID')
+
+        print('✓ Operation call invalid component ID test passed')
+
+    def test_35_operation_call_invalid_operation_name(self):
+        """
+        Test POST /components/{component_id}/operations/{operation_name} rejects invalid operation name.
+
+        @verifies REQ_INTEROP_021
+        """
+        invalid_names = [
+            'op;drop',
+            'op<script>',
+            'op-name',
+        ]
+
+        for invalid_name in invalid_names:
+            response = requests.post(
+                f'{self.BASE_URL}/components/calibration/operations/{invalid_name}',
+                json={},
+                timeout=5
+            )
+            self.assertEqual(
+                response.status_code,
+                400,
+                f'Expected 400 for operation_name: {invalid_name}'
+            )
+
+            data = response.json()
+            self.assertIn('error', data)
+            self.assertEqual(data['error'], 'Invalid operation name')
+
+        print('✓ Operation call invalid operation name test passed')
+
+    def test_36_operation_call_with_invalid_json(self):
+        """
+        Test POST /components/{component_id}/operations/{operation_name} returns 400 for invalid JSON.
+
+        @verifies REQ_INTEROP_021
+        """
+        response = requests.post(
+            f'{self.BASE_URL}/components/calibration/operations/calibrate',
+            data='not valid json',
+            headers={'Content-Type': 'application/json'},
+            timeout=5
+        )
+        self.assertEqual(response.status_code, 400)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertIn('json', data['error'].lower())
+
+        print('✓ Operation call invalid JSON body test passed')
+
+    def test_37_operations_listed_in_component_discovery(self):
+        """
+        Test that operations (services) are listed in component discovery response.
+
+        @verifies REQ_INTEROP_021
+        """
+        components = self._get_json('/components')
+
+        # Find calibration component
+        calibration = None
+        for comp in components:
+            if comp['id'] == 'calibration':
+                calibration = comp
+                break
+
+        self.assertIsNotNone(calibration, 'Calibration component should exist')
+        self.assertIn('operations', calibration, 'Component should have operations field')
+        self.assertIsInstance(calibration['operations'], list)
+
+        # Find the calibrate operation
+        calibrate_op = None
+        for op in calibration['operations']:
+            if op['name'] == 'calibrate':
+                calibrate_op = op
+                break
+
+        self.assertIsNotNone(calibrate_op, 'Calibrate operation should be listed')
+        self.assertIn('kind', calibrate_op)
+        self.assertEqual(calibrate_op['kind'], 'service')
+        self.assertIn('type', calibrate_op)
+        self.assertEqual(calibrate_op['type'], 'std_srvs/srv/Trigger')
+        self.assertIn('path', calibrate_op)
+        self.assertEqual(calibrate_op['path'], '/powertrain/engine/calibrate')
+
+        print('✓ Operations listed in component discovery test passed')
+
+    def test_38_root_endpoint_includes_operations(self):
+        """
+        Test that root endpoint lists operations endpoint and capability.
+
+        @verifies REQ_INTEROP_021
+        """
+        data = self._get_json('/')
+
+        # Verify operations endpoint is listed
+        self.assertIn('endpoints', data)
+        self.assertIn(
+            'POST /api/v1/components/{component_id}/operations/{operation_name}',
+            data['endpoints']
+        )
+
+        # Verify operations capability is listed
+        self.assertIn('capabilities', data)
+        self.assertIn('operations', data['capabilities'])
+        self.assertTrue(data['capabilities']['operations'])
+
+        print('✓ Root endpoint includes operations test passed')

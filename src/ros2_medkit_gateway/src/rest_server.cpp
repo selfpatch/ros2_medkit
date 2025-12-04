@@ -120,6 +120,12 @@ void RESTServer::setup_routes() {
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_component_topic_publish(req, res);
                });
+
+  // Component operation (POST) - sync operations like service calls
+  server_->Post((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)").c_str(),
+                [this](const httplib::Request & req, httplib::Response & res) {
+                  handle_component_operation(req, res);
+                });
 }
 
 void RESTServer::start() {
@@ -198,8 +204,9 @@ void RESTServer::handle_root(const httplib::Request & req, httplib::Response & r
                                                 "GET /api/v1/components", "GET /api/v1/areas/{area_id}/components",
                                                 "GET /api/v1/components/{component_id}/data",
                                                 "GET /api/v1/components/{component_id}/data/{topic_name}",
-                                                "PUT /api/v1/components/{component_id}/data/{topic_name}"})},
-                     {"capabilities", {{"discovery", true}, {"data_access", true}}}};
+                                                "PUT /api/v1/components/{component_id}/data/{topic_name}",
+                                                "POST /api/v1/components/{component_id}/operations/{operation_name}"})},
+                     {"capabilities", {{"discovery", true}, {"data_access", true}, {"operations", true}}}};
 
     res.set_content(response.dump(2), "application/json");
   } catch (const std::exception & e) {
@@ -601,6 +608,123 @@ void RESTServer::handle_component_topic_publish(const httplib::Request & req, ht
     RCLCPP_ERROR(rclcpp::get_logger("rest_server"),
                  "Error in handle_component_topic_publish for component '%s', topic '%s': %s", component_id.c_str(),
                  topic_name.c_str(), e.what());
+  }
+}
+
+void RESTServer::handle_component_operation(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string operation_name;
+  try {
+    // Extract component_id and operation_name from URL path
+    if (req.matches.size() < 3) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+    operation_name = req.matches[2];
+
+    // Validate component_id
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"},
+                           {"details", component_validation.error()},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Validate operation_name
+    auto operation_validation = validate_entity_id(operation_name);
+    if (!operation_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid operation name"},
+                           {"details", operation_validation.error()},
+                           {"operation_name", operation_name}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Parse request body (optional for services with no parameters)
+    json body = json::object();
+    if (!req.body.empty()) {
+      try {
+        body = json::parse(req.body);
+      } catch (const json::parse_error & e) {
+        res.status = StatusCode::BadRequest_400;
+        res.set_content(json{{"error", "Invalid JSON in request body"}, {"details", e.what()}}.dump(2),
+                        "application/json");
+        return;
+      }
+    }
+
+    // Extract optional type override and request data
+    std::optional<std::string> service_type;
+    json request_data = json::object();
+
+    if (body.contains("type") && body["type"].is_string()) {
+      service_type = body["type"].get<std::string>();
+    }
+
+    if (body.contains("request")) {
+      request_data = body["request"];
+    }
+
+    const auto cache = node_->get_entity_cache();
+
+    // Find component in cache
+    std::string component_namespace;
+    bool component_found = false;
+
+    for (const auto & component : cache.components) {
+      if (component.id == component_id) {
+        component_namespace = component.namespace_path;
+        component_found = true;
+        break;
+      }
+    }
+
+    if (!component_found) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Call the service using OperationManager
+    auto operation_mgr = node_->get_operation_manager();
+    auto result = operation_mgr->call_component_service(component_namespace, operation_name, service_type, request_data);
+
+    if (result.success) {
+      json response = {{"status", "success"},
+                       {"component_id", component_id},
+                       {"operation", operation_name},
+                       {"response", result.response}};
+      res.set_content(response.dump(2), "application/json");
+    } else {
+      res.status = StatusCode::InternalServerError_500;
+      res.set_content(json{{"status", "error"},
+                           {"component_id", component_id},
+                           {"operation", operation_name},
+                           {"error", result.error_message}}
+                          .dump(2),
+                      "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Failed to execute operation"},
+                         {"details", e.what()},
+                         {"component_id", component_id},
+                         {"operation_name", operation_name}}
+                        .dump(2),
+                    "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"),
+                 "Error in handle_component_operation for component '%s', operation '%s': %s", component_id.c_str(),
+                 operation_name.c_str(), e.what());
   }
 }
 
