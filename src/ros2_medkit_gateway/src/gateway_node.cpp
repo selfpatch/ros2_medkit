@@ -28,7 +28,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("server.port", 8080);
   declare_parameter("refresh_interval_ms", 2000);
   declare_parameter("cors.allowed_origins", std::vector<std::string>{});
-  declare_parameter("cors.allowed_methods", std::vector<std::string>{"GET", "PUT", "POST", "OPTIONS"});
+  declare_parameter("cors.allowed_methods", std::vector<std::string>{"GET", "PUT", "POST", "DELETE", "OPTIONS"});
   declare_parameter("cors.allowed_headers", std::vector<std::string>{"Content-Type", "Accept"});
   declare_parameter("cors.allow_credentials", false);
   declare_parameter("cors.max_age_seconds", 86400);

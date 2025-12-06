@@ -76,7 +76,7 @@
                 "components"
               ]
             },
-            "description": "List all discovered components across all areas. Returns component metadata including id, namespace, fqn, type, and parent area."
+            "description": "List all discovered components across all areas. Returns component metadata including id, namespace, fqn, type, parent area, and available operations (services and actions)."
           },
           "response": []
         },
@@ -367,10 +367,10 @@
           ]
         },
         {
-          "name": "Async Operations (Actions) - TODO",
+          "name": "Async Operations (Actions)",
           "item": [
             {
-              "name": "POST Start Action (send_goal)",
+              "name": "POST Send Action Goal (Long Calibration)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -384,34 +384,86 @@
                   "raw": "{\n  \"goal\": {\n    \"order\": 10\n  }\n}"
                 },
                 "url": {
-                  "raw": "{{base_url}}/components/calibration/operations/long_calibration",
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration",
                   "host": [
                     "{{base_url}}"
                   ],
                   "path": [
                     "components",
-                    "calibration",
+                    "long_calibration",
                     "operations",
                     "long_calibration"
                   ]
                 },
-                "description": "[NOT YET IMPLEMENTED] Start an async action operation. For actions, POST starts the action and returns a goal_id for tracking progress. Response includes goal_id and status."
+                "description": "Start an async action operation. Sends a goal to the action server and returns immediately with goal_id. Response includes goal_id, goal_status (executing/succeeded), kind (action), and component info. Takes ~3-4 seconds due to CLI discovery. The action continues running in the background."
               },
               "response": []
             },
             {
-              "name": "GET Action Status",
+              "name": "POST Send Short Action Goal (Fast)",
               "request": {
-                "method": "GET",
-                "header": [],
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"goal\": {\n    \"order\": 3\n  }\n}"
+                },
                 "url": {
-                  "raw": "{{base_url}}/components/calibration/operations/long_calibration/status?goal_id=abc123",
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration",
                   "host": [
                     "{{base_url}}"
                   ],
                   "path": [
                     "components",
-                    "calibration",
+                    "long_calibration",
+                    "operations",
+                    "long_calibration"
+                  ]
+                },
+                "description": "Send a short action goal (order=3 completes in ~1.5s). If the action completes within 3 seconds, goal_status will be 'succeeded' immediately."
+              },
+              "response": []
+            },
+            {
+              "name": "GET Action Status (Latest)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/status",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "long_calibration",
+                    "operations",
+                    "long_calibration",
+                    "status"
+                  ]
+                },
+                "description": "Get the status of the most recent action goal. No goal_id needed - the gateway tracks goals internally and returns the latest one. Returns goal_id, status (accepted/executing/succeeded/canceled/aborted), action_path, and action_type."
+              },
+              "response": []
+            },
+            {
+              "name": "GET Action Status (Specific Goal)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/status?goal_id={{goal_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "long_calibration",
                     "operations",
                     "long_calibration",
                     "status"
@@ -419,94 +471,66 @@
                   "query": [
                     {
                       "key": "goal_id",
-                      "value": "abc123"
+                      "value": "{{goal_id}}"
                     }
                   ]
                 },
-                "description": "[NOT YET IMPLEMENTED] Get the current status of a running action. Returns status (pending, executing, succeeded, canceled, aborted) and progress information."
+                "description": "Get the status of a specific action goal by goal_id. Use this when you have multiple concurrent goals and need to track a specific one."
               },
               "response": []
             },
             {
-              "name": "GET Action Feedback",
+              "name": "GET Action Status (All Goals)",
               "request": {
                 "method": "GET",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/components/calibration/operations/long_calibration/feedback?goal_id=abc123",
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/status?all=true",
                   "host": [
                     "{{base_url}}"
                   ],
                   "path": [
                     "components",
-                    "calibration",
+                    "long_calibration",
                     "operations",
                     "long_calibration",
-                    "feedback"
+                    "status"
                   ],
                   "query": [
                     {
-                      "key": "goal_id",
-                      "value": "abc123"
+                      "key": "all",
+                      "value": "true"
                     }
                   ]
                 },
-                "description": "[NOT YET IMPLEMENTED] Get feedback from a running action. Returns the latest feedback message published by the action server with progress updates."
+                "description": "Get the status of all tracked goals for this action. Returns an array of goals sorted by most recent first, with count."
               },
               "response": []
             },
             {
-              "name": "GET Action Result",
-              "request": {
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{base_url}}/components/calibration/operations/long_calibration/result?goal_id=abc123",
-                  "host": [
-                    "{{base_url}}"
-                  ],
-                  "path": [
-                    "components",
-                    "calibration",
-                    "operations",
-                    "long_calibration",
-                    "result"
-                  ],
-                  "query": [
-                    {
-                      "key": "goal_id",
-                      "value": "abc123"
-                    }
-                  ]
-                },
-                "description": "[NOT YET IMPLEMENTED] Get the final result of a completed action. Returns the action result once the action has finished (succeeded, canceled, or aborted)."
-              },
-              "response": []
-            },
-            {
-              "name": "DELETE Cancel Action",
+              "name": "DELETE Cancel Action Goal",
               "request": {
                 "method": "DELETE",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/components/calibration/operations/long_calibration?goal_id=abc123",
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration?goal_id={{goal_id}}",
                   "host": [
                     "{{base_url}}"
                   ],
                   "path": [
                     "components",
-                    "calibration",
+                    "long_calibration",
                     "operations",
                     "long_calibration"
                   ],
                   "query": [
                     {
                       "key": "goal_id",
-                      "value": "abc123"
+                      "value": "{{goal_id}}"
                     }
                   ]
                 },
-                "description": "[NOT YET IMPLEMENTED] Cancel a running action. Sends cancel request to the action server. Returns confirmation of cancellation request."
+                "description": "Cancel a running action goal. Sends cancel request to the action server. Returns confirmation with status 'canceling'. Use GET /status to verify the goal was canceled (status becomes 'canceled')."
               },
               "response": []
             }

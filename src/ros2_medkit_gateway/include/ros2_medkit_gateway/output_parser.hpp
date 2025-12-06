@@ -32,8 +32,10 @@ class OutputParser {
    */
   json parse_yaml(const std::string & yaml_str);
 
- private:
-  json yaml_to_json(const YAML::Node & node);
+  /**
+   * @brief Convert YAML node to JSON (static utility)
+   */
+  static json yaml_to_json(const YAML::Node & node);
 };
 
 }  // namespace ros2_medkit_gateway

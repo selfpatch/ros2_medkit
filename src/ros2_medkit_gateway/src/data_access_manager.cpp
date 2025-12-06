@@ -15,12 +15,11 @@
 #include "ros2_medkit_gateway/data_access_manager.hpp"
 
 #include <algorithm>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <chrono>
 #include <cmath>
 #include <future>
 #include <sstream>
-
-#include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include "ros2_medkit_gateway/exceptions.hpp"
 

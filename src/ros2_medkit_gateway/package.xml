@@ -15,6 +15,7 @@
   <depend>std_srvs</depend>
   <depend>sensor_msgs</depend>
   <depend>rcl_interfaces</depend>
+  <depend>action_msgs</depend>
   <depend>nlohmann-json-dev</depend>
   <depend>libcpp-httplib-dev</depend>
   <depend>yaml_cpp_vendor</depend>
@@ -29,6 +30,8 @@
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>launch_testing_ament_cmake</test_depend>
   <test_depend>python3-requests</test_depend>
+  <test_depend>rclcpp_action</test_depend>
+  <test_depend>example_interfaces</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -19,11 +19,10 @@
 #include <condition_variable>
 #include <future>
 #include <mutex>
-#include <sstream>
-#include <thread>
-
 #include <rclcpp/serialization.hpp>
 #include <rclcpp/serialized_message.hpp>
+#include <sstream>
+#include <thread>
 
 #include "ros2_medkit_gateway/output_parser.hpp"
 #include "ros2_medkit_gateway/ros2_cli_wrapper.hpp"

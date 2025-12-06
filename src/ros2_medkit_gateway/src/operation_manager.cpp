@@ -14,10 +14,16 @@
 
 #include "ros2_medkit_gateway/operation_manager.hpp"
 
-#include <sstream>
-#include <regex>
-
 #include <yaml-cpp/yaml.h>
+
+#include <algorithm>
+#include <cctype>
+#include <iomanip>
+#include <regex>
+#include <set>
+#include <sstream>
+
+#include "ros2_medkit_gateway/output_parser.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -47,11 +53,59 @@ bool OperationManager::is_action_type(const std::string & type) {
   return type.find("/action/") != std::string::npos;
 }
 
+bool OperationManager::is_valid_uuid_hex(const std::string & uuid_hex) {
+  // UUID hex string must be exactly 32 hex characters
+  if (uuid_hex.length() != 32) {
+    return false;
+  }
+  return std::all_of(uuid_hex.begin(), uuid_hex.end(), [](char c) {
+    return std::isxdigit(static_cast<unsigned char>(c));
+  });
+}
+
 std::string OperationManager::json_to_yaml(const json & j) {
-  // For ros2 service call, we can pass JSON directly since JSON is valid YAML 1.2
-  // But ros2 CLI sometimes prefers YAML format for complex types
-  // For now, use JSON which works for most cases
-  return j.dump();
+  // Convert JSON to YAML format for ros2 CLI commands
+  // ros2 action/service commands expect YAML format: {key: value} not {"key": value}
+  std::function<std::string(const json &)> convert = [&convert](const json & val) -> std::string {
+    if (val.is_object()) {
+      std::ostringstream ss;
+      ss << "{";
+      bool first = true;
+      for (auto it = val.begin(); it != val.end(); ++it) {
+        if (!first) {
+          ss << ", ";
+        }
+        first = false;
+        ss << it.key() << ": " << convert(it.value());
+      }
+      ss << "}";
+      return ss.str();
+    } else if (val.is_array()) {
+      std::ostringstream ss;
+      ss << "[";
+      bool first = true;
+      for (const auto & item : val) {
+        if (!first) {
+          ss << ", ";
+        }
+        first = false;
+        ss << convert(item);
+      }
+      ss << "]";
+      return ss.str();
+    } else if (val.is_string()) {
+      // Quote strings that contain special YAML characters
+      std::string s = val.get<std::string>();
+      if (s.find_first_of(":{}[],\"'") != std::string::npos) {
+        return "'" + s + "'";
+      }
+      return s;
+    } else {
+      return val.dump();  // numbers, bools, null
+    }
+  };
+
+  return convert(j);
 }
 
 json OperationManager::parse_service_response(const std::string & yaml_output) {
@@ -173,48 +227,8 @@ json OperationManager::parse_service_response(const std::string & yaml_output) {
     // Try to parse as YAML (for newer ROS2 format)
     YAML::Node yaml_node = YAML::Load(response_section);
 
-    // Convert YAML to JSON
-    json result;
-
-    std::function<json(const YAML::Node &)> yaml_to_json = [&yaml_to_json](const YAML::Node & node) -> json {
-      if (node.IsNull()) {
-        return nullptr;
-      }
-      if (node.IsScalar()) {
-        // Try to parse as different types
-        try {
-          return node.as<bool>();
-        } catch (...) {
-        }
-        try {
-          return node.as<int64_t>();
-        } catch (...) {
-        }
-        try {
-          return node.as<double>();
-        } catch (...) {
-        }
-        return node.as<std::string>();
-      }
-      if (node.IsSequence()) {
-        json arr = json::array();
-        for (const auto & item : node) {
-          arr.push_back(yaml_to_json(item));
-        }
-        return arr;
-      }
-      if (node.IsMap()) {
-        json obj = json::object();
-        for (const auto & kv : node) {
-          obj[kv.first.as<std::string>()] = yaml_to_json(kv.second);
-        }
-        return obj;
-      }
-      return nullptr;
-    };
-
-    result = yaml_to_json(yaml_node);
-    return result;
+    // Convert YAML to JSON using shared utility
+    return OutputParser::yaml_to_json(yaml_node);
 
   } catch (const std::exception & e) {
     RCLCPP_WARN(node_->get_logger(), "Failed to parse service response: %s", e.what());
@@ -301,6 +315,508 @@ ServiceCallResult OperationManager::call_component_service(const std::string & c
   }
 
   return call_service(service_path, resolved_type, request);
+}
+
+// ==================== ACTION OPERATIONS ====================
+
+std::string action_status_to_string(ActionGoalStatus status) {
+  switch (status) {
+    case ActionGoalStatus::UNKNOWN:
+      return "unknown";
+    case ActionGoalStatus::ACCEPTED:
+      return "accepted";
+    case ActionGoalStatus::EXECUTING:
+      return "executing";
+    case ActionGoalStatus::CANCELING:
+      return "canceling";
+    case ActionGoalStatus::SUCCEEDED:
+      return "succeeded";
+    case ActionGoalStatus::CANCELED:
+      return "canceled";
+    case ActionGoalStatus::ABORTED:
+      return "aborted";
+    default:
+      return "unknown";
+  }
+}
+
+std::string OperationManager::uuid_to_yaml_array(const std::string & uuid_hex) {
+  // Convert hex string to YAML array of byte values [b1, b2, ...]
+  std::ostringstream ss;
+  ss << "[";
+  for (size_t i = 0; i < uuid_hex.length() && i < 32; i += 2) {
+    if (i > 0) {
+      ss << ", ";
+    }
+    int byte_val = std::stoi(uuid_hex.substr(i, 2), nullptr, 16);
+    ss << byte_val;
+  }
+  ss << "]";
+  return ss.str();
+}
+
+ActionSendGoalResult OperationManager::parse_send_goal_cli_output(const std::string & output) {
+  ActionSendGoalResult result;
+  result.success = false;
+  result.goal_accepted = false;
+
+  // Look for "Goal accepted with ID: <uuid>"
+  static const std::regex goal_id_regex(R"(Goal accepted with ID:\s*([a-f0-9]+))");
+  std::smatch match;
+  if (std::regex_search(output, match, goal_id_regex)) {
+    result.goal_id = match[1].str();
+    result.goal_accepted = true;
+    result.success = true;
+  }
+
+  // Check for rejection
+  if (output.find("Goal rejected") != std::string::npos) {
+    result.success = true;  // Command worked, but goal was rejected
+    result.goal_accepted = false;
+    result.error_message = "Goal rejected by action server";
+  }
+
+  // Check for server not available
+  if (output.find("Action server is not available") != std::string::npos ||
+      output.find("not available after waiting") != std::string::npos) {
+    result.success = false;
+    result.error_message = "Action server not available";
+  }
+
+  return result;
+}
+
+ActionCancelResult OperationManager::parse_cancel_output(const std::string & output) {
+  ActionCancelResult result;
+  result.success = true;
+  result.return_code = 0;  // ERROR_NONE
+
+  // Check output for success/failure
+  if (output.find("Cancel request accepted") != std::string::npos || output.find("canceling") != std::string::npos) {
+    result.return_code = 0;
+  } else if (output.find("not found") != std::string::npos || output.find("unknown") != std::string::npos) {
+    result.return_code = 2;  // ERROR_UNKNOWN_GOAL_ID
+    result.error_message = "Unknown goal ID";
+  } else if (output.find("rejected") != std::string::npos) {
+    result.return_code = 1;  // ERROR_REJECTED
+    result.error_message = "Cancel request rejected";
+  } else if (output.find("terminated") != std::string::npos || output.find("already finished") != std::string::npos) {
+    result.return_code = 3;  // ERROR_GOAL_TERMINATED
+    result.error_message = "Goal already terminated";
+  }
+
+  return result;
+}
+
+void OperationManager::track_goal(const std::string & goal_id, const std::string & action_path,
+                                  const std::string & action_type) {
+  std::lock_guard<std::mutex> lock(goals_mutex_);
+  ActionGoalInfo info;
+  info.goal_id = goal_id;
+  info.action_path = action_path;
+  info.action_type = action_type;
+  info.status = ActionGoalStatus::ACCEPTED;
+  info.created_at = std::chrono::system_clock::now();
+  info.last_update = info.created_at;
+  tracked_goals_[goal_id] = info;
+}
+
+ActionSendGoalResult OperationManager::send_action_goal(const std::string & action_path,
+                                                        const std::string & action_type, const json & goal) {
+  ActionSendGoalResult result;
+
+  try {
+    // Use ros2 action send_goal with short timeout (2.5s)
+    // This is enough for discovery + goal acceptance, but not for long-running actions
+    // The action continues running in background after we get the goal_id
+    std::ostringstream cmd;
+    cmd << "ros2 action send_goal " << ROS2CLIWrapper::escape_shell_arg(action_path) << " "
+        << ROS2CLIWrapper::escape_shell_arg(action_type);
+
+    // Add goal data
+    if (!goal.empty() && !goal.is_null()) {
+      cmd << " " << ROS2CLIWrapper::escape_shell_arg(json_to_yaml(goal));
+    } else {
+      cmd << " '{}'";
+    }
+
+    // Short timeout: enough for discovery + acceptance, action continues in background
+    cmd << " -t 3";
+
+    RCLCPP_INFO(node_->get_logger(), "Sending action goal: %s (type: %s)", action_path.c_str(), action_type.c_str());
+
+    std::string output = cli_wrapper_->exec(cmd.str());
+    RCLCPP_DEBUG(node_->get_logger(), "Action send_goal output: %s", output.c_str());
+
+    // Parse goal_id from CLI output
+    result = parse_send_goal_cli_output(output);
+
+    // Track the goal if accepted
+    if (result.goal_accepted && !result.goal_id.empty()) {
+      track_goal(result.goal_id, action_path, action_type);
+      RCLCPP_INFO(node_->get_logger(), "Action goal accepted with ID: %s", result.goal_id.c_str());
+
+      // Subscribe to status topic for real-time updates
+      subscribe_to_action_status(action_path);
+
+      // Check if action already completed (fast actions) or still running
+      if (output.find("Goal finished with status: SUCCEEDED") != std::string::npos) {
+        update_goal_status(result.goal_id, ActionGoalStatus::SUCCEEDED);
+      } else if (output.find("Goal finished with status: CANCELED") != std::string::npos) {
+        update_goal_status(result.goal_id, ActionGoalStatus::CANCELED);
+      } else if (output.find("Goal finished with status: ABORTED") != std::string::npos) {
+        update_goal_status(result.goal_id, ActionGoalStatus::ABORTED);
+      } else {
+        // Still executing (timed out waiting for result, which is expected)
+        update_goal_status(result.goal_id, ActionGoalStatus::EXECUTING);
+      }
+    }
+
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(node_->get_logger(), "Action send_goal failed for '%s': %s", action_path.c_str(), e.what());
+    result.success = false;
+    result.error_message = e.what();
+  }
+
+  return result;
+}
+
+ActionSendGoalResult OperationManager::send_component_action_goal(const std::string & component_ns,
+                                                                  const std::string & operation_name,
+                                                                  const std::optional<std::string> & action_type,
+                                                                  const json & goal) {
+  ActionSendGoalResult result;
+
+  // Determine action type - use provided or look up from discovery
+  std::string resolved_type;
+  std::string action_path;
+
+  if (action_type.has_value() && !action_type->empty()) {
+    resolved_type = *action_type;
+    // Construct action path from component namespace and operation name
+    action_path = component_ns;
+    if (!action_path.empty() && action_path.back() != '/') {
+      action_path += "/";
+    }
+    action_path += operation_name;
+  } else {
+    // Look up from discovery cache
+    auto action_info = discovery_manager_->find_action(component_ns, operation_name);
+    if (!action_info.has_value()) {
+      result.success = false;
+      result.error_message = "Action not found: " + operation_name + " in namespace " + component_ns;
+      return result;
+    }
+    resolved_type = action_info->type;
+    action_path = action_info->full_path;
+  }
+
+  // Validate type format
+  if (!is_valid_message_type(resolved_type)) {
+    result.success = false;
+    result.error_message = "Invalid action type format: " + resolved_type;
+    return result;
+  }
+
+  // Verify it's an action type
+  if (!is_action_type(resolved_type)) {
+    result.success = false;
+    result.error_message = "Type is not an action type: " + resolved_type;
+    return result;
+  }
+
+  return send_action_goal(action_path, resolved_type, goal);
+}
+
+ActionCancelResult OperationManager::cancel_action_goal(const std::string & action_path, const std::string & goal_id) {
+  ActionCancelResult result;
+
+  // Validate goal_id format
+  if (!is_valid_uuid_hex(goal_id)) {
+    result.success = false;
+    result.error_message = "Invalid goal_id format: must be 32 hex characters";
+    return result;
+  }
+
+  try {
+    // Build cancel command - ros2 action doesn't have a direct cancel by goal_id
+    // We need to use the internal service
+    std::ostringstream cmd;
+    cmd << "ros2 service call " << ROS2CLIWrapper::escape_shell_arg(action_path + "/_action/cancel_goal")
+        << " action_msgs/srv/CancelGoal ";
+
+    // Convert goal_id hex string to UUID bytes array
+    // Format: {goal_info: {goal_id: {uuid: [b1, b2, ...]}}}
+    cmd << "'{goal_info: {goal_id: {uuid: " << uuid_to_yaml_array(goal_id) << "}}}'";
+
+    RCLCPP_INFO(node_->get_logger(), "Canceling action goal: %s (goal_id: %s)", action_path.c_str(), goal_id.c_str());
+
+    std::string output = cli_wrapper_->exec(cmd.str());
+    RCLCPP_DEBUG(node_->get_logger(), "Action cancel output: %s", output.c_str());
+
+    result = parse_cancel_output(output);
+
+    // Update goal status if cancel was accepted
+    if (result.success && result.return_code == 0) {
+      update_goal_status(goal_id, ActionGoalStatus::CANCELING);
+    }
+
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(node_->get_logger(), "Action cancel failed for '%s': %s", action_path.c_str(), e.what());
+    result.success = false;
+    result.error_message = e.what();
+  }
+
+  return result;
+}
+
+ActionGetResultResult OperationManager::get_action_result(const std::string & action_path,
+                                                          const std::string & action_type,
+                                                          const std::string & goal_id) {
+  ActionGetResultResult result;
+  result.success = false;
+  result.status = ActionGoalStatus::UNKNOWN;
+
+  // Validate goal_id format
+  if (!is_valid_uuid_hex(goal_id)) {
+    result.error_message = "Invalid goal_id format: must be 32 hex characters";
+    return result;
+  }
+
+  try {
+    // Build get_result service call
+    // Service type is {action_type}_GetResult
+    std::string get_result_type = action_type;
+    // Replace /action/ with action:: for service type naming
+    // e.g., example_interfaces/action/Fibonacci -> example_interfaces/action/Fibonacci_GetResult
+    get_result_type += "_GetResult";
+
+    std::ostringstream cmd;
+    cmd << "ros2 service call " << ROS2CLIWrapper::escape_shell_arg(action_path + "/_action/get_result") << " "
+        << ROS2CLIWrapper::escape_shell_arg(get_result_type) << " ";
+
+    // Convert goal_id to UUID bytes array
+    cmd << "'{goal_id: {uuid: " << uuid_to_yaml_array(goal_id) << "}}'";
+
+    RCLCPP_INFO(node_->get_logger(), "Getting action result: %s (goal_id: %s)", action_path.c_str(), goal_id.c_str());
+
+    std::string output = cli_wrapper_->exec(cmd.str());
+    RCLCPP_DEBUG(node_->get_logger(), "Action get_result output: %s", output.c_str());
+
+    // Parse the response
+    json response = parse_service_response(output);
+    result.success = true;
+
+    // Extract status from response
+    if (response.contains("status")) {
+      int status_val = response["status"].get<int>();
+      result.status = static_cast<ActionGoalStatus>(status_val);
+    }
+
+    // Extract result from response
+    if (response.contains("result")) {
+      result.result = response["result"];
+    } else {
+      result.result = response;
+    }
+
+    // Update local tracking
+    update_goal_status(goal_id, result.status);
+
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(node_->get_logger(), "Get action result failed for '%s': %s", action_path.c_str(), e.what());
+    result.success = false;
+    result.error_message = e.what();
+  }
+
+  return result;
+}
+
+std::optional<ActionGoalInfo> OperationManager::get_tracked_goal(const std::string & goal_id) const {
+  std::lock_guard<std::mutex> lock(goals_mutex_);
+  auto it = tracked_goals_.find(goal_id);
+  if (it != tracked_goals_.end()) {
+    return it->second;
+  }
+  return std::nullopt;
+}
+
+std::vector<ActionGoalInfo> OperationManager::list_tracked_goals() const {
+  std::lock_guard<std::mutex> lock(goals_mutex_);
+  std::vector<ActionGoalInfo> goals;
+  goals.reserve(tracked_goals_.size());
+  for (const auto & [id, info] : tracked_goals_) {
+    goals.push_back(info);
+  }
+  return goals;
+}
+
+std::vector<ActionGoalInfo> OperationManager::get_goals_for_action(const std::string & action_path) const {
+  std::vector<ActionGoalInfo> goals;
+
+  // Copy data under lock
+  {
+    std::lock_guard<std::mutex> lock(goals_mutex_);
+    for (const auto & [id, info] : tracked_goals_) {
+      if (info.action_path == action_path) {
+        goals.push_back(info);
+      }
+    }
+  }  // Release lock before sorting
+
+  // Sort by last_update, newest first
+  std::sort(goals.begin(), goals.end(), [](const ActionGoalInfo & a, const ActionGoalInfo & b) {
+    return a.last_update > b.last_update;
+  });
+  return goals;
+}
+
+std::optional<ActionGoalInfo> OperationManager::get_latest_goal_for_action(const std::string & action_path) const {
+  auto goals = get_goals_for_action(action_path);
+  if (goals.empty()) {
+    return std::nullopt;
+  }
+  return goals.front();  // Already sorted newest first
+}
+
+void OperationManager::update_goal_status(const std::string & goal_id, ActionGoalStatus status) {
+  std::lock_guard<std::mutex> lock(goals_mutex_);
+  auto it = tracked_goals_.find(goal_id);
+  if (it != tracked_goals_.end()) {
+    it->second.status = status;
+    it->second.last_update = std::chrono::system_clock::now();
+  }
+}
+
+void OperationManager::update_goal_feedback(const std::string & goal_id, const json & feedback) {
+  std::lock_guard<std::mutex> lock(goals_mutex_);
+  auto it = tracked_goals_.find(goal_id);
+  if (it != tracked_goals_.end()) {
+    it->second.last_feedback = feedback;
+    it->second.last_update = std::chrono::system_clock::now();
+  }
+}
+
+void OperationManager::cleanup_old_goals(std::chrono::seconds max_age) {
+  std::set<std::string> actions_to_check;
+
+  {
+    std::lock_guard<std::mutex> lock(goals_mutex_);
+    auto now = std::chrono::system_clock::now();
+
+    for (auto it = tracked_goals_.begin(); it != tracked_goals_.end();) {
+      // Only remove completed goals (succeeded, canceled, aborted)
+      if (it->second.status == ActionGoalStatus::SUCCEEDED || it->second.status == ActionGoalStatus::CANCELED ||
+          it->second.status == ActionGoalStatus::ABORTED) {
+        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - it->second.last_update);
+        if (age > max_age) {
+          actions_to_check.insert(it->second.action_path);
+          it = tracked_goals_.erase(it);
+          continue;
+        }
+      }
+      ++it;
+    }
+  }  // Release goals_mutex_ before checking subscriptions
+
+  // Check if any action paths need to be unsubscribed
+  for (const auto & action_path : actions_to_check) {
+    auto remaining_goals = get_goals_for_action(action_path);
+    if (remaining_goals.empty()) {
+      unsubscribe_from_action_status(action_path);
+    }
+  }
+}
+
+// ==================== NATIVE STATUS SUBSCRIPTION ====================
+
+std::string OperationManager::uuid_bytes_to_hex(const std::array<uint8_t, 16> & uuid) const {
+  std::ostringstream ss;
+  ss << std::hex << std::setfill('0');
+  for (const auto & byte : uuid) {
+    ss << std::setw(2) << static_cast<int>(byte);
+  }
+  return ss.str();
+}
+
+void OperationManager::subscribe_to_action_status(const std::string & action_path) {
+  std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+
+  // Check if already subscribed
+  if (status_subscriptions_.count(action_path) > 0) {
+    return;
+  }
+
+  // Create subscription to status topic
+  std::string status_topic = action_path + "/_action/status";
+
+  auto callback = [this, action_path](const action_msgs::msg::GoalStatusArray::ConstSharedPtr & msg) {
+    on_action_status(action_path, msg);
+  };
+
+  auto subscription = node_->create_subscription<action_msgs::msg::GoalStatusArray>(
+      status_topic, rclcpp::QoS(10).best_effort(), callback);
+
+  status_subscriptions_[action_path] = subscription;
+  RCLCPP_INFO(node_->get_logger(), "Subscribed to action status: %s", status_topic.c_str());
+}
+
+void OperationManager::unsubscribe_from_action_status(const std::string & action_path) {
+  std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+
+  auto it = status_subscriptions_.find(action_path);
+  if (it != status_subscriptions_.end()) {
+    status_subscriptions_.erase(it);
+    RCLCPP_INFO(node_->get_logger(), "Unsubscribed from action status: %s/_action/status", action_path.c_str());
+  }
+}
+
+void OperationManager::on_action_status(const std::string & action_path,
+                                        const action_msgs::msg::GoalStatusArray::ConstSharedPtr & msg) {
+  std::lock_guard<std::mutex> lock(goals_mutex_);
+
+  for (const auto & status : msg->status_list) {
+    // Convert UUID bytes to hex string
+    std::string goal_id = uuid_bytes_to_hex(status.goal_info.goal_id.uuid);
+
+    // Find if we're tracking this goal
+    auto it = tracked_goals_.find(goal_id);
+    if (it != tracked_goals_.end() && it->second.action_path == action_path) {
+      // Map status code to our enum
+      ActionGoalStatus new_status;
+      switch (status.status) {
+        case action_msgs::msg::GoalStatus::STATUS_ACCEPTED:
+          new_status = ActionGoalStatus::ACCEPTED;
+          break;
+        case action_msgs::msg::GoalStatus::STATUS_EXECUTING:
+          new_status = ActionGoalStatus::EXECUTING;
+          break;
+        case action_msgs::msg::GoalStatus::STATUS_CANCELING:
+          new_status = ActionGoalStatus::CANCELING;
+          break;
+        case action_msgs::msg::GoalStatus::STATUS_SUCCEEDED:
+          new_status = ActionGoalStatus::SUCCEEDED;
+          break;
+        case action_msgs::msg::GoalStatus::STATUS_CANCELED:
+          new_status = ActionGoalStatus::CANCELED;
+          break;
+        case action_msgs::msg::GoalStatus::STATUS_ABORTED:
+          new_status = ActionGoalStatus::ABORTED;
+          break;
+        default:
+          new_status = ActionGoalStatus::UNKNOWN;
+          break;
+      }
+
+      // Only update if status changed
+      if (it->second.status != new_status) {
+        RCLCPP_INFO(node_->get_logger(), "Goal %s status update: %s -> %s", goal_id.c_str(),
+                    action_status_to_string(it->second.status).c_str(), action_status_to_string(new_status).c_str());
+        it->second.status = new_status;
+        it->second.last_update = std::chrono::system_clock::now();
+      }
+    }
+  }
 }
 
 }  // namespace ros2_medkit_gateway

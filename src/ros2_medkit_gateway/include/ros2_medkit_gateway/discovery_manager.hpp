@@ -38,12 +38,10 @@ class DiscoveryManager {
   std::vector<ActionInfo> discover_actions();
 
   /// Find a service by component namespace and operation name
-  std::optional<ServiceInfo> find_service(const std::string & component_ns,
-                                          const std::string & operation_name) const;
+  std::optional<ServiceInfo> find_service(const std::string & component_ns, const std::string & operation_name) const;
 
   /// Find an action by component namespace and operation name
-  std::optional<ActionInfo> find_action(const std::string & component_ns,
-                                        const std::string & operation_name) const;
+  std::optional<ActionInfo> find_action(const std::string & component_ns, const std::string & operation_name) const;
 
  private:
   std::string extract_area_from_namespace(const std::string & ns);

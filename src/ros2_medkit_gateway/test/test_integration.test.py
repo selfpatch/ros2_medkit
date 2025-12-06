@@ -101,6 +101,14 @@ def generate_test_description():
         output='screen',
     )
 
+    long_calibration_action = launch_ros.actions.Node(
+        package='ros2_medkit_gateway',
+        executable='demo_long_calibration_action',
+        name='long_calibration',
+        namespace='/powertrain/engine',
+        output='screen',
+    )
+
     # Start demo nodes with a delay to ensure gateway starts first
     delayed_sensors = TimerAction(
         period=2.0,
@@ -112,6 +120,7 @@ def generate_test_description():
             brake_actuator,
             light_controller,
             calibration_service,
+            long_calibration_action,
         ],
     )
 
@@ -991,7 +1000,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_32_operation_call_nonexistent_operation(self):
         """
-        Test POST /components/{component_id}/operations/{operation_name} returns error for unknown operation.
+        Test operation call returns error for unknown operation.
+
+        POST /components/{component_id}/operations/{operation_name}
 
         @verifies REQ_INTEROP_021
         """
@@ -1012,7 +1023,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_33_operation_call_nonexistent_component(self):
         """
-        Test POST /components/{component_id}/operations/{operation_name} returns 404 for unknown component.
+        Test operation call returns 404 for unknown component.
+
+        POST /components/{component_id}/operations/{operation_name}
 
         @verifies REQ_INTEROP_021
         """
@@ -1032,7 +1045,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_34_operation_call_invalid_component_id(self):
         """
-        Test POST /components/{component_id}/operations/{operation_name} rejects invalid component ID.
+        Test operation call rejects invalid component ID.
+
+        POST /components/{component_id}/operations/{operation_name}
 
         @verifies REQ_INTEROP_021
         """
@@ -1062,7 +1077,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_35_operation_call_invalid_operation_name(self):
         """
-        Test POST /components/{component_id}/operations/{operation_name} rejects invalid operation name.
+        Test operation call rejects invalid operation name.
+
+        POST /components/{component_id}/operations/{operation_name}
 
         @verifies REQ_INTEROP_021
         """
@@ -1092,7 +1109,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_36_operation_call_with_invalid_json(self):
         """
-        Test POST /components/{component_id}/operations/{operation_name} returns 400 for invalid JSON.
+        Test operation call returns 400 for invalid JSON body.
+
+        POST /components/{component_id}/operations/{operation_name}
 
         @verifies REQ_INTEROP_021
         """
@@ -1167,3 +1186,214 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertTrue(data['capabilities']['operations'])
 
         print('✓ Root endpoint includes operations test passed')
+
+    # ========== Async Action Operations Tests (test_39-44) ==========
+
+    def test_39_action_send_goal_and_get_id(self):
+        """
+        Test POST /components/{component_id}/operations/{operation_name} sends action goal.
+
+        Sends a goal to the long_calibration action and verifies goal_id is returned.
+
+        @verifies REQ_INTEROP_022
+        """
+        response = requests.post(
+            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            json={'goal': {'order': 5}},
+            timeout=15
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('status', data)
+        self.assertEqual(data['status'], 'success')
+        self.assertIn('kind', data)
+        self.assertEqual(data['kind'], 'action')
+        self.assertIn('component_id', data)
+        self.assertEqual(data['component_id'], 'long_calibration')
+        self.assertIn('operation', data)
+        self.assertEqual(data['operation'], 'long_calibration')
+        self.assertIn('goal_id', data)
+        self.assertIsInstance(data['goal_id'], str)
+        self.assertGreater(len(data['goal_id']), 0)
+        self.assertIn('goal_status', data)
+        # Status can be 'executing' or 'succeeded' depending on timing
+        self.assertIn(data['goal_status'], ['accepted', 'executing', 'succeeded'])
+
+        print(f'✓ Action send goal test passed: goal_id={data["goal_id"]}')
+
+    def test_40_action_status_endpoint(self):
+        """
+        Test GET /components/{component_id}/operations/{operation_name}/status returns goal status.
+
+        @verifies REQ_INTEROP_022
+        """
+        # First, send a goal with enough steps to ensure it's still running
+        response = requests.post(
+            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            json={'goal': {'order': 10}},
+            timeout=15
+        )
+        self.assertEqual(response.status_code, 200)
+        goal_id = response.json()['goal_id']
+
+        # Check status immediately
+        status_response = requests.get(
+            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration/status',
+            params={'goal_id': goal_id},
+            timeout=5
+        )
+        self.assertEqual(status_response.status_code, 200)
+
+        data = status_response.json()
+        self.assertIn('goal_id', data)
+        self.assertEqual(data['goal_id'], goal_id)
+        self.assertIn('status', data)
+        valid_statuses = ['accepted', 'executing', 'succeeded', 'canceled', 'aborted']
+        self.assertIn(data['status'], valid_statuses)
+        self.assertIn('action_path', data)
+        self.assertEqual(data['action_path'], '/powertrain/engine/long_calibration')
+        self.assertIn('action_type', data)
+        self.assertEqual(data['action_type'], 'example_interfaces/action/Fibonacci')
+
+        print(f'✓ Action status endpoint test passed: status={data["status"]}')
+
+    def test_41_action_status_after_completion(self):
+        """
+        Test that action status is updated to succeeded after completion via native subscription.
+
+        The native status subscription updates goal status in real-time.
+        After an action completes, polling the status endpoint should show 'succeeded'.
+
+        @verifies REQ_INTEROP_022
+        """
+        # Send a short goal that will complete quickly
+        response = requests.post(
+            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            json={'goal': {'order': 3}},
+            timeout=15
+        )
+        self.assertEqual(response.status_code, 200)
+        goal_id = response.json()['goal_id']
+
+        # Wait for action to complete (3 steps * 0.5s = ~1.5s, plus margin)
+        time.sleep(3)
+
+        # Check status should show succeeded (updated via native subscription)
+        status_response = requests.get(
+            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration/status',
+            params={'goal_id': goal_id},
+            timeout=5
+        )
+        self.assertEqual(status_response.status_code, 200)
+
+        data = status_response.json()
+        self.assertIn('goal_id', data)
+        self.assertEqual(data['goal_id'], goal_id)
+        self.assertIn('status', data)
+        self.assertEqual(data['status'], 'succeeded')
+
+        print(f'✓ Action status after completion test passed: status={data["status"]}')
+
+    def test_42_action_cancel_endpoint(self):
+        """
+        Test DELETE /components/{component_id}/operations/{operation_name} cancels action.
+
+        @verifies REQ_INTEROP_022
+        """
+        # Send a long goal that we can cancel
+        response = requests.post(
+            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            json={'goal': {'order': 20}},
+            timeout=15
+        )
+        self.assertEqual(response.status_code, 200)
+        goal_id = response.json()['goal_id']
+
+        # Wait a moment for it to start executing
+        time.sleep(1)
+
+        # Cancel the goal
+        cancel_response = requests.delete(
+            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            params={'goal_id': goal_id},
+            timeout=10
+        )
+        self.assertEqual(cancel_response.status_code, 200)
+
+        data = cancel_response.json()
+        self.assertIn('status', data)
+        self.assertEqual(data['status'], 'canceling')
+        self.assertIn('goal_id', data)
+        self.assertEqual(data['goal_id'], goal_id)
+
+        print(f'✓ Action cancel endpoint test passed: {data}')
+
+    def test_43_action_listed_in_component_discovery(self):
+        """
+        Test that actions are listed in component discovery response.
+
+        @verifies REQ_INTEROP_022
+        """
+        components = self._get_json('/components')
+
+        # Find long_calibration component
+        long_cal = None
+        for comp in components:
+            if comp['id'] == 'long_calibration':
+                long_cal = comp
+                break
+
+        self.assertIsNotNone(long_cal, 'long_calibration component should exist')
+        self.assertIn('operations', long_cal, 'Component should have operations field')
+        self.assertIsInstance(long_cal['operations'], list)
+
+        # Find the long_calibration action operation
+        action_op = None
+        for op in long_cal['operations']:
+            if op['name'] == 'long_calibration' and op['kind'] == 'action':
+                action_op = op
+                break
+
+        self.assertIsNotNone(action_op, 'long_calibration action should be listed')
+        self.assertEqual(action_op['kind'], 'action')
+        self.assertEqual(action_op['type'], 'example_interfaces/action/Fibonacci')
+        self.assertEqual(action_op['path'], '/powertrain/engine/long_calibration')
+
+        print('✓ Action listed in component discovery test passed')
+
+    def test_44_action_status_without_goal_id_returns_latest(self):
+        """
+        Test action status without goal_id returns latest goal.
+
+        GET /components/{component_id}/operations/{operation_name}/status
+        Returns the most recent goal status when no goal_id is provided.
+
+        @verifies REQ_INTEROP_022
+        """
+        # First, send a goal so we have something to query
+        response = requests.post(
+            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            json={'goal': {'order': 3}},
+            timeout=15
+        )
+        self.assertEqual(response.status_code, 200)
+        expected_goal_id = response.json()['goal_id']
+
+        # Wait for it to complete
+        time.sleep(3)
+
+        # Now query status without goal_id - should return the latest goal
+        status_response = requests.get(
+            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration/status',
+            timeout=5
+        )
+        self.assertEqual(status_response.status_code, 200)
+
+        data = status_response.json()
+        self.assertIn('goal_id', data)
+        self.assertEqual(data['goal_id'], expected_goal_id)
+        self.assertIn('status', data)
+        self.assertEqual(data['status'], 'succeeded')
+
+        print(f'✓ Action status without goal_id returns latest goal: {data["goal_id"]}')
