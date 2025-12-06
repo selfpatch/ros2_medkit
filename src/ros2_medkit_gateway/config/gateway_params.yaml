@@ -23,7 +23,8 @@ ros2_medkit_gateway:
     # Cache refresh interval in milliseconds
     # How often to discover ROS 2 nodes and update the cache
     # Valid range: 100-60000 (0.1s to 60s)
-    refresh_interval_ms: 2000
+    # Default: 10000 (10 seconds) - optimized for developer experience
+    refresh_interval_ms: 10000
 
     # CORS Configuration
     # Cross-Origin Resource Sharing settings for browser-based clients
@@ -56,6 +57,12 @@ ros2_medkit_gateway:
     # Higher values improve response time but use more system resources
     # Valid range: 1-50
     max_parallel_topic_samples: 10
+
+    # Timeout (in seconds) for sampling topic data via ros2 topic echo
+    # Topics without publishers return immediately with metadata (no timeout wait)
+    # This timeout only applies when topics have active publishers
+    # Valid range: 0.1-30.0
+    topic_sample_timeout_sec: 1.0
 
     # NOTE: Native sampling is always enabled
     # The gateway uses native rclcpp APIs for topic discovery and sampling:

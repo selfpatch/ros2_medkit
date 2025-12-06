@@ -391,7 +391,16 @@ void RESTServer::handle_component_topic_data(const httplib::Request & req, httpl
     }
 
     component_id = req.matches[1];
-    topic_name = req.matches[2];
+    std::string encoded_topic_name = req.matches[2];
+
+    // Decode topic name: __ -> / (URL encoding used by UI)
+    // e.g., "global_costmap__footprint" -> "global_costmap/footprint"
+    topic_name = encoded_topic_name;
+    size_t pos = 0;
+    while ((pos = topic_name.find("__", pos)) != std::string::npos) {
+      topic_name.replace(pos, 2, "/");
+      pos += 1;  // Move past the replacement
+    }
 
     // Validate component_id
     auto component_validation = validate_entity_id(component_id);
@@ -405,16 +414,8 @@ void RESTServer::handle_component_topic_data(const httplib::Request & req, httpl
       return;
     }
 
-    // Validate topic_name
-    auto topic_validation = validate_entity_id(topic_name);
-    if (!topic_validation) {
-      res.status = StatusCode::BadRequest_400;
-      res.set_content(
-          json{{"error", "Invalid topic name"}, {"details", topic_validation.error()}, {"topic_name", topic_name}}.dump(
-              2),
-          "application/json");
-      return;
-    }
+    // Skip topic_name validation since we decoded it and it may now contain slashes
+    // The actual validation happens when we try to find the topic in the graph
 
     const auto cache = node_->get_entity_cache();
 
@@ -437,12 +438,13 @@ void RESTServer::handle_component_topic_data(const httplib::Request & req, httpl
       return;
     }
 
-    // Construct full topic path: {namespace_path}/{topic_name}
-    // Handle root namespace case to avoid double slash (//topic_name)
-    std::string full_topic_path =
-        (component_namespace == "/") ? "/" + topic_name : component_namespace + "/" + topic_name;
+    // topic_name after decoding is already a full path (without leading /)
+    // e.g., "global_costmap/footprint" for topic "/global_costmap/footprint"
+    // Just add the leading slash to make it a full ROS topic path
+    std::string full_topic_path = "/" + topic_name;
 
     // Get topic data from DataAccessManager (with fallback to metadata if data unavailable)
+    // Uses topic_sample_timeout_sec parameter (default: 1.0s)
     auto data_access_mgr = node_->get_data_access_manager();
     json topic_data = data_access_mgr->get_topic_sample_with_fallback(full_topic_path);
 

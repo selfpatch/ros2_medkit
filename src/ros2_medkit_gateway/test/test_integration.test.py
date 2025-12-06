@@ -141,9 +141,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     BASE_URL = f'http://localhost:8080{API_BASE_PATH}'
     # Wait for cache refresh + safety margin
-    # Must be kept in sync with gateway_params.yaml refresh_interval_ms (2000ms)
+    # Must be kept in sync with gateway_params.yaml refresh_interval_ms (10000ms)
     # Need to wait for at least 2 refresh cycles to ensure all demo nodes are discovered
-    CACHE_REFRESH_INTERVAL = 5.0
+    CACHE_REFRESH_INTERVAL = 12.0
 
     @classmethod
     def setUpClass(cls):
