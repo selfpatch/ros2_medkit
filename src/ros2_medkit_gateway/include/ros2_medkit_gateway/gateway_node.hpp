@@ -84,6 +84,9 @@ class GatewayNode : public rclcpp::Node {
   // Timer for periodic refresh
   rclcpp::TimerBase::SharedPtr refresh_timer_;
 
+  // Timer for periodic cleanup of old action goals
+  rclcpp::TimerBase::SharedPtr cleanup_timer_;
+
   // REST server thread management
   std::unique_ptr<std::thread> server_thread_;
   std::atomic<bool> server_running_{false};

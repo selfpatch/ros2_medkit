@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <set>
+#include <unordered_map>
 
 namespace ros2_medkit_gateway {
 
@@ -57,6 +58,24 @@ std::vector<Component> DiscoveryManager::discover_components() {
   auto services = discover_services();
   auto actions = discover_actions();
 
+  // Pre-group services by parent namespace for O(1) lookup
+  // Key: parent namespace (e.g., "/powertrain/engine" for service "/powertrain/engine/calibrate")
+  std::unordered_map<std::string, std::vector<ServiceInfo>> services_by_ns;
+  for (const auto & svc : services) {
+    // Extract parent namespace: everything before the last '/'
+    size_t last_slash = svc.full_path.rfind('/');
+    std::string parent_ns = (last_slash == 0) ? "/" : svc.full_path.substr(0, last_slash);
+    services_by_ns[parent_ns].push_back(svc);
+  }
+
+  // Pre-group actions by parent namespace for O(1) lookup
+  std::unordered_map<std::string, std::vector<ActionInfo>> actions_by_ns;
+  for (const auto & act : actions) {
+    size_t last_slash = act.full_path.rfind('/');
+    std::string parent_ns = (last_slash == 0) ? "/" : act.full_path.substr(0, last_slash);
+    actions_by_ns[parent_ns].push_back(act);
+  }
+
   auto node_graph = node_->get_node_graph_interface();
   auto names_and_namespaces = node_graph->get_node_names_and_namespaces();
 
@@ -70,19 +89,16 @@ std::vector<Component> DiscoveryManager::discover_components() {
     comp.fqn = (ns == "/") ? std::string("/").append(name) : std::string(ns).append("/").append(name);
     comp.area = extract_area_from_namespace(ns);
 
-    // Attach services that belong to this component's namespace
-    // Services are created relative to the node's namespace, not its FQN
-    for (const auto & svc : services) {
-      if (path_belongs_to_namespace(svc.full_path, comp.namespace_path)) {
-        comp.services.push_back(svc);
-      }
+    // Attach services that belong to this component's namespace (O(1) lookup)
+    auto svc_it = services_by_ns.find(comp.namespace_path);
+    if (svc_it != services_by_ns.end()) {
+      comp.services = svc_it->second;
     }
 
-    // Attach actions that belong to this component's namespace
-    for (const auto & act : actions) {
-      if (path_belongs_to_namespace(act.full_path, comp.namespace_path)) {
-        comp.actions.push_back(act);
-      }
+    // Attach actions that belong to this component's namespace (O(1) lookup)
+    auto act_it = actions_by_ns.find(comp.namespace_path);
+    if (act_it != actions_by_ns.end()) {
+      comp.actions = act_it->second;
     }
 
     components.push_back(comp);

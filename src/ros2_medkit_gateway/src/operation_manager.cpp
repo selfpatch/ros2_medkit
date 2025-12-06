@@ -27,6 +27,9 @@
 
 namespace ros2_medkit_gateway {
 
+/// UUID hex string length (16 bytes = 32 hex characters)
+constexpr size_t kUuidHexLength = 32;
+
 OperationManager::OperationManager(rclcpp::Node * node, DiscoveryManager * discovery_manager)
   : node_(node), discovery_manager_(discovery_manager), cli_wrapper_(std::make_unique<ROS2CLIWrapper>()) {
   if (!cli_wrapper_->is_command_available("ros2")) {
@@ -54,8 +57,7 @@ bool OperationManager::is_action_type(const std::string & type) {
 }
 
 bool OperationManager::is_valid_uuid_hex(const std::string & uuid_hex) {
-  // UUID hex string must be exactly 32 hex characters
-  if (uuid_hex.length() != 32) {
+  if (uuid_hex.length() != kUuidHexLength) {
     return false;
   }
   return std::all_of(uuid_hex.begin(), uuid_hex.end(), [](char c) {
@@ -344,7 +346,7 @@ std::string OperationManager::uuid_to_yaml_array(const std::string & uuid_hex) {
   // Convert hex string to YAML array of byte values [b1, b2, ...]
   std::ostringstream ss;
   ss << "[";
-  for (size_t i = 0; i < uuid_hex.length() && i < 32; i += 2) {
+  for (size_t i = 0; i < uuid_hex.length() && i < kUuidHexLength; i += 2) {
     if (i > 0) {
       ss << ", ";
     }
@@ -426,7 +428,7 @@ ActionSendGoalResult OperationManager::send_action_goal(const std::string & acti
   ActionSendGoalResult result;
 
   try {
-    // Use ros2 action send_goal with short timeout (2.5s)
+    // Use ros2 action send_goal with short timeout (3s)
     // This is enough for discovery + goal acceptance, but not for long-running actions
     // The action continues running in background after we get the goal_id
     std::ostringstream cmd;

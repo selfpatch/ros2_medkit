@@ -33,7 +33,6 @@ json OutputParser::parse_yaml(const std::string & yaml_str) {
   }
 }
 
-// static
 json OutputParser::yaml_to_json(const YAML::Node & node) {
   switch (node.Type()) {
     case YAML::NodeType::Null:

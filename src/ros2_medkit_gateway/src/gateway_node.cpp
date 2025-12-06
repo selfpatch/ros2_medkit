@@ -112,6 +112,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   refresh_timer_ =
       create_wall_timer(std::chrono::milliseconds(refresh_interval_ms_), std::bind(&GatewayNode::refresh_cache, this));
 
+  // Setup periodic cleanup of old action goals (every 60 seconds, remove goals older than 5 minutes)
+  cleanup_timer_ = create_wall_timer(60s, [this]() {
+    operation_mgr_->cleanup_old_goals(std::chrono::seconds(300));
+  });
+
   // Start REST server with configured host, port and CORS
   rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_);
   start_rest_server();
