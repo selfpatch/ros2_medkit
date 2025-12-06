@@ -76,7 +76,7 @@
                 "components"
               ]
             },
-            "description": "List all discovered components across all areas. Returns component metadata including id, namespace, fqn, type, and parent area."
+            "description": "List all discovered components across all areas. Returns component metadata including id, namespace, fqn, type, parent area, and available operations (services and actions)."
           },
           "response": []
         },
@@ -247,6 +247,294 @@
             "description": "Publish temperature data to the temp_sensor component. Example of publishing sensor_msgs/msg/Temperature type."
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "Operations",
+      "item": [
+        {
+          "name": "Sync Operations (Services)",
+          "item": [
+            {
+              "name": "GET List Component Operations",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components"
+                  ]
+                },
+                "description": "List all components with their available operations. Each component includes an 'operations' array showing available services (kind: 'service') and actions (kind: 'action') with their types and paths."
+              },
+              "response": []
+            },
+            {
+              "name": "POST Call Calibrate Service",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/components/calibration/operations/calibrate",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "calibration",
+                    "operations",
+                    "calibrate"
+                  ]
+                },
+                "description": "Call a ROS 2 service operation on a component. This example calls the std_srvs/srv/Trigger calibrate service. The service type is auto-discovered from the component's registered services. Response includes success status and service response data."
+              },
+              "response": []
+            },
+            {
+              "name": "POST Call Service with Type Override",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"type\": \"std_srvs/srv/Trigger\",\n  \"request\": {}\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/components/calibration/operations/calibrate",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "calibration",
+                    "operations",
+                    "calibrate"
+                  ]
+                },
+                "description": "Call a ROS 2 service with explicit type override. Use 'type' field to specify the service type (e.g., 'std_srvs/srv/Trigger') and 'request' field for the service request data. Useful when the service type cannot be auto-discovered."
+              },
+              "response": []
+            },
+            {
+              "name": "POST Call Service (Error - Not Found)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/components/calibration/operations/nonexistent",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "calibration",
+                    "operations",
+                    "nonexistent"
+                  ]
+                },
+                "description": "Example of calling a non-existent operation. Returns 500 error with 'Service not found' message."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Async Operations (Actions)",
+          "item": [
+            {
+              "name": "POST Send Action Goal (Long Calibration)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"goal\": {\n    \"order\": 10\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "long_calibration",
+                    "operations",
+                    "long_calibration"
+                  ]
+                },
+                "description": "Start an async action operation. Sends a goal to the action server and returns immediately with goal_id. Response includes goal_id, goal_status (executing/succeeded), kind (action), and component info. Takes ~3-4 seconds due to CLI discovery. The action continues running in the background."
+              },
+              "response": []
+            },
+            {
+              "name": "POST Send Short Action Goal (Fast)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"goal\": {\n    \"order\": 3\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "long_calibration",
+                    "operations",
+                    "long_calibration"
+                  ]
+                },
+                "description": "Send a short action goal (order=3 completes in ~1.5s). If the action completes within 3 seconds, goal_status will be 'succeeded' immediately."
+              },
+              "response": []
+            },
+            {
+              "name": "GET Action Status (Latest)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/status",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "long_calibration",
+                    "operations",
+                    "long_calibration",
+                    "status"
+                  ]
+                },
+                "description": "Get the status of the most recent action goal. No goal_id needed - the gateway tracks goals internally and returns the latest one. Returns goal_id, status (accepted/executing/succeeded/canceled/aborted), action_path, and action_type."
+              },
+              "response": []
+            },
+            {
+              "name": "GET Action Status (Specific Goal)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/status?goal_id={{goal_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "long_calibration",
+                    "operations",
+                    "long_calibration",
+                    "status"
+                  ],
+                  "query": [
+                    {
+                      "key": "goal_id",
+                      "value": "{{goal_id}}"
+                    }
+                  ]
+                },
+                "description": "Get the status of a specific action goal by goal_id. Use this when you have multiple concurrent goals and need to track a specific one."
+              },
+              "response": []
+            },
+            {
+              "name": "GET Action Status (All Goals)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/status?all=true",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "long_calibration",
+                    "operations",
+                    "long_calibration",
+                    "status"
+                  ],
+                  "query": [
+                    {
+                      "key": "all",
+                      "value": "true"
+                    }
+                  ]
+                },
+                "description": "Get the status of all tracked goals for this action. Returns an array of goals sorted by most recent first, with count."
+              },
+              "response": []
+            },
+            {
+              "name": "DELETE Cancel Action Goal",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration?goal_id={{goal_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "components",
+                    "long_calibration",
+                    "operations",
+                    "long_calibration"
+                  ],
+                  "query": [
+                    {
+                      "key": "goal_id",
+                      "value": "{{goal_id}}"
+                    }
+                  ]
+                },
+                "description": "Cancel a running action goal. Sends cancel request to the action server. Returns confirmation with status 'canceling'. Use GET /status to verify the goal was canceled (status becomes 'canceled')."
+              },
+              "response": []
+            }
+          ]
         }
       ]
     }

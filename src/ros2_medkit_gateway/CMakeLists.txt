@@ -28,6 +28,9 @@ find_package(nlohmann_json REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(action_msgs REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(example_interfaces REQUIRED)
 
 # Find cpp-httplib using pkg-config
 find_package(PkgConfig REQUIRED)
@@ -47,6 +50,7 @@ add_library(gateway_lib STATIC
   src/data_access_manager.cpp
   src/type_introspection.cpp
   src/native_topic_sampler.cpp
+  src/operation_manager.cpp
 )
 
 ament_target_dependencies(gateway_lib
@@ -55,6 +59,7 @@ ament_target_dependencies(gateway_lib
   std_srvs
   rcl_interfaces
   ament_index_cpp
+  action_msgs
 )
 
 target_link_libraries(gateway_lib
@@ -217,6 +222,18 @@ if(BUILD_TESTING)
     std_srvs
   )
   install(TARGETS demo_calibration_service
+    DESTINATION lib/${PROJECT_NAME}
+  )
+
+  add_executable(demo_long_calibration_action
+    test/demo_nodes/long_calibration_action.cpp
+  )
+  ament_target_dependencies(demo_long_calibration_action
+    rclcpp
+    rclcpp_action
+    example_interfaces
+  )
+  install(TARGETS demo_long_calibration_action
     DESTINATION lib/${PROJECT_NAME}
   )
 endif()

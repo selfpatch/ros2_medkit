@@ -27,6 +27,7 @@
 #include "ros2_medkit_gateway/data_access_manager.hpp"
 #include "ros2_medkit_gateway/discovery_manager.hpp"
 #include "ros2_medkit_gateway/models.hpp"
+#include "ros2_medkit_gateway/operation_manager.hpp"
 #include "ros2_medkit_gateway/rest_server.hpp"
 
 namespace ros2_medkit_gateway {
@@ -47,6 +48,18 @@ class GatewayNode : public rclcpp::Node {
    */
   DataAccessManager * get_data_access_manager() const;
 
+  /**
+   * @brief Get the OperationManager instance
+   * @return Raw pointer to OperationManager (valid for lifetime of GatewayNode)
+   */
+  OperationManager * get_operation_manager() const;
+
+  /**
+   * @brief Get the DiscoveryManager instance
+   * @return Raw pointer to DiscoveryManager (valid for lifetime of GatewayNode)
+   */
+  DiscoveryManager * get_discovery_manager() const;
+
  private:
   void refresh_cache();
   void start_rest_server();
@@ -61,6 +74,7 @@ class GatewayNode : public rclcpp::Node {
   // Managers
   std::unique_ptr<DiscoveryManager> discovery_mgr_;
   std::unique_ptr<DataAccessManager> data_access_mgr_;
+  std::unique_ptr<OperationManager> operation_mgr_;
   std::unique_ptr<RESTServer> rest_server_;
 
   // Cache with thread safety
@@ -69,6 +83,9 @@ class GatewayNode : public rclcpp::Node {
 
   // Timer for periodic refresh
   rclcpp::TimerBase::SharedPtr refresh_timer_;
+
+  // Timer for periodic cleanup of old action goals
+  rclcpp::TimerBase::SharedPtr cleanup_timer_;
 
   // REST server thread management
   std::unique_ptr<std::thread> server_thread_;

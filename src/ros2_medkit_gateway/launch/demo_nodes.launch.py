@@ -34,7 +34,10 @@ def generate_launch_description():
     Actuators:
     - Brake actuator → /chassis/brakes
     - Light controller → /body/lights
-    - Calibration service → /powertrain/engine
+
+    Operations:
+    - Calibration service (sync) → /powertrain/engine
+    - Long calibration action (async) → /powertrain/engine
     """
     return LaunchDescription([
         # === POWERTRAIN AREA ===
@@ -61,6 +64,15 @@ def generate_launch_description():
             package='ros2_medkit_gateway',
             executable='demo_calibration_service',
             name='calibration',
+            namespace='powertrain/engine',
+            output='log',
+            emulate_tty=True,
+        ),
+
+        Node(
+            package='ros2_medkit_gateway',
+            executable='demo_long_calibration_action',
+            name='long_calibration',
             namespace='powertrain/engine',
             output='log',
             emulate_tty=True,

@@ -28,7 +28,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("server.port", 8080);
   declare_parameter("refresh_interval_ms", 2000);
   declare_parameter("cors.allowed_origins", std::vector<std::string>{});
-  declare_parameter("cors.allowed_methods", std::vector<std::string>{"GET", "PUT", "OPTIONS"});
+  declare_parameter("cors.allowed_methods", std::vector<std::string>{"GET", "PUT", "POST", "DELETE", "OPTIONS"});
   declare_parameter("cors.allowed_headers", std::vector<std::string>{"Content-Type", "Accept"});
   declare_parameter("cors.allow_credentials", false);
   declare_parameter("cors.max_age_seconds", 86400);
@@ -103,6 +103,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   // Initialize managers
   discovery_mgr_ = std::make_unique<DiscoveryManager>(this);
   data_access_mgr_ = std::make_unique<DataAccessManager>(this);
+  operation_mgr_ = std::make_unique<OperationManager>(this, discovery_mgr_.get());
 
   // Initial discovery
   refresh_cache();
@@ -110,6 +111,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   // Setup periodic refresh with configurable interval
   refresh_timer_ =
       create_wall_timer(std::chrono::milliseconds(refresh_interval_ms_), std::bind(&GatewayNode::refresh_cache, this));
+
+  // Setup periodic cleanup of old action goals (every 60 seconds, remove goals older than 5 minutes)
+  cleanup_timer_ = create_wall_timer(60s, [this]() {
+    operation_mgr_->cleanup_old_goals(std::chrono::seconds(300));
+  });
 
   // Start REST server with configured host, port and CORS
   rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_);
@@ -130,6 +136,14 @@ EntityCache GatewayNode::get_entity_cache() const {
 
 DataAccessManager * GatewayNode::get_data_access_manager() const {
   return data_access_mgr_.get();
+}
+
+OperationManager * GatewayNode::get_operation_manager() const {
+  return operation_mgr_.get();
+}
+
+DiscoveryManager * GatewayNode::get_discovery_manager() const {
+  return discovery_mgr_.get();
 }
 
 void GatewayNode::refresh_cache() {

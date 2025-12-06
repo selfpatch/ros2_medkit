@@ -120,6 +120,30 @@ void RESTServer::setup_routes() {
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_component_topic_publish(req, res);
                });
+
+  // Component operation (POST) - sync operations like service calls, async action goals
+  server_->Post((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)").c_str(),
+                [this](const httplib::Request & req, httplib::Response & res) {
+                  handle_component_operation(req, res);
+                });
+
+  // Action status (GET) - get current status of an action goal
+  server_->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/status$)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_action_status(req, res);
+               });
+
+  // Action result (GET) - get result of a completed action goal
+  server_->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/result$)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_action_result(req, res);
+               });
+
+  // Action cancel (DELETE) - cancel a running action goal
+  server_->Delete((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)").c_str(),
+                  [this](const httplib::Request & req, httplib::Response & res) {
+                    handle_action_cancel(req, res);
+                  });
 }
 
 void RESTServer::start() {
@@ -191,15 +215,20 @@ void RESTServer::handle_root(const httplib::Request & req, httplib::Response & r
   (void)req;  // Unused parameter
 
   try {
-    json response = {{"name", "ROS 2 Medkit Gateway"},
-                     {"version", "0.1.0"},
-                     {"api_base", API_BASE_PATH},
-                     {"endpoints", json::array({"GET /api/v1/health", "GET /api/v1/version-info", "GET /api/v1/areas",
-                                                "GET /api/v1/components", "GET /api/v1/areas/{area_id}/components",
-                                                "GET /api/v1/components/{component_id}/data",
-                                                "GET /api/v1/components/{component_id}/data/{topic_name}",
-                                                "PUT /api/v1/components/{component_id}/data/{topic_name}"})},
-                     {"capabilities", {{"discovery", true}, {"data_access", true}}}};
+    json response = {
+        {"name", "ROS 2 Medkit Gateway"},
+        {"version", "0.1.0"},
+        {"api_base", API_BASE_PATH},
+        {"endpoints",
+         json::array({"GET /api/v1/health", "GET /api/v1/version-info", "GET /api/v1/areas", "GET /api/v1/components",
+                      "GET /api/v1/areas/{area_id}/components", "GET /api/v1/components/{component_id}/data",
+                      "GET /api/v1/components/{component_id}/data/{topic_name}",
+                      "PUT /api/v1/components/{component_id}/data/{topic_name}",
+                      "POST /api/v1/components/{component_id}/operations/{operation_name}",
+                      "GET /api/v1/components/{component_id}/operations/{operation_name}/status",
+                      "GET /api/v1/components/{component_id}/operations/{operation_name}/result",
+                      "DELETE /api/v1/components/{component_id}/operations/{operation_name}"})},
+        {"capabilities", {{"discovery", true}, {"data_access", true}, {"operations", true}, {"async_actions", true}}}};
 
     res.set_content(response.dump(2), "application/json");
   } catch (const std::exception & e) {
@@ -601,6 +630,448 @@ void RESTServer::handle_component_topic_publish(const httplib::Request & req, ht
     RCLCPP_ERROR(rclcpp::get_logger("rest_server"),
                  "Error in handle_component_topic_publish for component '%s', topic '%s': %s", component_id.c_str(),
                  topic_name.c_str(), e.what());
+  }
+}
+
+void RESTServer::handle_component_operation(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string operation_name;
+  try {
+    // Extract component_id and operation_name from URL path
+    if (req.matches.size() < 3) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+    operation_name = req.matches[2];
+
+    // Validate component_id
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"},
+                           {"details", component_validation.error()},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Validate operation_name
+    auto operation_validation = validate_entity_id(operation_name);
+    if (!operation_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid operation name"},
+                           {"details", operation_validation.error()},
+                           {"operation_name", operation_name}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Parse request body (optional for services with no parameters)
+    json body = json::object();
+    if (!req.body.empty()) {
+      try {
+        body = json::parse(req.body);
+      } catch (const json::parse_error & e) {
+        res.status = StatusCode::BadRequest_400;
+        res.set_content(json{{"error", "Invalid JSON in request body"}, {"details", e.what()}}.dump(2),
+                        "application/json");
+        return;
+      }
+    }
+
+    // Extract optional type override and request data
+    std::optional<std::string> service_type;
+    json request_data = json::object();
+
+    if (body.contains("type") && body["type"].is_string()) {
+      service_type = body["type"].get<std::string>();
+    }
+
+    if (body.contains("request")) {
+      request_data = body["request"];
+    }
+
+    const auto cache = node_->get_entity_cache();
+
+    // Find component in cache
+    std::string component_namespace;
+    bool component_found = false;
+
+    for (const auto & component : cache.components) {
+      if (component.id == component_id) {
+        component_namespace = component.namespace_path;
+        component_found = true;
+        break;
+      }
+    }
+
+    if (!component_found) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Check if operation is a service or action
+    auto operation_mgr = node_->get_operation_manager();
+    auto discovery_mgr = node_->get_discovery_manager();
+
+    // First, check if it's an action
+    auto action_info = discovery_mgr->find_action(component_namespace, operation_name);
+    if (action_info.has_value()) {
+      // Extract goal data (from 'goal' field or root object)
+      json goal_data = json::object();
+      if (body.contains("goal")) {
+        goal_data = body["goal"];
+      } else if (!body.contains("type") && !body.contains("request")) {
+        // If no 'type' or 'request', treat the whole body as goal (without system fields)
+        goal_data = body;
+      }
+
+      std::optional<std::string> action_type;
+      if (body.contains("type") && body["type"].is_string()) {
+        action_type = body["type"].get<std::string>();
+      }
+
+      auto action_result =
+          operation_mgr->send_component_action_goal(component_namespace, operation_name, action_type, goal_data);
+
+      if (action_result.success && action_result.goal_accepted) {
+        auto tracked = operation_mgr->get_tracked_goal(action_result.goal_id);
+        std::string status_str = tracked ? action_status_to_string(tracked->status) : "accepted";
+
+        json response = {{"status", "success"},
+                         {"kind", "action"},
+                         {"component_id", component_id},
+                         {"operation", operation_name},
+                         {"goal_id", action_result.goal_id},
+                         {"goal_status", status_str}};
+        res.set_content(response.dump(2), "application/json");
+      } else if (action_result.success && !action_result.goal_accepted) {
+        res.status = StatusCode::BadRequest_400;
+        res.set_content(
+            json{{"status", "rejected"},
+                 {"kind", "action"},
+                 {"component_id", component_id},
+                 {"operation", operation_name},
+                 {"error", action_result.error_message.empty() ? "Goal rejected" : action_result.error_message}}
+                .dump(2),
+            "application/json");
+      } else {
+        res.status = StatusCode::InternalServerError_500;
+        res.set_content(json{{"status", "error"},
+                             {"kind", "action"},
+                             {"component_id", component_id},
+                             {"operation", operation_name},
+                             {"error", action_result.error_message}}
+                            .dump(2),
+                        "application/json");
+      }
+      return;
+    }
+
+    // Otherwise, it's a service call
+    auto result =
+        operation_mgr->call_component_service(component_namespace, operation_name, service_type, request_data);
+
+    if (result.success) {
+      json response = {{"status", "success"},
+                       {"kind", "service"},
+                       {"component_id", component_id},
+                       {"operation", operation_name},
+                       {"response", result.response}};
+      res.set_content(response.dump(2), "application/json");
+    } else {
+      res.status = StatusCode::InternalServerError_500;
+      res.set_content(json{{"status", "error"},
+                           {"kind", "service"},
+                           {"component_id", component_id},
+                           {"operation", operation_name},
+                           {"error", result.error_message}}
+                          .dump(2),
+                      "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Failed to execute operation"},
+                         {"details", e.what()},
+                         {"component_id", component_id},
+                         {"operation_name", operation_name}}
+                        .dump(2),
+                    "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"),
+                 "Error in handle_component_operation for component '%s', operation '%s': %s", component_id.c_str(),
+                 operation_name.c_str(), e.what());
+  }
+}
+
+void RESTServer::handle_action_status(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string operation_name;
+  try {
+    // Extract component_id and operation_name from URL path
+    if (req.matches.size() < 3) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+    operation_name = req.matches[2];
+
+    // Validate IDs
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"}, {"details", component_validation.error()}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    auto operation_validation = validate_entity_id(operation_name);
+    if (!operation_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid operation name"}, {"details", operation_validation.error()}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    auto operation_mgr = node_->get_operation_manager();
+
+    // Check query parameters
+    std::string goal_id;
+    bool get_all = false;
+    if (req.has_param("goal_id")) {
+      goal_id = req.get_param_value("goal_id");
+    }
+    if (req.has_param("all") && req.get_param_value("all") == "true") {
+      get_all = true;
+    }
+
+    // If specific goal_id provided, return that goal's status
+    if (!goal_id.empty()) {
+      auto goal_info = operation_mgr->get_tracked_goal(goal_id);
+      if (!goal_info.has_value()) {
+        res.status = StatusCode::NotFound_404;
+        res.set_content(json{{"error", "Goal not found"}, {"goal_id", goal_id}}.dump(2), "application/json");
+        return;
+      }
+
+      json response = {{"goal_id", goal_info->goal_id},
+                       {"status", action_status_to_string(goal_info->status)},
+                       {"action_path", goal_info->action_path},
+                       {"action_type", goal_info->action_type}};
+      if (!goal_info->last_feedback.empty() && !goal_info->last_feedback.is_null()) {
+        response["last_feedback"] = goal_info->last_feedback;
+      }
+      res.set_content(response.dump(2), "application/json");
+      return;
+    }
+
+    // No goal_id provided - find goals by action path
+    // First, find the component to get its namespace
+    auto discovery_mgr = node_->get_discovery_manager();
+    auto components = discovery_mgr->discover_components();
+    std::optional<Component> component;
+    for (const auto & c : components) {
+      if (c.id == component_id) {
+        component = c;
+        break;
+      }
+    }
+    if (!component.has_value()) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Build the action path: namespace + operation_name
+    std::string action_path = component->namespace_path + "/" + operation_name;
+
+    if (get_all) {
+      // Return all goals for this action
+      auto goals = operation_mgr->get_goals_for_action(action_path);
+      json goals_array = json::array();
+      for (const auto & goal : goals) {
+        json goal_json = {{"goal_id", goal.goal_id},
+                          {"status", action_status_to_string(goal.status)},
+                          {"action_path", goal.action_path},
+                          {"action_type", goal.action_type}};
+        if (!goal.last_feedback.empty() && !goal.last_feedback.is_null()) {
+          goal_json["last_feedback"] = goal.last_feedback;
+        }
+        goals_array.push_back(goal_json);
+      }
+      json response = {{"action_path", action_path}, {"goals", goals_array}, {"count", goals.size()}};
+      res.set_content(response.dump(2), "application/json");
+    } else {
+      // Return the most recent goal for this action
+      auto goal_info = operation_mgr->get_latest_goal_for_action(action_path);
+      if (!goal_info.has_value()) {
+        res.status = StatusCode::NotFound_404;
+        res.set_content(json{{"error", "No goals found for this action"}, {"action_path", action_path}}.dump(2),
+                        "application/json");
+        return;
+      }
+
+      json response = {{"goal_id", goal_info->goal_id},
+                       {"status", action_status_to_string(goal_info->status)},
+                       {"action_path", goal_info->action_path},
+                       {"action_type", goal_info->action_type}};
+      if (!goal_info->last_feedback.empty() && !goal_info->last_feedback.is_null()) {
+        response["last_feedback"] = goal_info->last_feedback;
+      }
+      res.set_content(response.dump(2), "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Failed to get action status"}, {"details", e.what()}}.dump(2), "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_action_status: %s", e.what());
+  }
+}
+
+void RESTServer::handle_action_result(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string operation_name;
+  try {
+    if (req.matches.size() < 3) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+    operation_name = req.matches[2];
+
+    // Validate IDs
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"}, {"details", component_validation.error()}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Get goal_id from query parameter
+    std::string goal_id;
+    if (req.has_param("goal_id")) {
+      goal_id = req.get_param_value("goal_id");
+    }
+
+    if (goal_id.empty()) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Missing goal_id query parameter"}}.dump(2), "application/json");
+      return;
+    }
+
+    // Get tracked goal info to find action path and type
+    auto operation_mgr = node_->get_operation_manager();
+    auto goal_info = operation_mgr->get_tracked_goal(goal_id);
+
+    if (!goal_info.has_value()) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Goal not found"}, {"goal_id", goal_id}}.dump(2), "application/json");
+      return;
+    }
+
+    // Get the result (this may block until the action completes)
+    auto result = operation_mgr->get_action_result(goal_info->action_path, goal_info->action_type, goal_id);
+
+    if (result.success) {
+      json response = {
+          {"goal_id", goal_id}, {"status", action_status_to_string(result.status)}, {"result", result.result}};
+      res.set_content(response.dump(2), "application/json");
+    } else {
+      res.status = StatusCode::InternalServerError_500;
+      res.set_content(json{{"error", "Failed to get action result"}, {"details", result.error_message}}.dump(2),
+                      "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Failed to get action result"}, {"details", e.what()}}.dump(2), "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_action_result: %s", e.what());
+  }
+}
+
+void RESTServer::handle_action_cancel(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string operation_name;
+  try {
+    if (req.matches.size() < 3) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+    operation_name = req.matches[2];
+
+    // Validate IDs
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"}, {"details", component_validation.error()}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Get goal_id from query parameter
+    std::string goal_id;
+    if (req.has_param("goal_id")) {
+      goal_id = req.get_param_value("goal_id");
+    }
+
+    if (goal_id.empty()) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Missing goal_id query parameter"}}.dump(2), "application/json");
+      return;
+    }
+
+    // Get tracked goal info to find action path
+    auto operation_mgr = node_->get_operation_manager();
+    auto goal_info = operation_mgr->get_tracked_goal(goal_id);
+
+    if (!goal_info.has_value()) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Goal not found"}, {"goal_id", goal_id}}.dump(2), "application/json");
+      return;
+    }
+
+    // Cancel the action
+    auto result = operation_mgr->cancel_action_goal(goal_info->action_path, goal_id);
+
+    if (result.success && result.return_code == 0) {
+      json response = {{"status", "canceling"}, {"goal_id", goal_id}, {"message", "Cancel request accepted"}};
+      res.set_content(response.dump(2), "application/json");
+    } else {
+      res.status = StatusCode::BadRequest_400;
+      std::string error_msg;
+      switch (result.return_code) {
+        case 1:
+          error_msg = "Cancel request rejected";
+          break;
+        case 2:
+          error_msg = "Unknown goal ID";
+          break;
+        case 3:
+          error_msg = "Goal already terminated";
+          break;
+        default:
+          error_msg = result.error_message.empty() ? "Cancel failed" : result.error_message;
+      }
+      res.set_content(json{{"error", error_msg}, {"goal_id", goal_id}, {"return_code", result.return_code}}.dump(2),
+                      "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Failed to cancel action"}, {"details", e.what()}}.dump(2), "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_action_cancel: %s", e.what());
   }
 }
 

@@ -33,15 +33,53 @@ struct Area {
   }
 };
 
+/// Information about a ROS2 service discovered in the system
+struct ServiceInfo {
+  std::string name;       // Service name (e.g., "calibrate")
+  std::string full_path;  // Full service path (e.g., "/powertrain/engine/calibrate")
+  std::string type;       // Service type (e.g., "std_srvs/srv/Trigger")
+
+  json to_json() const {
+    return {{"name", name}, {"path", full_path}, {"type", type}, {"kind", "service"}};
+  }
+};
+
+/// Information about a ROS2 action discovered in the system
+struct ActionInfo {
+  std::string name;       // Action name (e.g., "navigate_to_pose")
+  std::string full_path;  // Full action path (e.g., "/navigation/navigate_to_pose")
+  std::string type;       // Action type (e.g., "nav2_msgs/action/NavigateToPose")
+
+  json to_json() const {
+    return {{"name", name}, {"path", full_path}, {"type", type}, {"kind", "action"}};
+  }
+};
+
 struct Component {
   std::string id;
   std::string namespace_path;
   std::string fqn;
   std::string type = "Component";
   std::string area;
+  std::vector<ServiceInfo> services;
+  std::vector<ActionInfo> actions;
 
   json to_json() const {
-    return {{"id", id}, {"namespace", namespace_path}, {"fqn", fqn}, {"type", type}, {"area", area}};
+    json j = {{"id", id}, {"namespace", namespace_path}, {"fqn", fqn}, {"type", type}, {"area", area}};
+
+    // Add operations array combining services and actions
+    json operations = json::array();
+    for (const auto & svc : services) {
+      operations.push_back(svc.to_json());
+    }
+    for (const auto & act : actions) {
+      operations.push_back(act.to_json());
+    }
+    if (!operations.empty()) {
+      j["operations"] = operations;
+    }
+
+    return j;
   }
 };
 
