@@ -34,7 +34,8 @@ DataAccessManager::DataAccessManager(rclcpp::Node * node)
                                                                                                                   "ipt"
                                                                                                                   "s"))
   , native_sampler_(std::make_unique<NativeTopicSampler>(node))
-  , max_parallel_samples_(node->declare_parameter<int>("max_parallel_topic_samples", 10)) {
+  , max_parallel_samples_(node->declare_parameter<int>("max_parallel_topic_samples", 10))
+  , topic_sample_timeout_sec_(node->declare_parameter<double>("topic_sample_timeout_sec", 1.0)) {
   // Validate max_parallel_samples_ against allowed range [1, 50]
   if (max_parallel_samples_ < 1 || max_parallel_samples_ > 50) {
     RCLCPP_WARN(node_->get_logger(), "max_parallel_topic_samples (%d) out of valid range (1-50), using default: 10",
@@ -42,13 +43,23 @@ DataAccessManager::DataAccessManager(rclcpp::Node * node)
     max_parallel_samples_ = 10;
   }
 
+  // Validate topic_sample_timeout_sec_ against allowed range [0.1, 30.0]
+  if (topic_sample_timeout_sec_ < 0.1 || topic_sample_timeout_sec_ > 30.0) {
+    RCLCPP_WARN(node_->get_logger(),
+                "topic_sample_timeout_sec (%.2f) out of valid range (0.1-30.0), using default: 1.0",
+                topic_sample_timeout_sec_);
+    topic_sample_timeout_sec_ = 1.0;
+  }
+
   // CLI is still needed for publishing (ros2 topic pub)
   if (!cli_wrapper_->is_command_available("ros2")) {
     RCLCPP_WARN(node_->get_logger(), "ROS 2 CLI not found, publishing will not be available");
   }
 
-  RCLCPP_INFO(node_->get_logger(), "DataAccessManager initialized (native_sampling=enabled, max_parallel_samples=%d)",
-              max_parallel_samples_);
+  RCLCPP_INFO(node_->get_logger(),
+              "DataAccessManager initialized (native_sampling=enabled, max_parallel_samples=%d, "
+              "topic_sample_timeout=%.2fs)",
+              max_parallel_samples_, topic_sample_timeout_sec_);
 }
 
 json DataAccessManager::publish_to_topic(const std::string & topic_path, const std::string & msg_type,
@@ -88,13 +99,17 @@ json DataAccessManager::publish_to_topic(const std::string & topic_path, const s
 }
 
 json DataAccessManager::get_topic_sample_with_fallback(const std::string & topic_name, double timeout_sec) {
+  // Use configured parameter if timeout_sec is negative (default)
+  double effective_timeout = (timeout_sec < 0) ? topic_sample_timeout_sec_ : timeout_sec;
   // Always use native sampling - much faster for idle topics
-  return get_topic_sample_native(topic_name, timeout_sec);
+  return get_topic_sample_native(topic_name, effective_timeout);
 }
 
 json DataAccessManager::get_component_data_with_fallback(const std::string & component_namespace, double timeout_sec) {
+  // Use configured parameter if timeout_sec is negative (default)
+  double effective_timeout = (timeout_sec < 0) ? topic_sample_timeout_sec_ : timeout_sec;
   // Always use native sampling - much faster for idle topics
-  return get_component_data_native(component_namespace, timeout_sec);
+  return get_component_data_native(component_namespace, effective_timeout);
 }
 
 std::vector<std::string> DataAccessManager::find_component_topics_native(const std::string & component_namespace) {
@@ -123,6 +138,19 @@ json DataAccessManager::sample_result_to_json(const TopicSampleResult & sample) 
     result["status"] = "metadata_only";
   }
 
+  // Add endpoint information with QoS
+  json publishers_json = json::array();
+  for (const auto & pub : sample.publishers) {
+    publishers_json.push_back(pub.to_json());
+  }
+  result["publishers"] = publishers_json;
+
+  json subscribers_json = json::array();
+  for (const auto & sub : sample.subscribers) {
+    subscribers_json.push_back(sub.to_json());
+  }
+  result["subscribers"] = subscribers_json;
+
   // Enrich with message type
   if (!sample.message_type.empty()) {
     result["type"] = sample.message_type;
@@ -140,13 +168,18 @@ json DataAccessManager::sample_result_to_json(const TopicSampleResult & sample) 
 }
 
 json DataAccessManager::get_topic_sample_native(const std::string & topic_name, double timeout_sec) {
+  RCLCPP_DEBUG(node_->get_logger(), "get_topic_sample_native: topic='%s', timeout=%.2f", topic_name.c_str(),
+               timeout_sec);
   auto sample = native_sampler_->sample_topic(topic_name, timeout_sec);
+  RCLCPP_DEBUG(node_->get_logger(), "get_topic_sample_native: sample returned, has_data=%d, type='%s'", sample.has_data,
+               sample.message_type.c_str());
 
   if (!sample.message_type.empty() || sample.has_data) {
     return sample_result_to_json(sample);
   }
 
   // Topic not found at all
+  RCLCPP_DEBUG(node_->get_logger(), "get_topic_sample_native: topic not available '%s'", topic_name.c_str());
   throw TopicNotAvailableException(topic_name);
 }
 

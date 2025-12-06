@@ -15,6 +15,7 @@
 #pragma once
 
 #include <chrono>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -22,6 +23,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "ros2_medkit_gateway/models.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -47,7 +50,9 @@ struct TopicSampleResult {
   bool has_data{false};      ///< Whether actual data was received
   size_t publisher_count{0};
   size_t subscriber_count{0};
-  int64_t timestamp_ns{0};  ///< Sample timestamp in nanoseconds since epoch
+  int64_t timestamp_ns{0};                 ///< Sample timestamp in nanoseconds since epoch
+  std::vector<TopicEndpoint> publishers;   ///< List of publisher endpoints with QoS
+  std::vector<TopicEndpoint> subscribers;  ///< List of subscriber endpoints with QoS
 };
 
 /**
@@ -146,6 +151,53 @@ class NativeTopicSampler {
    */
   std::vector<TopicSampleResult> sample_topics_parallel(const std::vector<std::string> & topic_names,
                                                         double timeout_sec = 1.0, int max_parallel = 10);
+
+  /**
+   * @brief Get all publishers for a specific topic
+   *
+   * Uses native rclcpp API to discover which nodes publish to a topic.
+   *
+   * @param topic_name Full topic path (e.g., "/cmd_vel")
+   * @return Vector of TopicEndpoint describing each publisher
+   */
+  std::vector<TopicEndpoint> get_topic_publishers(const std::string & topic_name);
+
+  /**
+   * @brief Get all subscribers for a specific topic
+   *
+   * Uses native rclcpp API to discover which nodes subscribe to a topic.
+   *
+   * @param topic_name Full topic path (e.g., "/cmd_vel")
+   * @return Vector of TopicEndpoint describing each subscriber
+   */
+  std::vector<TopicEndpoint> get_topic_subscribers(const std::string & topic_name);
+
+  /**
+   * @brief Get full connection info for a topic (publishers + subscribers)
+   *
+   * @param topic_name Full topic path
+   * @return TopicConnection with all endpoint information
+   */
+  TopicConnection get_topic_connection(const std::string & topic_name);
+
+  /**
+   * @brief Build a map of component FQN -> topics it publishes/subscribes
+   *
+   * Scans all topics in the graph and builds a mapping from each node (component)
+   * to the topics it publishes and subscribes to. This is the core function for
+   * the new topic-to-component association approach.
+   *
+   * @return Map from component FQN (e.g., "/navigation/controller_server") to ComponentTopics
+   */
+  std::map<std::string, ComponentTopics> build_component_topic_map();
+
+  /**
+   * @brief Get topics for a specific component
+   *
+   * @param component_fqn Fully qualified node name (e.g., "/navigation/controller_server")
+   * @return ComponentTopics with publishes/subscribes lists
+   */
+  ComponentTopics get_component_topics(const std::string & component_fqn);
 
  private:
   /**

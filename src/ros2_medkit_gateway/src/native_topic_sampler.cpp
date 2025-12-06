@@ -18,6 +18,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <future>
+#include <iomanip>
 #include <mutex>
 #include <rclcpp/serialization.hpp>
 #include <rclcpp/serialized_message.hpp>
@@ -28,6 +29,89 @@
 #include "ros2_medkit_gateway/ros2_cli_wrapper.hpp"
 
 namespace ros2_medkit_gateway {
+
+namespace {
+
+/// Convert rclcpp ReliabilityPolicy to string
+/// Note: BestAvailable policy requires ROS 2 Humble or newer
+std::string reliability_to_string(rclcpp::ReliabilityPolicy policy) {
+  switch (policy) {
+    case rclcpp::ReliabilityPolicy::Reliable:
+      return "reliable";
+    case rclcpp::ReliabilityPolicy::BestEffort:
+      return "best_effort";
+    case rclcpp::ReliabilityPolicy::SystemDefault:
+      return "system_default";
+    case rclcpp::ReliabilityPolicy::BestAvailable:
+      return "best_available";
+    default:
+      return "unknown";
+  }
+}
+
+/// Convert rclcpp DurabilityPolicy to string
+/// Note: BestAvailable policy requires ROS 2 Humble or newer
+std::string durability_to_string(rclcpp::DurabilityPolicy policy) {
+  switch (policy) {
+    case rclcpp::DurabilityPolicy::Volatile:
+      return "volatile";
+    case rclcpp::DurabilityPolicy::TransientLocal:
+      return "transient_local";
+    case rclcpp::DurabilityPolicy::SystemDefault:
+      return "system_default";
+    case rclcpp::DurabilityPolicy::BestAvailable:
+      return "best_available";
+    default:
+      return "unknown";
+  }
+}
+
+/// Convert rclcpp HistoryPolicy to string
+std::string history_to_string(rclcpp::HistoryPolicy policy) {
+  switch (policy) {
+    case rclcpp::HistoryPolicy::KeepLast:
+      return "keep_last";
+    case rclcpp::HistoryPolicy::KeepAll:
+      return "keep_all";
+    case rclcpp::HistoryPolicy::SystemDefault:
+      return "system_default";
+    default:
+      return "unknown";
+  }
+}
+
+/// Convert rclcpp LivelinessPolicy to string
+/// Note: BestAvailable policy requires ROS 2 Humble or newer
+std::string liveliness_to_string(rclcpp::LivelinessPolicy policy) {
+  switch (policy) {
+    case rclcpp::LivelinessPolicy::Automatic:
+      return "automatic";
+    case rclcpp::LivelinessPolicy::ManualByTopic:
+      return "manual_by_topic";
+    case rclcpp::LivelinessPolicy::SystemDefault:
+      return "system_default";
+    case rclcpp::LivelinessPolicy::BestAvailable:
+      return "best_available";
+    default:
+      return "unknown";
+  }
+}
+
+/// Convert rclcpp::QoS to our QosProfile struct
+QosProfile qos_to_profile(const rclcpp::QoS & qos) {
+  QosProfile profile;
+  const auto & rmw_qos = qos.get_rmw_qos_profile();
+
+  profile.reliability = reliability_to_string(qos.reliability());
+  profile.durability = durability_to_string(qos.durability());
+  profile.history = history_to_string(qos.history());
+  profile.depth = rmw_qos.depth;
+  profile.liveliness = liveliness_to_string(qos.liveliness());
+
+  return profile;
+}
+
+}  // namespace
 
 NativeTopicSampler::NativeTopicSampler(rclcpp::Node * node) : node_(node) {
   if (!node_) {
@@ -117,6 +201,7 @@ json NativeTopicSampler::parse_message_yaml(const std::string & yaml_str) {
 }
 
 TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_name, double timeout_sec) {
+  RCLCPP_DEBUG(node_->get_logger(), "sample_topic: START topic='%s', timeout=%.2f", topic_name.c_str(), timeout_sec);
   TopicSampleResult result;
   result.topic_name = topic_name;
   result.timestamp_ns =
@@ -125,19 +210,27 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
   // Get topic info (type, pub/sub counts) - this is always fast
   auto info = get_topic_info(topic_name);
   if (!info) {
-    RCLCPP_WARN(node_->get_logger(), "Topic '%s' not found in graph", topic_name.c_str());
+    RCLCPP_DEBUG(node_->get_logger(), "sample_topic: Topic '%s' not found in graph", topic_name.c_str());
     result.has_data = false;
     return result;
   }
+
+  RCLCPP_DEBUG(node_->get_logger(), "sample_topic: topic='%s' type='%s' pubs=%zu subs=%zu", topic_name.c_str(),
+               info->type.c_str(), info->publisher_count, info->subscriber_count);
 
   result.message_type = info->type;
   result.publisher_count = info->publisher_count;
   result.subscriber_count = info->subscriber_count;
 
+  // Get detailed endpoint info with QoS
+  result.publishers = get_topic_publishers(topic_name);
+  result.subscribers = get_topic_subscribers(topic_name);
+
   // Fast path: if no publishers, return metadata immediately
   // This is the key UX improvement - no waiting for idle topics!
   if (info->publisher_count == 0) {
-    RCLCPP_DEBUG(node_->get_logger(), "Topic '%s' has no publishers, returning metadata only", topic_name.c_str());
+    RCLCPP_DEBUG(node_->get_logger(), "sample_topic: Topic '%s' has no publishers, returning metadata only",
+                 topic_name.c_str());
     result.has_data = false;
     return result;
   }
@@ -157,13 +250,21 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
   // - Topics with publishers use CLI but we've eliminated ~50-90% of CLI calls
 
   try {
-    // Use ros2 topic echo with the standard approach but shorter timeout
-    // Note: timeout_sec is rounded up to integer seconds (minimum 1s) for GNU timeout command
+    // Use ros2 topic echo --once with native --timeout flag
+    // timeout_sec is passed from caller (default 1s for single topic, configurable)
+    constexpr double kDefaultTimeoutSec = 1.0;
+    if (timeout_sec <= 0) {
+      RCLCPP_WARN(node_->get_logger(),
+                  "sample_topic: Invalid timeout_sec (%.3f) for topic '%s'. Using default (%.1fs).", timeout_sec,
+                  topic_name.c_str(), kDefaultTimeoutSec);
+      timeout_sec = kDefaultTimeoutSec;
+    }
+    int timeout_int = static_cast<int>(std::ceil(timeout_sec));
     std::ostringstream cmd;
-    int timeout_int = std::max(1, static_cast<int>(std::ceil(timeout_sec)));
-    // Use escape_shell_arg to prevent command injection
-    cmd << "timeout " << timeout_int << "s ros2 topic echo " << ROS2CLIWrapper::escape_shell_arg(topic_name)
-        << " --once --no-arr 2>/dev/null";
+    cmd << "ros2 topic echo " << ROS2CLIWrapper::escape_shell_arg(topic_name) << " --once --no-arr --timeout "
+        << timeout_int << " 2>/dev/null";
+
+    RCLCPP_DEBUG(node_->get_logger(), "sample_topic: executing CLI: %s", cmd.str().c_str());
 
     // Execute command with RAII pipe management to prevent resource leaks
     auto pipe_closer = [](FILE * f) {
@@ -174,10 +275,13 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
     std::unique_ptr<FILE, decltype(pipe_closer)> pipe(popen(cmd.str().c_str(), "r"), pipe_closer);
 
     if (!pipe) {
-      RCLCPP_WARN(node_->get_logger(), "Failed to execute CLI command for topic '%s'", topic_name.c_str());
+      RCLCPP_WARN(node_->get_logger(), "sample_topic: Failed to execute CLI command for topic '%s'",
+                  topic_name.c_str());
       result.has_data = false;
       return result;
     }
+
+    RCLCPP_DEBUG(node_->get_logger(), "sample_topic: CLI started, reading output...");
 
     // Use larger buffer for better performance with large messages
     std::array<char, 4096> buffer;
@@ -191,16 +295,20 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
     // Get exit code - release pipe to get exit code before RAII cleanup
     int exit_code = pclose(pipe.release());
 
+    RCLCPP_DEBUG(node_->get_logger(), "sample_topic: CLI finished, exit_code=%d, output_len=%zu", exit_code,
+                 output.length());
+
     // Check for success (exit code 0 and non-empty output without warnings)
     if (exit_code == 0 && !output.empty() && output.find("WARNING") == std::string::npos) {
       result.data = parse_message_yaml(output);
       // Check if result.data has a value AND is not null
       if (result.data && !result.data->is_null()) {
         result.has_data = true;
-        RCLCPP_DEBUG(node_->get_logger(), "Sampled data from topic '%s'", topic_name.c_str());
+        RCLCPP_DEBUG(node_->get_logger(), "sample_topic: Sampled data from topic '%s'", topic_name.c_str());
       }
     } else {
-      RCLCPP_DEBUG(node_->get_logger(), "No data received from topic '%s' (timeout or error)", topic_name.c_str());
+      RCLCPP_DEBUG(node_->get_logger(), "sample_topic: No data received from topic '%s' (exit_code=%d)",
+                   topic_name.c_str(), exit_code);
       result.has_data = false;
     }
   } catch (const std::exception & e) {
@@ -290,6 +398,107 @@ std::vector<TopicSampleResult> NativeTopicSampler::sample_topics_parallel(const 
   results.insert(results.end(), immediate_results.begin(), immediate_results.end());
 
   return results;
+}
+
+std::vector<TopicEndpoint> NativeTopicSampler::get_topic_publishers(const std::string & topic_name) {
+  std::vector<TopicEndpoint> endpoints;
+
+  auto publishers_info = node_->get_publishers_info_by_topic(topic_name);
+  for (const auto & pub_info : publishers_info) {
+    TopicEndpoint endpoint;
+    endpoint.node_name = pub_info.node_name();
+    endpoint.node_namespace = pub_info.node_namespace();
+    endpoint.topic_type = pub_info.topic_type();
+    endpoint.qos = qos_to_profile(pub_info.qos_profile());
+    endpoints.push_back(endpoint);
+  }
+
+  RCLCPP_DEBUG(node_->get_logger(), "Topic '%s' has %zu publishers", topic_name.c_str(), endpoints.size());
+  return endpoints;
+}
+
+std::vector<TopicEndpoint> NativeTopicSampler::get_topic_subscribers(const std::string & topic_name) {
+  std::vector<TopicEndpoint> endpoints;
+
+  auto subscribers_info = node_->get_subscriptions_info_by_topic(topic_name);
+  for (const auto & sub_info : subscribers_info) {
+    TopicEndpoint endpoint;
+    endpoint.node_name = sub_info.node_name();
+    endpoint.node_namespace = sub_info.node_namespace();
+    endpoint.topic_type = sub_info.topic_type();
+    endpoint.qos = qos_to_profile(sub_info.qos_profile());
+    endpoints.push_back(endpoint);
+  }
+
+  RCLCPP_DEBUG(node_->get_logger(), "Topic '%s' has %zu subscribers", topic_name.c_str(), endpoints.size());
+  return endpoints;
+}
+
+TopicConnection NativeTopicSampler::get_topic_connection(const std::string & topic_name) {
+  TopicConnection conn;
+  conn.topic_name = topic_name;
+  conn.topic_type = get_topic_type(topic_name);
+  conn.publishers = get_topic_publishers(topic_name);
+  conn.subscribers = get_topic_subscribers(topic_name);
+  return conn;
+}
+
+std::map<std::string, ComponentTopics> NativeTopicSampler::build_component_topic_map() {
+  std::map<std::string, ComponentTopics> component_map;
+
+  // Get all topics
+  auto all_topics = node_->get_topic_names_and_types();
+
+  for (const auto & [topic_name, types] : all_topics) {
+    // Get publishers info (lightweight - just node names, no QoS)
+    auto publishers_info = node_->get_publishers_info_by_topic(topic_name);
+    for (const auto & pub_info : publishers_info) {
+      std::string ns = pub_info.node_namespace();
+      std::string name = pub_info.node_name();
+      std::string component_fqn;
+      if (ns == "/" || ns.empty()) {
+        component_fqn = "/" + name;
+      } else {
+        component_fqn = ns;
+        component_fqn += "/";
+        component_fqn += name;
+      }
+      component_map[component_fqn].publishes.push_back(topic_name);
+    }
+
+    // Get subscribers info (lightweight - just node names, no QoS)
+    auto subscribers_info = node_->get_subscriptions_info_by_topic(topic_name);
+    for (const auto & sub_info : subscribers_info) {
+      std::string ns = sub_info.node_namespace();
+      std::string name = sub_info.node_name();
+      std::string component_fqn;
+      if (ns == "/" || ns.empty()) {
+        component_fqn = "/" + name;
+      } else {
+        component_fqn = ns;
+        component_fqn += "/";
+        component_fqn += name;
+      }
+      component_map[component_fqn].subscribes.push_back(topic_name);
+    }
+  }
+
+  RCLCPP_DEBUG(node_->get_logger(), "Built topic map for %zu components", component_map.size());
+  return component_map;
+}
+
+ComponentTopics NativeTopicSampler::get_component_topics(const std::string & component_fqn) {
+  // Build full map and extract for this component
+  // TODO(optimization): Cache the map and invalidate on graph changes
+  auto full_map = build_component_topic_map();
+
+  auto it = full_map.find(component_fqn);
+  if (it != full_map.end()) {
+    return it->second;
+  }
+
+  // Component not found or has no topics
+  return ComponentTopics{};
 }
 
 }  // namespace ros2_medkit_gateway

@@ -15,12 +15,14 @@
 #pragma once
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <vector>
 
 #include "ros2_medkit_gateway/models.hpp"
+#include "ros2_medkit_gateway/native_topic_sampler.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -43,6 +45,31 @@ class DiscoveryManager {
   /// Find an action by component namespace and operation name
   std::optional<ActionInfo> find_action(const std::string & component_ns, const std::string & operation_name) const;
 
+  /**
+   * @brief Set the topic sampler for component-topic mapping
+   *
+   * When set, discover_components() will populate the topics field
+   * of each component with its publishes/subscribes lists.
+   *
+   * @param sampler Pointer to NativeTopicSampler (must outlive DiscoveryManager)
+   */
+  void set_topic_sampler(NativeTopicSampler * sampler);
+
+  /**
+   * @brief Refresh the cached topic map
+   *
+   * Call this to force a rebuild of the component-topic map.
+   * The map is built once at startup and cached for performance.
+   * Periodic background refresh will also update this cache.
+   */
+  void refresh_topic_map();
+
+  /**
+   * @brief Check if topic map has been built at least once
+   * @return true if topic map is ready, false if not yet built
+   */
+  bool is_topic_map_ready() const;
+
  private:
   std::string extract_area_from_namespace(const std::string & ns);
 
@@ -53,10 +80,15 @@ class DiscoveryManager {
   bool path_belongs_to_namespace(const std::string & path, const std::string & ns) const;
 
   rclcpp::Node * node_;
+  NativeTopicSampler * topic_sampler_{nullptr};
 
   // Cached services and actions for lookup
   std::vector<ServiceInfo> cached_services_;
   std::vector<ActionInfo> cached_actions_;
+
+  // Cached topic map for performance (rebuilt on demand or periodically)
+  std::map<std::string, ComponentTopics> cached_topic_map_;
+  bool topic_map_ready_{false};
 };
 
 }  // namespace ros2_medkit_gateway

@@ -26,7 +26,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   // Declare parameters with defaults
   declare_parameter("server.host", "127.0.0.1");
   declare_parameter("server.port", 8080);
-  declare_parameter("refresh_interval_ms", 2000);
+  declare_parameter("refresh_interval_ms", 10000);
   declare_parameter("cors.allowed_origins", std::vector<std::string>{});
   declare_parameter("cors.allowed_methods", std::vector<std::string>{"GET", "PUT", "POST", "DELETE", "OPTIONS"});
   declare_parameter("cors.allowed_headers", std::vector<std::string>{"Content-Type", "Accept"});
@@ -67,9 +67,9 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
 
   // Validate refresh interval
   if (refresh_interval_ms_ < 100 || refresh_interval_ms_ > 60000) {
-    RCLCPP_WARN(get_logger(), "Invalid refresh interval %dms. Must be between 100-60000ms. Using default 2000ms.",
+    RCLCPP_WARN(get_logger(), "Invalid refresh interval %dms. Must be between 100-60000ms. Using default 10000ms.",
                 refresh_interval_ms_);
-    refresh_interval_ms_ = 2000;
+    refresh_interval_ms_ = 10000;
   }
 
   // Log configuration
@@ -104,6 +104,9 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   discovery_mgr_ = std::make_unique<DiscoveryManager>(this);
   data_access_mgr_ = std::make_unique<DataAccessManager>(this);
   operation_mgr_ = std::make_unique<OperationManager>(this, discovery_mgr_.get());
+
+  // Connect topic sampler to discovery manager for component-topic mapping
+  discovery_mgr_->set_topic_sampler(data_access_mgr_->get_native_sampler());
 
   // Initial discovery
   refresh_cache();
@@ -150,6 +153,9 @@ void GatewayNode::refresh_cache() {
   RCLCPP_DEBUG(get_logger(), "Refreshing entity cache...");
 
   try {
+    // Refresh topic map first (rebuilds the cached map)
+    discovery_mgr_->refresh_topic_map();
+
     // Discover data outside the lock to minimize lock time
     auto areas = discovery_mgr_->discover_areas();
     auto components = discovery_mgr_->discover_components();

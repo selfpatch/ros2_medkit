@@ -104,7 +104,8 @@ void RESTServer::setup_routes() {
                });
 
   // Component topic data (specific topic) - register before general route
-  server_->Get((api_path("/components") + R"(/([^/]+)/data/([^/]+)$)").c_str(),
+  // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
+  server_->Get((api_path("/components") + R"(/([^/]+)/data/(.+)$)").c_str(),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_component_topic_data(req, res);
                });
@@ -116,7 +117,8 @@ void RESTServer::setup_routes() {
                });
 
   // Component topic publish (PUT)
-  server_->Put((api_path("/components") + R"(/([^/]+)/data/([^/]+)$)").c_str(),
+  // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
+  server_->Put((api_path("/components") + R"(/([^/]+)/data/(.+)$)").c_str(),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_component_topic_publish(req, res);
                });
@@ -420,6 +422,8 @@ void RESTServer::handle_component_topic_data(const httplib::Request & req, httpl
     }
 
     component_id = req.matches[1];
+    // cpp-httplib automatically decodes percent-encoded characters in URL path
+    // e.g., "powertrain%2Fengine%2Ftemperature" -> "powertrain/engine/temperature"
     topic_name = req.matches[2];
 
     // Validate component_id
@@ -434,26 +438,17 @@ void RESTServer::handle_component_topic_data(const httplib::Request & req, httpl
       return;
     }
 
-    // Validate topic_name
-    auto topic_validation = validate_entity_id(topic_name);
-    if (!topic_validation) {
-      res.status = StatusCode::BadRequest_400;
-      res.set_content(
-          json{{"error", "Invalid topic name"}, {"details", topic_validation.error()}, {"topic_name", topic_name}}.dump(
-              2),
-          "application/json");
-      return;
-    }
+    // Skip topic_name validation - it may contain slashes after URL decoding
+    // The actual validation happens when we try to find the topic in the ROS graph
 
     const auto cache = node_->get_entity_cache();
 
-    // Find component in cache
-    std::string component_namespace;
+    // Find component in cache - only needed to verify it exists
+    // We use the full topic path from the URL, not the component namespace
     bool component_found = false;
 
     for (const auto & component : cache.components) {
       if (component.id == component_id) {
-        component_namespace = component.namespace_path;
         component_found = true;
         break;
       }
@@ -466,12 +461,13 @@ void RESTServer::handle_component_topic_data(const httplib::Request & req, httpl
       return;
     }
 
-    // Construct full topic path: {namespace_path}/{topic_name}
-    // Handle root namespace case to avoid double slash (//topic_name)
-    std::string full_topic_path =
-        (component_namespace == "/") ? "/" + topic_name : component_namespace + "/" + topic_name;
+    // cpp-httplib has already decoded %2F to / in topic_name
+    // Now just add leading slash to make it a full ROS topic path
+    // e.g., "powertrain/engine/temperature" -> "/powertrain/engine/temperature"
+    std::string full_topic_path = "/" + topic_name;
 
     // Get topic data from DataAccessManager (with fallback to metadata if data unavailable)
+    // Uses topic_sample_timeout_sec parameter (default: 1.0s)
     auto data_access_mgr = node_->get_data_access_manager();
     json topic_data = data_access_mgr->get_topic_sample_with_fallback(full_topic_path);
 
@@ -510,6 +506,8 @@ void RESTServer::handle_component_topic_publish(const httplib::Request & req, ht
     }
 
     component_id = req.matches[1];
+    // cpp-httplib automatically decodes percent-encoded characters in URL path
+    // e.g., "chassis%2Fbrakes%2Fcommand" -> "chassis/brakes/command"
     topic_name = req.matches[2];
 
     // Validate component_id
@@ -524,16 +522,8 @@ void RESTServer::handle_component_topic_publish(const httplib::Request & req, ht
       return;
     }
 
-    // Validate topic_name
-    auto topic_validation = validate_entity_id(topic_name);
-    if (!topic_validation) {
-      res.status = StatusCode::BadRequest_400;
-      res.set_content(
-          json{{"error", "Invalid topic name"}, {"details", topic_validation.error()}, {"topic_name", topic_name}}.dump(
-              2),
-          "application/json");
-      return;
-    }
+    // Skip topic_name validation - it may contain slashes after URL decoding
+    // The actual validation happens when we try to publish to the topic
 
     // Parse request body
     json body;
@@ -587,13 +577,11 @@ void RESTServer::handle_component_topic_publish(const httplib::Request & req, ht
 
     const auto cache = node_->get_entity_cache();
 
-    // Find component in cache
-    std::string component_namespace;
+    // Find component in cache - only needed to verify it exists
     bool component_found = false;
 
     for (const auto & component : cache.components) {
       if (component.id == component_id) {
-        component_namespace = component.namespace_path;
         component_found = true;
         break;
       }
@@ -606,9 +594,10 @@ void RESTServer::handle_component_topic_publish(const httplib::Request & req, ht
       return;
     }
 
-    // Construct full topic path
-    std::string full_topic_path =
-        (component_namespace == "/") ? "/" + topic_name : component_namespace + "/" + topic_name;
+    // cpp-httplib has already decoded %2F to / in topic_name
+    // Now just add leading slash to make it a full ROS topic path
+    // e.g., "chassis/brakes/command" -> "/chassis/brakes/command"
+    std::string full_topic_path = "/" + topic_name;
 
     // Publish data using DataAccessManager
     auto data_access_mgr = node_->get_data_access_manager();

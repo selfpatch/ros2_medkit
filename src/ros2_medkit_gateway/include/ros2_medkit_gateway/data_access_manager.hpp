@@ -51,28 +51,37 @@ class DataAccessManager {
    * If the topic times out, returns metadata (type, schema, pub/sub counts) instead of error.
    *
    * @param topic_name Full topic path (e.g., "/powertrain/engine/temperature")
-   * @param timeout_sec Timeout for data retrieval (default: 1.0 second)
+   * @param timeout_sec Timeout for data retrieval. Use -1.0 to use the topic_sample_timeout_sec parameter (default)
    * @return JSON object with one of two structures:
    *   - status="data": {topic, timestamp, data, status, type, type_info, publisher_count, subscriber_count}
    *   - status="metadata_only": {topic, timestamp, status, type, type_info, publisher_count, subscriber_count}
    * @throws TopicNotAvailableException if topic doesn't exist or metadata cannot be retrieved
    */
-  json get_topic_sample_with_fallback(const std::string & topic_name, double timeout_sec = 1.0);
+  json get_topic_sample_with_fallback(const std::string & topic_name, double timeout_sec = -1.0);
 
   /**
    * @brief Get component data with fallback to metadata for unavailable topics
    *
    * @param component_namespace Component's namespace
-   * @param timeout_sec Timeout per topic (default: 1.0 second)
+   * @param timeout_sec Timeout per topic. Use -1.0 to use the topic_sample_timeout_sec parameter (default)
    * @return JSON array with topic data/metadata
    */
-  json get_component_data_with_fallback(const std::string & component_namespace, double timeout_sec = 1.0);
+  json get_component_data_with_fallback(const std::string & component_namespace, double timeout_sec = -1.0);
 
   /**
    * @brief Get the type introspection instance
    */
   TypeIntrospection * get_type_introspection() const {
     return type_introspection_.get();
+  }
+
+  /**
+   * @brief Get the native topic sampler instance
+   *
+   * Used by DiscoveryManager to build component-topic mappings.
+   */
+  NativeTopicSampler * get_native_sampler() const {
+    return native_sampler_.get();
   }
 
   /**
@@ -117,6 +126,14 @@ class DataAccessManager {
   std::unique_ptr<TypeIntrospection> type_introspection_;
   std::unique_ptr<NativeTopicSampler> native_sampler_;
   int max_parallel_samples_;
+  double topic_sample_timeout_sec_;
+
+  /**
+   * @brief Get default timeout for topic sampling (from parameter)
+   */
+  double get_default_topic_timeout() const {
+    return topic_sample_timeout_sec_;
+  }
 };
 
 }  // namespace ros2_medkit_gateway

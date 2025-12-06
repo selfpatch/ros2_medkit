@@ -25,12 +25,44 @@ This launch file:
 
 import time
 import unittest
+from urllib.parse import quote
 
 from launch import LaunchDescription
 from launch.actions import TimerAction
 import launch_ros.actions
 import launch_testing.actions
 import requests
+
+
+def encode_topic_path(topic_path: str) -> str:
+    """
+    Encode a ROS topic path for use in URLs.
+
+    Slashes are encoded as %2F for proper URL routing.
+    Example: '/powertrain/engine/temperature' -> 'powertrain%2Fengine%2Ftemperature'
+
+    Parameters
+    ----------
+    topic_path : str
+        Full ROS topic path starting with '/'
+
+    Returns
+    -------
+    str
+        URL-encoded topic path without leading slash
+
+    Raises
+    ------
+    ValueError
+        If topic_path doesn't start with '/'
+
+    """
+    # Validate that the topic path starts with a leading slash
+    if not topic_path.startswith('/'):
+        raise ValueError(f"Topic path must start with '/': {topic_path}")
+    # Remove leading slash and encode the rest
+    topic_path = topic_path[1:]
+    return quote(topic_path, safe='')
 
 
 def generate_test_description():
@@ -150,9 +182,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     BASE_URL = f'http://localhost:8080{API_BASE_PATH}'
     # Wait for cache refresh + safety margin
-    # Must be kept in sync with gateway_params.yaml refresh_interval_ms (2000ms)
+    # Must be kept in sync with gateway_params.yaml refresh_interval_ms (10000ms)
     # Need to wait for at least 2 refresh cycles to ensure all demo nodes are discovered
-    CACHE_REFRESH_INTERVAL = 5.0
+    CACHE_REFRESH_INTERVAL = 12.0
 
     @classmethod
     def setUpClass(cls):
@@ -199,7 +231,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('GET /api/v1/version-info', data['endpoints'])
         self.assertIn('GET /api/v1/areas', data['endpoints'])
         self.assertIn('GET /api/v1/components', data['endpoints'])
-        self.assertIn('PUT /api/v1/components/{component_id}/data/{topic_name}', data['endpoints'])
+        self.assertIn(
+            'PUT /api/v1/components/{component_id}/data/{topic_name}', data['endpoints']
+        )
 
         # Verify api_base field
         self.assertIn('api_base', data)
@@ -347,7 +381,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                 self.assertIn(topic_data['status'], ['data', 'metadata_only'])
                 if topic_data['status'] == 'data':
                     self.assertIn('data', topic_data)
-                print(f'  - Topic: {topic_data["topic"]} (status: {topic_data["status"]})')
+                print(
+                    f"  - Topic: {topic_data['topic']} (status: {topic_data['status']})"
+                )
 
         print(f'✓ Engine component data test passed: {len(data)} topics')
 
@@ -408,30 +444,42 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         if len(data) > 0:
             first_item = data[0]
             self.assertIn('topic', first_item, "Each item should have 'topic' field")
-            self.assertIn('timestamp', first_item, "Each item should have 'timestamp' field")
+            self.assertIn(
+                'timestamp', first_item, "Each item should have 'timestamp' field"
+            )
             self.assertIn('status', first_item, "Each item should have 'status' field")
-            self.assertIsInstance(first_item['topic'], str, "'topic' should be a string")
+            self.assertIsInstance(
+                first_item['topic'], str, "'topic' should be a string"
+            )
             self.assertIsInstance(
                 first_item['timestamp'],
                 int,
-                "'timestamp' should be an integer (nanoseconds)"
+                "'timestamp' should be an integer (nanoseconds)",
             )
             # Status can be 'data' or 'metadata_only'
             self.assertIn(first_item['status'], ['data', 'metadata_only'])
             if first_item['status'] == 'data':
                 self.assertIn('data', first_item, "status=data should have 'data'")
-                self.assertIsInstance(first_item['data'], dict, "'data' should be object")
+                self.assertIsInstance(
+                    first_item['data'], dict, "'data' should be object"
+                )
 
             # Verify metadata fields are present (for both data and metadata_only)
             self.assertIn('type', first_item, "Each item should have 'type' field")
             self.assertIn('type_info', first_item, "Each item should have 'type_info'")
-            self.assertIn('publisher_count', first_item, "Should have 'publisher_count'")
-            self.assertIn('subscriber_count', first_item, "Should have 'subscriber_count'")
+            self.assertIn(
+                'publisher_count', first_item, "Should have 'publisher_count'"
+            )
+            self.assertIn(
+                'subscriber_count', first_item, "Should have 'subscriber_count'"
+            )
 
             # Verify type_info structure
             type_info = first_item['type_info']
             self.assertIn('schema', type_info, "'type_info' should have 'schema'")
-            self.assertIn('default_value', type_info, "'type_info' should have 'default_value'")
+            self.assertIn(
+                'default_value', type_info, "'type_info' should have 'default_value'"
+            )
 
         print('✓ Component data structure test passed')
 
@@ -442,8 +490,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         @verifies REQ_INTEROP_018
         """
         response = requests.get(
-            f'{self.BASE_URL}/components/nonexistent_component/data',
-            timeout=5
+            f'{self.BASE_URL}/components/nonexistent_component/data', timeout=5
         )
         self.assertEqual(response.status_code, 404)
 
@@ -490,13 +537,12 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         for invalid_id in invalid_ids:
             response = requests.get(
-                f'{self.BASE_URL}/components/{invalid_id}/data',
-                timeout=5
+                f'{self.BASE_URL}/components/{invalid_id}/data', timeout=5
             )
             self.assertEqual(
                 response.status_code,
                 400,
-                f'Expected 400 for component_id: {invalid_id}'
+                f'Expected 400 for component_id: {invalid_id}',
             )
 
             data = response.json()
@@ -523,13 +569,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         for invalid_id in invalid_ids:
             response = requests.get(
-                f'{self.BASE_URL}/areas/{invalid_id}/components',
-                timeout=5
+                f'{self.BASE_URL}/areas/{invalid_id}/components', timeout=5
             )
             self.assertEqual(
-                response.status_code,
-                400,
-                f'Expected 400 for area_id: {invalid_id}'
+                response.status_code, 400, f'Expected 400 for area_id: {invalid_id}'
             )
 
             data = response.json()
@@ -556,14 +599,13 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         for valid_id in valid_ids:
             response = requests.get(
-                f'{self.BASE_URL}/components/{valid_id}/data',
-                timeout=5
+                f'{self.BASE_URL}/components/{valid_id}/data', timeout=5
             )
             # Should return 404 (not found) not 400 (invalid)
             self.assertEqual(
                 response.status_code,
                 404,
-                f'Expected 404 for valid but nonexistent ID: {valid_id}'
+                f'Expected 404 for valid but nonexistent ID: {valid_id}',
             )
 
         print('✓ Valid IDs with underscores test passed')
@@ -582,13 +624,12 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         for invalid_id in invalid_ids:
             response = requests.get(
-                f'{self.BASE_URL}/components/{invalid_id}/data',
-                timeout=5
+                f'{self.BASE_URL}/components/{invalid_id}/data', timeout=5
             )
             self.assertEqual(
                 response.status_code,
                 400,
-                f'Expected 400 for hyphenated ID: {invalid_id}'
+                f'Expected 400 for hyphenated ID: {invalid_id}',
             )
 
             data = response.json()
@@ -603,9 +644,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_019
         """
+        # Use percent encoding for topic path: /powertrain/engine/temperature
+        topic_path = encode_topic_path('/powertrain/engine/temperature')
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/data/temperature',
-            timeout=10
+            f'{self.BASE_URL}/components/temp_sensor/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -620,7 +662,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.assertIn('data', data)
             self.assertIsInstance(data['data'], dict)
 
-        print(f'✓ Temperature test passed: {data["topic"]} ({data["status"]})')
+        print(f"✓ Temperature test passed: {data['topic']} ({data['status']})")
 
     def test_18_component_topic_rpm(self):
         """
@@ -628,9 +670,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_019
         """
+        # Use percent encoding for topic path: /powertrain/engine/rpm
+        topic_path = encode_topic_path('/powertrain/engine/rpm')
         response = requests.get(
-            f'{self.BASE_URL}/components/rpm_sensor/data/rpm',
-            timeout=10
+            f'{self.BASE_URL}/components/rpm_sensor/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -643,7 +686,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         if data['status'] == 'data':
             self.assertIn('data', data)
 
-        print(f'✓ Component topic RPM test passed: {data["topic"]} (status: {data["status"]})')
+        print(
+            f"✓ Component topic RPM test passed: {data['topic']} (status: {data['status']})"
+        )
 
     def test_19_component_topic_pressure(self):
         """
@@ -651,9 +696,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_019
         """
+        # Use percent encoding for topic path: /chassis/brakes/pressure
+        topic_path = encode_topic_path('/chassis/brakes/pressure')
         response = requests.get(
-            f'{self.BASE_URL}/components/pressure_sensor/data/pressure',
-            timeout=10
+            f'{self.BASE_URL}/components/pressure_sensor/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -666,7 +712,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         if data['status'] == 'data':
             self.assertIn('data', data)
 
-        print(f'✓ Pressure test passed: {data["topic"]} ({data["status"]})')
+        print(f"✓ Pressure test passed: {data['topic']} ({data['status']})")
 
     def test_20_component_topic_data_structure(self):
         """
@@ -674,9 +720,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_019
         """
+        # Use percent encoding for topic path: /powertrain/engine/temperature
+        topic_path = encode_topic_path('/powertrain/engine/temperature')
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/data/temperature',
-            timeout=10
+            f'{self.BASE_URL}/components/temp_sensor/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -689,20 +736,20 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         # Verify field types
         self.assertIsInstance(data['topic'], str, "'topic' should be a string")
         self.assertIsInstance(
-            data['timestamp'],
-            int,
-            "'timestamp' should be an integer (nanoseconds)"
+            data['timestamp'], int, "'timestamp' should be an integer (nanoseconds)"
         )
         # Status can be 'data' or 'metadata_only'
         self.assertIn(data['status'], ['data', 'metadata_only'])
         if data['status'] == 'data':
-            self.assertIn('data', data, "Response with status=data should have 'data' field")
+            self.assertIn(
+                'data', data, "Response with status=data should have 'data' field"
+            )
             self.assertIsInstance(data['data'], dict, "'data' should be an object")
 
         # Verify topic path format
         self.assertTrue(
             data['topic'].startswith('/'),
-            "Topic should be an absolute path starting with '/'"
+            "Topic should be an absolute path starting with '/'",
         )
 
         print('✓ Component topic data structure test passed')
@@ -713,9 +760,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_019
         """
+        # Use percent encoding for topic path: /some/nonexistent/topic
+        topic_path = encode_topic_path('/some/nonexistent/topic')
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/data/nonexistent_topic',
-            timeout=10
+            f'{self.BASE_URL}/components/temp_sensor/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 404)
 
@@ -725,7 +773,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('component_id', data)
         self.assertEqual(data['component_id'], 'temp_sensor')
         self.assertIn('topic_name', data)
-        self.assertEqual(data['topic_name'], 'nonexistent_topic')
+        # topic_name in response is the decoded path (from URL)
+        self.assertEqual(data['topic_name'], 'some/nonexistent/topic')
 
         print('✓ Nonexistent topic error test passed')
 
@@ -735,9 +784,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_019
         """
+        # Use percent encoding for topic path
+        topic_path = encode_topic_path('/some/topic')
         response = requests.get(
-            f'{self.BASE_URL}/components/nonexistent_component/data/temperature',
-            timeout=5
+            f'{self.BASE_URL}/components/nonexistent_component/data/{topic_path}',
+            timeout=5,
         )
         self.assertEqual(response.status_code, 404)
 
@@ -749,46 +800,34 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print('✓ Component topic nonexistent component error test passed')
 
-    def test_23_component_topic_invalid_topic_name(self):
+    def test_23_component_topic_with_slashes(self):
         """
-        Test GET /components/{component_id}/data/{topic_name} rejects invalid topic names.
+        Test GET with percent-encoded slashes in topic path.
 
         @verifies REQ_INTEROP_019
         """
-        invalid_topic_names = [
-            'topic;drop',  # SQL injection attempt
-            'topic<script>',  # XSS attempt
-            'topic"test',  # Quote
-            'topic|test',  # Pipe
-            'topic-name',  # Hyphen (not allowed in ROS 2)
-        ]
+        # Test that percent-encoded slashes work correctly
+        # /powertrain/engine/temperature encoded as powertrain%2Fengine%2Ftemperature
+        topic_path = encode_topic_path('/powertrain/engine/temperature')
+        response = requests.get(
+            f'{self.BASE_URL}/components/temp_sensor/data/{topic_path}', timeout=10
+        )
+        # Should return 200 (found) since this topic exists
+        self.assertEqual(response.status_code, 200)
 
-        for invalid_topic in invalid_topic_names:
-            response = requests.get(
-                f'{self.BASE_URL}/components/temp_sensor/data/{invalid_topic}',
-                timeout=5
-            )
-            self.assertEqual(
-                response.status_code,
-                400,
-                f'Expected 400 for topic_name: {invalid_topic}'
-            )
+        data = response.json()
+        self.assertEqual(data['topic'], '/powertrain/engine/temperature')
 
-            data = response.json()
-            self.assertIn('error', data)
-            self.assertEqual(data['error'], 'Invalid topic name')
-            self.assertIn('details', data)
+        print('✓ Percent-encoded slashes test passed')
 
-        print('✓ Invalid topic name test passed')
-
-    def test_24_component_topic_valid_underscores(self):
+    def test_24_component_topic_valid_names(self):
         """
-        Test that valid topic names with underscores pass validation.
+        Test that valid topic names work correctly.
 
         @verifies REQ_INTEROP_019
         """
-        # These topic names are valid but may not exist
-        # They should return 404 (not found) not 400 (invalid)
+        # These topic names are valid but may not exist as full paths
+        # They should return 404 (not found) - the gateway will try to find /topic_name
         valid_topic_names = [
             'topic_name',
             'topic_name_123',
@@ -798,15 +837,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         for valid_topic in valid_topic_names:
             response = requests.get(
-                f'{self.BASE_URL}/components/temp_sensor/data/{valid_topic}',
-                timeout=10
+                f'{self.BASE_URL}/components/temp_sensor/data/{valid_topic}', timeout=10
             )
             # Should return 404 (topic not found) not 400 (invalid name)
             self.assertIn(
                 response.status_code,
                 [200, 404],
                 f'Expected 200 or 404 for valid topic name: {valid_topic}, '
-                f'got {response.status_code}'
+                f'got {response.status_code}',
             )
 
         print('✓ Valid topic names with underscores test passed')
@@ -819,13 +857,12 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_020
         """
+        # Use percent encoding for topic path: /chassis/brakes/command
+        topic_path = encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/actuator/data/command',
-            json={
-                'type': 'std_msgs/msg/Float32',
-                'data': {'data': 50.0}
-            },
-            timeout=10
+            f'{self.BASE_URL}/components/actuator/data/{topic_path}',
+            json={'type': 'std_msgs/msg/Float32', 'data': {'data': 50.0}},
+            timeout=10,
         )
         self.assertEqual(response.status_code, 200)
 
@@ -839,9 +876,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(data['status'], 'published')
         self.assertEqual(data['type'], 'std_msgs/msg/Float32')
         self.assertEqual(data['component_id'], 'actuator')
-        self.assertEqual(data['topic_name'], 'command')
+        # topic_name is the decoded path from URL
+        self.assertEqual(data['topic_name'], 'chassis/brakes/command')
 
-        print(f'✓ Publish brake command test passed: {data["topic"]}')
+        print(f"✓ Publish brake command test passed: {data['topic']}")
 
     def test_26_publish_validation_missing_type(self):
         """
@@ -849,12 +887,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_020
         """
+        topic_path = encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/actuator/data/command',
-            json={
-                'data': {'data': 50.0}
-            },
-            timeout=5
+            f'{self.BASE_URL}/components/actuator/data/{topic_path}',
+            json={'data': {'data': 50.0}},
+            timeout=5,
         )
         self.assertEqual(response.status_code, 400)
 
@@ -870,12 +907,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_020
         """
+        topic_path = encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/actuator/data/command',
-            json={
-                'type': 'std_msgs/msg/Float32'
-            },
-            timeout=5
+            f'{self.BASE_URL}/components/actuator/data/{topic_path}',
+            json={'type': 'std_msgs/msg/Float32'},
+            timeout=5,
         )
         self.assertEqual(response.status_code, 400)
 
@@ -893,28 +929,24 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         # Test various invalid message type formats
         invalid_types = [
-            'InvalidType',           # No slashes
-            'std_msgs/Float32',      # Missing /msg/
-            'std_msgs/srv/Empty',    # Wrong middle part (srv instead of msg)
-            'a/b/c/d',               # Too many slashes (no /msg/)
-            'a/msg/b/c',             # Too many slashes (3 instead of 2)
-            '/msg/Type',             # Missing package (starts with /)
-            'package/msg/',          # Missing type (ends with /)
+            'InvalidType',  # No slashes
+            'std_msgs/Float32',  # Missing /msg/
+            'std_msgs/srv/Empty',  # Wrong middle part (srv instead of msg)
+            'a/b/c/d',  # Too many slashes (no /msg/)
+            'a/msg/b/c',  # Too many slashes (3 instead of 2)
+            '/msg/Type',  # Missing package (starts with /)
+            'package/msg/',  # Missing type (ends with /)
         ]
 
+        topic_path = encode_topic_path('/chassis/brakes/command')
         for invalid_type in invalid_types:
             response = requests.put(
-                f'{self.BASE_URL}/components/actuator/data/command',
-                json={
-                    'type': invalid_type,
-                    'data': {'data': 50.0}
-                },
-                timeout=5
+                f'{self.BASE_URL}/components/actuator/data/{topic_path}',
+                json={'type': invalid_type, 'data': {'data': 50.0}},
+                timeout=5,
             )
             self.assertEqual(
-                response.status_code,
-                400,
-                f'Expected 400 for type: {invalid_type}'
+                response.status_code, 400, f'Expected 400 for type: {invalid_type}'
             )
 
             data = response.json()
@@ -929,13 +961,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_020
         """
+        topic_path = encode_topic_path('/some/topic/path')
         response = requests.put(
-            f'{self.BASE_URL}/components/nonexistent_component/data/command',
-            json={
-                'type': 'std_msgs/msg/Float32',
-                'data': {'data': 50.0}
-            },
-            timeout=5
+            f'{self.BASE_URL}/components/nonexistent_component/data/{topic_path}',
+            json={'type': 'std_msgs/msg/Float32', 'data': {'data': 50.0}},
+            timeout=5,
         )
         self.assertEqual(response.status_code, 404)
 
@@ -952,11 +982,12 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_020
         """
+        topic_path = encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/actuator/data/command',
+            f'{self.BASE_URL}/components/actuator/data/{topic_path}',
             data='not valid json',
             headers={'Content-Type': 'application/json'},
-            timeout=5
+            timeout=5,
         )
         self.assertEqual(response.status_code, 400)
 

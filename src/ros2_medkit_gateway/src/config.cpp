@@ -46,6 +46,13 @@ CorsConfigBuilder & CorsConfigBuilder::with_max_age(int seconds) {
 }
 
 CorsConfig CorsConfigBuilder::build() {
+  // Filter out empty strings from allowed_origins (used as placeholder for empty list in YAML)
+  config_.allowed_origins.erase(std::remove_if(config_.allowed_origins.begin(), config_.allowed_origins.end(),
+                                               [](const std::string & s) {
+                                                 return s.empty();
+                                               }),
+                                config_.allowed_origins.end());
+
   // Enable CORS only if origins are configured
   config_.enabled = !config_.allowed_origins.empty();
 

@@ -79,6 +79,11 @@ std::vector<Component> DiscoveryManager::discover_components() {
   auto node_graph = node_->get_node_graph_interface();
   auto names_and_namespaces = node_graph->get_node_names_and_namespaces();
 
+  // Build topic map if not yet ready (first call or after manual refresh)
+  if (topic_sampler_ && !topic_map_ready_) {
+    refresh_topic_map();
+  }
+
   for (const auto & name_and_ns : names_and_namespaces) {
     const auto & name = name_and_ns.first;
     const auto & ns = name_and_ns.second;
@@ -99,6 +104,14 @@ std::vector<Component> DiscoveryManager::discover_components() {
     auto act_it = actions_by_ns.find(comp.namespace_path);
     if (act_it != actions_by_ns.end()) {
       comp.actions = act_it->second;
+    }
+
+    // Populate topics from cached map
+    if (topic_sampler_) {
+      auto it = cached_topic_map_.find(comp.fqn);
+      if (it != cached_topic_map_.end()) {
+        comp.topics = it->second;
+      }
     }
 
     components.push_back(comp);
@@ -232,6 +245,23 @@ std::optional<ActionInfo> DiscoveryManager::find_action(const std::string & comp
   }
 
   return std::nullopt;
+}
+
+void DiscoveryManager::set_topic_sampler(NativeTopicSampler * sampler) {
+  topic_sampler_ = sampler;
+}
+
+void DiscoveryManager::refresh_topic_map() {
+  if (!topic_sampler_) {
+    return;
+  }
+  cached_topic_map_ = topic_sampler_->build_component_topic_map();
+  topic_map_ready_ = true;
+  RCLCPP_DEBUG(node_->get_logger(), "Topic map refreshed: %zu components", cached_topic_map_.size());
+}
+
+bool DiscoveryManager::is_topic_map_ready() const {
+  return topic_map_ready_;
 }
 
 std::string DiscoveryManager::extract_area_from_namespace(const std::string & ns) {

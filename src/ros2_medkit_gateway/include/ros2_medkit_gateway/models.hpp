@@ -23,6 +23,81 @@ namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
 
+/**
+ * @brief QoS profile information for a topic endpoint
+ */
+struct QosProfile {
+  std::string reliability;  ///< "reliable", "best_effort", "system_default", "unknown"
+  std::string durability;   ///< "volatile", "transient_local", "system_default", "unknown"
+  std::string history;      ///< "keep_last", "keep_all", "system_default", "unknown"
+  size_t depth{0};          ///< History depth (for keep_last)
+  std::string liveliness;   ///< "automatic", "manual_by_topic", "system_default", "unknown"
+
+  json to_json() const {
+    return {{"reliability", reliability},
+            {"durability", durability},
+            {"history", history},
+            {"depth", depth},
+            {"liveliness", liveliness}};
+  }
+};
+
+/**
+ * @brief Information about an endpoint (publisher or subscriber) on a topic
+ */
+struct TopicEndpoint {
+  std::string node_name;       ///< Name of the node (e.g., "controller_server")
+  std::string node_namespace;  ///< Namespace of the node (e.g., "/navigation")
+  std::string topic_type;      ///< Message type (e.g., "geometry_msgs/msg/Twist")
+  QosProfile qos;              ///< QoS profile of this endpoint
+
+  /// Get fully qualified node name
+  std::string fqn() const {
+    if (node_namespace == "/" || node_namespace.empty()) {
+      return "/" + node_name;
+    }
+    return node_namespace + "/" + node_name;
+  }
+
+  json to_json() const {
+    return {{"node_name", node_name}, {"node_namespace", node_namespace}, {"fqn", fqn()}, {"qos", qos.to_json()}};
+  }
+};
+
+/**
+ * @brief Topic with its publishers and subscribers
+ */
+struct TopicConnection {
+  std::string topic_name;  ///< Full topic path (e.g., "/cmd_vel")
+  std::string topic_type;  ///< Message type
+  std::vector<TopicEndpoint> publishers;
+  std::vector<TopicEndpoint> subscribers;
+
+  json to_json() const {
+    json pub_json = json::array();
+    for (const auto & p : publishers) {
+      pub_json.push_back(p.to_json());
+    }
+    json sub_json = json::array();
+    for (const auto & s : subscribers) {
+      sub_json.push_back(s.to_json());
+    }
+    return {{"topic", topic_name}, {"type", topic_type}, {"publishers", pub_json}, {"subscribers", sub_json}};
+  }
+};
+
+/**
+ * @brief Topics associated with a component (node)
+ */
+struct ComponentTopics {
+  std::vector<std::string> publishes;   ///< Topics this component publishes to
+  std::vector<std::string> subscribes;  ///< Topics this component subscribes to
+
+  json to_json() const {
+    return {{"publishes", publishes}, {"subscribes", subscribes}};
+  }
+};
+
 struct Area {
   std::string id;
   std::string namespace_path;
@@ -63,9 +138,11 @@ struct Component {
   std::string area;
   std::vector<ServiceInfo> services;
   std::vector<ActionInfo> actions;
+  ComponentTopics topics;  ///< Topics this component publishes/subscribes
 
   json to_json() const {
-    json j = {{"id", id}, {"namespace", namespace_path}, {"fqn", fqn}, {"type", type}, {"area", area}};
+    json j = {{"id", id},     {"namespace", namespace_path}, {"fqn", fqn}, {"type", type},
+              {"area", area}, {"topics", topics.to_json()}};
 
     // Add operations array combining services and actions
     json operations = json::array();

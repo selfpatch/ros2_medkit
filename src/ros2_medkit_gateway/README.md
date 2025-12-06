@@ -433,17 +433,20 @@ ros2 launch ros2_medkit_gateway demo_nodes.launch.py
 
 ## URL Encoding
 
-Component and topic names in URLs use double underscore (`__`) as a namespace separator:
+Topic names in URLs use standard percent-encoding (`%2F`) for the forward slash character:
 
-| ROS 2 Name              | URL Encoding             |
-| ----------------------- | ------------------------ |
-| `/powertrain/engine`    | `powertrain__engine`     |
-| `/chassis/brakes`       | `chassis__brakes`        |
-| `/body/door/front_left` | `body__door__front_left` |
+| ROS 2 Topic Path                | URL Encoding                                |
+| ------------------------------- | ------------------------------------------- |
+| `/powertrain/engine/temperature`| `powertrain%2Fengine%2Ftemperature`         |
+| `/chassis/brakes/command`       | `chassis%2Fbrakes%2Fcommand`                |
+| `/body/door/front_left/status`  | `body%2Fdoor%2Ffront_left%2Fstatus`         |
 
 **Example:**
-- Component FQN: `/powertrain/engine/temp_sensor`
-- URL component ID: `powertrain__engine__temp_sensor`
+- Topic: `/powertrain/engine/temperature`
+- URL: `/api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperature`
+
+> **Note:** Component IDs do not require encoding (they are simple names like `temp_sensor`).
+> The leading slash is stripped before encoding.
 
 ## Manual API Testing with Postman
 
@@ -474,4 +477,5 @@ colcon test-result --verbose
 ```
 
 ## License
+
 Apache-2.0
