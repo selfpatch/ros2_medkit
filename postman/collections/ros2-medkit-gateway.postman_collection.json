@@ -537,6 +537,175 @@
           ]
         }
       ]
+    },
+    {
+      "name": "Configurations",
+      "item": [
+        {
+          "name": "GET List Component Configurations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/configurations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "configurations"
+              ]
+            },
+            "description": "List all parameters (configurations) for a component. Returns component_id, node_name, and array of parameters with name, value, and type. Maps to SOVD Configurations API."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Specific Configuration (publish_rate)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/configurations/publish_rate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "configurations",
+                "publish_rate"
+              ]
+            },
+            "description": "Get a specific parameter value for a component. Returns component_id and parameter object with name, value, type, description, and read_only flag."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Specific Configuration (min_temp)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/configurations/min_temp",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "configurations",
+                "min_temp"
+              ]
+            },
+            "description": "Get the min_temp parameter value from the temp_sensor component."
+          },
+          "response": []
+        },
+        {
+          "name": "PUT Set Configuration (min_temp)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": 80.0\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/configurations/min_temp",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "configurations",
+                "min_temp"
+              ]
+            },
+            "description": "Set a parameter value for a component. Request body must contain 'value' field. Returns status, component_id, and updated parameter object. The value type is automatically converted to match the existing parameter type."
+          },
+          "response": []
+        },
+        {
+          "name": "PUT Set Configuration (publish_rate)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": 5.0\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/configurations/publish_rate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "configurations",
+                "publish_rate"
+              ]
+            },
+            "description": "Change the publish rate of the temp_sensor component. Default is 2.0 Hz, valid range is 0.1-100.0 Hz. The demo node will dynamically update its timer."
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE Configuration (Not Supported)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/configurations/min_temp",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "configurations",
+                "min_temp"
+              ]
+            },
+            "description": "Attempt to delete a configuration. Returns 405 Method Not Allowed because ROS 2 does not support deleting parameters at runtime. The Allow header indicates GET and PUT are supported."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Configuration (Error - Not Found)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/configurations/nonexistent_param",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "configurations",
+                "nonexistent_param"
+              ]
+            },
+            "description": "Example of requesting a non-existent parameter. Returns 404 with error details."
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

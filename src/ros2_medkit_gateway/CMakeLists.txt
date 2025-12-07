@@ -51,6 +51,7 @@ add_library(gateway_lib STATIC
   src/type_introspection.cpp
   src/native_topic_sampler.cpp
   src/operation_manager.cpp
+  src/configuration_manager.cpp
 )
 
 ament_target_dependencies(gateway_lib
@@ -152,6 +153,7 @@ if(BUILD_TESTING)
   )
   ament_target_dependencies(demo_engine_temp_sensor
     rclcpp
+    rcl_interfaces
     sensor_msgs
   )
   install(TARGETS demo_engine_temp_sensor

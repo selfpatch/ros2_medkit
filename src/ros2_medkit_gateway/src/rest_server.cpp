@@ -146,6 +146,31 @@ void RESTServer::setup_routes() {
                   [this](const httplib::Request & req, httplib::Response & res) {
                     handle_action_cancel(req, res);
                   });
+
+  // Configurations endpoints - SOVD Configurations API mapped to ROS2 parameters
+  // List all configurations (parameters) for a component
+  server_->Get((api_path("/components") + R"(/([^/]+)/configurations$)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_list_configurations(req, res);
+               });
+
+  // Get specific configuration (parameter) - register before general route
+  server_->Get((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_get_configuration(req, res);
+               });
+
+  // Set configuration (parameter)
+  server_->Put((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_set_configuration(req, res);
+               });
+
+  // Delete configuration - not supported in ROS2 (returns 405)
+  server_->Delete((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)").c_str(),
+                  [this](const httplib::Request & req, httplib::Response & res) {
+                    handle_delete_configuration(req, res);
+                  });
 }
 
 void RESTServer::start() {
@@ -229,8 +254,16 @@ void RESTServer::handle_root(const httplib::Request & req, httplib::Response & r
                       "POST /api/v1/components/{component_id}/operations/{operation_name}",
                       "GET /api/v1/components/{component_id}/operations/{operation_name}/status",
                       "GET /api/v1/components/{component_id}/operations/{operation_name}/result",
-                      "DELETE /api/v1/components/{component_id}/operations/{operation_name}"})},
-        {"capabilities", {{"discovery", true}, {"data_access", true}, {"operations", true}, {"async_actions", true}}}};
+                      "DELETE /api/v1/components/{component_id}/operations/{operation_name}",
+                      "GET /api/v1/components/{component_id}/configurations",
+                      "GET /api/v1/components/{component_id}/configurations/{param_name}",
+                      "PUT /api/v1/components/{component_id}/configurations/{param_name}"})},
+        {"capabilities",
+         {{"discovery", true},
+          {"data_access", true},
+          {"operations", true},
+          {"async_actions", true},
+          {"configurations", true}}}};
 
     res.set_content(response.dump(2), "application/json");
   } catch (const std::exception & e) {
@@ -855,7 +888,7 @@ void RESTServer::handle_action_status(const httplib::Request & req, httplib::Res
                        {"status", action_status_to_string(goal_info->status)},
                        {"action_path", goal_info->action_path},
                        {"action_type", goal_info->action_type}};
-      if (!goal_info->last_feedback.empty() && !goal_info->last_feedback.is_null()) {
+      if (!goal_info->last_feedback.is_null() && !goal_info->last_feedback.empty()) {
         response["last_feedback"] = goal_info->last_feedback;
       }
       res.set_content(response.dump(2), "application/json");
@@ -892,7 +925,7 @@ void RESTServer::handle_action_status(const httplib::Request & req, httplib::Res
                           {"status", action_status_to_string(goal.status)},
                           {"action_path", goal.action_path},
                           {"action_type", goal.action_type}};
-        if (!goal.last_feedback.empty() && !goal.last_feedback.is_null()) {
+        if (!goal.last_feedback.is_null() && !goal.last_feedback.empty()) {
           goal_json["last_feedback"] = goal.last_feedback;
         }
         goals_array.push_back(goal_json);
@@ -913,7 +946,7 @@ void RESTServer::handle_action_status(const httplib::Request & req, httplib::Res
                        {"status", action_status_to_string(goal_info->status)},
                        {"action_path", goal_info->action_path},
                        {"action_type", goal_info->action_type}};
-      if (!goal_info->last_feedback.empty() && !goal_info->last_feedback.is_null()) {
+      if (!goal_info->last_feedback.is_null() && !goal_info->last_feedback.empty()) {
         response["last_feedback"] = goal_info->last_feedback;
       }
       res.set_content(response.dump(2), "application/json");
@@ -1062,6 +1095,290 @@ void RESTServer::handle_action_cancel(const httplib::Request & req, httplib::Res
     res.set_content(json{{"error", "Failed to cancel action"}, {"details", e.what()}}.dump(2), "application/json");
     RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_action_cancel: %s", e.what());
   }
+}
+
+void RESTServer::handle_list_configurations(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  try {
+    if (req.matches.size() < 2) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"},
+                           {"details", component_validation.error()},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    const auto cache = node_->get_entity_cache();
+
+    // Find component to get its namespace and node name
+    std::string node_name;
+    bool component_found = false;
+
+    for (const auto & component : cache.components) {
+      if (component.id == component_id) {
+        node_name = component.namespace_path + "/" + component.id;
+        component_found = true;
+        break;
+      }
+    }
+
+    if (!component_found) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    auto config_mgr = node_->get_configuration_manager();
+    auto result = config_mgr->list_parameters(node_name);
+
+    if (result.success) {
+      json response = {{"component_id", component_id}, {"node_name", node_name}, {"parameters", result.data}};
+      res.set_content(response.dump(2), "application/json");
+    } else {
+      res.status = StatusCode::ServiceUnavailable_503;
+      res.set_content(
+          json{{"error", "Failed to list parameters"}, {"details", result.error_message}, {"node_name", node_name}}
+              .dump(2),
+          "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(
+        json{{"error", "Failed to list configurations"}, {"details", e.what()}, {"component_id", component_id}}.dump(2),
+        "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_list_configurations for component '%s': %s",
+                 component_id.c_str(), e.what());
+  }
+}
+
+void RESTServer::handle_get_configuration(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string param_name;
+  try {
+    if (req.matches.size() < 3) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+    param_name = req.matches[2];
+
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"},
+                           {"details", component_validation.error()},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Parameter names may contain dots, so we use a more permissive validation
+    if (param_name.empty() || param_name.length() > 256) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(
+          json{{"error", "Invalid parameter name"}, {"details", "Parameter name is empty or too long"}}.dump(2),
+          "application/json");
+      return;
+    }
+
+    const auto cache = node_->get_entity_cache();
+
+    std::string node_name;
+    bool component_found = false;
+
+    for (const auto & component : cache.components) {
+      if (component.id == component_id) {
+        node_name = component.namespace_path + "/" + component.id;
+        component_found = true;
+        break;
+      }
+    }
+
+    if (!component_found) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    auto config_mgr = node_->get_configuration_manager();
+    auto result = config_mgr->get_parameter(node_name, param_name);
+
+    if (result.success) {
+      json response = {{"component_id", component_id}, {"parameter", result.data}};
+      res.set_content(response.dump(2), "application/json");
+    } else {
+      // Check if it's a "not found" error
+      if (result.error_message.find("not found") != std::string::npos ||
+          result.error_message.find("Parameter not found") != std::string::npos) {
+        res.status = StatusCode::NotFound_404;
+      } else {
+        res.status = StatusCode::ServiceUnavailable_503;
+      }
+      res.set_content(json{{"error", "Failed to get parameter"},
+                           {"details", result.error_message},
+                           {"component_id", component_id},
+                           {"param_name", param_name}}
+                          .dump(2),
+                      "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Failed to get configuration"},
+                         {"details", e.what()},
+                         {"component_id", component_id},
+                         {"param_name", param_name}}
+                        .dump(2),
+                    "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"),
+                 "Error in handle_get_configuration for component '%s', param '%s': %s", component_id.c_str(),
+                 param_name.c_str(), e.what());
+  }
+}
+
+void RESTServer::handle_set_configuration(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string param_name;
+  try {
+    if (req.matches.size() < 3) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+    param_name = req.matches[2];
+
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"},
+                           {"details", component_validation.error()},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    if (param_name.empty() || param_name.length() > 256) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(
+          json{{"error", "Invalid parameter name"}, {"details", "Parameter name is empty or too long"}}.dump(2),
+          "application/json");
+      return;
+    }
+
+    // Parse request body
+    json body;
+    try {
+      body = json::parse(req.body);
+    } catch (const json::parse_error & e) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid JSON in request body"}, {"details", e.what()}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Extract value from request body
+    if (!body.contains("value")) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(
+          json{{"error", "Missing 'value' field"}, {"details", "Request body must contain 'value' field"}}.dump(2),
+          "application/json");
+      return;
+    }
+
+    json value = body["value"];
+
+    const auto cache = node_->get_entity_cache();
+
+    std::string node_name;
+    bool component_found = false;
+
+    for (const auto & component : cache.components) {
+      if (component.id == component_id) {
+        node_name = component.namespace_path + "/" + component.id;
+        component_found = true;
+        break;
+      }
+    }
+
+    if (!component_found) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    auto config_mgr = node_->get_configuration_manager();
+    auto result = config_mgr->set_parameter(node_name, param_name, value);
+
+    if (result.success) {
+      json response = {{"status", "success"}, {"component_id", component_id}, {"parameter", result.data}};
+      res.set_content(response.dump(2), "application/json");
+    } else {
+      // Check if it's a read-only, not found, or service unavailable error
+      if (result.error_message.find("read-only") != std::string::npos ||
+          result.error_message.find("read only") != std::string::npos ||
+          result.error_message.find("is read_only") != std::string::npos) {
+        res.status = StatusCode::Forbidden_403;
+      } else if (result.error_message.find("not found") != std::string::npos ||
+                 result.error_message.find("Parameter not found") != std::string::npos) {
+        res.status = StatusCode::NotFound_404;
+      } else if (result.error_message.find("not available") != std::string::npos ||
+                 result.error_message.find("service not available") != std::string::npos) {
+        res.status = StatusCode::ServiceUnavailable_503;
+      } else {
+        res.status = StatusCode::BadRequest_400;
+      }
+      res.set_content(json{{"error", "Failed to set parameter"},
+                           {"details", result.error_message},
+                           {"component_id", component_id},
+                           {"param_name", param_name}}
+                          .dump(2),
+                      "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Failed to set configuration"},
+                         {"details", e.what()},
+                         {"component_id", component_id},
+                         {"param_name", param_name}}
+                        .dump(2),
+                    "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"),
+                 "Error in handle_set_configuration for component '%s', param '%s': %s", component_id.c_str(),
+                 param_name.c_str(), e.what());
+  }
+}
+
+void RESTServer::handle_delete_configuration(const httplib::Request & req, httplib::Response & res) {
+  (void)req;  // Unused parameter
+
+  // ROS2 does not support deleting parameters at runtime (they can be unset but not removed)
+  // Return 405 Method Not Allowed per SOVD spec for unsupported operations
+  res.status = StatusCode::MethodNotAllowed_405;
+  res.set_header("Allow", "GET, PUT");
+  res.set_content(
+      json{{"error", "Method not allowed"},
+           {"details", "Deleting configurations is not supported in ROS2. Parameters cannot be removed at runtime."}}
+          .dump(2),
+      "application/json");
 }
 
 void RESTServer::set_cors_headers(httplib::Response & res, const std::string & origin) const {

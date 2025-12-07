@@ -1428,3 +1428,228 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(data['status'], 'succeeded')
 
         print(f'✓ Action status without goal_id returns latest goal: {data["goal_id"]}')
+
+    # ========== Configurations API Tests (test_45-52) ==========
+
+    def test_45_list_configurations(self):
+        """
+        Test GET /components/{component_id}/configurations lists all parameters.
+
+        @verifies REQ_INTEROP_023
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/components/temp_sensor/configurations',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('component_id', data)
+        self.assertEqual(data['component_id'], 'temp_sensor')
+        self.assertIn('node_name', data)
+        self.assertIn('parameters', data)
+        self.assertIsInstance(data['parameters'], list)
+
+        # Verify we have parameters from the demo node
+        param_names = [p['name'] for p in data['parameters']]
+        # The engine_temp_sensor should have these parameters we just added
+        self.assertIn('publish_rate', param_names)
+        self.assertIn('min_temp', param_names)
+        self.assertIn('max_temp', param_names)
+        self.assertIn('temp_step', param_names)
+
+        # Verify parameter structure
+        for param in data['parameters']:
+            self.assertIn('name', param)
+            self.assertIn('value', param)
+            self.assertIn('type', param)
+
+        print(f'✓ List configurations test passed: {len(data["parameters"])} parameters')
+
+    def test_46_get_configuration(self):
+        """
+        Test GET /components/{component_id}/configurations/{param_name} gets parameter.
+
+        @verifies REQ_INTEROP_023
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/components/temp_sensor/configurations/publish_rate',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('component_id', data)
+        self.assertEqual(data['component_id'], 'temp_sensor')
+        self.assertIn('parameter', data)
+
+        param = data['parameter']
+        self.assertIn('name', param)
+        self.assertEqual(param['name'], 'publish_rate')
+        self.assertIn('value', param)
+        self.assertIn('type', param)
+        self.assertEqual(param['type'], 'double')
+        # Default value is 2.0
+        self.assertEqual(param['value'], 2.0)
+
+        print(f'✓ Get configuration test passed: {param["name"]}={param["value"]}')
+
+    def test_47_set_configuration(self):
+        """
+        Test PUT /components/{component_id}/configurations/{param_name} sets parameter.
+
+        @verifies REQ_INTEROP_024
+        """
+        # Set a new value
+        response = requests.put(
+            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            json={'value': 80.0},
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('status', data)
+        self.assertEqual(data['status'], 'success')
+        self.assertIn('component_id', data)
+        self.assertEqual(data['component_id'], 'temp_sensor')
+        self.assertIn('parameter', data)
+
+        param = data['parameter']
+        self.assertIn('name', param)
+        self.assertEqual(param['name'], 'min_temp')
+        self.assertIn('value', param)
+        self.assertEqual(param['value'], 80.0)
+        self.assertIn('type', param)
+        self.assertEqual(param['type'], 'double')
+
+        # Verify the value was actually set by reading it back
+        verify_response = requests.get(
+            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            timeout=10
+        )
+        self.assertEqual(verify_response.status_code, 200)
+        verify_data = verify_response.json()
+        self.assertEqual(verify_data['parameter']['value'], 80.0)
+
+        # Reset the value back to default
+        requests.put(
+            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            json={'value': 85.0},
+            timeout=10
+        )
+
+        print(f'✓ Set configuration test passed: {param["name"]}={param["value"]}')
+
+    def test_48_delete_configuration_not_allowed(self):
+        """
+        Test DELETE /components/{component_id}/configurations/{param_name} returns 405.
+
+        @verifies REQ_INTEROP_025
+        """
+        response = requests.delete(
+            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 405)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Method not allowed')
+        self.assertIn('details', data)
+        self.assertIn('not supported', data['details'].lower())
+
+        # Verify Allow header is set
+        self.assertIn('Allow', response.headers)
+        self.assertIn('GET', response.headers['Allow'])
+        self.assertIn('PUT', response.headers['Allow'])
+
+        print('✓ Delete configuration not allowed test passed')
+
+    def test_49_configurations_nonexistent_component(self):
+        """
+        Test GET /components/{component_id}/configurations returns 404 for unknown component.
+
+        @verifies REQ_INTEROP_023
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/components/nonexistent_component/configurations',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Component not found')
+        self.assertIn('component_id', data)
+        self.assertEqual(data['component_id'], 'nonexistent_component')
+
+        print('✓ Configurations nonexistent component test passed')
+
+    def test_50_configuration_nonexistent_parameter(self):
+        """
+        Test GET configurations/{param_name} returns 404 for unknown param.
+
+        @verifies REQ_INTEROP_023
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/components/temp_sensor/configurations/nonexistent_param',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertIn('param_name', data)
+        self.assertEqual(data['param_name'], 'nonexistent_param')
+
+        print('✓ Configuration nonexistent parameter test passed')
+
+    def test_51_set_configuration_missing_value(self):
+        """
+        Test PUT configurations/{param_name} returns 400 when value missing.
+
+        @verifies REQ_INTEROP_024
+        """
+        response = requests.put(
+            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            json={},
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 400)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertIn('value', data['error'].lower())
+
+        print('✓ Set configuration missing value test passed')
+
+    def test_52_root_endpoint_includes_configurations(self):
+        """
+        Test that root endpoint lists configurations endpoints and capability.
+
+        @verifies REQ_INTEROP_023
+        """
+        data = self._get_json('/')
+
+        # Verify configurations endpoints are listed
+        self.assertIn('endpoints', data)
+        self.assertIn(
+            'GET /api/v1/components/{component_id}/configurations',
+            data['endpoints']
+        )
+        self.assertIn(
+            'GET /api/v1/components/{component_id}/configurations/{param_name}',
+            data['endpoints']
+        )
+        self.assertIn(
+            'PUT /api/v1/components/{component_id}/configurations/{param_name}',
+            data['endpoints']
+        )
+
+        # Verify configurations capability is listed
+        self.assertIn('capabilities', data)
+        self.assertIn('configurations', data['capabilities'])
+        self.assertTrue(data['capabilities']['configurations'])
+
+        print('✓ Root endpoint includes configurations test passed')

@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/config.hpp"
+#include "ros2_medkit_gateway/configuration_manager.hpp"
 #include "ros2_medkit_gateway/data_access_manager.hpp"
 #include "ros2_medkit_gateway/discovery_manager.hpp"
 #include "ros2_medkit_gateway/models.hpp"
@@ -60,6 +61,12 @@ class GatewayNode : public rclcpp::Node {
    */
   DiscoveryManager * get_discovery_manager() const;
 
+  /**
+   * @brief Get the ConfigurationManager instance
+   * @return Raw pointer to ConfigurationManager (valid for lifetime of GatewayNode)
+   */
+  ConfigurationManager * get_configuration_manager() const;
+
  private:
   void refresh_cache();
   void start_rest_server();
@@ -75,6 +82,7 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<DiscoveryManager> discovery_mgr_;
   std::unique_ptr<DataAccessManager> data_access_mgr_;
   std::unique_ptr<OperationManager> operation_mgr_;
+  std::unique_ptr<ConfigurationManager> config_mgr_;
   std::unique_ptr<RESTServer> rest_server_;
 
   // Cache with thread safety

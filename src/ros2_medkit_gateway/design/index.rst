@@ -33,6 +33,7 @@ The following diagram shows the relationships between the main components of the
            + get_data_access_manager(): DataAccessManager*
            + get_operation_manager(): OperationManager*
            + get_discovery_manager(): DiscoveryManager*
+           + get_configuration_manager(): ConfigurationManager*
        }
 
        class DiscoveryManager {
@@ -69,6 +70,14 @@ The following diagram shows the relationships between the main components of the
            + publish_to_topic(): json
            + get_topic_sample_native(): json
            + get_component_data_native(): json
+       }
+
+       class ConfigurationManager {
+           + list_parameters(): ParameterResult
+           + get_parameter(): ParameterResult
+           + set_parameter(): ParameterResult
+           + describe_parameter(): ParameterResult
+           + is_node_available(): bool
        }
 
        class NativeTopicSampler {
@@ -141,15 +150,17 @@ The following diagram shows the relationships between the main components of the
    GatewayNode *-down-> RESTServer : owns
    GatewayNode *-down-> DataAccessManager : owns
    GatewayNode *-down-> OperationManager : owns
+   GatewayNode *-down-> ConfigurationManager : owns
    GatewayNode *-down-> EntityCache : owns
 
    ' Discovery Manager uses Node interface
    DiscoveryManager --> "rclcpp::Node" : uses
 
-   ' REST Server references Gateway, DataAccessManager, and OperationManager
+   ' REST Server references Gateway, DataAccessManager, OperationManager, and ConfigurationManager
    RESTServer --> GatewayNode : uses
    RESTServer --> DataAccessManager : uses
    RESTServer --> OperationManager : uses
+   RESTServer --> ConfigurationManager : uses
 
    ' OperationManager uses DiscoveryManager and CLI
    OperationManager --> DiscoveryManager : uses
@@ -162,6 +173,9 @@ The following diagram shows the relationships between the main components of the
 
    ' NativeTopicSampler uses Node interface
    NativeTopicSampler --> "rclcpp::Node" : uses
+
+   ' ConfigurationManager uses Node interface for parameter clients
+   ConfigurationManager --> "rclcpp::Node" : uses
 
    ' Entity Cache aggregates entities
    EntityCache o-right-> Area : contains many
@@ -215,12 +229,21 @@ Main Components
    - Discovery endpoints: ``/health``, ``/``, ``/areas``, ``/components``, ``/areas/{area_id}/components``
    - Data endpoints: ``/components/{component_id}/data``, ``/components/{component_id}/data/{topic_name}``
    - Operations endpoints: ``POST .../operations/{op}`` (execute), ``GET .../operations/{op}/status`` (status), ``DELETE .../operations/{op}`` (cancel)
+   - Configurations endpoints: ``GET/PUT .../configurations``, ``GET/PUT .../configurations/{param}``
    - Retrieves cached entities from the GatewayNode
    - Uses DataAccessManager for runtime topic data access
    - Uses OperationManager for service/action execution
+   - Uses ConfigurationManager for parameter CRUD operations
    - Runs on configurable host and port with CORS support
 
-5. **DataAccessManager** - Reads runtime data from ROS 2 topics
+5. **ConfigurationManager** - Manages ROS 2 node parameters
+   - Lists all parameters for a node via ``rclcpp::SyncParametersClient``
+   - Gets/sets individual parameter values with type conversion
+   - Provides parameter descriptors (description, constraints, read-only flag)
+   - Caches parameter clients per node for efficiency
+   - Converts between JSON and ROS 2 parameter types automatically
+
+6. **DataAccessManager** - Reads runtime data from ROS 2 topics
    - Uses native rclcpp APIs for fast topic discovery and sampling
    - Checks publisher counts before sampling to skip idle topics instantly
    - Returns metadata (type, schema) for topics without publishers
@@ -228,30 +251,30 @@ Main Components
    - Returns topic data as JSON with metadata (topic name, timestamp, type info)
    - Parallel topic sampling with configurable concurrency limit (``max_parallel_topic_samples``, default: 10)
 
-6. **NativeTopicSampler** - Fast topic sampling using native rclcpp APIs
+7. **NativeTopicSampler** - Fast topic sampling using native rclcpp APIs
    - Discovers topics via ``node->get_topic_names_and_types()``
    - Checks ``count_publishers()`` before sampling to skip idle topics
    - Returns metadata instantly for topics without publishers (no CLI timeout)
    - Significantly improves UX when robot has many idle topics
 
-7. **ROS2CLIWrapper** - Executes ROS 2 CLI commands safely
+8. **ROS2CLIWrapper** - Executes ROS 2 CLI commands safely
    - Used for publishing (``ros2 topic pub``), service calls, and action operations
    - Wraps ``popen()`` with RAII for exception safety during command execution
    - Checks command exit status to detect failures
    - Prevents command injection with shell argument escaping
    - Validates command availability before execution
 
-8. **OutputParser** - Converts ROS 2 CLI output to JSON
+9. **OutputParser** - Converts ROS 2 CLI output to JSON
    - Parses YAML output from ``ros2 topic echo`` and ``ros2 service call``
    - Preserves type information (bool → int → double → string precedence)
    - Handles multi-document YAML streams correctly
    - Converts ROS message structures to nested JSON objects
    - Provides static ``yaml_to_json()`` utility for reuse
 
-9. **Data Models** - Entity representations
-   - ``Area`` - Physical or logical domain
-   - ``Component`` - Hardware or software component with attached operations
-   - ``ServiceInfo`` - Service metadata (path, name, type)
-   - ``ActionInfo`` - Action metadata (path, name, type)
-   - ``EntityCache`` - Thread-safe cache of discovered entities
+10. **Data Models** - Entity representations
+    - ``Area`` - Physical or logical domain
+    - ``Component`` - Hardware or software component with attached operations
+    - ``ServiceInfo`` - Service metadata (path, name, type)
+    - ``ActionInfo`` - Action metadata (path, name, type)
+    - ``EntityCache`` - Thread-safe cache of discovered entities
 
