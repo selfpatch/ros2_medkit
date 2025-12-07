@@ -208,4 +208,45 @@ json DataAccessManager::get_component_data_native(const std::string & component_
   return result;
 }
 
+json DataAccessManager::get_component_data_by_fqn(const std::string & component_fqn, double timeout_sec) {
+  json result = json::array();
+
+  // Get topics this component publishes/subscribes to using the topic map
+  auto component_topics = native_sampler_->get_component_topics(component_fqn);
+
+  // Combine publishes and subscribes into unique set of topics
+  std::set<std::string> all_topics;
+  for (const auto & topic : component_topics.publishes) {
+    all_topics.insert(topic);
+  }
+  for (const auto & topic : component_topics.subscribes) {
+    all_topics.insert(topic);
+  }
+
+  if (all_topics.empty()) {
+    RCLCPP_WARN(node_->get_logger(), "No topics found for component '%s'", component_fqn.c_str());
+    return result;
+  }
+
+  RCLCPP_INFO(node_->get_logger(), "Found %zu topics for component '%s' (publishes: %zu, subscribes: %zu)",
+              all_topics.size(), component_fqn.c_str(), component_topics.publishes.size(),
+              component_topics.subscribes.size());
+
+  // Convert set to vector for parallel sampling
+  std::vector<std::string> topics_vec(all_topics.begin(), all_topics.end());
+
+  // Use native parallel sampling with publisher count optimization
+  auto samples = native_sampler_->sample_topics_parallel(topics_vec, timeout_sec, max_parallel_samples_);
+
+  for (const auto & sample : samples) {
+    try {
+      result.push_back(sample_result_to_json(sample));
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(node_->get_logger(), "Failed to convert sample for '%s': %s", sample.topic_name.c_str(), e.what());
+    }
+  }
+
+  return result;
+}
+
 }  // namespace ros2_medkit_gateway

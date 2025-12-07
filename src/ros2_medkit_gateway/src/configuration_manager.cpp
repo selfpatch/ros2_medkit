@@ -27,6 +27,9 @@ ConfigurationManager::ConfigurationManager(rclcpp::Node * node) : node_(node) {
   rclcpp::NodeOptions options;
   options.start_parameter_services(false);
   options.start_parameter_event_publisher(false);
+  // Don't inherit node name/namespace from global arguments (--ros-args -r __node:=...)
+  // Without this, the internal node would have the same name as the main gateway node
+  options.use_global_arguments(false);
   param_node_ = std::make_shared<rclcpp::Node>("_param_client_node", options);
   RCLCPP_INFO(node_->get_logger(), "ConfigurationManager initialized");
 }

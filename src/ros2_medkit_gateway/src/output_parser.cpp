@@ -14,19 +14,81 @@
 
 #include "ros2_medkit_gateway/output_parser.hpp"
 
+#include <sstream>
 #include <vector>
 
 namespace ros2_medkit_gateway {
 
+namespace {
+
+/**
+ * @brief Preprocess ros2 topic echo output to extract clean YAML
+ *
+ * ros2 topic echo can output warning messages like:
+ * - "A message was lost!!!" with count info
+ * - Other diagnostic messages
+ *
+ * This function extracts the last valid YAML document from the output.
+ */
+std::string preprocess_topic_echo_output(const std::string & raw_output) {
+  // Split by document separator "---"
+  std::vector<std::string> documents;
+  std::istringstream stream(raw_output);
+  std::string line;
+  std::string current_doc;
+
+  while (std::getline(stream, line)) {
+    // Skip warning lines from ros2 topic echo
+    if (line.find("A message was lost") != std::string::npos || line.find("total count") != std::string::npos) {
+      continue;
+    }
+
+    // Document separator
+    if (line == "---") {
+      if (!current_doc.empty()) {
+        documents.push_back(current_doc);
+        current_doc.clear();
+      }
+      continue;
+    }
+
+    // Accumulate non-empty lines
+    if (!line.empty()) {
+      current_doc += line + "\n";
+    }
+  }
+
+  // Don't forget the last document if there's no trailing ---
+  if (!current_doc.empty()) {
+    documents.push_back(current_doc);
+  }
+
+  // Return the last valid document (the actual message data)
+  if (documents.empty()) {
+    return "";
+  }
+
+  return documents.back();
+}
+
+}  // namespace
+
 json OutputParser::parse_yaml(const std::string & yaml_str) {
   try {
-    std::vector<YAML::Node> docs = YAML::LoadAll(yaml_str);
+    // Preprocess to remove warning messages and get clean YAML
+    std::string clean_yaml = preprocess_topic_echo_output(yaml_str);
+
+    if (clean_yaml.empty()) {
+      throw std::runtime_error("No valid YAML content found in input");
+    }
+
+    std::vector<YAML::Node> docs = YAML::LoadAll(clean_yaml);
 
     if (docs.empty()) {
       throw std::runtime_error("No YAML documents found in input");
     }
 
-    // Parse only the first document (ros2 topic echo outputs single document)
+    // Parse only the first document (should be the message data after preprocessing)
     return yaml_to_json(docs[0]);
   } catch (const YAML::Exception & e) {
     throw std::runtime_error("Failed to parse YAML: " + std::string(e.what()));

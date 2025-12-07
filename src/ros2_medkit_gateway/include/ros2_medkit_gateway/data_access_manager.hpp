@@ -95,8 +95,24 @@ class DataAccessManager {
    * @param component_namespace Component's namespace (e.g., "/powertrain/engine")
    * @param timeout_sec Timeout per topic for topics that have publishers
    * @return JSON array with topic data/metadata
+   * @deprecated Use get_component_data_by_fqn instead for accurate topic discovery
    */
   json get_component_data_native(const std::string & component_namespace, double timeout_sec = 1.0);
+
+  /**
+   * @brief Get component data by fully qualified name using topic map
+   *
+   * This method finds all topics that the component publishes or subscribes to
+   * by building a component-topic map from the ROS graph. This is more accurate
+   * than namespace-based filtering because:
+   * - A node can publish/subscribe to topics outside its namespace
+   * - Topics like /clock, /tf, /diagnostics are in root namespace but used by many nodes
+   *
+   * @param component_fqn Component's fully qualified name (e.g., "/ros2_medkit_gateway")
+   * @param timeout_sec Timeout per topic for topics that have publishers
+   * @return JSON array with topic data/metadata for all topics this component interacts with
+   */
+  json get_component_data_by_fqn(const std::string & component_fqn, double timeout_sec = 1.0);
 
   /**
    * @brief Get single topic sample using native rclcpp APIs
@@ -108,6 +124,14 @@ class DataAccessManager {
    * @return JSON with topic data or metadata
    */
   json get_topic_sample_native(const std::string & topic_name, double timeout_sec = 1.0);
+
+  /**
+   * @brief Get the configured topic sample timeout
+   * @return Timeout in seconds for topic sampling
+   */
+  double get_topic_sample_timeout() const {
+    return topic_sample_timeout_sec_;
+  }
 
  private:
   /**

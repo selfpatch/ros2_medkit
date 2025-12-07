@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <sstream>
 
 #include "ros2_medkit_gateway/exceptions.hpp"
@@ -407,13 +408,13 @@ void RESTServer::handle_component_data(const httplib::Request & req, httplib::Re
 
     const auto cache = node_->get_entity_cache();
 
-    // Find component in cache
-    std::string component_namespace;
+    // Find component in cache and get its topics from the topic map
+    ComponentTopics component_topics;
     bool component_found = false;
 
     for (const auto & component : cache.components) {
       if (component.id == component_id) {
-        component_namespace = component.namespace_path;
+        component_topics = component.topics;
         component_found = true;
         break;
       }
@@ -426,10 +427,72 @@ void RESTServer::handle_component_data(const httplib::Request & req, httplib::Re
       return;
     }
 
-    // Get component data from DataAccessManager (with fallback to metadata)
-    // Use namespace_path to find topics (topics are relative to namespace, not FQN)
+    // Combine publishes and subscribes into unique set of topics
+    std::set<std::string> all_topics;
+    for (const auto & topic : component_topics.publishes) {
+      all_topics.insert(topic);
+    }
+    for (const auto & topic : component_topics.subscribes) {
+      all_topics.insert(topic);
+    }
+
+    // Sample all topics for this component
     auto data_access_mgr = node_->get_data_access_manager();
-    json component_data = data_access_mgr->get_component_data_with_fallback(component_namespace);
+    json component_data = json::array();
+
+    if (!all_topics.empty()) {
+      // Convert set to vector for parallel sampling
+      std::vector<std::string> topics_vec(all_topics.begin(), all_topics.end());
+
+      // Use native sampler for parallel sampling with fallback to metadata
+      auto native_sampler = data_access_mgr->get_native_sampler();
+      auto samples =
+          native_sampler->sample_topics_parallel(topics_vec, data_access_mgr->get_topic_sample_timeout(), 10);
+
+      for (const auto & sample : samples) {
+        json topic_json;
+        topic_json["topic"] = sample.topic_name;
+        topic_json["timestamp"] = sample.timestamp_ns;
+        topic_json["publisher_count"] = sample.publisher_count;
+        topic_json["subscriber_count"] = sample.subscriber_count;
+
+        if (sample.has_data && sample.data) {
+          topic_json["status"] = "data";
+          topic_json["data"] = *sample.data;
+        } else {
+          topic_json["status"] = "metadata_only";
+        }
+
+        // Add endpoint information with QoS
+        json publishers_json = json::array();
+        for (const auto & pub : sample.publishers) {
+          publishers_json.push_back(pub.to_json());
+        }
+        topic_json["publishers"] = publishers_json;
+
+        json subscribers_json = json::array();
+        for (const auto & sub : sample.subscribers) {
+          subscribers_json.push_back(sub.to_json());
+        }
+        topic_json["subscribers"] = subscribers_json;
+
+        // Enrich with message type and schema
+        if (!sample.message_type.empty()) {
+          topic_json["type"] = sample.message_type;
+
+          try {
+            auto type_introspection = data_access_mgr->get_type_introspection();
+            auto type_info = type_introspection->get_type_info(sample.message_type);
+            topic_json["type_info"] = {{"schema", type_info.schema}, {"default_value", type_info.default_value}};
+          } catch (const std::exception & e) {
+            RCLCPP_DEBUG(rclcpp::get_logger("rest_server"), "Could not get type info for '%s': %s",
+                         sample.message_type.c_str(), e.what());
+          }
+        }
+
+        component_data.push_back(topic_json);
+      }
+    }
 
     res.set_content(component_data.dump(2), "application/json");
   } catch (const std::exception & e) {
