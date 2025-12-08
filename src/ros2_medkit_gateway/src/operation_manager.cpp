@@ -96,9 +96,10 @@ std::string OperationManager::json_to_yaml(const json & j) {
       ss << "]";
       return ss.str();
     } else if (val.is_string()) {
-      // Quote strings that contain special YAML characters
+      // Quote strings that contain special YAML characters or are empty
       std::string s = val.get<std::string>();
-      if (s.find_first_of(":{}[],\"'") != std::string::npos) {
+      // Empty strings must be quoted, otherwise YAML interprets them as null/None
+      if (s.empty() || s.find_first_of(":{}[],\"'") != std::string::npos) {
         return "'" + s + "'";
       }
       return s;
@@ -244,9 +245,11 @@ ServiceCallResult OperationManager::call_service(const std::string & service_pat
   ServiceCallResult result;
 
   try {
-    // Build ros2 service call command
+    // Build ros2 service call command with timeout
+    // -1 = single call (don't wait for response if service unavailable)
+    // timeout 10s = overall timeout to prevent hanging
     std::ostringstream cmd;
-    cmd << "ros2 service call " << ROS2CLIWrapper::escape_shell_arg(service_path) << " "
+    cmd << "timeout 10 ros2 service call " << ROS2CLIWrapper::escape_shell_arg(service_path) << " "
         << ROS2CLIWrapper::escape_shell_arg(service_type);
 
     // Add request data if not empty
@@ -264,9 +267,16 @@ ServiceCallResult OperationManager::call_service(const std::string & service_pat
     result.response = parse_service_response(output);
 
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(node_->get_logger(), "Service call failed for '%s': %s", service_path.c_str(), e.what());
+    std::string error_msg = e.what();
+    // Check if it was a timeout
+    if (error_msg.find("exit code 124") != std::string::npos) {
+      RCLCPP_WARN(node_->get_logger(), "Service call timed out for '%s'", service_path.c_str());
+      result.error_message = "Service call timed out (10s). The service may be unavailable or slow to respond.";
+    } else {
+      RCLCPP_ERROR(node_->get_logger(), "Service call failed for '%s': %s", service_path.c_str(), e.what());
+      result.error_message = error_msg;
+    }
     result.success = false;
-    result.error_message = e.what();
   }
 
   return result;

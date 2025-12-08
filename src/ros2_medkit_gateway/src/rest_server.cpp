@@ -130,6 +130,12 @@ void RESTServer::setup_routes() {
                   handle_component_operation(req, res);
                 });
 
+  // List component operations (GET) - list all services and actions for a component
+  server_->Get((api_path("/components") + R"(/([^/]+)/operations$)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_list_operations(req, res);
+               });
+
   // Action status (GET) - get current status of an action goal
   server_->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/status$)").c_str(),
                [this](const httplib::Request & req, httplib::Response & res) {
@@ -167,10 +173,16 @@ void RESTServer::setup_routes() {
                  handle_set_configuration(req, res);
                });
 
-  // Delete configuration - not supported in ROS2 (returns 405)
+  // Delete (reset) single configuration to default value
   server_->Delete((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)").c_str(),
                   [this](const httplib::Request & req, httplib::Response & res) {
                     handle_delete_configuration(req, res);
+                  });
+
+  // Delete (reset) all configurations to default values
+  server_->Delete((api_path("/components") + R"(/([^/]+)/configurations$)").c_str(),
+                  [this](const httplib::Request & req, httplib::Response & res) {
+                    handle_delete_all_configurations(req, res);
                   });
 }
 
@@ -252,6 +264,7 @@ void RESTServer::handle_root(const httplib::Request & req, httplib::Response & r
                       "GET /api/v1/areas/{area_id}/components", "GET /api/v1/components/{component_id}/data",
                       "GET /api/v1/components/{component_id}/data/{topic_name}",
                       "PUT /api/v1/components/{component_id}/data/{topic_name}",
+                      "GET /api/v1/components/{component_id}/operations",
                       "POST /api/v1/components/{component_id}/operations/{operation_name}",
                       "GET /api/v1/components/{component_id}/operations/{operation_name}/status",
                       "GET /api/v1/components/{component_id}/operations/{operation_name}/result",
@@ -718,6 +731,99 @@ void RESTServer::handle_component_topic_publish(const httplib::Request & req, ht
   }
 }
 
+void RESTServer::handle_list_operations(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  try {
+    if (req.matches.size() < 2) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"},
+                           {"details", component_validation.error()},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    const auto cache = node_->get_entity_cache();
+
+    // Find component in cache
+    bool component_found = false;
+    std::vector<ServiceInfo> services;
+    std::vector<ActionInfo> actions;
+
+    for (const auto & component : cache.components) {
+      if (component.id == component_id) {
+        services = component.services;
+        actions = component.actions;
+        component_found = true;
+        break;
+      }
+    }
+
+    if (!component_found) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Build response with services and actions
+    json operations = json::array();
+
+    // Get type introspection for schema info
+    auto data_access_mgr = node_->get_data_access_manager();
+    auto type_introspection = data_access_mgr->get_type_introspection();
+
+    for (const auto & svc : services) {
+      json svc_json = {{"name", svc.name}, {"path", svc.full_path}, {"type", svc.type}, {"kind", "service"}};
+
+      // Try to get schema for service type
+      try {
+        auto type_info = type_introspection->get_type_info(svc.type);
+        svc_json["type_info"] = {{"schema", type_info.schema}, {"default_value", type_info.default_value}};
+      } catch (const std::exception & e) {
+        RCLCPP_DEBUG(rclcpp::get_logger("rest_server"), "Could not get type info for service '%s': %s", svc.type.c_str(),
+                     e.what());
+      }
+
+      operations.push_back(svc_json);
+    }
+
+    for (const auto & act : actions) {
+      json act_json = {{"name", act.name}, {"path", act.full_path}, {"type", act.type}, {"kind", "action"}};
+
+      // Try to get schema for action type
+      try {
+        auto type_info = type_introspection->get_type_info(act.type);
+        act_json["type_info"] = {{"schema", type_info.schema}, {"default_value", type_info.default_value}};
+      } catch (const std::exception & e) {
+        RCLCPP_DEBUG(rclcpp::get_logger("rest_server"), "Could not get type info for action '%s': %s", act.type.c_str(),
+                     e.what());
+      }
+
+      operations.push_back(act_json);
+    }
+
+    res.set_content(operations.dump(2), "application/json");
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(
+        json{{"error", "Failed to list operations"}, {"details", e.what()}, {"component_id", component_id}}.dump(2),
+        "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_list_operations for component '%s': %s",
+                 component_id.c_str(), e.what());
+  }
+}
+
 void RESTServer::handle_component_operation(const httplib::Request & req, httplib::Response & res) {
   std::string component_id;
   std::string operation_name;
@@ -783,19 +889,35 @@ void RESTServer::handle_component_operation(const httplib::Request & req, httpli
 
     const auto cache = node_->get_entity_cache();
 
-    // Find component in cache
-    std::string component_namespace;
-    bool component_found = false;
+    // Find component in cache and look up service/action with full_path
+    const Component * found_component = nullptr;
+    std::optional<ServiceInfo> service_info;
+    std::optional<ActionInfo> action_info;
 
     for (const auto & component : cache.components) {
       if (component.id == component_id) {
-        component_namespace = component.namespace_path;
-        component_found = true;
+        found_component = &component;
+
+        // Search in component's services list (has full_path)
+        for (const auto & svc : component.services) {
+          if (svc.name == operation_name) {
+            service_info = svc;
+            break;
+          }
+        }
+
+        // Search in component's actions list (has full_path)
+        for (const auto & act : component.actions) {
+          if (act.name == operation_name) {
+            action_info = act;
+            break;
+          }
+        }
         break;
       }
     }
 
-    if (!component_found) {
+    if (!found_component) {
       res.status = StatusCode::NotFound_404;
       res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
                       "application/json");
@@ -804,10 +926,8 @@ void RESTServer::handle_component_operation(const httplib::Request & req, httpli
 
     // Check if operation is a service or action
     auto operation_mgr = node_->get_operation_manager();
-    auto discovery_mgr = node_->get_discovery_manager();
 
-    // First, check if it's an action
-    auto action_info = discovery_mgr->find_action(component_namespace, operation_name);
+    // First, check if it's an action (use full_path from cache)
     if (action_info.has_value()) {
       // Extract goal data (from 'goal' field or root object)
       json goal_data = json::object();
@@ -818,13 +938,14 @@ void RESTServer::handle_component_operation(const httplib::Request & req, httpli
         goal_data = body;
       }
 
-      std::optional<std::string> action_type;
+      // Use action type from cache or request body
+      std::string action_type = action_info->type;
       if (body.contains("type") && body["type"].is_string()) {
         action_type = body["type"].get<std::string>();
       }
 
-      auto action_result =
-          operation_mgr->send_component_action_goal(component_namespace, operation_name, action_type, goal_data);
+      // Use full_path from cache (e.g., "/waypoint_follower/navigate_to_pose")
+      auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data);
 
       if (action_result.success && action_result.goal_accepted) {
         auto tracked = operation_mgr->get_tracked_goal(action_result.goal_id);
@@ -860,24 +981,40 @@ void RESTServer::handle_component_operation(const httplib::Request & req, httpli
       return;
     }
 
-    // Otherwise, it's a service call
-    auto result =
-        operation_mgr->call_component_service(component_namespace, operation_name, service_type, request_data);
+    // Otherwise, check if it's a service call (must exist in component.services)
+    if (service_info.has_value()) {
+      // Use service type from cache or request body
+      std::string resolved_service_type = service_info->type;
+      if (service_type.has_value() && !service_type->empty()) {
+        resolved_service_type = *service_type;
+      }
 
-    if (result.success) {
-      json response = {{"status", "success"},
-                       {"kind", "service"},
-                       {"component_id", component_id},
-                       {"operation", operation_name},
-                       {"response", result.response}};
-      res.set_content(response.dump(2), "application/json");
+      // Use full_path from cache (e.g., "/waypoint_follower/get_available_states")
+      auto result = operation_mgr->call_service(service_info->full_path, resolved_service_type, request_data);
+
+      if (result.success) {
+        json response = {{"status", "success"},
+                         {"kind", "service"},
+                         {"component_id", component_id},
+                         {"operation", operation_name},
+                         {"response", result.response}};
+        res.set_content(response.dump(2), "application/json");
+      } else {
+        res.status = StatusCode::InternalServerError_500;
+        res.set_content(json{{"status", "error"},
+                             {"kind", "service"},
+                             {"component_id", component_id},
+                             {"operation", operation_name},
+                             {"error", result.error_message}}
+                            .dump(2),
+                        "application/json");
+      }
     } else {
-      res.status = StatusCode::InternalServerError_500;
-      res.set_content(json{{"status", "error"},
-                           {"kind", "service"},
+      // Neither service nor action found
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Operation not found"},
                            {"component_id", component_id},
-                           {"operation", operation_name},
-                           {"error", result.error_message}}
+                           {"operation_name", operation_name}}
                           .dump(2),
                       "application/json");
     }
@@ -1190,7 +1327,7 @@ void RESTServer::handle_list_configurations(const httplib::Request & req, httpli
 
     for (const auto & component : cache.components) {
       if (component.id == component_id) {
-        node_name = component.namespace_path + "/" + component.id;
+        node_name = component.fqn;  // Use fqn to avoid double slash for root namespace
         component_found = true;
         break;
       }
@@ -1266,7 +1403,7 @@ void RESTServer::handle_get_configuration(const httplib::Request & req, httplib:
 
     for (const auto & component : cache.components) {
       if (component.id == component_id) {
-        node_name = component.namespace_path + "/" + component.id;
+        node_name = component.fqn;  // Use fqn to avoid double slash for root namespace
         component_found = true;
         break;
       }
@@ -1375,7 +1512,7 @@ void RESTServer::handle_set_configuration(const httplib::Request & req, httplib:
 
     for (const auto & component : cache.components) {
       if (component.id == component_id) {
-        node_name = component.namespace_path + "/" + component.id;
+        node_name = component.fqn;  // Use fqn to avoid double slash for root namespace
         component_found = true;
         break;
       }
@@ -1431,17 +1568,141 @@ void RESTServer::handle_set_configuration(const httplib::Request & req, httplib:
 }
 
 void RESTServer::handle_delete_configuration(const httplib::Request & req, httplib::Response & res) {
-  (void)req;  // Unused parameter
+  std::string component_id;
+  std::string param_name;
 
-  // ROS2 does not support deleting parameters at runtime (they can be unset but not removed)
-  // Return 405 Method Not Allowed per SOVD spec for unsupported operations
-  res.status = StatusCode::MethodNotAllowed_405;
-  res.set_header("Allow", "GET, PUT");
-  res.set_content(
-      json{{"error", "Method not allowed"},
-           {"details", "Deleting configurations is not supported in ROS2. Parameters cannot be removed at runtime."}}
-          .dump(2),
-      "application/json");
+  try {
+    if (req.matches.size() < 3) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+    param_name = req.matches[2];
+
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"},
+                           {"details", component_validation.error()},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    const auto cache = node_->get_entity_cache();
+
+    // Find component to get its namespace and node name
+    std::string node_name;
+    bool component_found = false;
+
+    for (const auto & component : cache.components) {
+      if (component.id == component_id) {
+        node_name = component.fqn;
+        component_found = true;
+        break;
+      }
+    }
+
+    if (!component_found) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    auto config_mgr = node_->get_configuration_manager();
+    auto result = config_mgr->reset_parameter(node_name, param_name);
+
+    if (result.success) {
+      res.set_content(result.data.dump(2), "application/json");
+    } else {
+      res.status = StatusCode::ServiceUnavailable_503;
+      res.set_content(
+          json{{"error", "Failed to reset parameter"},
+               {"details", result.error_message},
+               {"node_name", node_name},
+               {"param_name", param_name}}
+              .dump(2),
+          "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(
+        json{{"error", "Failed to reset configuration"},
+             {"details", e.what()},
+             {"component_id", component_id},
+             {"param_name", param_name}}
+            .dump(2),
+        "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_delete_configuration: %s", e.what());
+  }
+}
+
+void RESTServer::handle_delete_all_configurations(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+
+  try {
+    if (req.matches.size() < 2) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"},
+                           {"details", component_validation.error()},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    const auto cache = node_->get_entity_cache();
+
+    // Find component to get its namespace and node name
+    std::string node_name;
+    bool component_found = false;
+
+    for (const auto & component : cache.components) {
+      if (component.id == component_id) {
+        node_name = component.fqn;
+        component_found = true;
+        break;
+      }
+    }
+
+    if (!component_found) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    auto config_mgr = node_->get_configuration_manager();
+    auto result = config_mgr->reset_all_parameters(node_name);
+
+    if (result.success) {
+      res.set_content(result.data.dump(2), "application/json");
+    } else {
+      // Partial success - some parameters were reset
+      res.status = StatusCode::MultiStatus_207;
+      res.set_content(result.data.dump(2), "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(
+        json{{"error", "Failed to reset configurations"}, {"details", e.what()}, {"component_id", component_id}}
+            .dump(2),
+        "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_delete_all_configurations: %s", e.what());
+  }
 }
 
 void RESTServer::set_cors_headers(httplib::Response & res, const std::string & origin) const {

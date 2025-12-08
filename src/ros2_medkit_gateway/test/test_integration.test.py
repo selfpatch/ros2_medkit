@@ -1082,7 +1082,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_32_operation_call_nonexistent_operation(self):
         """
-        Test operation call returns error for unknown operation.
+        Test operation call returns 404 for unknown operation.
 
         POST /components/{component_id}/operations/{operation_name}
 
@@ -1093,13 +1093,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             json={},
             timeout=10
         )
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 404)
 
         data = response.json()
-        self.assertIn('status', data)
-        self.assertEqual(data['status'], 'error')
         self.assertIn('error', data)
-        self.assertIn('nonexistent_op', data['error'])
+        self.assertIn('Operation not found', data['error'])
 
         print('✓ Operation call nonexistent operation test passed')
 
@@ -1594,30 +1592,48 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print(f'✓ Set configuration test passed: {param["name"]}={param["value"]}')
 
-    def test_48_delete_configuration_not_allowed(self):
+    def test_48_delete_configuration_resets_to_default(self):
         """
-        Test DELETE /components/{component_id}/configurations/{param_name} returns 405.
+        Test DELETE /components/{component_id}/configurations/{param_name} resets to default.
+
+        The DELETE method resets the parameter to its default value.
+        It first changes the value, then resets it, then verifies the reset.
 
         @verifies REQ_INTEROP_025
         """
+        # First, change the value from default
+        set_response = requests.put(
+            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            json={'value': -50.0},
+            timeout=10
+        )
+        self.assertEqual(set_response.status_code, 200)
+
+        # Now reset to default via DELETE
         response = requests.delete(
             f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
             timeout=10
         )
-        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('error', data)
-        self.assertEqual(data['error'], 'Method not allowed')
-        self.assertIn('details', data)
-        self.assertIn('not supported', data['details'].lower())
+        self.assertIn('reset_to_default', data)
+        self.assertTrue(data['reset_to_default'])
+        self.assertIn('name', data)
+        self.assertEqual(data['name'], 'min_temp')
+        self.assertIn('value', data)  # The value after reset
 
-        # Verify Allow header is set
-        self.assertIn('Allow', response.headers)
-        self.assertIn('GET', response.headers['Allow'])
-        self.assertIn('PUT', response.headers['Allow'])
+        # Verify the value was actually reset by reading it
+        get_response = requests.get(
+            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            timeout=10
+        )
+        self.assertEqual(get_response.status_code, 200)
+        get_data = get_response.json()
+        # The value should match what DELETE returned
+        self.assertEqual(get_data['value'], data['value'])
 
-        print('✓ Delete configuration not allowed test passed')
+        print(f'✓ Delete configuration (reset to default) test passed: value={data["value"]}')
 
     def test_49_configurations_nonexistent_component(self):
         """

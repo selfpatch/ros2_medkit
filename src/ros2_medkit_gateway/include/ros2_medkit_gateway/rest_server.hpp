@@ -50,6 +50,7 @@ class RESTServer {
   void handle_component_topic_data(const httplib::Request & req, httplib::Response & res);
   void handle_component_topic_publish(const httplib::Request & req, httplib::Response & res);
   void handle_component_operation(const httplib::Request & req, httplib::Response & res);
+  void handle_list_operations(const httplib::Request & req, httplib::Response & res);
   void handle_action_status(const httplib::Request & req, httplib::Response & res);
   void handle_action_result(const httplib::Request & req, httplib::Response & res);
   void handle_action_cancel(const httplib::Request & req, httplib::Response & res);
@@ -57,6 +58,7 @@ class RESTServer {
   void handle_get_configuration(const httplib::Request & req, httplib::Response & res);
   void handle_set_configuration(const httplib::Request & req, httplib::Response & res);
   void handle_delete_configuration(const httplib::Request & req, httplib::Response & res);
+  void handle_delete_all_configurations(const httplib::Request & req, httplib::Response & res);
 
   // Helper methods
   std::expected<void, std::string> validate_entity_id(const std::string & entity_id) const;

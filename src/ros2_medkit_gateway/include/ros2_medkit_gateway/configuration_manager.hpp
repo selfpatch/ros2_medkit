@@ -35,6 +35,7 @@ struct ParameterResult {
 
 /// Manager for ROS2 node parameters
 /// Provides CRUD operations on node parameters via native rclcpp APIs
+/// Also caches initial parameter values as "defaults" for reset operations
 class ConfigurationManager {
  public:
   explicit ConfigurationManager(rclcpp::Node * node);
@@ -57,9 +58,34 @@ class ConfigurationManager {
   /// @return ParameterResult with {name, value, type}
   ParameterResult set_parameter(const std::string & node_name, const std::string & param_name, const json & value);
 
+  /// Describe a parameter (get metadata)
+  /// @param node_name Fully qualified node name
+  /// @param param_name Parameter name
+  /// @return ParameterResult with parameter descriptor info
+  ParameterResult describe_parameter(const std::string & node_name, const std::string & param_name);
+
+  /// Reset a specific parameter to its default (initial) value
+  /// @param node_name Fully qualified node name
+  /// @param param_name Parameter name
+  /// @return ParameterResult with reset parameter info
+  ParameterResult reset_parameter(const std::string & node_name, const std::string & param_name);
+
+  /// Reset all parameters of a node to their default (initial) values
+  /// @param node_name Fully qualified node name
+  /// @return ParameterResult with count of reset parameters
+  ParameterResult reset_all_parameters(const std::string & node_name);
+
+  /// Check if a node exists and is reachable for parameter operations
+  /// @param node_name Fully qualified node name
+  /// @return true if node parameters are accessible
+  bool is_node_available(const std::string & node_name);
+
  private:
   /// Get or create a SyncParametersClient for the given node
   std::shared_ptr<rclcpp::SyncParametersClient> get_param_client(const std::string & node_name);
+
+  /// Cache default values for a node (called on first access)
+  void cache_default_values(const std::string & node_name);
 
   /// Convert ROS2 parameter type to string
   static std::string parameter_type_to_string(rclcpp::ParameterType type);
@@ -80,6 +106,11 @@ class ConfigurationManager {
   /// Cache of parameter clients per node (avoids recreating clients)
   mutable std::mutex clients_mutex_;
   std::map<std::string, std::shared_ptr<rclcpp::SyncParametersClient>> param_clients_;
+
+  /// Cache of default parameter values per node
+  /// Key: node_name, Value: map of param_name -> Parameter
+  mutable std::mutex defaults_mutex_;
+  std::map<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
 };
 
 }  // namespace ros2_medkit_gateway

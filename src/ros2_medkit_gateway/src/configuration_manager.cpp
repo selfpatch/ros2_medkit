@@ -52,20 +52,60 @@ std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_cl
 ParameterResult ConfigurationManager::list_parameters(const std::string & node_name) {
   ParameterResult result;
 
+  RCLCPP_DEBUG(node_->get_logger(), "list_parameters called for node: '%s'", node_name.c_str());
+
+  // Cache default values on first access to this node
+  cache_default_values(node_name);
+
   try {
     auto client = get_param_client(node_name);
+
+    RCLCPP_DEBUG(node_->get_logger(), "Got param client for node: '%s'", node_name.c_str());
 
     if (!client->wait_for_service(2s)) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
+      RCLCPP_WARN(node_->get_logger(), "Parameter service not available for node: '%s'", node_name.c_str());
       return result;
     }
+
+    RCLCPP_DEBUG(node_->get_logger(), "Service ready for node: '%s'", node_name.c_str());
 
     // List all parameter names
     auto param_names = client->list_parameters({}, 0);
 
-    // Get all parameter values
-    auto parameters = client->get_parameters(param_names.names);
+    RCLCPP_DEBUG(node_->get_logger(), "Got %zu parameter names for node: '%s'",
+                 param_names.names.size(), node_name.c_str());
+
+    // Log first few parameter names for debugging
+    for (size_t i = 0; i < std::min(param_names.names.size(), static_cast<size_t>(5)); ++i) {
+      RCLCPP_DEBUG(node_->get_logger(), "  param[%zu]: '%s'", i, param_names.names[i].c_str());
+    }
+
+    // Get all parameter values - try in smaller batches if needed
+    std::vector<rclcpp::Parameter> parameters;
+
+    // First try getting all at once
+    parameters = client->get_parameters(param_names.names);
+
+    if (parameters.empty() && !param_names.names.empty()) {
+      RCLCPP_WARN(node_->get_logger(), "get_parameters returned empty, trying one by one for node: '%s'",
+                  node_name.c_str());
+      // Try getting parameters one by one
+      for (const auto & name : param_names.names) {
+        try {
+          auto single_params = client->get_parameters({name});
+          if (!single_params.empty()) {
+            parameters.push_back(single_params[0]);
+          }
+        } catch (const std::exception & e) {
+          RCLCPP_DEBUG(node_->get_logger(), "Failed to get param '%s': %s", name.c_str(), e.what());
+        }
+      }
+    }
+
+    RCLCPP_DEBUG(node_->get_logger(), "Got %zu parameter values for node: '%s'",
+                 parameters.size(), node_name.c_str());
 
     json params_array = json::array();
     for (const auto & param : parameters) {
@@ -81,6 +121,8 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
   } catch (const std::exception & e) {
     result.success = false;
     result.error_message = std::string("Failed to list parameters: ") + e.what();
+    RCLCPP_ERROR(node_->get_logger(), "Exception in list_parameters for node '%s': %s",
+                 node_name.c_str(), e.what());
   }
 
   return result;
@@ -344,6 +386,194 @@ rclcpp::ParameterValue ConfigurationManager::json_to_parameter_value(const json 
 
   // Default: convert to string
   return rclcpp::ParameterValue(value.dump());
+}
+
+void ConfigurationManager::cache_default_values(const std::string & node_name) {
+  std::lock_guard<std::mutex> lock(defaults_mutex_);
+
+  // Check if already cached
+  if (default_values_.find(node_name) != default_values_.end()) {
+    return;
+  }
+
+  RCLCPP_DEBUG(node_->get_logger(), "Caching default values for node: '%s'", node_name.c_str());
+
+  try {
+    auto client = get_param_client(node_name);
+
+    if (!client->wait_for_service(2s)) {
+      RCLCPP_WARN(node_->get_logger(), "Cannot cache defaults - service not available for node: '%s'", node_name.c_str());
+      return;
+    }
+
+    // List all parameter names
+    auto param_names = client->list_parameters({}, 0);
+
+    // Get all parameter values
+    std::vector<rclcpp::Parameter> parameters;
+    parameters = client->get_parameters(param_names.names);
+
+    // Fallback to one-by-one if batch fails
+    if (parameters.empty() && !param_names.names.empty()) {
+      for (const auto & name : param_names.names) {
+        try {
+          auto single_params = client->get_parameters({name});
+          if (!single_params.empty()) {
+            parameters.push_back(single_params[0]);
+          }
+        } catch (const std::exception &) {
+          // Skip failed parameters
+        }
+      }
+    }
+
+    // Store as defaults
+    std::map<std::string, rclcpp::Parameter> node_defaults;
+    for (const auto & param : parameters) {
+      node_defaults[param.get_name()] = param;
+    }
+    default_values_[node_name] = std::move(node_defaults);
+
+    RCLCPP_DEBUG(node_->get_logger(), "Cached %zu default values for node: '%s'",
+                 default_values_[node_name].size(), node_name.c_str());
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(node_->get_logger(), "Failed to cache defaults for node '%s': %s", node_name.c_str(), e.what());
+  }
+}
+
+ParameterResult ConfigurationManager::reset_parameter(const std::string & node_name, const std::string & param_name) {
+  ParameterResult result;
+
+  try {
+    // Ensure defaults are cached
+    cache_default_values(node_name);
+
+    // Look up default value
+    std::lock_guard<std::mutex> lock(defaults_mutex_);
+    auto node_it = default_values_.find(node_name);
+    if (node_it == default_values_.end()) {
+      result.success = false;
+      result.error_message = "No default values cached for node: " + node_name;
+      return result;
+    }
+
+    auto param_it = node_it->second.find(param_name);
+    if (param_it == node_it->second.end()) {
+      result.success = false;
+      result.error_message = "No default value for parameter: " + param_name;
+      return result;
+    }
+
+    const auto & default_param = param_it->second;
+
+    // Set parameter back to default value
+    auto client = get_param_client(node_name);
+    if (!client->wait_for_service(2s)) {
+      result.success = false;
+      result.error_message = "Parameter service not available for node: " + node_name;
+      return result;
+    }
+
+    auto results = client->set_parameters({default_param});
+    if (results.empty() || !results[0].successful) {
+      result.success = false;
+      result.error_message = results.empty() ? "Failed to reset parameter" : results[0].reason;
+      return result;
+    }
+
+    // Return the reset value
+    json param_obj;
+    param_obj["name"] = param_name;
+    param_obj["value"] = parameter_value_to_json(default_param.get_parameter_value());
+    param_obj["type"] = parameter_type_to_string(default_param.get_type());
+    param_obj["reset_to_default"] = true;
+
+    result.success = true;
+    result.data = param_obj;
+
+    RCLCPP_INFO(node_->get_logger(), "Reset parameter '%s' on node '%s' to default value",
+                param_name.c_str(), node_name.c_str());
+  } catch (const std::exception & e) {
+    result.success = false;
+    result.error_message = std::string("Failed to reset parameter: ") + e.what();
+  }
+
+  return result;
+}
+
+ParameterResult ConfigurationManager::reset_all_parameters(const std::string & node_name) {
+  ParameterResult result;
+
+  try {
+    // Ensure defaults are cached
+    cache_default_values(node_name);
+
+    // Look up default values
+    std::lock_guard<std::mutex> lock(defaults_mutex_);
+    auto node_it = default_values_.find(node_name);
+    if (node_it == default_values_.end()) {
+      result.success = false;
+      result.error_message = "No default values cached for node: " + node_name;
+      return result;
+    }
+
+    auto client = get_param_client(node_name);
+    if (!client->wait_for_service(2s)) {
+      result.success = false;
+      result.error_message = "Parameter service not available for node: " + node_name;
+      return result;
+    }
+
+    // Collect all default parameters
+    std::vector<rclcpp::Parameter> params_to_reset;
+    for (const auto & [name, param] : node_it->second) {
+      params_to_reset.push_back(param);
+    }
+
+    // Reset all parameters
+    size_t reset_count = 0;
+    size_t failed_count = 0;
+    json failed_params = json::array();
+
+    // Set parameters one by one to handle partial failures
+    for (const auto & param : params_to_reset) {
+      try {
+        auto results = client->set_parameters({param});
+        if (!results.empty() && results[0].successful) {
+          reset_count++;
+        } else {
+          failed_count++;
+          failed_params.push_back(param.get_name());
+        }
+      } catch (const std::exception &) {
+        failed_count++;
+        failed_params.push_back(param.get_name());
+      }
+    }
+
+    json response;
+    response["node_name"] = node_name;
+    response["reset_count"] = reset_count;
+    response["failed_count"] = failed_count;
+    if (!failed_params.empty()) {
+      response["failed_parameters"] = failed_params;
+    }
+
+    result.success = (failed_count == 0);
+    result.data = response;
+
+    if (failed_count > 0) {
+      result.error_message = "Some parameters could not be reset";
+    }
+
+    RCLCPP_INFO(node_->get_logger(), "Reset %zu parameters on node '%s' (%zu failed)",
+                reset_count, node_name.c_str(), failed_count);
+  } catch (const std::exception & e) {
+    result.success = false;
+    result.error_message = std::string("Failed to reset parameters: ") + e.what();
+  }
+
+  return result;
 }
 
 }  // namespace ros2_medkit_gateway

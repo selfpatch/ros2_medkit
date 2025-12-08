@@ -54,26 +54,20 @@ std::vector<Area> DiscoveryManager::discover_areas() {
 std::vector<Component> DiscoveryManager::discover_components() {
   std::vector<Component> components;
 
-  // First, discover all services and actions to attach to components
-  auto services = discover_services();
-  auto actions = discover_actions();
-
-  // Pre-group services by parent namespace for O(1) lookup
-  // Key: parent namespace (e.g., "/powertrain/engine" for service "/powertrain/engine/calibrate")
-  std::unordered_map<std::string, std::vector<ServiceInfo>> services_by_ns;
-  for (const auto & svc : services) {
-    // Extract parent namespace: everything before the last '/'
-    size_t last_slash = svc.full_path.rfind('/');
-    std::string parent_ns = (last_slash == 0) ? "/" : svc.full_path.substr(0, last_slash);
-    services_by_ns[parent_ns].push_back(svc);
+  // Pre-build service info map for schema lookups
+  // Key: service full path, Value: ServiceInfo with type info
+  std::unordered_map<std::string, ServiceInfo> service_info_map;
+  auto all_services = discover_services();
+  for (const auto & svc : all_services) {
+    service_info_map[svc.full_path] = svc;
   }
 
-  // Pre-group actions by parent namespace for O(1) lookup
-  std::unordered_map<std::string, std::vector<ActionInfo>> actions_by_ns;
-  for (const auto & act : actions) {
-    size_t last_slash = act.full_path.rfind('/');
-    std::string parent_ns = (last_slash == 0) ? "/" : act.full_path.substr(0, last_slash);
-    actions_by_ns[parent_ns].push_back(act);
+  // Pre-build action info map for schema lookups
+  // Key: action full path, Value: ActionInfo with type info
+  std::unordered_map<std::string, ActionInfo> action_info_map;
+  auto all_actions = discover_actions();
+  for (const auto & act : all_actions) {
+    action_info_map[act.full_path] = act;
   }
 
   auto node_graph = node_->get_node_graph_interface();
@@ -94,16 +88,63 @@ std::vector<Component> DiscoveryManager::discover_components() {
     comp.fqn = (ns == "/") ? std::string("/").append(name) : std::string(ns).append("/").append(name);
     comp.area = extract_area_from_namespace(ns);
 
-    // Attach services that belong to this component's namespace (O(1) lookup)
-    auto svc_it = services_by_ns.find(comp.namespace_path);
-    if (svc_it != services_by_ns.end()) {
-      comp.services = svc_it->second;
-    }
+    // Use ROS 2 introspection API to get services for this specific node
+    // This is more accurate than grouping by parent namespace
+    try {
+      auto node_services = node_->get_service_names_and_types_by_node(name, ns);
+      for (const auto & [service_path, types] : node_services) {
+        // Skip internal ROS2 services (parameter services, etc.)
+        if (service_path.find("/get_parameters") != std::string::npos ||
+            service_path.find("/set_parameters") != std::string::npos ||
+            service_path.find("/list_parameters") != std::string::npos ||
+            service_path.find("/describe_parameters") != std::string::npos ||
+            service_path.find("/get_parameter_types") != std::string::npos ||
+            service_path.find("/set_parameters_atomically") != std::string::npos ||
+            service_path.find("/get_type_description") != std::string::npos ||
+            service_path.find("/_action/") != std::string::npos) {  // Skip action internal services
+          continue;
+        }
 
-    // Attach actions that belong to this component's namespace (O(1) lookup)
-    auto act_it = actions_by_ns.find(comp.namespace_path);
-    if (act_it != actions_by_ns.end()) {
-      comp.actions = act_it->second;
+        // Use pre-built service info map to get enriched info (with schema)
+        auto it = service_info_map.find(service_path);
+        if (it != service_info_map.end()) {
+          comp.services.push_back(it->second);
+        } else {
+          // Fallback: create basic ServiceInfo
+          ServiceInfo info;
+          info.full_path = service_path;
+          info.name = extract_name_from_path(service_path);
+          info.type = types.empty() ? "" : types[0];
+          comp.services.push_back(info);
+        }
+      }
+
+      // Detect actions owned by this node by checking for /_action/send_goal services
+      for (const auto & [service_path, types] : node_services) {
+        const std::string action_suffix = "/_action/send_goal";
+        if (service_path.length() > action_suffix.length() &&
+            service_path.compare(
+                service_path.length() - action_suffix.length(), action_suffix.length(), action_suffix) == 0) {
+          // Extract action path by removing /_action/send_goal suffix
+          std::string action_path = service_path.substr(0, service_path.length() - action_suffix.length());
+
+          // Use pre-built action info map to get enriched info (with schema)
+          auto it = action_info_map.find(action_path);
+          if (it != action_info_map.end()) {
+            comp.actions.push_back(it->second);
+          } else {
+            // Fallback: create basic ActionInfo
+            ActionInfo info;
+            info.full_path = action_path;
+            info.name = extract_name_from_path(action_path);
+            comp.actions.push_back(info);
+          }
+        }
+      }
+    } catch (const std::exception & e) {
+      RCLCPP_DEBUG(
+          node_->get_logger(), "Could not get services for node '%s' in namespace '%s': %s", name.c_str(), ns.c_str(),
+          e.what());
     }
 
     // Populate topics from cached map
