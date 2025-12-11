@@ -96,12 +96,18 @@ class ConfigurationManager {
   /// Convert JSON value to ROS2 ParameterValue
   static rclcpp::ParameterValue json_to_parameter_value(const json & value, rclcpp::ParameterType hint_type);
 
+  /// Get the service timeout as a chrono duration
+  std::chrono::duration<double> get_service_timeout() const;
+
   rclcpp::Node * node_;
 
   /// Internal node for parameter client operations
   /// SyncParametersClient requires a node that is NOT in an executor
   /// to perform synchronous operations (spinning internally)
   std::shared_ptr<rclcpp::Node> param_node_;
+
+  /// Timeout for waiting for parameter services (configurable via parameter_service_timeout_sec parameter)
+  double service_timeout_sec_{2.0};
 
   /// Cache of parameter clients per node (avoids recreating clients)
   mutable std::mutex clients_mutex_;

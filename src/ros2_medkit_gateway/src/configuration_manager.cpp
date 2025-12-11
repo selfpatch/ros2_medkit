@@ -31,7 +31,16 @@ ConfigurationManager::ConfigurationManager(rclcpp::Node * node) : node_(node) {
   // Without this, the internal node would have the same name as the main gateway node
   options.use_global_arguments(false);
   param_node_ = std::make_shared<rclcpp::Node>("_param_client_node", options);
+
+  // Get configurable timeout for parameter services (default 2.0 seconds)
+  service_timeout_sec_ = node_->declare_parameter("parameter_service_timeout_sec", 2.0);
+
   RCLCPP_INFO(node_->get_logger(), "ConfigurationManager initialized");
+}
+
+/// Helper to get the service timeout as a chrono duration
+std::chrono::duration<double> ConfigurationManager::get_service_timeout() const {
+  return std::chrono::duration<double>(service_timeout_sec_);
 }
 
 std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_client(const std::string & node_name) {
@@ -62,7 +71,7 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
 
     RCLCPP_DEBUG(node_->get_logger(), "Got param client for node: '%s'", node_name.c_str());
 
-    if (!client->wait_for_service(2s)) {
+    if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
       RCLCPP_WARN(node_->get_logger(), "Parameter service not available for node: '%s'", node_name.c_str());
@@ -132,7 +141,7 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
   try {
     auto client = get_param_client(node_name);
 
-    if (!client->wait_for_service(2s)) {
+    if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
       return result;
@@ -186,7 +195,7 @@ ParameterResult ConfigurationManager::set_parameter(const std::string & node_nam
   try {
     auto client = get_param_client(node_name);
 
-    if (!client->wait_for_service(2s)) {
+    if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
       return result;
@@ -387,6 +396,10 @@ rclcpp::ParameterValue ConfigurationManager::json_to_parameter_value(const json 
 }
 
 void ConfigurationManager::cache_default_values(const std::string & node_name) {
+  // TODO(bburda): Consider releasing the lock during I/O operations (wait_for_service,
+  // list_parameters, get_parameters) to reduce thread contention. Current implementation
+  // holds the lock for the entire operation to prevent duplicate caching attempts.
+  // A future improvement could use std::once_flag per node or a separate synchronization mechanism.
   std::lock_guard<std::mutex> lock(defaults_mutex_);
 
   // Check if already cached
@@ -399,7 +412,7 @@ void ConfigurationManager::cache_default_values(const std::string & node_name) {
   try {
     auto client = get_param_client(node_name);
 
-    if (!client->wait_for_service(2s)) {
+    if (!client->wait_for_service(get_service_timeout())) {
       RCLCPP_WARN(node_->get_logger(), "Cannot cache defaults - service not available for node: '%s'",
                   node_name.c_str());
       return;
@@ -448,6 +461,8 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
     cache_default_values(node_name);
 
     // Look up default value
+    // TODO(bburda): Consider copying needed data and releasing lock before wait_for_service
+    // to reduce thread contention during the blocking I/O operation.
     std::lock_guard<std::mutex> lock(defaults_mutex_);
     auto node_it = default_values_.find(node_name);
     if (node_it == default_values_.end()) {
@@ -467,7 +482,7 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
 
     // Set parameter back to default value
     auto client = get_param_client(node_name);
-    if (!client->wait_for_service(2s)) {
+    if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
       return result;
@@ -508,6 +523,8 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
     cache_default_values(node_name);
 
     // Look up default values
+    // TODO(bburda): Consider copying params_to_reset and releasing lock before wait_for_service
+    // to reduce thread contention during the blocking I/O operation.
     std::lock_guard<std::mutex> lock(defaults_mutex_);
     auto node_it = default_values_.find(node_name);
     if (node_it == default_values_.end()) {
@@ -517,7 +534,7 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
     }
 
     auto client = get_param_client(node_name);
-    if (!client->wait_for_service(2s)) {
+    if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
       return result;

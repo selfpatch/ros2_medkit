@@ -225,6 +225,9 @@ class OperationManager {
   DiscoveryManager * discovery_manager_;
   std::unique_ptr<ROS2CLIWrapper> cli_wrapper_;
 
+  /// Timeout for service calls in seconds (configurable via service_call_timeout_sec param)
+  int service_call_timeout_sec_;
+
   /// Map of goal_id -> ActionGoalInfo for tracking active goals
   mutable std::mutex goals_mutex_;
   std::map<std::string, ActionGoalInfo> tracked_goals_;

@@ -30,8 +30,15 @@ namespace ros2_medkit_gateway {
 /// UUID hex string length (16 bytes = 32 hex characters)
 constexpr size_t kUuidHexLength = 32;
 
+/// Default timeout for service calls in seconds
+constexpr int kDefaultServiceCallTimeoutSec = 10;
+
 OperationManager::OperationManager(rclcpp::Node * node, DiscoveryManager * discovery_manager)
-  : node_(node), discovery_manager_(discovery_manager), cli_wrapper_(std::make_unique<ROS2CLIWrapper>()) {
+  : node_(node)
+  , discovery_manager_(discovery_manager)
+  , cli_wrapper_(std::make_unique<ROS2CLIWrapper>())
+  , service_call_timeout_sec_(
+        static_cast<int>(node->declare_parameter<int64_t>("service_call_timeout_sec", kDefaultServiceCallTimeoutSec))) {
   if (!cli_wrapper_->is_command_available("ros2")) {
     RCLCPP_WARN(node_->get_logger(), "ROS 2 CLI not found, service calls may not be available");
   }
@@ -247,10 +254,10 @@ ServiceCallResult OperationManager::call_service(const std::string & service_pat
   try {
     // Build ros2 service call command with timeout
     // -1 = single call (don't wait for response if service unavailable)
-    // timeout 10s = overall timeout to prevent hanging
+    // timeout = overall timeout to prevent hanging (configurable via service_call_timeout_sec param)
     std::ostringstream cmd;
-    cmd << "timeout 10 ros2 service call " << ROS2CLIWrapper::escape_shell_arg(service_path) << " "
-        << ROS2CLIWrapper::escape_shell_arg(service_type);
+    cmd << "timeout " << service_call_timeout_sec_ << " ros2 service call "
+        << ROS2CLIWrapper::escape_shell_arg(service_path) << " " << ROS2CLIWrapper::escape_shell_arg(service_type);
 
     // Add request data if not empty
     if (!request.empty() && !request.is_null()) {
@@ -271,7 +278,8 @@ ServiceCallResult OperationManager::call_service(const std::string & service_pat
     // Check if it was a timeout
     if (error_msg.find("exit code 124") != std::string::npos) {
       RCLCPP_WARN(node_->get_logger(), "Service call timed out for '%s'", service_path.c_str());
-      result.error_message = "Service call timed out (10s). The service may be unavailable or slow to respond.";
+      result.error_message = "Service call timed out (" + std::to_string(service_call_timeout_sec_) +
+                             "s). The service may be unavailable or slow to respond.";
     } else {
       RCLCPP_ERROR(node_->get_logger(), "Service call failed for '%s': %s", service_path.c_str(), e.what());
       result.error_message = error_msg;

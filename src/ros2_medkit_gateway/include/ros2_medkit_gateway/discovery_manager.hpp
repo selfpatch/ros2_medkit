@@ -90,6 +90,9 @@ class DiscoveryManager {
   /// Check if a service path belongs to a component namespace
   bool path_belongs_to_namespace(const std::string & path, const std::string & ns) const;
 
+  /// Check if a service path is an internal ROS2 service (parameter services, action internals, etc.)
+  static bool is_internal_service(const std::string & service_path);
+
   rclcpp::Node * node_;
   NativeTopicSampler * topic_sampler_{nullptr};
   TypeIntrospection * type_introspection_{nullptr};

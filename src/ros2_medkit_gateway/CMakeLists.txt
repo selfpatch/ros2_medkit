@@ -118,10 +118,20 @@ if(BUILD_TESTING)
   ament_add_gtest(test_gateway_node test/test_gateway_node.cpp)
   target_link_libraries(test_gateway_node gateway_lib)
 
-  # Apply coverage flags to test target
+  ament_add_gtest(test_operation_manager test/test_operation_manager.cpp)
+  target_link_libraries(test_operation_manager gateway_lib)
+
+  ament_add_gtest(test_configuration_manager test/test_configuration_manager.cpp)
+  target_link_libraries(test_configuration_manager gateway_lib)
+
+  # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
     target_link_options(test_gateway_node PRIVATE --coverage)
+    target_compile_options(test_operation_manager PRIVATE --coverage -O0 -g)
+    target_link_options(test_operation_manager PRIVATE --coverage)
+    target_compile_options(test_configuration_manager PRIVATE --coverage -O0 -g)
+    target_link_options(test_configuration_manager PRIVATE --coverage)
   endif()
 
   # Integration testing

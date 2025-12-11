@@ -20,6 +20,18 @@
 
 namespace ros2_medkit_gateway {
 
+// Helper function to check if a service path is internal ROS2 infrastructure
+bool DiscoveryManager::is_internal_service(const std::string & service_path) {
+  return service_path.find("/get_parameters") != std::string::npos ||
+         service_path.find("/set_parameters") != std::string::npos ||
+         service_path.find("/list_parameters") != std::string::npos ||
+         service_path.find("/describe_parameters") != std::string::npos ||
+         service_path.find("/get_parameter_types") != std::string::npos ||
+         service_path.find("/set_parameters_atomically") != std::string::npos ||
+         service_path.find("/get_type_description") != std::string::npos ||
+         service_path.find("/_action/") != std::string::npos;  // Action internal services
+}
+
 DiscoveryManager::DiscoveryManager(rclcpp::Node * node) : node_(node) {
 }
 
@@ -93,15 +105,8 @@ std::vector<Component> DiscoveryManager::discover_components() {
     try {
       auto node_services = node_->get_service_names_and_types_by_node(name, ns);
       for (const auto & [service_path, types] : node_services) {
-        // Skip internal ROS2 services (parameter services, etc.)
-        if (service_path.find("/get_parameters") != std::string::npos ||
-            service_path.find("/set_parameters") != std::string::npos ||
-            service_path.find("/list_parameters") != std::string::npos ||
-            service_path.find("/describe_parameters") != std::string::npos ||
-            service_path.find("/get_parameter_types") != std::string::npos ||
-            service_path.find("/set_parameters_atomically") != std::string::npos ||
-            service_path.find("/get_type_description") != std::string::npos ||
-            service_path.find("/_action/") != std::string::npos) {  // Skip action internal services
+        // Skip internal ROS2 services (parameter services, action internals, etc.)
+        if (is_internal_service(service_path)) {
           continue;
         }
 
@@ -167,15 +172,8 @@ std::vector<ServiceInfo> DiscoveryManager::discover_services() {
   auto service_names_and_types = node_->get_service_names_and_types();
 
   for (const auto & [service_path, types] : service_names_and_types) {
-    // Skip internal ROS2 services (parameter services, etc.)
-    if (service_path.find("/get_parameters") != std::string::npos ||
-        service_path.find("/set_parameters") != std::string::npos ||
-        service_path.find("/list_parameters") != std::string::npos ||
-        service_path.find("/describe_parameters") != std::string::npos ||
-        service_path.find("/get_parameter_types") != std::string::npos ||
-        service_path.find("/set_parameters_atomically") != std::string::npos ||
-        service_path.find("/get_type_description") != std::string::npos ||
-        service_path.find("/_action/") != std::string::npos) {  // Skip action internal services
+    // Skip internal ROS2 services (parameter services, action internals, etc.)
+    if (is_internal_service(service_path)) {
       continue;
     }
 
