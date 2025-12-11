@@ -32,7 +32,7 @@ DataAccessManager::DataAccessManager(rclcpp::Node * node)
                                                                                                                   "ipt"
                                                                                                                   "s"))
   , native_sampler_(std::make_unique<NativeTopicSampler>(node))
-  , max_parallel_samples_(node->declare_parameter<int>("max_parallel_topic_samples", 10))
+  , max_parallel_samples_(static_cast<int>(node->declare_parameter<int64_t>("max_parallel_topic_samples", 10)))
   , topic_sample_timeout_sec_(node->declare_parameter<double>("topic_sample_timeout_sec", 1.0)) {
   // Validate max_parallel_samples_ against allowed range [1, 50]
   if (max_parallel_samples_ < 1 || max_parallel_samples_ > 50) {

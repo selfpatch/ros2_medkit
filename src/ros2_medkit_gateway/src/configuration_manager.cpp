@@ -74,8 +74,8 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
     // List all parameter names
     auto param_names = client->list_parameters({}, 0);
 
-    RCLCPP_DEBUG(node_->get_logger(), "Got %zu parameter names for node: '%s'",
-                 param_names.names.size(), node_name.c_str());
+    RCLCPP_DEBUG(node_->get_logger(), "Got %zu parameter names for node: '%s'", param_names.names.size(),
+                 node_name.c_str());
 
     // Log first few parameter names for debugging
     for (size_t i = 0; i < std::min(param_names.names.size(), static_cast<size_t>(5)); ++i) {
@@ -104,8 +104,7 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
       }
     }
 
-    RCLCPP_DEBUG(node_->get_logger(), "Got %zu parameter values for node: '%s'",
-                 parameters.size(), node_name.c_str());
+    RCLCPP_DEBUG(node_->get_logger(), "Got %zu parameter values for node: '%s'", parameters.size(), node_name.c_str());
 
     json params_array = json::array();
     for (const auto & param : parameters) {
@@ -121,8 +120,7 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
   } catch (const std::exception & e) {
     result.success = false;
     result.error_message = std::string("Failed to list parameters: ") + e.what();
-    RCLCPP_ERROR(node_->get_logger(), "Exception in list_parameters for node '%s': %s",
-                 node_name.c_str(), e.what());
+    RCLCPP_ERROR(node_->get_logger(), "Exception in list_parameters for node '%s': %s", node_name.c_str(), e.what());
   }
 
   return result;
@@ -402,7 +400,8 @@ void ConfigurationManager::cache_default_values(const std::string & node_name) {
     auto client = get_param_client(node_name);
 
     if (!client->wait_for_service(2s)) {
-      RCLCPP_WARN(node_->get_logger(), "Cannot cache defaults - service not available for node: '%s'", node_name.c_str());
+      RCLCPP_WARN(node_->get_logger(), "Cannot cache defaults - service not available for node: '%s'",
+                  node_name.c_str());
       return;
     }
 
@@ -434,8 +433,8 @@ void ConfigurationManager::cache_default_values(const std::string & node_name) {
     }
     default_values_[node_name] = std::move(node_defaults);
 
-    RCLCPP_DEBUG(node_->get_logger(), "Cached %zu default values for node: '%s'",
-                 default_values_[node_name].size(), node_name.c_str());
+    RCLCPP_DEBUG(node_->get_logger(), "Cached %zu default values for node: '%s'", default_values_[node_name].size(),
+                 node_name.c_str());
   } catch (const std::exception & e) {
     RCLCPP_ERROR(node_->get_logger(), "Failed to cache defaults for node '%s': %s", node_name.c_str(), e.what());
   }
@@ -491,8 +490,8 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
     result.success = true;
     result.data = param_obj;
 
-    RCLCPP_INFO(node_->get_logger(), "Reset parameter '%s' on node '%s' to default value",
-                param_name.c_str(), node_name.c_str());
+    RCLCPP_INFO(node_->get_logger(), "Reset parameter '%s' on node '%s' to default value", param_name.c_str(),
+                node_name.c_str());
   } catch (const std::exception & e) {
     result.success = false;
     result.error_message = std::string("Failed to reset parameter: ") + e.what();
@@ -566,8 +565,8 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
       result.error_message = "Some parameters could not be reset";
     }
 
-    RCLCPP_INFO(node_->get_logger(), "Reset %zu parameters on node '%s' (%zu failed)",
-                reset_count, node_name.c_str(), failed_count);
+    RCLCPP_INFO(node_->get_logger(), "Reset %zu parameters on node '%s' (%zu failed)", reset_count, node_name.c_str(),
+                failed_count);
   } catch (const std::exception & e) {
     result.success = false;
     result.error_message = std::string("Failed to reset parameters: ") + e.what();

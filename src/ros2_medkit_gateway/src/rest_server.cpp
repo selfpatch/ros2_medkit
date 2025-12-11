@@ -791,8 +791,8 @@ void RESTServer::handle_list_operations(const httplib::Request & req, httplib::R
         auto type_info = type_introspection->get_type_info(svc.type);
         svc_json["type_info"] = {{"schema", type_info.schema}, {"default_value", type_info.default_value}};
       } catch (const std::exception & e) {
-        RCLCPP_DEBUG(rclcpp::get_logger("rest_server"), "Could not get type info for service '%s': %s", svc.type.c_str(),
-                     e.what());
+        RCLCPP_DEBUG(rclcpp::get_logger("rest_server"), "Could not get type info for service '%s': %s",
+                     svc.type.c_str(), e.what());
       }
 
       operations.push_back(svc_json);
@@ -1012,11 +1012,10 @@ void RESTServer::handle_component_operation(const httplib::Request & req, httpli
     } else {
       // Neither service nor action found
       res.status = StatusCode::NotFound_404;
-      res.set_content(json{{"error", "Operation not found"},
-                           {"component_id", component_id},
-                           {"operation_name", operation_name}}
-                          .dump(2),
-                      "application/json");
+      res.set_content(
+          json{{"error", "Operation not found"}, {"component_id", component_id}, {"operation_name", operation_name}}
+              .dump(2),
+          "application/json");
     }
   } catch (const std::exception & e) {
     res.status = StatusCode::InternalServerError_500;
@@ -1620,23 +1619,21 @@ void RESTServer::handle_delete_configuration(const httplib::Request & req, httpl
       res.set_content(result.data.dump(2), "application/json");
     } else {
       res.status = StatusCode::ServiceUnavailable_503;
-      res.set_content(
-          json{{"error", "Failed to reset parameter"},
-               {"details", result.error_message},
-               {"node_name", node_name},
-               {"param_name", param_name}}
-              .dump(2),
-          "application/json");
+      res.set_content(json{{"error", "Failed to reset parameter"},
+                           {"details", result.error_message},
+                           {"node_name", node_name},
+                           {"param_name", param_name}}
+                          .dump(2),
+                      "application/json");
     }
   } catch (const std::exception & e) {
     res.status = StatusCode::InternalServerError_500;
-    res.set_content(
-        json{{"error", "Failed to reset configuration"},
-             {"details", e.what()},
-             {"component_id", component_id},
-             {"param_name", param_name}}
-            .dump(2),
-        "application/json");
+    res.set_content(json{{"error", "Failed to reset configuration"},
+                         {"details", e.what()},
+                         {"component_id", component_id},
+                         {"param_name", param_name}}
+                        .dump(2),
+                    "application/json");
     RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_delete_configuration: %s", e.what());
   }
 }
@@ -1698,8 +1695,8 @@ void RESTServer::handle_delete_all_configurations(const httplib::Request & req, 
   } catch (const std::exception & e) {
     res.status = StatusCode::InternalServerError_500;
     res.set_content(
-        json{{"error", "Failed to reset configurations"}, {"details", e.what()}, {"component_id", component_id}}
-            .dump(2),
+        json{{"error", "Failed to reset configurations"}, {"details", e.what()}, {"component_id", component_id}}.dump(
+            2),
         "application/json");
     RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_delete_all_configurations: %s", e.what());
   }

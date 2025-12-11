@@ -35,8 +35,8 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
 
   // Get parameter values
   server_host_ = get_parameter("server.host").as_string();
-  server_port_ = get_parameter("server.port").as_int();
-  refresh_interval_ms_ = get_parameter("refresh_interval_ms").as_int();
+  server_port_ = static_cast<int>(get_parameter("server.port").as_int());
+  refresh_interval_ms_ = static_cast<int>(get_parameter("refresh_interval_ms").as_int());
 
   // Build CORS configuration using builder pattern
   // Throws std::invalid_argument if configuration is invalid
@@ -45,7 +45,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
                      .with_methods(get_parameter("cors.allowed_methods").as_string_array())
                      .with_headers(get_parameter("cors.allowed_headers").as_string_array())
                      .with_credentials(get_parameter("cors.allow_credentials").as_bool())
-                     .with_max_age(get_parameter("cors.max_age_seconds").as_int())
+                     .with_max_age(static_cast<int>(get_parameter("cors.max_age_seconds").as_int()))
                      .build();
 
   // Validate port range

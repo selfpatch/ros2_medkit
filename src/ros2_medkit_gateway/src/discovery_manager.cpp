@@ -123,8 +123,8 @@ std::vector<Component> DiscoveryManager::discover_components() {
       for (const auto & [service_path, types] : node_services) {
         const std::string action_suffix = "/_action/send_goal";
         if (service_path.length() > action_suffix.length() &&
-            service_path.compare(
-                service_path.length() - action_suffix.length(), action_suffix.length(), action_suffix) == 0) {
+            service_path.compare(service_path.length() - action_suffix.length(), action_suffix.length(),
+                                 action_suffix) == 0) {
           // Extract action path by removing /_action/send_goal suffix
           std::string action_path = service_path.substr(0, service_path.length() - action_suffix.length());
 
@@ -142,9 +142,8 @@ std::vector<Component> DiscoveryManager::discover_components() {
         }
       }
     } catch (const std::exception & e) {
-      RCLCPP_DEBUG(
-          node_->get_logger(), "Could not get services for node '%s' in namespace '%s': %s", name.c_str(), ns.c_str(),
-          e.what());
+      RCLCPP_DEBUG(node_->get_logger(), "Could not get services for node '%s' in namespace '%s': %s", name.c_str(),
+                   ns.c_str(), e.what());
     }
 
     // Populate topics from cached map

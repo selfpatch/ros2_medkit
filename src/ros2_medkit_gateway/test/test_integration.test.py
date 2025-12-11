@@ -1631,7 +1631,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(get_response.status_code, 200)
         get_data = get_response.json()
         # The value should match what DELETE returned
-        self.assertEqual(get_data['value'], data['value'])
+        self.assertEqual(get_data['parameter']['value'], data['value'])
 
         print(f'✓ Delete configuration (reset to default) test passed: value={data["value"]}')
 

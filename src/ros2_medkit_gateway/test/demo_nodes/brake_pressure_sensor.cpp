@@ -34,7 +34,7 @@ class BrakePressureSensor : public rclcpp::Node {
     }
 
     auto pressure_msg = std_msgs::msg::Float32();
-    pressure_msg.data = current_pressure_;
+    pressure_msg.data = static_cast<float>(current_pressure_);
 
     pressure_pub_->publish(pressure_msg);
 

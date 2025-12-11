@@ -44,7 +44,7 @@ class TestGatewayNode : public ::testing::Test {
 
     // Get server configuration from node parameters
     server_host_ = node_->get_parameter("server.host").as_string();
-    server_port_ = node_->get_parameter("server.port").as_int();
+    server_port_ = static_cast<int>(node_->get_parameter("server.port").as_int());
 
     // Wait for the server to be ready
     wait_for_server_ready();

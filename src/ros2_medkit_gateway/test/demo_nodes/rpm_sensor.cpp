@@ -33,7 +33,7 @@ class RPMSensor : public rclcpp::Node {
     }
 
     auto rpm_msg = std_msgs::msg::Float32();
-    rpm_msg.data = current_rpm_;
+    rpm_msg.data = static_cast<float>(current_rpm_);
 
     rpm_pub_->publish(rpm_msg);
 
