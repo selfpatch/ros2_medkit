@@ -58,12 +58,6 @@ class ConfigurationManager {
   /// @return ParameterResult with {name, value, type}
   ParameterResult set_parameter(const std::string & node_name, const std::string & param_name, const json & value);
 
-  /// Describe a parameter (get metadata)
-  /// @param node_name Fully qualified node name
-  /// @param param_name Parameter name
-  /// @return ParameterResult with parameter descriptor info
-  ParameterResult describe_parameter(const std::string & node_name, const std::string & param_name);
-
   /// Reset a specific parameter to its default (initial) value
   /// @param node_name Fully qualified node name
   /// @param param_name Parameter name
@@ -74,11 +68,6 @@ class ConfigurationManager {
   /// @param node_name Fully qualified node name
   /// @return ParameterResult with count of reset parameters
   ParameterResult reset_all_parameters(const std::string & node_name);
-
-  /// Check if a node exists and is reachable for parameter operations
-  /// @param node_name Fully qualified node name
-  /// @return true if node parameters are accessible
-  bool is_node_available(const std::string & node_name);
 
  private:
   /// Get or create a SyncParametersClient for the given node
