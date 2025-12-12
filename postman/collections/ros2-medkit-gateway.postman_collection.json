@@ -262,15 +262,17 @@
                 "method": "GET",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/components",
+                  "raw": "{{base_url}}/components/calibration/operations",
                   "host": [
                     "{{base_url}}"
                   ],
                   "path": [
-                    "components"
+                    "components",
+                    "calibration",
+                    "operations"
                   ]
                 },
-                "description": "List all components with their available operations. Each component includes an 'operations' array showing available services (kind: 'service') and actions (kind: 'action') with their types and paths."
+                "description": "List all operations (services and actions) for a specific component. Returns array of operations with name, path, type, kind (service/action), and type_info with schema information."
               },
               "response": []
             },
@@ -360,7 +362,7 @@
                     "nonexistent"
                   ]
                 },
-                "description": "Example of calling a non-existent operation. Returns 500 error with 'Service not found' message."
+                "description": "Example of calling a non-existent operation. Returns 404 error with 'Operation not found' message."
               },
               "response": []
             }
@@ -664,7 +666,7 @@
           "response": []
         },
         {
-          "name": "DELETE Configuration (Not Supported)",
+          "name": "DELETE Reset Configuration to Default",
           "request": {
             "method": "DELETE",
             "header": [],
@@ -680,7 +682,27 @@
                 "min_temp"
               ]
             },
-            "description": "Attempt to delete a configuration. Returns 405 Method Not Allowed because ROS 2 does not support deleting parameters at runtime. The Allow header indicates GET and PUT are supported."
+            "description": "Reset a configuration to its default (initial) value. The gateway caches parameter values when first accessed, allowing reset to the original state. Returns the parameter with reset_to_default=true and the restored value."
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE Reset All Configurations to Default",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/configurations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "configurations"
+              ]
+            },
+            "description": "Reset all configurations for a component to their default (initial) values. Returns reset_count and failed_count. Some parameters may fail to reset if they are read-only."
           },
           "response": []
         },

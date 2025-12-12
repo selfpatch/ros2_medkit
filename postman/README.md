@@ -23,6 +23,7 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - ✅ PUT `/api/v1/components/{component_id}/data/{topic_path}` - Publish to a topic
 
 ### Operations Endpoints (Services & Actions)
+- ✅ GET `/api/v1/components/{component_id}/operations` - List all operations (services & actions) with schema info
 - ✅ POST `/api/v1/components/{component_id}/operations/{operation}` - Call service or send action goal
 - ✅ GET `/api/v1/components/{component_id}/operations/{operation}/status` - Get action status
 - ✅ DELETE `/api/v1/components/{component_id}/operations/{operation}?goal_id=...` - Cancel action
@@ -31,7 +32,8 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - ✅ GET `/api/v1/components/{component_id}/configurations` - List all parameters
 - ✅ GET `/api/v1/components/{component_id}/configurations/{param}` - Get parameter value
 - ✅ PUT `/api/v1/components/{component_id}/configurations/{param}` - Set parameter value
-- ❌ DELETE `/api/v1/components/{component_id}/configurations/{param}` - Not supported (405)
+- ✅ DELETE `/api/v1/components/{component_id}/configurations/{param}` - Reset parameter to default value
+- ✅ DELETE `/api/v1/components/{component_id}/configurations` - Reset all parameters to default values
 
 ## Quick Start
 
