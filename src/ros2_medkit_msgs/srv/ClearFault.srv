@@ -1,0 +1,27 @@
+# Copyright 2025 mfaferek93
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# ClearFault.srv - Clear/acknowledge a fault in the FaultManager.
+#
+# Marks the specified fault as CLEARED. The fault record is retained for historical
+# purposes and can be retrieved by calling GetFaults with statuses=["CLEARED"].
+# Cleared faults are retained indefinitely unless storage cleanup is configured.
+# A FaultEvent with EVENT_CLEARED is published when a fault is successfully cleared.
+
+# Request fields
+string fault_code        # The fault_code to clear
+---
+# Response fields
+bool success             # True if the fault was found and cleared
+string message           # Status message or error description
