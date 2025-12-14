@@ -256,6 +256,17 @@ std::expected<void, std::string> RESTServer::validate_entity_id(const std::strin
   return {};
 }
 
+std::expected<std::string, std::string>
+RESTServer::get_component_namespace_path(const std::string & component_id) const {
+  const auto cache = node_->get_entity_cache();
+  for (const auto & component : cache.components) {
+    if (component.id == component_id) {
+      return component.namespace_path;
+    }
+  }
+  return std::unexpected("Component not found");
+}
+
 void RESTServer::handle_health(const httplib::Request & req, httplib::Response & res) {
   (void)req;  // Unused parameter
 
@@ -1747,26 +1758,14 @@ void RESTServer::handle_list_faults(const httplib::Request & req, httplib::Respo
       return;
     }
 
-    const auto cache = node_->get_entity_cache();
-
-    // Find component to get its namespace path (used as source_id filter)
-    std::string namespace_path;
-    bool component_found = false;
-
-    for (const auto & component : cache.components) {
-      if (component.id == component_id) {
-        namespace_path = component.namespace_path;
-        component_found = true;
-        break;
-      }
-    }
-
-    if (!component_found) {
+    auto namespace_result = get_component_namespace_path(component_id);
+    if (!namespace_result) {
       res.status = StatusCode::NotFound_404;
-      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+      res.set_content(json{{"error", namespace_result.error()}, {"component_id", component_id}}.dump(2),
                       "application/json");
       return;
     }
+    std::string namespace_path = namespace_result.value();
 
     // Parse query parameters for status filtering
     bool include_pending = true;
@@ -1851,26 +1850,14 @@ void RESTServer::handle_get_fault(const httplib::Request & req, httplib::Respons
       return;
     }
 
-    const auto cache = node_->get_entity_cache();
-
-    // Find component to get its namespace path
-    std::string namespace_path;
-    bool component_found = false;
-
-    for (const auto & component : cache.components) {
-      if (component.id == component_id) {
-        namespace_path = component.namespace_path;
-        component_found = true;
-        break;
-      }
-    }
-
-    if (!component_found) {
+    auto namespace_result = get_component_namespace_path(component_id);
+    if (!namespace_result) {
       res.status = StatusCode::NotFound_404;
-      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+      res.set_content(json{{"error", namespace_result.error()}, {"component_id", component_id}}.dump(2),
                       "application/json");
       return;
     }
+    std::string namespace_path = namespace_result.value();
 
     auto fault_mgr = node_->get_fault_manager();
     auto result = fault_mgr->get_fault(fault_code, namespace_path);
@@ -1938,21 +1925,11 @@ void RESTServer::handle_clear_fault(const httplib::Request & req, httplib::Respo
       return;
     }
 
-    const auto cache = node_->get_entity_cache();
-
-    // Verify component exists
-    bool component_found = false;
-
-    for (const auto & component : cache.components) {
-      if (component.id == component_id) {
-        component_found = true;
-        break;
-      }
-    }
-
-    if (!component_found) {
+    // Verify component exists (we don't need namespace_path for clearing)
+    auto namespace_result = get_component_namespace_path(component_id);
+    if (!namespace_result) {
       res.status = StatusCode::NotFound_404;
-      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+      res.set_content(json{{"error", namespace_result.error()}, {"component_id", component_id}}.dump(2),
                       "application/json");
       return;
     }

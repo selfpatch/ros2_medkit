@@ -294,6 +294,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                     expected = cls.MIN_EXPECTED_COMPONENTS
                     print(f'  Waiting for discovery: {len(components)}/{expected}...')
             except requests.exceptions.RequestException:
+                # Ignore connection errors during discovery wait; will retry until timeout
                 pass
             time.sleep(cls.DISCOVERY_CHECK_INTERVAL)
 
@@ -1857,7 +1858,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print(f'✓ Action operation type_info test passed: {type_info}')
 
-    # ========== Faults API Tests (test_55-61) ==========
+    # ========== Faults API Tests (test_55-58) ==========
 
     def test_55_root_endpoint_includes_faults(self):
         """

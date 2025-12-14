@@ -67,6 +67,7 @@ class RESTServer {
 
   // Helper methods
   std::expected<void, std::string> validate_entity_id(const std::string & entity_id) const;
+  std::expected<std::string, std::string> get_component_namespace_path(const std::string & component_id) const;
   void set_cors_headers(httplib::Response & res, const std::string & origin) const;
   bool is_origin_allowed(const std::string & origin) const;
 

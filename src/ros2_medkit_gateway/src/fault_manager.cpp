@@ -45,6 +45,9 @@ bool FaultManager::is_available() const {
          clear_fault_client_->service_is_ready();
 }
 
+/// Convert a ROS 2 Fault message to JSON for REST API responses.
+/// Timestamps are converted from builtin_interfaces::msg::Time (sec + nanosec) to seconds as double.
+/// A human-readable severity_label is added based on the severity level.
 json FaultManager::fault_to_json(const ros2_medkit_msgs::msg::Fault & fault) {
   // Convert ROS 2 Time to seconds as double
   auto to_seconds = [](const builtin_interfaces::msg::Time & t) {

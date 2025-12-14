@@ -99,7 +99,13 @@ class LidarSensor : public rclcpp::Node {
         max_range_ = param.as_double();
         RCLCPP_INFO(this->get_logger(), "max_range changed to %.2f m", max_range_);
       } else if (param.get_name() == "scan_frequency") {
-        scan_frequency_ = param.as_double();
+        double new_freq = param.as_double();
+        if (new_freq <= 0.0) {
+          result.successful = false;
+          result.reason = "scan_frequency must be positive";
+          return result;
+        }
+        scan_frequency_ = new_freq;
         // Recreate timer with new frequency
         int period_ms = static_cast<int>(1000.0 / scan_frequency_);
         scan_timer_ =
