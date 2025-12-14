@@ -1,0 +1,93 @@
+@startuml ros2_medkit_fault_manager_architecture
+
+skinparam linetype ortho
+skinparam classAttributeIconSize 0
+
+title ROS 2 Medkit Fault Manager - Class Architecture
+
+package "ROS 2 Framework" {
+    class "rclcpp::Node" {
+        +create_service()
+        +get_logger()
+        +now()
+    }
+}
+
+package "ros2_medkit_msgs" {
+    class "msg::Fault" {
+        +fault_code: string
+        +severity: uint8
+        +description: string
+        +first_occurred: Time
+        +last_occurred: Time
+        +occurrence_count: uint32
+        +status: string
+        +reporting_sources: string[]
+    }
+
+    class "srv::ReportFault" {
+        +Request: fault_code, severity, description, source_id
+        +Response: success, message
+    }
+
+    class "srv::GetFaults" {
+        +Request: filter_by_severity, severity, statuses
+        +Response: faults[]
+    }
+
+    class "srv::ClearFault" {
+        +Request: fault_code
+        +Response: success, message
+    }
+}
+
+package "ros2_medkit_fault_manager" {
+
+    class FaultManagerNode {
+        + get_storage(): FaultStorage&
+    }
+
+    abstract class FaultStorage <<interface>> {
+        + {abstract} report_fault(): bool
+        + {abstract} get_faults(): vector<Fault>
+        + {abstract} get_fault(): optional<Fault>
+        + {abstract} clear_fault(): bool
+        + {abstract} size(): size_t
+        + {abstract} contains(): bool
+    }
+
+    class InMemoryFaultStorage {
+        + report_fault(): bool
+        + get_faults(): vector<Fault>
+        + get_fault(): optional<Fault>
+        + clear_fault(): bool
+        + size(): size_t
+        + contains(): bool
+    }
+
+    class FaultState <<struct>> {
+        + to_msg(): Fault
+    }
+}
+
+' Relationships
+
+' Inheritance
+FaultManagerNode -up-|> "rclcpp::Node" : extends
+InMemoryFaultStorage -up-|> FaultStorage : implements
+
+' Composition
+FaultManagerNode *-down-> InMemoryFaultStorage : owns
+
+' InMemoryFaultStorage contains FaultStates
+InMemoryFaultStorage o-right-> FaultState : contains many
+
+' FaultState converts to message
+FaultState ..> "msg::Fault" : converts to
+
+' Node uses service types
+FaultManagerNode ..> "srv::ReportFault" : handles
+FaultManagerNode ..> "srv::GetFaults" : handles
+FaultManagerNode ..> "srv::ClearFault" : handles
+
+@enduml
