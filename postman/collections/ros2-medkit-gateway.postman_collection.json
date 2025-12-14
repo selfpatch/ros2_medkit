@@ -728,6 +728,120 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "Faults",
+      "item": [
+        {
+          "name": "GET List Component Faults",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/faults",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "faults"
+              ]
+            },
+            "description": "List all faults for a component (REQ_INTEROP_012). Returns component_id, source_id (namespace), faults array, and count. By default returns PENDING and CONFIRMED faults."
+          },
+          "response": []
+        },
+        {
+          "name": "GET List Component Faults (All Statuses)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/faults?status=all",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "faults"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "all"
+                }
+              ]
+            },
+            "description": "List all faults including cleared ones. Use status=pending, status=confirmed, status=cleared, or status=all to filter."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Specific Fault",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/faults/SENSOR_OVERTEMP",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "faults",
+                "SENSOR_OVERTEMP"
+              ]
+            },
+            "description": "Get a specific fault by fault_code (REQ_INTEROP_013). Returns component_id and fault object with fault_code, severity, severity_label, description, status, timestamps, and reporting_sources."
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE Clear Fault",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/faults/SENSOR_OVERTEMP",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "faults",
+                "SENSOR_OVERTEMP"
+              ]
+            },
+            "description": "Clear a fault by fault_code (REQ_INTEROP_015). Changes fault status to CLEARED. Returns success status with component_id and fault_code."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Fault (Error - Not Found)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/faults/NONEXISTENT_FAULT",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "faults",
+                "NONEXISTENT_FAULT"
+              ]
+            },
+            "description": "Example of requesting a non-existent fault. Returns 404 with error details."
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

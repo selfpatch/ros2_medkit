@@ -35,6 +35,11 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - ✅ DELETE `/api/v1/components/{component_id}/configurations/{param}` - Reset parameter to default value
 - ✅ DELETE `/api/v1/components/{component_id}/configurations` - Reset all parameters to default values
 
+### Faults Endpoints (Fault Management)
+- ✅ GET `/api/v1/components/{component_id}/faults` - List all faults for a component
+- ✅ GET `/api/v1/components/{component_id}/faults/{fault_code}` - Get specific fault details
+- ✅ DELETE `/api/v1/components/{component_id}/faults/{fault_code}` - Clear a fault
+
 ## Quick Start
 
 ### 1. Import Collection
@@ -86,6 +91,16 @@ ros2 launch ros2_medkit_gateway gateway.launch.py
 1. Expand **"Configurations"** folder
 2. Click **"GET List Component Configurations"** → **Send**
 3. Click **"PUT Set Configuration (publish_rate)"** → **Send** (changes temp_sensor rate)
+
+**Faults:**
+1. Expand **"Faults"** folder
+2. Click **"GET List Component Faults"** → **Send** (shows faults for component)
+3. Click **"GET Specific Fault"** → **Send** (gets fault details by code)
+4. Click **"DELETE Clear Fault"** → **Send** (clears a fault)
+
+> **Note:** Faults API requires `ros2_medkit_fault_manager` node to be running.
+> Launch it with: `ros2 run ros2_medkit_fault_manager fault_manager_node`
+> Faults are reported by ROS 2 nodes via the ReportFault service, not via REST API.
 
 ## URL Encoding for Topics
 

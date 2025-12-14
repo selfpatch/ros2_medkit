@@ -192,6 +192,15 @@ def generate_test_description():
         additional_env=coverage_env,
     )
 
+    # Launch the fault_manager node for fault REST API tests
+    fault_manager_node = launch_ros.actions.Node(
+        package='ros2_medkit_fault_manager',
+        executable='fault_manager_node',
+        name='fault_manager',
+        output='screen',
+        additional_env=coverage_env,
+    )
+
     # Start demo nodes with a delay to ensure gateway starts first
     delayed_sensors = TimerAction(
         period=2.0,
@@ -204,6 +213,7 @@ def generate_test_description():
             light_controller,
             calibration_service,
             long_calibration_action,
+            fault_manager_node,
         ],
     )
 
@@ -232,28 +242,46 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
     """Integration tests for ROS 2 Medkit Gateway REST API and discovery."""
 
     BASE_URL = f'http://localhost:8080{API_BASE_PATH}'
-    # Wait for cache refresh + safety margin
-    # Must be kept in sync with gateway_params.yaml refresh_interval_ms (10000ms)
-    # Need to wait for at least 2 refresh cycles to ensure all demo nodes are discovered
-    CACHE_REFRESH_INTERVAL = 12.0
+    # Minimum expected components for tests to pass
+    MIN_EXPECTED_COMPONENTS = 7
+    # Maximum time to wait for discovery (seconds)
+    MAX_DISCOVERY_WAIT = 60.0
+    # Interval between discovery checks (seconds)
+    DISCOVERY_CHECK_INTERVAL = 2.0
 
     @classmethod
     def setUpClass(cls):
-        """Wait for gateway to be ready before any tests."""
-        # Wait for gateway and discovery
-        time.sleep(cls.CACHE_REFRESH_INTERVAL)
-
-        # Verify gateway is responding
-        max_retries = 5
+        """Wait for gateway to be ready and components to be discovered."""
+        # First, wait for gateway to respond
+        max_retries = 30
         for i in range(max_retries):
             try:
-                response = requests.get(f'{cls.BASE_URL}/health', timeout=1)
+                response = requests.get(f'{cls.BASE_URL}/health', timeout=2)
                 if response.status_code == 200:
-                    return
+                    break
             except requests.exceptions.RequestException:
                 if i == max_retries - 1:
-                    raise unittest.SkipTest('Gateway not responding')
+                    raise unittest.SkipTest('Gateway not responding after 30 retries')
                 time.sleep(1)
+
+        # Wait for components to be discovered (CI can be slow)
+        start_time = time.time()
+        while time.time() - start_time < cls.MAX_DISCOVERY_WAIT:
+            try:
+                response = requests.get(f'{cls.BASE_URL}/components', timeout=5)
+                if response.status_code == 200:
+                    components = response.json()
+                    if len(components) >= cls.MIN_EXPECTED_COMPONENTS:
+                        print(f'✓ Discovery complete: {len(components)} components')
+                        return
+                    expected = cls.MIN_EXPECTED_COMPONENTS
+                    print(f'  Waiting for discovery: {len(components)}/{expected}...')
+            except requests.exceptions.RequestException:
+                pass
+            time.sleep(cls.DISCOVERY_CHECK_INTERVAL)
+
+        # If we get here, not all components were discovered but continue anyway
+        print('Warning: Discovery timeout, some tests may fail')
 
     def _get_json(self, endpoint: str):
         """Get JSON from an endpoint."""
@@ -1811,3 +1839,96 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('sequence', type_info['feedback'])
 
         print(f'✓ Action operation type_info test passed: {type_info}')
+
+    # ========== Faults API Tests (test_55-61) ==========
+
+    def test_55_root_endpoint_includes_faults(self):
+        """
+        Test that root endpoint lists faults endpoints and capability.
+
+        @verifies REQ_INTEROP_012
+        """
+        data = self._get_json('/')
+
+        # Verify faults endpoints are listed
+        self.assertIn('endpoints', data)
+        self.assertIn(
+            'GET /api/v1/components/{component_id}/faults',
+            data['endpoints']
+        )
+        self.assertIn(
+            'GET /api/v1/components/{component_id}/faults/{fault_code}',
+            data['endpoints']
+        )
+        self.assertIn(
+            'DELETE /api/v1/components/{component_id}/faults/{fault_code}',
+            data['endpoints']
+        )
+
+        # Verify faults capability is listed
+        self.assertIn('capabilities', data)
+        self.assertIn('faults', data['capabilities'])
+        self.assertTrue(data['capabilities']['faults'])
+
+        print('✓ Root endpoint includes faults test passed')
+
+    def test_56_list_faults_response_structure(self):
+        """
+        Test GET /components/{component_id}/faults returns valid response structure.
+
+        @verifies REQ_INTEROP_012
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/components/temp_sensor/faults',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('component_id', data)
+        self.assertEqual(data['component_id'], 'temp_sensor')
+        self.assertIn('source_id', data)
+        self.assertIn('faults', data)
+        self.assertIsInstance(data['faults'], list)
+        self.assertIn('count', data)
+
+        print(f'✓ List faults response structure test passed: {data["count"]} faults')
+
+    def test_57_faults_nonexistent_component(self):
+        """
+        Test GET /components/{component_id}/faults returns 404 for unknown component.
+
+        @verifies REQ_INTEROP_012
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/components/nonexistent_component/faults',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Component not found')
+        self.assertIn('component_id', data)
+        self.assertEqual(data['component_id'], 'nonexistent_component')
+
+        print('✓ Faults nonexistent component test passed')
+
+    def test_58_get_nonexistent_fault(self):
+        """
+        Test GET /components/{component_id}/faults/{fault_code} returns 404.
+
+        @verifies REQ_INTEROP_013
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/components/temp_sensor/faults/NONEXISTENT_FAULT',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertIn('fault_code', data)
+        self.assertEqual(data['fault_code'], 'NONEXISTENT_FAULT')
+
+        print('✓ Get nonexistent fault test passed')

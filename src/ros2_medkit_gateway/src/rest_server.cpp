@@ -184,6 +184,25 @@ void RESTServer::setup_routes() {
                   [this](const httplib::Request & req, httplib::Response & res) {
                     handle_delete_all_configurations(req, res);
                   });
+
+  // Fault endpoints - SOVD Faults API mapped to ros2_medkit_fault_manager services
+  // List all faults for a component (REQ_INTEROP_012)
+  server_->Get((api_path("/components") + R"(/([^/]+)/faults$)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_list_faults(req, res);
+               });
+
+  // Get specific fault by code (REQ_INTEROP_013)
+  server_->Get((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_get_fault(req, res);
+               });
+
+  // Clear a fault (REQ_INTEROP_015)
+  server_->Delete((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)").c_str(),
+                  [this](const httplib::Request & req, httplib::Response & res) {
+                    handle_clear_fault(req, res);
+                  });
 }
 
 void RESTServer::start() {
@@ -271,13 +290,17 @@ void RESTServer::handle_root(const httplib::Request & req, httplib::Response & r
                       "DELETE /api/v1/components/{component_id}/operations/{operation_name}",
                       "GET /api/v1/components/{component_id}/configurations",
                       "GET /api/v1/components/{component_id}/configurations/{param_name}",
-                      "PUT /api/v1/components/{component_id}/configurations/{param_name}"})},
+                      "PUT /api/v1/components/{component_id}/configurations/{param_name}",
+                      "GET /api/v1/components/{component_id}/faults",
+                      "GET /api/v1/components/{component_id}/faults/{fault_code}",
+                      "DELETE /api/v1/components/{component_id}/faults/{fault_code}"})},
         {"capabilities",
          {{"discovery", true},
           {"data_access", true},
           {"operations", true},
           {"async_actions", true},
-          {"configurations", true}}}};
+          {"configurations", true},
+          {"faults", true}}}};
 
     res.set_content(response.dump(2), "application/json");
   } catch (const std::exception & e) {
@@ -1699,6 +1722,275 @@ void RESTServer::handle_delete_all_configurations(const httplib::Request & req, 
             2),
         "application/json");
     RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_delete_all_configurations: %s", e.what());
+  }
+}
+
+void RESTServer::handle_list_faults(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  try {
+    if (req.matches.size() < 2) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"},
+                           {"details", component_validation.error()},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    const auto cache = node_->get_entity_cache();
+
+    // Find component to get its namespace path (used as source_id filter)
+    std::string namespace_path;
+    bool component_found = false;
+
+    for (const auto & component : cache.components) {
+      if (component.id == component_id) {
+        namespace_path = component.namespace_path;
+        component_found = true;
+        break;
+      }
+    }
+
+    if (!component_found) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Parse query parameters for status filtering
+    bool include_pending = true;
+    bool include_confirmed = true;
+    bool include_cleared = false;
+
+    if (req.has_param("status")) {
+      std::string status = req.get_param_value("status");
+      // Reset defaults when explicit status filter is provided
+      include_pending = false;
+      include_confirmed = false;
+      include_cleared = false;
+
+      if (status == "pending") {
+        include_pending = true;
+      } else if (status == "confirmed") {
+        include_confirmed = true;
+      } else if (status == "cleared") {
+        include_cleared = true;
+      } else if (status == "all") {
+        include_pending = true;
+        include_confirmed = true;
+        include_cleared = true;
+      }
+    }
+
+    auto fault_mgr = node_->get_fault_manager();
+    auto result = fault_mgr->get_faults(namespace_path, include_pending, include_confirmed, include_cleared);
+
+    if (result.success) {
+      json response = {{"component_id", component_id},
+                       {"source_id", namespace_path},
+                       {"faults", result.data["faults"]},
+                       {"count", result.data["count"]}};
+      res.set_content(response.dump(2), "application/json");
+    } else {
+      res.status = StatusCode::ServiceUnavailable_503;
+      res.set_content(
+          json{{"error", "Failed to get faults"}, {"details", result.error_message}, {"component_id", component_id}}
+              .dump(2),
+          "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(
+        json{{"error", "Failed to list faults"}, {"details", e.what()}, {"component_id", component_id}}.dump(2),
+        "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_list_faults for component '%s': %s",
+                 component_id.c_str(), e.what());
+  }
+}
+
+void RESTServer::handle_get_fault(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string fault_code;
+  try {
+    if (req.matches.size() < 3) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+    fault_code = req.matches[2];
+
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"},
+                           {"details", component_validation.error()},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Fault codes may contain dots and underscores, validate basic constraints
+    if (fault_code.empty() || fault_code.length() > 256) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid fault code"}, {"details", "Fault code is empty or too long"}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    const auto cache = node_->get_entity_cache();
+
+    // Find component to get its namespace path
+    std::string namespace_path;
+    bool component_found = false;
+
+    for (const auto & component : cache.components) {
+      if (component.id == component_id) {
+        namespace_path = component.namespace_path;
+        component_found = true;
+        break;
+      }
+    }
+
+    if (!component_found) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    auto fault_mgr = node_->get_fault_manager();
+    auto result = fault_mgr->get_fault(fault_code, namespace_path);
+
+    if (result.success) {
+      json response = {{"component_id", component_id}, {"fault", result.data}};
+      res.set_content(response.dump(2), "application/json");
+    } else {
+      // Check if it's a "not found" error
+      if (result.error_message.find("not found") != std::string::npos ||
+          result.error_message.find("Fault not found") != std::string::npos) {
+        res.status = StatusCode::NotFound_404;
+      } else {
+        res.status = StatusCode::ServiceUnavailable_503;
+      }
+      res.set_content(json{{"error", "Failed to get fault"},
+                           {"details", result.error_message},
+                           {"component_id", component_id},
+                           {"fault_code", fault_code}}
+                          .dump(2),
+                      "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Failed to get fault"},
+                         {"details", e.what()},
+                         {"component_id", component_id},
+                         {"fault_code", fault_code}}
+                        .dump(2),
+                    "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_get_fault for component '%s', fault '%s': %s",
+                 component_id.c_str(), fault_code.c_str(), e.what());
+  }
+}
+
+void RESTServer::handle_clear_fault(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string fault_code;
+  try {
+    if (req.matches.size() < 3) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid request"}}.dump(2), "application/json");
+      return;
+    }
+
+    component_id = req.matches[1];
+    fault_code = req.matches[2];
+
+    auto component_validation = validate_entity_id(component_id);
+    if (!component_validation) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid component ID"},
+                           {"details", component_validation.error()},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Validate fault code
+    if (fault_code.empty() || fault_code.length() > 256) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid fault code"}, {"details", "Fault code is empty or too long"}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    const auto cache = node_->get_entity_cache();
+
+    // Verify component exists
+    bool component_found = false;
+
+    for (const auto & component : cache.components) {
+      if (component.id == component_id) {
+        component_found = true;
+        break;
+      }
+    }
+
+    if (!component_found) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Component not found"}, {"component_id", component_id}}.dump(2),
+                      "application/json");
+      return;
+    }
+
+    auto fault_mgr = node_->get_fault_manager();
+    auto result = fault_mgr->clear_fault(fault_code);
+
+    if (result.success) {
+      json response = {{"status", "success"},
+                       {"component_id", component_id},
+                       {"fault_code", fault_code},
+                       {"message", result.data.value("message", "Fault cleared")}};
+      res.set_content(response.dump(2), "application/json");
+    } else {
+      // Check if it's a "not found" error
+      if (result.error_message.find("not found") != std::string::npos ||
+          result.error_message.find("Fault not found") != std::string::npos) {
+        res.status = StatusCode::NotFound_404;
+      } else {
+        res.status = StatusCode::ServiceUnavailable_503;
+      }
+      res.set_content(json{{"error", "Failed to clear fault"},
+                           {"details", result.error_message},
+                           {"component_id", component_id},
+                           {"fault_code", fault_code}}
+                          .dump(2),
+                      "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Failed to clear fault"},
+                         {"details", e.what()},
+                         {"component_id", component_id},
+                         {"fault_code", fault_code}}
+                        .dump(2),
+                    "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_clear_fault for component '%s', fault '%s': %s",
+                 component_id.c_str(), fault_code.c_str(), e.what());
   }
 }
 

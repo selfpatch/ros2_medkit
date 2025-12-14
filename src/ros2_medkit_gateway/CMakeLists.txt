@@ -31,6 +31,7 @@ find_package(ament_index_cpp REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(example_interfaces REQUIRED)
+find_package(ros2_medkit_msgs REQUIRED)
 
 # Find cpp-httplib using pkg-config
 find_package(PkgConfig REQUIRED)
@@ -52,6 +53,7 @@ add_library(gateway_lib STATIC
   src/native_topic_sampler.cpp
   src/operation_manager.cpp
   src/configuration_manager.cpp
+  src/fault_manager.cpp
 )
 
 ament_target_dependencies(gateway_lib
@@ -61,6 +63,7 @@ ament_target_dependencies(gateway_lib
   rcl_interfaces
   ament_index_cpp
   action_msgs
+  ros2_medkit_msgs
 )
 
 target_link_libraries(gateway_lib

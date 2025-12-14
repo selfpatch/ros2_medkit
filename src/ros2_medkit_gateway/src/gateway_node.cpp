@@ -105,6 +105,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   data_access_mgr_ = std::make_unique<DataAccessManager>(this);
   operation_mgr_ = std::make_unique<OperationManager>(this, discovery_mgr_.get());
   config_mgr_ = std::make_unique<ConfigurationManager>(this);
+  fault_mgr_ = std::make_unique<FaultManager>(this);
 
   // Connect topic sampler to discovery manager for component-topic mapping
   discovery_mgr_->set_topic_sampler(data_access_mgr_->get_native_sampler());
@@ -155,6 +156,10 @@ DiscoveryManager * GatewayNode::get_discovery_manager() const {
 
 ConfigurationManager * GatewayNode::get_configuration_manager() const {
   return config_mgr_.get();
+}
+
+FaultManager * GatewayNode::get_fault_manager() const {
+  return fault_mgr_.get();
 }
 
 void GatewayNode::refresh_cache() {

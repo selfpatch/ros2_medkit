@@ -60,6 +60,11 @@ class RESTServer {
   void handle_delete_configuration(const httplib::Request & req, httplib::Response & res);
   void handle_delete_all_configurations(const httplib::Request & req, httplib::Response & res);
 
+  // Fault endpoints
+  void handle_list_faults(const httplib::Request & req, httplib::Response & res);
+  void handle_get_fault(const httplib::Request & req, httplib::Response & res);
+  void handle_clear_fault(const httplib::Request & req, httplib::Response & res);
+
   // Helper methods
   std::expected<void, std::string> validate_entity_id(const std::string & entity_id) const;
   void set_cors_headers(httplib::Response & res, const std::string & origin) const;
