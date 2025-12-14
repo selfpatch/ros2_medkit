@@ -37,8 +37,9 @@ ros2_medkit_msgs::msg::Fault FaultState::to_msg() const {
   return msg;
 }
 
-bool FaultStorage::report_fault(const std::string & fault_code, uint8_t severity, const std::string & description,
-                                const std::string & source_id, const rclcpp::Time & timestamp) {
+bool InMemoryFaultStorage::report_fault(const std::string & fault_code, uint8_t severity,
+                                        const std::string & description, const std::string & source_id,
+                                        const rclcpp::Time & timestamp) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = faults_.find(fault_code);
@@ -83,8 +84,9 @@ bool FaultStorage::report_fault(const std::string & fault_code, uint8_t severity
   return false;
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault> FaultStorage::get_faults(bool filter_by_severity, uint8_t severity,
-                                                                   const std::vector<std::string> & statuses) const {
+std::vector<ros2_medkit_msgs::msg::Fault>
+InMemoryFaultStorage::get_faults(bool filter_by_severity, uint8_t severity,
+                                 const std::vector<std::string> & statuses) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
@@ -126,7 +128,7 @@ std::vector<ros2_medkit_msgs::msg::Fault> FaultStorage::get_faults(bool filter_b
   return result;
 }
 
-std::optional<ros2_medkit_msgs::msg::Fault> FaultStorage::get_fault(const std::string & fault_code) const {
+std::optional<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_fault(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = faults_.find(fault_code);
@@ -137,7 +139,7 @@ std::optional<ros2_medkit_msgs::msg::Fault> FaultStorage::get_fault(const std::s
   return it->second.to_msg();
 }
 
-bool FaultStorage::clear_fault(const std::string & fault_code) {
+bool InMemoryFaultStorage::clear_fault(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = faults_.find(fault_code);
@@ -149,12 +151,12 @@ bool FaultStorage::clear_fault(const std::string & fault_code) {
   return true;
 }
 
-size_t FaultStorage::size() const {
+size_t InMemoryFaultStorage::size() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return faults_.size();
 }
 
-bool FaultStorage::contains(const std::string & fault_code) const {
+bool InMemoryFaultStorage::contains(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
   return faults_.find(fault_code) != faults_.end();
 }

@@ -22,12 +22,12 @@
 #include "ros2_medkit_msgs/msg/fault.hpp"
 
 using ros2_medkit_fault_manager::FaultManagerNode;
-using ros2_medkit_fault_manager::FaultStorage;
+using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_msgs::msg::Fault;
 
 class FaultStorageTest : public ::testing::Test {
  protected:
-  FaultStorage storage_;
+  InMemoryFaultStorage storage_;
 };
 
 TEST_F(FaultStorageTest, ReportNewFault) {

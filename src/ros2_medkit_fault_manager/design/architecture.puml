@@ -44,35 +44,28 @@ package "ros2_medkit_msgs" {
 package "ros2_medkit_fault_manager" {
 
     class FaultManagerNode {
-        - storage_: FaultStorage
-        - report_fault_srv_: Service
-        - get_faults_srv_: Service
-        - clear_fault_srv_: Service
         + get_storage(): FaultStorage&
-        - handle_report_fault()
-        - handle_get_faults()
-        - handle_clear_fault()
-        - is_valid_severity(): bool
     }
 
-    class FaultStorage {
-        - faults_: map<string, FaultState>
-        - mutex_: mutex
+    abstract class FaultStorage <<interface>> {
+        + {abstract} report_fault(): bool
+        + {abstract} get_faults(): vector<Fault>
+        + {abstract} get_fault(): optional<Fault>
+        + {abstract} clear_fault(): bool
+        + {abstract} size(): size_t
+        + {abstract} contains(): bool
+    }
+
+    class InMemoryFaultStorage {
         + report_fault(): bool
         + get_faults(): vector<Fault>
+        + get_fault(): optional<Fault>
         + clear_fault(): bool
         + size(): size_t
+        + contains(): bool
     }
 
     class FaultState <<struct>> {
-        + fault_code: string
-        + severity: uint8
-        + description: string
-        + first_occurred: Time
-        + last_occurred: Time
-        + occurrence_count: uint32
-        + status: string
-        + reporting_sources: set<string>
         + to_msg(): Fault
     }
 }
@@ -81,12 +74,13 @@ package "ros2_medkit_fault_manager" {
 
 ' Inheritance
 FaultManagerNode -up-|> "rclcpp::Node" : extends
+InMemoryFaultStorage -up-|> FaultStorage : implements
 
 ' Composition
-FaultManagerNode *-down-> FaultStorage : owns
+FaultManagerNode *-down-> InMemoryFaultStorage : owns
 
-' FaultStorage contains FaultStates
-FaultStorage o-right-> FaultState : contains many
+' InMemoryFaultStorage contains FaultStates
+InMemoryFaultStorage o-right-> FaultState : contains many
 
 ' FaultState converts to message
 FaultState ..> "msg::Fault" : converts to

@@ -57,35 +57,28 @@ The following diagram shows the relationships between the main components of the
    package "ros2_medkit_fault_manager" {
 
        class FaultManagerNode {
-           - storage_: FaultStorage
-           - report_fault_srv_: Service
-           - get_faults_srv_: Service
-           - clear_fault_srv_: Service
            + get_storage(): FaultStorage&
-           - handle_report_fault()
-           - handle_get_faults()
-           - handle_clear_fault()
-           - is_valid_severity(): bool
        }
 
-       class FaultStorage {
-           - faults_: map<string, FaultState>
-           - mutex_: mutex
+       abstract class FaultStorage <<interface>> {
+           + {abstract} report_fault(): bool
+           + {abstract} get_faults(): vector<Fault>
+           + {abstract} get_fault(): optional<Fault>
+           + {abstract} clear_fault(): bool
+           + {abstract} size(): size_t
+           + {abstract} contains(): bool
+       }
+
+       class InMemoryFaultStorage {
            + report_fault(): bool
            + get_faults(): vector<Fault>
+           + get_fault(): optional<Fault>
            + clear_fault(): bool
            + size(): size_t
+           + contains(): bool
        }
 
        class FaultState <<struct>> {
-           + fault_code: string
-           + severity: uint8
-           + description: string
-           + first_occurred: Time
-           + last_occurred: Time
-           + occurrence_count: uint32
-           + status: string
-           + reporting_sources: set<string>
            + to_msg(): Fault
        }
    }
@@ -94,12 +87,13 @@ The following diagram shows the relationships between the main components of the
 
    ' Inheritance
    FaultManagerNode -up-|> "rclcpp::Node" : extends
+   InMemoryFaultStorage -up-|> FaultStorage : implements
 
    ' Composition
-   FaultManagerNode *-down-> FaultStorage : owns
+   FaultManagerNode *-down-> InMemoryFaultStorage : owns
 
-   ' FaultStorage contains FaultStates
-   FaultStorage o-right-> FaultState : contains many
+   ' InMemoryFaultStorage contains FaultStates
+   InMemoryFaultStorage o-right-> FaultState : contains many
 
    ' FaultState converts to message
    FaultState ..> "msg::Fault" : converts to
@@ -116,19 +110,24 @@ Main Components
 
 1. **FaultManagerNode** - The main ROS 2 node that provides fault management services
    - Extends ``rclcpp::Node``
-   - Owns a ``FaultStorage`` instance for persistent fault state
+   - Owns a ``FaultStorage`` implementation for fault state persistence
    - Provides three ROS 2 services for fault reporting, querying, and clearing
    - Validates input parameters (fault_code, severity, source_id)
    - Logs fault lifecycle events at appropriate severity levels
 
-2. **FaultStorage** - Thread-safe in-memory fault storage
+2. **FaultStorage** - Abstract interface for fault storage backends
+   - Defines the contract for fault storage implementations
+   - Enables pluggable storage backends (in-memory, persistent, distributed)
+   - Future implementations can be added in Issue #8: Fault Persistence Options
+
+3. **InMemoryFaultStorage** - Thread-safe in-memory implementation of FaultStorage
    - Uses ``std::map`` keyed by ``fault_code`` for O(log n) lookups
    - Protected by ``std::mutex`` for concurrent service request handling
    - Aggregates reports from multiple sources into single fault entries
    - Implements severity escalation (higher severity overwrites lower)
    - Tracks occurrence counts and all reporting sources
 
-3. **FaultState** - Internal representation of a fault entry
+4. **FaultState** - Internal representation of a fault entry
    - Maps directly to ``ros2_medkit_msgs::msg::Fault`` via ``to_msg()``
    - Uses ``std::set`` for reporting_sources to ensure uniqueness
    - Tracks first and last occurrence timestamps

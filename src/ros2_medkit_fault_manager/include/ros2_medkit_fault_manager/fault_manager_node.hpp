@@ -53,7 +53,7 @@ class FaultManagerNode : public rclcpp::Node {
   /// Validate severity value
   static bool is_valid_severity(uint8_t severity);
 
-  FaultStorage storage_;
+  InMemoryFaultStorage storage_;
 
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetFaults>::SharedPtr get_faults_srv_;

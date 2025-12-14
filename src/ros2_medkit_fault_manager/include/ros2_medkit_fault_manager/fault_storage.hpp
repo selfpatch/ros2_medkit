@@ -41,10 +41,10 @@ struct FaultState {
   ros2_medkit_msgs::msg::Fault to_msg() const;
 };
 
-/// Thread-safe in-memory fault storage
+/// Abstract interface for fault storage backends
 class FaultStorage {
  public:
-  FaultStorage() = default;
+  virtual ~FaultStorage() = default;
 
   /// Store or update a fault report
   /// @param fault_code Global fault identifier
@@ -53,32 +53,59 @@ class FaultStorage {
   /// @param source_id Reporting source identifier
   /// @param timestamp Current time for tracking
   /// @return true if this is a new fault, false if existing fault was updated
-  bool report_fault(const std::string & fault_code, uint8_t severity, const std::string & description,
-                    const std::string & source_id, const rclcpp::Time & timestamp);
+  virtual bool report_fault(const std::string & fault_code, uint8_t severity, const std::string & description,
+                            const std::string & source_id, const rclcpp::Time & timestamp) = 0;
 
   /// Get faults matching filter criteria
   /// @param filter_by_severity Whether to filter by severity
   /// @param severity Severity level to filter (if filter_by_severity is true)
   /// @param statuses List of statuses to include (empty = CONFIRMED only)
   /// @return Vector of matching faults
-  std::vector<ros2_medkit_msgs::msg::Fault> get_faults(bool filter_by_severity, uint8_t severity,
-                                                       const std::vector<std::string> & statuses) const;
+  virtual std::vector<ros2_medkit_msgs::msg::Fault> get_faults(bool filter_by_severity, uint8_t severity,
+                                                               const std::vector<std::string> & statuses) const = 0;
 
   /// Get a single fault by fault_code
   /// @param fault_code The fault code to look up
   /// @return The fault if found, nullopt otherwise
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const;
+  virtual std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const = 0;
 
   /// Clear a fault by fault_code
   /// @param fault_code The fault code to clear
   /// @return true if fault was found and cleared, false if not found
-  bool clear_fault(const std::string & fault_code);
+  virtual bool clear_fault(const std::string & fault_code) = 0;
 
   /// Get total number of stored faults
-  size_t size() const;
+  virtual size_t size() const = 0;
 
   /// Check if a fault exists
-  bool contains(const std::string & fault_code) const;
+  virtual bool contains(const std::string & fault_code) const = 0;
+
+ protected:
+  FaultStorage() = default;
+  FaultStorage(const FaultStorage &) = default;
+  FaultStorage & operator=(const FaultStorage &) = default;
+  FaultStorage(FaultStorage &&) = default;
+  FaultStorage & operator=(FaultStorage &&) = default;
+};
+
+/// Thread-safe in-memory fault storage implementation
+class InMemoryFaultStorage : public FaultStorage {
+ public:
+  InMemoryFaultStorage() = default;
+
+  bool report_fault(const std::string & fault_code, uint8_t severity, const std::string & description,
+                    const std::string & source_id, const rclcpp::Time & timestamp) override;
+
+  std::vector<ros2_medkit_msgs::msg::Fault> get_faults(bool filter_by_severity, uint8_t severity,
+                                                       const std::vector<std::string> & statuses) const override;
+
+  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override;
+
+  bool clear_fault(const std::string & fault_code) override;
+
+  size_t size() const override;
+
+  bool contains(const std::string & fault_code) const override;
 
  private:
   mutable std::mutex mutex_;
