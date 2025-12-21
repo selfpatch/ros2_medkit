@@ -19,9 +19,23 @@
 namespace ros2_medkit_fault_reporter {
 
 LocalFilter::LocalFilter(const FilterConfig & config) : config_(config) {
+  validate_config();
+}
+
+void LocalFilter::validate_config() {
+  // Ensure threshold is at least 1
+  if (config_.default_threshold < 1) {
+    config_.default_threshold = 1;
+  }
+  // Ensure window is positive
+  if (config_.default_window_sec <= 0.0) {
+    config_.default_window_sec = 1.0;
+  }
 }
 
 bool LocalFilter::should_forward(const std::string & fault_code, uint8_t severity) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
   // If filtering is disabled, always forward
   if (!config_.enabled) {
     return true;
@@ -31,8 +45,6 @@ bool LocalFilter::should_forward(const std::string & fault_code, uint8_t severit
   if (severity >= config_.bypass_severity) {
     return true;
   }
-
-  std::lock_guard<std::mutex> lock(mutex_);
 
   auto now = std::chrono::steady_clock::now();
   auto & tracker = trackers_[fault_code];
@@ -60,6 +72,7 @@ void LocalFilter::reset_all() {
 void LocalFilter::set_config(const FilterConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
   config_ = config;
+  validate_config();
   trackers_.clear();
 }
 
@@ -67,10 +80,14 @@ void LocalFilter::cleanup_expired(FaultTracker & tracker, std::chrono::steady_cl
   auto window = std::chrono::duration<double>(config_.default_window_sec);
   auto cutoff = now - std::chrono::duration_cast<std::chrono::steady_clock::duration>(window);
 
-  auto it = std::remove_if(tracker.timestamps.begin(), tracker.timestamps.end(), [cutoff](const auto & ts) {
-    return ts < cutoff;
-  });
-  tracker.timestamps.erase(it, tracker.timestamps.end());
+  // Fast path: if nothing has expired, avoid any work
+  if (tracker.timestamps.empty() || tracker.timestamps.front() >= cutoff) {
+    return;
+  }
+
+  // Timestamps are sorted (pushed in chronological order), use lower_bound for efficiency
+  auto it = std::lower_bound(tracker.timestamps.begin(), tracker.timestamps.end(), cutoff);
+  tracker.timestamps.erase(tracker.timestamps.begin(), it);
 }
 
 }  // namespace ros2_medkit_fault_reporter
