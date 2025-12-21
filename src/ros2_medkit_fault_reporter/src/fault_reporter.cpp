@@ -1,0 +1,85 @@
+// Copyright 2025 mfaferek93
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "ros2_medkit_fault_reporter/fault_reporter.hpp"
+
+namespace ros2_medkit_fault_reporter {
+
+FaultReporter::FaultReporter(const rclcpp::Node::SharedPtr & node, const std::string & source_id,
+                             const std::string & service_name)
+  : node_(node), source_id_(source_id), logger_(node->get_logger()) {
+  // Create service client
+  client_ = node_->create_client<ros2_medkit_msgs::srv::ReportFault>(service_name);
+
+  // Load configuration from parameters
+  load_parameters();
+
+  RCLCPP_DEBUG(logger_, "FaultReporter initialized for source: %s", source_id_.c_str());
+}
+
+void FaultReporter::load_parameters() {
+  FilterConfig config;
+
+  // Declare and get parameters with defaults
+  node_->declare_parameter("fault_reporter.local_filtering.enabled", config.enabled);
+  node_->declare_parameter("fault_reporter.local_filtering.default_threshold", config.default_threshold);
+  node_->declare_parameter("fault_reporter.local_filtering.default_window_sec", config.default_window_sec);
+  node_->declare_parameter("fault_reporter.local_filtering.bypass_severity", static_cast<int>(config.bypass_severity));
+
+  config.enabled = node_->get_parameter("fault_reporter.local_filtering.enabled").as_bool();
+  config.default_threshold =
+      static_cast<int>(node_->get_parameter("fault_reporter.local_filtering.default_threshold").as_int());
+  config.default_window_sec = node_->get_parameter("fault_reporter.local_filtering.default_window_sec").as_double();
+  config.bypass_severity =
+      static_cast<uint8_t>(node_->get_parameter("fault_reporter.local_filtering.bypass_severity").as_int());
+
+  filter_.set_config(config);
+
+  RCLCPP_DEBUG(logger_, "Filter config: enabled=%d, threshold=%d, window=%.1fs, bypass_severity=%d", config.enabled,
+               config.default_threshold, config.default_window_sec, config.bypass_severity);
+}
+
+void FaultReporter::report(const std::string & fault_code, uint8_t severity, const std::string & description) {
+  // Check if filter allows forwarding
+  if (!filter_.should_forward(fault_code, severity)) {
+    RCLCPP_DEBUG(logger_, "Fault '%s' filtered (threshold not met)", fault_code.c_str());
+    return;
+  }
+
+  send_report(fault_code, severity, description);
+}
+
+bool FaultReporter::is_service_ready() const {
+  return client_->service_is_ready();
+}
+
+void FaultReporter::send_report(const std::string & fault_code, uint8_t severity, const std::string & description) {
+  if (!client_->service_is_ready()) {
+    RCLCPP_DEBUG(logger_, "FaultManager service not available, skipping report for '%s'", fault_code.c_str());
+    return;
+  }
+
+  auto request = std::make_shared<ros2_medkit_msgs::srv::ReportFault::Request>();
+  request->fault_code = fault_code;
+  request->severity = severity;
+  request->description = description;
+  request->source_id = source_id_;
+
+  // Fire and forget - don't block on response
+  client_->async_send_request(request);
+
+  RCLCPP_DEBUG(logger_, "Reported fault: %s (severity=%d)", fault_code.c_str(), severity);
+}
+
+}  // namespace ros2_medkit_fault_reporter
