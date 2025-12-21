@@ -1,0 +1,90 @@
+// Copyright 2025 mfaferek93
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+#include <memory>
+#include <string>
+
+#include "rclcpp/rclcpp.hpp"
+#include "ros2_medkit_fault_reporter/local_filter.hpp"
+#include "ros2_medkit_msgs/srv/report_fault.hpp"
+
+namespace ros2_medkit_fault_reporter {
+
+/// Client library for reporting faults to the central FaultManager
+///
+/// Provides a simple API for ROS 2 nodes to report faults with optional
+/// local filtering to reduce noise from repeated fault occurrences.
+///
+/// Example usage:
+/// @code
+/// class MyNode : public rclcpp::Node {
+///  public:
+///   MyNode() : Node("my_node") {
+///     reporter_ = std::make_unique<FaultReporter>(
+///         shared_from_this(), get_fully_qualified_name());
+///   }
+///
+///   void on_error() {
+///     reporter_->report("SENSOR_FAILURE", Fault::SEVERITY_ERROR, "Sensor timeout");
+///   }
+///
+///  private:
+///   std::unique_ptr<FaultReporter> reporter_;
+/// };
+/// @endcode
+class FaultReporter {
+ public:
+  /// Construct a FaultReporter
+  ///
+  /// @param node The ROS 2 node to use for service client and parameters
+  /// @param source_id Identifier for this reporter (typically node's FQN)
+  /// @param service_name Name of the ReportFault service (default: /fault_manager/report_fault)
+  FaultReporter(const rclcpp::Node::SharedPtr & node, const std::string & source_id,
+                const std::string & service_name = "/fault_manager/report_fault");
+
+  /// Report a fault occurrence
+  ///
+  /// The fault will be forwarded to the FaultManager if local filtering
+  /// allows it (threshold met within time window, or high severity).
+  ///
+  /// @param fault_code Global fault identifier (e.g., "MOTOR_OVERHEAT")
+  /// @param severity Severity level (use Fault::SEVERITY_* constants)
+  /// @param description Human-readable fault description
+  void report(const std::string & fault_code, uint8_t severity, const std::string & description);
+
+  /// Check if the FaultManager service is available
+  bool is_service_ready() const;
+
+  /// Get read-only access to the local filter (for testing)
+  const LocalFilter & filter() const {
+    return filter_;
+  }
+
+ private:
+  /// Load filter configuration from ROS parameters
+  void load_parameters();
+
+  /// Send the fault report to FaultManager (async, fire-and-forget)
+  void send_report(const std::string & fault_code, uint8_t severity, const std::string & description);
+
+  rclcpp::Node::SharedPtr node_;
+  std::string source_id_;
+  rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr client_;
+  LocalFilter filter_;
+  rclcpp::Logger logger_;
+};
+
+}  // namespace ros2_medkit_fault_reporter

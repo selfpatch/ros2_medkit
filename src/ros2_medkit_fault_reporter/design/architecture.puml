@@ -1,0 +1,95 @@
+@startuml ros2_medkit_fault_reporter_architecture
+
+skinparam linetype ortho
+skinparam classAttributeIconSize 0
+
+title ROS 2 Medkit Fault Reporter - Class Architecture
+
+package "ROS 2 Framework" {
+    class "rclcpp::Node" {
+        +create_client()
+        +get_logger()
+        +declare_parameter()
+        +get_parameter()
+    }
+}
+
+package "ros2_medkit_msgs" {
+    class "srv::ReportFault" {
+        +Request: fault_code, severity, description, source_id
+        +Response: success, message
+    }
+}
+
+package "ros2_medkit_fault_reporter" {
+
+    class FaultReporter {
+        - node_: rclcpp::Node::SharedPtr
+        - source_id_: string
+        - client_: ServiceClient<ReportFault>
+        - filter_: LocalFilter
+        - logger_: rclcpp::Logger
+        --
+        + FaultReporter(node, source_id, service_name)
+        + report(fault_code, severity, description): void
+        + is_service_ready(): bool
+        + filter(): const LocalFilter&
+        --
+        - load_parameters(): void
+        - send_report(fault_code, severity, description): void
+    }
+
+    class LocalFilter {
+        - config_: FilterConfig
+        - trackers_: map<string, FaultTracker>
+        - mutex_: std::mutex
+        --
+        + LocalFilter(config)
+        + should_forward(fault_code, severity): bool
+        + reset(fault_code): void
+        + reset_all(): void
+        + config(): const FilterConfig&
+        + set_config(config): void
+        --
+        - cleanup_expired(tracker, now): void
+    }
+
+    class FilterConfig <<struct>> {
+        + enabled: bool = true
+        + default_threshold: int = 3
+        + default_window_sec: double = 10.0
+        + bypass_severity: uint8 = 2
+    }
+
+    class FaultTracker <<struct>> {
+        + timestamps: vector<time_point>
+    }
+}
+
+package "ros2_medkit_fault_manager" {
+    class FaultManagerNode {
+        ~/report_fault service
+    }
+}
+
+' Relationships
+
+' FaultReporter uses rclcpp::Node
+FaultReporter --> "rclcpp::Node" : uses
+
+' FaultReporter owns LocalFilter
+FaultReporter *-down-> LocalFilter : owns
+
+' LocalFilter uses config
+LocalFilter --> FilterConfig : configured by
+
+' LocalFilter contains trackers
+LocalFilter o--> FaultTracker : per fault_code
+
+' FaultReporter uses ReportFault service
+FaultReporter ..> "srv::ReportFault" : calls
+
+' Service communication
+FaultReporter ..> FaultManagerNode : calls service
+
+@enduml
