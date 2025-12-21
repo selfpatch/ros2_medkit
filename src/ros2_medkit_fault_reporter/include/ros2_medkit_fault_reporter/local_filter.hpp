@@ -24,10 +24,16 @@ namespace ros2_medkit_fault_reporter {
 
 /// Configuration for local fault filtering
 struct FilterConfig {
+  /// Whether local filtering is enabled. When false, all faults are forwarded immediately.
   bool enabled{true};
+  /// Number of occurrences required within the time window before forwarding. Must be >= 1.
   int default_threshold{3};
+  /// Time window in seconds for counting fault occurrences. Must be > 0.
   double default_window_sec{10.0};
-  uint8_t bypass_severity{2};  // SEVERITY_ERROR and above bypass filtering
+  /// Minimum severity level that bypasses filtering (uses Fault::SEVERITY_* constants).
+  /// Faults with severity >= this value are always forwarded immediately.
+  /// Default is 2 (SEVERITY_ERROR), meaning ERROR and CRITICAL bypass filtering.
+  uint8_t bypass_severity{2};
 };
 
 /// Local filter for fault reports
@@ -54,8 +60,9 @@ class LocalFilter {
   /// Reset all tracking state
   void reset_all();
 
-  /// Get the current configuration
-  const FilterConfig & config() const {
+  /// Get the current configuration (thread-safe copy)
+  FilterConfig config() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return config_;
   }
 
@@ -66,6 +73,9 @@ class LocalFilter {
   struct FaultTracker {
     std::vector<std::chrono::steady_clock::time_point> timestamps;
   };
+
+  /// Validate and correct configuration values
+  void validate_config();
 
   /// Remove expired timestamps from tracker
   void cleanup_expired(FaultTracker & tracker, std::chrono::steady_clock::time_point now);

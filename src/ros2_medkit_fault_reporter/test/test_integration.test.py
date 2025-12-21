@@ -50,6 +50,7 @@ def get_coverage_env():
                 'GCOV_PREFIX_STRIP': str(build_dir.count(os.sep)),
             }
     except Exception:
+        # Coverage setup is best-effort; ignore failures and run tests without gcov.
         pass
     return {}
 
