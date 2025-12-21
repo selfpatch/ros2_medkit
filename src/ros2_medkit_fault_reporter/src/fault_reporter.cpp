@@ -19,6 +19,11 @@ namespace ros2_medkit_fault_reporter {
 FaultReporter::FaultReporter(const rclcpp::Node::SharedPtr & node, const std::string & source_id,
                              const std::string & service_name)
   : node_(node), source_id_(source_id), logger_(node->get_logger()) {
+  // Validate source_id
+  if (source_id_.empty()) {
+    RCLCPP_WARN(logger_, "FaultReporter created with empty source_id, fault origins will be difficult to trace");
+  }
+
   // Create service client
   client_ = node_->create_client<ros2_medkit_msgs::srv::ReportFault>(service_name);
 
@@ -31,11 +36,20 @@ FaultReporter::FaultReporter(const rclcpp::Node::SharedPtr & node, const std::st
 void FaultReporter::load_parameters() {
   FilterConfig config;
 
-  // Declare and get parameters with defaults
-  node_->declare_parameter("fault_reporter.local_filtering.enabled", config.enabled);
-  node_->declare_parameter("fault_reporter.local_filtering.default_threshold", config.default_threshold);
-  node_->declare_parameter("fault_reporter.local_filtering.default_window_sec", config.default_window_sec);
-  node_->declare_parameter("fault_reporter.local_filtering.bypass_severity", static_cast<int>(config.bypass_severity));
+  // Declare parameters with defaults if not already declared
+  if (!node_->has_parameter("fault_reporter.local_filtering.enabled")) {
+    node_->declare_parameter("fault_reporter.local_filtering.enabled", config.enabled);
+  }
+  if (!node_->has_parameter("fault_reporter.local_filtering.default_threshold")) {
+    node_->declare_parameter("fault_reporter.local_filtering.default_threshold", config.default_threshold);
+  }
+  if (!node_->has_parameter("fault_reporter.local_filtering.default_window_sec")) {
+    node_->declare_parameter("fault_reporter.local_filtering.default_window_sec", config.default_window_sec);
+  }
+  if (!node_->has_parameter("fault_reporter.local_filtering.bypass_severity")) {
+    node_->declare_parameter("fault_reporter.local_filtering.bypass_severity",
+                             static_cast<int>(config.bypass_severity));
+  }
 
   config.enabled = node_->get_parameter("fault_reporter.local_filtering.enabled").as_bool();
   config.default_threshold =
@@ -51,6 +65,12 @@ void FaultReporter::load_parameters() {
 }
 
 void FaultReporter::report(const std::string & fault_code, uint8_t severity, const std::string & description) {
+  // Validate fault_code
+  if (fault_code.empty()) {
+    RCLCPP_WARN(logger_, "Attempted to report fault with empty fault_code, ignoring");
+    return;
+  }
+
   // Check if filter allows forwarding
   if (!filter_.should_forward(fault_code, severity)) {
     RCLCPP_DEBUG(logger_, "Fault '%s' filtered (threshold not met)", fault_code.c_str());
@@ -66,7 +86,12 @@ bool FaultReporter::is_service_ready() const {
 
 void FaultReporter::send_report(const std::string & fault_code, uint8_t severity, const std::string & description) {
   if (!client_->service_is_ready()) {
-    RCLCPP_DEBUG(logger_, "FaultManager service not available, skipping report for '%s'", fault_code.c_str());
+    // Use WARN level for high-severity faults that would bypass filtering
+    if (severity >= filter_.config().bypass_severity) {
+      RCLCPP_WARN(logger_, "FaultManager service not available, dropping high-severity fault '%s'", fault_code.c_str());
+    } else {
+      RCLCPP_DEBUG(logger_, "FaultManager service not available, skipping report for '%s'", fault_code.c_str());
+    }
     return;
   }
 
