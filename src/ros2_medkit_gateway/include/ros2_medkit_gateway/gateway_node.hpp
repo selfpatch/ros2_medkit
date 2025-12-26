@@ -23,6 +23,7 @@
 #include <thread>
 #include <vector>
 
+#include "ros2_medkit_gateway/auth_config.hpp"
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/configuration_manager.hpp"
 #include "ros2_medkit_gateway/data_access_manager.hpp"
@@ -84,6 +85,7 @@ class GatewayNode : public rclcpp::Node {
   int server_port_;
   int refresh_interval_ms_;
   CorsConfig cors_config_;
+  AuthConfig auth_config_;
 
   // Managers
   std::unique_ptr<DiscoveryManager> discovery_mgr_;

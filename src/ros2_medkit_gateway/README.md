@@ -426,6 +426,92 @@ curl -X DELETE "http://localhost:8080/api/v1/components/long_calibration/operati
 }
 ```
 
+### Authentication Endpoints
+
+#### POST /api/v1/auth/authorize
+
+Authenticate using OAuth2 client credentials flow. Returns access and refresh tokens.
+
+**Example (JSON):**
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/authorize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "grant_type": "client_credentials",
+    "client_id": "my_client",
+    "client_secret": "my_secret"
+  }'
+```
+
+**Example (Form URL-encoded):**
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/authorize \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d 'grant_type=client_credentials&client_id=my_client&client_secret=my_secret'
+```
+
+**Response (200 OK):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...",
+  "scope": "admin"
+}
+```
+
+**Response (401 Unauthorized - Invalid Credentials):**
+```json
+{
+  "error": "invalid_client",
+  "error_description": "Invalid client credentials"
+}
+```
+
+#### POST /api/v1/auth/token
+
+Refresh an access token using a refresh token.
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{
+    "grant_type": "refresh_token",
+    "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4..."
+  }'
+```
+
+**Response (200 OK):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "bmV3IHJlZnJlc2ggdG9rZW4...",
+  "scope": "admin"
+}
+```
+
+#### POST /api/v1/auth/revoke
+
+Revoke a refresh token to prevent further use.
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/revoke \
+  -H "Content-Type: application/json" \
+  -d '{"token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4..."}'
+```
+
+**Response (200 OK):**
+```json
+{
+  "status": "revoked"
+}
+```
+
 ### Configurations Endpoints
 
 #### GET /api/v1/components/{component_id}/configurations
@@ -695,6 +781,30 @@ Cross-Origin Resource Sharing (CORS) settings for browser-based clients. CORS is
 | `cors.allow_credentials` | bool     | `false`                      | Allow credentials (cookies, auth headers). Cannot be `true` with wildcard origin.   |
 | `cors.max_age_seconds`   | int      | `86400`                      | How long browsers cache preflight response (24 hours default)                       |
 
+#### Authentication Configuration
+
+JWT-based authentication with Role-Based Access Control (RBAC). Authentication is **disabled by default** for backward compatibility.
+
+| Parameter                           | Type     | Default               | Description                                                                 |
+| ----------------------------------- | -------- | --------------------- | --------------------------------------------------------------------------- |
+| `auth.enabled`                      | bool     | `false`               | Enable/disable authentication. Set to `true` to require auth.              |
+| `auth.jwt_secret`                   | string   | (required if enabled) | Secret key for HS256 signing. Must be at least 32 characters.              |
+| `auth.jwt_algorithm`                | string   | `HS256`               | JWT signing algorithm: `HS256` (symmetric) or `RS256` (asymmetric).        |
+| `auth.token_expiry_seconds`         | int      | `3600`                | Access token lifetime in seconds (range: 60-86400).                        |
+| `auth.refresh_token_expiry_seconds` | int      | `86400`               | Refresh token lifetime in seconds (range: 300-604800).                     |
+| `auth.require_auth_for`             | string   | `write`               | Auth requirement: `none`, `write` (POST/PUT/DELETE only), or `all`.        |
+| `auth.issuer`                       | string   | `ros2_medkit_gateway` | JWT issuer claim for token validation.                                     |
+| `auth.clients`                      | string[] | `[]`                  | Client credentials in format `client_id:client_secret:role`.               |
+
+**Roles and Permissions:**
+
+| Role         | Read (GET) | Operations (POST) | Configurations (PUT/DELETE) | Faults (DELETE) |
+| ------------ | ---------- | ----------------- | --------------------------- | --------------- |
+| `viewer`     | ✅          | ❌                 | ❌                           | ❌               |
+| `operator`   | ✅          | ✅                 | ❌                           | ❌               |
+| `configurator` | ✅        | ✅                 | ✅                           | ❌               |
+| `admin`      | ✅          | ✅                 | ✅                           | ✅               |
+
 ### Configuration Examples
 
 **Change port via command line:**
@@ -728,6 +838,64 @@ cors:
 ```
 
 > ⚠️ **Security Note:** Using `["*"]` as `allowed_origins` is not recommended for production. When `allow_credentials` is `true`, wildcard origins will cause the application to fail to start with an exception.
+
+### Authentication Configuration Examples
+
+**Enable authentication with write-only protection (recommended for development):**
+```yaml
+auth:
+  enabled: true
+  jwt_secret: "your_secret_key_at_least_32_chars_long"
+  jwt_algorithm: "HS256"
+  token_expiry_seconds: 3600
+  refresh_token_expiry_seconds: 86400
+  require_auth_for: "write"   # GET requests work without auth
+  issuer: "ros2_medkit_gateway"
+  clients:
+    - "admin:admin_secret:admin"
+    - "operator:operator_secret:operator"
+    - "viewer:viewer_secret:viewer"
+```
+
+**Full protection (all endpoints require authentication):**
+```yaml
+auth:
+  enabled: true
+  jwt_secret: "your_production_secret_minimum_32_chars"
+  jwt_algorithm: "HS256"
+  token_expiry_seconds: 1800    # 30 minutes for tighter security
+  refresh_token_expiry_seconds: 43200  # 12 hours
+  require_auth_for: "all"      # All endpoints require valid token
+  issuer: "production_gateway"
+  clients:
+    - "dashboard:dashboard_secret_key:admin"
+    - "monitoring:monitoring_secret:viewer"
+```
+
+**Usage with curl:**
+```bash
+# 1. Get access token
+TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/authorize \
+  -H "Content-Type: application/json" \
+  -d '{"grant_type":"client_credentials","client_id":"admin","client_secret":"admin_secret"}' \
+  | jq -r '.access_token')
+
+# 2. Use token for protected endpoints
+curl http://localhost:8080/api/v1/components/temp_sensor/data \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. Set a parameter (requires operator+ role)
+curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/configurations/rate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"value": 5.0}'
+```
+
+> ⚠️ **Security Notes:**
+> - Store `jwt_secret` securely and never commit it to version control
+> - Use environment variables or secure secret management in production
+> - RS256 algorithm requires additional setup with public/private key files
+> - Client secrets should be generated using cryptographically secure random strings
 
 ## Architecture
 

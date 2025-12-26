@@ -71,3 +71,57 @@ ros2_medkit_gateway:
     # - Returns metadata instantly for topics without publishers (no CLI timeout wait)
     # This significantly improves UX when many topics are idle (e.g., robot waiting for commands)
     # CLI is only used for publishing (ros2 topic pub)
+
+    # Authentication Configuration (REQ_INTEROP_086, REQ_INTEROP_087)
+    # JWT-based authentication with Role-Based Access Control (RBAC)
+    auth:
+      # Enable/disable authentication
+      # Default: false (disabled for local development)
+      enabled: false
+
+      # JWT signing secret (required when enabled)
+      # For HS256: The shared secret string
+      # For RS256: Path to the private key file (PEM format)
+      jwt_secret: ""
+
+      # Path to public key file for RS256 (required for RS256, optional for HS256)
+      jwt_public_key: ""
+
+      # JWT signing algorithm
+      # Options: "HS256" (symmetric, default), "RS256" (asymmetric)
+      jwt_algorithm: "HS256"
+
+      # Access token validity period in seconds
+      # Default: 3600 (1 hour)
+      token_expiry_seconds: 3600
+
+      # Refresh token validity period in seconds
+      # Default: 86400 (24 hours)
+      # Must be >= token_expiry_seconds
+      refresh_token_expiry_seconds: 86400
+
+      # When to require authentication
+      # Options:
+      #   - "none": No authentication required (auth endpoints still available)
+      #   - "write": Auth required for write operations (POST, PUT, DELETE)
+      #   - "all": Auth required for all operations
+      # Default: "write"
+      require_auth_for: "write"
+
+      # JWT issuer claim
+      # Default: "ros2_medkit_gateway"
+      issuer: "ros2_medkit_gateway"
+
+      # Pre-configured clients for authentication
+      # Format: "client_id:client_secret:role"
+      # Roles: viewer, operator, configurator, admin
+      #
+      # Role permissions:
+      #   - viewer: Read-only access (GET on areas, components, data, faults)
+      #   - operator: Viewer + trigger operations, acknowledge faults, publish data
+      #   - configurator: Operator + modify/reset configurations
+      #   - admin: Full access including auth management
+      #
+      # Example:
+      #   clients: ["admin:admin_secret_123:admin", "viewer:viewer_pass:viewer"]
+      clients: [""]

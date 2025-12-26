@@ -33,6 +33,17 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("cors.allow_credentials", false);
   declare_parameter("cors.max_age_seconds", 86400);
 
+  // Authentication parameters (REQ_INTEROP_086, REQ_INTEROP_087)
+  declare_parameter("auth.enabled", false);
+  declare_parameter("auth.jwt_secret", "");
+  declare_parameter("auth.jwt_public_key", "");
+  declare_parameter("auth.jwt_algorithm", "HS256");
+  declare_parameter("auth.token_expiry_seconds", 3600);
+  declare_parameter("auth.refresh_token_expiry_seconds", 86400);
+  declare_parameter("auth.require_auth_for", "write");
+  declare_parameter("auth.issuer", "ros2_medkit_gateway");
+  declare_parameter("auth.clients", std::vector<std::string>{});
+
   // Get parameter values
   server_host_ = get_parameter("server.host").as_string();
   server_port_ = static_cast<int>(get_parameter("server.port").as_int());
@@ -100,6 +111,61 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
     RCLCPP_INFO(get_logger(), "CORS: disabled (no configuration provided)");
   }
 
+  // Build Authentication configuration (REQ_INTEROP_086, REQ_INTEROP_087)
+  bool auth_enabled = get_parameter("auth.enabled").as_bool();
+  if (auth_enabled) {
+    try {
+      AuthConfigBuilder auth_builder;
+      auth_builder.with_enabled(true)
+          .with_jwt_secret(get_parameter("auth.jwt_secret").as_string())
+          .with_jwt_public_key(get_parameter("auth.jwt_public_key").as_string())
+          .with_algorithm(string_to_algorithm(get_parameter("auth.jwt_algorithm").as_string()))
+          .with_token_expiry(static_cast<int>(get_parameter("auth.token_expiry_seconds").as_int()))
+          .with_refresh_token_expiry(static_cast<int>(get_parameter("auth.refresh_token_expiry_seconds").as_int()))
+          .with_require_auth_for(string_to_auth_requirement(get_parameter("auth.require_auth_for").as_string()))
+          .with_issuer(get_parameter("auth.issuer").as_string());
+
+      // Parse clients from configuration
+      // Format: "client_id:client_secret:role" (e.g., "admin:secret123:admin")
+      auto clients = get_parameter("auth.clients").as_string_array();
+      for (const auto & client_str : clients) {
+        if (client_str.empty()) {
+          continue;
+        }
+        // Parse "client_id:client_secret:role"
+        size_t first_colon = client_str.find(':');
+        size_t last_colon = client_str.rfind(':');
+        if (first_colon != std::string::npos && last_colon != std::string::npos && first_colon != last_colon) {
+          std::string client_id = client_str.substr(0, first_colon);
+          std::string client_secret = client_str.substr(first_colon + 1, last_colon - first_colon - 1);
+          std::string role_str = client_str.substr(last_colon + 1);
+          try {
+            UserRole role = string_to_role(role_str);
+            auth_builder.add_client(client_id, client_secret, role);
+            RCLCPP_INFO(get_logger(), "Registered client '%s' with role '%s'", client_id.c_str(), role_str.c_str());
+          } catch (const std::exception & e) {
+            RCLCPP_WARN(get_logger(), "Invalid role '%s' for client '%s': %s", role_str.c_str(), client_id.c_str(),
+                        e.what());
+          }
+        } else {
+          RCLCPP_WARN(get_logger(), "Invalid client format: '%s'. Expected 'client_id:client_secret:role'",
+                      client_str.c_str());
+        }
+      }
+
+      auth_config_ = auth_builder.build();
+      RCLCPP_INFO(get_logger(), "Authentication enabled - algorithm: %s, require_auth_for: %s",
+                  algorithm_to_string(auth_config_.jwt_algorithm).c_str(),
+                  get_parameter("auth.require_auth_for").as_string().c_str());
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(get_logger(), "Invalid authentication configuration: %s. Authentication disabled.", e.what());
+      auth_config_ = AuthConfig{};  // Disabled
+    }
+  } else {
+    RCLCPP_INFO(get_logger(), "Authentication: disabled");
+    auth_config_ = AuthConfig{};
+  }
+
   // Initialize managers
   discovery_mgr_ = std::make_unique<DiscoveryManager>(this);
   data_access_mgr_ = std::make_unique<DataAccessManager>(this);
@@ -125,8 +191,8 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
     operation_mgr_->cleanup_old_goals(std::chrono::seconds(300));
   });
 
-  // Start REST server with configured host, port and CORS
-  rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_);
+  // Start REST server with configured host, port, CORS and auth
+  rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_, auth_config_);
   start_rest_server();
 
   RCLCPP_INFO(get_logger(), "ROS 2 Medkit Gateway ready on %s:%d", server_host_.c_str(), server_port_);

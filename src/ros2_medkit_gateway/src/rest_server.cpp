@@ -20,6 +20,7 @@
 #include <set>
 #include <sstream>
 
+#include "ros2_medkit_gateway/auth_models.hpp"
 #include "ros2_medkit_gateway/exceptions.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
@@ -74,22 +75,41 @@ inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req) 
   return filter;
 }
 
-RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config)
-  : node_(node), host_(host), port_(port), cors_config_(cors_config) {
+RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
+                       const AuthConfig & auth_config)
+  : node_(node), host_(host), port_(port), cors_config_(cors_config), auth_config_(auth_config) {
   server_ = std::make_unique<httplib::Server>();
 
-  // Set up pre-routing handler for CORS (only if enabled)
-  if (cors_config_.enabled) {
-    server_->set_pre_routing_handler([this](const httplib::Request & req, httplib::Response & res) {
+  // Initialize auth manager if auth is enabled
+  if (auth_config_.enabled) {
+    auth_manager_ = std::make_unique<AuthManager>(auth_config_);
+    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Authentication enabled - algorithm: %s, require_auth_for: %s",
+                algorithm_to_string(auth_config_.jwt_algorithm).c_str(),
+                auth_config_.require_auth_for == AuthRequirement::NONE    ? "none"
+                : auth_config_.require_auth_for == AuthRequirement::WRITE ? "write"
+                                                                          : "all");
+  }
+
+  // Set up pre-routing handler for CORS and Authentication
+  // This handler runs before any route handler
+  server_->set_pre_routing_handler([this](const httplib::Request & req, httplib::Response & res) {
+    // Handle CORS if enabled
+    if (cors_config_.enabled) {
       std::string origin = req.get_header_value("Origin");
       bool origin_allowed = !origin.empty() && is_origin_allowed(origin);
 
       if (origin_allowed) {
         set_cors_headers(res, origin);
+        // Add Authorization header to allowed headers for CORS
+        if (auth_config_.enabled) {
+          std::string current_headers = res.get_header_value("Access-Control-Allow-Headers");
+          if (!current_headers.empty() && current_headers.find("Authorization") == std::string::npos) {
+            res.set_header("Access-Control-Allow-Headers", current_headers + ", Authorization");
+          }
+        }
       }
 
       // Handle preflight OPTIONS requests
-      // Return 204 for allowed origins, 403 for disallowed (prevents endpoint discovery)
       if (req.method == "OPTIONS") {
         if (origin_allowed) {
           res.set_header("Access-Control-Max-Age", std::to_string(cors_config_.max_age_seconds));
@@ -99,9 +119,22 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
         }
         return httplib::Server::HandlerResponse::Handled;
       }
-      return httplib::Server::HandlerResponse::Unhandled;
-    });
-  }
+    }
+
+    // Handle Authentication if enabled
+    if (auth_config_.enabled && auth_manager_) {
+      // Extract path from request
+      std::string path = req.path;
+
+      // Check authentication
+      if (!check_auth(req, res, req.method, path)) {
+        // Response already set by check_auth
+        return httplib::Server::HandlerResponse::Handled;
+      }
+    }
+
+    return httplib::Server::HandlerResponse::Unhandled;
+  });
 
   setup_routes();
 }
@@ -247,6 +280,22 @@ void RESTServer::setup_routes() {
                   [this](const httplib::Request & req, httplib::Response & res) {
                     handle_clear_fault(req, res);
                   });
+
+  // Authentication endpoints (REQ_INTEROP_086, REQ_INTEROP_087)
+  // POST /auth/authorize - Authenticate and get tokens (client_credentials grant)
+  server_->Post(api_path("/auth/authorize").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+    handle_auth_authorize(req, res);
+  });
+
+  // POST /auth/token - Refresh access token
+  server_->Post(api_path("/auth/token").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+    handle_auth_token(req, res);
+  });
+
+  // POST /auth/revoke - Revoke a refresh token
+  server_->Post(api_path("/auth/revoke").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+    handle_auth_revoke(req, res);
+  });
 }
 
 void RESTServer::start() {
@@ -329,37 +378,61 @@ void RESTServer::handle_root(const httplib::Request & req, httplib::Response & r
   (void)req;  // Unused parameter
 
   try {
+    json endpoints = json::array({
+        "GET /api/v1/health",
+        "GET /api/v1/version-info",
+        "GET /api/v1/areas",
+        "GET /api/v1/components",
+        "GET /api/v1/areas/{area_id}/components",
+        "GET /api/v1/components/{component_id}/data",
+        "GET /api/v1/components/{component_id}/data/{topic_name}",
+        "PUT /api/v1/components/{component_id}/data/{topic_name}",
+        "GET /api/v1/components/{component_id}/operations",
+        "POST /api/v1/components/{component_id}/operations/{operation_name}",
+        "GET /api/v1/components/{component_id}/operations/{operation_name}/status",
+        "GET /api/v1/components/{component_id}/operations/{operation_name}/result",
+        "DELETE /api/v1/components/{component_id}/operations/{operation_name}",
+        "GET /api/v1/components/{component_id}/configurations",
+        "GET /api/v1/components/{component_id}/configurations/{param_name}",
+        "PUT /api/v1/components/{component_id}/configurations/{param_name}",
+        "GET /api/v1/faults",
+        "GET /api/v1/components/{component_id}/faults",
+        "GET /api/v1/components/{component_id}/faults/{fault_code}",
+        "DELETE /api/v1/components/{component_id}/faults/{fault_code}",
+    });
+
+    // Add auth endpoints if auth is enabled
+    if (auth_config_.enabled) {
+      endpoints.push_back("POST /api/v1/auth/authorize");
+      endpoints.push_back("POST /api/v1/auth/token");
+      endpoints.push_back("POST /api/v1/auth/revoke");
+    }
+
+    json capabilities = {
+        {"discovery", true},
+        {"data_access", true},
+        {"operations", true},
+        {"async_actions", true},
+        {"configurations", true},
+        {"faults", true},
+        {"authentication", auth_config_.enabled},
+    };
+
     json response = {
-        {"name", "ROS 2 Medkit Gateway"},
-        {"version", "0.1.0"},
-        {"api_base", API_BASE_PATH},
-        {"endpoints", json::array({"GET /api/v1/health",
-                                   "GET /api/v1/version-info",
-                                   "GET /api/v1/areas",
-                                   "GET /api/v1/components",
-                                   "GET /api/v1/areas/{area_id}/components",
-                                   "GET /api/v1/components/{component_id}/data",
-                                   "GET /api/v1/components/{component_id}/data/{topic_name}",
-                                   "PUT /api/v1/components/{component_id}/data/{topic_name}",
-                                   "GET /api/v1/components/{component_id}/operations",
-                                   "POST /api/v1/components/{component_id}/operations/{operation_name}",
-                                   "GET /api/v1/components/{component_id}/operations/{operation_name}/status",
-                                   "GET /api/v1/components/{component_id}/operations/{operation_name}/result",
-                                   "DELETE /api/v1/components/{component_id}/operations/{operation_name}",
-                                   "GET /api/v1/components/{component_id}/configurations",
-                                   "GET /api/v1/components/{component_id}/configurations/{param_name}",
-                                   "PUT /api/v1/components/{component_id}/configurations/{param_name}",
-                                   "GET /api/v1/faults",
-                                   "GET /api/v1/components/{component_id}/faults",
-                                   "GET /api/v1/components/{component_id}/faults/{fault_code}",
-                                   "DELETE /api/v1/components/{component_id}/faults/{fault_code}"})},
-        {"capabilities",
-         {{"discovery", true},
-          {"data_access", true},
-          {"operations", true},
-          {"async_actions", true},
-          {"configurations", true},
-          {"faults", true}}}};
+        {"name", "ROS 2 Medkit Gateway"}, {"version", "0.1.0"},           {"api_base", API_BASE_PATH},
+        {"endpoints", endpoints},         {"capabilities", capabilities},
+    };
+
+    // Add auth info if enabled
+    if (auth_config_.enabled) {
+      response["auth"] = {
+          {"enabled", true},
+          {"algorithm", algorithm_to_string(auth_config_.jwt_algorithm)},
+          {"require_auth_for", auth_config_.require_auth_for == AuthRequirement::NONE    ? "none"
+                               : auth_config_.require_auth_for == AuthRequirement::WRITE ? "write"
+                                                                                         : "all"},
+      };
+    }
 
     res.set_content(response.dump(2), "application/json");
   } catch (const std::exception & e) {
@@ -2070,6 +2143,261 @@ bool RESTServer::is_origin_allowed(const std::string & origin) const {
     }
   }
   return false;
+}
+
+// Authentication handlers (REQ_INTEROP_086, REQ_INTEROP_087)
+
+void RESTServer::handle_auth_authorize(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (!auth_config_.enabled) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Authentication is not enabled"}}.dump(2), "application/json");
+      return;
+    }
+
+    // Parse request - support both JSON and form-urlencoded
+    AuthorizeRequest auth_req;
+    std::string content_type = req.get_header_value("Content-Type");
+
+    if (content_type.find("application/json") != std::string::npos) {
+      try {
+        json body = json::parse(req.body);
+        auth_req = AuthorizeRequest::from_json(body);
+      } catch (const json::parse_error & e) {
+        res.status = StatusCode::BadRequest_400;
+        res.set_content(AuthErrorResponse::invalid_request("Invalid JSON: " + std::string(e.what())).to_json().dump(2),
+                        "application/json");
+        return;
+      }
+    } else if (content_type.find("application/x-www-form-urlencoded") != std::string::npos) {
+      auth_req = AuthorizeRequest::from_form_data(req.body);
+    } else {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(AuthErrorResponse::invalid_request(
+                          "Content-Type must be application/json or application/x-www-form-urlencoded")
+                          .to_json()
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Validate grant_type
+    if (auth_req.grant_type != "client_credentials") {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(AuthErrorResponse::unsupported_grant_type("Only 'client_credentials' grant type is supported")
+                          .to_json()
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Validate required fields
+    if (!auth_req.client_id.has_value() || auth_req.client_id->empty()) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(AuthErrorResponse::invalid_request("client_id is required").to_json().dump(2),
+                      "application/json");
+      return;
+    }
+
+    if (!auth_req.client_secret.has_value() || auth_req.client_secret->empty()) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(AuthErrorResponse::invalid_request("client_secret is required").to_json().dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Authenticate
+    auto result = auth_manager_->authenticate(auth_req.client_id.value(), auth_req.client_secret.value());
+
+    if (result) {
+      res.set_content(result->to_json().dump(2), "application/json");
+    } else {
+      res.status = StatusCode::Unauthorized_401;
+      res.set_content(result.error().to_json().dump(2), "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Internal server error"}, {"details", e.what()}}.dump(2), "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_auth_authorize: %s", e.what());
+  }
+}
+
+void RESTServer::handle_auth_token(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (!auth_config_.enabled) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Authentication is not enabled"}}.dump(2), "application/json");
+      return;
+    }
+
+    // Parse request
+    AuthorizeRequest auth_req;
+    std::string content_type = req.get_header_value("Content-Type");
+
+    if (content_type.find("application/json") != std::string::npos) {
+      try {
+        json body = json::parse(req.body);
+        auth_req = AuthorizeRequest::from_json(body);
+      } catch (const json::parse_error & e) {
+        res.status = StatusCode::BadRequest_400;
+        res.set_content(AuthErrorResponse::invalid_request("Invalid JSON: " + std::string(e.what())).to_json().dump(2),
+                        "application/json");
+        return;
+      }
+    } else if (content_type.find("application/x-www-form-urlencoded") != std::string::npos) {
+      auth_req = AuthorizeRequest::from_form_data(req.body);
+    } else {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(AuthErrorResponse::invalid_request(
+                          "Content-Type must be application/json or application/x-www-form-urlencoded")
+                          .to_json()
+                          .dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Validate grant_type
+    if (auth_req.grant_type != "refresh_token") {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(
+          AuthErrorResponse::unsupported_grant_type("Only 'refresh_token' grant type is supported on this endpoint")
+              .to_json()
+              .dump(2),
+          "application/json");
+      return;
+    }
+
+    // Validate required fields
+    if (!auth_req.refresh_token.has_value() || auth_req.refresh_token->empty()) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(AuthErrorResponse::invalid_request("refresh_token is required").to_json().dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Refresh token
+    auto result = auth_manager_->refresh_access_token(auth_req.refresh_token.value());
+
+    if (result) {
+      res.set_content(result->to_json().dump(2), "application/json");
+    } else {
+      res.status = StatusCode::Unauthorized_401;
+      res.set_content(result.error().to_json().dump(2), "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Internal server error"}, {"details", e.what()}}.dump(2), "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_auth_token: %s", e.what());
+  }
+}
+
+void RESTServer::handle_auth_revoke(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (!auth_config_.enabled) {
+      res.status = StatusCode::NotFound_404;
+      res.set_content(json{{"error", "Authentication is not enabled"}}.dump(2), "application/json");
+      return;
+    }
+
+    // Parse request
+    json body;
+    try {
+      body = json::parse(req.body);
+    } catch (const json::parse_error & e) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(AuthErrorResponse::invalid_request("Invalid JSON: " + std::string(e.what())).to_json().dump(2),
+                      "application/json");
+      return;
+    }
+
+    // Extract token to revoke
+    if (!body.contains("token") || !body["token"].is_string()) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(AuthErrorResponse::invalid_request("token is required").to_json().dump(2), "application/json");
+      return;
+    }
+
+    std::string token = body["token"].get<std::string>();
+
+    // Revoke token
+    bool revoked = auth_manager_->revoke_refresh_token(token);
+
+    // Per OAuth2 spec, always return 200 even if token wasn't found
+    json response = {{"status", revoked ? "revoked" : "not_found"}};
+    res.set_content(response.dump(2), "application/json");
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Internal server error"}, {"details", e.what()}}.dump(2), "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_auth_revoke: %s", e.what());
+  }
+}
+
+bool RESTServer::check_auth(const httplib::Request & req, httplib::Response & res, const std::string & method,
+                            const std::string & path) {
+  // If auth is not enabled, allow all requests
+  if (!auth_config_.enabled || !auth_manager_) {
+    return true;
+  }
+
+  // Check if authentication is required for this request
+  if (!auth_manager_->requires_authentication(method, path)) {
+    return true;
+  }
+
+  // Extract token from Authorization header
+  auto token = extract_bearer_token(req);
+  if (!token.has_value()) {
+    res.status = StatusCode::Unauthorized_401;
+    res.set_header("WWW-Authenticate", "Bearer realm=\"ros2_medkit_gateway\"");
+    res.set_content(AuthErrorResponse::invalid_token("Missing or invalid Authorization header").to_json().dump(2),
+                    "application/json");
+    return false;
+  }
+
+  // Validate token
+  auto validation = auth_manager_->validate_token(token.value());
+  if (!validation.valid) {
+    res.status = StatusCode::Unauthorized_401;
+    res.set_header("WWW-Authenticate", "Bearer realm=\"ros2_medkit_gateway\", error=\"invalid_token\"");
+    res.set_content(AuthErrorResponse::invalid_token(validation.error).to_json().dump(2), "application/json");
+    return false;
+  }
+
+  // Check authorization (RBAC)
+  auto auth_result = auth_manager_->check_authorization(validation.claims->role, method, path);
+  if (!auth_result.authorized) {
+    res.status = StatusCode::Forbidden_403;
+    res.set_content(AuthErrorResponse::insufficient_scope(auth_result.error).to_json().dump(2), "application/json");
+    return false;
+  }
+
+  return true;
+}
+
+std::optional<std::string> RESTServer::extract_bearer_token(const httplib::Request & req) const {
+  std::string auth_header = req.get_header_value("Authorization");
+  if (auth_header.empty()) {
+    return std::nullopt;
+  }
+
+  // Check for "Bearer " prefix (case-insensitive for "Bearer")
+  const std::string bearer_prefix = "Bearer ";
+  if (auth_header.length() < bearer_prefix.length()) {
+    return std::nullopt;
+  }
+
+  std::string prefix = auth_header.substr(0, bearer_prefix.length());
+  // Case-insensitive comparison for "Bearer "
+  if (prefix != "Bearer " && prefix != "bearer ") {
+    return std::nullopt;
+  }
+
+  std::string token = auth_header.substr(bearer_prefix.length());
+  if (token.empty()) {
+    return std::nullopt;
+  }
+
+  return token;
 }
 
 }  // namespace ros2_medkit_gateway

@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include "ros2_medkit_gateway/auth_config.hpp"
+#include "ros2_medkit_gateway/auth_manager.hpp"
 #include "ros2_medkit_gateway/config.hpp"
 
 namespace ros2_medkit_gateway {
@@ -30,7 +32,8 @@ class GatewayNode;
 
 class RESTServer {
  public:
-  RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config);
+  RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
+             const AuthConfig & auth_config);
   ~RESTServer();
 
   void start();
@@ -66,16 +69,42 @@ class RESTServer {
   void handle_get_fault(const httplib::Request & req, httplib::Response & res);
   void handle_clear_fault(const httplib::Request & req, httplib::Response & res);
 
+  // Authentication endpoints (REQ_INTEROP_086, REQ_INTEROP_087)
+  void handle_auth_authorize(const httplib::Request & req, httplib::Response & res);
+  void handle_auth_token(const httplib::Request & req, httplib::Response & res);
+  void handle_auth_revoke(const httplib::Request & req, httplib::Response & res);
+
   // Helper methods
   std::expected<void, std::string> validate_entity_id(const std::string & entity_id) const;
   std::expected<std::string, std::string> get_component_namespace_path(const std::string & component_id) const;
   void set_cors_headers(httplib::Response & res, const std::string & origin) const;
   bool is_origin_allowed(const std::string & origin) const;
 
+  // Authentication middleware
+  /**
+   * @brief Check if request is authenticated and authorized
+   * @param req HTTP request
+   * @param res HTTP response (set error on failure)
+   * @param method HTTP method
+   * @param path Request path
+   * @return true if authorized, false if denied (response already set)
+   */
+  bool check_auth(const httplib::Request & req, httplib::Response & res, const std::string & method,
+                  const std::string & path);
+
+  /**
+   * @brief Extract Bearer token from Authorization header
+   * @param req HTTP request
+   * @return Token string if present and valid format
+   */
+  std::optional<std::string> extract_bearer_token(const httplib::Request & req) const;
+
   GatewayNode * node_;
   std::string host_;
   int port_;
   CorsConfig cors_config_;
+  AuthConfig auth_config_;
+  std::unique_ptr<AuthManager> auth_manager_;
 
   std::unique_ptr<httplib::Server> server_;
 };

@@ -37,6 +37,18 @@ find_package(ros2_medkit_msgs REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(cpp_httplib REQUIRED IMPORTED_TARGET cpp-httplib)
 
+# Find OpenSSL (required by jwt-cpp for RS256)
+find_package(OpenSSL REQUIRED)
+
+# Fetch jwt-cpp header-only library
+include(FetchContent)
+FetchContent_Declare(
+  jwt-cpp
+  GIT_REPOSITORY https://github.com/Thalhammer/jwt-cpp.git
+  GIT_TAG        v0.7.0
+)
+FetchContent_MakeAvailable(jwt-cpp)
+
 # Include directories
 include_directories(include)
 
@@ -54,6 +66,9 @@ add_library(gateway_lib STATIC
   src/operation_manager.cpp
   src/configuration_manager.cpp
   src/fault_manager.cpp
+  src/auth_config.cpp
+  src/auth_models.cpp
+  src/auth_manager.cpp
 )
 
 ament_target_dependencies(gateway_lib
@@ -70,6 +85,9 @@ target_link_libraries(gateway_lib
   PkgConfig::cpp_httplib
   nlohmann_json::nlohmann_json
   yaml-cpp::yaml-cpp
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  jwt-cpp::jwt-cpp
 )
 
 # Apply coverage flags to library
@@ -121,6 +139,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_gateway_node test/test_gateway_node.cpp)
   target_link_libraries(test_gateway_node gateway_lib)
 
+  ament_add_gtest(test_auth_manager test/test_auth_manager.cpp)
+  target_link_libraries(test_auth_manager gateway_lib)
+
   ament_add_gtest(test_operation_manager test/test_operation_manager.cpp)
   target_link_libraries(test_operation_manager gateway_lib)
 
@@ -142,6 +163,8 @@ if(BUILD_TESTING)
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
     target_link_options(test_gateway_node PRIVATE --coverage)
+    target_compile_options(test_auth_manager PRIVATE --coverage -O0 -g)
+    target_link_options(test_auth_manager PRIVATE --coverage)
     target_compile_options(test_operation_manager PRIVATE --coverage -O0 -g)
     target_link_options(test_operation_manager PRIVATE --coverage)
     target_compile_options(test_configuration_manager PRIVATE --coverage -O0 -g)
@@ -173,6 +196,13 @@ if(BUILD_TESTING)
     test/test_cors.test.py
     TARGET test_cors
     TIMEOUT 60
+  )
+
+  # Add authentication integration tests
+  add_launch_test(
+    test/test_auth.test.py
+    TARGET test_auth
+    TIMEOUT 120
   )
 
   # Demo automotive nodes
