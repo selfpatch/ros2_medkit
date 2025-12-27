@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/auth_manager.hpp"
+#include "ros2_medkit_gateway/auth/auth_manager.hpp"
 
 #include <jwt-cpp/jwt.h>
 
@@ -36,11 +36,36 @@ static std::string read_file_contents(const std::string & path) {
   return buffer.str();
 }
 
+// Helper to validate RSA key file exists and is readable
+static void validate_key_file(const std::string & path, const std::string & key_type) {
+  if (path.empty()) {
+    throw std::runtime_error(key_type + " path is empty");
+  }
+  std::ifstream file(path);
+  if (!file.is_open()) {
+    throw std::runtime_error("Failed to open " + key_type + " file: " + path);
+  }
+  // Check file is not empty
+  file.seekg(0, std::ios::end);
+  if (file.tellg() == 0) {
+    throw std::runtime_error(key_type + " file is empty: " + path);
+  }
+}
+
 AuthManager::AuthManager(const AuthConfig & config) : config_(config) {
+  // Validate RS256 key files at startup (fail fast)
+  if (config_.enabled && config_.jwt_algorithm == JwtAlgorithm::RS256) {
+    validate_key_file(config_.jwt_secret, "RS256 private key");
+    validate_key_file(config_.jwt_public_key, "RS256 public key");
+  }
+
   // Initialize clients from config
   for (const auto & client : config_.clients) {
     clients_[client.client_id] = client;
   }
+
+  // Create auth requirement policy from config
+  auth_policy_ = AuthRequirementPolicyFactory::create(config_.require_auth_for);
 }
 
 std::expected<TokenResponse, AuthErrorResponse> AuthManager::authenticate(const std::string & client_id,
@@ -76,6 +101,7 @@ std::expected<TokenResponse, AuthErrorResponse> AuthManager::authenticate(const 
   refresh_claims.iat = now_ts;
   refresh_claims.exp = now_ts + config_.refresh_token_expiry_seconds;
   refresh_claims.jti = refresh_token_id;
+  refresh_claims.typ = TokenType::REFRESH;  // Mark as refresh token
   refresh_claims.role = client.role;
 
   std::string refresh_token = generate_jwt(refresh_claims);
@@ -97,6 +123,7 @@ std::expected<TokenResponse, AuthErrorResponse> AuthManager::authenticate(const 
   access_claims.iat = now_ts;
   access_claims.exp = now_ts + config_.token_expiry_seconds;
   access_claims.jti = generate_token_id();
+  access_claims.typ = TokenType::ACCESS;  // Mark as access token
   access_claims.role = client.role;
   access_claims.refresh_token_id = refresh_token_id;
 
@@ -121,6 +148,11 @@ std::expected<TokenResponse, AuthErrorResponse> AuthManager::refresh_access_toke
   }
 
   const auto & claims = decode_result.value();
+
+  // Verify this is actually a refresh token, not an access token
+  if (claims.typ != TokenType::REFRESH) {
+    return std::unexpected(AuthErrorResponse::invalid_grant("Token is not a refresh token"));
+  }
 
   // Check if refresh token exists and is not revoked
   auto record = get_refresh_token(claims.jti);
@@ -157,7 +189,8 @@ std::expected<TokenResponse, AuthErrorResponse> AuthManager::refresh_access_toke
   access_claims.iat = now_ts;
   access_claims.exp = now_ts + config_.token_expiry_seconds;
   access_claims.jti = generate_token_id();
-  access_claims.role = record->role;  // Use role from refresh token record
+  access_claims.typ = TokenType::ACCESS;  // Mark as access token
+  access_claims.role = record->role;      // Use role from refresh token record
   access_claims.refresh_token_id = claims.jti;
 
   std::string access_token = generate_jwt(access_claims);
@@ -172,7 +205,7 @@ std::expected<TokenResponse, AuthErrorResponse> AuthManager::refresh_access_toke
   return response;
 }
 
-TokenValidationResult AuthManager::validate_token(const std::string & token) const {
+TokenValidationResult AuthManager::validate_token(const std::string & token, TokenType expected_type) const {
   TokenValidationResult result;
 
   auto decode_result = decode_jwt(token);
@@ -184,10 +217,31 @@ TokenValidationResult AuthManager::validate_token(const std::string & token) con
 
   const auto & claims = decode_result.value();
 
+  // Check token type matches expected
+  if (claims.typ != expected_type) {
+    result.valid = false;
+    result.error = "Invalid token type: expected " + token_type_to_string(expected_type) + ", got " +
+                   token_type_to_string(claims.typ);
+    return result;
+  }
+
   // Check expiration
   if (claims.is_expired()) {
     result.valid = false;
     result.error = "Token has expired";
+    return result;
+  }
+
+  // Check if client is still enabled (security: validate on every request)
+  auto client = get_client(claims.sub);
+  if (!client.has_value()) {
+    result.valid = false;
+    result.error = "Client no longer exists";
+    return result;
+  }
+  if (!client->enabled) {
+    result.valid = false;
+    result.error = "Client has been disabled";
     return result;
   }
 
@@ -261,25 +315,8 @@ bool AuthManager::requires_authentication(const std::string & method, const std:
     return false;
   }
 
-  // Auth endpoints are always accessible without auth (to allow login)
-  if (path.find("/api/v1/auth/") == 0) {
-    return false;
-  }
-
-  switch (config_.require_auth_for) {
-    case AuthRequirement::NONE:
-      return false;
-
-    case AuthRequirement::WRITE:
-      // Require auth for write operations
-      return method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH";
-
-    case AuthRequirement::ALL:
-      return true;
-
-    default:
-      return false;
-  }
+  // Delegate to policy
+  return auth_policy_->requires_authentication(method, path);
 }
 
 bool AuthManager::revoke_refresh_token(const std::string & refresh_token) {
@@ -346,8 +383,29 @@ std::optional<ClientCredentials> AuthManager::get_client(const std::string & cli
   return it->second;
 }
 
+bool AuthManager::disable_client(const std::string & client_id) {
+  std::lock_guard<std::mutex> lock(clients_mutex_);
+  auto it = clients_.find(client_id);
+  if (it == clients_.end()) {
+    return false;
+  }
+  it->second.enabled = false;
+  return true;
+}
+
+bool AuthManager::enable_client(const std::string & client_id) {
+  std::lock_guard<std::mutex> lock(clients_mutex_);
+  auto it = clients_.find(client_id);
+  if (it == clients_.end()) {
+    return false;
+  }
+  it->second.enabled = true;
+  return true;
+}
+
 std::string AuthManager::generate_jwt(const JwtClaims & claims) const {
   auto builder = jwt::create()
+                     .set_type(token_type_to_string(claims.typ))  // Set typ in JWT header
                      .set_issuer(claims.iss)
                      .set_subject(claims.sub)
                      .set_issued_at(std::chrono::system_clock::from_time_t(claims.iat))
@@ -416,6 +474,15 @@ std::expected<JwtClaims, std::string> AuthManager::decode_jwt(const std::string 
     claims.sub = decoded.get_subject();
     claims.jti = decoded.get_id();
 
+    // Extract typ from header
+    if (decoded.has_type()) {
+      try {
+        claims.typ = string_to_token_type(decoded.get_type());
+      } catch (const std::invalid_argument &) {
+        claims.typ = TokenType::ACCESS;  // Default for backward compatibility
+      }
+    }
+
     auto exp_claim = decoded.get_expires_at();
     claims.exp = std::chrono::duration_cast<std::chrono::seconds>(exp_claim.time_since_epoch()).count();
 
@@ -444,10 +511,10 @@ std::expected<JwtClaims, std::string> AuthManager::decode_jwt(const std::string 
 }
 
 std::string AuthManager::generate_token_id() {
-  // Generate UUID-like string
-  static std::random_device rd;
-  static std::mt19937_64 gen(rd());
-  static std::uniform_int_distribution<uint64_t> dis;
+  // Generate UUID-like string using thread-local RNG for thread safety
+  thread_local std::random_device rd;
+  thread_local std::mt19937_64 gen(rd());
+  thread_local std::uniform_int_distribution<uint64_t> dis;
 
   std::stringstream ss;
   ss << std::hex << std::setfill('0');
