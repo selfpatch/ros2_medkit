@@ -147,13 +147,14 @@ struct Component {
   std::string fqn;
   std::string type = "Component";
   std::string area;
+  std::string source = "node";  ///< Discovery source: "node" or "topic"
   std::vector<ServiceInfo> services;
   std::vector<ActionInfo> actions;
   ComponentTopics topics;  ///< Topics this component publishes/subscribes
 
   json to_json() const {
-    json j = {{"id", id},     {"namespace", namespace_path}, {"fqn", fqn}, {"type", type},
-              {"area", area}, {"topics", topics.to_json()}};
+    json j = {{"id", id},         {"namespace", namespace_path}, {"fqn", fqn}, {"type", type}, {"area", area},
+              {"source", source}, {"topics", topics.to_json()}};
 
     // Add operations array combining services and actions
     json operations = json::array();

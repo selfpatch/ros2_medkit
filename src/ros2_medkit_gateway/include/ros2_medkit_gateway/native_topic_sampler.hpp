@@ -20,6 +20,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -198,6 +199,85 @@ class NativeTopicSampler {
    * @return ComponentTopics with publishes/subscribes lists
    */
   ComponentTopics get_component_topics(const std::string & component_fqn);
+
+  /**
+   * @brief Result of topic-based discovery containing namespaces and their topics
+   *
+   * This struct aggregates all topic-based discovery results to avoid
+   * multiple ROS 2 graph queries (N+1 query problem).
+   */
+  struct TopicDiscoveryResult {
+    std::set<std::string> namespaces;                     ///< Unique namespace prefixes
+    std::map<std::string, ComponentTopics> topics_by_ns;  ///< Topics grouped by namespace
+  };
+
+  /**
+   * @brief Discover namespaces and their topics in a single graph query
+   *
+   * This method performs a single call to get_topic_names_and_types() and
+   * processes all topics to extract namespaces and group topics by namespace.
+   * This avoids the N+1 query problem of calling discover_topic_namespaces()
+   * followed by get_topics_for_namespace() for each namespace.
+   *
+   * Example: Topics ["/carter1/odom", "/carter1/cmd_vel", "/carter2/imu"]
+   * Returns: {
+   *   namespaces: {"carter1", "carter2"},
+   *   topics_by_ns: {
+   *     "/carter1": {publishes: ["/carter1/odom", "/carter1/cmd_vel"]},
+   *     "/carter2": {publishes: ["/carter2/imu"]}
+   *   }
+   * }
+   *
+   * @return TopicDiscoveryResult with namespaces and topics grouped by namespace
+   */
+  TopicDiscoveryResult discover_topics_by_namespace();
+
+  /**
+   * @brief Discover unique namespace prefixes from all topics
+   *
+   * Extracts the first segment of each topic path to identify namespaces.
+   * Used for topic-based component discovery when nodes are not available
+   * (e.g., Isaac Sim publishing topics without creating ROS 2 nodes).
+   *
+   * Example: Topics ["/carter1/odom", "/carter2/cmd_vel", "/tf"]
+   * Returns: {"carter1", "carter2"} (root topics like /tf are excluded)
+   *
+   * @note Consider using discover_topics_by_namespace() instead to avoid N+1 queries
+   *
+   * @return Set of unique namespace prefixes (without leading slash)
+   */
+  std::set<std::string> discover_topic_namespaces();
+
+  /**
+   * @brief Get all topics under a specific namespace prefix
+   *
+   * Returns ComponentTopics containing all topics that start with the given
+   * namespace prefix. For topic-based discovery, all matched topics are
+   * placed in the 'publishes' list since direction cannot be determined
+   * without node information.
+   *
+   * @note Consider using discover_topics_by_namespace() instead to avoid N+1 queries
+   *
+   * @param ns_prefix Namespace prefix including leading slash (e.g., "/carter1")
+   * @return ComponentTopics with matching topics in publishes list
+   */
+  ComponentTopics get_topics_for_namespace(const std::string & ns_prefix);
+
+  /**
+   * @brief Check if a topic is a ROS 2 system/infrastructure topic
+   *
+   * System topics are filtered out during topic-based discovery to avoid
+   * creating spurious components. Filtered topics include:
+   * - /parameter_events
+   * - /rosout
+   * - /clock
+   *
+   * Note: /tf and /tf_static are NOT filtered (useful for diagnostics).
+   *
+   * @param topic_name Full topic path
+   * @return true if this is a system topic that should be filtered
+   */
+  static bool is_system_topic(const std::string & topic_name);
 
  private:
   /**

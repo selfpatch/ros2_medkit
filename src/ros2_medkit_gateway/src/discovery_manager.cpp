@@ -51,6 +51,14 @@ std::vector<Area> DiscoveryManager::discover_areas() {
     area_set.insert(area);
   }
 
+  // Also include areas from topic namespaces (for topic-based discovery)
+  if (topic_sampler_) {
+    auto topic_namespaces = topic_sampler_->discover_topic_namespaces();
+    for (const auto & ns : topic_namespaces) {
+      area_set.insert(ns);
+    }
+  }
+
   // Convert set to vector of Area structs
   std::vector<Area> areas;
   for (const auto & area_name : area_set) {
@@ -358,6 +366,71 @@ std::string DiscoveryManager::extract_name_from_path(const std::string & path) {
   }
 
   return path;
+}
+
+std::set<std::string> DiscoveryManager::get_node_namespaces() {
+  std::set<std::string> namespaces;
+
+  auto node_graph = node_->get_node_graph_interface();
+  auto names_and_namespaces = node_graph->get_node_names_and_namespaces();
+
+  for (const auto & name_and_ns : names_and_namespaces) {
+    std::string ns = name_and_ns.second;
+    std::string area = extract_area_from_namespace(ns);
+    if (area != "root") {
+      namespaces.insert(area);
+    }
+  }
+
+  return namespaces;
+}
+
+std::vector<Component> DiscoveryManager::discover_topic_components() {
+  std::vector<Component> components;
+
+  if (!topic_sampler_) {
+    RCLCPP_DEBUG(node_->get_logger(), "Topic sampler not set, skipping topic-based discovery");
+    return components;
+  }
+
+  // Single graph query - get all namespaces and their topics at once (avoids N+1 queries)
+  auto discovery_result = topic_sampler_->discover_topics_by_namespace();
+
+  // Get namespaces that already have nodes (to avoid duplicates)
+  auto node_namespaces = get_node_namespaces();
+
+  RCLCPP_DEBUG(node_->get_logger(), "Topic-based discovery: %zu topic namespaces, %zu node namespaces",
+               discovery_result.namespaces.size(), node_namespaces.size());
+
+  for (const auto & ns : discovery_result.namespaces) {
+    // Skip if there's already a node with this namespace
+    if (node_namespaces.count(ns) > 0) {
+      RCLCPP_DEBUG(node_->get_logger(), "Skipping namespace '%s' - already has nodes", ns.c_str());
+      continue;
+    }
+
+    Component comp;
+    comp.id = ns;
+    comp.namespace_path = "/" + ns;
+    comp.fqn = "/" + ns;
+    comp.area = ns;
+    comp.source = "topic";
+
+    // Get topics from cached result (no additional graph query)
+    std::string ns_prefix = "/" + ns;
+    auto it = discovery_result.topics_by_ns.find(ns_prefix);
+    if (it != discovery_result.topics_by_ns.end()) {
+      comp.topics = it->second;
+    }
+
+    RCLCPP_DEBUG(node_->get_logger(), "Created topic-based component '%s' with %zu topics", ns.c_str(),
+                 comp.topics.publishes.size());
+
+    components.push_back(comp);
+  }
+
+  RCLCPP_INFO(node_->get_logger(), "Discovered %zu topic-based components", components.size());
+  return components;
 }
 
 bool DiscoveryManager::path_belongs_to_namespace(const std::string & path, const std::string & ns) const {
