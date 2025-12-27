@@ -14,9 +14,20 @@
 
 #include "ros2_medkit_fault_manager/fault_manager_node.hpp"
 
+#include <filesystem>
+
+#include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
+
 namespace ros2_medkit_fault_manager {
 
 FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("fault_manager", options) {
+  // Declare and get parameters
+  storage_type_ = declare_parameter<std::string>("storage_type", "sqlite");
+  database_path_ = declare_parameter<std::string>("database_path", "/var/lib/ros2_medkit/faults.db");
+
+  // Create storage backend
+  storage_ = create_storage();
+
   // Create service servers
   report_fault_srv_ = create_service<ros2_medkit_msgs::srv::ReportFault>(
       "~/report_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
@@ -36,7 +47,39 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
         handle_clear_fault(request, response);
       });
 
-  RCLCPP_INFO(get_logger(), "FaultManager node started");
+  RCLCPP_INFO(get_logger(), "FaultManager node started (storage=%s)", storage_type_.c_str());
+}
+
+std::unique_ptr<FaultStorage> FaultManagerNode::create_storage() {
+  if (storage_type_ == "memory") {
+    RCLCPP_INFO(get_logger(), "Using in-memory fault storage");
+    return std::make_unique<InMemoryFaultStorage>();
+  }
+
+  if (storage_type_ == "sqlite") {
+    // Create parent directory if it doesn't exist (except for :memory:)
+    if (database_path_ != ":memory:") {
+      std::filesystem::path db_path(database_path_);
+      auto parent_dir = db_path.parent_path();
+      std::string parent_dir_str = parent_dir.string();
+      if (!parent_dir_str.empty() && !std::filesystem::exists(parent_dir)) {
+        try {
+          std::filesystem::create_directories(parent_dir);
+          RCLCPP_INFO(get_logger(), "Created database directory: %s", parent_dir_str.c_str());
+        } catch (const std::filesystem::filesystem_error & e) {
+          RCLCPP_ERROR(get_logger(), "Failed to create database directory for fault manager storage at '%s': %s",
+                       parent_dir_str.c_str(), e.what());
+          throw;
+        }
+      }
+    }
+
+    RCLCPP_INFO(get_logger(), "Using SQLite fault storage: %s", database_path_.c_str());
+    return std::make_unique<SqliteFaultStorage>(database_path_);
+  }
+
+  RCLCPP_ERROR(get_logger(), "Unknown storage_type '%s', falling back to in-memory", storage_type_.c_str());
+  return std::make_unique<InMemoryFaultStorage>();
 }
 
 void FaultManagerNode::handle_report_fault(
@@ -65,7 +108,7 @@ void FaultManagerNode::handle_report_fault(
 
   // Report the fault
   bool is_new =
-      storage_.report_fault(request->fault_code, request->severity, request->description, request->source_id, now());
+      storage_->report_fault(request->fault_code, request->severity, request->description, request->source_id, now());
 
   response->success = true;
   if (is_new) {
@@ -81,7 +124,7 @@ void FaultManagerNode::handle_report_fault(
 
 void FaultManagerNode::handle_get_faults(const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Request> & request,
                                          const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Response> & response) {
-  response->faults = storage_.get_faults(request->filter_by_severity, request->severity, request->statuses);
+  response->faults = storage_->get_faults(request->filter_by_severity, request->severity, request->statuses);
 
   RCLCPP_DEBUG(get_logger(), "GetFaults returned %zu faults", response->faults.size());
 }
@@ -96,7 +139,7 @@ void FaultManagerNode::handle_clear_fault(
     return;
   }
 
-  bool cleared = storage_.clear_fault(request->fault_code);
+  bool cleared = storage_->clear_fault(request->fault_code);
 
   response->success = cleared;
   if (cleared) {

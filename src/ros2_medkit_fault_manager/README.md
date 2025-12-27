@@ -22,13 +22,36 @@ query and clearing interfaces.
 - **Occurrence tracking**: Counts total reports and tracks all reporting sources
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
 - **Status lifecycle**: PENDING → CONFIRMED → CLEARED (automatic status transitions in Issue #6)
+- **Persistent storage**: SQLite backend ensures faults survive node restarts
+
+## Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `storage_type` | string | `"sqlite"` | Storage backend: `"sqlite"` for persistent storage, `"memory"` for in-memory |
+| `database_path` | string | `"/var/lib/ros2_medkit/faults.db"` | Path to SQLite database file. Use `":memory:"` for in-memory SQLite |
+
+### Storage Backends
+
+**SQLite (default)**: Faults are persisted to disk and survive node restarts. The database directory is created automatically if it doesn't exist. Uses WAL mode for optimal performance.
+
+**Memory**: Faults are stored in memory only. Useful for testing or when persistence is not required.
 
 ## Usage
 
 ### Launch
 
 ```bash
+# Default (SQLite storage)
 ros2 launch ros2_medkit_fault_manager fault_manager.launch.py
+
+# With custom database path
+ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
+  -p database_path:=/custom/path/faults.db
+
+# With in-memory storage (no persistence)
+ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
+  -p storage_type:=memory
 ```
 
 ### Manual Testing

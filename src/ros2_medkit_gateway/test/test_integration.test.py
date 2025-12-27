@@ -209,12 +209,14 @@ def generate_test_description():
     )
 
     # Launch the fault_manager node for fault REST API tests
+    # Use in-memory storage to avoid filesystem permission issues in CI
     fault_manager_node = launch_ros.actions.Node(
         package='ros2_medkit_fault_manager',
         executable='fault_manager_node',
         name='fault_manager',
         output='screen',
         additional_env=coverage_env,
+        parameters=[{'storage_type': 'memory'}],
     )
 
     # Start demo nodes with a delay to ensure gateway starts first
