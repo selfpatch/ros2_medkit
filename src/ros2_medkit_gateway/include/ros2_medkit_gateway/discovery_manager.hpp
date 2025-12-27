@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,25 @@ class DiscoveryManager {
 
   std::vector<Area> discover_areas();
   std::vector<Component> discover_components();
+
+  /**
+   * @brief Discover components from topic namespaces (topic-based discovery)
+   *
+   * Creates "virtual" components for topic namespaces that don't have
+   * corresponding ROS 2 nodes. This is useful for systems like Isaac Sim
+   * that publish topics without creating proper ROS 2 nodes.
+   *
+   * Example: Topics ["/carter1/odom", "/carter1/cmd_vel", "/carter2/odom"]
+   * Creates components: carter1, carter2 (if no matching nodes exist)
+   *
+   * Components are created with:
+   * - id: namespace name (e.g., "carter1")
+   * - source: "topic" (to distinguish from node-based components)
+   * - topics.publishes: all topics under this namespace
+   *
+   * @return Vector of topic-based components (excludes namespaces with existing nodes)
+   */
+  std::vector<Component> discover_topic_components();
 
   /// Discover all services in the system with their types
   std::vector<ServiceInfo> discover_services();
@@ -86,6 +106,9 @@ class DiscoveryManager {
 
   /// Extract the last segment from a path (e.g., "/a/b/c" -> "c")
   std::string extract_name_from_path(const std::string & path);
+
+  /// Get set of namespaces that have ROS 2 nodes (for deduplication)
+  std::set<std::string> get_node_namespaces();
 
   /// Check if a service path belongs to a component namespace
   bool path_belongs_to_namespace(const std::string & path, const std::string & ns) const;

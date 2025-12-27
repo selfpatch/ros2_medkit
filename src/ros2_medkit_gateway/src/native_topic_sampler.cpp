@@ -501,4 +501,78 @@ ComponentTopics NativeTopicSampler::get_component_topics(const std::string & com
   return ComponentTopics{};
 }
 
+bool NativeTopicSampler::is_system_topic(const std::string & topic_name) {
+  // System topics to filter out during topic-based discovery
+  // Note: /tf and /tf_static are NOT filtered (useful for diagnostics)
+  static const std::vector<std::string> system_topics = {"/parameter_events", "/rosout", "/clock"};
+
+  return std::find(system_topics.begin(), system_topics.end(), topic_name) != system_topics.end();
+}
+
+NativeTopicSampler::TopicDiscoveryResult NativeTopicSampler::discover_topics_by_namespace() {
+  TopicDiscoveryResult result;
+
+  // Single graph query - avoids N+1 problem
+  auto all_topics = node_->get_topic_names_and_types();
+
+  for (const auto & [topic_name, types] : all_topics) {
+    // Skip system topics
+    if (is_system_topic(topic_name)) {
+      continue;
+    }
+
+    // Extract first segment from topic path
+    // "/carter1/odom" -> namespace "carter1", ns_prefix "/carter1"
+    if (topic_name.length() > 1 && topic_name[0] == '/') {
+      size_t second_slash = topic_name.find('/', 1);
+      if (second_slash != std::string::npos) {
+        std::string ns = topic_name.substr(1, second_slash - 1);
+        if (!ns.empty()) {
+          // Add namespace to set
+          result.namespaces.insert(ns);
+
+          // Add topic to the namespace's topic list
+          std::string ns_prefix = "/" + ns;
+          result.topics_by_ns[ns_prefix].publishes.push_back(topic_name);
+        }
+      }
+      // else: root topic like "/tf", skip (no namespace)
+    }
+  }
+
+  RCLCPP_DEBUG(node_->get_logger(), "Discovered %zu topic namespaces with topics in single query",
+               result.namespaces.size());
+  return result;
+}
+
+std::set<std::string> NativeTopicSampler::discover_topic_namespaces() {
+  // Delegate to optimized method (for backward compatibility)
+  return discover_topics_by_namespace().namespaces;
+}
+
+ComponentTopics NativeTopicSampler::get_topics_for_namespace(const std::string & ns_prefix) {
+  ComponentTopics topics;
+
+  auto all_topics = node_->get_topic_names_and_types();
+
+  for (const auto & [topic_name, types] : all_topics) {
+    // Skip system topics
+    if (is_system_topic(topic_name)) {
+      continue;
+    }
+
+    // Check if topic starts with namespace prefix followed by '/'
+    // ns_prefix is like "/carter1", topic is like "/carter1/odom"
+    if (topic_name.length() > ns_prefix.length() && topic_name.find(ns_prefix) == 0 &&
+        topic_name[ns_prefix.length()] == '/') {
+      // For topic-based discovery, we put all topics in 'publishes'
+      // since we can't determine direction without node info
+      topics.publishes.push_back(topic_name);
+    }
+  }
+
+  RCLCPP_DEBUG(node_->get_logger(), "Found %zu topics for namespace '%s'", topics.publishes.size(), ns_prefix.c_str());
+  return topics;
+}
+
 }  // namespace ros2_medkit_gateway

@@ -76,7 +76,7 @@
                 "components"
               ]
             },
-            "description": "List all discovered components across all areas. Returns component metadata including id, namespace, fqn, type, parent area, and available operations (services and actions). Each operation includes type_info with schema information: services have request/response schemas, actions have goal/result/feedback schemas."
+            "description": "List all discovered components across all areas. Returns component metadata including id, namespace, fqn, type, area, source (node or topic), and available operations (services and actions). The 'source' field indicates whether the component was discovered from a ROS 2 node ('node') or from topic namespaces ('topic' - for systems like Isaac Sim)."
           },
           "response": []
         },

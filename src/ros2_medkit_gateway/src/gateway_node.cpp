@@ -171,22 +171,37 @@ void GatewayNode::refresh_cache() {
 
     // Discover data outside the lock to minimize lock time
     auto areas = discovery_mgr_->discover_areas();
-    auto components = discovery_mgr_->discover_components();
+
+    // Discover node-based components (standard ROS 2 nodes)
+    auto node_components = discovery_mgr_->discover_components();
+
+    // Discover topic-based components (for systems like Isaac Sim that
+    // publish topics without creating proper ROS 2 nodes)
+    auto topic_components = discovery_mgr_->discover_topic_components();
+
+    // Merge both component lists
+    std::vector<Component> all_components;
+    all_components.reserve(node_components.size() + topic_components.size());
+    all_components.insert(all_components.end(), node_components.begin(), node_components.end());
+    all_components.insert(all_components.end(), topic_components.begin(), topic_components.end());
+
     auto timestamp = std::chrono::system_clock::now();
 
     // Capture sizes before move for logging
     const size_t area_count = areas.size();
-    const size_t component_count = components.size();
+    const size_t node_component_count = node_components.size();
+    const size_t topic_component_count = topic_components.size();
 
     // Lock only for the actual cache update
     {
       std::lock_guard<std::mutex> lock(cache_mutex_);
       entity_cache_.areas = std::move(areas);
-      entity_cache_.components = std::move(components);
+      entity_cache_.components = std::move(all_components);
       entity_cache_.last_update = timestamp;
     }
 
-    RCLCPP_DEBUG(get_logger(), "Cache refreshed: %zu areas, %zu components", area_count, component_count);
+    RCLCPP_DEBUG(get_logger(), "Cache refreshed: %zu areas, %zu components (%zu node-based, %zu topic-based)",
+                 area_count, node_component_count + topic_component_count, node_component_count, topic_component_count);
   } catch (const std::exception & e) {
     RCLCPP_ERROR(get_logger(), "Failed to refresh cache: %s", e.what());
   } catch (...) {
