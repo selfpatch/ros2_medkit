@@ -127,6 +127,17 @@ if(BUILD_TESTING)
   ament_add_gtest(test_configuration_manager test/test_configuration_manager.cpp)
   target_link_libraries(test_configuration_manager gateway_lib)
 
+  # Add NativeTopicSampler tests
+  find_package(std_msgs REQUIRED)
+  ament_add_gtest(test_native_topic_sampler test/test_native_topic_sampler.cpp)
+  target_link_libraries(test_native_topic_sampler gateway_lib)
+  ament_target_dependencies(test_native_topic_sampler std_msgs)
+
+  # Add DiscoveryManager tests
+  ament_add_gtest(test_discovery_manager test/test_discovery_manager.cpp)
+  target_link_libraries(test_discovery_manager gateway_lib)
+  ament_target_dependencies(test_discovery_manager std_msgs)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
@@ -135,6 +146,10 @@ if(BUILD_TESTING)
     target_link_options(test_operation_manager PRIVATE --coverage)
     target_compile_options(test_configuration_manager PRIVATE --coverage -O0 -g)
     target_link_options(test_configuration_manager PRIVATE --coverage)
+    target_compile_options(test_native_topic_sampler PRIVATE --coverage -O0 -g)
+    target_link_options(test_native_topic_sampler PRIVATE --coverage)
+    target_compile_options(test_discovery_manager PRIVATE --coverage -O0 -g)
+    target_link_options(test_discovery_manager PRIVATE --coverage)
   endif()
 
   # Integration testing

@@ -90,23 +90,26 @@ curl http://localhost:8080/api/v1/components
     "namespace": "/powertrain/engine",
     "fqn": "/powertrain/engine/temp_sensor",
     "type": "Component",
-    "area": "powertrain"
+    "area": "powertrain",
+    "source": "node"
   },
   {
-    "id": "rpm_sensor",
-    "namespace": "/powertrain/engine",
-    "fqn": "/powertrain/engine/rpm_sensor",
+    "id": "carter1",
+    "namespace": "/carter1",
+    "fqn": "/carter1",
     "type": "Component",
-    "area": "powertrain"
+    "area": "carter1",
+    "source": "topic"
   }
 ]
 ```
 
 **Response Fields:**
-- `id` - Component name (node name)
+- `id` - Component name (node name or namespace for topic-based)
 - `namespace` - ROS 2 namespace where the component is running
 - `fqn` - Fully qualified name (namespace + node name)
 - `type` - Always "Component"
+- `source` - Discovery source: `"node"` (standard ROS 2 node) or `"topic"` (discovered from topic namespaces)
 - `area` - Parent area this component belongs to
 
 #### GET /api/v1/areas/{area_id}/components
@@ -126,14 +129,16 @@ curl http://localhost:8080/api/v1/areas/powertrain/components
     "namespace": "/powertrain/engine",
     "fqn": "/powertrain/engine/temp_sensor",
     "type": "Component",
-    "area": "powertrain"
+    "area": "powertrain",
+    "source": "node"
   },
   {
     "id": "rpm_sensor",
     "namespace": "/powertrain/engine",
     "fqn": "/powertrain/engine/rpm_sensor",
     "type": "Component",
-    "area": "powertrain"
+    "area": "powertrain",
+    "source": "node"
   }
 ]
 ```
@@ -658,6 +663,24 @@ cors:
 - **Discovery Manager**: Discovers and caches ROS 2 nodes, organizing them into areas and components
 - **REST Server**: HTTP server using cpp-httplib
 - **Entity Cache**: In-memory cache of discovered areas and components, updated periodically
+
+### Topic-Based Discovery
+
+In addition to standard ROS 2 node discovery, the gateway supports **topic-based discovery** for systems that publish topics without creating discoverable nodes (e.g., NVIDIA Isaac Sim, hardware bridges).
+
+**How it works:**
+1. Gateway scans all topics in the ROS 2 graph
+2. Extracts unique namespace prefixes (e.g., `/carter1/odom` → `carter1`)
+3. Creates virtual "components" for namespaces that have topics but no nodes
+4. These components have `"source": "topic"` to distinguish them from node-based components
+
+**Example:** Isaac Sim publishes topics like `/carter1/odom`, `/carter1/cmd_vel`, `/carter2/imu` without creating ROS 2 nodes. The gateway discovers:
+- Component `carter1` with topics: `/carter1/odom`, `/carter1/cmd_vel`
+- Component `carter2` with topics: `/carter2/imu`
+
+**System topic filtering:** The following topics are filtered out during discovery:
+- `/parameter_events`, `/rosout`, `/clock`
+- Note: `/tf` and `/tf_static` are NOT filtered (useful for diagnostics)
 
 ### Area Organization
 
