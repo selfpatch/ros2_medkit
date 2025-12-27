@@ -58,12 +58,14 @@ def get_coverage_env():
 def generate_test_description():
     """Generate launch description with fault_manager node."""
     # We need fault_manager running for FaultReporter to connect to
+    # Use in-memory storage to avoid filesystem permission issues in CI
     fault_manager_node = launch_ros.actions.Node(
         package='ros2_medkit_fault_manager',
         executable='fault_manager_node',
         name='fault_manager',
         output='screen',
         additional_env=get_coverage_env(),
+        parameters=[{'storage_type': 'memory'}],
     )
 
     return (

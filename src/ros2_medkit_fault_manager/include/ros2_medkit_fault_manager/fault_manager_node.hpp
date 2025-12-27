@@ -15,6 +15,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
@@ -27,17 +28,30 @@ namespace ros2_medkit_fault_manager {
 /// Central fault manager node
 ///
 /// Provides service interfaces for fault reporting, querying, and clearing.
-/// Stores faults in memory and aggregates reports by fault_code.
+/// Supports configurable storage backends (memory or SQLite) via ROS parameters.
+///
+/// Parameters:
+/// - storage_type (string): "memory" or "sqlite" (default: "sqlite")
+/// - database_path (string): Path to SQLite database file (default: "/var/lib/ros2_medkit/faults.db")
+///   Use ":memory:" for in-memory SQLite database (useful for testing)
 class FaultManagerNode : public rclcpp::Node {
  public:
   explicit FaultManagerNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
   /// Get read-only access to fault storage (for testing)
   const FaultStorage & get_storage() const {
-    return storage_;
+    return *storage_;
+  }
+
+  /// Get the storage type being used
+  const std::string & get_storage_type() const {
+    return storage_type_;
   }
 
  private:
+  /// Create storage backend based on configuration
+  std::unique_ptr<FaultStorage> create_storage();
+
   /// Handle ReportFault service request
   void handle_report_fault(const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
                            const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response);
@@ -53,7 +67,9 @@ class FaultManagerNode : public rclcpp::Node {
   /// Validate severity value
   static bool is_valid_severity(uint8_t severity);
 
-  InMemoryFaultStorage storage_;
+  std::string storage_type_;
+  std::string database_path_;
+  std::unique_ptr<FaultStorage> storage_;
 
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetFaults>::SharedPtr get_faults_srv_;

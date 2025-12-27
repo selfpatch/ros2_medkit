@@ -147,7 +147,12 @@ TEST_F(FaultStorageTest, InvalidStatusDefaultsToConfirmed) {
 class FaultManagerNodeTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    node_ = std::make_shared<FaultManagerNode>();
+    // Use in-memory storage for tests to avoid permission issues
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+        {"storage_type", "memory"},
+    });
+    node_ = std::make_shared<FaultManagerNode>(options);
   }
 
   void TearDown() override {
@@ -160,6 +165,7 @@ class FaultManagerNodeTest : public ::testing::Test {
 TEST_F(FaultManagerNodeTest, NodeCreation) {
   EXPECT_STREQ(node_->get_name(), "fault_manager");
   EXPECT_EQ(node_->get_storage().size(), 0u);
+  EXPECT_EQ(node_->get_storage_type(), "memory");
 }
 
 int main(int argc, char ** argv) {

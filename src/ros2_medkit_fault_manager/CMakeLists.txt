@@ -34,11 +34,13 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
+find_package(SQLite3 REQUIRED)
 
 # Library target (shared between executable and tests)
 add_library(fault_manager_lib STATIC
   src/fault_manager_node.cpp
   src/fault_storage.cpp
+  src/sqlite_fault_storage.cpp
 )
 
 target_include_directories(fault_manager_lib PUBLIC
@@ -46,10 +48,12 @@ target_include_directories(fault_manager_lib PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(fault_manager_lib
+ament_target_dependencies(fault_manager_lib PUBLIC
   rclcpp
   ros2_medkit_msgs
 )
+
+target_link_libraries(fault_manager_lib PUBLIC SQLite::SQLite3)
 
 if(ENABLE_COVERAGE)
   target_compile_options(fault_manager_lib PRIVATE --coverage -O0 -g)
@@ -95,10 +99,17 @@ if(BUILD_TESTING)
   target_link_libraries(test_fault_manager fault_manager_lib)
   ament_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
 
-  # Apply coverage flags to test target
+  # SQLite storage tests
+  ament_add_gtest(test_sqlite_storage test/test_sqlite_storage.cpp)
+  target_link_libraries(test_sqlite_storage fault_manager_lib)
+  ament_target_dependencies(test_sqlite_storage rclcpp ros2_medkit_msgs)
+
+  # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_fault_manager PRIVATE --coverage -O0 -g)
     target_link_options(test_fault_manager PRIVATE --coverage)
+    target_compile_options(test_sqlite_storage PRIVATE --coverage -O0 -g)
+    target_link_options(test_sqlite_storage PRIVATE --coverage)
   endif()
 
   # Integration tests

@@ -73,6 +73,9 @@ def generate_test_description():
         name='fault_manager',
         output='screen',
         additional_env=get_coverage_env(),
+        parameters=[{
+            'storage_type': 'memory',  # Use in-memory storage for integration tests
+        }],
     )
 
     return (
