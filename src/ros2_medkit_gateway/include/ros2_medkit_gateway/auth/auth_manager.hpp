@@ -20,8 +20,9 @@
 #include <string>
 #include <unordered_map>
 
-#include "ros2_medkit_gateway/auth_config.hpp"
-#include "ros2_medkit_gateway/auth_models.hpp"
+#include "ros2_medkit_gateway/auth/auth_config.hpp"
+#include "ros2_medkit_gateway/auth/auth_models.hpp"
+#include "ros2_medkit_gateway/auth/auth_requirement_policy.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -86,9 +87,10 @@ class AuthManager {
   /**
    * @brief Validate a JWT access token
    * @param token The JWT token string
+   * @param expected_type Expected token type (defaults to ACCESS)
    * @return TokenValidationResult with claims if valid
    */
-  TokenValidationResult validate_token(const std::string & token) const;
+  TokenValidationResult validate_token(const std::string & token, TokenType expected_type = TokenType::ACCESS) const;
 
   /**
    * @brief Check if a role is authorized for a specific HTTP method and path
@@ -136,6 +138,20 @@ class AuthManager {
    */
   std::optional<ClientCredentials> get_client(const std::string & client_id) const;
 
+  /**
+   * @brief Disable a client (all tokens become invalid immediately)
+   * @param client_id Client identifier
+   * @return true if disabled, false if client not found
+   */
+  bool disable_client(const std::string & client_id);
+
+  /**
+   * @brief Enable a previously disabled client
+   * @param client_id Client identifier
+   * @return true if enabled, false if client not found
+   */
+  bool enable_client(const std::string & client_id);
+
  private:
   /**
    * @brief Generate a JWT token
@@ -179,6 +195,9 @@ class AuthManager {
   std::optional<RefreshTokenRecord> get_refresh_token(const std::string & token_id) const;
 
   AuthConfig config_;
+
+  // Auth requirement policy (created from config)
+  std::unique_ptr<IAuthRequirementPolicy> auth_policy_;
 
   // Client credentials storage (thread-safe)
   mutable std::mutex clients_mutex_;

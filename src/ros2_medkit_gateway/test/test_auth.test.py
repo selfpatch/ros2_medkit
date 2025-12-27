@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Integration tests for JWT authentication and authorization.
+"""
+Integration tests for JWT authentication and authorization.
 
 @verifies REQ_INTEROP_086, REQ_INTEROP_087
 """

@@ -20,7 +20,8 @@
 #include <set>
 #include <sstream>
 
-#include "ros2_medkit_gateway/auth_models.hpp"
+#include "ros2_medkit_gateway/auth/auth_middleware.hpp"
+#include "ros2_medkit_gateway/auth/auth_models.hpp"
 #include "ros2_medkit_gateway/exceptions.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
@@ -80,9 +81,10 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   : node_(node), host_(host), port_(port), cors_config_(cors_config), auth_config_(auth_config) {
   server_ = std::make_unique<httplib::Server>();
 
-  // Initialize auth manager if auth is enabled
+  // Initialize auth manager and middleware if auth is enabled
   if (auth_config_.enabled) {
     auth_manager_ = std::make_unique<AuthManager>(auth_config_);
+    auth_middleware_ = std::make_unique<AuthMiddleware>(auth_config_, auth_manager_.get());
     RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Authentication enabled - algorithm: %s, require_auth_for: %s",
                 algorithm_to_string(auth_config_.jwt_algorithm).c_str(),
                 auth_config_.require_auth_for == AuthRequirement::NONE    ? "none"
@@ -122,13 +124,13 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
     }
 
     // Handle Authentication if enabled
-    if (auth_config_.enabled && auth_manager_) {
-      // Extract path from request
-      std::string path = req.path;
+    if (auth_middleware_ && auth_middleware_->is_enabled()) {
+      // Use AuthMiddleware to process the request
+      auto auth_request = AuthMiddleware::from_httplib_request(req);
+      auto result = auth_middleware_->process(auth_request);
 
-      // Check authentication
-      if (!check_auth(req, res, req.method, path)) {
-        // Response already set by check_auth
+      if (!result.allowed) {
+        AuthMiddleware::apply_to_response(result, res);
         return httplib::Server::HandlerResponse::Handled;
       }
     }
@@ -2155,31 +2157,14 @@ void RESTServer::handle_auth_authorize(const httplib::Request & req, httplib::Re
       return;
     }
 
-    // Parse request - support both JSON and form-urlencoded
-    AuthorizeRequest auth_req;
-    std::string content_type = req.get_header_value("Content-Type");
-
-    if (content_type.find("application/json") != std::string::npos) {
-      try {
-        json body = json::parse(req.body);
-        auth_req = AuthorizeRequest::from_json(body);
-      } catch (const json::parse_error & e) {
-        res.status = StatusCode::BadRequest_400;
-        res.set_content(AuthErrorResponse::invalid_request("Invalid JSON: " + std::string(e.what())).to_json().dump(2),
-                        "application/json");
-        return;
-      }
-    } else if (content_type.find("application/x-www-form-urlencoded") != std::string::npos) {
-      auth_req = AuthorizeRequest::from_form_data(req.body);
-    } else {
+    // Parse request using DRY helper
+    auto parse_result = AuthorizeRequest::parse_request(req.get_header_value("Content-Type"), req.body);
+    if (!parse_result) {
       res.status = StatusCode::BadRequest_400;
-      res.set_content(AuthErrorResponse::invalid_request(
-                          "Content-Type must be application/json or application/x-www-form-urlencoded")
-                          .to_json()
-                          .dump(2),
-                      "application/json");
+      res.set_content(parse_result.error().to_json().dump(2), "application/json");
       return;
     }
+    auto auth_req = parse_result.value();
 
     // Validate grant_type
     if (auth_req.grant_type != "client_credentials") {
@@ -2230,31 +2215,14 @@ void RESTServer::handle_auth_token(const httplib::Request & req, httplib::Respon
       return;
     }
 
-    // Parse request
-    AuthorizeRequest auth_req;
-    std::string content_type = req.get_header_value("Content-Type");
-
-    if (content_type.find("application/json") != std::string::npos) {
-      try {
-        json body = json::parse(req.body);
-        auth_req = AuthorizeRequest::from_json(body);
-      } catch (const json::parse_error & e) {
-        res.status = StatusCode::BadRequest_400;
-        res.set_content(AuthErrorResponse::invalid_request("Invalid JSON: " + std::string(e.what())).to_json().dump(2),
-                        "application/json");
-        return;
-      }
-    } else if (content_type.find("application/x-www-form-urlencoded") != std::string::npos) {
-      auth_req = AuthorizeRequest::from_form_data(req.body);
-    } else {
+    // Parse request using DRY helper
+    auto parse_result = AuthorizeRequest::parse_request(req.get_header_value("Content-Type"), req.body);
+    if (!parse_result) {
       res.status = StatusCode::BadRequest_400;
-      res.set_content(AuthErrorResponse::invalid_request(
-                          "Content-Type must be application/json or application/x-www-form-urlencoded")
-                          .to_json()
-                          .dump(2),
-                      "application/json");
+      res.set_content(parse_result.error().to_json().dump(2), "application/json");
       return;
     }
+    auto auth_req = parse_result.value();
 
     // Validate grant_type
     if (auth_req.grant_type != "refresh_token") {
@@ -2330,74 +2298,6 @@ void RESTServer::handle_auth_revoke(const httplib::Request & req, httplib::Respo
     res.set_content(json{{"error", "Internal server error"}, {"details", e.what()}}.dump(2), "application/json");
     RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_auth_revoke: %s", e.what());
   }
-}
-
-bool RESTServer::check_auth(const httplib::Request & req, httplib::Response & res, const std::string & method,
-                            const std::string & path) {
-  // If auth is not enabled, allow all requests
-  if (!auth_config_.enabled || !auth_manager_) {
-    return true;
-  }
-
-  // Check if authentication is required for this request
-  if (!auth_manager_->requires_authentication(method, path)) {
-    return true;
-  }
-
-  // Extract token from Authorization header
-  auto token = extract_bearer_token(req);
-  if (!token.has_value()) {
-    res.status = StatusCode::Unauthorized_401;
-    res.set_header("WWW-Authenticate", "Bearer realm=\"ros2_medkit_gateway\"");
-    res.set_content(AuthErrorResponse::invalid_token("Missing or invalid Authorization header").to_json().dump(2),
-                    "application/json");
-    return false;
-  }
-
-  // Validate token
-  auto validation = auth_manager_->validate_token(token.value());
-  if (!validation.valid) {
-    res.status = StatusCode::Unauthorized_401;
-    res.set_header("WWW-Authenticate", "Bearer realm=\"ros2_medkit_gateway\", error=\"invalid_token\"");
-    res.set_content(AuthErrorResponse::invalid_token(validation.error).to_json().dump(2), "application/json");
-    return false;
-  }
-
-  // Check authorization (RBAC)
-  auto auth_result = auth_manager_->check_authorization(validation.claims->role, method, path);
-  if (!auth_result.authorized) {
-    res.status = StatusCode::Forbidden_403;
-    res.set_content(AuthErrorResponse::insufficient_scope(auth_result.error).to_json().dump(2), "application/json");
-    return false;
-  }
-
-  return true;
-}
-
-std::optional<std::string> RESTServer::extract_bearer_token(const httplib::Request & req) const {
-  std::string auth_header = req.get_header_value("Authorization");
-  if (auth_header.empty()) {
-    return std::nullopt;
-  }
-
-  // Check for "Bearer " prefix (case-insensitive for "Bearer")
-  const std::string bearer_prefix = "Bearer ";
-  if (auth_header.length() < bearer_prefix.length()) {
-    return std::nullopt;
-  }
-
-  std::string prefix = auth_header.substr(0, bearer_prefix.length());
-  // Case-insensitive comparison for "Bearer "
-  if (prefix != "Bearer " && prefix != "bearer ") {
-    return std::nullopt;
-  }
-
-  std::string token = auth_header.substr(bearer_prefix.length());
-  if (token.empty()) {
-    return std::nullopt;
-  }
-
-  return token;
 }
 
 }  // namespace ros2_medkit_gateway

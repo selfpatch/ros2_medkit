@@ -15,16 +15,56 @@
 #pragma once
 
 #include <chrono>
+#include <expected>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "ros2_medkit_gateway/auth_config.hpp"
+#include "ros2_medkit_gateway/auth/auth_config.hpp"
 
 namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
+
+// Forward declarations
+struct AuthErrorResponse;
+
+/**
+ * @brief JWT token type for distinguishing access vs refresh tokens
+ */
+enum class TokenType {
+  ACCESS,  ///< Short-lived access token for API authorization
+  REFRESH  ///< Long-lived refresh token for obtaining new access tokens
+};
+
+/**
+ * @brief Convert TokenType to string (for JWT typ claim)
+ */
+inline std::string token_type_to_string(TokenType type) {
+  switch (type) {
+    case TokenType::ACCESS:
+      return "access";
+    case TokenType::REFRESH:
+      return "refresh";
+    default:
+      return "unknown";
+  }
+}
+
+/**
+ * @brief Convert string to TokenType
+ * @throws std::invalid_argument if string is not a valid token type
+ */
+inline TokenType string_to_token_type(const std::string & type_str) {
+  if (type_str == "access") {
+    return TokenType::ACCESS;
+  }
+  if (type_str == "refresh") {
+    return TokenType::REFRESH;
+  }
+  throw std::invalid_argument("Invalid token type: " + type_str);
+}
 
 /**
  * @brief JWT token claims
@@ -36,12 +76,19 @@ struct JwtClaims {
   int64_t exp{0};                               ///< Expiration time (Unix timestamp)
   int64_t iat{0};                               ///< Issued at time (Unix timestamp)
   std::string jti;                              ///< JWT ID (unique identifier)
+  TokenType typ{TokenType::ACCESS};             ///< Token type (access or refresh)
   UserRole role{UserRole::VIEWER};              ///< User role for RBAC
   std::vector<std::string> permissions;         ///< Explicit permissions (optional)
   std::optional<std::string> refresh_token_id;  ///< Associated refresh token ID (for access tokens)
 
   json to_json() const {
-    json j = {{"iss", iss}, {"sub", sub}, {"exp", exp}, {"iat", iat}, {"jti", jti}, {"role", role_to_string(role)}};
+    json j = {{"iss", iss},
+              {"sub", sub},
+              {"exp", exp},
+              {"iat", iat},
+              {"jti", jti},
+              {"typ", token_type_to_string(typ)},
+              {"role", role_to_string(role)}};
 
     if (!permissions.empty()) {
       j["permissions"] = permissions;
@@ -61,6 +108,14 @@ struct JwtClaims {
     claims.exp = j.value("exp", int64_t{0});
     claims.iat = j.value("iat", int64_t{0});
     claims.jti = j.value("jti", "");
+
+    if (j.contains("typ")) {
+      try {
+        claims.typ = string_to_token_type(j["typ"].get<std::string>());
+      } catch (const std::invalid_argument &) {
+        claims.typ = TokenType::ACCESS;  // Default to access for backward compatibility
+      }
+    }
 
     if (j.contains("role")) {
       claims.role = string_to_role(j["role"].get<std::string>());
@@ -142,6 +197,15 @@ struct AuthorizeRequest {
 
   // Parse from URL-encoded form data (application/x-www-form-urlencoded)
   static AuthorizeRequest from_form_data(const std::string & body);
+
+  /**
+   * @brief Parse AuthorizeRequest from HTTP request body with content-type detection
+   * @param content_type Content-Type header value
+   * @param body Request body
+   * @return AuthorizeRequest on success, AuthErrorResponse on failure
+   */
+  static std::expected<AuthorizeRequest, AuthErrorResponse> parse_request(const std::string & content_type,
+                                                                          const std::string & body);
 };
 
 /**

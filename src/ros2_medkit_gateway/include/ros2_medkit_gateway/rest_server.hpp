@@ -22,8 +22,9 @@
 #include <string>
 #include <vector>
 
-#include "ros2_medkit_gateway/auth_config.hpp"
-#include "ros2_medkit_gateway/auth_manager.hpp"
+#include "ros2_medkit_gateway/auth/auth_config.hpp"
+#include "ros2_medkit_gateway/auth/auth_manager.hpp"
+#include "ros2_medkit_gateway/auth/auth_middleware.hpp"
 #include "ros2_medkit_gateway/config.hpp"
 
 namespace ros2_medkit_gateway {
@@ -80,31 +81,13 @@ class RESTServer {
   void set_cors_headers(httplib::Response & res, const std::string & origin) const;
   bool is_origin_allowed(const std::string & origin) const;
 
-  // Authentication middleware
-  /**
-   * @brief Check if request is authenticated and authorized
-   * @param req HTTP request
-   * @param res HTTP response (set error on failure)
-   * @param method HTTP method
-   * @param path Request path
-   * @return true if authorized, false if denied (response already set)
-   */
-  bool check_auth(const httplib::Request & req, httplib::Response & res, const std::string & method,
-                  const std::string & path);
-
-  /**
-   * @brief Extract Bearer token from Authorization header
-   * @param req HTTP request
-   * @return Token string if present and valid format
-   */
-  std::optional<std::string> extract_bearer_token(const httplib::Request & req) const;
-
   GatewayNode * node_;
   std::string host_;
   int port_;
   CorsConfig cors_config_;
   AuthConfig auth_config_;
   std::unique_ptr<AuthManager> auth_manager_;
+  std::unique_ptr<AuthMiddleware> auth_middleware_;
 
   std::unique_ptr<httplib::Server> server_;
 };

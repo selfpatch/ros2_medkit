@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/auth_models.hpp"
+#include "ros2_medkit_gateway/auth/auth_models.hpp"
 
 #include <sstream>
 
@@ -66,6 +66,25 @@ AuthorizeRequest AuthorizeRequest::from_form_data(const std::string & body) {
   }
 
   return req;
+}
+
+std::expected<AuthorizeRequest, AuthErrorResponse> AuthorizeRequest::parse_request(const std::string & content_type,
+                                                                                   const std::string & body) {
+  if (content_type.find("application/json") != std::string::npos) {
+    try {
+      nlohmann::json json_body = nlohmann::json::parse(body);
+      return AuthorizeRequest::from_json(json_body);
+    } catch (const nlohmann::json::parse_error & e) {
+      return std::unexpected(AuthErrorResponse::invalid_request("Invalid JSON: " + std::string(e.what())));
+    }
+  }
+
+  if (content_type.find("application/x-www-form-urlencoded") != std::string::npos) {
+    return AuthorizeRequest::from_form_data(body);
+  }
+
+  return std::unexpected(
+      AuthErrorResponse::invalid_request("Content-Type must be application/json or application/x-www-form-urlencoded"));
 }
 
 }  // namespace ros2_medkit_gateway

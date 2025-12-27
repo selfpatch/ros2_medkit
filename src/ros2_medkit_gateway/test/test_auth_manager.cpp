@@ -17,9 +17,7 @@
 #include <chrono>
 #include <thread>
 
-#include "ros2_medkit_gateway/auth_config.hpp"
-#include "ros2_medkit_gateway/auth_manager.hpp"
-#include "ros2_medkit_gateway/auth_models.hpp"
+#include "ros2_medkit_gateway/auth/auth.hpp"
 
 using namespace ros2_medkit_gateway;
 
@@ -147,6 +145,23 @@ TEST(AuthConfigTest, StringToAuthRequirementInvalid) {
   EXPECT_THROW(string_to_auth_requirement("invalid"), std::invalid_argument);
 }
 
+// Test TokenType
+// @verifies REQ_INTEROP_087
+TEST(TokenTypeTest, TokenTypeToString) {
+  EXPECT_EQ(token_type_to_string(TokenType::ACCESS), "access");
+  EXPECT_EQ(token_type_to_string(TokenType::REFRESH), "refresh");
+}
+
+TEST(TokenTypeTest, StringToTokenType) {
+  EXPECT_EQ(string_to_token_type("access"), TokenType::ACCESS);
+  EXPECT_EQ(string_to_token_type("refresh"), TokenType::REFRESH);
+}
+
+TEST(TokenTypeTest, StringToTokenTypeInvalid) {
+  EXPECT_THROW(string_to_token_type("invalid"), std::invalid_argument);
+  EXPECT_THROW(string_to_token_type("ACCESS"), std::invalid_argument);  // Case-sensitive
+}
+
 // Test AuthManager authentication
 // @verifies REQ_INTEROP_086
 TEST_F(AuthManagerTest, AuthenticateValidCredentials) {
@@ -210,6 +225,53 @@ TEST_F(AuthManagerTest, ValidateTamperedToken) {
   EXPECT_FALSE(validation.valid);
 }
 
+// Test token type enforcement
+// @verifies REQ_INTEROP_087
+TEST_F(AuthManagerTest, ValidateTokenWithCorrectType) {
+  auto auth_result = auth_manager_->authenticate("admin_user", "admin_password");
+  ASSERT_TRUE(auth_result.has_value());
+
+  // Access token should validate as ACCESS type
+  auto access_validation = auth_manager_->validate_token(auth_result->access_token, TokenType::ACCESS);
+  EXPECT_TRUE(access_validation.valid);
+  EXPECT_EQ(access_validation.claims->typ, TokenType::ACCESS);
+
+  // Refresh token should validate as REFRESH type
+  ASSERT_TRUE(auth_result->refresh_token.has_value());
+  auto refresh_validation = auth_manager_->validate_token(auth_result->refresh_token.value(), TokenType::REFRESH);
+  EXPECT_TRUE(refresh_validation.valid);
+  EXPECT_EQ(refresh_validation.claims->typ, TokenType::REFRESH);
+}
+
+// @verifies REQ_INTEROP_087
+TEST_F(AuthManagerTest, ValidateTokenWithWrongTypeRejectsToken) {
+  auto auth_result = auth_manager_->authenticate("admin_user", "admin_password");
+  ASSERT_TRUE(auth_result.has_value());
+  ASSERT_TRUE(auth_result->refresh_token.has_value());
+
+  // Access token should NOT validate as REFRESH type
+  auto access_as_refresh = auth_manager_->validate_token(auth_result->access_token, TokenType::REFRESH);
+  EXPECT_FALSE(access_as_refresh.valid);
+  EXPECT_TRUE(access_as_refresh.error.find("Invalid token type") != std::string::npos);
+
+  // Refresh token should NOT validate as ACCESS type
+  auto refresh_as_access = auth_manager_->validate_token(auth_result->refresh_token.value(), TokenType::ACCESS);
+  EXPECT_FALSE(refresh_as_access.valid);
+  EXPECT_TRUE(refresh_as_access.error.find("Invalid token type") != std::string::npos);
+}
+
+// @verifies REQ_INTEROP_087
+TEST_F(AuthManagerTest, RefreshWithAccessTokenFails) {
+  auto auth_result = auth_manager_->authenticate("admin_user", "admin_password");
+  ASSERT_TRUE(auth_result.has_value());
+
+  // Try to use access token as refresh token (should fail due to type check)
+  auto refresh_result = auth_manager_->refresh_access_token(auth_result->access_token);
+  ASSERT_FALSE(refresh_result.has_value());
+  EXPECT_EQ(refresh_result.error().error, "invalid_grant");
+  EXPECT_TRUE(refresh_result.error().error_description.find("not a refresh token") != std::string::npos);
+}
+
 // Test token refresh
 // @verifies REQ_INTEROP_087
 TEST_F(AuthManagerTest, RefreshAccessToken) {
@@ -248,9 +310,29 @@ TEST_F(AuthManagerTest, RevokeRefreshToken) {
   ASSERT_FALSE(refresh_result.has_value());
   EXPECT_EQ(refresh_result.error().error, "invalid_grant");
 
-  // Access token should still be valid (until expiry)
+  // Access token should also be invalid (propagated revocation)
   auto validation = auth_manager_->validate_token(auth_result->access_token);
-  EXPECT_FALSE(validation.valid);  // Access token tied to revoked refresh token
+  EXPECT_FALSE(validation.valid);
+  EXPECT_TRUE(validation.error.find("revoked") != std::string::npos);
+}
+
+// @verifies REQ_INTEROP_087
+TEST_F(AuthManagerTest, RefreshRevocationPropagatestoAccessToken) {
+  // Get tokens
+  auto auth_result = auth_manager_->authenticate("operator_user", "operator_password");
+  ASSERT_TRUE(auth_result.has_value());
+
+  // Access token is valid initially
+  auto validation = auth_manager_->validate_token(auth_result->access_token);
+  EXPECT_TRUE(validation.valid);
+
+  // Revoke refresh token
+  auth_manager_->revoke_refresh_token(auth_result->refresh_token.value());
+
+  // Access token should now be invalid because its refresh token was revoked
+  validation = auth_manager_->validate_token(auth_result->access_token);
+  EXPECT_FALSE(validation.valid);
+  EXPECT_TRUE(validation.error.find("refresh token has been revoked") != std::string::npos);
 }
 
 // Test RBAC authorization
@@ -382,6 +464,32 @@ TEST(AuthManagerDisabledTest, DisabledAuthManagerNeverRequiresAuth) {
   EXPECT_FALSE(manager.requires_authentication("POST", "/api/v1/components/engine/operations/calibrate"));
 }
 
+// Test RS256 fail fast at startup
+// @verifies REQ_INTEROP_087
+TEST(AuthManagerRS256Test, RS256WithMissingPrivateKeyThrows) {
+  AuthConfig config = AuthConfigBuilder()
+                          .with_enabled(true)
+                          .with_algorithm(JwtAlgorithm::RS256)
+                          .with_jwt_secret("/nonexistent/private.pem")
+                          .with_jwt_public_key("/nonexistent/public.pem")
+                          .add_client("test", "test", UserRole::VIEWER)
+                          .build();
+
+  EXPECT_THROW(AuthManager manager(config), std::runtime_error);
+}
+
+TEST(AuthManagerRS256Test, RS256DisabledDoesNotValidateKeys) {
+  // When auth is disabled, RS256 keys should not be validated
+  AuthConfig config = AuthConfigBuilder()
+                          .with_enabled(false)
+                          .with_algorithm(JwtAlgorithm::RS256)
+                          .with_jwt_secret("/nonexistent/private.pem")
+                          .with_jwt_public_key("/nonexistent/public.pem")
+                          .build();
+
+  EXPECT_NO_THROW(AuthManager manager(config));
+}
+
 // Test client registration
 TEST_F(AuthManagerTest, RegisterNewClient) {
   bool registered = auth_manager_->register_client("new_client", "new_secret", UserRole::VIEWER);
@@ -400,6 +508,56 @@ TEST_F(AuthManagerTest, RegisterNewClient) {
 TEST_F(AuthManagerTest, RegisterDuplicateClientFails) {
   bool registered = auth_manager_->register_client("admin_user", "different_secret", UserRole::VIEWER);
   EXPECT_FALSE(registered);
+}
+
+// Test client state validation on every request
+// @verifies REQ_INTEROP_087
+TEST_F(AuthManagerTest, DisabledClientTokenBecomesInvalid) {
+  // Authenticate first
+  auto auth_result = auth_manager_->authenticate("admin_user", "admin_password");
+  ASSERT_TRUE(auth_result.has_value());
+
+  // Token should be valid initially
+  auto validation = auth_manager_->validate_token(auth_result->access_token);
+  EXPECT_TRUE(validation.valid);
+
+  // Disable the client
+  bool disabled = auth_manager_->disable_client("admin_user");
+  EXPECT_TRUE(disabled);
+
+  // Token should now be invalid
+  validation = auth_manager_->validate_token(auth_result->access_token);
+  EXPECT_FALSE(validation.valid);
+  EXPECT_TRUE(validation.error.find("disabled") != std::string::npos);
+}
+
+TEST_F(AuthManagerTest, ReenabledClientTokenBecomesValid) {
+  // Authenticate first
+  auto auth_result = auth_manager_->authenticate("admin_user", "admin_password");
+  ASSERT_TRUE(auth_result.has_value());
+
+  // Disable the client
+  auth_manager_->disable_client("admin_user");
+  auto validation = auth_manager_->validate_token(auth_result->access_token);
+  EXPECT_FALSE(validation.valid);
+
+  // Re-enable the client
+  bool enabled = auth_manager_->enable_client("admin_user");
+  EXPECT_TRUE(enabled);
+
+  // Token should be valid again
+  validation = auth_manager_->validate_token(auth_result->access_token);
+  EXPECT_TRUE(validation.valid);
+}
+
+TEST_F(AuthManagerTest, DisableNonexistentClientFails) {
+  bool disabled = auth_manager_->disable_client("nonexistent_client");
+  EXPECT_FALSE(disabled);
+}
+
+TEST_F(AuthManagerTest, EnableNonexistentClientFails) {
+  bool enabled = auth_manager_->enable_client("nonexistent_client");
+  EXPECT_FALSE(enabled);
 }
 
 // Test cleanup of expired tokens
@@ -435,6 +593,7 @@ TEST(JwtClaimsTest, ToJson) {
   claims.exp = 1234567890;
   claims.iat = 1234567800;
   claims.jti = "test_jti";
+  claims.typ = TokenType::ACCESS;
   claims.role = UserRole::ADMIN;
   claims.permissions = {"read", "write"};
   claims.refresh_token_id = "refresh_123";
@@ -446,15 +605,32 @@ TEST(JwtClaimsTest, ToJson) {
   EXPECT_EQ(j["exp"], 1234567890);
   EXPECT_EQ(j["iat"], 1234567800);
   EXPECT_EQ(j["jti"], "test_jti");
+  EXPECT_EQ(j["typ"], "access");
   EXPECT_EQ(j["role"], "admin");
   EXPECT_EQ(j["permissions"].size(), 2);
   EXPECT_EQ(j["refresh_token_id"], "refresh_123");
 }
 
+TEST(JwtClaimsTest, ToJsonRefreshToken) {
+  JwtClaims claims;
+  claims.iss = "test_issuer";
+  claims.sub = "test_subject";
+  claims.exp = 1234567890;
+  claims.iat = 1234567800;
+  claims.jti = "test_jti";
+  claims.typ = TokenType::REFRESH;
+  claims.role = UserRole::OPERATOR;
+
+  auto j = claims.to_json();
+
+  EXPECT_EQ(j["typ"], "refresh");
+  EXPECT_EQ(j["role"], "operator");
+}
+
 TEST(JwtClaimsTest, FromJson) {
-  nlohmann::json j = {
-      {"iss", "test_issuer"}, {"sub", "test_subject"}, {"exp", 1234567890},       {"iat", 1234567800},
-      {"jti", "test_jti"},    {"role", "operator"},    {"permissions", {"read"}}, {"refresh_token_id", "refresh_456"}};
+  nlohmann::json j = {{"iss", "test_issuer"}, {"sub", "test_subject"},   {"exp", 1234567890},
+                      {"iat", 1234567800},    {"jti", "test_jti"},       {"typ", "access"},
+                      {"role", "operator"},   {"permissions", {"read"}}, {"refresh_token_id", "refresh_456"}};
 
   auto claims = JwtClaims::from_json(j);
 
@@ -463,10 +639,31 @@ TEST(JwtClaimsTest, FromJson) {
   EXPECT_EQ(claims.exp, 1234567890);
   EXPECT_EQ(claims.iat, 1234567800);
   EXPECT_EQ(claims.jti, "test_jti");
+  EXPECT_EQ(claims.typ, TokenType::ACCESS);
   EXPECT_EQ(claims.role, UserRole::OPERATOR);
   EXPECT_EQ(claims.permissions.size(), 1);
   EXPECT_TRUE(claims.refresh_token_id.has_value());
   EXPECT_EQ(claims.refresh_token_id.value(), "refresh_456");
+}
+
+TEST(JwtClaimsTest, FromJsonRefreshToken) {
+  nlohmann::json j = {{"iss", "test_issuer"}, {"sub", "test_subject"}, {"exp", 1234567890}, {"iat", 1234567800},
+                      {"jti", "test_jti"},    {"typ", "refresh"},      {"role", "admin"}};
+
+  auto claims = JwtClaims::from_json(j);
+
+  EXPECT_EQ(claims.typ, TokenType::REFRESH);
+  EXPECT_EQ(claims.role, UserRole::ADMIN);
+}
+
+TEST(JwtClaimsTest, FromJsonWithInvalidTypDefaultsToAccess) {
+  nlohmann::json j = {{"iss", "test_issuer"}, {"sub", "test_subject"}, {"exp", 1234567890}, {"iat", 1234567800},
+                      {"jti", "test_jti"},    {"typ", "unknown_type"}, {"role", "admin"}};
+
+  auto claims = JwtClaims::from_json(j);
+
+  // Should default to ACCESS for backward compatibility
+  EXPECT_EQ(claims.typ, TokenType::ACCESS);
 }
 
 TEST(JwtClaimsTest, IsExpired) {
@@ -583,6 +780,394 @@ TEST(AuthorizeRequestTest, FromJson) {
   EXPECT_EQ(req.client_secret.value(), "test_secret");
   EXPECT_TRUE(req.scope.has_value());
   EXPECT_EQ(req.scope.value(), "operator");
+}
+
+// @verifies REQ_INTEROP_086
+TEST(AuthorizeRequestTest, ParseRequestJson) {
+  std::string content_type = "application/json";
+  std::string body = R"({"grant_type": "client_credentials", "client_id": "test", "client_secret": "secret"})";
+
+  auto result = AuthorizeRequest::parse_request(content_type, body);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->grant_type, "client_credentials");
+  EXPECT_TRUE(result->client_id.has_value());
+  EXPECT_EQ(result->client_id.value(), "test");
+}
+
+// @verifies REQ_INTEROP_086
+TEST(AuthorizeRequestTest, ParseRequestFormUrlEncoded) {
+  std::string content_type = "application/x-www-form-urlencoded";
+  std::string body = "grant_type=client_credentials&client_id=test&client_secret=secret";
+
+  auto result = AuthorizeRequest::parse_request(content_type, body);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->grant_type, "client_credentials");
+  EXPECT_TRUE(result->client_id.has_value());
+  EXPECT_EQ(result->client_id.value(), "test");
+}
+
+// @verifies REQ_INTEROP_086
+TEST(AuthorizeRequestTest, ParseRequestInvalidContentType) {
+  std::string content_type = "text/plain";
+  std::string body = "some text";
+
+  auto result = AuthorizeRequest::parse_request(content_type, body);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().error, "invalid_request");
+}
+
+// @verifies REQ_INTEROP_086
+TEST(AuthorizeRequestTest, ParseRequestInvalidJson) {
+  std::string content_type = "application/json";
+  std::string body = "{ invalid json }";
+
+  auto result = AuthorizeRequest::parse_request(content_type, body);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().error, "invalid_request");
+}
+
+// @verifies REQ_INTEROP_086
+TEST(AuthorizeRequestTest, ParseRequestJsonWithCharset) {
+  // Content-Type may include charset
+  std::string content_type = "application/json; charset=utf-8";
+  std::string body = R"({"grant_type": "client_credentials"})";
+
+  auto result = AuthorizeRequest::parse_request(content_type, body);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->grant_type, "client_credentials");
+}
+
+// ============================================================================
+// AuthMiddleware tests
+// ============================================================================
+
+class AuthMiddlewareTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    config_ = AuthConfigBuilder()
+                  .with_enabled(true)
+                  .with_jwt_secret("test_secret_key_for_middleware_test_12345")
+                  .with_algorithm(JwtAlgorithm::HS256)
+                  .with_token_expiry(3600)
+                  .with_refresh_token_expiry(86400)
+                  .with_require_auth_for(AuthRequirement::WRITE)
+                  .add_client("test_admin", "admin_secret", UserRole::ADMIN)
+                  .add_client("test_viewer", "viewer_secret", UserRole::VIEWER)
+                  .build();
+
+    auth_manager_ = std::make_unique<AuthManager>(config_);
+    middleware_ = std::make_unique<AuthMiddleware>(config_, auth_manager_.get());
+  }
+
+  AuthConfig config_;
+  std::unique_ptr<AuthManager> auth_manager_;
+  std::unique_ptr<AuthMiddleware> middleware_;
+};
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthMiddlewareTest, ExtractBearerToken_ValidToken) {
+  auto token = AuthMiddleware::extract_bearer_token("Bearer abc123xyz");
+  ASSERT_TRUE(token.has_value());
+  EXPECT_EQ(token.value(), "abc123xyz");
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthMiddlewareTest, ExtractBearerToken_CaseInsensitive) {
+  auto token = AuthMiddleware::extract_bearer_token("bearer abc123xyz");
+  ASSERT_TRUE(token.has_value());
+  EXPECT_EQ(token.value(), "abc123xyz");
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthMiddlewareTest, ExtractBearerToken_EmptyHeader) {
+  auto token = AuthMiddleware::extract_bearer_token("");
+  EXPECT_FALSE(token.has_value());
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthMiddlewareTest, ExtractBearerToken_InvalidPrefix) {
+  auto token = AuthMiddleware::extract_bearer_token("Basic abc123xyz");
+  EXPECT_FALSE(token.has_value());
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthMiddlewareTest, ExtractBearerToken_EmptyToken) {
+  auto token = AuthMiddleware::extract_bearer_token("Bearer ");
+  EXPECT_FALSE(token.has_value());
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthMiddlewareTest, ProcessGetRequestWithoutAuth) {
+  // GET requests don't require auth when require_auth_for=WRITE
+  AuthRequest req;
+  req.method = "GET";
+  req.path = "/api/v1/components";
+
+  auto result = middleware_->process(req);
+  EXPECT_TRUE(result.allowed);
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthMiddlewareTest, ProcessWriteRequestWithoutAuth) {
+  // POST requests require auth when require_auth_for=WRITE
+  AuthRequest req;
+  req.method = "POST";
+  req.path = "/api/v1/components/engine/operations/calibrate";
+
+  auto result = middleware_->process(req);
+  EXPECT_FALSE(result.allowed);
+  EXPECT_EQ(result.status_code, 401);
+}
+
+// @verifies REQ_INTEROP_086, REQ_INTEROP_087
+TEST_F(AuthMiddlewareTest, ProcessWriteRequestWithValidToken) {
+  // Authenticate first to get a valid token
+  auto auth_result = auth_manager_->authenticate("test_admin", "admin_secret");
+  ASSERT_TRUE(auth_result.has_value());
+
+  // POST request with valid admin token
+  AuthRequest req;
+  req.method = "POST";
+  req.path = "/api/v1/components/engine/operations/calibrate";
+  req.authorization_header = "Bearer " + auth_result->access_token;
+
+  auto result = middleware_->process(req);
+  EXPECT_TRUE(result.allowed);
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthMiddlewareTest, ProcessWriteRequestWithInvalidToken) {
+  AuthRequest req;
+  req.method = "POST";
+  req.path = "/api/v1/components/engine/operations/calibrate";
+  req.authorization_header = "Bearer invalid_token_12345";
+
+  auto result = middleware_->process(req);
+  EXPECT_FALSE(result.allowed);
+  EXPECT_EQ(result.status_code, 401);
+  EXPECT_FALSE(result.www_authenticate_header.empty());
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthMiddlewareTest, ProcessWriteRequestWithInsufficientPermissions) {
+  // Authenticate as viewer
+  auto auth_result = auth_manager_->authenticate("test_viewer", "viewer_secret");
+  ASSERT_TRUE(auth_result.has_value());
+
+  // Viewer trying to POST (not allowed)
+  AuthRequest req;
+  req.method = "POST";
+  req.path = "/api/v1/components/engine/operations/calibrate";
+  req.authorization_header = "Bearer " + auth_result->access_token;
+
+  auto result = middleware_->process(req);
+  EXPECT_FALSE(result.allowed);
+  EXPECT_EQ(result.status_code, 403);  // Forbidden, not Unauthorized
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthMiddlewareTest, AuthEndpointsNeverRequireAuth) {
+  AuthRequest req;
+  req.method = "POST";
+  req.path = "/api/v1/auth/authorize";
+  // No authorization header
+
+  auto result = middleware_->process(req);
+  EXPECT_TRUE(result.allowed);  // Auth endpoints are always accessible
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthMiddlewareTest, DisabledMiddlewareAllowsAll) {
+  AuthConfig disabled_config;
+  disabled_config.enabled = false;
+
+  AuthMiddleware disabled_middleware(disabled_config, nullptr);
+
+  AuthRequest req;
+  req.method = "POST";
+  req.path = "/api/v1/components/engine/operations/calibrate";
+
+  auto result = disabled_middleware.process(req);
+  EXPECT_TRUE(result.allowed);
+}
+
+// ============================================================================
+// AuthRequirementPolicy Tests
+// ============================================================================
+
+class AuthRequirementPolicyTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    // Set up auth requirements for configurable policy testing
+    auth_requirements_ = {
+        {"/api/v1/version", AuthRequirement::NONE},
+        {"/api/v1/health", AuthRequirement::NONE},
+        {"/api/v1/components", AuthRequirement::ALL},
+        {"/api/v1/components/*", AuthRequirement::ALL},
+        {"/api/v1/components/*/data/*", AuthRequirement::WRITE},
+        {"/api/v1/admin/*", AuthRequirement::ALL},
+    };
+  }
+
+  std::unordered_map<std::string, AuthRequirement> auth_requirements_;
+};
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, NoAuthPolicyNeverRequiresAuth) {
+  NoAuthRequirementPolicy policy;
+
+  EXPECT_FALSE(policy.requires_authentication("GET", "/api/v1/version"));
+  EXPECT_FALSE(policy.requires_authentication("POST", "/api/v1/components/engine/operations"));
+  EXPECT_FALSE(policy.requires_authentication("DELETE", "/api/v1/admin/users"));
+  EXPECT_FALSE(policy.requires_authentication("PUT", "/anything"));
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, AllAuthPolicyAlwaysRequiresAuth) {
+  AllAuthRequirementPolicy policy;
+
+  EXPECT_TRUE(policy.requires_authentication("GET", "/api/v1/version"));
+  EXPECT_TRUE(policy.requires_authentication("GET", "/api/v1/components"));
+  EXPECT_TRUE(policy.requires_authentication("POST", "/api/v1/components/engine/operations"));
+  EXPECT_TRUE(policy.requires_authentication("DELETE", "/api/v1/admin/users"));
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, WriteOnlyPolicyForGetRequests) {
+  WriteOnlyAuthRequirementPolicy policy;
+
+  // GET requests don't require auth
+  EXPECT_FALSE(policy.requires_authentication("GET", "/api/v1/version"));
+  EXPECT_FALSE(policy.requires_authentication("GET", "/api/v1/components"));
+  EXPECT_FALSE(policy.requires_authentication("GET", "/api/v1/admin/users"));
+  EXPECT_FALSE(policy.requires_authentication("HEAD", "/api/v1/health"));
+  EXPECT_FALSE(policy.requires_authentication("OPTIONS", "/api/v1/anything"));
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, WriteOnlyPolicyForWriteRequests) {
+  WriteOnlyAuthRequirementPolicy policy;
+
+  // Write requests require auth
+  EXPECT_TRUE(policy.requires_authentication("POST", "/api/v1/components/engine/operations"));
+  EXPECT_TRUE(policy.requires_authentication("PUT", "/api/v1/components/engine/config"));
+  EXPECT_TRUE(policy.requires_authentication("DELETE", "/api/v1/admin/users"));
+  EXPECT_TRUE(policy.requires_authentication("PATCH", "/api/v1/components/engine"));
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, ConfigurablePolicyExactMatch) {
+  ConfigurableAuthRequirementPolicy policy(auth_requirements_);
+
+  // Public endpoints (NONE)
+  EXPECT_FALSE(policy.requires_authentication("GET", "/api/v1/version"));
+  EXPECT_FALSE(policy.requires_authentication("GET", "/api/v1/health"));
+  EXPECT_FALSE(policy.requires_authentication("POST", "/api/v1/version"));  // NONE for any method
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, ConfigurablePolicyWildcardMatch) {
+  ConfigurableAuthRequirementPolicy policy(auth_requirements_);
+
+  // Wildcard match for /api/v1/components/*
+  EXPECT_TRUE(policy.requires_authentication("GET", "/api/v1/components/engine"));
+  EXPECT_TRUE(policy.requires_authentication("GET", "/api/v1/components/sensor"));
+
+  // Admin wildcard
+  EXPECT_TRUE(policy.requires_authentication("GET", "/api/v1/admin/users"));
+  EXPECT_TRUE(policy.requires_authentication("POST", "/api/v1/admin/settings"));
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, ConfigurablePolicyMultipleWildcards) {
+  ConfigurableAuthRequirementPolicy policy(auth_requirements_);
+
+  // /api/v1/components/*/data/* should match
+  EXPECT_TRUE(policy.requires_authentication("POST", "/api/v1/components/engine/data/temperature"));
+  EXPECT_TRUE(policy.requires_authentication("GET", "/api/v1/components/sensor/data/pressure"));
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, ConfigurablePolicyUnknownPathsRequireAuth) {
+  ConfigurableAuthRequirementPolicy policy(auth_requirements_);
+
+  // Unknown paths default to requiring authentication
+  EXPECT_TRUE(policy.requires_authentication("GET", "/api/v1/unknown/path"));
+  EXPECT_TRUE(policy.requires_authentication("POST", "/api/v1/secret"));
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, ConfigurablePolicyLongestMatchWins) {
+  // Create a policy where /api/v1/public is public, but /api/v1/public/secret/* requires auth
+  std::unordered_map<std::string, AuthRequirement> requirements = {
+      {"/api/v1/public", AuthRequirement::NONE},
+      {"/api/v1/public/*", AuthRequirement::NONE},
+      {"/api/v1/public/secret/*", AuthRequirement::ALL},
+  };
+  ConfigurableAuthRequirementPolicy policy(requirements);
+
+  // /api/v1/public/anything should be public
+  EXPECT_FALSE(policy.requires_authentication("GET", "/api/v1/public/info"));
+
+  // /api/v1/public/secret/data should require auth (longest match wins)
+  EXPECT_TRUE(policy.requires_authentication("GET", "/api/v1/public/secret/data"));
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, FactoryCreatesNoAuthPolicy) {
+  AuthConfig config;
+  config.enabled = false;
+
+  auto policy = AuthRequirementPolicyFactory::create(config);
+  ASSERT_NE(policy, nullptr);
+
+  // Should be NoAuthRequirementPolicy
+  EXPECT_FALSE(policy->requires_authentication("POST", "/api/v1/admin/users"));
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, FactoryCreatesWriteOnlyFromConfig) {
+  AuthConfig config;
+  config.enabled = true;
+  config.require_auth_for = AuthRequirement::WRITE;
+
+  auto policy = AuthRequirementPolicyFactory::create(config);
+  ASSERT_NE(policy, nullptr);
+
+  // Should be WriteOnlyAuthRequirementPolicy
+  EXPECT_FALSE(policy->requires_authentication("GET", "/api/v1/version"));
+  EXPECT_TRUE(policy->requires_authentication("POST", "/api/v1/admin/users"));
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, FactoryCreatesAllAuthFromConfig) {
+  AuthConfig config;
+  config.enabled = true;
+  config.require_auth_for = AuthRequirement::ALL;
+
+  auto policy = AuthRequirementPolicyFactory::create(config);
+  ASSERT_NE(policy, nullptr);
+
+  // Should be AllAuthRequirementPolicy
+  EXPECT_TRUE(policy->requires_authentication("GET", "/api/v1/version"));
+  EXPECT_TRUE(policy->requires_authentication("POST", "/api/v1/admin/users"));
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthRequirementPolicyTest, PolicyDescriptions) {
+  NoAuthRequirementPolicy no_auth;
+  AllAuthRequirementPolicy all_auth;
+  WriteOnlyAuthRequirementPolicy write_only;
+  ConfigurableAuthRequirementPolicy configurable(auth_requirements_);
+
+  EXPECT_FALSE(no_auth.description().empty());
+  EXPECT_FALSE(all_auth.description().empty());
+  EXPECT_FALSE(write_only.description().empty());
+  EXPECT_FALSE(configurable.description().empty());
+
+  // Descriptions should be unique
+  EXPECT_NE(no_auth.description(), all_auth.description());
+  EXPECT_NE(write_only.description(), configurable.description());
 }
 
 int main(int argc, char ** argv) {

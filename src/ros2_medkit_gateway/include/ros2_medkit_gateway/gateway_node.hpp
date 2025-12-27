@@ -23,7 +23,7 @@
 #include <thread>
 #include <vector>
 
-#include "ros2_medkit_gateway/auth_config.hpp"
+#include "ros2_medkit_gateway/auth/auth_config.hpp"
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/configuration_manager.hpp"
 #include "ros2_medkit_gateway/data_access_manager.hpp"
