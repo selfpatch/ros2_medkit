@@ -1,5 +1,6 @@
 {
   "name": "ROS2 ros2_medkit Development",
+  "runArgs": ["--network=host"],
   "build": {
     "dockerfile": "Dockerfile",
     "context": "..",
