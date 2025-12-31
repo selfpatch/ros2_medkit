@@ -62,16 +62,17 @@ TEST_F(FaultStorageTest, ReportExistingFaultUpdates) {
   EXPECT_EQ(fault->reporting_sources.size(), 2u);
 }
 
-TEST_F(FaultStorageTest, GetFaultsDefaultReturnsConfirmedOnly) {
+TEST_F(FaultStorageTest, GetFaultsDefaultReturnsPendingAndConfirmed) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
   // Report a fault (starts as PENDING)
   storage_.report_fault("FAULT_1", Fault::SEVERITY_ERROR, "Test", "/node1", timestamp);
 
-  // Default query should return empty (only PENDING exists)
+  // Default query should return PENDING faults (PENDING + CONFIRMED by default)
   auto faults = storage_.get_faults(false, 0, {});
-  EXPECT_EQ(faults.size(), 0u);
+  EXPECT_EQ(faults.size(), 1u);
+  EXPECT_EQ(faults[0].status, Fault::STATUS_PENDING);
 }
 
 TEST_F(FaultStorageTest, GetFaultsWithPendingStatus) {

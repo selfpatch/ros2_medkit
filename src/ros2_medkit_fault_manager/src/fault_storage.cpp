@@ -92,7 +92,8 @@ InMemoryFaultStorage::get_faults(bool filter_by_severity, uint8_t severity,
   // Determine which statuses to include
   std::set<std::string> status_filter;
   if (statuses.empty()) {
-    // Default: CONFIRMED only
+    // Default: PENDING and CONFIRMED (exclude CLEARED)
+    status_filter.insert(ros2_medkit_msgs::msg::Fault::STATUS_PENDING);
     status_filter.insert(ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
   } else {
     for (const auto & s : statuses) {
