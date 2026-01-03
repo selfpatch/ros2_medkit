@@ -1873,6 +1873,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         # Verify faults endpoints are listed
         self.assertIn('endpoints', data)
         self.assertIn(
+            'GET /api/v1/faults',
+            data['endpoints']
+        )
+        self.assertIn(
             'GET /api/v1/components/{component_id}/faults',
             data['endpoints']
         )
@@ -1952,3 +1956,42 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(data['fault_code'], 'NONEXISTENT_FAULT')
 
         print('✓ Get nonexistent fault test passed')
+
+    def test_59_list_all_faults_globally(self):
+        """
+        Test GET /faults returns all faults across the system.
+
+        This is a convenience API for dashboards and monitoring tools
+        that need a complete system health view without iterating over components.
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/faults',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('faults', data)
+        self.assertIsInstance(data['faults'], list)
+        self.assertIn('count', data)
+        self.assertIsInstance(data['count'], int)
+        self.assertEqual(data['count'], len(data['faults']))
+
+        print(f'✓ List all faults globally test passed: {data["count"]} faults')
+
+    def test_60_list_all_faults_with_status_filter(self):
+        """
+        Test GET /faults?status={status} filters faults by status.
+        """
+        # Test with status=all
+        response = requests.get(
+            f'{self.BASE_URL}/faults?status=all',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('faults', data)
+        self.assertIn('count', data)
+
+        print(f'✓ List all faults with status filter test passed: {data["count"]} faults')

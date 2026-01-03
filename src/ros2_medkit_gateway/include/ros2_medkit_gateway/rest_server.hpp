@@ -61,6 +61,7 @@ class RESTServer {
   void handle_delete_all_configurations(const httplib::Request & req, httplib::Response & res);
 
   // Fault endpoints
+  void handle_list_all_faults(const httplib::Request & req, httplib::Response & res);
   void handle_list_faults(const httplib::Request & req, httplib::Response & res);
   void handle_get_fault(const httplib::Request & req, httplib::Response & res);
   void handle_clear_fault(const httplib::Request & req, httplib::Response & res);
