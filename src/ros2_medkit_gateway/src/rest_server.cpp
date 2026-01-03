@@ -36,6 +36,44 @@ inline std::string api_path(const std::string & endpoint) {
   return std::string(API_BASE_PATH) + endpoint;
 }
 
+// Fault status filter flags
+struct FaultStatusFilter {
+  bool include_pending = true;
+  bool include_confirmed = true;
+  bool include_cleared = false;
+  bool is_valid = true;
+};
+
+// Helper to parse fault status query parameter
+// Returns filter flags and validity. If status param is invalid, is_valid=false.
+inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req) {
+  FaultStatusFilter filter;
+
+  if (req.has_param("status")) {
+    std::string status = req.get_param_value("status");
+    // Reset defaults when explicit status filter is provided
+    filter.include_pending = false;
+    filter.include_confirmed = false;
+    filter.include_cleared = false;
+
+    if (status == "pending") {
+      filter.include_pending = true;
+    } else if (status == "confirmed") {
+      filter.include_confirmed = true;
+    } else if (status == "cleared") {
+      filter.include_cleared = true;
+    } else if (status == "all") {
+      filter.include_pending = true;
+      filter.include_confirmed = true;
+      filter.include_cleared = true;
+    } else {
+      filter.is_valid = false;
+    }
+  }
+
+  return filter;
+}
+
 RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config)
   : node_(node), host_(host), port_(port), cors_config_(cors_config) {
   server_ = std::make_unique<httplib::Server>();
@@ -188,10 +226,9 @@ void RESTServer::setup_routes() {
   // Fault endpoints
   // GET /faults - convenience API to retrieve all faults across the system
   // Useful for dashboards and monitoring tools that need a complete system health view
-  server_->Get(api_path("/faults").c_str(),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_list_all_faults(req, res);
-               });
+  server_->Get(api_path("/faults").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+    handle_list_all_faults(req, res);
+  });
 
   // List all faults for a component (REQ_INTEROP_012)
   server_->Get((api_path("/components") + R"(/([^/]+)/faults$)").c_str(),
@@ -296,23 +333,26 @@ void RESTServer::handle_root(const httplib::Request & req, httplib::Response & r
         {"name", "ROS 2 Medkit Gateway"},
         {"version", "0.1.0"},
         {"api_base", API_BASE_PATH},
-        {"endpoints",
-         json::array({"GET /api/v1/health", "GET /api/v1/version-info", "GET /api/v1/areas", "GET /api/v1/components",
-                      "GET /api/v1/areas/{area_id}/components", "GET /api/v1/components/{component_id}/data",
-                      "GET /api/v1/components/{component_id}/data/{topic_name}",
-                      "PUT /api/v1/components/{component_id}/data/{topic_name}",
-                      "GET /api/v1/components/{component_id}/operations",
-                      "POST /api/v1/components/{component_id}/operations/{operation_name}",
-                      "GET /api/v1/components/{component_id}/operations/{operation_name}/status",
-                      "GET /api/v1/components/{component_id}/operations/{operation_name}/result",
-                      "DELETE /api/v1/components/{component_id}/operations/{operation_name}",
-                      "GET /api/v1/components/{component_id}/configurations",
-                      "GET /api/v1/components/{component_id}/configurations/{param_name}",
-                      "PUT /api/v1/components/{component_id}/configurations/{param_name}",
-                      "GET /api/v1/faults",
-                      "GET /api/v1/components/{component_id}/faults",
-                      "GET /api/v1/components/{component_id}/faults/{fault_code}",
-                      "DELETE /api/v1/components/{component_id}/faults/{fault_code}"})},
+        {"endpoints", json::array({"GET /api/v1/health",
+                                   "GET /api/v1/version-info",
+                                   "GET /api/v1/areas",
+                                   "GET /api/v1/components",
+                                   "GET /api/v1/areas/{area_id}/components",
+                                   "GET /api/v1/components/{component_id}/data",
+                                   "GET /api/v1/components/{component_id}/data/{topic_name}",
+                                   "PUT /api/v1/components/{component_id}/data/{topic_name}",
+                                   "GET /api/v1/components/{component_id}/operations",
+                                   "POST /api/v1/components/{component_id}/operations/{operation_name}",
+                                   "GET /api/v1/components/{component_id}/operations/{operation_name}/status",
+                                   "GET /api/v1/components/{component_id}/operations/{operation_name}/result",
+                                   "DELETE /api/v1/components/{component_id}/operations/{operation_name}",
+                                   "GET /api/v1/components/{component_id}/configurations",
+                                   "GET /api/v1/components/{component_id}/configurations/{param_name}",
+                                   "PUT /api/v1/components/{component_id}/configurations/{param_name}",
+                                   "GET /api/v1/faults",
+                                   "GET /api/v1/components/{component_id}/faults",
+                                   "GET /api/v1/components/{component_id}/faults/{fault_code}",
+                                   "DELETE /api/v1/components/{component_id}/faults/{fault_code}"})},
         {"capabilities",
          {{"discovery", true},
           {"data_access", true},
@@ -1746,38 +1786,26 @@ void RESTServer::handle_delete_all_configurations(const httplib::Request & req, 
 
 void RESTServer::handle_list_all_faults(const httplib::Request & req, httplib::Response & res) {
   try {
-    // Parse query parameters for status filtering
-    bool include_pending = true;
-    bool include_confirmed = true;
-    bool include_cleared = false;
-
-    if (req.has_param("status")) {
-      std::string status = req.get_param_value("status");
-      include_pending = false;
-      include_confirmed = false;
-      include_cleared = false;
-
-      if (status == "pending") {
-        include_pending = true;
-      } else if (status == "confirmed") {
-        include_confirmed = true;
-      } else if (status == "cleared") {
-        include_cleared = true;
-      } else if (status == "all") {
-        include_pending = true;
-        include_confirmed = true;
-        include_cleared = true;
-      }
+    auto filter = parse_fault_status_param(req);
+    if (!filter.is_valid) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid status parameter"},
+                           {"details", "Valid values: pending, confirmed, cleared, all"},
+                           {"parameter", "status"},
+                           {"value", req.get_param_value("status")}}
+                          .dump(2),
+                      "application/json");
+      return;
     }
 
     auto fault_mgr = node_->get_fault_manager();
     // Empty source_id = no filtering, return all faults
-    auto result = fault_mgr->get_faults("", include_pending, include_confirmed, include_cleared);
+    auto result = fault_mgr->get_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared);
 
     if (result.success) {
       res.status = StatusCode::OK_200;
-      res.set_content(
-          json{{"faults", result.data["faults"]}, {"count", result.data["count"]}}.dump(2), "application/json");
+      res.set_content(json{{"faults", result.data["faults"]}, {"count", result.data["count"]}}.dump(2),
+                      "application/json");
     } else {
       res.status = StatusCode::ServiceUnavailable_503;
       res.set_content(json{{"error", "Failed to get faults"}, {"details", result.error_message}}.dump(2),
@@ -1821,33 +1849,22 @@ void RESTServer::handle_list_faults(const httplib::Request & req, httplib::Respo
     }
     std::string namespace_path = namespace_result.value();
 
-    // Parse query parameters for status filtering
-    bool include_pending = true;
-    bool include_confirmed = true;
-    bool include_cleared = false;
-
-    if (req.has_param("status")) {
-      std::string status = req.get_param_value("status");
-      // Reset defaults when explicit status filter is provided
-      include_pending = false;
-      include_confirmed = false;
-      include_cleared = false;
-
-      if (status == "pending") {
-        include_pending = true;
-      } else if (status == "confirmed") {
-        include_confirmed = true;
-      } else if (status == "cleared") {
-        include_cleared = true;
-      } else if (status == "all") {
-        include_pending = true;
-        include_confirmed = true;
-        include_cleared = true;
-      }
+    auto filter = parse_fault_status_param(req);
+    if (!filter.is_valid) {
+      res.status = StatusCode::BadRequest_400;
+      res.set_content(json{{"error", "Invalid status parameter"},
+                           {"details", "Valid values: pending, confirmed, cleared, all"},
+                           {"parameter", "status"},
+                           {"value", req.get_param_value("status")},
+                           {"component_id", component_id}}
+                          .dump(2),
+                      "application/json");
+      return;
     }
 
     auto fault_mgr = node_->get_fault_manager();
-    auto result = fault_mgr->get_faults(namespace_path, include_pending, include_confirmed, include_cleared);
+    auto result =
+        fault_mgr->get_faults(namespace_path, filter.include_pending, filter.include_confirmed, filter.include_cleared);
 
     if (result.success) {
       json response = {{"component_id", component_id},
