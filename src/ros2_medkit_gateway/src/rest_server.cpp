@@ -185,7 +185,14 @@ void RESTServer::setup_routes() {
                     handle_delete_all_configurations(req, res);
                   });
 
-  // Fault endpoints - SOVD Faults API mapped to ros2_medkit_fault_manager services
+  // Fault endpoints
+  // GET /faults - convenience API to retrieve all faults across the system
+  // Useful for dashboards and monitoring tools that need a complete system health view
+  server_->Get(api_path("/faults").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_list_all_faults(req, res);
+               });
+
   // List all faults for a component (REQ_INTEROP_012)
   server_->Get((api_path("/components") + R"(/([^/]+)/faults$)").c_str(),
                [this](const httplib::Request & req, httplib::Response & res) {
@@ -302,6 +309,7 @@ void RESTServer::handle_root(const httplib::Request & req, httplib::Response & r
                       "GET /api/v1/components/{component_id}/configurations",
                       "GET /api/v1/components/{component_id}/configurations/{param_name}",
                       "PUT /api/v1/components/{component_id}/configurations/{param_name}",
+                      "GET /api/v1/faults",
                       "GET /api/v1/components/{component_id}/faults",
                       "GET /api/v1/components/{component_id}/faults/{fault_code}",
                       "DELETE /api/v1/components/{component_id}/faults/{fault_code}"})},
@@ -1733,6 +1741,52 @@ void RESTServer::handle_delete_all_configurations(const httplib::Request & req, 
             2),
         "application/json");
     RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_delete_all_configurations: %s", e.what());
+  }
+}
+
+void RESTServer::handle_list_all_faults(const httplib::Request & req, httplib::Response & res) {
+  try {
+    // Parse query parameters for status filtering
+    bool include_pending = true;
+    bool include_confirmed = true;
+    bool include_cleared = false;
+
+    if (req.has_param("status")) {
+      std::string status = req.get_param_value("status");
+      include_pending = false;
+      include_confirmed = false;
+      include_cleared = false;
+
+      if (status == "pending") {
+        include_pending = true;
+      } else if (status == "confirmed") {
+        include_confirmed = true;
+      } else if (status == "cleared") {
+        include_cleared = true;
+      } else if (status == "all") {
+        include_pending = true;
+        include_confirmed = true;
+        include_cleared = true;
+      }
+    }
+
+    auto fault_mgr = node_->get_fault_manager();
+    // Empty source_id = no filtering, return all faults
+    auto result = fault_mgr->get_faults("", include_pending, include_confirmed, include_cleared);
+
+    if (result.success) {
+      res.status = StatusCode::OK_200;
+      res.set_content(
+          json{{"faults", result.data["faults"]}, {"count", result.data["count"]}}.dump(2), "application/json");
+    } else {
+      res.status = StatusCode::ServiceUnavailable_503;
+      res.set_content(json{{"error", "Failed to get faults"}, {"details", result.error_message}}.dump(2),
+                      "application/json");
+    }
+  } catch (const std::exception & e) {
+    res.status = StatusCode::InternalServerError_500;
+    res.set_content(json{{"error", "Failed to list faults"}, {"details", e.what()}}.dump(2), "application/json");
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Error in handle_list_all_faults: %s", e.what());
   }
 }
 
