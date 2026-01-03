@@ -549,6 +549,80 @@ curl -X DELETE http://localhost:8080/api/v1/components/temp_sensor/configuration
 }
 ```
 
+### Faults Endpoints
+
+Faults represent errors or warnings reported by system components. The gateway provides access to faults stored in `ros2_medkit_fault_manager`.
+
+- `GET /api/v1/faults` - List all faults across the system (convenience API for dashboards)
+- `GET /api/v1/components/{component_id}/faults` - List faults for a specific component
+- `GET /api/v1/components/{component_id}/faults/{fault_code}` - Get a specific fault
+- `DELETE /api/v1/components/{component_id}/faults/{fault_code}` - Clear a fault
+
+#### GET /api/v1/faults
+
+List all faults across the system. This is a convenience API for dashboards and monitoring tools that need a complete system health view without iterating over individual components.
+
+**Query Parameters:**
+- `status` - Filter by fault status: `pending`, `confirmed`, `cleared`, `all` (default: `pending` + `confirmed`)
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/faults
+curl http://localhost:8080/api/v1/faults?status=all
+```
+
+**Response (200 OK):**
+```json
+{
+  "faults": [
+    {
+      "fault_code": "NAVIGATION_PATH_BLOCKED",
+      "severity": 2,
+      "severity_label": "ERROR",
+      "description": "Navigation failed - cannot find valid path to goal",
+      "source_id": "/nav2_fault_reporter",
+      "status": "pending",
+      "first_occurred": 1735830000,
+      "last_occurred": 1735830000,
+      "occurrence_count": 1
+    }
+  ],
+  "count": 1
+}
+```
+
+**Response (400 Bad Request - Invalid Status):**
+```json
+{
+  "error": "Invalid status parameter",
+  "details": "Valid values: pending, confirmed, cleared, all",
+  "parameter": "status",
+  "value": "invalid"
+}
+```
+
+#### GET /api/v1/components/{component_id}/faults
+
+List all faults for a specific component.
+
+**Query Parameters:**
+- `status` - Filter by fault status: `pending`, `confirmed`, `cleared`, `all` (default: `pending` + `confirmed`)
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/components/nav2_controller/faults
+```
+
+**Response (200 OK):**
+```json
+{
+  "component_id": "nav2_controller",
+  "source_id": "/nav2_controller",
+  "faults": [...],
+  "count": 1
+}
+```
+
 ## Quick Start
 
 ### Build

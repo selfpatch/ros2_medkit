@@ -1978,9 +1978,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print(f'✓ List all faults globally test passed: {data["count"]} faults')
 
     def test_60_list_all_faults_with_status_filter(self):
-        """
-        Test GET /faults?status={status} filters faults by status.
-        """
+        """Test GET /faults?status={status} filters faults by status."""
         # Test with status=all
         response = requests.get(
             f'{self.BASE_URL}/faults?status=all',
@@ -1992,4 +1990,47 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('faults', data)
         self.assertIn('count', data)
 
+        # Test other valid status values
+        for status in ['pending', 'confirmed', 'cleared']:
+            response = requests.get(
+                f'{self.BASE_URL}/faults?status={status}',
+                timeout=10
+            )
+            self.assertEqual(response.status_code, 200)
+
         print(f'✓ List all faults with status filter test passed: {data["count"]} faults')
+
+    def test_61_list_faults_invalid_status_returns_400(self):
+        """Test GET /faults?status=invalid returns 400 Bad Request."""
+        response = requests.get(
+            f'{self.BASE_URL}/faults?status=invalid_status',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 400)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Invalid status parameter')
+        self.assertIn('details', data)
+        self.assertIn('pending', data['details'])  # Should mention valid values
+        self.assertIn('parameter', data)
+        self.assertEqual(data['parameter'], 'status')
+        self.assertIn('value', data)
+        self.assertEqual(data['value'], 'invalid_status')
+
+        print('✓ List faults invalid status returns 400 test passed')
+
+    def test_62_component_faults_invalid_status_returns_400(self):
+        """Test GET /components/{id}/faults?status=invalid returns 400."""
+        response = requests.get(
+            f'{self.BASE_URL}/components/temp_sensor/faults?status=bogus',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 400)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Invalid status parameter')
+        self.assertIn('component_id', data)
+
+        print('✓ Component faults invalid status returns 400 test passed')

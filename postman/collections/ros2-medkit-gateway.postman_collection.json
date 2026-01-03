@@ -733,6 +733,48 @@
       "name": "Faults",
       "item": [
         {
+          "name": "GET List All Faults (System-wide)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/faults",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "faults"
+              ]
+            },
+            "description": "List all faults across the entire system. Convenience API for dashboards and monitoring tools. By default returns PENDING and CONFIRMED faults."
+          },
+          "response": []
+        },
+        {
+          "name": "GET List All Faults (All Statuses)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/faults?status=all",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "faults"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "all"
+                }
+              ]
+            },
+            "description": "List all faults across the system including cleared ones. Use status=pending, status=confirmed, status=cleared, or status=all to filter."
+          },
+          "response": []
+        },
+        {
           "name": "GET List Component Faults",
           "request": {
             "method": "GET",
