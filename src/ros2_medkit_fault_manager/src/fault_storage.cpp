@@ -18,6 +18,16 @@
 
 namespace ros2_medkit_fault_manager {
 
+void InMemoryFaultStorage::set_confirmation_threshold(uint32_t threshold) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  confirmation_threshold_ = threshold;
+}
+
+uint32_t InMemoryFaultStorage::get_confirmation_threshold() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return confirmation_threshold_;
+}
+
 ros2_medkit_msgs::msg::Fault FaultState::to_msg() const {
   ros2_medkit_msgs::msg::Fault msg;
   msg.fault_code = fault_code;
@@ -55,6 +65,11 @@ bool InMemoryFaultStorage::report_fault(const std::string & fault_code, uint8_t 
     state.status = ros2_medkit_msgs::msg::Fault::STATUS_PENDING;
     state.reporting_sources.insert(source_id);
 
+    // Check if threshold is already met on first report
+    if (confirmation_threshold_ > 0 && state.occurrence_count >= confirmation_threshold_) {
+      state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+    }
+
     faults_.emplace(fault_code, std::move(state));
     return true;
   }
@@ -79,6 +94,12 @@ bool InMemoryFaultStorage::report_fault(const std::string & fault_code, uint8_t 
   // Update description if provided
   if (!description.empty()) {
     state.description = description;
+  }
+
+  // Check for auto-confirmation (only for PENDING faults)
+  if (confirmation_threshold_ > 0 && state.status == ros2_medkit_msgs::msg::Fault::STATUS_PENDING &&
+      state.occurrence_count >= confirmation_threshold_) {
+    state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
   }
 
   return false;

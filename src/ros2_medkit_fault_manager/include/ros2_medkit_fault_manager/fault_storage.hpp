@@ -46,6 +46,13 @@ class FaultStorage {
  public:
   virtual ~FaultStorage() = default;
 
+  /// Set the confirmation threshold for automatic PENDING → CONFIRMED transition
+  /// @param threshold Number of occurrences required to confirm a fault (0 = disabled)
+  virtual void set_confirmation_threshold(uint32_t threshold) = 0;
+
+  /// Get the current confirmation threshold
+  virtual uint32_t get_confirmation_threshold() const = 0;
+
   /// Store or update a fault report
   /// @param fault_code Global fault identifier
   /// @param severity Fault severity level
@@ -93,6 +100,9 @@ class InMemoryFaultStorage : public FaultStorage {
  public:
   InMemoryFaultStorage() = default;
 
+  void set_confirmation_threshold(uint32_t threshold) override;
+  uint32_t get_confirmation_threshold() const override;
+
   bool report_fault(const std::string & fault_code, uint8_t severity, const std::string & description,
                     const std::string & source_id, const rclcpp::Time & timestamp) override;
 
@@ -110,6 +120,7 @@ class InMemoryFaultStorage : public FaultStorage {
  private:
   mutable std::mutex mutex_;
   std::map<std::string, FaultState> faults_;
+  uint32_t confirmation_threshold_{0};  ///< 0 = disabled (no auto-confirmation)
 };
 
 }  // namespace ros2_medkit_fault_manager

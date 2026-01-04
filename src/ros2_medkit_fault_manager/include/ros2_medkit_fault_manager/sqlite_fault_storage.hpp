@@ -41,6 +41,9 @@ class SqliteFaultStorage : public FaultStorage {
   SqliteFaultStorage(SqliteFaultStorage &&) = delete;
   SqliteFaultStorage & operator=(SqliteFaultStorage &&) = delete;
 
+  void set_confirmation_threshold(uint32_t threshold) override;
+  uint32_t get_confirmation_threshold() const override;
+
   bool report_fault(const std::string & fault_code, uint8_t severity, const std::string & description,
                     const std::string & source_id, const rclcpp::Time & timestamp) override;
 
@@ -73,6 +76,7 @@ class SqliteFaultStorage : public FaultStorage {
   std::string db_path_;
   sqlite3 * db_{nullptr};
   mutable std::mutex mutex_;
+  uint32_t confirmation_threshold_{0};  ///< 0 = disabled (no auto-confirmation)
 };
 
 }  // namespace ros2_medkit_fault_manager

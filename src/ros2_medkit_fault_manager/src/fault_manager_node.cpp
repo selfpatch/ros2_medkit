@@ -25,8 +25,19 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   storage_type_ = declare_parameter<std::string>("storage_type", "sqlite");
   database_path_ = declare_parameter<std::string>("database_path", "/var/lib/ros2_medkit/faults.db");
 
+  auto confirmation_threshold_param = declare_parameter<int>("confirmation_threshold", 3);
+  if (confirmation_threshold_param < 0) {
+    RCLCPP_WARN(get_logger(), "confirmation_threshold cannot be negative (%ld), using 0 (disabled)",
+                confirmation_threshold_param);
+    confirmation_threshold_param = 0;
+  }
+  confirmation_threshold_ = static_cast<uint32_t>(confirmation_threshold_param);
+
   // Create storage backend
   storage_ = create_storage();
+
+  // Configure confirmation threshold
+  storage_->set_confirmation_threshold(confirmation_threshold_);
 
   // Create service servers
   report_fault_srv_ = create_service<ros2_medkit_msgs::srv::ReportFault>(
@@ -47,7 +58,8 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
         handle_clear_fault(request, response);
       });
 
-  RCLCPP_INFO(get_logger(), "FaultManager node started (storage=%s)", storage_type_.c_str());
+  RCLCPP_INFO(get_logger(), "FaultManager node started (storage=%s, confirmation_threshold=%u)", storage_type_.c_str(),
+              confirmation_threshold_);
 }
 
 std::unique_ptr<FaultStorage> FaultManagerNode::create_storage() {
