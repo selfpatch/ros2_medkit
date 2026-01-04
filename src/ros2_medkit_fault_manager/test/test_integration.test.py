@@ -332,6 +332,102 @@ class TestFaultManagerIntegration(unittest.TestCase):
         print(f'Updated fault: occurrence_count={updated_fault.occurrence_count}, '
               f'sources={updated_fault.reporting_sources}')
 
+    def test_11_confirmation_workflow(self):
+        """Test fault auto-confirms after reaching threshold (default=3)."""
+        fault_code = 'TEST_FAULT_CONFIRM'
+
+        # Report fault 3 times (default threshold)
+        for i in range(3):
+            request = ReportFault.Request()
+            request.fault_code = fault_code
+            request.severity = Fault.SEVERITY_ERROR
+            request.description = f'Report {i + 1}'
+            request.source_id = f'/node{i + 1}'
+            self._call_service(self.report_fault_client, request)
+
+        # Query CONFIRMED faults (should include our fault now)
+        get_request = GetFaults.Request()
+        get_request.filter_by_severity = False
+        get_request.severity = 0
+        get_request.statuses = ['CONFIRMED']
+
+        response = self._call_service(self.get_faults_client, get_request)
+
+        confirmed_codes = [f.fault_code for f in response.faults]
+        self.assertIn(fault_code, confirmed_codes)
+
+        # Find the fault and verify its state
+        confirmed_fault = next(f for f in response.faults if f.fault_code == fault_code)
+        self.assertEqual(confirmed_fault.status, Fault.STATUS_CONFIRMED)
+        self.assertEqual(confirmed_fault.occurrence_count, 3)
+        print(f'Fault confirmed: status={confirmed_fault.status}, '
+              f'occurrence_count={confirmed_fault.occurrence_count}')
+
+    def test_12_pending_excluded_from_default_query(self):
+        """Test that PENDING faults are not returned in default query."""
+        fault_code = 'TEST_FAULT_PENDING_ONLY'
+
+        # Report fault once (stays PENDING since threshold=3)
+        request = ReportFault.Request()
+        request.fault_code = fault_code
+        request.severity = Fault.SEVERITY_WARN
+        request.description = 'Single report - should stay pending'
+        request.source_id = '/test_node'
+        self._call_service(self.report_fault_client, request)
+
+        # Query with empty statuses (default = CONFIRMED only)
+        get_request = GetFaults.Request()
+        get_request.filter_by_severity = False
+        get_request.severity = 0
+        get_request.statuses = []  # Empty = CONFIRMED only
+
+        response = self._call_service(self.get_faults_client, get_request)
+
+        # Fault should NOT be in results (it's PENDING)
+        fault_codes = [f.fault_code for f in response.faults]
+        self.assertNotIn(fault_code, fault_codes)
+        print('Default query excluded PENDING fault as expected')
+
+        # But it should be visible when querying PENDING explicitly
+        get_pending = GetFaults.Request()
+        get_pending.filter_by_severity = False
+        get_pending.severity = 0
+        get_pending.statuses = ['PENDING']
+
+        pending_response = self._call_service(self.get_faults_client, get_pending)
+        pending_codes = [f.fault_code for f in pending_response.faults]
+        self.assertIn(fault_code, pending_codes)
+        print('PENDING query found the fault as expected')
+
+    def test_13_multi_source_confirmation(self):
+        """Test fault confirms when multiple sources report same fault."""
+        fault_code = 'TEST_FAULT_MULTI_SRC'
+
+        # Report from 3 different sources
+        sources = ['/sensor1', '/sensor2', '/sensor3']
+        for source in sources:
+            request = ReportFault.Request()
+            request.fault_code = fault_code
+            request.severity = Fault.SEVERITY_CRITICAL
+            request.description = 'Multi-source fault'
+            request.source_id = source
+            self._call_service(self.report_fault_client, request)
+
+        # Query and verify
+        get_request = GetFaults.Request()
+        get_request.filter_by_severity = False
+        get_request.severity = 0
+        get_request.statuses = ['CONFIRMED']
+
+        response = self._call_service(self.get_faults_client, get_request)
+
+        fault = next((f for f in response.faults if f.fault_code == fault_code), None)
+        self.assertIsNotNone(fault)
+        self.assertEqual(fault.status, Fault.STATUS_CONFIRMED)
+        self.assertEqual(len(fault.reporting_sources), 3)
+        self.assertEqual(fault.occurrence_count, 3)
+        print(f'Multi-source fault confirmed: sources={fault.reporting_sources}')
+
 
 @launch_testing.post_shutdown_test()
 class TestFaultManagerShutdown(unittest.TestCase):

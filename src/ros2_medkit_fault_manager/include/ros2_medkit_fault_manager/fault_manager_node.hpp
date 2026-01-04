@@ -69,6 +69,7 @@ class FaultManagerNode : public rclcpp::Node {
 
   std::string storage_type_;
   std::string database_path_;
+  uint32_t confirmation_threshold_{0};
   std::unique_ptr<FaultStorage> storage_;
 
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
