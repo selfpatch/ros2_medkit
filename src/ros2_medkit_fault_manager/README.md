@@ -21,8 +21,37 @@ query and clearing interfaces.
 - **Multi-source aggregation**: Same `fault_code` from different sources creates a single fault
 - **Occurrence tracking**: Counts total reports and tracks all reporting sources
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
-- **Status lifecycle**: PENDING → CONFIRMED → CLEARED (automatic status transitions in Issue #6)
+- **Debounce filtering**: AUTOSAR DEM-style counter-based fault confirmation
+- **Status lifecycle**: PREFAILED → CONFIRMED → HEALED → CLEARED
 - **Persistent storage**: SQLite backend ensures faults survive node restarts
+
+## Debounce Model
+
+The fault manager implements an AUTOSAR DEM-style debounce filtering model:
+
+- **FAILED events**: Decrement the debounce counter (towards confirmation)
+- **PASSED events**: Increment the debounce counter (towards healing)
+- **Counter thresholds**:
+  - `confirmation_threshold` (default: -3): Counter value at which fault becomes CONFIRMED
+  - `healing_threshold` (default: +3): Counter value at which fault becomes HEALED (if enabled)
+
+### Fault Lifecycle
+
+```
+     FAILED events          PASSED events
+          |                      |
+          v                      v
+   [counter--]             [counter++]
+          |                      |
+          v                      v
+PREFAILED -----> CONFIRMED -----> HEALED -----> CLEARED
+  (counter     (counter <=     (counter >=    (manual or
+   < 0)         threshold)      healing)       auto-clear)
+```
+
+### Immediate Confirmation
+
+CRITICAL severity faults bypass debounce and are immediately CONFIRMED.
 
 ## Parameters
 
@@ -30,6 +59,7 @@ query and clearing interfaces.
 |-----------|------|---------|-------------|
 | `storage_type` | string | `"sqlite"` | Storage backend: `"sqlite"` for persistent storage, `"memory"` for in-memory |
 | `database_path` | string | `"/var/lib/ros2_medkit/faults.db"` | Path to SQLite database file. Use `":memory:"` for in-memory SQLite |
+| `confirmation_threshold` | int | `-3` | Counter value at which faults are confirmed (must be <= 0) |
 
 ### Storage Backends
 
@@ -57,18 +87,24 @@ ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
 ### Manual Testing
 
 ```bash
-# Report a fault
+# Report a FAILED event (fault detected)
 ros2 service call /fault_manager/report_fault ros2_medkit_msgs/srv/ReportFault \
-  "{fault_code: 'MOTOR_OVERHEAT', severity: 2, description: 'Motor temp exceeded', source_id: '/motor_node'}"
+  "{fault_code: 'MOTOR_OVERHEAT', event_type: 0, severity: 2, description: 'Motor temp exceeded', source_id: '/motor_node'}"
 
-# Get all faults (including PENDING)
+# Report a PASSED event (fault condition cleared)
+ros2 service call /fault_manager/report_fault ros2_medkit_msgs/srv/ReportFault \
+  "{fault_code: 'MOTOR_OVERHEAT', event_type: 1, severity: 0, description: '', source_id: '/motor_node'}"
+
+# Get all faults (including PREFAILED)
 ros2 service call /fault_manager/get_faults ros2_medkit_msgs/srv/GetFaults \
-  "{filter_by_severity: false, severity: 0, statuses: ['PENDING', 'CONFIRMED']}"
+  "{filter_by_severity: false, severity: 0, statuses: ['PREFAILED', 'CONFIRMED']}"
 
-# Clear a fault
+# Clear a fault manually
 ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
   "{fault_code: 'MOTOR_OVERHEAT'}"
 ```
+
+Event types: `0` = EVENT_FAILED, `1` = EVENT_PASSED
 
 ## Building
 
