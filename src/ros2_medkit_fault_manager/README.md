@@ -44,7 +44,7 @@ The fault manager implements an AUTOSAR DEM-style debounce filtering model:
    [counter--]             [counter++]
           |                      |
           v                      v
-PREFAILED -----> CONFIRMED -----> HEALED
+PREFAILED -----> CONFIRMED -----> HEALED (retained)
   (counter     (counter <=     (counter >=
    < 0)         threshold)      healing)
                     |

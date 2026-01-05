@@ -65,7 +65,7 @@ uint8 SEVERITY_CRITICAL = 3
 #       │      (counter crosses 0)    │
 #       ▼                             ▼
 #   CONFIRMED                      HEALED
-#       │                          (removed)
+#       │                          (retained)
 #       ▼
 #   CLEARED (manual)
 #
