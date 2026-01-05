@@ -1074,7 +1074,7 @@
                 "faults"
               ]
             },
-            "description": "List all faults for a component (REQ_INTEROP_012). Returns component_id, source_id (namespace), faults array, and count. By default returns PENDING and CONFIRMED faults."
+            "description": "List all faults for a component (REQ_INTEROP_012). Returns component_id, source_id (namespace), faults array, and count. By default returns PREFAILED and CONFIRMED faults."
           },
           "response": []
         },
@@ -1100,7 +1100,7 @@
                 }
               ]
             },
-            "description": "List all faults including cleared ones. Use status=pending, status=confirmed, status=cleared, or status=all to filter."
+            "description": "List all faults including cleared ones. Use status=prefailed, status=confirmed, status=cleared, or status=all to filter."
           },
           "response": []
         },
