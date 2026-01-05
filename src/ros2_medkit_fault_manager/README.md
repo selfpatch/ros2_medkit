@@ -44,14 +44,29 @@ The fault manager implements an AUTOSAR DEM-style debounce filtering model:
    [counter--]             [counter++]
           |                      |
           v                      v
-PREFAILED -----> CONFIRMED -----> HEALED -----> CLEARED
-  (counter     (counter <=     (counter >=    (manual or
-   < 0)         threshold)      healing)       auto-clear)
+PREFAILED -----> CONFIRMED -----> HEALED
+  (counter     (counter <=     (counter >=
+   < 0)         threshold)      healing)
+                    |
+                    v
+                CLEARED (manual via ~/clear_fault)
 ```
+
+### Status Persistence
+
+All fault statuses (including HEALED and CLEARED) are retained in storage and remain queryable
+via `~/get_faults` with appropriate status filters.
 
 ### Immediate Confirmation
 
 CRITICAL severity faults bypass debounce and are immediately CONFIRMED.
+
+### Current Limitations
+
+- **Healing disabled by default**: The `healing_enabled` and `healing_threshold` parameters are not
+  exposed as ROS parameters. Healing is disabled by default.
+- **Time-based confirmation**: The `auto_confirm_after_sec` feature is implemented in storage but
+  not yet wired to a periodic timer in the node.
 
 ## Parameters
 

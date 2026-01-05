@@ -168,13 +168,23 @@ void SqliteFaultStorage::initialize_schema() {
   }
 
   // Add new columns to existing databases (migration)
-  // These will fail silently if columns already exist
-  sqlite3_exec(db_, "ALTER TABLE faults ADD COLUMN debounce_counter INTEGER NOT NULL DEFAULT 0;", nullptr, nullptr,
-               nullptr);
-  sqlite3_exec(db_, "ALTER TABLE faults ADD COLUMN last_failed_ns INTEGER NOT NULL DEFAULT 0;", nullptr, nullptr,
-               nullptr);
-  sqlite3_exec(db_, "ALTER TABLE faults ADD COLUMN last_passed_ns INTEGER NOT NULL DEFAULT 0;", nullptr, nullptr,
-               nullptr);
+  // These will fail if columns already exist (expected), but log unexpected errors
+  auto try_add_column = [this](const char * sql, const char * col_name) {
+    char * migration_err = nullptr;
+    int rc = sqlite3_exec(db_, sql, nullptr, nullptr, &migration_err);
+    if (rc != SQLITE_OK && migration_err != nullptr) {
+      // SQLite returns "duplicate column name" for existing columns - that's expected
+      std::string error(migration_err);
+      sqlite3_free(migration_err);
+      if (error.find("duplicate column") == std::string::npos) {
+        RCUTILS_LOG_WARN_NAMED("sqlite_fault_storage", "Migration warning for column '%s': %s", col_name,
+                               error.c_str());
+      }
+    }
+  };
+  try_add_column("ALTER TABLE faults ADD COLUMN debounce_counter INTEGER NOT NULL DEFAULT 0;", "debounce_counter");
+  try_add_column("ALTER TABLE faults ADD COLUMN last_failed_ns INTEGER NOT NULL DEFAULT 0;", "last_failed_ns");
+  try_add_column("ALTER TABLE faults ADD COLUMN last_passed_ns INTEGER NOT NULL DEFAULT 0;", "last_passed_ns");
 }
 
 std::vector<std::string> SqliteFaultStorage::parse_json_array(const std::string & json_str) {
@@ -385,8 +395,10 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         ++new_count;
       }
 
-      // Decrement debounce counter
-      --debounce_counter;
+      // Decrement debounce counter with saturation
+      if (debounce_counter > std::numeric_limits<int32_t>::min()) {
+        --debounce_counter;
+      }
 
       // Check for immediate confirmation of CRITICAL
       std::string new_status = current_status;
@@ -432,8 +444,10 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         throw std::runtime_error(std::string("Failed to update fault: ") + sqlite3_errmsg(db_));
       }
     } else {
-      // PASSED event
-      ++debounce_counter;
+      // PASSED event - increment debounce counter with saturation
+      if (debounce_counter < std::numeric_limits<int32_t>::max()) {
+        ++debounce_counter;
+      }
 
       std::string new_status = current_status;
       if (config_.healing_enabled && debounce_counter >= config_.healing_threshold) {
