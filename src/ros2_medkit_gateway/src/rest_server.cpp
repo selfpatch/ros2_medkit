@@ -1768,32 +1768,32 @@ void RESTServer::handle_list_faults(const httplib::Request & req, httplib::Respo
     std::string namespace_path = namespace_result.value();
 
     // Parse query parameters for status filtering
-    bool include_pending = true;
+    bool include_prefailed = true;
     bool include_confirmed = true;
     bool include_cleared = false;
 
     if (req.has_param("status")) {
       std::string status = req.get_param_value("status");
       // Reset defaults when explicit status filter is provided
-      include_pending = false;
+      include_prefailed = false;
       include_confirmed = false;
       include_cleared = false;
 
-      if (status == "pending") {
-        include_pending = true;
+      if (status == "prefailed") {
+        include_prefailed = true;
       } else if (status == "confirmed") {
         include_confirmed = true;
       } else if (status == "cleared") {
         include_cleared = true;
       } else if (status == "all") {
-        include_pending = true;
+        include_prefailed = true;
         include_confirmed = true;
         include_cleared = true;
       }
     }
 
     auto fault_mgr = node_->get_fault_manager();
-    auto result = fault_mgr->get_faults(namespace_path, include_pending, include_confirmed, include_cleared);
+    auto result = fault_mgr->get_faults(namespace_path, include_prefailed, include_confirmed, include_cleared);
 
     if (result.success) {
       json response = {{"component_id", component_id},
