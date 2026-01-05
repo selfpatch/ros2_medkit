@@ -121,10 +121,12 @@ class TestFaultReporterIntegration(unittest.TestCase):
         self.assertIsNotNone(future.result(), 'Service call timed out')
         return future.result()
 
-    def _report_fault(self, fault_code, severity, description, source_id):
+    def _report_fault(self, fault_code, severity, description, source_id,
+                      event_type=ReportFault.Request.EVENT_FAILED):
         """Report a fault via service call."""
         request = ReportFault.Request()
         request.fault_code = fault_code
+        request.event_type = event_type
         request.severity = severity
         request.description = description
         request.source_id = source_id
@@ -135,7 +137,7 @@ class TestFaultReporterIntegration(unittest.TestCase):
         request = GetFaults.Request()
         request.filter_by_severity = False
         request.severity = 0
-        request.statuses = statuses or ['PENDING', 'CONFIRMED']
+        request.statuses = statuses or ['PREFAILED', 'CONFIRMED']
         return self._call_service(self.get_faults_client, request)
 
     def test_01_service_connectivity(self):
@@ -145,26 +147,27 @@ class TestFaultReporterIntegration(unittest.TestCase):
 
     def test_02_report_fault_is_stored(self):
         """Test that reported faults are stored in FaultManager."""
+        # Use CRITICAL severity to bypass debounce and get immediate CONFIRMED status
         response = self._report_fault(
             fault_code='REPORTER_TEST_001',
-            severity=Fault.SEVERITY_ERROR,
+            severity=Fault.SEVERITY_CRITICAL,
             description='Test from FaultReporter integration test',
             source_id='/test_reporter_node'
         )
 
-        self.assertTrue(response.success)
+        self.assertTrue(response.accepted)
 
-        # Verify fault is in storage
-        faults_response = self._get_faults()
+        # Verify fault is in storage with CONFIRMED status
+        faults_response = self._get_faults(statuses=['CONFIRMED'])
         fault_codes = [f.fault_code for f in faults_response.faults]
         self.assertIn('REPORTER_TEST_001', fault_codes)
 
     def test_03_multiple_reports_aggregate(self):
         """Test that multiple reports of same fault aggregate."""
-        # First report
+        # First report - use CRITICAL to bypass debounce
         self._report_fault(
             fault_code='REPORTER_TEST_002',
-            severity=Fault.SEVERITY_WARN,
+            severity=Fault.SEVERITY_CRITICAL,
             description='First occurrence',
             source_id='/node_a'
         )
@@ -172,21 +175,21 @@ class TestFaultReporterIntegration(unittest.TestCase):
         # Second report from different source
         self._report_fault(
             fault_code='REPORTER_TEST_002',
-            severity=Fault.SEVERITY_WARN,
+            severity=Fault.SEVERITY_CRITICAL,
             description='Second occurrence',
             source_id='/node_b'
         )
 
-        # Third report - higher severity
+        # Third report
         self._report_fault(
             fault_code='REPORTER_TEST_002',
-            severity=Fault.SEVERITY_ERROR,
+            severity=Fault.SEVERITY_CRITICAL,
             description='Third occurrence',
             source_id='/node_a'
         )
 
         # Verify aggregation
-        faults_response = self._get_faults()
+        faults_response = self._get_faults(statuses=['CONFIRMED'])
         fault = next(
             (f for f in faults_response.faults if f.fault_code == 'REPORTER_TEST_002'),
             None
@@ -194,20 +197,21 @@ class TestFaultReporterIntegration(unittest.TestCase):
 
         self.assertIsNotNone(fault)
         self.assertEqual(fault.occurrence_count, 3)
-        self.assertEqual(fault.severity, Fault.SEVERITY_ERROR)  # Escalated
+        self.assertEqual(fault.severity, Fault.SEVERITY_CRITICAL)
         self.assertIn('/node_a', fault.reporting_sources)
         self.assertIn('/node_b', fault.reporting_sources)
 
     def test_04_source_id_tracked(self):
         """Test that source_id is correctly tracked."""
+        # Use CRITICAL severity to bypass debounce
         self._report_fault(
             fault_code='REPORTER_TEST_003',
-            severity=Fault.SEVERITY_INFO,
+            severity=Fault.SEVERITY_CRITICAL,
             description='Source tracking test',
             source_id='/perception/lidar/scanner_node'
         )
 
-        faults_response = self._get_faults()
+        faults_response = self._get_faults(statuses=['CONFIRMED'])
         fault = next(
             (f for f in faults_response.faults if f.fault_code == 'REPORTER_TEST_003'),
             None
