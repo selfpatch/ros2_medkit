@@ -131,7 +131,7 @@ Main Components
    - Maps directly to ``ros2_medkit_msgs::msg::Fault`` via ``to_msg()``
    - Uses ``std::set`` for reporting_sources to ensure uniqueness
    - Tracks first and last occurrence timestamps
-   - Manages fault status lifecycle (PENDING → CONFIRMED → CLEARED)
+   - Manages fault status lifecycle with debounce (PREFAILED → CONFIRMED → CLEARED)
 
 Services
 --------
@@ -141,17 +141,19 @@ Services
 
 Reports a new fault or updates an existing one.
 
-- **Input validation**: fault_code and source_id cannot be empty, severity must be 0-3
+- **Input validation**: fault_code and source_id cannot be empty, event_type must be valid
+- **Event types**: FAILED (fault detected) or PASSED (fault condition cleared)
+- **Debounce**: FAILED events decrement counter, PASSED events increment counter
 - **Aggregation**: Same fault_code from different sources creates a single fault entry
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
-- **Returns**: ``success=true`` with message indicating "New fault" or "Fault updated"
+- **Returns**: ``accepted=true`` if event was processed
 
 ~/get_faults
 ~~~~~~~~~~~~
 
 Queries faults with optional filtering.
 
-- **Status filter**: Filter by status (PENDING, CONFIRMED, CLEARED); defaults to CONFIRMED
+- **Status filter**: Filter by status (PREFAILED, PREPASSED, CONFIRMED, HEALED, CLEARED); defaults to CONFIRMED
 - **Severity filter**: When ``filter_by_severity=true``, returns only faults of specified severity
 - **Returns**: List of ``Fault`` messages matching the filter criteria
 
@@ -191,14 +193,17 @@ When a fault is re-reported with a higher severity, the stored severity is updat
 This ensures the fault reflects the worst-case condition. Severity levels are ordered:
 ``INFO(0) < WARN(1) < ERROR(2) < CRITICAL(3)``.
 
-Status Lifecycle
-~~~~~~~~~~~~~~~~
+Status Lifecycle (Debounce Model)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Faults follow a lifecycle: PENDING → CONFIRMED → CLEARED
+Faults follow an AUTOSAR DEM-style debounce lifecycle:
 
-- **PENDING**: Initial status when fault is first reported
-- **CONFIRMED**: Status after automatic or manual confirmation (Issue #6)
-- **CLEARED**: Status after fault is cleared/acknowledged
+- **PREFAILED**: Debounce counter < 0 but above confirmation threshold (fault trending towards confirmation)
+- **PREPASSED**: Debounce counter > 0 but below healing threshold (fault trending towards healing)
+- **CONFIRMED**: Debounce counter <= confirmation threshold (e.g., -3). Fault is active and verified.
+- **HEALED**: Debounce counter >= healing threshold (if healing enabled). Fault resolved by PASSED events.
+- **CLEARED**: Fault manually acknowledged via ClearFault service
 
-Currently, faults start as PENDING and move to CLEARED when explicitly cleared.
-Automatic PENDING → CONFIRMED transitions will be implemented in Issue #6.
+FAILED events decrement the debounce counter (towards confirmation).
+PASSED events increment the debounce counter (towards healing).
+CRITICAL severity bypasses debounce and confirms immediately.

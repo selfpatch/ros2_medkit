@@ -67,7 +67,7 @@ Real-time fault event notification for SSE streaming (published on `/fault_manag
 **Event Types:**
 | Constant | Trigger |
 |----------|---------|
-| `EVENT_CONFIRMED` | Fault transitions PENDING → CONFIRMED |
+| `EVENT_CONFIRMED` | Fault transitions PREFAILED → CONFIRMED |
 | `EVENT_CLEARED` | Fault transitions to CLEARED |
 | `EVENT_UPDATED` | Fault data changes without status transition |
 
