@@ -54,11 +54,11 @@ class FaultManager {
 
   /// Get all faults, optionally filtered by component
   /// @param source_id Optional component identifier to filter by (empty = all)
-  /// @param include_pending Include PENDING status faults
+  /// @param include_prefailed Include PREFAILED status faults (debounce not yet confirmed)
   /// @param include_confirmed Include CONFIRMED status faults
   /// @param include_cleared Include CLEARED status faults
   /// @return FaultResult with array of faults
-  FaultResult get_faults(const std::string & source_id = "", bool include_pending = true, bool include_confirmed = true,
+  FaultResult get_faults(const std::string & source_id = "", bool include_prefailed = true, bool include_confirmed = true,
                          bool include_cleared = false);
 
   /// Get a specific fault by code

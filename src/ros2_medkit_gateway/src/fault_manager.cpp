@@ -100,6 +100,7 @@ FaultResult FaultManager::report_fault(const std::string & fault_code, uint8_t s
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ReportFault::Request>();
   request->fault_code = fault_code;
+  request->event_type = ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED;
   request->severity = severity;
   request->description = description;
   request->source_id = source_id;
@@ -113,16 +114,16 @@ FaultResult FaultManager::report_fault(const std::string & fault_code, uint8_t s
   }
 
   auto response = future.get();
-  result.success = response->success;
-  result.data = {{"success", response->success}, {"message", response->message}};
-  if (!response->success) {
-    result.error_message = response->message;
+  result.success = response->accepted;
+  result.data = {{"accepted", response->accepted}};
+  if (!response->accepted) {
+    result.error_message = "Fault report rejected";
   }
 
   return result;
 }
 
-FaultResult FaultManager::get_faults(const std::string & source_id, bool include_pending, bool include_confirmed,
+FaultResult FaultManager::get_faults(const std::string & source_id, bool include_prefailed, bool include_confirmed,
                                      bool include_cleared) {
   std::lock_guard<std::mutex> lock(service_mutex_);
   FaultResult result;
@@ -139,8 +140,8 @@ FaultResult FaultManager::get_faults(const std::string & source_id, bool include
   request->severity = 0;
 
   // Build status filter
-  if (include_pending) {
-    request->statuses.push_back(ros2_medkit_msgs::msg::Fault::STATUS_PENDING);
+  if (include_prefailed) {
+    request->statuses.push_back(ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
   }
   if (include_confirmed) {
     request->statuses.push_back(ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
