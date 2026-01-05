@@ -134,73 +134,74 @@ class TestFaultManagerIntegration(unittest.TestCase):
         """Test reporting a new fault."""
         request = ReportFault.Request()
         request.fault_code = 'TEST_FAULT_001'
+        request.event_type = ReportFault.Request.EVENT_FAILED
         request.severity = Fault.SEVERITY_ERROR
         request.description = 'Test fault from integration test'
         request.source_id = '/test_node'
 
         response = self._call_service(self.report_fault_client, request)
 
-        self.assertTrue(response.success)
-        self.assertIn('TEST_FAULT_001', response.message)
-        print(f'Report fault response: {response.message}')
+        self.assertTrue(response.accepted)
+        print('Report fault accepted')
 
     def test_02_report_fault_empty_code_fails(self):
         """Test that empty fault_code is rejected."""
         request = ReportFault.Request()
         request.fault_code = ''
+        request.event_type = ReportFault.Request.EVENT_FAILED
         request.severity = Fault.SEVERITY_ERROR
         request.description = 'Test fault'
         request.source_id = '/test_node'
 
         response = self._call_service(self.report_fault_client, request)
 
-        self.assertFalse(response.success)
-        self.assertIn('empty', response.message.lower())
-        print(f'Empty code response: {response.message}')
+        self.assertFalse(response.accepted)
+        print('Empty code rejected as expected')
 
     def test_03_report_fault_empty_source_fails(self):
         """Test that empty source_id is rejected."""
         request = ReportFault.Request()
         request.fault_code = 'TEST_FAULT_002'
+        request.event_type = ReportFault.Request.EVENT_FAILED
         request.severity = Fault.SEVERITY_ERROR
         request.description = 'Test fault'
         request.source_id = ''
 
         response = self._call_service(self.report_fault_client, request)
 
-        self.assertFalse(response.success)
-        self.assertIn('empty', response.message.lower())
-        print(f'Empty source response: {response.message}')
+        self.assertFalse(response.accepted)
+        print('Empty source rejected as expected')
 
     def test_04_report_fault_invalid_severity_fails(self):
         """Test that invalid severity is rejected."""
         request = ReportFault.Request()
         request.fault_code = 'TEST_FAULT_003'
+        request.event_type = ReportFault.Request.EVENT_FAILED
         request.severity = 99  # Invalid severity
         request.description = 'Test fault'
         request.source_id = '/test_node'
 
         response = self._call_service(self.report_fault_client, request)
 
-        self.assertFalse(response.success)
-        self.assertIn('severity', response.message.lower())
-        print(f'Invalid severity response: {response.message}')
+        self.assertFalse(response.accepted)
+        print('Invalid severity rejected as expected')
 
-    def test_05_get_faults_pending(self):
-        """Test getting faults with PENDING status."""
+    def test_05_get_faults_prefailed(self):
+        """Test getting faults with PREFAILED status."""
         # First report a fault
         report_request = ReportFault.Request()
         report_request.fault_code = 'TEST_FAULT_GET_001'
+        report_request.event_type = ReportFault.Request.EVENT_FAILED
         report_request.severity = Fault.SEVERITY_WARN
         report_request.description = 'Fault for get test'
         report_request.source_id = '/test_node'
         self._call_service(self.report_fault_client, report_request)
 
-        # Query PENDING faults
+        # Query PREFAILED faults
         get_request = GetFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
-        get_request.statuses = ['PENDING']
+        get_request.statuses = [Fault.STATUS_PREFAILED]
 
         response = self._call_service(self.get_faults_client, get_request)
 
@@ -215,6 +216,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
         for i, severity in enumerate([Fault.SEVERITY_INFO, Fault.SEVERITY_ERROR]):
             request = ReportFault.Request()
             request.fault_code = f'TEST_FAULT_SEV_{i}'
+            request.event_type = ReportFault.Request.EVENT_FAILED
             request.severity = severity
             request.description = f'Fault with severity {severity}'
             request.source_id = '/test_node'
@@ -224,7 +226,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
         get_request = GetFaults.Request()
         get_request.filter_by_severity = True
         get_request.severity = Fault.SEVERITY_ERROR
-        get_request.statuses = ['PENDING']
+        get_request.statuses = [Fault.STATUS_PREFAILED]
 
         response = self._call_service(self.get_faults_client, get_request)
 
@@ -237,6 +239,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
         # First report a fault
         report_request = ReportFault.Request()
         report_request.fault_code = 'TEST_FAULT_CLEAR'
+        report_request.event_type = ReportFault.Request.EVENT_FAILED
         report_request.severity = Fault.SEVERITY_ERROR
         report_request.description = 'Fault to be cleared'
         report_request.source_id = '/test_node'
@@ -256,7 +259,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
         get_request = GetFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
-        get_request.statuses = ['CLEARED']
+        get_request.statuses = [Fault.STATUS_CLEARED]
 
         get_response = self._call_service(self.get_faults_client, get_request)
 
@@ -292,30 +295,30 @@ class TestFaultManagerIntegration(unittest.TestCase):
         # Report first time
         request1 = ReportFault.Request()
         request1.fault_code = fault_code
+        request1.event_type = ReportFault.Request.EVENT_FAILED
         request1.severity = Fault.SEVERITY_WARN
         request1.description = 'First report'
         request1.source_id = '/node1'
 
         response1 = self._call_service(self.report_fault_client, request1)
-        self.assertTrue(response1.success)
-        self.assertIn('New fault', response1.message)
+        self.assertTrue(response1.accepted)
 
         # Report second time from different source
         request2 = ReportFault.Request()
         request2.fault_code = fault_code
+        request2.event_type = ReportFault.Request.EVENT_FAILED
         request2.severity = Fault.SEVERITY_ERROR  # Higher severity
         request2.description = 'Second report'
         request2.source_id = '/node2'
 
         response2 = self._call_service(self.report_fault_client, request2)
-        self.assertTrue(response2.success)
-        self.assertIn('updated', response2.message.lower())
+        self.assertTrue(response2.accepted)
 
         # Verify fault was updated
         get_request = GetFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
-        get_request.statuses = ['PENDING']
+        get_request.statuses = [Fault.STATUS_PREFAILED]
 
         get_response = self._call_service(self.get_faults_client, get_request)
 
@@ -333,13 +336,14 @@ class TestFaultManagerIntegration(unittest.TestCase):
               f'sources={updated_fault.reporting_sources}')
 
     def test_11_confirmation_workflow(self):
-        """Test fault auto-confirms after reaching threshold (default=3)."""
+        """Test fault auto-confirms after reaching threshold (default=-3)."""
         fault_code = 'TEST_FAULT_CONFIRM'
 
         # Report fault 3 times (default threshold)
         for i in range(3):
             request = ReportFault.Request()
             request.fault_code = fault_code
+            request.event_type = ReportFault.Request.EVENT_FAILED
             request.severity = Fault.SEVERITY_ERROR
             request.description = f'Report {i + 1}'
             request.source_id = f'/node{i + 1}'
@@ -349,7 +353,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
         get_request = GetFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
-        get_request.statuses = ['CONFIRMED']
+        get_request.statuses = [Fault.STATUS_CONFIRMED]
 
         response = self._call_service(self.get_faults_client, get_request)
 
@@ -363,15 +367,16 @@ class TestFaultManagerIntegration(unittest.TestCase):
         print(f'Fault confirmed: status={confirmed_fault.status}, '
               f'occurrence_count={confirmed_fault.occurrence_count}')
 
-    def test_12_pending_excluded_from_default_query(self):
-        """Test that PENDING faults are not returned in default query."""
-        fault_code = 'TEST_FAULT_PENDING_ONLY'
+    def test_12_prefailed_excluded_from_default_query(self):
+        """Test that PREFAILED faults are not returned in default query."""
+        fault_code = 'TEST_FAULT_PREFAILED_ONLY'
 
-        # Report fault once (stays PENDING since threshold=3)
+        # Report fault once (stays PREFAILED since threshold=-3)
         request = ReportFault.Request()
         request.fault_code = fault_code
+        request.event_type = ReportFault.Request.EVENT_FAILED
         request.severity = Fault.SEVERITY_WARN
-        request.description = 'Single report - should stay pending'
+        request.description = 'Single report - should stay prefailed'
         request.source_id = '/test_node'
         self._call_service(self.report_fault_client, request)
 
@@ -383,21 +388,21 @@ class TestFaultManagerIntegration(unittest.TestCase):
 
         response = self._call_service(self.get_faults_client, get_request)
 
-        # Fault should NOT be in results (it's PENDING)
+        # Fault should NOT be in results (it's PREFAILED)
         fault_codes = [f.fault_code for f in response.faults]
         self.assertNotIn(fault_code, fault_codes)
-        print('Default query excluded PENDING fault as expected')
+        print('Default query excluded PREFAILED fault as expected')
 
-        # But it should be visible when querying PENDING explicitly
-        get_pending = GetFaults.Request()
-        get_pending.filter_by_severity = False
-        get_pending.severity = 0
-        get_pending.statuses = ['PENDING']
+        # But it should be visible when querying PREFAILED explicitly
+        get_prefailed = GetFaults.Request()
+        get_prefailed.filter_by_severity = False
+        get_prefailed.severity = 0
+        get_prefailed.statuses = [Fault.STATUS_PREFAILED]
 
-        pending_response = self._call_service(self.get_faults_client, get_pending)
-        pending_codes = [f.fault_code for f in pending_response.faults]
-        self.assertIn(fault_code, pending_codes)
-        print('PENDING query found the fault as expected')
+        prefailed_response = self._call_service(self.get_faults_client, get_prefailed)
+        prefailed_codes = [f.fault_code for f in prefailed_response.faults]
+        self.assertIn(fault_code, prefailed_codes)
+        print('PREFAILED query found the fault as expected')
 
     def test_13_multi_source_confirmation(self):
         """Test fault confirms when multiple sources report same fault."""
@@ -408,7 +413,8 @@ class TestFaultManagerIntegration(unittest.TestCase):
         for source in sources:
             request = ReportFault.Request()
             request.fault_code = fault_code
-            request.severity = Fault.SEVERITY_CRITICAL
+            request.event_type = ReportFault.Request.EVENT_FAILED
+            request.severity = Fault.SEVERITY_ERROR
             request.description = 'Multi-source fault'
             request.source_id = source
             self._call_service(self.report_fault_client, request)
@@ -417,7 +423,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
         get_request = GetFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
-        get_request.statuses = ['CONFIRMED']
+        get_request.statuses = [Fault.STATUS_CONFIRMED]
 
         response = self._call_service(self.get_faults_client, get_request)
 
@@ -427,6 +433,80 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self.assertEqual(len(fault.reporting_sources), 3)
         self.assertEqual(fault.occurrence_count, 3)
         print(f'Multi-source fault confirmed: sources={fault.reporting_sources}')
+
+    def test_14_critical_severity_immediate_confirmation(self):
+        """Test CRITICAL severity bypasses debounce and confirms immediately."""
+        fault_code = 'TEST_FAULT_CRITICAL'
+
+        # Report single CRITICAL fault
+        request = ReportFault.Request()
+        request.fault_code = fault_code
+        request.event_type = ReportFault.Request.EVENT_FAILED
+        request.severity = Fault.SEVERITY_CRITICAL
+        request.description = 'Critical fault - should confirm immediately'
+        request.source_id = '/test_node'
+        self._call_service(self.report_fault_client, request)
+
+        # Query CONFIRMED faults
+        get_request = GetFaults.Request()
+        get_request.filter_by_severity = False
+        get_request.severity = 0
+        get_request.statuses = [Fault.STATUS_CONFIRMED]
+
+        response = self._call_service(self.get_faults_client, get_request)
+
+        fault = next((f for f in response.faults if f.fault_code == fault_code), None)
+        self.assertIsNotNone(fault)
+        self.assertEqual(fault.status, Fault.STATUS_CONFIRMED)
+        self.assertEqual(fault.occurrence_count, 1)  # Only one report needed
+        print('CRITICAL fault confirmed immediately as expected')
+
+    def test_15_passed_event_increments_counter(self):
+        """Test PASSED events increment debounce counter towards healing."""
+        fault_code = 'TEST_FAULT_PASSED'
+
+        # Report 2 FAILED events (counter = -2)
+        for i in range(2):
+            request = ReportFault.Request()
+            request.fault_code = fault_code
+            request.event_type = ReportFault.Request.EVENT_FAILED
+            request.severity = Fault.SEVERITY_ERROR
+            request.description = f'Failed report {i + 1}'
+            request.source_id = f'/node{i + 1}'
+            self._call_service(self.report_fault_client, request)
+
+        # Verify fault is PREFAILED
+        get_request = GetFaults.Request()
+        get_request.filter_by_severity = False
+        get_request.severity = 0
+        get_request.statuses = [Fault.STATUS_PREFAILED]
+
+        response = self._call_service(self.get_faults_client, get_request)
+        fault = next((f for f in response.faults if f.fault_code == fault_code), None)
+        self.assertIsNotNone(fault)
+        self.assertEqual(fault.status, Fault.STATUS_PREFAILED)
+
+        # Report 3 PASSED events (counter = -2 + 3 = +1)
+        for i in range(3):
+            request = ReportFault.Request()
+            request.fault_code = fault_code
+            request.event_type = ReportFault.Request.EVENT_PASSED
+            request.severity = 0  # Ignored for PASSED
+            request.description = ''  # Ignored for PASSED
+            request.source_id = '/test_node'
+            self._call_service(self.report_fault_client, request)
+
+        # Verify fault is PREPASSED (counter > 0)
+        get_request = GetFaults.Request()
+        get_request.filter_by_severity = False
+        get_request.severity = 0
+        get_request.statuses = [Fault.STATUS_PREPASSED]
+
+        response = self._call_service(self.get_faults_client, get_request)
+        fault = next((f for f in response.faults if f.fault_code == fault_code), None)
+        self.assertIsNotNone(fault)
+        self.assertEqual(fault.status, Fault.STATUS_PREPASSED)
+        print('PASSED events moved fault to PREPASSED as expected')
 
 
 @launch_testing.post_shutdown_test()

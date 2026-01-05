@@ -133,14 +133,14 @@ SqliteFaultStorage::~SqliteFaultStorage() {
   }
 }
 
-void SqliteFaultStorage::set_confirmation_threshold(uint32_t threshold) {
+void SqliteFaultStorage::set_debounce_config(const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
-  confirmation_threshold_ = threshold;
+  config_ = config;
 }
 
-uint32_t SqliteFaultStorage::get_confirmation_threshold() const {
+DebounceConfig SqliteFaultStorage::get_debounce_config() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return confirmation_threshold_;
+  return config_;
 }
 
 void SqliteFaultStorage::initialize_schema() {
@@ -153,7 +153,10 @@ void SqliteFaultStorage::initialize_schema() {
       last_occurred_ns INTEGER NOT NULL,
       occurrence_count INTEGER NOT NULL,
       status TEXT NOT NULL,
-      reporting_sources TEXT NOT NULL
+      reporting_sources TEXT NOT NULL,
+      debounce_counter INTEGER NOT NULL DEFAULT 0,
+      last_failed_ns INTEGER NOT NULL DEFAULT 0,
+      last_passed_ns INTEGER NOT NULL DEFAULT 0
     );
   )";
 
@@ -163,6 +166,15 @@ void SqliteFaultStorage::initialize_schema() {
     sqlite3_free(err_msg);
     throw std::runtime_error("Failed to create schema: " + error);
   }
+
+  // Add new columns to existing databases (migration)
+  // These will fail silently if columns already exist
+  sqlite3_exec(db_, "ALTER TABLE faults ADD COLUMN debounce_counter INTEGER NOT NULL DEFAULT 0;", nullptr, nullptr,
+               nullptr);
+  sqlite3_exec(db_, "ALTER TABLE faults ADD COLUMN last_failed_ns INTEGER NOT NULL DEFAULT 0;", nullptr, nullptr,
+               nullptr);
+  sqlite3_exec(db_, "ALTER TABLE faults ADD COLUMN last_passed_ns INTEGER NOT NULL DEFAULT 0;", nullptr, nullptr,
+               nullptr);
 }
 
 std::vector<std::string> SqliteFaultStorage::parse_json_array(const std::string & json_str) {
@@ -298,15 +310,49 @@ std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::stri
   return oss.str();
 }
 
-bool SqliteFaultStorage::report_fault(const std::string & fault_code, uint8_t severity, const std::string & description,
-                                      const std::string & source_id, const rclcpp::Time & timestamp) {
+void SqliteFaultStorage::update_status_in_db(const std::string & fault_code, int32_t debounce_counter) {
+  std::string new_status;
+
+  // Get current status to check for CLEARED
+  SqliteStatement check_stmt(db_, "SELECT status FROM faults WHERE fault_code = ?");
+  check_stmt.bind_text(1, fault_code);
+  if (check_stmt.step() == SQLITE_ROW) {
+    std::string current_status = check_stmt.column_text(0);
+    if (current_status == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
+      return;  // Don't update CLEARED faults
+    }
+  }
+
+  if (debounce_counter <= config_.confirmation_threshold) {
+    new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+  } else if (config_.healing_enabled && debounce_counter >= config_.healing_threshold) {
+    new_status = ros2_medkit_msgs::msg::Fault::STATUS_HEALED;
+  } else if (debounce_counter < 0) {
+    new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
+  } else if (debounce_counter > 0) {
+    new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED;
+  } else {
+    return;  // counter == 0, keep current status
+  }
+
+  SqliteStatement update_stmt(db_, "UPDATE faults SET status = ? WHERE fault_code = ?");
+  update_stmt.bind_text(1, new_status);
+  update_stmt.bind_text(2, fault_code);
+  update_stmt.step();
+}
+
+bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+                                            const std::string & description, const std::string & source_id,
+                                            const rclcpp::Time & timestamp) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   int64_t timestamp_ns = timestamp.nanoseconds();
+  const bool is_failed = (event_type == EventType::EVENT_FAILED);
 
   // Check if fault exists
   SqliteStatement check_stmt(
-      db_, "SELECT severity, occurrence_count, reporting_sources, status FROM faults WHERE fault_code = ?");
+      db_,
+      "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter FROM faults WHERE fault_code = ?");
   check_stmt.bind_text(1, fault_code);
 
   if (check_stmt.step() == SQLITE_ROW) {
@@ -315,85 +361,136 @@ bool SqliteFaultStorage::report_fault(const std::string & fault_code, uint8_t se
     int64_t existing_count = check_stmt.column_int64(1);
     std::string sources_json = check_stmt.column_text(2);
     std::string current_status = check_stmt.column_text(3);
+    int32_t debounce_counter = static_cast<int32_t>(check_stmt.column_int(4));
 
-    // Parse existing sources and add new one
-    std::vector<std::string> sources = parse_json_array(sources_json);
-    std::set<std::string> sources_set(sources.begin(), sources.end());
-    sources_set.insert(source_id);
-    sources.assign(sources_set.begin(), sources_set.end());
-
-    // Escalate severity if new severity is higher
-    int new_severity = std::max(existing_severity, static_cast<int>(severity));
-
-    // Increment count with saturation
-    int64_t new_count = existing_count;
-    if (new_count < std::numeric_limits<uint32_t>::max()) {
-      ++new_count;
+    // Don't update CLEARED faults
+    if (current_status == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
+      return false;
     }
 
-    // Check for auto-confirmation (only for PENDING faults)
-    std::string new_status = current_status;
-    if (confirmation_threshold_ > 0 && current_status == ros2_medkit_msgs::msg::Fault::STATUS_PENDING &&
-        static_cast<uint32_t>(new_count) >= confirmation_threshold_) {
-      new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-    }
+    if (is_failed) {
+      // FAILED event
+      // Parse existing sources and add new one
+      std::vector<std::string> sources = parse_json_array(sources_json);
+      std::set<std::string> sources_set(sources.begin(), sources.end());
+      sources_set.insert(source_id);
+      sources.assign(sources_set.begin(), sources_set.end());
 
-    // Update with new description and status
-    const char * update_sql = description.empty()
-                                  ? "UPDATE faults SET severity = ?, last_occurred_ns = ?, occurrence_count = ?, "
-                                    "reporting_sources = ?, status = ? WHERE fault_code = ?"
-                                  : "UPDATE faults SET severity = ?, description = ?, last_occurred_ns = ?, "
-                                    "occurrence_count = ?, reporting_sources = ?, status = ? WHERE fault_code = ?";
+      // Escalate severity if new severity is higher
+      int new_severity = std::max(existing_severity, static_cast<int>(severity));
 
-    SqliteStatement update_stmt(db_, update_sql);
+      // Increment count with saturation
+      int64_t new_count = existing_count;
+      if (new_count < std::numeric_limits<uint32_t>::max()) {
+        ++new_count;
+      }
 
-    if (description.empty()) {
-      update_stmt.bind_int(1, new_severity);
-      update_stmt.bind_int64(2, timestamp_ns);
-      update_stmt.bind_int64(3, new_count);
-      update_stmt.bind_text(4, serialize_json_array(sources));
-      update_stmt.bind_text(5, new_status);
-      update_stmt.bind_text(6, fault_code);
+      // Decrement debounce counter
+      --debounce_counter;
+
+      // Check for immediate confirmation of CRITICAL
+      std::string new_status = current_status;
+      if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+        new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+      } else if (debounce_counter <= config_.confirmation_threshold) {
+        new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+      } else if (debounce_counter < 0) {
+        new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
+      }
+
+      // Update with new values
+      SqliteStatement update_stmt(
+          db_, description.empty()
+                   ? "UPDATE faults SET severity = ?, last_occurred_ns = ?, last_failed_ns = ?, occurrence_count = ?, "
+                     "reporting_sources = ?, status = ?, debounce_counter = ? WHERE fault_code = ?"
+                   : "UPDATE faults SET severity = ?, description = ?, last_occurred_ns = ?, last_failed_ns = ?, "
+                     "occurrence_count = ?, reporting_sources = ?, status = ?, debounce_counter = ? WHERE fault_code = ?");
+
+      if (description.empty()) {
+        update_stmt.bind_int(1, new_severity);
+        update_stmt.bind_int64(2, timestamp_ns);
+        update_stmt.bind_int64(3, timestamp_ns);
+        update_stmt.bind_int64(4, new_count);
+        update_stmt.bind_text(5, serialize_json_array(sources));
+        update_stmt.bind_text(6, new_status);
+        update_stmt.bind_int(7, debounce_counter);
+        update_stmt.bind_text(8, fault_code);
+      } else {
+        update_stmt.bind_int(1, new_severity);
+        update_stmt.bind_text(2, description);
+        update_stmt.bind_int64(3, timestamp_ns);
+        update_stmt.bind_int64(4, timestamp_ns);
+        update_stmt.bind_int64(5, new_count);
+        update_stmt.bind_text(6, serialize_json_array(sources));
+        update_stmt.bind_text(7, new_status);
+        update_stmt.bind_int(8, debounce_counter);
+        update_stmt.bind_text(9, fault_code);
+      }
+
+      if (update_stmt.step() != SQLITE_DONE) {
+        throw std::runtime_error(std::string("Failed to update fault: ") + sqlite3_errmsg(db_));
+      }
     } else {
-      update_stmt.bind_int(1, new_severity);
-      update_stmt.bind_text(2, description);
-      update_stmt.bind_int64(3, timestamp_ns);
-      update_stmt.bind_int64(4, new_count);
-      update_stmt.bind_text(5, serialize_json_array(sources));
-      update_stmt.bind_text(6, new_status);
-      update_stmt.bind_text(7, fault_code);
-    }
+      // PASSED event
+      ++debounce_counter;
 
-    if (update_stmt.step() != SQLITE_DONE) {
-      throw std::runtime_error(std::string("Failed to update fault: ") + sqlite3_errmsg(db_));
+      std::string new_status = current_status;
+      if (config_.healing_enabled && debounce_counter >= config_.healing_threshold) {
+        new_status = ros2_medkit_msgs::msg::Fault::STATUS_HEALED;
+      } else if (debounce_counter > 0) {
+        new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED;
+      } else if (debounce_counter < 0) {
+        new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
+      }
+
+      SqliteStatement update_stmt(
+          db_,
+          "UPDATE faults SET last_occurred_ns = ?, last_passed_ns = ?, status = ?, debounce_counter = ? WHERE "
+          "fault_code = ?");
+      update_stmt.bind_int64(1, timestamp_ns);
+      update_stmt.bind_int64(2, timestamp_ns);
+      update_stmt.bind_text(3, new_status);
+      update_stmt.bind_int(4, debounce_counter);
+      update_stmt.bind_text(5, fault_code);
+
+      if (update_stmt.step() != SQLITE_DONE) {
+        throw std::runtime_error(std::string("Failed to update fault: ") + sqlite3_errmsg(db_));
+      }
     }
 
     return false;  // Existing fault updated
   }
 
-  // New fault starts with occurrence_count = 1 (first report)
-  constexpr uint32_t kInitialOccurrenceCount = 1;
+  // New fault - only create for FAILED events
+  if (!is_failed) {
+    return false;  // PASSED event for non-existent fault is ignored
+  }
 
-  // Check if threshold is already met on first report
-  std::string initial_status = ros2_medkit_msgs::msg::Fault::STATUS_PENDING;
-  if (confirmation_threshold_ > 0 && kInitialOccurrenceCount >= confirmation_threshold_) {
+  // Check for immediate confirmation (CRITICAL or threshold == 0)
+  std::string initial_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
+  if ((config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) ||
+      config_.confirmation_threshold == 0) {
     initial_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
   }
 
-  // New fault - insert
+  // New fault - insert with debounce_counter = -1
   SqliteStatement insert_stmt(db_,
                               "INSERT INTO faults (fault_code, severity, description, first_occurred_ns, "
-                              "last_occurred_ns, occurrence_count, status, reporting_sources) "
-                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                              "last_occurred_ns, occurrence_count, status, reporting_sources, "
+                              "debounce_counter, last_failed_ns, last_passed_ns) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
   insert_stmt.bind_text(1, fault_code);
   insert_stmt.bind_int(2, static_cast<int>(severity));
   insert_stmt.bind_text(3, description);
   insert_stmt.bind_int64(4, timestamp_ns);
   insert_stmt.bind_int64(5, timestamp_ns);
-  insert_stmt.bind_int(6, static_cast<int>(kInitialOccurrenceCount));
+  insert_stmt.bind_int(6, 1);  // occurrence_count = 1
   insert_stmt.bind_text(7, initial_status);
   insert_stmt.bind_text(8, serialize_json_array({source_id}));
+  insert_stmt.bind_int(9, -1);            // debounce_counter = -1 for first FAILED
+  insert_stmt.bind_int64(10, timestamp_ns);  // last_failed_ns
+  insert_stmt.bind_int64(11, 0);          // last_passed_ns (never passed)
 
   if (insert_stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to insert fault: ") + sqlite3_errmsg(db_));
@@ -413,7 +510,10 @@ SqliteFaultStorage::get_faults(bool filter_by_severity, uint8_t severity,
     status_filter.insert(ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
   } else {
     for (const auto & s : statuses) {
-      if (s == ros2_medkit_msgs::msg::Fault::STATUS_PENDING || s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED ||
+      if (s == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED ||
+          s == ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED ||
+          s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED ||
+          s == ros2_medkit_msgs::msg::Fault::STATUS_HEALED ||
           s == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
         status_filter.insert(s);
       }
@@ -533,6 +633,30 @@ bool SqliteFaultStorage::contains(const std::string & fault_code) const {
   stmt.bind_text(1, fault_code);
 
   return stmt.step() == SQLITE_ROW;
+}
+
+size_t SqliteFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (config_.auto_confirm_after_sec <= 0.0) {
+    return 0;  // Time-based confirmation disabled
+  }
+
+  int64_t current_ns = current_time.nanoseconds();
+  int64_t threshold_ns = static_cast<int64_t>(config_.auto_confirm_after_sec * 1e9);
+  int64_t cutoff_ns = current_ns - threshold_ns;
+
+  SqliteStatement update_stmt(db_,
+                              "UPDATE faults SET status = ? WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
+  update_stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
+  update_stmt.bind_text(2, ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
+  update_stmt.bind_int64(3, cutoff_ns);
+
+  if (update_stmt.step() != SQLITE_DONE) {
+    throw std::runtime_error(std::string("Failed to confirm faults: ") + sqlite3_errmsg(db_));
+  }
+
+  return static_cast<size_t>(sqlite3_changes(db_));
 }
 
 }  // namespace ros2_medkit_fault_manager

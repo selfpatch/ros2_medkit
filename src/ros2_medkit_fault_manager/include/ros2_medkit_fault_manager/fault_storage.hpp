@@ -23,8 +23,30 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
+#include "ros2_medkit_msgs/srv/report_fault.hpp"
 
 namespace ros2_medkit_fault_manager {
+
+/// Debounce configuration for fault filtering
+struct DebounceConfig {
+  /// Confirmation threshold (negative). Fault is CONFIRMED when counter <= this value.
+  /// Default: -3 (3 FAILED events to confirm). 0 = disabled (immediate confirmation).
+  int32_t confirmation_threshold{-3};
+
+  /// Whether healing is enabled. When true, faults can transition to HEALED status.
+  bool healing_enabled{false};
+
+  /// Healing threshold (positive). Fault is HEALED when counter >= this value.
+  /// Default: 3 (3 more PASSED than FAILED events to heal). Only used if healing_enabled.
+  int32_t healing_threshold{3};
+
+  /// Whether CRITICAL severity bypasses debounce and confirms immediately.
+  bool critical_immediate_confirm{true};
+
+  /// Time-based auto-confirmation. If > 0, PREFAILED faults older than this are auto-confirmed.
+  /// 0.0 = disabled.
+  double auto_confirm_after_sec{0.0};
+};
 
 /// Internal fault state stored in memory
 struct FaultState {
@@ -33,35 +55,44 @@ struct FaultState {
   std::string description;
   rclcpp::Time first_occurred;
   rclcpp::Time last_occurred;
-  uint32_t occurrence_count{0};
+  uint32_t occurrence_count{0};  ///< Count of FAILED events
   std::string status;
   std::set<std::string> reporting_sources;
+
+  // Debounce state (internal, not exposed in Fault.msg)
+  int32_t debounce_counter{0};       ///< FAILED: -1, PASSED: +1
+  rclcpp::Time last_failed_time;     ///< Timestamp of last FAILED event
+  rclcpp::Time last_passed_time;     ///< Timestamp of last PASSED event
 
   /// Convert to ROS 2 message
   ros2_medkit_msgs::msg::Fault to_msg() const;
 };
+
+/// Event type alias for convenience
+using EventType = ros2_medkit_msgs::srv::ReportFault::Request;
 
 /// Abstract interface for fault storage backends
 class FaultStorage {
  public:
   virtual ~FaultStorage() = default;
 
-  /// Set the confirmation threshold for automatic PENDING → CONFIRMED transition
-  /// @param threshold Number of occurrences required to confirm a fault (0 = disabled)
-  virtual void set_confirmation_threshold(uint32_t threshold) = 0;
+  /// Set debounce configuration
+  virtual void set_debounce_config(const DebounceConfig & config) = 0;
 
-  /// Get the current confirmation threshold
-  virtual uint32_t get_confirmation_threshold() const = 0;
+  /// Get current debounce configuration
+  virtual DebounceConfig get_debounce_config() const = 0;
 
-  /// Store or update a fault report
+  /// Report a fault event (FAILED or PASSED)
   /// @param fault_code Global fault identifier
-  /// @param severity Fault severity level
-  /// @param description Human-readable description
+  /// @param event_type EVENT_FAILED (0) or EVENT_PASSED (1)
+  /// @param severity Fault severity level (only used for FAILED events)
+  /// @param description Human-readable description (only used for FAILED events)
   /// @param source_id Reporting source identifier
   /// @param timestamp Current time for tracking
-  /// @return true if this is a new fault, false if existing fault was updated
-  virtual bool report_fault(const std::string & fault_code, uint8_t severity, const std::string & description,
-                            const std::string & source_id, const rclcpp::Time & timestamp) = 0;
+  /// @return true if this created a new fault entry, false if existing fault was updated
+  virtual bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+                                  const std::string & description, const std::string & source_id,
+                                  const rclcpp::Time & timestamp) = 0;
 
   /// Get faults matching filter criteria
   /// @param filter_by_severity Whether to filter by severity
@@ -76,7 +107,7 @@ class FaultStorage {
   /// @return The fault if found, nullopt otherwise
   virtual std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const = 0;
 
-  /// Clear a fault by fault_code
+  /// Clear a fault by fault_code (manual acknowledgment)
   /// @param fault_code The fault code to clear
   /// @return true if fault was found and cleared, false if not found
   virtual bool clear_fault(const std::string & fault_code) = 0;
@@ -86,6 +117,11 @@ class FaultStorage {
 
   /// Check if a fault exists
   virtual bool contains(const std::string & fault_code) const = 0;
+
+  /// Check and confirm PREFAILED faults that have been pending too long (time-based confirmation)
+  /// @param current_time Current timestamp for age calculation
+  /// @return Number of faults that were confirmed
+  virtual size_t check_time_based_confirmation(const rclcpp::Time & current_time) = 0;
 
  protected:
   FaultStorage() = default;
@@ -100,11 +136,12 @@ class InMemoryFaultStorage : public FaultStorage {
  public:
   InMemoryFaultStorage() = default;
 
-  void set_confirmation_threshold(uint32_t threshold) override;
-  uint32_t get_confirmation_threshold() const override;
+  void set_debounce_config(const DebounceConfig & config) override;
+  DebounceConfig get_debounce_config() const override;
 
-  bool report_fault(const std::string & fault_code, uint8_t severity, const std::string & description,
-                    const std::string & source_id, const rclcpp::Time & timestamp) override;
+  bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+                          const std::string & description, const std::string & source_id,
+                          const rclcpp::Time & timestamp) override;
 
   std::vector<ros2_medkit_msgs::msg::Fault> get_faults(bool filter_by_severity, uint8_t severity,
                                                        const std::vector<std::string> & statuses) const override;
@@ -117,10 +154,15 @@ class InMemoryFaultStorage : public FaultStorage {
 
   bool contains(const std::string & fault_code) const override;
 
+  size_t check_time_based_confirmation(const rclcpp::Time & current_time) override;
+
  private:
+  /// Update fault status based on debounce counter
+  void update_status(FaultState & state);
+
   mutable std::mutex mutex_;
   std::map<std::string, FaultState> faults_;
-  uint32_t confirmation_threshold_{0};  ///< 0 = disabled (no auto-confirmation)
+  DebounceConfig config_;
 };
 
 }  // namespace ros2_medkit_fault_manager
