@@ -90,12 +90,12 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     state.debounce_counter = -1;  // First FAILED event
     state.reporting_sources.insert(source_id);
 
-    // Check for immediate confirmation (CRITICAL or threshold == 0)
-    if ((config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) ||
-        config_.confirmation_threshold == 0) {
+    // CRITICAL severity bypasses debounce and confirms immediately
+    if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
       state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
     } else {
-      state.status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
+      // Set status based on debounce counter vs threshold
+      update_status(state);
     }
 
     faults_.emplace(fault_code, std::move(state));

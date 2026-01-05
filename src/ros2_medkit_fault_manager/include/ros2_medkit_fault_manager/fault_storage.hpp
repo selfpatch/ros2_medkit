@@ -29,8 +29,9 @@ namespace ros2_medkit_fault_manager {
 
 /// Debounce configuration for fault filtering
 struct DebounceConfig {
-  /// Confirmation threshold (negative). Fault is CONFIRMED when counter <= this value.
-  /// Default: -3 (3 FAILED events to confirm). 0 = immediate confirmation on first FAILED.
+  /// Confirmation threshold (typically negative). Fault is CONFIRMED when counter <= this value.
+  /// Default: -3 (3 FAILED events to confirm). Since the first FAILED sets counter to -1,
+  /// any value >= -1 results in immediate confirmation (0 is the canonical "immediate" value).
   int32_t confirmation_threshold{-3};
 
   /// Whether healing is enabled. When true, faults can transition to HEALED status.
