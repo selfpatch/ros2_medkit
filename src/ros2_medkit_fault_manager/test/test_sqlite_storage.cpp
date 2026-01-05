@@ -57,8 +57,9 @@ TEST_F(SqliteFaultStorageTest, ReportNewFaultEvent) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
-  bool is_new = storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                             "Motor temperature exceeded threshold", "/powertrain/motor", timestamp);
+  bool is_new =
+      storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                                   "Motor temperature exceeded threshold", "/powertrain/motor", timestamp);
 
   EXPECT_TRUE(is_new);
   EXPECT_EQ(storage_->size(), 1u);
@@ -84,8 +85,8 @@ TEST_F(SqliteFaultStorageTest, ReportExistingFaultEventUpdates) {
   storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                "Initial report", "/powertrain/motor1", timestamp1);
 
-  bool is_new = storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                             "Second report", "/powertrain/motor2", timestamp2);
+  bool is_new = storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED,
+                                             Fault::SEVERITY_ERROR, "Second report", "/powertrain/motor2", timestamp2);
 
   EXPECT_FALSE(is_new);
   EXPECT_EQ(storage_->size(), 1u);

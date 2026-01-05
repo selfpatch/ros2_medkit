@@ -60,9 +60,9 @@ struct FaultState {
   std::set<std::string> reporting_sources;
 
   // Debounce state (internal, not exposed in Fault.msg)
-  int32_t debounce_counter{0};       ///< FAILED: -1, PASSED: +1
-  rclcpp::Time last_failed_time;     ///< Timestamp of last FAILED event
-  rclcpp::Time last_passed_time;     ///< Timestamp of last PASSED event
+  int32_t debounce_counter{0};    ///< FAILED: -1, PASSED: +1
+  rclcpp::Time last_failed_time;  ///< Timestamp of last FAILED event
+  rclcpp::Time last_passed_time;  ///< Timestamp of last PASSED event
 
   /// Convert to ROS 2 message
   ros2_medkit_msgs::msg::Fault to_msg() const;

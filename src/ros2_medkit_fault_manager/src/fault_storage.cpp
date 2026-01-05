@@ -66,8 +66,8 @@ void InMemoryFaultStorage::update_status(FaultState & state) {
 }
 
 bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
-                                               const std::string & description, const std::string & source_id,
-                                               const rclcpp::Time & timestamp) {
+                                              const std::string & description, const std::string & source_id,
+                                              const rclcpp::Time & timestamp) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
@@ -169,10 +169,8 @@ InMemoryFaultStorage::get_faults(bool filter_by_severity, uint8_t severity,
   } else {
     for (const auto & s : statuses) {
       // Only add valid statuses (invalid ones are silently ignored)
-      if (s == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED ||
-          s == ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED ||
-          s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED ||
-          s == ros2_medkit_msgs::msg::Fault::STATUS_HEALED ||
+      if (s == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED || s == ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED ||
+          s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED || s == ros2_medkit_msgs::msg::Fault::STATUS_HEALED ||
           s == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
         status_filter.insert(s);
       }
