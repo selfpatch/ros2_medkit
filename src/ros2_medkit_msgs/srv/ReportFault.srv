@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# ReportFault.srv - Report a fault occurrence to the FaultManager.
+# ReportFault.srv - Report a fault event to the FaultManager.
 #
 # Called by FaultReporter clients or directly by nodes to report fault conditions.
-# The FaultManager aggregates reports by fault_code across all sources.
+# The FaultManager aggregates reports by fault_code across all sources and applies
+# debounce filtering based on FAILED/PASSED event counts.
 
 # Request fields
 
@@ -24,12 +25,24 @@
 # Same fault_code from different sources = single aggregated fault.
 string fault_code
 
+# Event type indicating whether the fault condition is detected or cleared.
+# FAILED: Fault condition detected - decrements internal debounce counter.
+# PASSED: Fault condition cleared - increments internal debounce counter.
+# Use EVENT_* constants for type safety.
+uint8 event_type
+
+# Event type constants
+uint8 EVENT_FAILED = 0
+uint8 EVENT_PASSED = 1
+
 # Severity level: 0=INFO, 1=WARN, 2=ERROR, 3=CRITICAL.
 # Use Fault.SEVERITY_* constants for type safety.
-# Values outside 0-3 range will be rejected (success=false with error message).
+# Only meaningful for FAILED events; ignored for PASSED events.
+# CRITICAL severity bypasses debounce filtering and confirms immediately.
 uint8 severity
 
 # Human-readable description of the fault condition.
+# Only meaningful for FAILED events; ignored for PASSED events.
 string description
 
 # Identifier of the reporting node/entity. Recommended: fully qualified ROS 2 node name
@@ -38,5 +51,7 @@ string description
 string source_id
 ---
 # Response fields
-bool success           # True if the fault was successfully recorded
-string message         # Status message or error description
+
+# True if the event was accepted (valid input). False only for validation errors
+# (e.g., empty fault_code, invalid event_type, invalid severity for FAILED events).
+bool accepted

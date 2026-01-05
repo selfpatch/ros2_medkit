@@ -17,6 +17,11 @@
 # A Fault represents an aggregated fault condition identified by a global fault_code.
 # Multiple sources can report the same fault_code, and they are aggregated into a
 # single Fault with tracked occurrence_count and reporting_sources.
+#
+# Debounce model (AUTOSAR DEM-style):
+# - FAILED events decrement internal counter (towards confirmation)
+# - PASSED events increment internal counter (towards healing)
+# - Status reflects the current debounce state
 
 # Global fault identifier (e.g., "MOTOR_OVERHEAT", "SENSOR_FAILURE_001")
 string fault_code
@@ -30,10 +35,10 @@ string description
 # Timestamp when this fault was first reported
 builtin_interfaces/Time first_occurred
 
-# Timestamp when this fault was last reported
+# Timestamp when this fault was last reported (FAILED or PASSED event)
 builtin_interfaces/Time last_occurred
 
-# Total number of reports aggregated across all sources
+# Total number of FAILED events aggregated across all sources
 uint32 occurrence_count
 
 # Current fault status (use STATUS_* constants)
@@ -50,16 +55,32 @@ uint8 SEVERITY_WARN = 1
 # Error: Impacts functionality and requires intervention.
 uint8 SEVERITY_ERROR = 2
 # Critical: Severe error requiring immediate attention; may compromise safety or system operation.
+# CRITICAL severity bypasses debounce filtering and confirms immediately.
 uint8 SEVERITY_CRITICAL = 3
 
 # Status constants
-# Fault status lifecycle:
-# - PENDING: Fault reported but not yet confirmed (awaiting confirmation threshold).
-#   Transitions to CONFIRMED when threshold is met (e.g., N reports within time window).
-# - CONFIRMED: Fault is active and verified. Appears in default GetFaults queries.
-#   Transitions to CLEARED when acknowledged or resolved via ClearFault service.
-# - CLEARED: Fault was previously confirmed but is now resolved or acknowledged.
-#   Can still be queried with statuses=["CLEARED"] for historical analysis.
-string STATUS_PENDING = "PENDING"
+# Fault status lifecycle with debounce filtering:
+#
+#   PREFAILED ←────────────────→ PREPASSED
+#       │      (counter crosses 0)    │
+#       ▼                             ▼
+#   CONFIRMED                      HEALED
+#       │                          (removed)
+#       ▼
+#   CLEARED (manual)
+#
+# - PREFAILED: Debounce counter < 0 but above confirmation threshold.
+#   Fault condition detected but not yet confirmed. More FAILED events push towards CONFIRMED.
+# - PREPASSED: Debounce counter > 0 but below healing threshold.
+#   More PASSED than FAILED events - fault condition trending towards resolution.
+# - CONFIRMED: Debounce counter <= confirmation_threshold (e.g., -3).
+#   Fault is active and verified. Appears in default GetFaults queries.
+# - HEALED: Debounce counter >= healing_threshold (e.g., +3).
+#   Fault resolved by sufficient PASSED events. Removed from storage (if healing enabled).
+# - CLEARED: Fault manually acknowledged/resolved via ClearFault service.
+#   Retained for historical analysis, queryable with statuses=["CLEARED"].
+string STATUS_PREFAILED = "PREFAILED"
+string STATUS_PREPASSED = "PREPASSED"
 string STATUS_CONFIRMED = "CONFIRMED"
+string STATUS_HEALED = "HEALED"
 string STATUS_CLEARED = "CLEARED"
