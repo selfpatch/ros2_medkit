@@ -172,14 +172,19 @@ void SqliteFaultStorage::initialize_schema() {
   auto try_add_column = [this](const char * sql, const char * col_name) {
     char * migration_err = nullptr;
     int rc = sqlite3_exec(db_, sql, nullptr, nullptr, &migration_err);
-    if (rc != SQLITE_OK && migration_err != nullptr) {
+    if (rc != SQLITE_OK) {
       // SQLite returns "duplicate column name" for existing columns - that's expected
-      std::string error(migration_err);
-      sqlite3_free(migration_err);
+      std::string error = migration_err != nullptr ? std::string(migration_err) : "Unknown migration error";
+      if (migration_err != nullptr) {
+        sqlite3_free(migration_err);
+      }
       if (error.find("duplicate column") == std::string::npos) {
         RCUTILS_LOG_WARN_NAMED("sqlite_fault_storage", "Migration warning for column '%s': %s", col_name,
                                error.c_str());
       }
+    } else if (migration_err != nullptr) {
+      // Should not normally be set on success, but free defensively
+      sqlite3_free(migration_err);
     }
   };
   try_add_column("ALTER TABLE faults ADD COLUMN debounce_counter INTEGER NOT NULL DEFAULT 0;", "debounce_counter");
@@ -481,11 +486,17 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
     return false;  // PASSED event for non-existent fault is ignored
   }
 
-  // Check for immediate confirmation (CRITICAL or threshold == 0)
-  std::string initial_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
-  if ((config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) ||
-      config_.confirmation_threshold == 0) {
+  // Determine initial status based on debounce logic
+  std::string initial_status;
+  constexpr int32_t initial_counter = -1;  // First FAILED event sets counter to -1
+  // CRITICAL severity bypasses debounce and confirms immediately
+  if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
     initial_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+  } else if (initial_counter <= config_.confirmation_threshold) {
+    // Counter already meets threshold (e.g., threshold >= -1)
+    initial_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+  } else {
+    initial_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
   }
 
   // New fault - insert with debounce_counter = -1
