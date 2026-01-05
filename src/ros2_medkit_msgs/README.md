@@ -14,7 +14,7 @@ This package provides the interface definitions used by the fault management com
 
 ### Fault.msg
 
-Core fault data model representing an aggregated fault condition.
+Core fault data model representing an aggregated fault condition with AUTOSAR DEM-style debounce filtering.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -22,9 +22,9 @@ Core fault data model representing an aggregated fault condition.
 | `severity` | uint8 | Severity level (use SEVERITY_* constants) |
 | `description` | string | Human-readable description |
 | `first_occurred` | builtin_interfaces/Time | When fault was first reported |
-| `last_occurred` | builtin_interfaces/Time | When fault was last reported |
-| `occurrence_count` | uint32 | Total reports aggregated across all sources |
-| `status` | string | PENDING, CONFIRMED, or CLEARED |
+| `last_occurred` | builtin_interfaces/Time | When fault was last reported (FAILED or PASSED) |
+| `occurrence_count` | uint32 | Total FAILED events aggregated across all sources |
+| `status` | string | Current status (see STATUS_* constants) |
 | `reporting_sources` | string[] | List of source identifiers that reported this fault |
 
 **Severity Levels:**
@@ -33,11 +33,26 @@ Core fault data model representing an aggregated fault condition.
 | `SEVERITY_INFO` | 0 | Informational, no action required |
 | `SEVERITY_WARN` | 1 | May require attention, no impact on functionality |
 | `SEVERITY_ERROR` | 2 | Impacts functionality, requires intervention |
-| `SEVERITY_CRITICAL` | 3 | Severe, may compromise safety or system operation |
+| `SEVERITY_CRITICAL` | 3 | Severe, may compromise safety or system operation. Bypasses debounce. |
 
-**Status Lifecycle:**
-- `PENDING` → `CONFIRMED`: After reaching confirmation threshold (N reports in time window)
-- `CONFIRMED` → `CLEARED`: Via ClearFault service call
+**Status Constants:**
+| Constant | Description |
+|----------|-------------|
+| `STATUS_PREFAILED` | Debounce counter < 0 but above confirmation threshold |
+| `STATUS_PREPASSED` | Debounce counter > 0 but below healing threshold |
+| `STATUS_CONFIRMED` | Fault confirmed (counter <= threshold, e.g., -3) |
+| `STATUS_HEALED` | Fault healed by PASSED events (if healing enabled) |
+| `STATUS_CLEARED` | Fault manually cleared via ClearFault service |
+
+**Status Lifecycle (Debounce Model):**
+```
+PREFAILED ←→ PREPASSED → HEALED (removed)
+    ↓
+CONFIRMED → CLEARED (manual)
+```
+- FAILED events decrement counter (towards confirmation)
+- PASSED events increment counter (towards healing)
+- CRITICAL severity bypasses debounce and confirms immediately
 
 ### FaultEvent.msg
 
@@ -60,21 +75,25 @@ Real-time fault event notification for SSE streaming (published on `/fault_manag
 
 ### ReportFault.srv
 
-Report a fault occurrence to the FaultManager.
+Report a fault event (FAILED or PASSED) to the FaultManager.
 
 **Request:**
 | Field | Type | Description |
 |-------|------|-------------|
 | `fault_code` | string | Global identifier (UPPER_SNAKE_CASE, max 64 chars) |
-| `severity` | uint8 | Severity level (0-3, use Fault.SEVERITY_* constants) |
-| `description` | string | Human-readable description |
+| `event_type` | uint8 | Event type: EVENT_FAILED (0) or EVENT_PASSED (1) |
+| `severity` | uint8 | Severity level (0-3, only for FAILED events) |
+| `description` | string | Human-readable description (only for FAILED events) |
 | `source_id` | string | Reporting node FQN (e.g., "/powertrain/engine/temp_sensor") |
 
 **Response:**
 | Field | Type | Description |
 |-------|------|-------------|
-| `success` | bool | True if fault was recorded |
-| `message` | string | Status or error message |
+| `accepted` | bool | True if the event was accepted |
+
+**Event Types:**
+- `EVENT_FAILED` (0): Fault condition detected - decrements debounce counter
+- `EVENT_PASSED` (1): Fault condition cleared - increments debounce counter
 
 ### GetFaults.srv
 
@@ -95,7 +114,7 @@ Query faults with optional filtering.
 **Examples:**
 - Default (active faults): `filter_by_severity=false, statuses=[]` → all CONFIRMED faults
 - Only errors: `filter_by_severity=true, severity=2, statuses=[]` → CONFIRMED with ERROR
-- All faults: `filter_by_severity=false, statuses=["PENDING", "CONFIRMED", "CLEARED"]`
+- All faults: `filter_by_severity=false, statuses=["PREFAILED", "CONFIRMED", "CLEARED"]`
 - Historical: `filter_by_severity=false, statuses=["CLEARED"]`
 
 ### ClearFault.srv

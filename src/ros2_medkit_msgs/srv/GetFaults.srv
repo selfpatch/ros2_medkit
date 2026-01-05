@@ -16,7 +16,7 @@
 #
 # Returns faults matching the specified filter criteria. By default (empty statuses array),
 # returns only CONFIRMED faults. To include other statuses, specify them explicitly
-# in the statuses array (e.g., ["CONFIRMED", "PENDING"]).
+# in the statuses array (e.g., ["CONFIRMED", "PREFAILED"]).
 
 # Request fields
 
@@ -30,9 +30,9 @@ bool filter_by_severity
 uint8 severity
 
 # List of statuses to include in results.
-# Valid values: "PENDING", "CONFIRMED", "CLEARED"
+# Valid values: "PREFAILED", "PREPASSED", "CONFIRMED", "HEALED", "CLEARED"
 # Empty array = CONFIRMED only (default behavior for active fault monitoring).
-# Example: ["CONFIRMED", "PENDING"] to include both confirmed and pending faults.
+# Example: ["CONFIRMED", "PREFAILED"] to include confirmed and pre-failed faults.
 # Invalid status strings are silently ignored.
 string[] statuses
 ---
