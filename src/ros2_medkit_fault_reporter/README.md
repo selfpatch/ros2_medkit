@@ -10,10 +10,11 @@ by only forwarding faults after a configurable threshold is reached within a tim
 
 ## Features
 
-- **Simple API**: Just construct and call `report()`
-- **Local Filtering** (default ON): Suppress repeated faults until threshold is met
+- **Simple API**: `report()` for FAILED events, `report_passed()` for PASSED events
+- **Local Filtering** (default ON): Suppress repeated FAILED events until threshold is met
 - **Per-fault tracking**: Each fault_code has independent threshold/window tracking
 - **Severity bypass**: High-severity faults can bypass filtering
+- **PASSED bypass**: PASSED events always bypass local filtering
 - **Configurable**: Via ROS 2 parameters
 
 ## Usage
@@ -32,9 +33,13 @@ class MyNode : public rclcpp::Node {
 
   void check_sensor() {
     if (sensor_error_detected()) {
+      // Report FAILED event - fault condition detected
       reporter_->report("SENSOR_FAILURE",
                         ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
                         "Sensor communication timeout");
+    } else if (was_sensor_failing()) {
+      // Report PASSED event - fault condition cleared
+      reporter_->report_passed("SENSOR_FAILURE");
     }
   }
 
@@ -42,6 +47,11 @@ class MyNode : public rclcpp::Node {
   std::unique_ptr<ros2_medkit_fault_reporter::FaultReporter> reporter_;
 };
 ```
+
+### API Methods
+
+- **`report(fault_code, severity, description)`**: Report a FAILED event (fault detected)
+- **`report_passed(fault_code)`**: Report a PASSED event (fault condition cleared)
 
 ### Configuration
 
