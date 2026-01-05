@@ -182,9 +182,6 @@ void SqliteFaultStorage::initialize_schema() {
         RCUTILS_LOG_WARN_NAMED("sqlite_fault_storage", "Migration warning for column '%s': %s", col_name,
                                error.c_str());
       }
-    } else if (migration_err != nullptr) {
-      // Should not normally be set on success, but free defensively
-      sqlite3_free(migration_err);
     }
   };
   try_add_column("ALTER TABLE faults ADD COLUMN debounce_counter INTEGER NOT NULL DEFAULT 0;", "debounce_counter");
