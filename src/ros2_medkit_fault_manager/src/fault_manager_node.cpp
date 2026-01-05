@@ -33,12 +33,32 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   }
   confirmation_threshold_ = static_cast<int32_t>(confirmation_threshold_param);
 
+  // Healing parameters
+  healing_enabled_ = declare_parameter<bool>("healing_enabled", false);
+  auto healing_threshold_param = declare_parameter<int>("healing_threshold", 3);
+  if (healing_threshold_param < 0) {
+    RCLCPP_WARN(get_logger(), "healing_threshold should be >= 0, got %d. Using %d.",
+                static_cast<int>(healing_threshold_param), static_cast<int>(-healing_threshold_param));
+    healing_threshold_param = -healing_threshold_param;
+  }
+  healing_threshold_ = static_cast<int32_t>(healing_threshold_param);
+
+  // Time-based auto-confirmation parameter
+  auto_confirm_after_sec_ = declare_parameter<double>("auto_confirm_after_sec", 0.0);
+  if (auto_confirm_after_sec_ < 0.0) {
+    RCLCPP_WARN(get_logger(), "auto_confirm_after_sec should be >= 0, got %.2f. Disabling.", auto_confirm_after_sec_);
+    auto_confirm_after_sec_ = 0.0;
+  }
+
   // Create storage backend
   storage_ = create_storage();
 
   // Configure debounce settings
   DebounceConfig config;
   config.confirmation_threshold = confirmation_threshold_;
+  config.healing_enabled = healing_enabled_;
+  config.healing_threshold = healing_threshold_;
+  config.auto_confirm_after_sec = auto_confirm_after_sec_;
   storage_->set_debounce_config(config);
 
   // Create service servers
@@ -60,8 +80,23 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
         handle_clear_fault(request, response);
       });
 
-  RCLCPP_INFO(get_logger(), "FaultManager node started (storage=%s, confirmation_threshold=%d)", storage_type_.c_str(),
-              confirmation_threshold_);
+  // Create auto-confirmation timer if enabled
+  if (auto_confirm_after_sec_ > 0.0) {
+    auto_confirm_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() {
+      size_t confirmed = storage_->check_time_based_confirmation(now());
+      if (confirmed > 0) {
+        RCLCPP_INFO(get_logger(), "Auto-confirmed %zu PREFAILED fault(s) due to time threshold", confirmed);
+      }
+    });
+    RCLCPP_INFO(get_logger(),
+                "FaultManager node started (storage=%s, confirmation_threshold=%d, "
+                "healing=%s, auto_confirm_after=%.1fs)",
+                storage_type_.c_str(), confirmation_threshold_, healing_enabled_ ? "enabled" : "disabled",
+                auto_confirm_after_sec_);
+  } else {
+    RCLCPP_INFO(get_logger(), "FaultManager node started (storage=%s, confirmation_threshold=%d, healing=%s)",
+                storage_type_.c_str(), confirmation_threshold_, healing_enabled_ ? "enabled" : "disabled");
+  }
 }
 
 std::unique_ptr<FaultStorage> FaultManagerNode::create_storage() {

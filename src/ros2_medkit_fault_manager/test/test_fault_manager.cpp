@@ -495,6 +495,32 @@ TEST(FaultManagerNodeParameterTest, ConfirmationThresholdDisabled) {
   EXPECT_EQ(config.confirmation_threshold, 0);
 }
 
+TEST(FaultManagerNodeParameterTest, HealingEnabled) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      {"storage_type", "memory"},
+      {"healing_enabled", true},
+      {"healing_threshold", 5},
+  });
+  auto node = std::make_shared<FaultManagerNode>(options);
+
+  auto config = node->get_storage().get_debounce_config();
+  EXPECT_TRUE(config.healing_enabled);
+  EXPECT_EQ(config.healing_threshold, 5);
+}
+
+TEST(FaultManagerNodeParameterTest, AutoConfirmAfterSec) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      {"storage_type", "memory"},
+      {"auto_confirm_after_sec", 15.0},
+  });
+  auto node = std::make_shared<FaultManagerNode>(options);
+
+  auto config = node->get_storage().get_debounce_config();
+  EXPECT_DOUBLE_EQ(config.auto_confirm_after_sec, 15.0);
+}
+
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
   ::testing::InitGoogleTest(&argc, argv);
