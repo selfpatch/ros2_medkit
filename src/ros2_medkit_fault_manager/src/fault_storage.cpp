@@ -62,7 +62,8 @@ void InMemoryFaultStorage::update_status(FaultState & state) {
   } else if (state.debounce_counter > 0) {
     state.status = ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED;
   }
-  // Note: counter == 0 keeps current status (edge case at initialization)
+  // Note: debounce_counter == 0 keeps current status (hysteresis behavior).
+  // This avoids rapid status flapping at the zero crossing boundary.
 }
 
 bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,

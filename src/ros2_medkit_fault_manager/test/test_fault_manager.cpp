@@ -440,6 +440,64 @@ TEST_F(FaultStorageTest, TimeBasedConfirmationWhenEnabled) {
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
+TEST_F(FaultStorageTest, ConfirmedFaultCanHealWithPassedEvents) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.healing_enabled = true;
+  config.healing_threshold = 3;
+  storage_.set_debounce_config(config);
+
+  // Report 3 FAILED events to confirm (counter = -3)
+  for (int i = 0; i < 3; ++i) {
+    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test",
+                                "/node" + std::to_string(i), clock.now());
+  }
+
+  auto fault = storage_.get_fault("FAULT_1");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
+
+  // Report 6 PASSED events (counter = -3 + 6 = +3, reaches healing threshold)
+  for (int i = 0; i < 6; ++i) {
+    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now());
+  }
+
+  fault = storage_.get_fault("FAULT_1");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->status, Fault::STATUS_HEALED);
+}
+
+TEST_F(FaultStorageTest, HealedFaultCanRecurWithFailedEvents) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.healing_enabled = true;
+  config.healing_threshold = 3;
+  storage_.set_debounce_config(config);
+
+  // Report 1 FAILED event (counter = -1)
+  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                              clock.now());
+
+  // Report 4 PASSED events to heal (counter = -1 + 4 = +3)
+  for (int i = 0; i < 4; ++i) {
+    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now());
+  }
+
+  auto fault = storage_.get_fault("FAULT_1");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->status, Fault::STATUS_HEALED);
+
+  // Report 3 FAILED events - fault should recur and confirm (counter = +3 - 3 = 0, then -3)
+  for (int i = 0; i < 6; ++i) {
+    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Recurrence",
+                                "/node2", clock.now());
+  }
+
+  fault = storage_.get_fault("FAULT_1");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
+}
+
 // FaultManagerNode tests
 class FaultManagerNodeTest : public ::testing::Test {
  protected:
