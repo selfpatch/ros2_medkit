@@ -350,9 +350,9 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
 
   // Check if fault exists
-  SqliteStatement check_stmt(
-      db_,
-      "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter FROM faults WHERE fault_code = ?");
+  SqliteStatement check_stmt(db_,
+                             "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter FROM "
+                             "faults WHERE fault_code = ?");
   check_stmt.bind_text(1, fault_code);
 
   if (check_stmt.step() == SQLITE_ROW) {
@@ -400,11 +400,12 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
 
       // Update with new values
       SqliteStatement update_stmt(
-          db_, description.empty()
-                   ? "UPDATE faults SET severity = ?, last_occurred_ns = ?, last_failed_ns = ?, occurrence_count = ?, "
-                     "reporting_sources = ?, status = ?, debounce_counter = ? WHERE fault_code = ?"
-                   : "UPDATE faults SET severity = ?, description = ?, last_occurred_ns = ?, last_failed_ns = ?, "
-                     "occurrence_count = ?, reporting_sources = ?, status = ?, debounce_counter = ? WHERE fault_code = ?");
+          db_,
+          description.empty()
+              ? "UPDATE faults SET severity = ?, last_occurred_ns = ?, last_failed_ns = ?, occurrence_count = ?, "
+                "reporting_sources = ?, status = ?, debounce_counter = ? WHERE fault_code = ?"
+              : "UPDATE faults SET severity = ?, description = ?, last_occurred_ns = ?, last_failed_ns = ?, "
+                "occurrence_count = ?, reporting_sources = ?, status = ?, debounce_counter = ? WHERE fault_code = ?");
 
       if (description.empty()) {
         update_stmt.bind_int(1, new_severity);
@@ -488,9 +489,9 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   insert_stmt.bind_int(6, 1);  // occurrence_count = 1
   insert_stmt.bind_text(7, initial_status);
   insert_stmt.bind_text(8, serialize_json_array({source_id}));
-  insert_stmt.bind_int(9, -1);            // debounce_counter = -1 for first FAILED
+  insert_stmt.bind_int(9, -1);               // debounce_counter = -1 for first FAILED
   insert_stmt.bind_int64(10, timestamp_ns);  // last_failed_ns
-  insert_stmt.bind_int64(11, 0);          // last_passed_ns (never passed)
+  insert_stmt.bind_int64(11, 0);             // last_passed_ns (never passed)
 
   if (insert_stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to insert fault: ") + sqlite3_errmsg(db_));
@@ -510,10 +511,8 @@ SqliteFaultStorage::get_faults(bool filter_by_severity, uint8_t severity,
     status_filter.insert(ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
   } else {
     for (const auto & s : statuses) {
-      if (s == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED ||
-          s == ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED ||
-          s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED ||
-          s == ros2_medkit_msgs::msg::Fault::STATUS_HEALED ||
+      if (s == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED || s == ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED ||
+          s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED || s == ros2_medkit_msgs::msg::Fault::STATUS_HEALED ||
           s == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
         status_filter.insert(s);
       }
@@ -646,8 +645,8 @@ size_t SqliteFaultStorage::check_time_based_confirmation(const rclcpp::Time & cu
   int64_t threshold_ns = static_cast<int64_t>(config_.auto_confirm_after_sec * 1e9);
   int64_t cutoff_ns = current_ns - threshold_ns;
 
-  SqliteStatement update_stmt(db_,
-                              "UPDATE faults SET status = ? WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
+  SqliteStatement update_stmt(
+      db_, "UPDATE faults SET status = ? WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
   update_stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
   update_stmt.bind_text(2, ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
   update_stmt.bind_int64(3, cutoff_ns);

@@ -58,8 +58,8 @@ class FaultManager {
   /// @param include_confirmed Include CONFIRMED status faults
   /// @param include_cleared Include CLEARED status faults
   /// @return FaultResult with array of faults
-  FaultResult get_faults(const std::string & source_id = "", bool include_prefailed = true, bool include_confirmed = true,
-                         bool include_cleared = false);
+  FaultResult get_faults(const std::string & source_id = "", bool include_prefailed = true,
+                         bool include_confirmed = true, bool include_cleared = false);
 
   /// Get a specific fault by code
   /// @param fault_code Fault identifier
