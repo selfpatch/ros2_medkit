@@ -70,11 +70,15 @@ class FaultManagerNode : public rclcpp::Node {
   std::string storage_type_;
   std::string database_path_;
   int32_t confirmation_threshold_{-3};
+  bool healing_enabled_{false};
+  int32_t healing_threshold_{3};
+  double auto_confirm_after_sec_{0.0};
   std::unique_ptr<FaultStorage> storage_;
 
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetFaults>::SharedPtr get_faults_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_fault_srv_;
+  rclcpp::TimerBase::SharedPtr auto_confirm_timer_;
 };
 
 }  // namespace ros2_medkit_fault_manager

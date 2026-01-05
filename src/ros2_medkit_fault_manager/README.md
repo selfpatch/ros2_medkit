@@ -61,13 +61,6 @@ via `~/get_faults` with appropriate status filters.
 
 CRITICAL severity faults bypass debounce and are immediately CONFIRMED.
 
-### Current Limitations
-
-- **Healing disabled by default**: The `healing_enabled` and `healing_threshold` parameters are not
-  exposed as ROS parameters. Healing is disabled by default.
-- **Time-based confirmation**: The `auto_confirm_after_sec` feature is implemented in storage but
-  not yet wired to a periodic timer in the node.
-
 ## Parameters
 
 | Parameter | Type | Default | Description |
@@ -75,6 +68,9 @@ CRITICAL severity faults bypass debounce and are immediately CONFIRMED.
 | `storage_type` | string | `"sqlite"` | Storage backend: `"sqlite"` for persistent storage, `"memory"` for in-memory |
 | `database_path` | string | `"/var/lib/ros2_medkit/faults.db"` | Path to SQLite database file. Use `":memory:"` for in-memory SQLite |
 | `confirmation_threshold` | int | `-3` | Counter value at which faults are confirmed (must be <= 0) |
+| `healing_enabled` | bool | `false` | Enable healing: faults can transition to HEALED status |
+| `healing_threshold` | int | `3` | Counter value at which faults are healed (must be >= 0) |
+| `auto_confirm_after_sec` | double | `0.0` | Auto-confirm PREFAILED faults after this many seconds (0 = disabled) |
 
 ### Storage Backends
 
