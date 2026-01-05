@@ -77,17 +77,30 @@ void FaultReporter::report(const std::string & fault_code, uint8_t severity, con
     return;
   }
 
-  send_report(fault_code, severity, description);
+  send_report(fault_code, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED, severity, description);
+}
+
+void FaultReporter::report_passed(const std::string & fault_code) {
+  // Validate fault_code
+  if (fault_code.empty()) {
+    RCLCPP_WARN(logger_, "Attempted to report PASSED with empty fault_code, ignoring");
+    return;
+  }
+
+  // PASSED events bypass local filtering and are always forwarded
+  send_report(fault_code, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED, 0, "");
 }
 
 bool FaultReporter::is_service_ready() const {
   return client_->service_is_ready();
 }
 
-void FaultReporter::send_report(const std::string & fault_code, uint8_t severity, const std::string & description) {
+void FaultReporter::send_report(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+                                const std::string & description) {
   if (!client_->service_is_ready()) {
     // Use WARN level for high-severity faults that would bypass filtering
-    if (severity >= filter_.config().bypass_severity) {
+    if (event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED &&
+        severity >= filter_.config().bypass_severity) {
       RCLCPP_WARN(logger_, "FaultManager service not available, dropping high-severity fault '%s'", fault_code.c_str());
     } else {
       RCLCPP_DEBUG(logger_, "FaultManager service not available, skipping report for '%s'", fault_code.c_str());
@@ -97,6 +110,7 @@ void FaultReporter::send_report(const std::string & fault_code, uint8_t severity
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ReportFault::Request>();
   request->fault_code = fault_code;
+  request->event_type = event_type;
   request->severity = severity;
   request->description = description;
   request->source_id = source_id_;
@@ -104,7 +118,11 @@ void FaultReporter::send_report(const std::string & fault_code, uint8_t severity
   // Fire and forget - don't block on response
   client_->async_send_request(request);
 
-  RCLCPP_DEBUG(logger_, "Reported fault: %s (severity=%d)", fault_code.c_str(), severity);
+  if (event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
+    RCLCPP_DEBUG(logger_, "Reported FAILED: %s (severity=%d)", fault_code.c_str(), severity);
+  } else {
+    RCLCPP_DEBUG(logger_, "Reported PASSED: %s", fault_code.c_str());
+  }
 }
 
 }  // namespace ros2_medkit_fault_reporter

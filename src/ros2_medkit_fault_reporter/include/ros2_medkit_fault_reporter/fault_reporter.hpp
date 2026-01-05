@@ -55,7 +55,7 @@ class FaultReporter {
   FaultReporter(const rclcpp::Node::SharedPtr & node, const std::string & source_id,
                 const std::string & service_name = "/fault_manager/report_fault");
 
-  /// Report a fault occurrence
+  /// Report a FAILED event (fault occurrence)
   ///
   /// The fault will be forwarded to the FaultManager if local filtering
   /// allows it (threshold met within time window, or high severity).
@@ -64,6 +64,14 @@ class FaultReporter {
   /// @param severity Severity level (use Fault::SEVERITY_* constants)
   /// @param description Human-readable fault description
   void report(const std::string & fault_code, uint8_t severity, const std::string & description);
+
+  /// Report a PASSED event (fault condition cleared)
+  ///
+  /// PASSED events bypass local filtering and are always forwarded to FaultManager.
+  /// Use this when the condition that caused a fault is no longer present.
+  ///
+  /// @param fault_code Global fault identifier (must match a previously reported fault)
+  void report_passed(const std::string & fault_code);
 
   /// Check if the FaultManager service is available
   bool is_service_ready() const;
@@ -78,7 +86,8 @@ class FaultReporter {
   void load_parameters();
 
   /// Send the fault report to FaultManager (async, fire-and-forget)
-  void send_report(const std::string & fault_code, uint8_t severity, const std::string & description);
+  void send_report(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+                   const std::string & description);
 
   rclcpp::Node::SharedPtr node_;
   std::string source_id_;
