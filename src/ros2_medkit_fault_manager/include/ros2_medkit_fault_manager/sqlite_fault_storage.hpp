@@ -41,11 +41,12 @@ class SqliteFaultStorage : public FaultStorage {
   SqliteFaultStorage(SqliteFaultStorage &&) = delete;
   SqliteFaultStorage & operator=(SqliteFaultStorage &&) = delete;
 
-  void set_confirmation_threshold(uint32_t threshold) override;
-  uint32_t get_confirmation_threshold() const override;
+  void set_debounce_config(const DebounceConfig & config) override;
+  DebounceConfig get_debounce_config() const override;
 
-  bool report_fault(const std::string & fault_code, uint8_t severity, const std::string & description,
-                    const std::string & source_id, const rclcpp::Time & timestamp) override;
+  bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+                          const std::string & description, const std::string & source_id,
+                          const rclcpp::Time & timestamp) override;
 
   std::vector<ros2_medkit_msgs::msg::Fault> get_faults(bool filter_by_severity, uint8_t severity,
                                                        const std::vector<std::string> & statuses) const override;
@@ -58,6 +59,8 @@ class SqliteFaultStorage : public FaultStorage {
 
   bool contains(const std::string & fault_code) const override;
 
+  size_t check_time_based_confirmation(const rclcpp::Time & current_time) override;
+
   /// Get the database path
   const std::string & db_path() const {
     return db_path_;
@@ -66,6 +69,9 @@ class SqliteFaultStorage : public FaultStorage {
  private:
   /// Initialize database schema
   void initialize_schema();
+
+  /// Update fault status based on debounce counter (must be called with mutex held)
+  void update_status_in_db(const std::string & fault_code, int32_t debounce_counter);
 
   /// Parse JSON array string to vector of strings
   static std::vector<std::string> parse_json_array(const std::string & json_str);
@@ -76,7 +82,7 @@ class SqliteFaultStorage : public FaultStorage {
   std::string db_path_;
   sqlite3 * db_{nullptr};
   mutable std::mutex mutex_;
-  uint32_t confirmation_threshold_{0};  ///< 0 = disabled (no auto-confirmation)
+  DebounceConfig config_;
 };
 
 }  // namespace ros2_medkit_fault_manager

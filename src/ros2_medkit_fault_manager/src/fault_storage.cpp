@@ -18,16 +18,6 @@
 
 namespace ros2_medkit_fault_manager {
 
-void InMemoryFaultStorage::set_confirmation_threshold(uint32_t threshold) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  confirmation_threshold_ = threshold;
-}
-
-uint32_t InMemoryFaultStorage::get_confirmation_threshold() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return confirmation_threshold_;
-}
-
 ros2_medkit_msgs::msg::Fault FaultState::to_msg() const {
   ros2_medkit_msgs::msg::Fault msg;
   msg.fault_code = fault_code;
@@ -47,27 +37,65 @@ ros2_medkit_msgs::msg::Fault FaultState::to_msg() const {
   return msg;
 }
 
-bool InMemoryFaultStorage::report_fault(const std::string & fault_code, uint8_t severity,
-                                        const std::string & description, const std::string & source_id,
-                                        const rclcpp::Time & timestamp) {
+void InMemoryFaultStorage::set_debounce_config(const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
+  config_ = config;
+}
+
+DebounceConfig InMemoryFaultStorage::get_debounce_config() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return config_;
+}
+
+void InMemoryFaultStorage::update_status(FaultState & state) {
+  // Don't update CLEARED faults
+  if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
+    return;
+  }
+
+  if (state.debounce_counter <= config_.confirmation_threshold) {
+    state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+  } else if (config_.healing_enabled && state.debounce_counter >= config_.healing_threshold) {
+    state.status = ros2_medkit_msgs::msg::Fault::STATUS_HEALED;
+  } else if (state.debounce_counter < 0) {
+    state.status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
+  } else if (state.debounce_counter > 0) {
+    state.status = ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED;
+  }
+  // Note: counter == 0 keeps current status (edge case at initialization)
+}
+
+bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+                                               const std::string & description, const std::string & source_id,
+                                               const rclcpp::Time & timestamp) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  const bool is_failed = (event_type == EventType::EVENT_FAILED);
 
   auto it = faults_.find(fault_code);
   if (it == faults_.end()) {
-    // New fault
+    // New fault - only create entry for FAILED events
+    if (!is_failed) {
+      return false;  // PASSED event for non-existent fault is ignored
+    }
+
     FaultState state;
     state.fault_code = fault_code;
     state.severity = severity;
     state.description = description;
     state.first_occurred = timestamp;
     state.last_occurred = timestamp;
+    state.last_failed_time = timestamp;
     state.occurrence_count = 1;
-    state.status = ros2_medkit_msgs::msg::Fault::STATUS_PENDING;
+    state.debounce_counter = -1;  // First FAILED event
     state.reporting_sources.insert(source_id);
 
-    // Check if threshold is already met on first report
-    if (confirmation_threshold_ > 0 && state.occurrence_count >= confirmation_threshold_) {
+    // Check for immediate confirmation (CRITICAL or threshold == 0)
+    if ((config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) ||
+        config_.confirmation_threshold == 0) {
       state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+    } else {
+      state.status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
     }
 
     faults_.emplace(fault_code, std::move(state));
@@ -76,31 +104,53 @@ bool InMemoryFaultStorage::report_fault(const std::string & fault_code, uint8_t 
 
   // Existing fault - update
   auto & state = it->second;
+
+  // Don't update CLEARED faults
+  if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
+    return false;
+  }
+
   state.last_occurred = timestamp;
 
-  // Increment occurrence_count with saturation
-  if (state.occurrence_count < std::numeric_limits<uint32_t>::max()) {
-    ++state.occurrence_count;
+  if (is_failed) {
+    state.last_failed_time = timestamp;
+
+    // Increment occurrence_count with saturation
+    if (state.occurrence_count < std::numeric_limits<uint32_t>::max()) {
+      ++state.occurrence_count;
+    }
+
+    // Decrement debounce counter (towards confirmation)
+    --state.debounce_counter;
+
+    // Add source if not already present
+    state.reporting_sources.insert(source_id);
+
+    // Update severity if higher
+    if (severity > state.severity) {
+      state.severity = severity;
+    }
+
+    // Update description if provided
+    if (!description.empty()) {
+      state.description = description;
+    }
+
+    // Check for immediate confirmation of CRITICAL
+    if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+      state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+      return false;
+    }
+  } else {
+    // PASSED event
+    state.last_passed_time = timestamp;
+
+    // Increment debounce counter (towards healing)
+    ++state.debounce_counter;
   }
 
-  // Add source if not already present
-  state.reporting_sources.insert(source_id);
-
-  // Update severity if higher (severity constants are ordered: INFO=0 < WARN=1 < ERROR=2 < CRITICAL=3)
-  if (severity > state.severity) {
-    state.severity = severity;
-  }
-
-  // Update description if provided
-  if (!description.empty()) {
-    state.description = description;
-  }
-
-  // Check for auto-confirmation (only for PENDING faults)
-  if (confirmation_threshold_ > 0 && state.status == ros2_medkit_msgs::msg::Fault::STATUS_PENDING &&
-      state.occurrence_count >= confirmation_threshold_) {
-    state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-  }
+  // Update status based on debounce counter
+  update_status(state);
 
   return false;
 }
@@ -119,7 +169,10 @@ InMemoryFaultStorage::get_faults(bool filter_by_severity, uint8_t severity,
   } else {
     for (const auto & s : statuses) {
       // Only add valid statuses (invalid ones are silently ignored)
-      if (s == ros2_medkit_msgs::msg::Fault::STATUS_PENDING || s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED ||
+      if (s == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED ||
+          s == ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED ||
+          s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED ||
+          s == ros2_medkit_msgs::msg::Fault::STATUS_HEALED ||
           s == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
         status_filter.insert(s);
       }
@@ -181,6 +234,29 @@ size_t InMemoryFaultStorage::size() const {
 bool InMemoryFaultStorage::contains(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
   return faults_.find(fault_code) != faults_.end();
+}
+
+size_t InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (config_.auto_confirm_after_sec <= 0.0) {
+    return 0;  // Time-based confirmation disabled
+  }
+
+  size_t confirmed_count = 0;
+  const double threshold_ns = config_.auto_confirm_after_sec * 1e9;
+
+  for (auto & [code, state] : faults_) {
+    if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED) {
+      const int64_t age_ns = (current_time - state.last_failed_time).nanoseconds();
+      if (static_cast<double>(age_ns) >= threshold_ns) {
+        state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+        ++confirmed_count;
+      }
+    }
+  }
+
+  return confirmed_count;
 }
 
 }  // namespace ros2_medkit_fault_manager
