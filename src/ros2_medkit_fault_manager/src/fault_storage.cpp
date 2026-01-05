@@ -120,8 +120,10 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
       ++state.occurrence_count;
     }
 
-    // Decrement debounce counter (towards confirmation)
-    --state.debounce_counter;
+    // Decrement debounce counter (towards confirmation) with saturation
+    if (state.debounce_counter > std::numeric_limits<int32_t>::min()) {
+      --state.debounce_counter;
+    }
 
     // Add source if not already present
     state.reporting_sources.insert(source_id);
@@ -145,8 +147,10 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     // PASSED event
     state.last_passed_time = timestamp;
 
-    // Increment debounce counter (towards healing)
-    ++state.debounce_counter;
+    // Increment debounce counter (towards healing) with saturation
+    if (state.debounce_counter < std::numeric_limits<int32_t>::max()) {
+      ++state.debounce_counter;
+    }
   }
 
   // Update status based on debounce counter
