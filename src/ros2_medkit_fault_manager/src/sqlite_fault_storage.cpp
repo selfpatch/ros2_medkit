@@ -325,37 +325,6 @@ std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::stri
   return oss.str();
 }
 
-void SqliteFaultStorage::update_status_in_db(const std::string & fault_code, int32_t debounce_counter) {
-  std::string new_status;
-
-  // Get current status to check for CLEARED
-  SqliteStatement check_stmt(db_, "SELECT status FROM faults WHERE fault_code = ?");
-  check_stmt.bind_text(1, fault_code);
-  if (check_stmt.step() == SQLITE_ROW) {
-    std::string current_status = check_stmt.column_text(0);
-    if (current_status == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
-      return;  // Don't update CLEARED faults
-    }
-  }
-
-  if (debounce_counter <= config_.confirmation_threshold) {
-    new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-  } else if (config_.healing_enabled && debounce_counter >= config_.healing_threshold) {
-    new_status = ros2_medkit_msgs::msg::Fault::STATUS_HEALED;
-  } else if (debounce_counter < 0) {
-    new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
-  } else if (debounce_counter > 0) {
-    new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED;
-  } else {
-    return;  // counter == 0, keep current status
-  }
-
-  SqliteStatement update_stmt(db_, "UPDATE faults SET status = ? WHERE fault_code = ?");
-  update_stmt.bind_text(1, new_status);
-  update_stmt.bind_text(2, fault_code);
-  update_stmt.step();
-}
-
 bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                             const std::string & description, const std::string & source_id,
                                             const rclcpp::Time & timestamp) {

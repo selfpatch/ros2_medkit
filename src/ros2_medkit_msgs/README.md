@@ -46,7 +46,7 @@ Core fault data model representing an aggregated fault condition with AUTOSAR DE
 
 **Status Lifecycle (Debounce Model):**
 ```
-PREFAILED ←→ PREPASSED → HEALED (removed)
+PREFAILED ←→ PREPASSED → HEALED (retained)
     ↓
 CONFIRMED → CLEARED (manual)
 ```

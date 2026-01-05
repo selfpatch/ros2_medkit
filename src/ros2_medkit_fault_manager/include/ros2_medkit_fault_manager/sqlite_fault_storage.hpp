@@ -70,9 +70,6 @@ class SqliteFaultStorage : public FaultStorage {
   /// Initialize database schema
   void initialize_schema();
 
-  /// Update fault status based on debounce counter (must be called with mutex held)
-  void update_status_in_db(const std::string & fault_code, int32_t debounce_counter);
-
   /// Parse JSON array string to vector of strings
   static std::vector<std::string> parse_json_array(const std::string & json_str);
 
