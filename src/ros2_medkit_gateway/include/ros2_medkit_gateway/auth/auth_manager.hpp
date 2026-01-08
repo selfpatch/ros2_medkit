@@ -44,13 +44,11 @@ class AuthManager {
 
   ~AuthManager() = default;
 
-  // Disable copy (contains mutex)
+  // Disable copy and move (contains non-movable mutex members)
   AuthManager(const AuthManager &) = delete;
   AuthManager & operator=(const AuthManager &) = delete;
-
-  // Enable move
-  AuthManager(AuthManager &&) = default;
-  AuthManager & operator=(AuthManager &&) = default;
+  AuthManager(AuthManager &&) = delete;
+  AuthManager & operator=(AuthManager &&) = delete;
 
   /**
    * @brief Check if authentication is enabled

@@ -52,7 +52,7 @@ class AuthManagerTest : public ::testing::Test {
 TEST(AuthConfigBuilderTest, BuildValidConfig) {
   AuthConfig config = AuthConfigBuilder()
                           .with_enabled(true)
-                          .with_jwt_secret("test_secret")
+                          .with_jwt_secret("test_secret_key_min_32_chars_12345")
                           .with_algorithm(JwtAlgorithm::HS256)
                           .with_token_expiry(3600)
                           .with_refresh_token_expiry(86400)
@@ -62,7 +62,7 @@ TEST(AuthConfigBuilderTest, BuildValidConfig) {
                           .build();
 
   EXPECT_TRUE(config.enabled);
-  EXPECT_EQ(config.jwt_secret, "test_secret");
+  EXPECT_EQ(config.jwt_secret, "test_secret_key_min_32_chars_12345");
   EXPECT_EQ(config.jwt_algorithm, JwtAlgorithm::HS256);
   EXPECT_EQ(config.token_expiry_seconds, 3600);
   EXPECT_EQ(config.refresh_token_expiry_seconds, 86400);
@@ -83,7 +83,7 @@ TEST(AuthConfigBuilderTest, RefreshExpiryLessThanTokenExpiryThrows) {
       {
         AuthConfigBuilder()
             .with_enabled(true)
-            .with_jwt_secret("secret")
+            .with_jwt_secret("secret_key_with_at_least_32_chars_xyz")
             .with_token_expiry(3600)
             .with_refresh_token_expiry(1800)  // Less than token expiry
             .build();
@@ -423,7 +423,7 @@ TEST_F(AuthManagerTest, AuthEndpointsNeverRequireAuth) {
 TEST(AuthManagerRequirementTest, RequireAuthForAll) {
   AuthConfig config = AuthConfigBuilder()
                           .with_enabled(true)
-                          .with_jwt_secret("test_secret")
+                          .with_jwt_secret("test_secret_key_min_32_chars_all__")
                           .with_token_expiry(3600)
                           .with_refresh_token_expiry(86400)
                           .with_require_auth_for(AuthRequirement::ALL)
@@ -441,7 +441,7 @@ TEST(AuthManagerRequirementTest, RequireAuthForAll) {
 TEST(AuthManagerRequirementTest, RequireAuthForNone) {
   AuthConfig config = AuthConfigBuilder()
                           .with_enabled(true)
-                          .with_jwt_secret("test_secret")
+                          .with_jwt_secret("test_secret_key_min_32_chars_none")
                           .with_token_expiry(3600)
                           .with_refresh_token_expiry(86400)
                           .with_require_auth_for(AuthRequirement::NONE)
@@ -565,7 +565,7 @@ TEST_F(AuthManagerTest, CleanupExpiredTokens) {
   // Create config with very short expiry for testing
   AuthConfig short_expiry_config = AuthConfigBuilder()
                                        .with_enabled(true)
-                                       .with_jwt_secret("test_secret")
+                                       .with_jwt_secret("test_secret_key_min_32_chars_exp__")
                                        .with_token_expiry(1)  // 1 second
                                        .with_refresh_token_expiry(1)
                                        .add_client("test", "test", UserRole::VIEWER)

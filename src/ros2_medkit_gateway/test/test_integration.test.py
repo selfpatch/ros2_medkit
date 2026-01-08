@@ -303,9 +303,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         # If we get here, not all components were discovered but continue anyway
         print('Warning: Discovery timeout, some tests may fail')
 
-    def _get_json(self, endpoint: str):
+    def _get_json(self, endpoint: str, timeout: int = 10):
         """Get JSON from an endpoint."""
-        response = requests.get(f'{self.BASE_URL}{endpoint}', timeout=5)
+        response = requests.get(f'{self.BASE_URL}{endpoint}', timeout=timeout)
         response.raise_for_status()
         return response.json()
 
@@ -1365,11 +1365,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         goal_id = response.json()['goal_id']
 
-        # Check status immediately
+        # Check status immediately (allow extra time for action server response)
         status_response = requests.get(
             f'{self.BASE_URL}/components/long_calibration/operations/long_calibration/status',
             params={'goal_id': goal_id},
-            timeout=5
+            timeout=10
         )
         self.assertEqual(status_response.status_code, 200)
 

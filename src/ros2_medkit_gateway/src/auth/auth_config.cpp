@@ -174,6 +174,11 @@ AuthConfig AuthConfigBuilder::build() {
       throw std::invalid_argument("JWT secret is required when authentication is enabled");
     }
 
+    // Enforce a minimum secret length for HS256 to avoid weak symmetric keys
+    if (config_.jwt_algorithm == JwtAlgorithm::HS256 && config_.jwt_secret.size() < 32U) {
+      throw std::invalid_argument("JWT secret must be at least 32 characters for HS256 algorithm");
+    }
+
     if (config_.token_expiry_seconds <= 0) {
       throw std::invalid_argument("Token expiry must be positive");
     }

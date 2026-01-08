@@ -56,13 +56,13 @@ ros2_medkit_gateway:
     # Maximum number of concurrent topic samples when fetching component data
     # Higher values improve response time but use more system resources
     # Valid range: 1-50
-    max_parallel_topic_samples: 10
+    max_parallel_topic_samples: 20
 
     # Timeout (in seconds) for sampling topic data via ros2 topic echo
     # Topics without publishers return immediately with metadata (no timeout wait)
     # This timeout only applies when topics have active publishers
     # Valid range: 0.1-30.0
-    topic_sample_timeout_sec: 1.0
+    topic_sample_timeout_sec: 2.0
 
     # NOTE: Native sampling is always enabled
     # The gateway uses native rclcpp APIs for topic discovery and sampling:
