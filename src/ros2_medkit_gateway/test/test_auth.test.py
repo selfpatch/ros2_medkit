@@ -71,8 +71,18 @@ class TestAuthenticationIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        """Wait for gateway to be ready."""
-        time.sleep(3)  # Give the gateway time to start
+        """Wait for gateway to be ready by polling the health endpoint."""
+        deadline = time.monotonic() + 30.0  # overall timeout in seconds
+        last_exception = None
+        while time.monotonic() < deadline:
+            try:
+                response = requests.get(f'{cls.BASE_URL}/health', timeout=1)
+                if response.status_code == 200:
+                    return
+            except requests.RequestException as exc:
+                last_exception = exc
+            time.sleep(0.2)
+        raise RuntimeError('Gateway did not become ready within timeout') from last_exception
 
     def test_01_health_endpoint_no_auth_required(self):
         """Health endpoint should be accessible without authentication."""
