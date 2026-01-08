@@ -261,7 +261,7 @@ void RESTServer::setup_routes() {
   // Fault endpoints
   // GET /faults - convenience API to retrieve all faults across the system
   // Useful for dashboards and monitoring tools that need a complete system health view
-  server_->Get(api_path("/faults").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Get(api_path("/faults"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_list_all_faults(req, res);
   });
 
