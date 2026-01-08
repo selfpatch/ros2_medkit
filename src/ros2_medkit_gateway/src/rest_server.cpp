@@ -2287,11 +2287,11 @@ void RESTServer::handle_auth_revoke(const httplib::Request & req, httplib::Respo
 
     std::string token = body["token"].get<std::string>();
 
-    // Revoke token
-    bool revoked = auth_manager_->revoke_refresh_token(token);
+    // Revoke token (do not reveal whether it existed to avoid token enumeration)
+    auth_manager_->revoke_refresh_token(token);
 
-    // Per OAuth2 spec, always return 200 even if token wasn't found
-    json response = {{"status", revoked ? "revoked" : "not_found"}};
+    // Per OAuth2 RFC 7009, always return 200 and do not indicate token validity
+    json response = {{"status", "revoked"}};
     res.set_content(response.dump(2), "application/json");
   } catch (const std::exception & e) {
     res.status = StatusCode::InternalServerError_500;

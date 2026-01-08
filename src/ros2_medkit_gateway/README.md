@@ -489,10 +489,12 @@ curl -X POST http://localhost:8080/api/v1/auth/token \
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "Bearer",
   "expires_in": 3600,
-  "refresh_token": "bmV3IHJlZnJlc2ggdG9rZW4...",
+  "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...",
   "scope": "admin"
 }
 ```
+
+**Note:** The `refresh_token` in the response is the same token that was sent in the request (not a new token). Refresh token rotation is not implemented.
 
 #### POST /api/v1/auth/revoke
 

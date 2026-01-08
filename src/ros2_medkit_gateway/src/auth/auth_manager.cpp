@@ -201,6 +201,8 @@ tl::expected<TokenResponse, AuthErrorResponse> AuthManager::refresh_access_token
   response.token_type = "Bearer";
   response.expires_in = config_.token_expiry_seconds;
   response.scope = role_to_string(record->role);
+  // Return the existing refresh token so clients can continue to use it
+  response.refresh_token = refresh_token;
 
   return response;
 }
@@ -511,9 +513,14 @@ tl::expected<JwtClaims, std::string> AuthManager::decode_jwt(const std::string &
 }
 
 std::string AuthManager::generate_token_id() {
-  // Generate UUID-like string using thread-local RNG for thread safety
-  thread_local std::random_device rd;
-  thread_local std::mt19937_64 gen(rd());
+  // Generate UUID-like string using thread-local RNG for thread safety.
+  // Seed the PRNG once per thread using a local random_device and time-based seed_seq
+  thread_local std::mt19937_64 gen = []() {
+    std::random_device rd;
+    auto now = static_cast<uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    std::seed_seq seq{rd(), static_cast<uint32_t>(now & 0xFFFFFFFFu), static_cast<uint32_t>((now >> 32) & 0xFFFFFFFFu)};
+    return std::mt19937_64(seq);
+  }();
   thread_local std::uniform_int_distribution<uint64_t> dis;
 
   std::stringstream ss;
@@ -544,53 +551,81 @@ bool AuthManager::matches_path(const std::string & pattern, const std::string & 
     return true;
   }
 
-  // Convert pattern to regex
-  std::string regex_pattern;
-  regex_pattern.reserve(pattern.size() * 2);
+  // Cache compiled regex patterns for performance (authorization is called on every request)
+  static std::mutex cache_mutex;
+  static std::unordered_map<std::string, std::optional<std::regex>> regex_cache;
 
-  for (size_t i = 0; i < pattern.size(); ++i) {
-    char c = pattern[i];
-    if (c == '*') {
-      // Check for ** (multi-segment wildcard)
-      if (i + 1 < pattern.size() && pattern[i + 1] == '*') {
-        regex_pattern += ".*";  // Match anything including slashes
-        ++i;                    // Skip the second *
-      } else {
-        regex_pattern += "[^/]+";  // Match any non-slash characters (single segment)
-      }
-    } else {
-      switch (c) {
-        case '.':
-        case '[':
-        case ']':
-        case '(':
-        case ')':
-        case '{':
-        case '}':
-        case '\\':
-        case '^':
-        case '$':
-        case '|':
-        case '?':
-        case '+':
-          regex_pattern += '\\';
-          regex_pattern += c;
-          break;
-        default:
-          regex_pattern += c;
-      }
+  // Check cache first
+  std::optional<std::regex> cached_regex;
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    auto it = regex_cache.find(pattern);
+    if (it != regex_cache.end()) {
+      cached_regex = it->second;
     }
   }
 
-  // Anchor the pattern
-  regex_pattern = "^" + regex_pattern + "$";
+  // If not in cache, compile and store
+  if (!cached_regex.has_value()) {
+    // Convert pattern to regex
+    std::string regex_pattern;
+    regex_pattern.reserve(pattern.size() * 2);
 
-  try {
-    std::regex re(regex_pattern);
-    return std::regex_match(path, re);
-  } catch (const std::regex_error &) {
+    for (size_t i = 0; i < pattern.size(); ++i) {
+      char c = pattern[i];
+      if (c == '*') {
+        // Check for ** (multi-segment wildcard)
+        if (i + 1 < pattern.size() && pattern[i + 1] == '*') {
+          regex_pattern += ".*";  // Match anything including slashes
+          ++i;                    // Skip the second *
+        } else {
+          regex_pattern += "[^/]+";  // Match any non-slash characters (single segment)
+        }
+      } else {
+        switch (c) {
+          case '.':
+          case '[':
+          case ']':
+          case '(':
+          case ')':
+          case '{':
+          case '}':
+          case '\\':
+          case '^':
+          case '$':
+          case '|':
+          case '?':
+          case '+':
+            regex_pattern += '\\';
+            regex_pattern += c;
+            break;
+          default:
+            regex_pattern += c;
+        }
+      }
+    }
+
+    // Anchor the pattern
+    regex_pattern = "^" + regex_pattern + "$";
+
+    try {
+      std::regex compiled(regex_pattern);
+      std::lock_guard<std::mutex> lock(cache_mutex);
+      regex_cache[pattern] = compiled;
+      cached_regex = compiled;
+    } catch (const std::regex_error &) {
+      std::lock_guard<std::mutex> lock(cache_mutex);
+      regex_cache[pattern] = std::nullopt;  // Cache the failure too
+      return false;
+    }
+  }
+
+  // If regex compilation failed previously, return false
+  if (!cached_regex.has_value()) {
     return false;
   }
+
+  return std::regex_match(path, cached_regex.value());
 }
 
 void AuthManager::store_refresh_token(const RefreshTokenRecord & record) {
