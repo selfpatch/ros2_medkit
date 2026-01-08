@@ -147,113 +147,113 @@ RESTServer::~RESTServer() {
 
 void RESTServer::setup_routes() {
   // Health check
-  server_->Get(api_path("/health").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Get(api_path("/health"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_health(req, res);
   });
 
   // Root - server capabilities and entry points (REQ_INTEROP_010)
-  server_->Get(api_path("/").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Get(api_path("/"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_root(req, res);
   });
 
   // Version info (REQ_INTEROP_001)
-  server_->Get(api_path("/version-info").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Get(api_path("/version-info"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_version_info(req, res);
   });
 
   // Areas
-  server_->Get(api_path("/areas").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Get(api_path("/areas"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_list_areas(req, res);
   });
 
   // Components
-  server_->Get(api_path("/components").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Get(api_path("/components"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_list_components(req, res);
   });
 
   // Area components
-  server_->Get((api_path("/areas") + R"(/([^/]+)/components)").c_str(),
+  server_->Get((api_path("/areas") + R"(/([^/]+)/components)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_area_components(req, res);
                });
 
   // Component topic data (specific topic) - register before general route
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
-  server_->Get((api_path("/components") + R"(/([^/]+)/data/(.+)$)").c_str(),
+  server_->Get((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_component_topic_data(req, res);
                });
 
   // Component data (all topics)
-  server_->Get((api_path("/components") + R"(/([^/]+)/data$)").c_str(),
+  server_->Get((api_path("/components") + R"(/([^/]+)/data$)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_component_data(req, res);
                });
 
   // Component topic publish (PUT)
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
-  server_->Put((api_path("/components") + R"(/([^/]+)/data/(.+)$)").c_str(),
+  server_->Put((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_component_topic_publish(req, res);
                });
 
   // Component operation (POST) - sync operations like service calls, async action goals
-  server_->Post((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)").c_str(),
+  server_->Post((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)"),
                 [this](const httplib::Request & req, httplib::Response & res) {
                   handle_component_operation(req, res);
                 });
 
   // List component operations (GET) - list all services and actions for a component
-  server_->Get((api_path("/components") + R"(/([^/]+)/operations$)").c_str(),
+  server_->Get((api_path("/components") + R"(/([^/]+)/operations$)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_list_operations(req, res);
                });
 
   // Action status (GET) - get current status of an action goal
-  server_->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/status$)").c_str(),
+  server_->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/status$)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_action_status(req, res);
                });
 
   // Action result (GET) - get result of a completed action goal
-  server_->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/result$)").c_str(),
+  server_->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/result$)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_action_result(req, res);
                });
 
   // Action cancel (DELETE) - cancel a running action goal
-  server_->Delete((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)").c_str(),
+  server_->Delete((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)"),
                   [this](const httplib::Request & req, httplib::Response & res) {
                     handle_action_cancel(req, res);
                   });
 
   // Configurations endpoints - SOVD Configurations API mapped to ROS2 parameters
   // List all configurations (parameters) for a component
-  server_->Get((api_path("/components") + R"(/([^/]+)/configurations$)").c_str(),
+  server_->Get((api_path("/components") + R"(/([^/]+)/configurations$)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_list_configurations(req, res);
                });
 
   // Get specific configuration (parameter) - register before general route
-  server_->Get((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)").c_str(),
+  server_->Get((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_get_configuration(req, res);
                });
 
   // Set configuration (parameter)
-  server_->Put((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)").c_str(),
+  server_->Put((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_set_configuration(req, res);
                });
 
   // Delete (reset) single configuration to default value
-  server_->Delete((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)").c_str(),
+  server_->Delete((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
                   [this](const httplib::Request & req, httplib::Response & res) {
                     handle_delete_configuration(req, res);
                   });
 
   // Delete (reset) all configurations to default values
-  server_->Delete((api_path("/components") + R"(/([^/]+)/configurations$)").c_str(),
+  server_->Delete((api_path("/components") + R"(/([^/]+)/configurations$)"),
                   [this](const httplib::Request & req, httplib::Response & res) {
                     handle_delete_all_configurations(req, res);
                   });
@@ -266,36 +266,36 @@ void RESTServer::setup_routes() {
   });
 
   // List all faults for a component (REQ_INTEROP_012)
-  server_->Get((api_path("/components") + R"(/([^/]+)/faults$)").c_str(),
+  server_->Get((api_path("/components") + R"(/([^/]+)/faults$)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_list_faults(req, res);
                });
 
   // Get specific fault by code (REQ_INTEROP_013)
-  server_->Get((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)").c_str(),
+  server_->Get((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)"),
                [this](const httplib::Request & req, httplib::Response & res) {
                  handle_get_fault(req, res);
                });
 
   // Clear a fault (REQ_INTEROP_015)
-  server_->Delete((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)").c_str(),
+  server_->Delete((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)"),
                   [this](const httplib::Request & req, httplib::Response & res) {
                     handle_clear_fault(req, res);
                   });
 
   // Authentication endpoints (REQ_INTEROP_086, REQ_INTEROP_087)
   // POST /auth/authorize - Authenticate and get tokens (client_credentials grant)
-  server_->Post(api_path("/auth/authorize").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Post(api_path("/auth/authorize"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_auth_authorize(req, res);
   });
 
   // POST /auth/token - Refresh access token
-  server_->Post(api_path("/auth/token").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Post(api_path("/auth/token"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_auth_token(req, res);
   });
 
   // POST /auth/revoke - Revoke a refresh token
-  server_->Post(api_path("/auth/revoke").c_str(), [this](const httplib::Request & req, httplib::Response & res) {
+  server_->Post(api_path("/auth/revoke"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_auth_revoke(req, res);
   });
 }
@@ -303,7 +303,7 @@ void RESTServer::setup_routes() {
 void RESTServer::start() {
   RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Starting REST server on %s:%d...", host_.c_str(), port_);
 
-  server_->listen(host_.c_str(), port_);
+  server_->listen(host_, port_);
 }
 
 void RESTServer::stop() {
@@ -313,15 +313,15 @@ void RESTServer::stop() {
   }
 }
 
-std::expected<void, std::string> RESTServer::validate_entity_id(const std::string & entity_id) const {
+tl::expected<void, std::string> RESTServer::validate_entity_id(const std::string & entity_id) const {
   // Check for empty string
   if (entity_id.empty()) {
-    return std::unexpected("Entity ID cannot be empty");
+    return tl::unexpected("Entity ID cannot be empty");
   }
 
   // Check length (reasonable limit to prevent abuse)
   if (entity_id.length() > 256) {
-    return std::unexpected("Entity ID too long (max 256 characters)");
+    return tl::unexpected("Entity ID too long (max 256 characters)");
   }
 
   // Validate characters according to ROS 2 naming conventions
@@ -343,15 +343,15 @@ std::expected<void, std::string> RESTServer::validate_entity_id(const std::strin
       } else {
         char_repr = std::string(1, c);
       }
-      return std::unexpected("Entity ID contains invalid character: '" + char_repr +
-                             "'. Only alphanumeric and underscore are allowed");
+      return tl::unexpected("Entity ID contains invalid character: '" + char_repr +
+                            "'. Only alphanumeric and underscore are allowed");
     }
   }
 
   return {};
 }
 
-std::expected<std::string, std::string>
+tl::expected<std::string, std::string>
 RESTServer::get_component_namespace_path(const std::string & component_id) const {
   const auto cache = node_->get_entity_cache();
   for (const auto & component : cache.components) {
@@ -359,7 +359,7 @@ RESTServer::get_component_namespace_path(const std::string & component_id) const
       return component.namespace_path;
     }
   }
-  return std::unexpected("Component not found");
+  return tl::unexpected("Component not found");
 }
 
 void RESTServer::handle_health(const httplib::Request & req, httplib::Response & res) {

@@ -15,10 +15,10 @@
 #pragma once
 
 #include <chrono>
-#include <expected>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <tl/expected.hpp>
 #include <vector>
 
 #include "ros2_medkit_gateway/auth/auth_config.hpp"
@@ -204,8 +204,8 @@ struct AuthorizeRequest {
    * @param body Request body
    * @return AuthorizeRequest on success, AuthErrorResponse on failure
    */
-  static std::expected<AuthorizeRequest, AuthErrorResponse> parse_request(const std::string & content_type,
-                                                                          const std::string & body);
+  static tl::expected<AuthorizeRequest, AuthErrorResponse> parse_request(const std::string & content_type,
+                                                                         const std::string & body);
 };
 
 /**

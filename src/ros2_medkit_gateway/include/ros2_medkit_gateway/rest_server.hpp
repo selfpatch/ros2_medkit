@@ -16,10 +16,10 @@
 
 #include <httplib.h>
 
-#include <expected>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <tl/expected.hpp>
 #include <vector>
 
 #include "ros2_medkit_gateway/auth/auth_config.hpp"
@@ -76,8 +76,8 @@ class RESTServer {
   void handle_auth_revoke(const httplib::Request & req, httplib::Response & res);
 
   // Helper methods
-  std::expected<void, std::string> validate_entity_id(const std::string & entity_id) const;
-  std::expected<std::string, std::string> get_component_namespace_path(const std::string & component_id) const;
+  tl::expected<void, std::string> validate_entity_id(const std::string & entity_id) const;
+  tl::expected<std::string, std::string> get_component_namespace_path(const std::string & component_id) const;
   void set_cors_headers(httplib::Response & res, const std::string & origin) const;
   bool is_origin_allowed(const std::string & origin) const;
 

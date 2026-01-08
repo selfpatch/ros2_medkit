@@ -183,8 +183,9 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   refresh_cache();
 
   // Setup periodic refresh with configurable interval
-  refresh_timer_ =
-      create_wall_timer(std::chrono::milliseconds(refresh_interval_ms_), std::bind(&GatewayNode::refresh_cache, this));
+  refresh_timer_ = create_wall_timer(std::chrono::milliseconds(refresh_interval_ms_), [this]() {
+    refresh_cache();
+  });
 
   // Setup periodic cleanup of old action goals (every 60 seconds, remove goals older than 5 minutes)
   cleanup_timer_ = create_wall_timer(60s, [this]() {

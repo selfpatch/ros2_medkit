@@ -68,14 +68,14 @@ AuthorizeRequest AuthorizeRequest::from_form_data(const std::string & body) {
   return req;
 }
 
-std::expected<AuthorizeRequest, AuthErrorResponse> AuthorizeRequest::parse_request(const std::string & content_type,
-                                                                                   const std::string & body) {
+tl::expected<AuthorizeRequest, AuthErrorResponse> AuthorizeRequest::parse_request(const std::string & content_type,
+                                                                                  const std::string & body) {
   if (content_type.find("application/json") != std::string::npos) {
     try {
       nlohmann::json json_body = nlohmann::json::parse(body);
       return AuthorizeRequest::from_json(json_body);
     } catch (const nlohmann::json::parse_error & e) {
-      return std::unexpected(AuthErrorResponse::invalid_request("Invalid JSON: " + std::string(e.what())));
+      return tl::unexpected(AuthErrorResponse::invalid_request("Invalid JSON: " + std::string(e.what())));
     }
   }
 
@@ -83,7 +83,7 @@ std::expected<AuthorizeRequest, AuthErrorResponse> AuthorizeRequest::parse_reque
     return AuthorizeRequest::from_form_data(body);
   }
 
-  return std::unexpected(
+  return tl::unexpected(
       AuthErrorResponse::invalid_request("Content-Type must be application/json or application/x-www-form-urlencoded"));
 }
 

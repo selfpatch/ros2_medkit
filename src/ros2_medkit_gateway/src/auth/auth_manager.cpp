@@ -68,25 +68,25 @@ AuthManager::AuthManager(const AuthConfig & config) : config_(config) {
   auth_policy_ = AuthRequirementPolicyFactory::create(config_.require_auth_for);
 }
 
-std::expected<TokenResponse, AuthErrorResponse> AuthManager::authenticate(const std::string & client_id,
-                                                                          const std::string & client_secret) {
+tl::expected<TokenResponse, AuthErrorResponse> AuthManager::authenticate(const std::string & client_id,
+                                                                         const std::string & client_secret) {
   // Find client
   std::lock_guard<std::mutex> lock(clients_mutex_);
   auto it = clients_.find(client_id);
   if (it == clients_.end()) {
-    return std::unexpected(AuthErrorResponse::invalid_client("Unknown client_id"));
+    return tl::unexpected(AuthErrorResponse::invalid_client("Unknown client_id"));
   }
 
   const auto & client = it->second;
 
   // Check if client is enabled
   if (!client.enabled) {
-    return std::unexpected(AuthErrorResponse::invalid_client("Client is disabled"));
+    return tl::unexpected(AuthErrorResponse::invalid_client("Client is disabled"));
   }
 
   // Verify secret
   if (client.client_secret != client_secret) {
-    return std::unexpected(AuthErrorResponse::invalid_client("Invalid client_secret"));
+    return tl::unexpected(AuthErrorResponse::invalid_client("Invalid client_secret"));
   }
 
   // Generate tokens
@@ -140,43 +140,43 @@ std::expected<TokenResponse, AuthErrorResponse> AuthManager::authenticate(const 
   return response;
 }
 
-std::expected<TokenResponse, AuthErrorResponse> AuthManager::refresh_access_token(const std::string & refresh_token) {
+tl::expected<TokenResponse, AuthErrorResponse> AuthManager::refresh_access_token(const std::string & refresh_token) {
   // Decode and validate refresh token
   auto decode_result = decode_jwt(refresh_token);
   if (!decode_result) {
-    return std::unexpected(AuthErrorResponse::invalid_grant(decode_result.error()));
+    return tl::unexpected(AuthErrorResponse::invalid_grant(decode_result.error()));
   }
 
   const auto & claims = decode_result.value();
 
   // Verify this is actually a refresh token, not an access token
   if (claims.typ != TokenType::REFRESH) {
-    return std::unexpected(AuthErrorResponse::invalid_grant("Token is not a refresh token"));
+    return tl::unexpected(AuthErrorResponse::invalid_grant("Token is not a refresh token"));
   }
 
   // Check if refresh token exists and is not revoked
   auto record = get_refresh_token(claims.jti);
   if (!record.has_value()) {
-    return std::unexpected(AuthErrorResponse::invalid_grant("Refresh token not found"));
+    return tl::unexpected(AuthErrorResponse::invalid_grant("Refresh token not found"));
   }
 
   if (record->revoked) {
-    return std::unexpected(AuthErrorResponse::invalid_grant("Refresh token has been revoked"));
+    return tl::unexpected(AuthErrorResponse::invalid_grant("Refresh token has been revoked"));
   }
 
   // Check expiration
   if (claims.is_expired()) {
-    return std::unexpected(AuthErrorResponse::invalid_grant("Refresh token has expired"));
+    return tl::unexpected(AuthErrorResponse::invalid_grant("Refresh token has expired"));
   }
 
   // Get client to check if still enabled
   auto client = get_client(claims.sub);
   if (!client.has_value()) {
-    return std::unexpected(AuthErrorResponse::invalid_grant("Client no longer exists"));
+    return tl::unexpected(AuthErrorResponse::invalid_grant("Client no longer exists"));
   }
 
   if (!client->enabled) {
-    return std::unexpected(AuthErrorResponse::invalid_grant("Client is disabled"));
+    return tl::unexpected(AuthErrorResponse::invalid_grant("Client is disabled"));
   }
 
   // Generate new access token
@@ -438,7 +438,7 @@ std::string AuthManager::generate_jwt(const JwtClaims & claims) const {
   }
 }
 
-std::expected<JwtClaims, std::string> AuthManager::decode_jwt(const std::string & token) const {
+tl::expected<JwtClaims, std::string> AuthManager::decode_jwt(const std::string & token) const {
   try {
     // Decode token first
     auto decoded = jwt::decode(token);
@@ -462,10 +462,10 @@ std::expected<JwtClaims, std::string> AuthManager::decode_jwt(const std::string 
         }
 
         default:
-          return std::unexpected("Unsupported JWT algorithm");
+          return tl::unexpected("Unsupported JWT algorithm");
       }
     } catch (const jwt::error::token_verification_exception & e) {
-      return std::unexpected("Token verification failed: " + std::string(e.what()));
+      return tl::unexpected("Token verification failed: " + std::string(e.what()));
     }
 
     // Extract claims
@@ -506,7 +506,7 @@ std::expected<JwtClaims, std::string> AuthManager::decode_jwt(const std::string 
 
     return claims;
   } catch (const std::exception & e) {
-    return std::unexpected("JWT decode error: " + std::string(e.what()));
+    return tl::unexpected("JWT decode error: " + std::string(e.what()));
   }
 }
 

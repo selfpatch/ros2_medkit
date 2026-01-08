@@ -14,10 +14,10 @@
 
 #pragma once
 
-#include <expected>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <tl/expected.hpp>
 #include <unordered_map>
 
 #include "ros2_medkit_gateway/auth/auth_config.hpp"
@@ -74,15 +74,15 @@ class AuthManager {
    * @param client_secret Client secret
    * @return TokenResponse on success, AuthErrorResponse on failure
    */
-  std::expected<TokenResponse, AuthErrorResponse> authenticate(const std::string & client_id,
-                                                               const std::string & client_secret);
+  tl::expected<TokenResponse, AuthErrorResponse> authenticate(const std::string & client_id,
+                                                              const std::string & client_secret);
 
   /**
    * @brief Refresh an access token using a refresh token
    * @param refresh_token The refresh token
    * @return TokenResponse on success, AuthErrorResponse on failure
    */
-  std::expected<TokenResponse, AuthErrorResponse> refresh_access_token(const std::string & refresh_token);
+  tl::expected<TokenResponse, AuthErrorResponse> refresh_access_token(const std::string & refresh_token);
 
   /**
    * @brief Validate a JWT access token
@@ -165,7 +165,7 @@ class AuthManager {
    * @param token JWT token string
    * @return JwtClaims if valid
    */
-  std::expected<JwtClaims, std::string> decode_jwt(const std::string & token) const;
+  tl::expected<JwtClaims, std::string> decode_jwt(const std::string & token) const;
 
   /**
    * @brief Generate a unique token ID

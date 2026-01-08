@@ -38,7 +38,7 @@ namespace ros2_medkit_gateway {
 class GatewayNode : public rclcpp::Node {
  public:
   GatewayNode();
-  ~GatewayNode();
+  ~GatewayNode() override;
 
   // Thread-safe accessors for REST server
   EntityCache get_entity_cache() const;
