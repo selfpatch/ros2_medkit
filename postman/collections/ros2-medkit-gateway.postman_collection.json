@@ -6,6 +6,290 @@
   },
   "item": [
     {
+      "name": "Authentication",
+      "description": "JWT authentication endpoints (REQ_INTEROP_086, REQ_INTEROP_087). OAuth2-compatible token management with RBAC support. Roles: viewer (read-only), operator (+ trigger operations), configurator (+ modify configs), admin (full access).",
+      "item": [
+        {
+          "name": "POST Authenticate (Client Credentials)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.environment.set('access_token', jsonData.access_token);",
+                  "    if (jsonData.refresh_token) {",
+                  "        pm.environment.set('refresh_token', jsonData.refresh_token);",
+                  "    }",
+                  "    console.log('Tokens saved to environment');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"grant_type\": \"client_credentials\",\n  \"client_id\": \"{{client_id}}\",\n  \"client_secret\": \"{{client_secret}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/authorize",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "authorize"
+              ]
+            },
+            "description": "Authenticate using client credentials (REQ_INTEROP_086). Returns access_token, refresh_token, token_type, expires_in, and scope. Tokens are automatically saved to environment variables. Supported Content-Types: application/json, application/x-www-form-urlencoded."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Authenticate (Form URL-Encoded)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.environment.set('access_token', jsonData.access_token);",
+                  "    if (jsonData.refresh_token) {",
+                  "        pm.environment.set('refresh_token', jsonData.refresh_token);",
+                  "    }",
+                  "    console.log('Tokens saved to environment');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "client_credentials",
+                  "type": "text"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{client_id}}",
+                  "type": "text"
+                },
+                {
+                  "key": "client_secret",
+                  "value": "{{client_secret}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/authorize",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "authorize"
+              ]
+            },
+            "description": "Authenticate using form URL-encoded body (OAuth2 standard format). Alternative to JSON body."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Refresh Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.environment.set('access_token', jsonData.access_token);",
+                  "    console.log('Access token refreshed');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"grant_type\": \"refresh_token\",\n  \"refresh_token\": \"{{refresh_token}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/token",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "token"
+              ]
+            },
+            "description": "Refresh an expired access token using a refresh token (REQ_INTEROP_087). Returns new access_token. The refresh_token remains valid until its expiry. New access token is automatically saved to environment."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Revoke Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    pm.environment.unset('access_token');",
+                  "    pm.environment.unset('refresh_token');",
+                  "    console.log('Tokens revoked and cleared from environment');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{refresh_token}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/revoke",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "revoke"
+              ]
+            },
+            "description": "Revoke a refresh token (REQ_INTEROP_087). Invalidates the refresh token and all access tokens derived from it. Environment tokens are cleared on success."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Authenticate (Error - Invalid Credentials)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"grant_type\": \"client_credentials\",\n  \"client_id\": \"admin\",\n  \"client_secret\": \"wrong_password\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/authorize",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "authorize"
+              ]
+            },
+            "description": "Example of authentication failure with invalid credentials. Returns 401 with OAuth2 error response (error, error_description)."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Authenticate (Error - Unknown Client)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"grant_type\": \"client_credentials\",\n  \"client_id\": \"nonexistent_user\",\n  \"client_secret\": \"secret\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/authorize",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "authorize"
+              ]
+            },
+            "description": "Example of authentication failure with unknown client. Returns 401 with error='invalid_client'."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Authenticate (Error - Unsupported Grant Type)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"grant_type\": \"password\",\n  \"username\": \"admin\",\n  \"password\": \"secret\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/authorize",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "authorize"
+              ]
+            },
+            "description": "Example of unsupported grant type. Only 'client_credentials' is supported for /auth/authorize. Returns 400 with error='unsupported_grant_type'."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "Discovery",
       "item": [
         {

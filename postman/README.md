@@ -10,6 +10,11 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 
 **Collection:** `collections/ros2-medkit-gateway.postman_collection.json`
 
+### Authentication Endpoints (JWT/OAuth2)
+- ✅ POST `/api/v1/auth/authorize` - Authenticate with client credentials (get access + refresh tokens)
+- ✅ POST `/api/v1/auth/token` - Refresh access token using refresh token
+- ✅ POST `/api/v1/auth/revoke` - Revoke a refresh token (invalidates all derived access tokens)
+
 ### Discovery Endpoints
 - ✅ GET `/api/v1/` - Server capabilities and entry points
 - ✅ GET `/api/v1/version-info` - Gateway status and version
@@ -71,6 +76,15 @@ ros2 launch ros2_medkit_gateway gateway.launch.py
 
 ### 4. Test Endpoints
 
+**Authentication (when auth is enabled):**
+1. Expand **"Authentication"** folder
+2. Set `client_id` and `client_secret` in environment (default: admin/admin_secret)
+3. Click **"POST Authenticate (Client Credentials)"** → **Send**
+4. Tokens are automatically saved to environment variables
+5. Use `{{access_token}}` in Authorization header for protected endpoints
+
+> **Note:** Auth endpoints are always accessible. By default (`require_auth_for: write`), only write operations (POST, PUT, DELETE) require authentication. GET requests work without a token.
+
 **Discovery:**
 1. Expand **"Discovery"** folder
 2. Click **"GET Server Capabilities"** → **Send**
@@ -123,6 +137,46 @@ The sensor starts with intentionally invalid parameters that generate faults:
    - **Step 7:** Verify all faults cleared
    - **Step 8:** View complete fault history
 
+## Authentication
+
+The gateway supports JWT-based authentication with Role-Based Access Control (RBAC).
+
+### Roles
+
+| Role | Permissions |
+|------|-------------|
+| `viewer` | Read-only access (GET on all endpoints) |
+| `operator` | Viewer + trigger operations, clear faults, publish data |
+| `configurator` | Operator + modify/reset configurations |
+| `admin` | Full access including auth management |
+
+### Auth Configuration
+
+Authentication is configured via ROS 2 parameters:
+
+```yaml
+auth:
+  enabled: true
+  jwt_secret: "your-secret-key"
+  jwt_algorithm: "HS256"  # or "RS256" for asymmetric
+  token_expiry_seconds: 3600
+  refresh_token_expiry_seconds: 86400
+  require_auth_for: "write"  # "none", "write", or "all"
+  clients:
+    - "admin:admin_secret:admin"
+    - "operator:operator_secret:operator"
+    - "viewer:viewer_secret:viewer"
+```
+
+### Using Tokens in Postman
+
+For protected endpoints, add Authorization header:
+```
+Authorization: Bearer {{access_token}}
+```
+
+The collection's auth requests automatically save tokens to environment variables.
+
 ## URL Encoding for Topics
 
 Topic paths use standard percent-encoding (`%2F` for `/`):
@@ -138,6 +192,10 @@ Example: `GET /api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperat
 
 The environment includes:
 - `base_url`: `http://localhost:8080/api/v1` (default gateway address with API prefix)
+- `client_id`: Client ID for authentication (default: `admin`)
+- `client_secret`: Client secret for authentication (default: `admin_secret`)
+- `access_token`: JWT access token (auto-populated after authentication)
+- `refresh_token`: JWT refresh token (auto-populated after authentication)
 - `goal_id`: Used for action status queries (set manually after sending a goal)
 
 ---
