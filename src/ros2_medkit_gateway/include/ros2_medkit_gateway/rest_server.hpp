@@ -26,6 +26,7 @@
 #include "ros2_medkit_gateway/auth/auth_manager.hpp"
 #include "ros2_medkit_gateway/auth/auth_middleware.hpp"
 #include "ros2_medkit_gateway/config.hpp"
+#include "ros2_medkit_gateway/http/http_server.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -42,16 +43,12 @@ class RESTServer {
 
   /// Check if TLS/HTTPS is enabled
   bool is_tls_enabled() const {
-    return tls_config_.enabled;
+    return http_server_ && http_server_->is_tls_enabled();
   }
 
  private:
   void setup_routes();
   void setup_pre_routing_handler();
-
-  /// Configure TLS settings on the SSL server
-  /// @throws std::runtime_error if TLS configuration fails
-  void configure_tls();
 
   // Route handlers
   void handle_health(const httplib::Request & req, httplib::Response & res);
@@ -100,13 +97,8 @@ class RESTServer {
   std::unique_ptr<AuthManager> auth_manager_;
   std::unique_ptr<AuthMiddleware> auth_middleware_;
 
-  // HTTP server (used when TLS is disabled)
-  std::unique_ptr<httplib::Server> server_;
-
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-  // HTTPS server (used when TLS is enabled)
-  std::unique_ptr<httplib::SSLServer> ssl_server_;
-#endif
+  // HTTP/HTTPS server manager
+  std::unique_ptr<HttpServerManager> http_server_;
 };
 
 }  // namespace ros2_medkit_gateway

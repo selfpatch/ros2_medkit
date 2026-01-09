@@ -112,6 +112,8 @@ add_library(gateway_lib STATIC
   src/operation_manager.cpp
   src/configuration_manager.cpp
   src/fault_manager.cpp
+  # HTTP server module (subfolder)
+  src/http/http_server.cpp
   # Auth module (subfolder)
   src/auth/auth_config.cpp
   src/auth/auth_models.cpp

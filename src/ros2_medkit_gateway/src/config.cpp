@@ -14,9 +14,8 @@
 
 #include "ros2_medkit_gateway/config.hpp"
 
-#include <sys/stat.h>
-
 #include <algorithm>
+#include <filesystem>
 #include <stdexcept>
 #include <utility>
 
@@ -27,8 +26,8 @@ static bool file_exists(const std::string & path) {
   if (path.empty()) {
     return false;
   }
-  struct stat buffer;
-  return (stat(path.c_str(), &buffer) == 0);
+  std::error_code ec;
+  return std::filesystem::exists(path, ec) && std::filesystem::is_regular_file(path, ec);
 }
 
 // TlsConfig implementation
@@ -109,7 +108,7 @@ TlsConfig TlsConfigBuilder::build() {
   if (!error.empty()) {
     throw std::invalid_argument(error);
   }
-  return std::move(config_);
+  return config_;
 }
 
 // CorsConfigBuilder implementation
@@ -175,7 +174,7 @@ CorsConfig CorsConfigBuilder::build() {
     }
   }
 
-  return std::move(config_);
+  return config_;
 }
 
 }  // namespace ros2_medkit_gateway

@@ -25,57 +25,12 @@
 #include "ros2_medkit_gateway/auth/auth_models.hpp"
 #include "ros2_medkit_gateway/exceptions.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
-
-// API version prefix for all endpoints
-static constexpr const char * API_BASE_PATH = "/api/v1";
-
-// Helper to build versioned endpoint path
-inline std::string api_path(const std::string & endpoint) {
-  return std::string(API_BASE_PATH) + endpoint;
-}
-
-// Fault status filter flags
-struct FaultStatusFilter {
-  bool include_pending = true;
-  bool include_confirmed = true;
-  bool include_cleared = false;
-  bool is_valid = true;
-};
-
-// Helper to parse fault status query parameter
-// Returns filter flags and validity. If status param is invalid, is_valid=false.
-inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req) {
-  FaultStatusFilter filter;
-
-  if (req.has_param("status")) {
-    std::string status = req.get_param_value("status");
-    // Reset defaults when explicit status filter is provided
-    filter.include_pending = false;
-    filter.include_confirmed = false;
-    filter.include_cleared = false;
-
-    if (status == "pending") {
-      filter.include_pending = true;
-    } else if (status == "confirmed") {
-      filter.include_confirmed = true;
-    } else if (status == "cleared") {
-      filter.include_cleared = true;
-    } else if (status == "all") {
-      filter.include_pending = true;
-      filter.include_confirmed = true;
-      filter.include_cleared = true;
-    } else {
-      filter.is_valid = false;
-    }
-  }
-
-  return filter;
-}
 
 RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
                        const AuthConfig & auth_config, const TlsConfig & tls_config)
@@ -85,35 +40,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   , cors_config_(cors_config)
   , auth_config_(auth_config)
   , tls_config_(tls_config) {
-  // Create the appropriate server based on TLS configuration
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-  if (tls_config_.enabled) {
-    // Create SSL server with certificate and key
-    ssl_server_ = std::make_unique<httplib::SSLServer>(tls_config_.cert_file.c_str(), tls_config_.key_file.c_str());
-
-    if (!ssl_server_->is_valid()) {
-      throw std::runtime_error("Failed to create SSL server. Check certificate and key files: " +
-                               tls_config_.cert_file + ", " + tls_config_.key_file);
-    }
-
-    // Configure additional TLS settings
-    configure_tls();
-
-    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "TLS/HTTPS enabled - cert: %s, min_version: %s, mutual_tls: %s",
-                tls_config_.cert_file.c_str(), tls_config_.min_version.c_str(),
-                tls_config_.mutual_tls ? "true" : "false");
-  } else {
-    server_ = std::make_unique<httplib::Server>();
-    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "TLS/HTTPS disabled - using plain HTTP");
-  }
-#else
-  if (tls_config_.enabled) {
-    throw std::runtime_error(
-        "TLS/HTTPS support requested but cpp-httplib was not compiled with OpenSSL support. "
-        "Ensure CPPHTTPLIB_OPENSSL_SUPPORT is defined.");
-  }
-  server_ = std::make_unique<httplib::Server>();
-#endif
+  // Create HTTP/HTTPS server manager
+  http_server_ = std::make_unique<HttpServerManager>(tls_config_);
 
   // Initialize auth manager and middleware if auth is enabled
   if (auth_config_.enabled) {
@@ -131,55 +59,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   setup_routes();
 }
 
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-void RESTServer::configure_tls() {
-  if (!ssl_server_) {
-    return;
-  }
-
-  // Configure minimum TLS version
-  // Note: cpp-httplib uses OpenSSL's SSL_CTX internally
-  // The SSLServer constructor already sets up basic SSL context
-  // Additional configuration can be done via the server's SSL context if needed
-
-  // For mutual TLS, configure client certificate verification
-  if (tls_config_.mutual_tls && !tls_config_.ca_file.empty()) {
-    // cpp-httplib doesn't expose SSL_CTX directly in a standard way,
-    // but the CA file can be loaded for client verification
-    // This is a limitation - for full mutual TLS support, consider
-    // extending cpp-httplib or using a different approach
-    RCLCPP_INFO(rclcpp::get_logger("rest_server"),
-                "Mutual TLS configured with CA file: %s (note: full mTLS support may require cpp-httplib extensions)",
-                tls_config_.ca_file.c_str());
-  }
-
-  // Log TLS handshake failures for debugging
-  ssl_server_->set_logger([](const httplib::Request & req, const httplib::Response & res) {
-    if (res.status >= 400) {
-      RCLCPP_DEBUG(rclcpp::get_logger("rest_server"), "Request %s %s -> %d", req.method.c_str(), req.path.c_str(),
-                   res.status);
-    }
-  });
-}
-#else
-void RESTServer::configure_tls() {
-  // No-op when OpenSSL support is not available
-}
-#endif
-
 void RESTServer::setup_pre_routing_handler() {
-  // Get the appropriate server pointer
-  httplib::Server * srv = nullptr;
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-  if (tls_config_.enabled && ssl_server_) {
-    srv = ssl_server_.get();
-  } else {
-    srv = server_.get();
-  }
-#else
-  srv = server_.get();
-#endif
-
+  httplib::Server * srv = http_server_->get_server();
   if (!srv) {
     return;
   }
@@ -236,18 +117,7 @@ RESTServer::~RESTServer() {
 }
 
 void RESTServer::setup_routes() {
-  // Get the appropriate server pointer
-  httplib::Server * srv = nullptr;
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-  if (tls_config_.enabled && ssl_server_) {
-    srv = ssl_server_.get();
-  } else {
-    srv = server_.get();
-  }
-#else
-  srv = server_.get();
-#endif
-
+  httplib::Server * srv = http_server_->get_server();
   if (!srv) {
     throw std::runtime_error("No server instance available for route setup");
   }
@@ -407,38 +277,13 @@ void RESTServer::setup_routes() {
 }
 
 void RESTServer::start() {
-  std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";
-  RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Starting %s REST server on %s:%d...", protocol.c_str(), host_.c_str(),
-              port_);
-
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-  if (tls_config_.enabled && ssl_server_) {
-    ssl_server_->listen(host_, port_);
-  } else if (server_) {
-    server_->listen(host_, port_);
-  }
-#else
-  if (server_) {
-    server_->listen(host_, port_);
-  }
-#endif
+  http_server_->listen(host_, port_);
 }
 
 void RESTServer::stop() {
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-  if (tls_config_.enabled && ssl_server_ && ssl_server_->is_running()) {
-    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Stopping HTTPS REST server...");
-    ssl_server_->stop();
-  } else if (server_ && server_->is_running()) {
-    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Stopping HTTP REST server...");
-    server_->stop();
+  if (http_server_) {
+    http_server_->stop();
   }
-#else
-  if (server_ && server_->is_running()) {
-    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Stopping REST server...");
-    server_->stop();
-  }
-#endif
 }
 
 tl::expected<void, std::string> RESTServer::validate_entity_id(const std::string & entity_id) const {

@@ -16,6 +16,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <random>
 #include <stdexcept>
 #include <string>
 
@@ -46,7 +47,11 @@ class TlsConfigTest : public ::testing::Test {
   }
 
   std::string create_temp_file(const std::string & prefix) {
-    std::string filename = "/tmp/tls_test_" + prefix + "_" + std::to_string(rand()) + ".pem";
+    // Use std::random_device for proper random number generation
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    static std::uniform_int_distribution<> dis(0, 999999);
+    std::string filename = "/tmp/tls_test_" + prefix + "_" + std::to_string(dis(gen)) + ".pem";
     std::ofstream file(filename);
     file << "test content";
     file.close();
@@ -248,3 +253,20 @@ TEST_F(TlsConfigTest, disabled_config_ignores_invalid_paths) {
 
   EXPECT_TRUE(config.validate().empty());
 }
+
+// Note: Expired certificate testing
+// ================================
+// Testing behavior with expired certificates requires:
+// 1. Generating a certificate with -days 0 (already expired)
+// 2. Starting HttpServerManager with that certificate
+// 3. Making HTTPS requests and verifying SSL_ERROR_SSL or similar
+//
+// This is better suited for integration testing (test_tls.test.py)
+// or manual testing, as it requires:
+// - Real OpenSSL certificate generation
+// - Actually starting an HTTPS server
+// - Client-side certificate validation
+//
+// The current certificate validation (file exists + is readable) happens
+// at config time. Certificate validity (expiration, chain, etc.) is
+// validated by OpenSSL at connection time.

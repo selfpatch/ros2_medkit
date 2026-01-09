@@ -32,6 +32,13 @@
 
 set -e
 
+# Check for required tools
+command -v openssl >/dev/null 2>&1 || {
+  echo "Error: openssl is required but not installed."
+  echo "Install it with: sudo apt-get install openssl"
+  exit 1
+}
+
 # Output directory
 OUTPUT_DIR="${1:-./certs}"
 

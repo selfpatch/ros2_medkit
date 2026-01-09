@@ -23,12 +23,14 @@ This launch file:
 4. Cleans up all processes and temporary certificates
 """
 
+import atexit
 import os
 import shutil
 import subprocess
 import tempfile
 import time
 import unittest
+import warnings
 
 from launch import LaunchDescription
 from launch.actions import TimerAction
@@ -36,10 +38,6 @@ import launch_ros.actions
 import launch_testing.actions
 import requests
 import urllib3
-
-
-# Disable SSL warnings for self-signed certificates in tests
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def get_coverage_env():
@@ -60,50 +58,54 @@ def get_coverage_env():
     return {}
 
 
-def generate_test_certificates(output_dir: str) -> tuple:
+class CertificateFixture:
     """
-    Generate self-signed certificates for testing.
+    Manage test certificates with proper cleanup.
 
-    Parameters
-    ----------
-    output_dir : str
-        Directory to store generated certificates
-
-    Returns
-    -------
-    tuple
-        (cert_file, key_file, ca_file) paths
-
+    This class ensures certificates are generated once and cleaned up
+    via atexit, avoiding resource leaks in test runs.
     """
-    cert_file = os.path.join(output_dir, 'cert.pem')
-    key_file = os.path.join(output_dir, 'key.pem')
-    ca_file = os.path.join(output_dir, 'ca.pem')
 
-    # Generate CA certificate
-    subprocess.run([
-        'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
-        '-keyout', os.path.join(output_dir, 'ca_key.pem'),
-        '-out', ca_file,
-        '-days', '1', '-nodes',
-        '-subj', '/CN=Test CA'
-    ], check=True, capture_output=True)
+    def __init__(self):
+        """Initialize certificate fixture (lazy initialization)."""
+        self._cert_dir = None
+        self._cert_file = None
+        self._key_file = None
+        self._ca_file = None
+        self._initialized = False
 
-    # Generate server key
-    subprocess.run([
-        'openssl', 'genrsa', '-out', key_file, '2048'
-    ], check=True, capture_output=True)
+    def _generate_certificates(self) -> None:
+        """Generate self-signed certificates for testing."""
+        self._cert_dir = tempfile.mkdtemp(prefix='ros2_medkit_tls_test_')
+        self._cert_file = os.path.join(self._cert_dir, 'cert.pem')
+        self._key_file = os.path.join(self._cert_dir, 'key.pem')
+        self._ca_file = os.path.join(self._cert_dir, 'ca.pem')
 
-    # Generate CSR
-    subprocess.run([
-        'openssl', 'req', '-new', '-key', key_file,
-        '-out', os.path.join(output_dir, 'server.csr'),
-        '-subj', '/CN=localhost'
-    ], check=True, capture_output=True)
+        # Generate CA certificate
+        subprocess.run([
+            'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
+            '-keyout', os.path.join(self._cert_dir, 'ca_key.pem'),
+            '-out', self._ca_file,
+            '-days', '1', '-nodes',
+            '-subj', '/CN=Test CA'
+        ], check=True, capture_output=True)
 
-    # Create extension file for SAN
-    ext_file = os.path.join(output_dir, 'ext.cnf')
-    with open(ext_file, 'w') as f:
-        f.write("""
+        # Generate server key
+        subprocess.run([
+            'openssl', 'genrsa', '-out', self._key_file, '2048'
+        ], check=True, capture_output=True)
+
+        # Generate CSR
+        subprocess.run([
+            'openssl', 'req', '-new', '-key', self._key_file,
+            '-out', os.path.join(self._cert_dir, 'server.csr'),
+            '-subj', '/CN=localhost'
+        ], check=True, capture_output=True)
+
+        # Create extension file for SAN
+        ext_file = os.path.join(self._cert_dir, 'ext.cnf')
+        with open(ext_file, 'w') as f:
+            f.write("""
 authorityKeyIdentifier=keyid,issuer
 basicConstraints=CA:FALSE
 keyUsage = digitalSignature, keyEncipherment
@@ -114,24 +116,73 @@ DNS.1 = localhost
 IP.1 = 127.0.0.1
 """)
 
-    # Sign server certificate with CA
-    subprocess.run([
-        'openssl', 'x509', '-req',
-        '-in', os.path.join(output_dir, 'server.csr'),
-        '-CA', ca_file,
-        '-CAkey', os.path.join(output_dir, 'ca_key.pem'),
-        '-CAcreateserial',
-        '-out', cert_file,
-        '-days', '1',
-        '-extfile', ext_file
-    ], check=True, capture_output=True)
+        # Sign server certificate with CA
+        subprocess.run([
+            'openssl', 'x509', '-req',
+            '-in', os.path.join(self._cert_dir, 'server.csr'),
+            '-CA', self._ca_file,
+            '-CAkey', os.path.join(self._cert_dir, 'ca_key.pem'),
+            '-CAcreateserial',
+            '-out', self._cert_file,
+            '-days', '1',
+            '-extfile', ext_file
+        ], check=True, capture_output=True)
 
-    return cert_file, key_file, ca_file
+        # Register cleanup with atexit for safety
+        atexit.register(self.cleanup)
+        self._initialized = True
+
+    def get_paths(self) -> tuple:
+        """
+        Get certificate paths, generating if needed.
+
+        Returns
+        -------
+        tuple
+            (cert_file, key_file, ca_file) paths
+
+        """
+        if not self._initialized:
+            self._generate_certificates()
+        return self._cert_file, self._key_file, self._ca_file
+
+    @property
+    def cert_dir(self) -> str:
+        """Get certificate directory path."""
+        if not self._initialized:
+            self._generate_certificates()
+        return self._cert_dir
+
+    @property
+    def cert_file(self) -> str:
+        """Get certificate file path."""
+        if not self._initialized:
+            self._generate_certificates()
+        return self._cert_file
+
+    @property
+    def key_file(self) -> str:
+        """Get key file path."""
+        if not self._initialized:
+            self._generate_certificates()
+        return self._key_file
+
+    @property
+    def ca_file(self) -> str:
+        """Get CA certificate file path."""
+        if not self._initialized:
+            self._generate_certificates()
+        return self._ca_file
+
+    def cleanup(self) -> None:
+        """Remove temporary certificate directory."""
+        if self._cert_dir and os.path.exists(self._cert_dir):
+            shutil.rmtree(self._cert_dir, ignore_errors=True)
+            self._initialized = False
 
 
-# Global variables for certificate paths
-_cert_dir = tempfile.mkdtemp(prefix='ros2_medkit_tls_test_')
-_cert_file, _key_file, _ca_file = generate_test_certificates(_cert_dir)
+# Singleton certificate fixture with atexit cleanup
+_cert_fixture = CertificateFixture()
 
 
 def generate_test_description():
@@ -148,8 +199,8 @@ def generate_test_description():
             'server.host': '127.0.0.1',
             'server.port': tls_port,
             'server.tls.enabled': True,
-            'server.tls.cert_file': _cert_file,
-            'server.tls.key_file': _key_file,
+            'server.tls.cert_file': _cert_fixture.cert_file,
+            'server.tls.key_file': _cert_fixture.key_file,
             'server.tls.min_version': '1.2',
             'refresh_interval_ms': 1000,
         }],
@@ -185,12 +236,14 @@ class TestTlsGateway(unittest.TestCase):
         max_retries = 30
         for _ in range(max_retries):
             try:
-                # Use verify=False for self-signed certificate
-                response = requests.get(
-                    f'{cls.API_BASE}/health',
-                    verify=False,
-                    timeout=1
-                )
+                # Suppress InsecureRequestWarning for self-signed certificates in tests
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', urllib3.exceptions.InsecureRequestWarning)
+                    response = requests.get(
+                        f'{cls.API_BASE}/health',
+                        verify=False,
+                        timeout=1
+                    )
                 if response.status_code == 200:
                     return
             except requests.exceptions.RequestException:
@@ -198,9 +251,15 @@ class TestTlsGateway(unittest.TestCase):
             time.sleep(0.5)
         raise RuntimeError('Gateway failed to start with TLS enabled')
 
+    def _request_get(self, url, **kwargs):
+        """Make GET request with SSL warning suppression for self-signed certs."""
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', urllib3.exceptions.InsecureRequestWarning)
+            return requests.get(url, **kwargs)
+
     def test_https_health_endpoint(self):
         """Test that health endpoint responds over HTTPS."""
-        response = requests.get(
+        response = self._request_get(
             f'{self.API_BASE}/health',
             verify=False,
             timeout=5
@@ -211,7 +270,7 @@ class TestTlsGateway(unittest.TestCase):
 
     def test_https_root_endpoint_shows_tls_enabled(self):
         """Test that root endpoint shows TLS capability."""
-        response = requests.get(
+        response = self._request_get(
             f'{self.API_BASE}/',
             verify=False,
             timeout=5
@@ -225,7 +284,7 @@ class TestTlsGateway(unittest.TestCase):
 
     def test_https_version_info_endpoint(self):
         """Test version-info endpoint over HTTPS."""
-        response = requests.get(
+        response = self._request_get(
             f'{self.API_BASE}/version-info',
             verify=False,
             timeout=5
@@ -236,7 +295,7 @@ class TestTlsGateway(unittest.TestCase):
 
     def test_https_areas_endpoint(self):
         """Test areas endpoint over HTTPS."""
-        response = requests.get(
+        response = self._request_get(
             f'{self.API_BASE}/areas',
             verify=False,
             timeout=5
@@ -247,7 +306,7 @@ class TestTlsGateway(unittest.TestCase):
 
     def test_https_components_endpoint(self):
         """Test components endpoint over HTTPS."""
-        response = requests.get(
+        response = self._request_get(
             f'{self.API_BASE}/components',
             verify=False,
             timeout=5
@@ -257,10 +316,10 @@ class TestTlsGateway(unittest.TestCase):
 
     def test_https_with_ca_verification(self):
         """Test HTTPS with proper CA certificate verification."""
-        # Use the CA certificate for verification
+        # Use the CA certificate for verification (no warning suppression needed)
         response = requests.get(
             f'{self.API_BASE}/health',
-            verify=_ca_file,
+            verify=_cert_fixture.ca_file,
             timeout=5
         )
         self.assertEqual(response.status_code, 200)
@@ -280,7 +339,6 @@ class TestTlsCleanup(unittest.TestCase):
     """Cleanup tests after shutdown."""
 
     def test_cleanup_certificates(self):
-        """Clean up temporary certificate directory."""
-        if os.path.exists(_cert_dir):
-            shutil.rmtree(_cert_dir)
-        self.assertFalse(os.path.exists(_cert_dir))
+        """Clean up temporary certificate directory (redundant with atexit, but explicit)."""
+        _cert_fixture.cleanup()
+        self.assertFalse(os.path.exists(_cert_fixture._cert_dir or '/nonexistent'))

@@ -131,9 +131,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
                         .with_min_version(get_parameter("server.tls.min_version").as_string())
                         .with_mutual_tls(get_parameter("server.tls.mutual_tls").as_bool())
                         .build();
-      RCLCPP_INFO(get_logger(), "TLS/HTTPS enabled - cert: %s, min_version: %s, mutual_tls: %s",
-                  tls_config_.cert_file.c_str(), tls_config_.min_version.c_str(),
-                  tls_config_.mutual_tls ? "true" : "false");
+      // Note: HttpServerManager will log TLS configuration details
     } catch (const std::exception & e) {
       RCLCPP_ERROR(get_logger(), "Invalid TLS configuration: %s. TLS disabled.", e.what());
       tls_config_ = TlsConfig{};  // Disabled
