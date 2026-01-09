@@ -1,0 +1,239 @@
+// Copyright 2025 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
+
+#include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
+
+using json = nlohmann::json;
+using httplib::StatusCode;
+
+namespace ros2_medkit_gateway {
+namespace handlers {
+
+void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib::Response & res) {
+  try {
+    auto filter = parse_fault_status_param(req);
+    if (!filter.is_valid) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid status parameter",
+                                 {{"details", "Valid values: pending, confirmed, cleared, all"},
+                                  {"parameter", "status"},
+                                  {"value", req.get_param_value("status")}});
+      return;
+    }
+
+    auto fault_mgr = ctx_.node()->get_fault_manager();
+    // Empty source_id = no filtering, return all faults
+    auto result = fault_mgr->get_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared);
+
+    if (result.success) {
+      json response = {{"faults", result.data["faults"]}, {"count", result.data["count"]}};
+      res.status = StatusCode::OK_200;
+      HandlerContext::send_json(res, response);
+    } else {
+      HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, "Failed to get faults",
+                                 {{"details", result.error_message}});
+    }
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to list faults",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_all_faults: %s", e.what());
+  }
+}
+
+void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    component_id = req.matches[1];
+
+    auto component_validation = ctx_.validate_entity_id(component_id);
+    if (!component_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+      return;
+    }
+
+    auto namespace_result = ctx_.get_component_namespace_path(component_id);
+    if (!namespace_result) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, namespace_result.error(),
+                                 {{"component_id", component_id}});
+      return;
+    }
+    std::string namespace_path = namespace_result.value();
+
+    auto filter = parse_fault_status_param(req);
+    if (!filter.is_valid) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid status parameter",
+                                 {{"details", "Valid values: pending, confirmed, cleared, all"},
+                                  {"parameter", "status"},
+                                  {"value", req.get_param_value("status")},
+                                  {"component_id", component_id}});
+      return;
+    }
+
+    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto result =
+        fault_mgr->get_faults(namespace_path, filter.include_pending, filter.include_confirmed, filter.include_cleared);
+
+    if (result.success) {
+      json response = {{"component_id", component_id},
+                       {"source_id", namespace_path},
+                       {"faults", result.data["faults"]},
+                       {"count", result.data["count"]}};
+      HandlerContext::send_json(res, response);
+    } else {
+      HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, "Failed to get faults",
+                                 {{"details", result.error_message}, {"component_id", component_id}});
+    }
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to list faults",
+                               {{"details", e.what()}, {"component_id", component_id}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_faults for component '%s': %s", component_id.c_str(),
+                 e.what());
+  }
+}
+
+void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string fault_code;
+  try {
+    if (req.matches.size() < 3) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    component_id = req.matches[1];
+    fault_code = req.matches[2];
+
+    auto component_validation = ctx_.validate_entity_id(component_id);
+    if (!component_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+      return;
+    }
+
+    // Fault codes may contain dots and underscores, validate basic constraints
+    if (fault_code.empty() || fault_code.length() > 256) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
+                                 {{"details", "Fault code is empty or too long"}});
+      return;
+    }
+
+    auto namespace_result = ctx_.get_component_namespace_path(component_id);
+    if (!namespace_result) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, namespace_result.error(),
+                                 {{"component_id", component_id}});
+      return;
+    }
+    std::string namespace_path = namespace_result.value();
+
+    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto result = fault_mgr->get_fault(fault_code, namespace_path);
+
+    if (result.success) {
+      json response = {{"component_id", component_id}, {"fault", result.data}};
+      HandlerContext::send_json(res, response);
+    } else {
+      // Check if it's a "not found" error
+      if (result.error_message.find("not found") != std::string::npos ||
+          result.error_message.find("Fault not found") != std::string::npos) {
+        HandlerContext::send_error(
+            res, StatusCode::NotFound_404, "Failed to get fault",
+            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+      } else {
+        HandlerContext::send_error(
+            res, StatusCode::ServiceUnavailable_503, "Failed to get fault",
+            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+      }
+    }
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get fault",
+                               {{"details", e.what()}, {"component_id", component_id}, {"fault_code", fault_code}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_fault for component '%s', fault '%s': %s",
+                 component_id.c_str(), fault_code.c_str(), e.what());
+  }
+}
+
+void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string fault_code;
+  try {
+    if (req.matches.size() < 3) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    component_id = req.matches[1];
+    fault_code = req.matches[2];
+
+    auto component_validation = ctx_.validate_entity_id(component_id);
+    if (!component_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+      return;
+    }
+
+    // Validate fault code
+    if (fault_code.empty() || fault_code.length() > 256) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
+                                 {{"details", "Fault code is empty or too long"}});
+      return;
+    }
+
+    // Verify component exists (we don't need namespace_path for clearing)
+    auto namespace_result = ctx_.get_component_namespace_path(component_id);
+    if (!namespace_result) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, namespace_result.error(),
+                                 {{"component_id", component_id}});
+      return;
+    }
+
+    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto result = fault_mgr->clear_fault(fault_code);
+
+    if (result.success) {
+      json response = {{"status", "success"},
+                       {"component_id", component_id},
+                       {"fault_code", fault_code},
+                       {"message", result.data.value("message", "Fault cleared")}};
+      HandlerContext::send_json(res, response);
+    } else {
+      // Check if it's a "not found" error
+      if (result.error_message.find("not found") != std::string::npos ||
+          result.error_message.find("Fault not found") != std::string::npos) {
+        HandlerContext::send_error(
+            res, StatusCode::NotFound_404, "Failed to clear fault",
+            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+      } else {
+        HandlerContext::send_error(
+            res, StatusCode::ServiceUnavailable_503, "Failed to clear fault",
+            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+      }
+    }
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to clear fault",
+                               {{"details", e.what()}, {"component_id", component_id}, {"fault_code", fault_code}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_clear_fault for component '%s', fault '%s': %s",
+                 component_id.c_str(), fault_code.c_str(), e.what());
+  }
+}
+
+}  // namespace handlers
+}  // namespace ros2_medkit_gateway

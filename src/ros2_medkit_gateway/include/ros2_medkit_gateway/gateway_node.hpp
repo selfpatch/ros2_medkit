@@ -29,9 +29,9 @@
 #include "ros2_medkit_gateway/data_access_manager.hpp"
 #include "ros2_medkit_gateway/discovery_manager.hpp"
 #include "ros2_medkit_gateway/fault_manager.hpp"
+#include "ros2_medkit_gateway/http/rest_server.hpp"
 #include "ros2_medkit_gateway/models.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
-#include "ros2_medkit_gateway/rest_server.hpp"
 
 namespace ros2_medkit_gateway {
 
