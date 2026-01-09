@@ -735,6 +735,11 @@ ros2 run ros2_medkit_gateway gateway_node
 ros2 launch ros2_medkit_gateway gateway.launch.py
 ```
 
+**Start with HTTPS (auto-generates development certificates):**
+```bash
+ros2 launch ros2_medkit_gateway gateway_https.launch.py
+```
+
 **Start demo nodes:**
 ```bash
 ros2 launch ros2_medkit_gateway demo_nodes.launch.py
@@ -742,7 +747,11 @@ ros2 launch ros2_medkit_gateway demo_nodes.launch.py
 
 **Test the API:**
 ```bash
+# HTTP
 curl http://localhost:8080/api/v1/areas
+
+# HTTPS (skip certificate verification for self-signed)
+curl -k https://localhost:8443/api/v1/areas
 ```
 
 ## Configuration
@@ -969,6 +978,29 @@ server:
     min_version: "1.2"
     mutual_tls: true                 # Require client certificates
 ```
+
+**Quick start with HTTPS (auto-generates development certificates):**
+```bash
+# Start gateway with HTTPS - certificates are generated automatically
+ros2 launch ros2_medkit_gateway gateway_https.launch.py
+
+# Custom port
+ros2 launch ros2_medkit_gateway gateway_https.launch.py server_port:=9443
+
+# Persist certificates to custom directory
+ros2 launch ros2_medkit_gateway gateway_https.launch.py cert_dir:=/home/user/certs
+
+# Use TLS 1.3 only
+ros2 launch ros2_medkit_gateway gateway_https.launch.py min_tls_version:=1.3
+```
+
+| Launch Argument       | Default                    | Description                                      |
+| --------------------- | -------------------------- | ------------------------------------------------ |
+| `cert_dir`            | `/tmp/ros2_medkit_certs`   | Directory for auto-generated certificates        |
+| `server_host`         | `127.0.0.1`                | Host to bind HTTPS server                        |
+| `server_port`         | `8443`                     | Port for HTTPS API                               |
+| `min_tls_version`     | `1.2`                      | Minimum TLS version (`1.2` or `1.3`)             |
+| `refresh_interval_ms` | `2000`                     | Cache refresh interval in milliseconds           |
 
 **Usage with curl (self-signed certs):**
 ```bash
