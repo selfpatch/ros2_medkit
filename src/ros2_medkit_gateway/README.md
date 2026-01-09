@@ -798,6 +798,19 @@ JWT-based authentication with Role-Based Access Control (RBAC). Authentication i
 | `auth.issuer`                       | string   | `ros2_medkit_gateway` | JWT issuer claim for token validation.                                     |
 | `auth.clients`                      | string[] | `[]`                  | Client credentials in format `client_id:client_secret:role`.               |
 
+#### TLS/HTTPS Configuration
+
+TLS (Transport Layer Security) enables encrypted HTTPS communication. TLS is **disabled by default** for backward compatibility.
+
+| Parameter                    | Type   | Default | Description                                                                 |
+| ---------------------------- | ------ | ------- | --------------------------------------------------------------------------- |
+| `server.tls.enabled`         | bool   | `false` | Enable/disable TLS. When enabled, server uses HTTPS instead of HTTP.       |
+| `server.tls.cert_file`       | string | (required if enabled) | Path to PEM-encoded certificate file.                         |
+| `server.tls.key_file`        | string | (required if enabled) | Path to PEM-encoded private key file.                         |
+| `server.tls.ca_file`         | string | `""`    | Optional CA certificate for client verification (mutual TLS).              |
+| `server.tls.min_version`     | string | `"1.2"` | Minimum TLS version: `"1.2"` (compatible) or `"1.3"` (more secure).        |
+| `server.tls.mutual_tls`      | bool   | `false` | Enable mutual TLS (client certificate verification). Requires `ca_file`.   |
+
 **Roles and Permissions:**
 
 | Role         | Read (GET) | Operations (POST) | Configurations (PUT/DELETE) | Faults (DELETE) |
@@ -898,6 +911,87 @@ curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/configurations/r
 > - Use environment variables or secure secret management in production
 > - RS256 algorithm requires additional setup with public/private key files
 > - Client secrets should be generated using cryptographically secure random strings
+
+### TLS/HTTPS Configuration Examples
+
+**Generate development certificates:**
+
+The package includes a helper script to generate self-signed certificates for development:
+
+```bash
+# Generate certificates in a certs/ directory
+./scripts/generate_dev_certs.sh ./certs
+
+# This creates:
+# ./certs/ca.crt           - CA certificate
+# ./certs/server.crt       - Server certificate
+# ./certs/server.key       - Server private key (chmod 600)
+# ./certs/client.crt       - Client certificate (for mutual TLS)
+# ./certs/client.key       - Client private key
+```
+
+**Basic TLS (HTTPS only):**
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls:
+    enabled: true
+    cert_file: "/path/to/server.crt"
+    key_file: "/path/to/server.key"
+    min_version: "1.2"
+    mutual_tls: false
+```
+
+**TLS with minimum TLS 1.3 (recommended for new deployments):**
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls:
+    enabled: true
+    cert_file: "/path/to/server.crt"
+    key_file: "/path/to/server.key"
+    min_version: "1.3"
+    mutual_tls: false
+```
+
+**Mutual TLS (client certificate verification):**
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls:
+    enabled: true
+    cert_file: "/path/to/server.crt"
+    key_file: "/path/to/server.key"
+    ca_file: "/path/to/ca.crt"      # CA to verify client certs
+    min_version: "1.2"
+    mutual_tls: true                 # Require client certificates
+```
+
+**Usage with curl (self-signed certs):**
+```bash
+# Basic HTTPS (skip verification for self-signed)
+curl -k https://localhost:8443/api/v1
+
+# HTTPS with CA verification
+curl --cacert ./certs/ca.crt https://localhost:8443/api/v1
+
+# Mutual TLS (provide client certificate)
+curl --cacert ./certs/ca.crt \
+     --cert ./certs/client.crt \
+     --key ./certs/client.key \
+     https://localhost:8443/api/v1/areas
+```
+
+> ⚠️ **Security Notes:**
+> - **Never use self-signed certificates in production** - obtain certificates from a trusted CA
+> - Protect private key files with restricted permissions: `chmod 600 server.key`
+> - Use TLS 1.3 minimum version when all clients support it
+> - Mutual TLS provides strong client authentication but requires certificate distribution
+> - Consider using Let's Encrypt for automated certificate management
+> - Store certificates outside the source tree and never commit private keys
 
 ## Architecture
 

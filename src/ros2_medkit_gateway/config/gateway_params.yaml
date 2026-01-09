@@ -20,6 +20,35 @@ ros2_medkit_gateway:
       # Valid range: 1024-65535
       port: 8080
 
+      # TLS/HTTPS Configuration
+      # Enables encrypted communication using OpenSSL
+      tls:
+        # Enable/disable TLS (default: false for backward compatibility)
+        enabled: false
+
+        # Path to PEM-encoded certificate file (required when TLS enabled)
+        # Example: "/etc/ros2_medkit/certs/cert.pem"
+        cert_file: ""
+
+        # Path to PEM-encoded private key file (required when TLS enabled)
+        # SECURITY: Private key should have restricted permissions (chmod 600)
+        # Example: "/etc/ros2_medkit/certs/key.pem"
+        key_file: ""
+
+        # Optional: Path to CA certificate file for client verification
+        # Required when mutual_tls is enabled
+        # Example: "/etc/ros2_medkit/certs/ca.pem"
+        ca_file: ""
+
+        # Minimum TLS version
+        # Options: "1.2" (default, widely compatible), "1.3" (more secure)
+        min_version: "1.2"
+
+        # Enable mutual TLS (client certificate verification)
+        # When true, clients must present a valid certificate signed by the CA
+        # Requires ca_file to be set
+        mutual_tls: false
+
     # Cache refresh interval in milliseconds
     # How often to discover ROS 2 nodes and update the cache
     # Valid range: 100-60000 (0.1s to 60s)

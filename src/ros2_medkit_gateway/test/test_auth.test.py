@@ -19,6 +19,7 @@ Integration tests for JWT authentication and authorization.
 @verifies REQ_INTEROP_086, REQ_INTEROP_087
 """
 
+import os
 import time
 import unittest
 
@@ -28,6 +29,24 @@ import launch_testing
 import launch_testing.actions
 import pytest
 import requests
+
+
+def get_coverage_env():
+    """Get environment variables for gcov coverage data collection."""
+    try:
+        from ament_index_python.packages import get_package_prefix
+        pkg_prefix = get_package_prefix('ros2_medkit_gateway')
+        workspace = os.path.dirname(os.path.dirname(pkg_prefix))
+        build_dir = os.path.join(workspace, 'build', 'ros2_medkit_gateway')
+
+        if os.path.exists(build_dir):
+            return {
+                'GCOV_PREFIX': build_dir,
+                'GCOV_PREFIX_STRIP': str(build_dir.count(os.sep)),
+            }
+    except Exception:
+        pass
+    return {}
 
 
 @pytest.mark.launch_test
@@ -55,6 +74,7 @@ def generate_test_description():
                 'configurator:configurator_secret:configurator',
             ],
         }],
+        additional_env=get_coverage_env(),
         output='screen',
     )
 

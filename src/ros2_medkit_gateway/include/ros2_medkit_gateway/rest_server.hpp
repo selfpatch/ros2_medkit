@@ -34,14 +34,24 @@ class GatewayNode;
 class RESTServer {
  public:
   RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
-             const AuthConfig & auth_config);
+             const AuthConfig & auth_config, const TlsConfig & tls_config = TlsConfig{});
   ~RESTServer();
 
   void start();
   void stop();
 
+  /// Check if TLS/HTTPS is enabled
+  bool is_tls_enabled() const {
+    return tls_config_.enabled;
+  }
+
  private:
   void setup_routes();
+  void setup_pre_routing_handler();
+
+  /// Configure TLS settings on the SSL server
+  /// @throws std::runtime_error if TLS configuration fails
+  void configure_tls();
 
   // Route handlers
   void handle_health(const httplib::Request & req, httplib::Response & res);
@@ -86,10 +96,17 @@ class RESTServer {
   int port_;
   CorsConfig cors_config_;
   AuthConfig auth_config_;
+  TlsConfig tls_config_;
   std::unique_ptr<AuthManager> auth_manager_;
   std::unique_ptr<AuthMiddleware> auth_middleware_;
 
+  // HTTP server (used when TLS is disabled)
   std::unique_ptr<httplib::Server> server_;
+
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+  // HTTPS server (used when TLS is enabled)
+  std::unique_ptr<httplib::SSLServer> ssl_server_;
+#endif
 };
 
 }  // namespace ros2_medkit_gateway

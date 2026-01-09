@@ -190,13 +190,73 @@ Example: `GET /api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperat
 
 ## Environment Variables
 
-The environment includes:
-- `base_url`: `http://localhost:8080/api/v1` (default gateway address with API prefix)
+The collection includes two environments:
+
+### HTTP Environment (`local.postman_environment.json`)
+- `base_url`: `http://localhost:8080/api/v1` (default HTTP gateway)
+
+### TLS/HTTPS Environment (`local-tls.postman_environment.json`)
+- `base_url`: `https://localhost:8443/api/v1` (HTTPS gateway with TLS)
+
+**Common variables (both environments):**
 - `client_id`: Client ID for authentication (default: `admin`)
 - `client_secret`: Client secret for authentication (default: `admin_secret`)
 - `access_token`: JWT access token (auto-populated after authentication)
 - `refresh_token`: JWT refresh token (auto-populated after authentication)
 - `goal_id`: Used for action status queries (set manually after sending a goal)
+
+## TLS/HTTPS Setup
+
+To test the gateway with TLS enabled:
+
+### 1. Generate Development Certificates
+
+```bash
+cd ros2_medkit/src/ros2_medkit_gateway
+./scripts/generate_dev_certs.sh ./certs
+```
+
+### 2. Start Gateway with TLS
+
+```bash
+ros2 launch ros2_medkit_gateway gateway.launch.py \
+  server.tls.enabled:=true \
+  server.tls.cert_file:=$(pwd)/certs/server.crt \
+  server.tls.key_file:=$(pwd)/certs/server.key \
+  server.port:=8443
+```
+
+### 3. Configure Postman for Self-Signed Certificates
+
+**Option A: Disable SSL Verification (Development Only)**
+1. Go to **Settings** (gear icon, top-right)
+2. Click **Settings**
+3. Scroll to **SSL certificate verification**
+4. Toggle **OFF**
+
+**Option B: Add CA Certificate (Recommended)**
+1. Go to **Settings** → **Certificates**
+2. Under **CA Certificates**, click **Select File**
+3. Select `certs/ca.crt` from your generated certificates
+4. Requests to `localhost:8443` will now verify against your CA
+
+### 4. Use TLS Environment
+
+1. Import `environments/local-tls.postman_environment.json`
+2. Select **"ROS 2 Medkit Gateway - Local TLS"** from environment dropdown
+3. All requests will now use `https://localhost:8443/api/v1`
+
+### Mutual TLS (Client Certificates)
+
+If the gateway is configured with `mutual_tls: true`:
+
+1. Go to **Settings** → **Certificates**
+2. Click **Add Certificate**
+3. Enter:
+   - **Host**: `localhost:8443`
+   - **CRT file**: `certs/client.crt`
+   - **KEY file**: `certs/client.key`
+4. Click **Add**
 
 ---
 

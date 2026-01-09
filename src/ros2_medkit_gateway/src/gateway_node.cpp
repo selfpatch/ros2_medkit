@@ -33,6 +33,14 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("cors.allow_credentials", false);
   declare_parameter("cors.max_age_seconds", 86400);
 
+  // TLS/HTTPS parameters
+  declare_parameter("server.tls.enabled", false);
+  declare_parameter("server.tls.cert_file", "");
+  declare_parameter("server.tls.key_file", "");
+  declare_parameter("server.tls.ca_file", "");
+  declare_parameter("server.tls.min_version", "1.2");
+  declare_parameter("server.tls.mutual_tls", false);
+
   // Authentication parameters (REQ_INTEROP_086, REQ_INTEROP_087)
   declare_parameter("auth.enabled", false);
   declare_parameter("auth.jwt_secret", "");
@@ -109,6 +117,30 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
                 cors_config_.max_age_seconds);
   } else {
     RCLCPP_INFO(get_logger(), "CORS: disabled (no configuration provided)");
+  }
+
+  // Build TLS/HTTPS configuration
+  bool tls_enabled = get_parameter("server.tls.enabled").as_bool();
+  if (tls_enabled) {
+    try {
+      tls_config_ = TlsConfigBuilder()
+                        .with_enabled(true)
+                        .with_cert_file(get_parameter("server.tls.cert_file").as_string())
+                        .with_key_file(get_parameter("server.tls.key_file").as_string())
+                        .with_ca_file(get_parameter("server.tls.ca_file").as_string())
+                        .with_min_version(get_parameter("server.tls.min_version").as_string())
+                        .with_mutual_tls(get_parameter("server.tls.mutual_tls").as_bool())
+                        .build();
+      RCLCPP_INFO(get_logger(), "TLS/HTTPS enabled - cert: %s, min_version: %s, mutual_tls: %s",
+                  tls_config_.cert_file.c_str(), tls_config_.min_version.c_str(),
+                  tls_config_.mutual_tls ? "true" : "false");
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(get_logger(), "Invalid TLS configuration: %s. TLS disabled.", e.what());
+      tls_config_ = TlsConfig{};  // Disabled
+    }
+  } else {
+    RCLCPP_INFO(get_logger(), "TLS/HTTPS: disabled");
+    tls_config_ = TlsConfig{};
   }
 
   // Build Authentication configuration (REQ_INTEROP_086, REQ_INTEROP_087)
@@ -192,11 +224,14 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
     operation_mgr_->cleanup_old_goals(std::chrono::seconds(300));
   });
 
-  // Start REST server with configured host, port, CORS and auth
-  rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_, auth_config_);
+  // Start REST server with configured host, port, CORS, auth, and TLS
+  rest_server_ =
+      std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_, auth_config_, tls_config_);
   start_rest_server();
 
-  RCLCPP_INFO(get_logger(), "ROS 2 Medkit Gateway ready on %s:%d", server_host_.c_str(), server_port_);
+  std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";
+  RCLCPP_INFO(get_logger(), "ROS 2 Medkit Gateway ready on %s://%s:%d", protocol.c_str(), server_host_.c_str(),
+              server_port_);
 }
 
 GatewayNode::~GatewayNode() {

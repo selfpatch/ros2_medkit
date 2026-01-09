@@ -86,6 +86,7 @@ class GatewayNode : public rclcpp::Node {
   int refresh_interval_ms_;
   CorsConfig cors_config_;
   AuthConfig auth_config_;
+  TlsConfig tls_config_;
 
   // Managers
   std::unique_ptr<DiscoveryManager> discovery_mgr_;

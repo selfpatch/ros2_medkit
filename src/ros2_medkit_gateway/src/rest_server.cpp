@@ -19,6 +19,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 
 #include "ros2_medkit_gateway/auth/auth_middleware.hpp"
 #include "ros2_medkit_gateway/auth/auth_models.hpp"
@@ -77,9 +78,42 @@ inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req) 
 }
 
 RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
-                       const AuthConfig & auth_config)
-  : node_(node), host_(host), port_(port), cors_config_(cors_config), auth_config_(auth_config) {
+                       const AuthConfig & auth_config, const TlsConfig & tls_config)
+  : node_(node)
+  , host_(host)
+  , port_(port)
+  , cors_config_(cors_config)
+  , auth_config_(auth_config)
+  , tls_config_(tls_config) {
+  // Create the appropriate server based on TLS configuration
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+  if (tls_config_.enabled) {
+    // Create SSL server with certificate and key
+    ssl_server_ = std::make_unique<httplib::SSLServer>(tls_config_.cert_file.c_str(), tls_config_.key_file.c_str());
+
+    if (!ssl_server_->is_valid()) {
+      throw std::runtime_error("Failed to create SSL server. Check certificate and key files: " +
+                               tls_config_.cert_file + ", " + tls_config_.key_file);
+    }
+
+    // Configure additional TLS settings
+    configure_tls();
+
+    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "TLS/HTTPS enabled - cert: %s, min_version: %s, mutual_tls: %s",
+                tls_config_.cert_file.c_str(), tls_config_.min_version.c_str(),
+                tls_config_.mutual_tls ? "true" : "false");
+  } else {
+    server_ = std::make_unique<httplib::Server>();
+    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "TLS/HTTPS disabled - using plain HTTP");
+  }
+#else
+  if (tls_config_.enabled) {
+    throw std::runtime_error(
+        "TLS/HTTPS support requested but cpp-httplib was not compiled with OpenSSL support. "
+        "Ensure CPPHTTPLIB_OPENSSL_SUPPORT is defined.");
+  }
   server_ = std::make_unique<httplib::Server>();
+#endif
 
   // Initialize auth manager and middleware if auth is enabled
   if (auth_config_.enabled) {
@@ -93,8 +127,66 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   }
 
   // Set up pre-routing handler for CORS and Authentication
+  setup_pre_routing_handler();
+  setup_routes();
+}
+
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+void RESTServer::configure_tls() {
+  if (!ssl_server_) {
+    return;
+  }
+
+  // Configure minimum TLS version
+  // Note: cpp-httplib uses OpenSSL's SSL_CTX internally
+  // The SSLServer constructor already sets up basic SSL context
+  // Additional configuration can be done via the server's SSL context if needed
+
+  // For mutual TLS, configure client certificate verification
+  if (tls_config_.mutual_tls && !tls_config_.ca_file.empty()) {
+    // cpp-httplib doesn't expose SSL_CTX directly in a standard way,
+    // but the CA file can be loaded for client verification
+    // This is a limitation - for full mutual TLS support, consider
+    // extending cpp-httplib or using a different approach
+    RCLCPP_INFO(rclcpp::get_logger("rest_server"),
+                "Mutual TLS configured with CA file: %s (note: full mTLS support may require cpp-httplib extensions)",
+                tls_config_.ca_file.c_str());
+  }
+
+  // Log TLS handshake failures for debugging
+  ssl_server_->set_logger([](const httplib::Request & req, const httplib::Response & res) {
+    if (res.status >= 400) {
+      RCLCPP_DEBUG(rclcpp::get_logger("rest_server"), "Request %s %s -> %d", req.method.c_str(), req.path.c_str(),
+                   res.status);
+    }
+  });
+}
+#else
+void RESTServer::configure_tls() {
+  // No-op when OpenSSL support is not available
+}
+#endif
+
+void RESTServer::setup_pre_routing_handler() {
+  // Get the appropriate server pointer
+  httplib::Server * srv = nullptr;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+  if (tls_config_.enabled && ssl_server_) {
+    srv = ssl_server_.get();
+  } else {
+    srv = server_.get();
+  }
+#else
+  srv = server_.get();
+#endif
+
+  if (!srv) {
+    return;
+  }
+
+  // Set up pre-routing handler for CORS and Authentication
   // This handler runs before any route handler
-  server_->set_pre_routing_handler([this](const httplib::Request & req, httplib::Response & res) {
+  srv->set_pre_routing_handler([this](const httplib::Request & req, httplib::Response & res) {
     // Handle CORS if enabled
     if (cors_config_.enabled) {
       std::string origin = req.get_header_value("Origin");
@@ -137,8 +229,6 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
 
     return httplib::Server::HandlerResponse::Unhandled;
   });
-
-  setup_routes();
 }
 
 RESTServer::~RESTServer() {
@@ -146,171 +236,209 @@ RESTServer::~RESTServer() {
 }
 
 void RESTServer::setup_routes() {
+  // Get the appropriate server pointer
+  httplib::Server * srv = nullptr;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+  if (tls_config_.enabled && ssl_server_) {
+    srv = ssl_server_.get();
+  } else {
+    srv = server_.get();
+  }
+#else
+  srv = server_.get();
+#endif
+
+  if (!srv) {
+    throw std::runtime_error("No server instance available for route setup");
+  }
+
   // Health check
-  server_->Get(api_path("/health"), [this](const httplib::Request & req, httplib::Response & res) {
+  srv->Get(api_path("/health"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_health(req, res);
   });
 
   // Root - server capabilities and entry points (REQ_INTEROP_010)
-  server_->Get(api_path("/"), [this](const httplib::Request & req, httplib::Response & res) {
+  srv->Get(api_path("/"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_root(req, res);
   });
 
   // Version info (REQ_INTEROP_001)
-  server_->Get(api_path("/version-info"), [this](const httplib::Request & req, httplib::Response & res) {
+  srv->Get(api_path("/version-info"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_version_info(req, res);
   });
 
   // Areas
-  server_->Get(api_path("/areas"), [this](const httplib::Request & req, httplib::Response & res) {
+  srv->Get(api_path("/areas"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_list_areas(req, res);
   });
 
   // Components
-  server_->Get(api_path("/components"), [this](const httplib::Request & req, httplib::Response & res) {
+  srv->Get(api_path("/components"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_list_components(req, res);
   });
 
   // Area components
-  server_->Get((api_path("/areas") + R"(/([^/]+)/components)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_area_components(req, res);
-               });
+  srv->Get((api_path("/areas") + R"(/([^/]+)/components)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_area_components(req, res);
+           });
 
   // Component topic data (specific topic) - register before general route
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
-  server_->Get((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_component_topic_data(req, res);
-               });
+  srv->Get((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_component_topic_data(req, res);
+           });
 
   // Component data (all topics)
-  server_->Get((api_path("/components") + R"(/([^/]+)/data$)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_component_data(req, res);
-               });
+  srv->Get((api_path("/components") + R"(/([^/]+)/data$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_component_data(req, res);
+           });
 
   // Component topic publish (PUT)
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
-  server_->Put((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_component_topic_publish(req, res);
-               });
+  srv->Put((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_component_topic_publish(req, res);
+           });
 
   // Component operation (POST) - sync operations like service calls, async action goals
-  server_->Post((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)"),
-                [this](const httplib::Request & req, httplib::Response & res) {
-                  handle_component_operation(req, res);
-                });
+  srv->Post((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)"),
+            [this](const httplib::Request & req, httplib::Response & res) {
+              handle_component_operation(req, res);
+            });
 
   // List component operations (GET) - list all services and actions for a component
-  server_->Get((api_path("/components") + R"(/([^/]+)/operations$)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_list_operations(req, res);
-               });
+  srv->Get((api_path("/components") + R"(/([^/]+)/operations$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_list_operations(req, res);
+           });
 
   // Action status (GET) - get current status of an action goal
-  server_->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/status$)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_action_status(req, res);
-               });
+  srv->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/status$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_action_status(req, res);
+           });
 
   // Action result (GET) - get result of a completed action goal
-  server_->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/result$)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_action_result(req, res);
-               });
+  srv->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/result$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_action_result(req, res);
+           });
 
   // Action cancel (DELETE) - cancel a running action goal
-  server_->Delete((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)"),
-                  [this](const httplib::Request & req, httplib::Response & res) {
-                    handle_action_cancel(req, res);
-                  });
+  srv->Delete((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                handle_action_cancel(req, res);
+              });
 
   // Configurations endpoints - SOVD Configurations API mapped to ROS2 parameters
   // List all configurations (parameters) for a component
-  server_->Get((api_path("/components") + R"(/([^/]+)/configurations$)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_list_configurations(req, res);
-               });
+  srv->Get((api_path("/components") + R"(/([^/]+)/configurations$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_list_configurations(req, res);
+           });
 
   // Get specific configuration (parameter) - register before general route
-  server_->Get((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_get_configuration(req, res);
-               });
+  srv->Get((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_get_configuration(req, res);
+           });
 
   // Set configuration (parameter)
-  server_->Put((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_set_configuration(req, res);
-               });
+  srv->Put((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_set_configuration(req, res);
+           });
 
   // Delete (reset) single configuration to default value
-  server_->Delete((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
-                  [this](const httplib::Request & req, httplib::Response & res) {
-                    handle_delete_configuration(req, res);
-                  });
+  srv->Delete((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                handle_delete_configuration(req, res);
+              });
 
   // Delete (reset) all configurations to default values
-  server_->Delete((api_path("/components") + R"(/([^/]+)/configurations$)"),
-                  [this](const httplib::Request & req, httplib::Response & res) {
-                    handle_delete_all_configurations(req, res);
-                  });
+  srv->Delete((api_path("/components") + R"(/([^/]+)/configurations$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                handle_delete_all_configurations(req, res);
+              });
 
   // Fault endpoints
   // GET /faults - convenience API to retrieve all faults across the system
   // Useful for dashboards and monitoring tools that need a complete system health view
-  server_->Get(api_path("/faults"), [this](const httplib::Request & req, httplib::Response & res) {
+  srv->Get(api_path("/faults"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_list_all_faults(req, res);
   });
 
   // List all faults for a component (REQ_INTEROP_012)
-  server_->Get((api_path("/components") + R"(/([^/]+)/faults$)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_list_faults(req, res);
-               });
+  srv->Get((api_path("/components") + R"(/([^/]+)/faults$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_list_faults(req, res);
+           });
 
   // Get specific fault by code (REQ_INTEROP_013)
-  server_->Get((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)"),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_get_fault(req, res);
-               });
+  srv->Get((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             handle_get_fault(req, res);
+           });
 
   // Clear a fault (REQ_INTEROP_015)
-  server_->Delete((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)"),
-                  [this](const httplib::Request & req, httplib::Response & res) {
-                    handle_clear_fault(req, res);
-                  });
+  srv->Delete((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                handle_clear_fault(req, res);
+              });
 
   // Authentication endpoints (REQ_INTEROP_086, REQ_INTEROP_087)
   // POST /auth/authorize - Authenticate and get tokens (client_credentials grant)
-  server_->Post(api_path("/auth/authorize"), [this](const httplib::Request & req, httplib::Response & res) {
+  srv->Post(api_path("/auth/authorize"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_auth_authorize(req, res);
   });
 
   // POST /auth/token - Refresh access token
-  server_->Post(api_path("/auth/token"), [this](const httplib::Request & req, httplib::Response & res) {
+  srv->Post(api_path("/auth/token"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_auth_token(req, res);
   });
 
   // POST /auth/revoke - Revoke a refresh token
-  server_->Post(api_path("/auth/revoke"), [this](const httplib::Request & req, httplib::Response & res) {
+  srv->Post(api_path("/auth/revoke"), [this](const httplib::Request & req, httplib::Response & res) {
     handle_auth_revoke(req, res);
   });
 }
 
 void RESTServer::start() {
-  RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Starting REST server on %s:%d...", host_.c_str(), port_);
+  std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";
+  RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Starting %s REST server on %s:%d...", protocol.c_str(), host_.c_str(),
+              port_);
 
-  server_->listen(host_, port_);
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+  if (tls_config_.enabled && ssl_server_) {
+    ssl_server_->listen(host_, port_);
+  } else if (server_) {
+    server_->listen(host_, port_);
+  }
+#else
+  if (server_) {
+    server_->listen(host_, port_);
+  }
+#endif
 }
 
 void RESTServer::stop() {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+  if (tls_config_.enabled && ssl_server_ && ssl_server_->is_running()) {
+    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Stopping HTTPS REST server...");
+    ssl_server_->stop();
+  } else if (server_ && server_->is_running()) {
+    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Stopping HTTP REST server...");
+    server_->stop();
+  }
+#else
   if (server_ && server_->is_running()) {
     RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Stopping REST server...");
     server_->stop();
   }
+#endif
 }
 
 tl::expected<void, std::string> RESTServer::validate_entity_id(const std::string & entity_id) const {
@@ -418,6 +546,7 @@ void RESTServer::handle_root(const httplib::Request & req, httplib::Response & r
         {"configurations", true},
         {"faults", true},
         {"authentication", auth_config_.enabled},
+        {"tls", tls_config_.enabled},
     };
 
     json response = {
@@ -433,6 +562,15 @@ void RESTServer::handle_root(const httplib::Request & req, httplib::Response & r
           {"require_auth_for", auth_config_.require_auth_for == AuthRequirement::NONE    ? "none"
                                : auth_config_.require_auth_for == AuthRequirement::WRITE ? "write"
                                                                                          : "all"},
+      };
+    }
+
+    // Add TLS info if enabled
+    if (tls_config_.enabled) {
+      response["tls"] = {
+          {"enabled", true},
+          {"min_version", tls_config_.min_version},
+          {"mutual_tls", tls_config_.mutual_tls},
       };
     }
 

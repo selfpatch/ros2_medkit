@@ -37,8 +37,12 @@ find_package(ros2_medkit_msgs REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(cpp_httplib REQUIRED IMPORTED_TARGET cpp-httplib)
 
-# Find OpenSSL (required by jwt-cpp for RS256)
+# Find OpenSSL (required by jwt-cpp for RS256 and optional TLS support)
 find_package(OpenSSL REQUIRED)
+
+# Enable OpenSSL support for cpp-httplib SSLServer
+# This enables the httplib::SSLServer class for HTTPS support
+add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
 
 # Fetch header-only libraries
 include(FetchContent)
@@ -162,7 +166,7 @@ install(DIRECTORY launch config
 )
 
 # Install scripts with execute permissions explicitly set
-install(PROGRAMS scripts/get_type_schema.py
+install(PROGRAMS scripts/get_type_schema.py scripts/generate_dev_certs.sh
   DESTINATION share/${PROJECT_NAME}/scripts
 )
 
@@ -214,6 +218,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_discovery_manager gateway_lib)
   ament_target_dependencies(test_discovery_manager std_msgs)
 
+  # Add TLS configuration tests
+  ament_add_gtest(test_tls_config test/test_tls_config.cpp)
+  target_link_libraries(test_tls_config gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
@@ -228,6 +236,8 @@ if(BUILD_TESTING)
     target_link_options(test_native_topic_sampler PRIVATE --coverage)
     target_compile_options(test_discovery_manager PRIVATE --coverage -O0 -g)
     target_link_options(test_discovery_manager PRIVATE --coverage)
+    target_compile_options(test_tls_config PRIVATE --coverage -O0 -g)
+    target_link_options(test_tls_config PRIVATE --coverage)
   endif()
 
   # Integration testing
@@ -257,6 +267,13 @@ if(BUILD_TESTING)
   add_launch_test(
     test/test_auth.test.py
     TARGET test_auth
+    TIMEOUT 120
+  )
+
+  # Add TLS/HTTPS integration tests
+  add_launch_test(
+    test/test_tls.test.py
+    TARGET test_tls
     TIMEOUT 120
   )
 

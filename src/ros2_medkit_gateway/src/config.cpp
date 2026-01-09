@@ -14,11 +14,105 @@
 
 #include "ros2_medkit_gateway/config.hpp"
 
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
 
 namespace ros2_medkit_gateway {
+
+// Helper function to check if a file exists and is readable
+static bool file_exists(const std::string & path) {
+  if (path.empty()) {
+    return false;
+  }
+  struct stat buffer;
+  return (stat(path.c_str(), &buffer) == 0);
+}
+
+// TlsConfig implementation
+
+std::string TlsConfig::validate() const {
+  if (!enabled) {
+    return "";  // Disabled config is always valid
+  }
+
+  // Certificate file is required when TLS is enabled
+  if (cert_file.empty()) {
+    return "TLS: cert_file is required when TLS is enabled";
+  }
+  if (!file_exists(cert_file)) {
+    return "TLS: cert_file does not exist or is not readable: " + cert_file;
+  }
+
+  // Key file is required when TLS is enabled
+  if (key_file.empty()) {
+    return "TLS: key_file is required when TLS is enabled";
+  }
+  if (!file_exists(key_file)) {
+    return "TLS: key_file does not exist or is not readable: " + key_file;
+  }
+
+  // CA file is optional, but if provided must exist
+  if (!ca_file.empty() && !file_exists(ca_file)) {
+    return "TLS: ca_file does not exist or is not readable: " + ca_file;
+  }
+
+  // Mutual TLS requires CA file
+  if (mutual_tls && ca_file.empty()) {
+    return "TLS: ca_file is required when mutual_tls is enabled";
+  }
+
+  // Validate minimum TLS version
+  if (min_version != "1.2" && min_version != "1.3") {
+    return "TLS: min_version must be '1.2' or '1.3', got: " + min_version;
+  }
+
+  return "";  // Valid
+}
+
+// TlsConfigBuilder implementation
+
+TlsConfigBuilder & TlsConfigBuilder::with_enabled(bool enabled) {
+  config_.enabled = enabled;
+  return *this;
+}
+
+TlsConfigBuilder & TlsConfigBuilder::with_cert_file(const std::string & cert_file) {
+  config_.cert_file = cert_file;
+  return *this;
+}
+
+TlsConfigBuilder & TlsConfigBuilder::with_key_file(const std::string & key_file) {
+  config_.key_file = key_file;
+  return *this;
+}
+
+TlsConfigBuilder & TlsConfigBuilder::with_ca_file(const std::string & ca_file) {
+  config_.ca_file = ca_file;
+  return *this;
+}
+
+TlsConfigBuilder & TlsConfigBuilder::with_min_version(const std::string & min_version) {
+  config_.min_version = min_version;
+  return *this;
+}
+
+TlsConfigBuilder & TlsConfigBuilder::with_mutual_tls(bool mutual_tls) {
+  config_.mutual_tls = mutual_tls;
+  return *this;
+}
+
+TlsConfig TlsConfigBuilder::build() {
+  std::string error = config_.validate();
+  if (!error.empty()) {
+    throw std::invalid_argument(error);
+  }
+  return std::move(config_);
+}
+
+// CorsConfigBuilder implementation
 
 CorsConfigBuilder & CorsConfigBuilder::with_origins(std::vector<std::string> origins) {
   config_.allowed_origins = std::move(origins);
