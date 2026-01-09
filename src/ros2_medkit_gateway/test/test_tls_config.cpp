@@ -78,7 +78,6 @@ TEST_F(TlsConfigTest, valid_config_with_cert_and_key) {
   EXPECT_EQ(config.cert_file, cert_file_);
   EXPECT_EQ(config.key_file, key_file_);
   EXPECT_EQ(config.min_version, "1.2");
-  EXPECT_FALSE(config.mutual_tls);
 }
 
 // Test valid TLS configuration with all options
@@ -89,7 +88,6 @@ TEST_F(TlsConfigTest, valid_config_with_all_options) {
                     .with_key_file(key_file_)
                     .with_ca_file(ca_file_)
                     .with_min_version("1.3")
-                    .with_mutual_tls(true)
                     .build();
 
   EXPECT_TRUE(config.enabled);
@@ -97,7 +95,6 @@ TEST_F(TlsConfigTest, valid_config_with_all_options) {
   EXPECT_EQ(config.key_file, key_file_);
   EXPECT_EQ(config.ca_file, ca_file_);
   EXPECT_EQ(config.min_version, "1.3");
-  EXPECT_TRUE(config.mutual_tls);
 }
 
 // Test missing certificate file
@@ -128,33 +125,9 @@ TEST_F(TlsConfigTest, nonexistent_key_file_throws) {
       std::invalid_argument);
 }
 
-// Test mutual TLS without CA file
-TEST_F(TlsConfigTest, mutual_tls_without_ca_file_throws) {
-  EXPECT_THROW(
-      {
-        TlsConfigBuilder()
-            .with_enabled(true)
-            .with_cert_file(cert_file_)
-            .with_key_file(key_file_)
-            .with_mutual_tls(true)
-            .build();
-      },
-      std::invalid_argument);
-}
-
-// Test mutual TLS with CA file
-TEST_F(TlsConfigTest, mutual_tls_with_ca_file_succeeds) {
-  auto config = TlsConfigBuilder()
-                    .with_enabled(true)
-                    .with_cert_file(cert_file_)
-                    .with_key_file(key_file_)
-                    .with_ca_file(ca_file_)
-                    .with_mutual_tls(true)
-                    .build();
-
-  EXPECT_TRUE(config.mutual_tls);
-  EXPECT_EQ(config.ca_file, ca_file_);
-}
+// TODO(future): Add mutual TLS tests when implemented
+// TEST_F(TlsConfigTest, mutual_tls_without_ca_file_throws) { ... }
+// TEST_F(TlsConfigTest, mutual_tls_with_ca_file_succeeds) { ... }
 
 // Test invalid TLS version
 TEST_F(TlsConfigTest, invalid_tls_version_throws) {

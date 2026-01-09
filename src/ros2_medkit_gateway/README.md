@@ -816,9 +816,10 @@ TLS (Transport Layer Security) enables encrypted HTTPS communication. TLS is **d
 | `server.tls.enabled`         | bool   | `false` | Enable/disable TLS. When enabled, server uses HTTPS instead of HTTP.       |
 | `server.tls.cert_file`       | string | (required if enabled) | Path to PEM-encoded certificate file.                         |
 | `server.tls.key_file`        | string | (required if enabled) | Path to PEM-encoded private key file.                         |
-| `server.tls.ca_file`         | string | `""`    | Optional CA certificate for client verification (mutual TLS).              |
+| `server.tls.ca_file`         | string | `""`    | Optional CA certificate (reserved for future mutual TLS support).          |
 | `server.tls.min_version`     | string | `"1.2"` | Minimum TLS version: `"1.2"` (compatible) or `"1.3"` (more secure).        |
-| `server.tls.mutual_tls`      | bool   | `false` | Enable mutual TLS (client certificate verification). Requires `ca_file`.   |
+
+> **Note:** Mutual TLS (client certificate verification) is planned for a future release.
 
 **Roles and Permissions:**
 
@@ -935,7 +936,7 @@ The package includes a helper script to generate self-signed certificates for de
 # ./certs/ca.crt           - CA certificate
 # ./certs/server.crt       - Server certificate
 # ./certs/server.key       - Server private key (chmod 600)
-# ./certs/client.crt       - Client certificate (for mutual TLS)
+# ./certs/client.crt       - Client certificate (for future mutual TLS)
 # ./certs/client.key       - Client private key
 ```
 
@@ -949,7 +950,6 @@ server:
     cert_file: "/path/to/server.crt"
     key_file: "/path/to/server.key"
     min_version: "1.2"
-    mutual_tls: false
 ```
 
 **TLS with minimum TLS 1.3 (recommended for new deployments):**
@@ -962,9 +962,10 @@ server:
     cert_file: "/path/to/server.crt"
     key_file: "/path/to/server.key"
     min_version: "1.3"
-    mutual_tls: false
 ```
 
+<!-- TODO: Add Mutual TLS example when implemented
+<!-- TODO: Add Mutual TLS example when implemented
 **Mutual TLS (client certificate verification):**
 ```yaml
 server:
@@ -974,10 +975,11 @@ server:
     enabled: true
     cert_file: "/path/to/server.crt"
     key_file: "/path/to/server.key"
-    ca_file: "/path/to/ca.crt"      # CA to verify client certs
+    ca_file: "/path/to/ca.crt"
     min_version: "1.2"
-    mutual_tls: true                 # Require client certificates
+    mutual_tls: true
 ```
+-->
 
 **Quick start with HTTPS (auto-generates development certificates):**
 ```bash
@@ -1010,18 +1012,17 @@ curl -k https://localhost:8443/api/v1
 # HTTPS with CA verification
 curl --cacert ./certs/ca.crt https://localhost:8443/api/v1
 
-# Mutual TLS (provide client certificate)
-curl --cacert ./certs/ca.crt \
-     --cert ./certs/client.crt \
-     --key ./certs/client.key \
-     https://localhost:8443/api/v1/areas
+# TODO: Mutual TLS example - coming in future release
+# curl --cacert ./certs/ca.crt \
+#      --cert ./certs/client.crt \
+#      --key ./certs/client.key \
+#      https://localhost:8443/api/v1/areas
 ```
 
 > ⚠️ **Security Notes:**
 > - **Never use self-signed certificates in production** - obtain certificates from a trusted CA
 > - Protect private key files with restricted permissions: `chmod 600 server.key`
 > - Use TLS 1.3 minimum version when all clients support it
-> - Mutual TLS provides strong client authentication but requires certificate distribution
 > - Consider using Let's Encrypt for automated certificate management
 > - Store certificates outside the source tree and never commit private keys
 

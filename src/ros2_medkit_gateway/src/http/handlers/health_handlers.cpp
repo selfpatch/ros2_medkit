@@ -105,9 +105,8 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
     // Add TLS info if enabled
     if (tls_config.enabled) {
       response["tls"] = {
-          {"enabled", true},
-          {"min_version", tls_config.min_version},
-          {"mutual_tls", tls_config.mutual_tls},
+          {"enabled", true}, {"min_version", tls_config.min_version},
+          // TODO(future): Add mutual_tls when implemented
       };
     }
 

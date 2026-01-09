@@ -58,10 +58,10 @@ std::string TlsConfig::validate() const {
     return "TLS: ca_file does not exist or is not readable: " + ca_file;
   }
 
-  // Mutual TLS requires CA file
-  if (mutual_tls && ca_file.empty()) {
-    return "TLS: ca_file is required when mutual_tls is enabled";
-  }
+  // TODO(future): Add mutual TLS validation when implemented
+  // if (mutual_tls && ca_file.empty()) {
+  //   return "TLS: ca_file is required when mutual_tls is enabled";
+  // }
 
   // Validate minimum TLS version
   if (min_version != "1.2" && min_version != "1.3") {
@@ -98,10 +98,11 @@ TlsConfigBuilder & TlsConfigBuilder::with_min_version(const std::string & min_ve
   return *this;
 }
 
-TlsConfigBuilder & TlsConfigBuilder::with_mutual_tls(bool mutual_tls) {
-  config_.mutual_tls = mutual_tls;
-  return *this;
-}
+// TODO(future): Add with_mutual_tls when implemented
+// TlsConfigBuilder & TlsConfigBuilder::with_mutual_tls(bool mutual_tls) {
+//   config_.mutual_tls = mutual_tls;
+//   return *this;
+// }
 
 TlsConfig TlsConfigBuilder::build() {
   std::string error = config_.validate();

@@ -41,8 +41,9 @@ struct TlsConfig {
   /// Minimum TLS version: "1.2" or "1.3" (default: "1.2")
   std::string min_version{"1.2"};
 
-  /// Enable mutual TLS (client certificate verification)
-  bool mutual_tls{false};
+  // TODO(future): Add mutual TLS support when cpp-httplib exposes SSL_CTX
+  // See: https://github.com/yhirose/cpp-httplib/issues/XXX
+  // bool mutual_tls{false};
 
   /// Validate the configuration
   /// @return Empty string if valid, error message otherwise
@@ -69,7 +70,6 @@ class TlsConfigBuilder {
   TlsConfigBuilder & with_key_file(const std::string & key_file);
   TlsConfigBuilder & with_ca_file(const std::string & ca_file);
   TlsConfigBuilder & with_min_version(const std::string & min_version);
-  TlsConfigBuilder & with_mutual_tls(bool mutual_tls);
 
   /// Build and validate the configuration
   /// @throws std::invalid_argument if configuration is invalid

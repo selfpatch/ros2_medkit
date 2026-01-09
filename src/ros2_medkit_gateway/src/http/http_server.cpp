@@ -34,9 +34,8 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config) : tls_config_
     // Configure additional TLS settings
     configure_tls();
 
-    RCLCPP_INFO(rclcpp::get_logger("http_server"), "TLS/HTTPS enabled - cert: %s, min_version: %s, mutual_tls: %s",
-                tls_config_.cert_file.c_str(), tls_config_.min_version.c_str(),
-                tls_config_.mutual_tls ? "true" : "false");
+    RCLCPP_INFO(rclcpp::get_logger("http_server"), "TLS/HTTPS enabled - cert: %s, min_version: %s",
+                tls_config_.cert_file.c_str(), tls_config_.min_version.c_str());
     // Note: key_file path intentionally not logged for security reasons
   } else {
     server_ = std::make_unique<httplib::Server>();
@@ -106,37 +105,26 @@ void HttpServerManager::configure_tls() {
     return;
   }
 
-  // YAGNI Decision: min_version and mutual_tls fields exist in TlsConfig for
-  // future extensibility but are not fully implemented.
+  // YAGNI Decision: min_version field exists in TlsConfig for future extensibility
+  // but is not fully implemented.
   //
   // Rationale:
   // - cpp-httplib's SSLServer doesn't expose SSL_CTX for min_version configuration
   // - Modern OpenSSL (1.1.1+) defaults to TLS 1.2+ which is secure
-  // - Mutual TLS would require cpp-httplib modifications or a different library
   //
   // Future implementation options:
   // 1. Fork cpp-httplib to expose SSL_CTX for SSL_CTX_set_min_proto_version()
   // 2. Use OpenSSL system-wide configuration (/etc/ssl/openssl.cnf)
   // 3. Replace cpp-httplib with Boost.Beast or another library with full SSL control
   //
-  // The config parameters are preserved for:
-  // - API stability - clients can specify desired values
-  // - Documentation - values are logged and shown in /api/v1/ endpoint
-  // - Forward compatibility - implementation can be added without API changes
+  // TODO(future): Add mutual TLS support - requires cpp-httplib modifications
+  // to expose SSL_CTX for SSL_CTX_set_verify() with SSL_VERIFY_PEER
 
   if (tls_config_.min_version != "1.2") {
     RCLCPP_WARN(rclcpp::get_logger("http_server"),
                 "min_version='%s' requested but cpp-httplib uses OpenSSL defaults (TLS 1.2+). "
                 "Custom min_version not enforced.",
                 tls_config_.min_version.c_str());
-  }
-
-  // For mutual TLS, log a warning that full support requires library modifications
-  if (tls_config_.mutual_tls && !tls_config_.ca_file.empty()) {
-    RCLCPP_WARN(rclcpp::get_logger("http_server"),
-                "Mutual TLS requested with CA file: %s - NOTE: Full mTLS client verification "
-                "requires cpp-httplib extensions and is not currently enforced.",
-                tls_config_.ca_file.c_str());
   }
 
   // Log TLS handshake failures for debugging

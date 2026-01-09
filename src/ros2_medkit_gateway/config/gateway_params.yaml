@@ -36,7 +36,7 @@ ros2_medkit_gateway:
         key_file: ""
 
         # Optional: Path to CA certificate file for client verification
-        # Required when mutual_tls is enabled
+        # TODO: Used for mutual TLS when implemented
         # Example: "/etc/ros2_medkit/certs/ca.pem"
         ca_file: ""
 
@@ -44,10 +44,9 @@ ros2_medkit_gateway:
         # Options: "1.2" (default, widely compatible), "1.3" (more secure)
         min_version: "1.2"
 
-        # Enable mutual TLS (client certificate verification)
-        # When true, clients must present a valid certificate signed by the CA
-        # Requires ca_file to be set
-        mutual_tls: false
+        # TODO: Mutual TLS (client certificate verification) is not yet implemented
+        # See: https://github.com/selfpatch/ros2_medkit/issues/XXX
+        # mutual_tls: false
 
     # Cache refresh interval in milliseconds
     # How often to discover ROS 2 nodes and update the cache

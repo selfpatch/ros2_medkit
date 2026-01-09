@@ -39,7 +39,8 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("server.tls.key_file", "");
   declare_parameter("server.tls.ca_file", "");
   declare_parameter("server.tls.min_version", "1.2");
-  declare_parameter("server.tls.mutual_tls", false);
+  // TODO(future): Add mutual_tls parameter when implemented
+  // declare_parameter("server.tls.mutual_tls", false);
 
   // Authentication parameters (REQ_INTEROP_086, REQ_INTEROP_087)
   declare_parameter("auth.enabled", false);
@@ -129,7 +130,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
                         .with_key_file(get_parameter("server.tls.key_file").as_string())
                         .with_ca_file(get_parameter("server.tls.ca_file").as_string())
                         .with_min_version(get_parameter("server.tls.min_version").as_string())
-                        .with_mutual_tls(get_parameter("server.tls.mutual_tls").as_bool())
+                        // TODO(future): Add .with_mutual_tls() when implemented
                         .build();
       // Note: HttpServerManager will log TLS configuration details
     } catch (const std::exception & e) {
