@@ -48,7 +48,9 @@ jobs:
 
       - name: Generate Doxygen XML
         working-directory: docs
-        run: doxygen Doxyfile
+        run: |
+          mkdir -p _build/doxygen/xml
+          doxygen Doxyfile
 
       - name: Generate verification report
         run: python3 scripts/generate_verification.py
