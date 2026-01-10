@@ -138,3 +138,9 @@ intersphinx_mapping = {
 # -- Options for PlantUML ----------------------------------------------------
 plantuml = "java -Djava.awt.headless=true -jar /usr/share/plantuml/plantuml.jar"
 plantuml_output_format = "svg"
+
+# -- Options for linkcheck ---------------------------------------------------
+linkcheck_ignore = [
+    r"http://localhost:\d+",  # Ignore localhost URLs
+    r"http://127\.0\.0\.1:\d+",
+]

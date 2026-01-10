@@ -16,7 +16,6 @@ endpoints for data access, operations, configurations, and fault management.
 .. note::
 
    Version 0.1.0 — First public release.
-   See :doc:`changelog` for what's new.
 
 Quick Links
 -----------
