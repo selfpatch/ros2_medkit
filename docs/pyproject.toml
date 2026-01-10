@@ -17,6 +17,7 @@ dependencies = [
     "sphinxcontrib-plantuml",
     "matplotlib",
     "sphinx-design",
+    "breathe",
 ]
 
 [project.optional-dependencies]

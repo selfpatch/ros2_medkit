@@ -41,7 +41,13 @@ extensions = [
     "sphinx_needs",
     "sphinxcontrib.plantuml",
     "sphinx_design",
+    "breathe",
 ]
+
+# -- Options for Breathe (Doxygen integration) -------------------------------
+breathe_projects = {"ros2_medkit": "_build/doxygen/xml"}
+breathe_default_project = "ros2_medkit"
+breathe_default_members = ("members", "undoc-members")
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", ".venv"]

@@ -72,6 +72,12 @@ Community
    roadmap
 
 .. toctree::
+   :maxdepth: 2
+   :caption: API Reference
+
+   api/index
+
+.. toctree::
    :maxdepth: 4
    :caption: Standard Compliance
 

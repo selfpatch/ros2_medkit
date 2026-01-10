@@ -43,8 +43,12 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y graphviz plantuml
+          sudo apt-get install -y graphviz plantuml doxygen
           pip install -e docs/.[dev]
+
+      - name: Generate Doxygen XML
+        working-directory: docs
+        run: doxygen Doxyfile
 
       - name: Generate verification report
         run: python3 scripts/generate_verification.py

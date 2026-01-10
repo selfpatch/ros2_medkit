@@ -1,0 +1,58 @@
+# Doxyfile for ros2_medkit C++ API documentation
+# Used by Breathe extension to integrate with Sphinx
+
+PROJECT_NAME           = "ros2_medkit"
+PROJECT_NUMBER         = "0.1.0"
+PROJECT_BRIEF          = "SOVD Gateway for ROS 2"
+
+# Input settings
+INPUT                  = ../src/ros2_medkit_gateway/include \
+                         ../src/ros2_medkit_gateway/src \
+                         ../src/ros2_medkit_fault_manager/include \
+                         ../src/ros2_medkit_fault_manager/src \
+                         ../src/ros2_medkit_fault_reporter/include \
+                         ../src/ros2_medkit_fault_reporter/src \
+                         ../src/ros2_medkit_msgs
+RECURSIVE              = YES
+FILE_PATTERNS          = *.hpp *.cpp *.h
+
+# Output settings - XML for Breathe
+GENERATE_XML           = YES
+XML_OUTPUT             = _build/doxygen/xml
+GENERATE_HTML          = NO
+GENERATE_LATEX         = NO
+
+# Extraction settings
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = YES
+
+# Documentation settings
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = YES
+BRIEF_MEMBER_DESC      = YES
+REPEAT_BRIEF           = YES
+ALWAYS_DETAILED_SEC    = NO
+
+# Preprocessing
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = NO
+
+# Source browsing
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+STRIP_CODE_COMMENTS    = YES
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+
+# Warnings
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+QUIET                  = YES
+
+# Graph settings (disabled for XML-only output)
+HAVE_DOT               = NO
+CLASS_DIAGRAMS         = NO
