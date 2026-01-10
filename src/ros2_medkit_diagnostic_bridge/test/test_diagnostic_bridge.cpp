@@ -1,4 +1,4 @@
-// Copyright 2025 mfaferek93
+// Copyright 2026 mfaferek93
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,25 +35,34 @@ class DiagnosticBridgeTest : public ::testing::Test {
 
 // Test severity mapping
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Warn) {
-  EXPECT_EQ(DiagnosticBridgeNode::map_to_severity(DiagStatus::WARN), Fault::SEVERITY_WARN);
+  auto result = DiagnosticBridgeNode::map_to_severity(DiagStatus::WARN);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, Fault::SEVERITY_WARN);
 }
 
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Error) {
-  EXPECT_EQ(DiagnosticBridgeNode::map_to_severity(DiagStatus::ERROR), Fault::SEVERITY_ERROR);
+  auto result = DiagnosticBridgeNode::map_to_severity(DiagStatus::ERROR);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, Fault::SEVERITY_ERROR);
 }
 
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Stale) {
-  EXPECT_EQ(DiagnosticBridgeNode::map_to_severity(DiagStatus::STALE), Fault::SEVERITY_CRITICAL);
+  auto result = DiagnosticBridgeNode::map_to_severity(DiagStatus::STALE);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, Fault::SEVERITY_CRITICAL);
 }
 
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Ok) {
-  // OK should return 255 (invalid severity, use is_ok_level instead)
-  EXPECT_EQ(DiagnosticBridgeNode::map_to_severity(DiagStatus::OK), 255);
+  // OK should return nullopt (use is_ok_level and send PASSED instead)
+  auto result = DiagnosticBridgeNode::map_to_severity(DiagStatus::OK);
+  EXPECT_FALSE(result.has_value());
 }
 
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Unknown) {
   // Unknown level defaults to ERROR
-  EXPECT_EQ(DiagnosticBridgeNode::map_to_severity(99), Fault::SEVERITY_ERROR);
+  auto result = DiagnosticBridgeNode::map_to_severity(99);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, Fault::SEVERITY_ERROR);
 }
 
 // Test is_ok_level
@@ -65,30 +74,6 @@ TEST_F(DiagnosticBridgeTest, IsOkLevel_False) {
   EXPECT_FALSE(DiagnosticBridgeNode::is_ok_level(DiagStatus::WARN));
   EXPECT_FALSE(DiagnosticBridgeNode::is_ok_level(DiagStatus::ERROR));
   EXPECT_FALSE(DiagnosticBridgeNode::is_ok_level(DiagStatus::STALE));
-}
-
-// Test fault code generation (static method accessible via class)
-class FaultCodeGenerationTest : public ::testing::Test {};
-
-TEST_F(FaultCodeGenerationTest, SimpleWord) {
-  // Access via creating node - need to test generate_fault_code indirectly
-  // Since generate_fault_code is private, we test via map_to_fault_code
-  // For now, test the expected behavior through node
-}
-
-TEST_F(FaultCodeGenerationTest, SpaceSeparated) {
-  // "motor temp" -> "MOTOR_TEMP"
-  // Tested through integration
-}
-
-TEST_F(FaultCodeGenerationTest, ColonSeparated) {
-  // "motor: temperature" -> "MOTOR_TEMPERATURE"
-  // Tested through integration
-}
-
-TEST_F(FaultCodeGenerationTest, SlashPath) {
-  // "/robot/motor/temp" -> "ROBOT_MOTOR_TEMP"
-  // Tested through integration
 }
 
 // Node creation test

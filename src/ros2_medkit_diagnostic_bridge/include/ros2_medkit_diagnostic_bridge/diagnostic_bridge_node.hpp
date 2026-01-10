@@ -1,4 +1,4 @@
-// Copyright 2025 mfaferek93
+// Copyright 2026 mfaferek93
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,10 +16,12 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 
-#include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "ros2_medkit_fault_reporter/fault_reporter.hpp"
 
 namespace ros2_medkit_diagnostic_bridge {
@@ -41,8 +43,8 @@ namespace ros2_medkit_diagnostic_bridge {
 ///   ros__parameters:
 ///     diagnostics_topic: "/diagnostics"
 ///     auto_generate_codes: true
-///     name_to_code:
-///       "motor_controller: Status": "MOTOR_001"
+///     # Custom mappings: "name_to_code.<diagnostic_name>": "<FAULT_CODE>"
+///     "name_to_code.motor_controller: Status": "MOTOR_001"
 /// @endcode
 class DiagnosticBridgeNode : public rclcpp::Node {
  public:
@@ -53,15 +55,15 @@ class DiagnosticBridgeNode : public rclcpp::Node {
   std::string map_to_fault_code(const std::string & diagnostic_name) const;
 
   /// Map DiagnosticStatus level to Fault severity
-  /// Returns 255 if level is OK (should send PASSED instead)
-  static uint8_t map_to_severity(uint8_t diagnostic_level);
+  /// Returns std::nullopt if level is OK (should send PASSED instead)
+  static std::optional<uint8_t> map_to_severity(uint8_t diagnostic_level);
 
   /// Check if diagnostic level indicates OK status
   static bool is_ok_level(uint8_t diagnostic_level);
 
  private:
   /// Callback for /diagnostics messages
-  void diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::SharedPtr msg);
+  void diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg);
 
   /// Process a single DiagnosticStatus
   void process_diagnostic(const diagnostic_msgs::msg::DiagnosticStatus & status);
@@ -76,6 +78,7 @@ class DiagnosticBridgeNode : public rclcpp::Node {
   // ROS2 components
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_sub_;
   std::unique_ptr<ros2_medkit_fault_reporter::FaultReporter> reporter_;
+  std::once_flag reporter_init_flag_;
 
   // Configuration
   std::string diagnostics_topic_;

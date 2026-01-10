@@ -1,4 +1,4 @@
-# Copyright 2025 mfaferek93
+# Copyright 2026 mfaferek93
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 cmake_minimum_required(VERSION 3.8)
 project(ros2_medkit_diagnostic_bridge)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -90,6 +90,7 @@ ament_export_dependencies(rclcpp diagnostic_msgs ros2_medkit_msgs ros2_medkit_fa
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(launch_testing_ament_cmake REQUIRED)
 
   set(ament_cmake_clang_format_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-format")
   set(ament_cmake_clang_tidy_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-tidy")
@@ -105,6 +106,17 @@ if(BUILD_TESTING)
     target_compile_options(test_diagnostic_bridge PRIVATE --coverage -O0 -g)
     target_link_options(test_diagnostic_bridge PRIVATE --coverage)
   endif()
+
+  # Integration tests
+  install(DIRECTORY test
+    DESTINATION share/${PROJECT_NAME}
+  )
+
+  add_launch_test(
+    test/test_integration.test.py
+    TARGET test_integration
+    TIMEOUT 60
+  )
 endif()
 
 ament_package()

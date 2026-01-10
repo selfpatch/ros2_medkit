@@ -8,8 +8,7 @@ diagnostic_bridge:
     auto_generate_codes: true
 
     # Custom diagnostic name to fault code mappings
-    # Format: name_to_code.<diagnostic_name>: <FAULT_CODE>
+    # Format: "name_to_code.<diagnostic_name>": "<FAULT_CODE>"
     # Example:
-    # name_to_code:
-    #   "motor_controller: Temperature": "MOTOR_OVERHEAT"
-    #   "battery_monitor: Voltage": "BATTERY_LOW"
+    # "name_to_code.motor_controller: Temperature": "MOTOR_OVERHEAT"
+    # "name_to_code.battery_monitor: Voltage": "BATTERY_LOW"

@@ -46,9 +46,9 @@ diagnostic_bridge:
     auto_generate_codes: true
 
     # Custom mappings (optional)
-    name_to_code:
-      "motor_controller: Temperature": "MOTOR_OVERHEAT"
-      "battery_monitor: Voltage": "BATTERY_LOW"
+    # Format: "name_to_code.<diagnostic_name>": "<FAULT_CODE>"
+    "name_to_code.motor_controller: Temperature": "MOTOR_OVERHEAT"
+    "name_to_code.battery_monitor: Voltage": "BATTERY_LOW"
 ```
 
 ### Fault Code Generation

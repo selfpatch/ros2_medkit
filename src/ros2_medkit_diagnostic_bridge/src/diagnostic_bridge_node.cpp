@@ -1,4 +1,4 @@
-// Copyright 2025 mfaferek93
+// Copyright 2026 mfaferek93
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,14 +21,14 @@
 
 namespace ros2_medkit_diagnostic_bridge {
 
-DiagnosticBridgeNode::DiagnosticBridgeNode(const rclcpp::NodeOptions & options)
-    : Node("diagnostic_bridge", options) {
+DiagnosticBridgeNode::DiagnosticBridgeNode(const rclcpp::NodeOptions & options) : Node("diagnostic_bridge", options) {
   load_parameters();
 
   // Subscribe to diagnostics - reporter created lazily on first callback
   diagnostics_sub_ = create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
-      diagnostics_topic_, rclcpp::QoS(10),
-      [this](const diagnostic_msgs::msg::DiagnosticArray::SharedPtr msg) { diagnostics_callback(msg); });
+      diagnostics_topic_, rclcpp::QoS(10), [this](const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg) {
+        diagnostics_callback(msg);
+      });
 
   RCLCPP_INFO(get_logger(), "DiagnosticBridge started (topic=%s, auto_generate=%s, mappings=%zu)",
               diagnostics_topic_.c_str(), auto_generate_codes_ ? "true" : "false", name_to_code_.size());
@@ -38,34 +38,26 @@ void DiagnosticBridgeNode::load_parameters() {
   diagnostics_topic_ = declare_parameter<std::string>("diagnostics_topic", "/diagnostics");
   auto_generate_codes_ = declare_parameter<bool>("auto_generate_codes", true);
 
-  // Load custom name_to_code mappings
-  // Expected format: name_to_code.<diagnostic_name> = <fault_code>
-  try {
-    declare_parameter("name_to_code", rclcpp::ParameterType::PARAMETER_STRING_ARRAY);
-  } catch (const rclcpp::exceptions::ParameterAlreadyDeclaredException &) {
-    // Parameter already declared, ignore
-  }
-
-  // Try to load mappings from a map-like parameter structure
-  // Users can pass mappings like: --ros-args -p "name_to_code.motor_temp:=MOTOR_OVERHEAT"
+  // Load custom name_to_code mappings from parameter overrides
+  // Format: name_to_code.<diagnostic_name> = <fault_code>
+  // Example: --ros-args -p "name_to_code.motor_temp:=MOTOR_OVERHEAT"
   auto params = get_node_parameters_interface()->get_parameter_overrides();
   const std::string prefix = "name_to_code.";
   for (const auto & [name, value] : params) {
     if (name.rfind(prefix, 0) == 0 && value.get_type() == rclcpp::ParameterType::PARAMETER_STRING) {
       std::string diag_name = name.substr(prefix.length());
       name_to_code_[diag_name] = value.get<std::string>();
-      RCLCPP_DEBUG(get_logger(), "Loaded mapping: '%s' -> '%s'", diag_name.c_str(),
-                   name_to_code_[diag_name].c_str());
+      RCLCPP_DEBUG(get_logger(), "Loaded mapping: '%s' -> '%s'", diag_name.c_str(), name_to_code_[diag_name].c_str());
     }
   }
 }
 
-void DiagnosticBridgeNode::diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::SharedPtr msg) {
-  // Lazy initialization of reporter (can't use shared_from_this in constructor)
-  if (!reporter_) {
-    reporter_ = std::make_unique<ros2_medkit_fault_reporter::FaultReporter>(
-        this->shared_from_this(), get_fully_qualified_name());
-  }
+void DiagnosticBridgeNode::diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg) {
+  // Thread-safe lazy initialization of reporter (can't use shared_from_this in constructor)
+  std::call_once(reporter_init_flag_, [this]() {
+    reporter_ = std::make_unique<ros2_medkit_fault_reporter::FaultReporter>(this->shared_from_this(),
+                                                                            get_fully_qualified_name());
+  });
 
   for (const auto & status : msg->status) {
     process_diagnostic(status);
@@ -75,16 +67,22 @@ void DiagnosticBridgeNode::diagnostics_callback(const diagnostic_msgs::msg::Diag
 void DiagnosticBridgeNode::process_diagnostic(const diagnostic_msgs::msg::DiagnosticStatus & status) {
   std::string fault_code = map_to_fault_code(status.name);
 
+  // Skip if no mapping and auto-generate disabled
+  if (fault_code.empty()) {
+    return;
+  }
+
   if (is_ok_level(status.level)) {
     // OK status -> send PASSED event for healing
     reporter_->report_passed(fault_code);
     RCLCPP_DEBUG(get_logger(), "Diagnostic OK: %s -> PASSED for %s", status.name.c_str(), fault_code.c_str());
   } else {
     // WARN, ERROR, STALE -> send FAILED event
-    uint8_t severity = map_to_severity(status.level);
-    reporter_->report(fault_code, severity, status.message);
+    auto severity = map_to_severity(status.level);
+    // severity is guaranteed to have value here (not OK level)
+    reporter_->report(fault_code, *severity, status.message);
     RCLCPP_DEBUG(get_logger(), "Diagnostic %s: %s -> fault %s (severity=%d)", status.name.c_str(),
-                 status.message.c_str(), fault_code.c_str(), severity);
+                 status.message.c_str(), fault_code.c_str(), *severity);
   }
 }
 
@@ -100,20 +98,19 @@ std::string DiagnosticBridgeNode::map_to_fault_code(const std::string & diagnost
     return generate_fault_code(diagnostic_name);
   }
 
-  // Return empty string if no mapping and auto-generate disabled
-  // This will be logged as warning by FaultReporter (empty fault_code rejected)
-  RCLCPP_WARN_ONCE(get_logger(), "No mapping for diagnostic '%s' and auto_generate_codes is disabled",
-                   diagnostic_name.c_str());
+  // Log warning and return empty string if no mapping and auto-generate disabled
+  RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                       "No mapping for diagnostic '%s' and auto_generate_codes is disabled", diagnostic_name.c_str());
   return "";
 }
 
-uint8_t DiagnosticBridgeNode::map_to_severity(uint8_t diagnostic_level) {
+std::optional<uint8_t> DiagnosticBridgeNode::map_to_severity(uint8_t diagnostic_level) {
   using DiagStatus = diagnostic_msgs::msg::DiagnosticStatus;
   using Fault = ros2_medkit_msgs::msg::Fault;
 
   switch (diagnostic_level) {
     case DiagStatus::OK:
-      return 255;  // Should use is_ok_level() and send PASSED instead
+      return std::nullopt;  // Use is_ok_level() and send PASSED instead
     case DiagStatus::WARN:
       return Fault::SEVERITY_WARN;
     case DiagStatus::ERROR:
