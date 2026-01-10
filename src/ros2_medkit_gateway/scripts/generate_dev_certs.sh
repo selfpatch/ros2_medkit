@@ -26,9 +26,7 @@
 # Generated files:
 #   - cert.pem: Self-signed certificate
 #   - key.pem: Private key (RSA 4096-bit)
-#   - ca.pem: CA certificate (for mutual TLS testing)
-#   - client_cert.pem: Client certificate (for mutual TLS testing)
-#   - client_key.pem: Client private key (for mutual TLS testing)
+#   - ca.pem: CA certificate
 
 set -e
 
@@ -65,19 +63,19 @@ cd "$OUTPUT_DIR"
 echo "Generating certificates in: $(pwd)"
 echo ""
 
-# Generate CA certificate (for mutual TLS)
-echo "[1/5] Generating CA certificate..."
+# Generate CA certificate
+echo "[1/3] Generating CA certificate..."
 openssl req -x509 -newkey rsa:$KEY_SIZE -keyout ca_key.pem -out ca.pem \
     -days $VALIDITY_DAYS -nodes \
     -subj "$SUBJECT/CN=ROS2Medkit Development CA" \
     2>/dev/null
 
 # Generate server private key
-echo "[2/5] Generating server private key..."
+echo "[2/3] Generating server private key..."
 openssl genrsa -out key.pem $KEY_SIZE 2>/dev/null
 
 # Generate server certificate signing request
-echo "[3/5] Generating server certificate..."
+echo "[3/3] Generating server certificate..."
 openssl req -new -key key.pem -out server.csr \
     -subj "$SUBJECT/CN=$SERVER_CN" \
     2>/dev/null
@@ -102,33 +100,11 @@ openssl x509 -req -in server.csr -CA ca.pem -CAkey ca_key.pem -CAcreateserial \
     -extfile server_ext.cnf \
     2>/dev/null
 
-# Generate client certificate (for mutual TLS)
-echo "[4/5] Generating client certificate for mutual TLS..."
-openssl genrsa -out client_key.pem $KEY_SIZE 2>/dev/null
-openssl req -new -key client_key.pem -out client.csr \
-    -subj "$SUBJECT/CN=Development Client" \
-    2>/dev/null
-
-# Create extension file for client certificate
-cat > client_ext.cnf << EOF
-authorityKeyIdentifier=keyid,issuer
-basicConstraints=CA:FALSE
-keyUsage = digitalSignature, keyEncipherment
-extendedKeyUsage = clientAuth
-EOF
-
-# Sign client certificate with CA
-openssl x509 -req -in client.csr -CA ca.pem -CAkey ca_key.pem -CAcreateserial \
-    -out client_cert.pem -days $VALIDITY_DAYS \
-    -extfile client_ext.cnf \
-    2>/dev/null
-
 # Cleanup temporary files
-echo "[5/5] Cleaning up..."
-rm -f server.csr client.csr server_ext.cnf client_ext.cnf ca.srl
+rm -f server.csr server_ext.cnf ca.srl
 
 # Set secure permissions on private keys
-chmod 600 key.pem client_key.pem ca_key.pem
+chmod 600 key.pem ca_key.pem
 
 echo ""
 echo "=== Certificate Generation Complete ==="
@@ -138,8 +114,6 @@ echo "  Server certificate: $OUTPUT_DIR/cert.pem"
 echo "  Server private key: $OUTPUT_DIR/key.pem"
 echo "  CA certificate:     $OUTPUT_DIR/ca.pem"
 echo "  CA private key:     $OUTPUT_DIR/ca_key.pem"
-echo "  Client certificate: $OUTPUT_DIR/client_cert.pem"
-echo "  Client private key: $OUTPUT_DIR/client_key.pem"
 echo ""
 echo "Example gateway configuration (gateway_params.yaml):"
 echo ""
@@ -148,18 +122,10 @@ echo "    tls:"
 echo "      enabled: true"
 echo "      cert_file: \"$OUTPUT_DIR/cert.pem\""
 echo "      key_file: \"$OUTPUT_DIR/key.pem\""
-echo "      # For mutual TLS (optional):"
 echo "      ca_file: \"$OUTPUT_DIR/ca.pem\""
-echo "      mutual_tls: false"
 echo ""
 echo "Test with curl:"
 echo "  curl -k https://localhost:8080/api/v1/health"
 echo ""
 echo "Test with curl (verify certificate):"
 echo "  curl --cacert $OUTPUT_DIR/ca.pem https://localhost:8080/api/v1/health"
-echo ""
-echo "For mutual TLS testing:"
-echo "  curl --cacert $OUTPUT_DIR/ca.pem \\"
-echo "       --cert $OUTPUT_DIR/client_cert.pem \\"
-echo "       --key $OUTPUT_DIR/client_key.pem \\"
-echo "       https://localhost:8080/api/v1/health"

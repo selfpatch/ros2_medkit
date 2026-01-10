@@ -965,7 +965,6 @@ server:
 ```
 
 <!-- TODO: Add Mutual TLS example when implemented
-<!-- TODO: Add Mutual TLS example when implemented
 **Mutual TLS (client certificate verification):**
 ```yaml
 server:

@@ -189,7 +189,6 @@ def launch_setup(context):
                     'server.tls.cert_file': cert_paths['cert_file'],
                     'server.tls.key_file': cert_paths['key_file'],
                     'server.tls.min_version': min_tls_version,
-                    'server.tls.mutual_tls': False,
                     'refresh_interval_ms': int(refresh_interval),
                 }
             ],

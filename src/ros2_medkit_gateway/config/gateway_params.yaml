@@ -46,7 +46,6 @@ ros2_medkit_gateway:
 
         # TODO: Mutual TLS (client certificate verification) is not yet implemented
         # See: https://github.com/selfpatch/ros2_medkit/issues/XXX
-        # mutual_tls: false
 
     # Cache refresh interval in milliseconds
     # How often to discover ROS 2 nodes and update the cache

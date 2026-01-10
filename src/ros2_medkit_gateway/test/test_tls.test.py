@@ -168,7 +168,6 @@ def create_https_params_file(cert_paths: dict, output_dir: str) -> str:
         cert_file: "{cert_paths['cert_file']}"
         key_file: "{cert_paths['key_file']}"
         min_version: "1.2"
-        mutual_tls: false
     refresh_interval_ms: 1000
     cors:
       allowed_origins: [""]
