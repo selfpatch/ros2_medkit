@@ -50,9 +50,10 @@ so the same concepts can be used across robots, vehicles, and other embedded sys
 ### 1. Clone and Install Dependencies
 
 ```bash
-cd ~/ros2_ws/src
+mkdir -p ~/ros2_medkit_ws/src
+cd ~/ros2_medkit_ws/src
 git clone https://github.com/selfpatch/ros2_medkit.git
-cd ros2_medkit
+cd ~/ros2_medkit_ws
 rosdep install --from-paths src --ignore-src -r -y
 ```
 

@@ -113,41 +113,49 @@ To report faults from your nodes, use the ``ros2_medkit_fault_reporter`` package
 .. code-block:: cpp
 
    #include "ros2_medkit_fault_reporter/fault_reporter.hpp"
+   #include "ros2_medkit_msgs/msg/fault.hpp"
+
+   using ros2_medkit_fault_reporter::FaultReporter;
+   using ros2_medkit_msgs::msg::Fault;
 
    class MyNode : public rclcpp::Node
    {
    public:
      MyNode() : Node("my_node")
      {
-       fault_reporter_ = std::make_shared<FaultReporter>(this);
+       // FaultReporter requires shared_from_this() and a source identifier
+       fault_reporter_ = std::make_shared<FaultReporter>(
+         this->shared_from_this(),
+         this->get_fully_qualified_name());
      }
 
      void check_sensor()
      {
        if (!sensor_ok_) {
-         fault_reporter_->report_fault(
+         fault_reporter_->report(
            "SENSOR_DISCONNECTED",
-           FaultSeverity::ERROR,
+           Fault::SEVERITY_ERROR,
            "Front camera not responding"
          );
        }
-     }
-
-     void on_sensor_recovered()
-     {
-       fault_reporter_->clear_fault("SENSOR_DISCONNECTED");
      }
 
    private:
      std::shared_ptr<FaultReporter> fault_reporter_;
    };
 
+.. note::
+
+   Faults are cleared through the FaultManager service, not the reporter.
+   Use ``ros2 service call /fault_manager/clear_fault`` or the REST API
+   ``DELETE /api/v1/components/{id}/faults/{fault_code}``.
+
 **Fault severity levels:**
 
-- ``INFO`` - Informational, no action required
-- ``WARN`` - Warning, may need attention
-- ``ERROR`` - Error, requires attention
-- ``CRITICAL`` - Critical, immediate action required
+- ``Fault::SEVERITY_INFO`` - Informational, no action required
+- ``Fault::SEVERITY_WARN`` - Warning, may need attention
+- ``Fault::SEVERITY_ERROR`` - Error, requires attention
+- ``Fault::SEVERITY_CRITICAL`` - Critical, immediate action required
 
 Exposing Custom Data
 --------------------
