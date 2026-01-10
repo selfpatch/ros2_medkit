@@ -30,9 +30,9 @@ namespace ros2_medkit_fault_manager {
 /// Debounce configuration for fault filtering
 struct DebounceConfig {
   /// Confirmation threshold (typically negative). Fault is CONFIRMED when counter <= this value.
-  /// Default: -3 (3 FAILED events to confirm). Since the first FAILED sets counter to -1,
-  /// any value >= -1 results in immediate confirmation (0 is the canonical "immediate" value).
-  int32_t confirmation_threshold{-3};
+  /// Default: -1 (immediate confirmation - first FAILED event confirms the fault).
+  /// Set to lower values (e.g., -3) for debounce filtering.
+  int32_t confirmation_threshold{-1};
 
   /// Whether healing is enabled. When true, faults can transition to HEALED status.
   bool healing_enabled{false};
@@ -61,9 +61,9 @@ struct FaultState {
   std::set<std::string> reporting_sources;
 
   // Debounce state (internal, not exposed in Fault.msg)
-  int32_t debounce_counter{0};    ///< FAILED: -1, PASSED: +1
-  rclcpp::Time last_failed_time;  ///< Timestamp of last FAILED event
-  rclcpp::Time last_passed_time;  ///< Timestamp of last PASSED event
+  int32_t debounce_counter{0};      ///< FAILED decrements (-1), PASSED increments (+1)
+  rclcpp::Time last_failed_time{};  ///< Timestamp of last FAILED event
+  rclcpp::Time last_passed_time{};  ///< Timestamp of last PASSED event
 
   /// Convert to ROS 2 message
   ros2_medkit_msgs::msg::Fault to_msg() const;

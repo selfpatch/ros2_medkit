@@ -42,7 +42,7 @@ uint8 EVENT_PASSED = 1
 uint8 severity
 
 # Human-readable description of the fault condition.
-# Only meaningful for FAILED events; ignored for PASSED events.
+# Only updated for FAILED events. PASSED events retain the existing description.
 string description
 
 # Identifier of the reporting node/entity. Recommended: fully qualified ROS 2 node name

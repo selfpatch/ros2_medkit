@@ -166,27 +166,6 @@ void SqliteFaultStorage::initialize_schema() {
     sqlite3_free(err_msg);
     throw std::runtime_error("Failed to create schema: " + error);
   }
-
-  // Add new columns to existing databases (migration)
-  // These will fail if columns already exist (expected), but log unexpected errors
-  auto try_add_column = [this](const char * sql, const char * col_name) {
-    char * migration_err = nullptr;
-    int rc = sqlite3_exec(db_, sql, nullptr, nullptr, &migration_err);
-    if (rc != SQLITE_OK) {
-      // SQLite returns "duplicate column name" for existing columns - that's expected
-      std::string error = migration_err != nullptr ? std::string(migration_err) : "Unknown migration error";
-      if (migration_err != nullptr) {
-        sqlite3_free(migration_err);
-      }
-      if (error.find("duplicate column") == std::string::npos) {
-        RCUTILS_LOG_WARN_NAMED("sqlite_fault_storage", "Migration warning for column '%s': %s", col_name,
-                               error.c_str());
-      }
-    }
-  };
-  try_add_column("ALTER TABLE faults ADD COLUMN debounce_counter INTEGER NOT NULL DEFAULT 0;", "debounce_counter");
-  try_add_column("ALTER TABLE faults ADD COLUMN last_failed_ns INTEGER NOT NULL DEFAULT 0;", "last_failed_ns");
-  try_add_column("ALTER TABLE faults ADD COLUMN last_passed_ns INTEGER NOT NULL DEFAULT 0;", "last_passed_ns");
 }
 
 std::vector<std::string> SqliteFaultStorage::parse_json_array(const std::string & json_str) {
@@ -379,7 +358,10 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
       } else if (debounce_counter < 0) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
+      } else if (debounce_counter > 0) {
+        new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED;
       }
+      // Note: debounce_counter == 0 keeps current status
 
       // Update with new values
       SqliteStatement update_stmt(

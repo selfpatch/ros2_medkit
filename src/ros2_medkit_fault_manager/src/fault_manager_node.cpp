@@ -25,9 +25,10 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   storage_type_ = declare_parameter<std::string>("storage_type", "sqlite");
   database_path_ = declare_parameter<std::string>("database_path", "/var/lib/ros2_medkit/faults.db");
 
-  auto confirmation_threshold_param = declare_parameter<int>("confirmation_threshold", -3);
+  auto confirmation_threshold_param = declare_parameter<int>("confirmation_threshold", -1);
   if (confirmation_threshold_param > 0) {
-    RCLCPP_WARN(get_logger(), "confirmation_threshold should be <= 0, got %d. Using %d.",
+    RCLCPP_WARN(get_logger(),
+                "confirmation_threshold should be <= 0 (0 or -1 = immediate confirmation), got %d. Using %d.",
                 static_cast<int>(confirmation_threshold_param), static_cast<int>(-confirmation_threshold_param));
     confirmation_threshold_param = -confirmation_threshold_param;
   }

@@ -75,6 +75,7 @@ def generate_test_description():
         additional_env=get_coverage_env(),
         parameters=[{
             'storage_type': 'memory',  # Use in-memory storage for integration tests
+            'confirmation_threshold': -3,  # Use debounce for testing lifecycle
         }],
     )
 

@@ -102,18 +102,24 @@ TEST_F(SqliteFaultStorageTest, GetFaultsDefaultReturnsConfirmedOnly) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
-  // Report a fault (starts as PREFAILED)
+  // With default threshold=-1, single report confirms immediately
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                timestamp);
 
-  // Default query should return empty (only PREFAILED exists)
+  // Default query should return the CONFIRMED fault
   auto faults = storage_->get_faults(false, 0, {});
-  EXPECT_EQ(faults.size(), 0u);
+  EXPECT_EQ(faults.size(), 1u);
+  EXPECT_EQ(faults[0].status, Fault::STATUS_CONFIRMED);
 }
 
 TEST_F(SqliteFaultStorageTest, GetFaultsWithPrefailedStatus) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
+
+  // Set threshold to -3 to test PREFAILED status
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  storage_->set_debounce_config(config);
 
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                timestamp);
@@ -129,13 +135,14 @@ TEST_F(SqliteFaultStorageTest, GetFaultsFilterBySeverity) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
+  // With default threshold=-1, faults are immediately CONFIRMED
   storage_->report_fault_event("FAULT_INFO", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_INFO, "Info", "/node1",
                                timestamp);
   storage_->report_fault_event("FAULT_ERROR", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Error",
                                "/node1", timestamp);
 
-  // Filter by ERROR severity
-  auto faults = storage_->get_faults(true, Fault::SEVERITY_ERROR, {Fault::STATUS_PREFAILED});
+  // Filter by ERROR severity (query CONFIRMED since that's the default status now)
+  auto faults = storage_->get_faults(true, Fault::SEVERITY_ERROR, {Fault::STATUS_CONFIRMED});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].fault_code, "FAULT_ERROR");
 }
@@ -178,12 +185,14 @@ TEST_F(SqliteFaultStorageTest, InvalidStatusDefaultsToConfirmed) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
+  // With default threshold=-1, fault is immediately CONFIRMED
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                timestamp);
 
-  // Query with invalid status - defaults to CONFIRMED (fault is PREFAILED, so no matches)
+  // Query with invalid status - defaults to CONFIRMED, which now matches our fault
   auto faults = storage_->get_faults(false, 0, {"INVALID_STATUS"});
-  EXPECT_EQ(faults.size(), 0u);
+  EXPECT_EQ(faults.size(), 1u);
+  EXPECT_EQ(faults[0].status, Fault::STATUS_CONFIRMED);
 }
 
 // SQLite-specific persistence test
@@ -191,6 +200,7 @@ TEST_F(SqliteFaultStorageTest, PersistenceAcrossRestarts) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
+  // With default threshold=-1, faults are immediately CONFIRMED
   // Report some faults
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
                                "Persistent fault 1", "/node1", timestamp);
@@ -215,7 +225,7 @@ TEST_F(SqliteFaultStorageTest, PersistenceAcrossRestarts) {
   auto fault1 = storage_->get_fault("FAULT_1");
   ASSERT_TRUE(fault1.has_value());
   EXPECT_EQ(fault1->severity, Fault::SEVERITY_ERROR);
-  EXPECT_EQ(fault1->status, Fault::STATUS_PREFAILED);
+  EXPECT_EQ(fault1->status, Fault::STATUS_CONFIRMED);  // Immediately confirmed with threshold=-1
   EXPECT_EQ(fault1->description, "Persistent fault 1");
 
   auto fault2 = storage_->get_fault("FAULT_2");
@@ -289,7 +299,7 @@ TEST_F(SqliteFaultStorageTest, DbPathAccessor) {
 // Debounce config tests for SQLite storage
 TEST_F(SqliteFaultStorageTest, DefaultDebounceConfig) {
   auto config = storage_->get_debounce_config();
-  EXPECT_EQ(config.confirmation_threshold, -3);
+  EXPECT_EQ(config.confirmation_threshold, -1);
   EXPECT_FALSE(config.healing_enabled);
   EXPECT_EQ(config.healing_threshold, 3);
   EXPECT_TRUE(config.critical_immediate_confirm);
@@ -314,7 +324,11 @@ TEST_F(SqliteFaultStorageTest, SetDebounceConfig) {
 TEST_F(SqliteFaultStorageTest, FaultStaysPrefailedAboveThreshold) {
   rclcpp::Clock clock;
 
-  // Default threshold is -3, so 2 FAILED events should stay PREFAILED
+  // Set threshold to -3 to test debounce behavior (2 FAILED events should stay PREFAILED)
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  storage_->set_debounce_config(config);
+
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                clock.now());
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
@@ -329,7 +343,11 @@ TEST_F(SqliteFaultStorageTest, FaultStaysPrefailedAboveThreshold) {
 TEST_F(SqliteFaultStorageTest, FaultConfirmsAtThreshold) {
   rclcpp::Clock clock;
 
-  // Default threshold is -3, so 3 FAILED events should confirm
+  // Set threshold to -3 to test debounce behavior (3 FAILED events should confirm)
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  storage_->set_debounce_config(config);
+
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                clock.now());
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
@@ -459,6 +477,7 @@ TEST_F(SqliteFaultStorageTest, HealingWhenEnabled) {
 TEST_F(SqliteFaultStorageTest, TimeBasedConfirmationWhenEnabled) {
   rclcpp::Clock clock;
   DebounceConfig config;
+  config.confirmation_threshold = -3;  // Need debounce so fault stays PREFAILED
   config.auto_confirm_after_sec = 10.0;
   storage_->set_debounce_config(config);
 

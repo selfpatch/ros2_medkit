@@ -95,6 +95,11 @@ TEST_F(FaultStorageTest, GetFaultsWithPrefailedStatus) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
+  // Set threshold to -3 to test PREFAILED status
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  storage_.set_debounce_config(config);
+
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                               timestamp);
 
@@ -109,13 +114,14 @@ TEST_F(FaultStorageTest, GetFaultsFilterBySeverity) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
+  // With default threshold=-1, faults are immediately CONFIRMED
   storage_.report_fault_event("FAULT_INFO", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_INFO, "Info", "/node1",
                               timestamp);
   storage_.report_fault_event("FAULT_ERROR", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Error",
                               "/node1", timestamp);
 
-  // Filter by ERROR severity
-  auto faults = storage_.get_faults(true, Fault::SEVERITY_ERROR, {Fault::STATUS_PREFAILED});
+  // Filter by ERROR severity (query CONFIRMED since that's the default status now)
+  auto faults = storage_.get_faults(true, Fault::SEVERITY_ERROR, {Fault::STATUS_CONFIRMED});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].fault_code, "FAULT_ERROR");
 }
@@ -158,17 +164,19 @@ TEST_F(FaultStorageTest, InvalidStatusDefaultsToConfirmed) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
+  // With default threshold=-1, fault is immediately CONFIRMED
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                               timestamp);
 
-  // Query with invalid status - defaults to CONFIRMED (fault is PREFAILED, so no matches)
+  // Query with invalid status - defaults to CONFIRMED, which now matches our fault
   auto faults = storage_.get_faults(false, 0, {"INVALID_STATUS"});
-  EXPECT_EQ(faults.size(), 0u);
+  EXPECT_EQ(faults.size(), 1u);
+  EXPECT_EQ(faults[0].status, Fault::STATUS_CONFIRMED);
 }
 
 TEST_F(FaultStorageTest, DefaultDebounceConfig) {
   auto config = storage_.get_debounce_config();
-  EXPECT_EQ(config.confirmation_threshold, -3);
+  EXPECT_EQ(config.confirmation_threshold, -1);
   EXPECT_FALSE(config.healing_enabled);
   EXPECT_EQ(config.healing_threshold, 3);
   EXPECT_TRUE(config.critical_immediate_confirm);
@@ -196,7 +204,11 @@ TEST_F(FaultStorageTest, SetDebounceConfig) {
 TEST_F(FaultStorageTest, FaultStaysPrefailedAboveThreshold) {
   rclcpp::Clock clock;
 
-  // Default threshold is -3, so 2 FAILED events should stay PREFAILED
+  // Set threshold to -3 to test debounce behavior (2 FAILED events should stay PREFAILED)
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  storage_.set_debounce_config(config);
+
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now());
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
@@ -211,7 +223,11 @@ TEST_F(FaultStorageTest, FaultStaysPrefailedAboveThreshold) {
 TEST_F(FaultStorageTest, FaultConfirmsAtThreshold) {
   rclcpp::Clock clock;
 
-  // Default threshold is -3, so 3 FAILED events should confirm
+  // Set threshold to -3 to test debounce behavior (3 FAILED events should confirm)
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  storage_.set_debounce_config(config);
+
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now());
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
@@ -307,6 +323,7 @@ TEST_F(FaultStorageTest, CriticalSeverityBypassesDebounce) {
 TEST_F(FaultStorageTest, CriticalBypassCanBeDisabled) {
   rclcpp::Clock clock;
   DebounceConfig config;
+  config.confirmation_threshold = -3;  // Need debounce to test CRITICAL bypass
   config.critical_immediate_confirm = false;
   storage_.set_debounce_config(config);
 
@@ -402,10 +419,15 @@ TEST_F(FaultStorageTest, HealingWhenEnabled) {
 TEST_F(FaultStorageTest, TimeBasedConfirmationDisabledByDefault) {
   rclcpp::Clock clock;
 
+  // Set threshold to -3 to get PREFAILED status for testing time-based confirmation
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  storage_.set_debounce_config(config);
+
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now());
 
-  // Advance time and check - should not auto-confirm
+  // Advance time and check - should not auto-confirm (auto_confirm_after_sec = 0)
   auto future_time = rclcpp::Time(clock.now().nanoseconds() + static_cast<int64_t>(20e9));
   size_t confirmed = storage_.check_time_based_confirmation(future_time);
 
@@ -419,6 +441,7 @@ TEST_F(FaultStorageTest, TimeBasedConfirmationDisabledByDefault) {
 TEST_F(FaultStorageTest, TimeBasedConfirmationWhenEnabled) {
   rclcpp::Clock clock;
   DebounceConfig config;
+  config.confirmation_threshold = -3;  // Need debounce so fault stays PREFAILED
   config.auto_confirm_after_sec = 10.0;
   storage_.set_debounce_config(config);
 
@@ -526,7 +549,7 @@ TEST_F(FaultManagerNodeTest, NodeCreation) {
 
 TEST_F(FaultManagerNodeTest, DefaultDebounceConfig) {
   auto config = node_->get_storage().get_debounce_config();
-  EXPECT_EQ(config.confirmation_threshold, -3);
+  EXPECT_EQ(config.confirmation_threshold, -1);
 }
 
 TEST(FaultManagerNodeParameterTest, CustomConfirmationThreshold) {

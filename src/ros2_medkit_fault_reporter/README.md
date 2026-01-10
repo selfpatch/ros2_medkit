@@ -1,25 +1,13 @@
 # ros2_medkit_fault_reporter
 
-Client library for easy fault reporting with local filtering support.
+Client library for easy fault reporting to the central FaultManager.
 
 ## Overview
 
-The FaultReporter library provides a simple API for ROS 2 nodes to report faults to the
-central `ros2_medkit_fault_manager`. It includes optional local filtering to reduce noise
-by only forwarding faults after a configurable threshold is reached within a time window.
+The FaultReporter library provides a simple API for ROS 2 nodes to report faults.
+Just call `report()` when something goes wrong - the fault is immediately confirmed.
 
-## Features
-
-- **Simple API**: `report()` for FAILED events, `report_passed()` for PASSED events
-- **Local Filtering** (default ON): Suppress repeated FAILED events until threshold is met
-- **Per-fault tracking**: Each fault_code has independent threshold/window tracking
-- **Severity bypass**: High-severity faults can bypass filtering
-- **PASSED bypass**: PASSED events always bypass local filtering
-- **Configurable**: Via ROS 2 parameters
-
-## Usage
-
-### Basic Example
+## Quick Start
 
 ```cpp
 #include "ros2_medkit_fault_reporter/fault_reporter.hpp"
@@ -33,13 +21,9 @@ class MyNode : public rclcpp::Node {
 
   void check_sensor() {
     if (sensor_error_detected()) {
-      // Report FAILED event - fault condition detected
       reporter_->report("SENSOR_FAILURE",
                         ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
                         "Sensor communication timeout");
-    } else if (was_sensor_failing()) {
-      // Report PASSED event - fault condition cleared
-      reporter_->report_passed("SENSOR_FAILURE");
     }
   }
 
@@ -48,27 +32,54 @@ class MyNode : public rclcpp::Node {
 };
 ```
 
-### API Methods
+That's it! The fault will be immediately confirmed in FaultManager.
 
-- **`report(fault_code, severity, description)`**: Report a FAILED event (fault detected)
-- **`report_passed(fault_code)`**: Report a PASSED event (fault condition cleared)
+## Features
+
+- **Simple API**: Just call `report()` to report a fault
+- **Local Filtering** (optional): Suppress repeated faults until threshold is met
+- **Per-fault tracking**: Each fault_code has independent filtering
+- **Severity bypass**: High-severity faults bypass local filtering
+
+## API
+
+### `report(fault_code, severity, description)`
+
+Report a fault occurrence. With default FaultManager settings, the fault is immediately confirmed.
+
+```cpp
+reporter_->report("MOTOR_OVERHEAT",
+                  ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                  "Motor temperature exceeded safe limit");
+```
+
+### `report_passed(fault_code)` (Advanced)
+
+Report that a fault condition has cleared. Use this when FaultManager is configured with debounce filtering and healing enabled.
+
+```cpp
+reporter_->report_passed("MOTOR_OVERHEAT");
+```
+
+## Local Filtering
+
+The reporter includes optional local filtering to reduce noise from repeated fault occurrences.
+Only forwards the fault to FaultManager after threshold is reached within a time window.
 
 ### Configuration
-
-Parameters can be set via YAML or command line:
 
 ```yaml
 my_node:
   ros__parameters:
     fault_reporter:
       local_filtering:
-        enabled: true
-        default_threshold: 3
-        default_window_sec: 10.0
-        bypass_severity: 2  # ERROR and CRITICAL bypass filtering
+        enabled: true           # Enable local filtering (default: true)
+        default_threshold: 3    # Reports needed before forwarding
+        default_window_sec: 10.0  # Time window in seconds
+        bypass_severity: 2      # ERROR and CRITICAL bypass filtering
 ```
 
-## Parameters
+### Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -76,6 +87,27 @@ my_node:
 | `fault_reporter.local_filtering.default_threshold` | int | 3 | Reports needed before forwarding |
 | `fault_reporter.local_filtering.default_window_sec` | double | 10.0 | Time window in seconds |
 | `fault_reporter.local_filtering.bypass_severity` | int | 2 | Severity level that bypasses filtering |
+
+## Advanced: Debounce Integration
+
+When FaultManager is configured with debounce filtering (`confirmation_threshold < -1`),
+you can use `report_passed()` to signal that a fault condition has cleared:
+
+```cpp
+void check_sensor() {
+  if (sensor_error_detected()) {
+    // Fault condition detected
+    reporter_->report("SENSOR_FAILURE",
+                      ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                      "Sensor timeout");
+  } else if (was_sensor_failing()) {
+    // Fault condition cleared - helps with healing
+    reporter_->report_passed("SENSOR_FAILURE");
+  }
+}
+```
+
+See [ros2_medkit_fault_manager README](../ros2_medkit_fault_manager/README.md) for debounce configuration details.
 
 ## Building
 
