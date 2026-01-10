@@ -53,6 +53,8 @@ WARN_IF_DOC_ERROR      = YES
 WARN_NO_PARAMDOC       = NO
 QUIET                  = YES
 
+# Custom command aliases for requirements traceability
+ALIASES                = "verifies=@par Verifies:"
+
 # Graph settings (disabled for XML-only output)
 HAVE_DOT               = NO
-CLASS_DIAGRAMS         = NO
