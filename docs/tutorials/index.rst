@@ -9,6 +9,7 @@ Step-by-step guides for common use cases with ros2_medkit.
    authentication
    https
    docker
+   devcontainer
    integration
    custom_areas
 
@@ -23,6 +24,9 @@ Basic Tutorials
 
 :doc:`docker`
    Deploy ros2_medkit in Docker containers.
+
+:doc:`devcontainer`
+   Set up a VS Code development container for ros2_medkit.
 
 Advanced Tutorials
 ------------------

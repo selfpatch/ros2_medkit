@@ -108,6 +108,37 @@ software updates, and authentication — completing the standard specification c
 
 `MS5 on GitHub <https://github.com/selfpatch/ros2_medkit/milestone/5>`_
 
+MS6: Fault Management System
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Goal:** Add fault management to ros2_medkit with fault reporting, two-level filtering
+(local + central), persistent storage, lifecycle management, and REST API access.
+
+This milestone introduces a complete fault management architecture that allows ROS 2
+nodes to report faults through a simple client library, with intelligent filtering
+and central aggregation.
+
+**Key features:**
+
+- **Two-level filtering**: FaultReporter (local) + FaultManager (central)
+- **Multi-source aggregation**: Same fault code from multiple sources combined into single entry
+- **Persistent storage**: Fault state survives restarts
+- **REST API + SSE**: Real-time fault monitoring via HTTP
+- **Backwards compatibility**: Integration with ``diagnostic_updater``
+
+**Success criteria:**
+
+- FaultReporter library with local filtering (default enabled)
+- FaultManager with central aggregation and lifecycle management
+- Storage survives node restarts
+- REST API endpoints for fault CRUD operations
+- Server-Sent Events (SSE) for real-time fault updates
+
+See :doc:`design/ros2_medkit_fault_manager/index` and :doc:`design/ros2_medkit_fault_reporter/index`
+for detailed architecture documentation.
+
+`MS6 on GitHub <https://github.com/selfpatch/ros2_medkit/milestone/6>`_
+
 Future Directions
 -----------------
 
