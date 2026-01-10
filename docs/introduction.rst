@@ -4,39 +4,69 @@ Introduction
 ros2_medkit
 -----------
 
-Modern, SOVD-compatible diagnostics for ROS 2 robots, built around an entity tree
+**Modern, SOVD-compatible diagnostics for ROS 2 robots**, built around an entity tree
 (Area / Component / Function / App) for runtime discovery, health modeling, and troubleshooting.
 
 What is ros2_medkit?
 --------------------
 
-ros2_medkit is an experiment in **modern diagnostics for ROS 2–based systems**.
+ros2_medkit provides **modern diagnostics for ROS 2–based systems**.
 
 Instead of hardcoding knowledge about every node, topic, or ECU, ros2_medkit models a robot
 as a **diagnostic entity tree**:
 
-- **Area** – physical or logical domain (e.g. ``base``, ``arm``, ``safety``, ``navigation``)
-- **Component** – hardware or software component within an area
-- **Function** – capability provided by one or more components
-- **App** – deployable software unit (node, container, process)
+.. list-table::
+   :widths: 20 40 40
+   :header-rows: 1
+
+   * - Entity
+     - Description
+     - Example
+   * - **Area**
+     - Physical or logical domain
+     - ``base``, ``arm``, ``safety``, ``navigation``
+   * - **Component**
+     - Hardware or software component within an area
+     - ``motor_controller``, ``lidar_driver``
+   * - **Function**
+     - Capability provided by one or more components
+     - ``localization``, ``obstacle_detection``
+   * - **App**
+     - Deployable software unit
+     - node, container, process
 
 The goal is to make this tree **compatible with the SOVD (Service-Oriented Vehicle Diagnostics) model**,
 so the same concepts can be used across robots, vehicles, and other embedded systems.
 
-Status
-------
+Packages
+--------
 
-**Early prototype / work in progress**
+ros2_medkit consists of several ROS 2 packages:
 
-This is an open source project exploring diagnostic patterns for ROS 2.
-APIs, architecture, and naming may change as the project evolves.
+**ros2_medkit_gateway**
+   The main HTTP gateway node. Discovers ROS 2 entities and exposes them via REST API.
 
-The current focus is on covering the SOVD API surface to enable early integration
-and compliance validation. See the :doc:`roadmap` for planned milestones and priorities.
+**ros2_medkit_fault_manager**
+   Stores and manages fault lifecycle. Provides ROS 2 services for fault operations.
 
-Target Use Cases
-----------------
+**ros2_medkit_fault_reporter**
+   Client library for reporting faults from your ROS 2 nodes.
 
-- Runtime discovery of what is actually running on the robot
-- Health state modeled per Area / Component / Function / App
-- Better remote troubleshooting and fleet-level observability for ROS 2 robots
+**ros2_medkit_msgs**
+   Message and service definitions for fault management.
+
+Next Steps
+----------
+
+- :doc:`installation` — Install ros2_medkit
+- :doc:`getting_started` — Hands-on tutorial
+- :doc:`tutorials/index` — Deep-dive guides
+- :doc:`design/index` — Architecture documentation
+
+Community
+---------
+
+- 💬 **Discord**: `Join our server <https://discord.gg/fEbWKTah>`_
+- 🐛 **Issues**: `Report bugs <https://github.com/selfpatch/ros2_medkit/issues>`_
+- 💡 **Discussions**: `GitHub Discussions <https://github.com/selfpatch/ros2_medkit/discussions>`_
+

@@ -3,43 +3,101 @@
 [![CI](https://github.com/selfpatch/ros2_medkit/actions/workflows/ci.yml/badge.svg)](https://github.com/selfpatch/ros2_medkit/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/selfpatch/ros2_medkit/branch/main/graph/badge.svg)](https://codecov.io/gh/selfpatch/ros2_medkit)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://selfpatch.github.io/ros2_medkit/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![ROS 2](https://img.shields.io/badge/ROS%202-Jazzy-blue)](https://docs.ros.org/en/jazzy/)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289DA?logo=discord&logoColor=white)](https://discord.gg/fEbWKTah)
 
-Modern, SOVD-compatible diagnostics for ROS 2 robots, built around an entity tree
+**Modern, SOVD-compatible diagnostics for ROS 2 robots** — built around an entity tree
 (Area / Component / Function / App) for runtime discovery, health modeling, and troubleshooting.
 
-## What is ros2_medkit?
+---
 
-ros2_medkit is an experiment in **modern diagnostics for ROS 2–based systems**.
+## ✨ Features
+
+- **🔍 Runtime Discovery** — Automatically discover what is actually running on your robot
+- **🏗️ Entity Tree Model** — Organize diagnostics as Area → Component → Function → App
+- **🔗 SOVD Compatible** — Align with Service-Oriented Vehicle Diagnostics standards
+- **🌐 REST API Gateway** — HTTP interface for integration with external tools and UIs
+- **📊 Health Modeling** — Track health state per entity for fleet-level observability
+- **🔧 Easy Integration** — Works with existing ROS 2 Jazzy nodes out of the box
+
+## 📖 Overview
+
+ros2_medkit provides **modern diagnostics for ROS 2–based systems**.
 
 Instead of hardcoding knowledge about every node, topic, or ECU, ros2_medkit models a robot
 as a **diagnostic entity tree**:
 
-- **Area** – physical or logical domain (e.g. `base`, `arm`, `safety`, `navigation`)
-- **Component** – hardware or software component within an area
-- **Function** – capability provided by one or more components
-- **App** – deployable software unit (node, container, process)
+| Entity | Description | Example |
+|--------|-------------|---------|
+| **Area** | Physical or logical domain | `base`, `arm`, `safety`, `navigation` |
+| **Component** | Hardware or software component within an area | `motor_controller`, `lidar_driver` |
+| **Function** | Capability provided by one or more components | `localization`, `obstacle_detection` |
+| **App** | Deployable software unit | node, container, process |
 
 The goal is to make this tree **compatible with the SOVD (Service-Oriented Vehicle Diagnostics) model**,
 so the same concepts can be used across robots, vehicles, and other embedded systems.
 
-## Status
+## 📋 Requirements
 
-> **Early prototype / work in progress**
->
-> This is an open source project exploring diagnostic patterns for ROS 2.
-> APIs, architecture, and naming may change as the project evolves.
+- **OS:** Ubuntu 24.04 LTS
+- **ROS 2:** Jazzy Jalisco
+- **Compiler:** GCC 13+ (C++23 support)
+- **Build System:** colcon + ament_cmake
 
-See the [Roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html) for planned
-milestones, or check [GitHub Milestones](https://github.com/selfpatch/ros2_medkit/milestones)
-for current progress.
+## 🚀 Quick Start
 
-## Target Use Cases
+### 1. Clone and Install Dependencies
 
-- Runtime discovery of what is actually running on the robot
-- Health state modeled per Area / Component / Function / App
-- Better remote troubleshooting and fleet-level observability for ROS 2 robots
+```bash
+cd ~/ros2_ws/src
+git clone https://github.com/selfpatch/ros2_medkit.git
+cd ros2_medkit
+rosdep install --from-paths src --ignore-src -r -y
+```
 
-## Development
+### 2. Build
+
+```bash
+colcon build --symlink-install
+source install/setup.bash
+```
+
+### 3. Launch the Gateway
+
+```bash
+ros2 launch ros2_medkit_gateway gateway.launch.py
+```
+
+### 4. Explore the API
+
+Open your browser at `http://localhost:8080/api/v1/areas` or use curl:
+
+```bash
+curl http://localhost:8080/api/v1/areas
+```
+
+For more examples, see our [Postman collection](postman/).
+
+## 📚 Documentation
+
+- 📖 [Full Documentation](https://selfpatch.github.io/ros2_medkit/)
+- 🗺️ [Roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html)
+- 📋 [GitHub Milestones](https://github.com/selfpatch/ros2_medkit/milestones)
+
+## 💬 Community
+
+We'd love to have you join our community!
+
+- **💬 Discord** — [Join our server](https://discord.gg/fEbWKTah) for discussions, help, and announcements
+- **🐛 Issues** — [Report bugs or request features](https://github.com/selfpatch/ros2_medkit/issues)
+- **💡 Discussions** — [GitHub Discussions](https://github.com/selfpatch/ros2_medkit/discussions) for Q&A and ideas
+
+---
+
+## 🛠️ Development
+
+This section is for contributors and developers who want to build and test ros2_medkit locally.
 
 ### Installing Dependencies
 
@@ -139,16 +197,28 @@ The CI workflow runs on Ubuntu 24.04 with ROS 2 Jazzy and consists of two parall
 
 After every run the workflow uploads test results and coverage reports as artifacts for debugging and review.
 
-## Contributing
+---
 
-Contributions and early feedback are welcome! Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
+## 🤝 Contributing
 
-By contributing, you agree to follow the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+Contributions are welcome! Whether it's bug reports, feature requests, documentation improvements, or code contributions — we appreciate your help.
 
-## Security
+1. Read our [Contributing Guidelines](CONTRIBUTING.md)
+2. Check out [good first issues](https://github.com/selfpatch/ros2_medkit/labels/good%20first%20issue) for beginners
+3. Follow our [Code of Conduct](CODE_OF_CONDUCT.md)
 
-If you discover a security vulnerability, please follow the process in [`SECURITY.md`](SECURITY.md).
+## 🔒 Security
 
-## License
+If you discover a security vulnerability, please follow the responsible disclosure process in [SECURITY.md](SECURITY.md).
 
-This project is licensed under the Apache License 2.0. See the [`LICENSE`](LICENSE) file for details.
+## 📄 License
+
+This project is licensed under the **Apache License 2.0** — see the [LICENSE](LICENSE) file for details.
+
+---
+
+<p align="center">
+  Made with ❤️ by the <a href="https://github.com/selfpatch">selfpatch</a> community
+  <br>
+  <a href="https://discord.gg/fEbWKTah">💬 Join us on Discord</a>
+</p>

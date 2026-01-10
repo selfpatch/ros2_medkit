@@ -40,10 +40,11 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx_needs",
     "sphinxcontrib.plantuml",
+    "sphinx_design",
 ]
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", ".venv"]
 
 # The suffix(es) of source filenames
 source_suffix = {

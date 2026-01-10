@@ -1,0 +1,279 @@
+Getting Started
+===============
+
+This tutorial will walk you through using ros2_medkit to discover and interact
+with ROS 2 nodes through the REST API gateway.
+
+.. contents:: Table of Contents
+   :local:
+   :depth: 2
+
+Overview
+--------
+
+ros2_medkit provides a REST API gateway that exposes your ROS 2 system for
+external tools, web interfaces, and remote diagnostics. In this tutorial, you will:
+
+1. Launch the gateway with demo nodes
+2. Discover areas and components
+3. Read sensor data via REST API
+4. Call services and manage parameters
+5. Monitor and clear faults
+
+Prerequisites
+-------------
+
+- ros2_medkit installed (see :doc:`installation`)
+- Terminal with ROS 2 environment sourced
+- ``curl`` or a REST client (Postman recommended)
+
+Step 1: Launch the Gateway
+--------------------------
+
+Open three terminals. In each, source your workspace:
+
+.. code-block:: bash
+
+   source ~/ros2_medkit_ws/install/setup.bash
+
+**Terminal 1 - Start the gateway:**
+
+.. code-block:: bash
+
+   ros2 launch ros2_medkit_gateway gateway.launch.py
+
+You should see:
+
+.. code-block:: text
+
+   [gateway_node]: REST server starting on http://127.0.0.1:8080
+   [gateway_node]: REST server started successfully
+
+**Terminal 2 - Start demo nodes:**
+
+.. code-block:: bash
+
+   ros2 launch ros2_medkit_gateway demo_nodes.launch.py
+
+This launches automotive demo nodes (temperature sensors, brake actuators, etc.)
+that we'll use to explore the API.
+
+**Terminal 3 - (Optional) Start fault manager:**
+
+.. code-block:: bash
+
+   ros2 run ros2_medkit_fault_manager fault_manager_node
+
+Required if you want to test the Faults API.
+
+Step 2: Explore the API
+-----------------------
+
+The gateway exposes all endpoints under ``/api/v1``. Let's explore!
+
+**Check gateway health:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/health
+
+Response:
+
+.. code-block:: json
+
+   {"status": "healthy"}
+
+**Get gateway capabilities:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/
+
+Response shows available endpoints and version info.
+
+Step 3: Discover Areas and Components
+-------------------------------------
+
+ros2_medkit organizes ROS 2 nodes into a hierarchy:
+
+- **Areas** - Physical or logical domains (e.g., powertrain, chassis)
+- **Components** - Individual nodes within areas
+
+**List all areas:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/areas
+
+Response:
+
+.. code-block:: json
+
+   [
+     {"id": "powertrain", "namespace": "/powertrain", "type": "Area"},
+     {"id": "chassis", "namespace": "/chassis", "type": "Area"},
+     {"id": "body", "namespace": "/body", "type": "Area"}
+   ]
+
+**List all components:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/components
+
+**List components in a specific area:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/areas/powertrain/components
+
+Step 4: Read Sensor Data
+------------------------
+
+The data endpoints let you read topic data from components.
+
+**Read all data from a component:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/components/temp_sensor/data
+
+Response:
+
+.. code-block:: json
+
+   [
+     {
+       "topic": "/powertrain/engine/temperature",
+       "timestamp": 1704067200000000000,
+       "data": {"temperature": 85.5, "variance": 0.0}
+     }
+   ]
+
+**Read a specific topic:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperature
+
+.. note::
+
+   Topic paths use URL encoding: ``/`` becomes ``%2F``
+
+Step 5: Call Services
+---------------------
+
+The operations endpoints let you call ROS 2 services and actions.
+
+**List available operations:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/components/calibration/operations
+
+**Call a service:**
+
+.. code-block:: bash
+
+   curl -X POST http://localhost:8080/api/v1/components/calibration/operations/calibrate \
+     -H "Content-Type: application/json" \
+     -d '{}'
+
+Response:
+
+.. code-block:: json
+
+   {
+     "status": "success",
+     "kind": "service",
+     "response": {"success": true, "message": "Calibration triggered"}
+   }
+
+Step 6: Manage Parameters
+-------------------------
+
+The configurations endpoints expose ROS 2 parameters.
+
+**List all parameters:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/components/temp_sensor/configurations
+
+**Get a specific parameter:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate
+
+**Set a parameter value:**
+
+.. code-block:: bash
+
+   curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate \
+     -H "Content-Type: application/json" \
+     -d '{"value": 5.0}'
+
+**Reset to default:**
+
+.. code-block:: bash
+
+   curl -X DELETE http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate
+
+Step 7: Monitor Faults
+----------------------
+
+.. note::
+
+   Requires ``ros2_medkit_fault_manager`` to be running.
+
+**List all system faults:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/faults
+
+**List faults for a specific component:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/components/lidar_sensor/faults
+
+**Clear a fault:**
+
+.. code-block:: bash
+
+   curl -X DELETE http://localhost:8080/api/v1/components/lidar_sensor/faults/LIDAR_CALIBRATION_REQUIRED
+
+Using with Web UI
+-----------------
+
+A companion web UI is available in the `sovd_web_ui <https://github.com/selfpatch/sovd_web_ui>`_ repository:
+
+.. code-block:: bash
+
+   git clone https://github.com/selfpatch/sovd_web_ui.git
+   cd sovd_web_ui
+   npm install
+   npm run dev
+
+Open http://localhost:5173 and connect to the gateway at http://localhost:8080.
+
+Using with Postman
+------------------
+
+For interactive API testing, import our Postman collection:
+
+1. Import ``postman/collections/ros2-medkit-gateway.postman_collection.json``
+2. Import ``postman/environments/local.postman_environment.json``
+3. Select "ROS 2 Medkit Gateway - Local" environment
+
+See ``postman/README.md`` for detailed instructions.
+
+Next Steps
+----------
+
+- :doc:`tutorials/authentication` - Enable JWT authentication
+- :doc:`tutorials/https` - Configure TLS/HTTPS
+- :doc:`tutorials/docker` - Deploy with Docker
+- :doc:`design/ros2_medkit_gateway/index` - Architecture deep-dive
