@@ -42,7 +42,7 @@ so the same concepts can be used across robots, vehicles, and other embedded sys
 
 - **OS:** Ubuntu 24.04 LTS
 - **ROS 2:** Jazzy Jalisco
-- **Compiler:** GCC 13+ (C++23 support)
+- **Compiler:** GCC 13+ (C++17 support)
 - **Build System:** colcon + ament_cmake
 
 ## 🚀 Quick Start

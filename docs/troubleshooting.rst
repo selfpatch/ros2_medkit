@@ -23,7 +23,7 @@ Solution: Initialize and update rosdep:
    sudo rosdep init  # Only needed once
    rosdep update
 
-**Build fails with C++23 errors**
+**Build fails with C++17 errors**
 
 .. code-block:: text
 
