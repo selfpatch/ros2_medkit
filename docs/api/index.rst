@@ -73,3 +73,11 @@ Client library for reporting faults to the fault manager.
 
 .. doxygenclass:: ros2_medkit_fault_reporter::LocalFilter
    :members:
+
+ros2_medkit_diagnostic_bridge
+-----------------------------
+
+Bridge node that converts ROS 2 /diagnostics messages to FaultManager faults.
+
+.. doxygenclass:: ros2_medkit_diagnostic_bridge::DiagnosticBridgeNode
+   :members:
