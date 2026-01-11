@@ -17,7 +17,7 @@ System Requirements
    * - ROS 2 Distribution
      - Jazzy Jalisco
    * - C++ Compiler
-     - GCC 13+ (C++23 support required)
+     - GCC 13+ (C++17 support required)
    * - CMake
      - 3.22+
    * - Python
@@ -161,7 +161,7 @@ Troubleshooting
       sudo rosdep init  # Only needed once
       rosdep update
 
-**Build fails with C++23 errors**
+**Build fails with C++17 errors**
 
    Ensure you have GCC 13 or newer:
 

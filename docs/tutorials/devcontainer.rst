@@ -15,7 +15,7 @@ The devcontainer provides:
 
 - **Ubuntu 24.04** base image
 - **ROS 2 Jazzy** desktop-full installation
-- **C++23** toolchain (GCC 13)
+- **C++17** toolchain (GCC 13)
 - **Development tools**: CMake, colcon, rosdep, clang-format, clang-tidy
 - **Documentation tools**: Doxygen, Sphinx, PlantUML
 - **Code coverage**: lcov

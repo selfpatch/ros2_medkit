@@ -16,6 +16,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     locales \
     build-essential \
     cmake \
+    doxygen \
     python3-pip \
     python3-venv \
     python3-dev \
