@@ -1,0 +1,14 @@
+diagnostic_bridge:
+  ros__parameters:
+    # Topic to subscribe to
+    diagnostics_topic: "/diagnostics"
+
+    # Auto-generate fault codes from diagnostic names
+    # If false, only explicitly mapped diagnostics will be forwarded
+    auto_generate_codes: true
+
+    # Custom diagnostic name to fault code mappings
+    # Format: "name_to_code.<diagnostic_name>": "<FAULT_CODE>"
+    # Example:
+    # "name_to_code.motor_controller: Temperature": "MOTOR_OVERHEAT"
+    # "name_to_code.battery_monitor: Voltage": "BATTERY_LOW"
