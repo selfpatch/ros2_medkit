@@ -49,6 +49,7 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
 
 RUN apt-get update && apt-get install -y \
     ros-jazzy-desktop-full \
+    ros-jazzy-test-msgs \
     python3-colcon-common-extensions \
     python3-rosdep \
     && rm -rf /var/lib/apt/lists/*
