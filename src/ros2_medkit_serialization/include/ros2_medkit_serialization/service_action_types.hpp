@@ -58,6 +58,54 @@ class ServiceActionTypes {
   /// @return Feedback type string
   static std::string get_action_feedback_type(const std::string & action_type);
 
+  // ==================== Action Internal Service Types ====================
+  // Actions are implemented as a set of internal services:
+  // - {action}/_action/send_goal (type: {ActionType}_SendGoal)
+  // - {action}/_action/cancel_goal (type: action_msgs/srv/CancelGoal)
+  // - {action}/_action/get_result (type: {ActionType}_GetResult)
+
+  /// Get the SendGoal service type for an action
+  ///
+  /// @param action_type Full action type (e.g., "example_interfaces/action/Fibonacci")
+  /// @return Service type string (e.g., "example_interfaces/action/Fibonacci_SendGoal")
+  static std::string get_action_send_goal_service_type(const std::string & action_type);
+
+  /// Get the GetResult service type for an action
+  ///
+  /// @param action_type Full action type
+  /// @return Service type string (e.g., "example_interfaces/action/Fibonacci_GetResult")
+  static std::string get_action_get_result_service_type(const std::string & action_type);
+
+  /// Get the SendGoal request type for an action (used with GenericClient)
+  ///
+  /// @param action_type Full action type
+  /// @return Request message type string (e.g., "example_interfaces/action/Fibonacci_SendGoal_Request")
+  static std::string get_action_send_goal_request_type(const std::string & action_type);
+
+  /// Get the SendGoal response type for an action
+  ///
+  /// @param action_type Full action type
+  /// @return Response message type string (e.g., "example_interfaces/action/Fibonacci_SendGoal_Response")
+  static std::string get_action_send_goal_response_type(const std::string & action_type);
+
+  /// Get the GetResult request type for an action (used with GenericClient)
+  ///
+  /// @param action_type Full action type
+  /// @return Request message type string (e.g., "example_interfaces/action/Fibonacci_GetResult_Request")
+  static std::string get_action_get_result_request_type(const std::string & action_type);
+
+  /// Get the GetResult response type for an action
+  ///
+  /// @param action_type Full action type
+  /// @return Response message type string (e.g., "example_interfaces/action/Fibonacci_GetResult_Response")
+  static std::string get_action_get_result_response_type(const std::string & action_type);
+
+  /// Get the FeedbackMessage type for an action (used for feedback subscription)
+  ///
+  /// @param action_type Full action type
+  /// @return Message type string (e.g., "example_interfaces/action/Fibonacci_FeedbackMessage")
+  static std::string get_action_feedback_message_type(const std::string & action_type);
+
   /// Parse a service/action type into components
   ///
   /// @param full_type Full type string (e.g., "std_srvs/srv/SetBool")

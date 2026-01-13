@@ -38,6 +38,34 @@ std::string ServiceActionTypes::get_action_feedback_type(const std::string & act
   return action_type + "_Feedback";
 }
 
+std::string ServiceActionTypes::get_action_send_goal_service_type(const std::string & action_type) {
+  return action_type + "_SendGoal";
+}
+
+std::string ServiceActionTypes::get_action_get_result_service_type(const std::string & action_type) {
+  return action_type + "_GetResult";
+}
+
+std::string ServiceActionTypes::get_action_send_goal_request_type(const std::string & action_type) {
+  return action_type + "_SendGoal_Request";
+}
+
+std::string ServiceActionTypes::get_action_send_goal_response_type(const std::string & action_type) {
+  return action_type + "_SendGoal_Response";
+}
+
+std::string ServiceActionTypes::get_action_get_result_request_type(const std::string & action_type) {
+  return action_type + "_GetResult_Request";
+}
+
+std::string ServiceActionTypes::get_action_get_result_response_type(const std::string & action_type) {
+  return action_type + "_GetResult_Response";
+}
+
+std::string ServiceActionTypes::get_action_feedback_message_type(const std::string & action_type) {
+  return action_type + "_FeedbackMessage";
+}
+
 std::optional<std::tuple<std::string, std::string, std::string>>
 ServiceActionTypes::parse_interface_type(const std::string & full_type) {
   // Pattern: package/interface_type/TypeName

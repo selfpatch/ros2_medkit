@@ -18,6 +18,9 @@
 
 #include "dynmsg/message_reading.hpp"
 #include "dynmsg/msg_parser.hpp"
+#include "rcpputils/shared_library.hpp"
+#include "rmw/rmw.h"
+#include "rosidl_typesupport_cpp/message_type_support.hpp"
 #include "rosidl_typesupport_introspection_cpp/field_types.hpp"
 
 namespace ros2_medkit_serialization {
@@ -299,6 +302,129 @@ const TypeInfo_Cpp * JsonSerializer::get_type_info_or_throw(const std::string & 
   }
 
   return type_info;
+}
+
+rclcpp::SerializedMessage JsonSerializer::serialize(const std::string & type_string,
+                                                    const nlohmann::json & json) const {
+  // Get type info for introspection
+  const TypeInfo_Cpp * type_info = get_type_info_or_throw(type_string);
+
+  // Create a ROS message from JSON using dynmsg
+  rcutils_allocator_t allocator = rcutils_get_default_allocator();
+  RosMessage_Cpp ros_msg = from_json(type_info, json);
+
+  // Get the type support for serialization
+  // We need to load the type support handle for rmw_serialize
+  auto parsed = TypeCache::parse_type_string(type_string);
+  if (!parsed) {
+    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_msg, &allocator);
+    throw SerializationError("Invalid type string format: " + type_string);
+  }
+
+  // Load the type support using ament_index
+  InterfaceTypeName interface_type = {parsed->first, parsed->second};
+
+  // Get generic type support (for serialization)
+  std::string ts_lib_name = "lib" + parsed->first + "__rosidl_typesupport_cpp.so";
+  std::string ts_func_name =
+      "rosidl_typesupport_cpp__get_message_type_support_handle__" + parsed->first + "__msg__" + parsed->second;
+
+  // Use rcpputils to load the library
+  try {
+    auto ts_lib = std::make_shared<rcpputils::SharedLibrary>(ts_lib_name);
+    auto get_ts_func = reinterpret_cast<get_message_ts_func>(ts_lib->get_symbol(ts_func_name));
+    const rosidl_message_type_support_t * type_support = get_ts_func();
+
+    // Create serialized message
+    rclcpp::SerializedMessage serialized_msg;
+
+    // Serialize using rmw
+    rmw_ret_t ret = rmw_serialize(ros_msg.data, type_support, &serialized_msg.get_rcl_serialized_message());
+
+    // Clean up ROS message
+    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_msg, &allocator);
+
+    if (ret != RMW_RET_OK) {
+      throw SerializationError("rmw_serialize failed for type: " + type_string);
+    }
+
+    return serialized_msg;
+  } catch (const TypeNotFoundError &) {
+    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_msg, &allocator);
+    throw;
+  } catch (const SerializationError &) {
+    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_msg, &allocator);
+    throw;
+  } catch (const std::runtime_error & e) {
+    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_msg, &allocator);
+    // Library load errors from SharedLibrary
+    std::string msg = e.what();
+    if (msg.find("library") != std::string::npos || msg.find("symbol") != std::string::npos) {
+      throw TypeNotFoundError(type_string + " (" + msg + ")");
+    }
+    throw SerializationError(std::string("Serialization failed: ") + e.what());
+  } catch (const std::exception & e) {
+    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_msg, &allocator);
+    throw SerializationError(std::string("Serialization failed: ") + e.what());
+  }
+}
+
+nlohmann::json JsonSerializer::deserialize(const std::string & type_string,
+                                           const rclcpp::SerializedMessage & serialized_msg) const {
+  // Get type info for introspection
+  const TypeInfo_Cpp * type_info = get_type_info_or_throw(type_string);
+
+  // Parse type string
+  auto parsed = TypeCache::parse_type_string(type_string);
+  if (!parsed) {
+    throw SerializationError("Invalid type string format: " + type_string);
+  }
+
+  // Load the type support
+  std::string ts_lib_name = "lib" + parsed->first + "__rosidl_typesupport_cpp.so";
+  std::string ts_func_name =
+      "rosidl_typesupport_cpp__get_message_type_support_handle__" + parsed->first + "__msg__" + parsed->second;
+
+  rcutils_allocator_t allocator = rcutils_get_default_allocator();
+
+  try {
+    auto ts_lib = std::make_shared<rcpputils::SharedLibrary>(ts_lib_name);
+    auto get_ts_func = reinterpret_cast<get_message_ts_func>(ts_lib->get_symbol(ts_func_name));
+    const rosidl_message_type_support_t * type_support = get_ts_func();
+
+    // Allocate a message to deserialize into
+    RosMessage_Cpp ros_msg;
+    dynmsg::cpp::ros_message_with_typeinfo_init(type_info, &ros_msg, &allocator);
+
+    // Deserialize using rmw
+    rmw_ret_t ret = rmw_deserialize(&serialized_msg.get_rcl_serialized_message(), type_support, ros_msg.data);
+
+    if (ret != RMW_RET_OK) {
+      dynmsg::cpp::ros_message_destroy_with_allocator(&ros_msg, &allocator);
+      throw SerializationError("rmw_deserialize failed for type: " + type_string);
+    }
+
+    // Convert to JSON
+    nlohmann::json result = to_json(type_info, ros_msg.data);
+
+    // Clean up
+    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_msg, &allocator);
+
+    return result;
+  } catch (const TypeNotFoundError &) {
+    throw;
+  } catch (const SerializationError &) {
+    throw;
+  } catch (const std::runtime_error & e) {
+    // Library load errors from SharedLibrary
+    std::string msg = e.what();
+    if (msg.find("library") != std::string::npos || msg.find("symbol") != std::string::npos) {
+      throw TypeNotFoundError(type_string + " (" + msg + ")");
+    }
+    throw SerializationError(std::string("Deserialization failed: ") + e.what());
+  } catch (const std::exception & e) {
+    throw SerializationError(std::string("Deserialization failed: ") + e.what());
+  }
 }
 
 }  // namespace ros2_medkit_serialization

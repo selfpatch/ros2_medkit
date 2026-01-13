@@ -101,8 +101,14 @@ class DataAccessManager {
   json sample_result_to_json(const TopicSampleResult & sample);
 
   rclcpp::Node * node_;
+
+  /// CLI wrapper for publishing (ros2 topic pub) - only remaining CLI usage
+  /// TODO(native_ops): Refactor publish_to_topic to use rclcpp::GenericPublisher
   std::unique_ptr<ROS2CLIWrapper> cli_wrapper_;
+
+  /// Output parser - only used by publish (legacy, may be removed)
   std::unique_ptr<OutputParser> output_parser_;
+
   std::unique_ptr<TypeIntrospection> type_introspection_;
   std::unique_ptr<NativeTopicSampler> native_sampler_;
   int max_parallel_samples_;

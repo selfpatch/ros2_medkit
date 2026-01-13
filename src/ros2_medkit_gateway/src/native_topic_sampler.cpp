@@ -15,18 +15,21 @@
 #include "ros2_medkit_gateway/native_topic_sampler.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <future>
 #include <iomanip>
 #include <mutex>
+#include <rclcpp/generic_subscription.hpp>
 #include <rclcpp/serialization.hpp>
 #include <rclcpp/serialized_message.hpp>
 #include <sstream>
 #include <thread>
 
 #include "ros2_medkit_gateway/output_parser.hpp"
-#include "ros2_medkit_gateway/ros2_cli_wrapper.hpp"
+#include "ros2_medkit_serialization/json_serializer.hpp"
+#include "ros2_medkit_serialization/serialization_error.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -113,11 +116,12 @@ QosProfile qos_to_profile(const rclcpp::QoS & qos) {
 
 }  // namespace
 
-NativeTopicSampler::NativeTopicSampler(rclcpp::Node * node) : node_(node) {
+NativeTopicSampler::NativeTopicSampler(rclcpp::Node * node)
+  : node_(node), serializer_(std::make_shared<ros2_medkit_serialization::JsonSerializer>()) {
   if (!node_) {
     throw std::invalid_argument("NativeTopicSampler requires a valid node pointer");
   }
-  RCLCPP_INFO(node_->get_logger(), "NativeTopicSampler initialized");
+  RCLCPP_INFO(node_->get_logger(), "NativeTopicSampler initialized with native serialization");
 }
 
 std::vector<TopicInfo> NativeTopicSampler::discover_all_topics() {
@@ -235,23 +239,8 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
     return result;
   }
 
-  // Create a generic subscription to receive one message
-  // We use serialized messages + ros2 topic echo approach via CLI for now,
-  // as GenericSubscription requires type support which needs runtime loading.
-  // TODO(mfaferek93): Implement true generic subscription with rosidl_typesupport_introspection_cpp
-
-  // For now, use a hybrid approach:
-  // 1. Fast metadata via native API (already done above)
-  // 2. Use ros2 topic echo with very short timeout only for active topics
-
-  // We fall back to CLI sampling but with a much shorter timeout since we know
-  // there are publishers. This still provides significant UX improvement:
-  // - Topics without publishers return immediately (no CLI call)
-  // - Topics with publishers use CLI but we've eliminated ~50-90% of CLI calls
-
+  // Use native GenericSubscription for sampling
   try {
-    // Use ros2 topic echo --once with native --timeout flag
-    // timeout_sec is passed from caller (default 1s for single topic, configurable)
     constexpr double kDefaultTimeoutSec = 1.0;
     if (timeout_sec <= 0) {
       RCLCPP_WARN(node_->get_logger(),
@@ -259,58 +248,82 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
                   topic_name.c_str(), kDefaultTimeoutSec);
       timeout_sec = kDefaultTimeoutSec;
     }
-    int timeout_int = static_cast<int>(std::ceil(timeout_sec));
-    std::ostringstream cmd;
-    cmd << "ros2 topic echo " << ROS2CLIWrapper::escape_shell_arg(topic_name) << " --once --no-arr --timeout "
-        << timeout_int << " 2>/dev/null";
 
-    RCLCPP_DEBUG(node_->get_logger(), "sample_topic: executing CLI: %s", cmd.str().c_str());
+    // Set up one-shot subscription with promise/future
+    std::promise<rclcpp::SerializedMessage> message_promise;
+    auto message_future = message_promise.get_future();
+    std::atomic<bool> received{false};
 
-    // Execute command with RAII pipe management to prevent resource leaks
-    auto pipe_closer = [](FILE * f) {
-      if (f) {
-        pclose(f);
+    // Choose QoS based on publisher QoS (best effort for sensor data, reliable for others)
+    rclcpp::QoS qos = rclcpp::SensorDataQoS();  // Best effort, keep last 1
+
+    // Try to match publisher QoS if available
+    if (!result.publishers.empty()) {
+      const auto & pub_qos = result.publishers[0].qos;
+      if (pub_qos.reliability == "reliable") {
+        qos = rclcpp::QoS(10);  // Reliable, keep last 10
+      }
+    }
+
+    // Create generic subscription
+    // NOLINTNEXTLINE(performance-unnecessary-value-param) - GenericSubscription requires value type in callback
+    auto callback = [&message_promise, &received](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+      // Only process first message (one-shot)
+      bool expected = false;
+      if (received.compare_exchange_strong(expected, true)) {
+        message_promise.set_value(*msg);
       }
     };
-    std::unique_ptr<FILE, decltype(pipe_closer)> pipe(popen(cmd.str().c_str(), "r"), pipe_closer);
 
-    if (!pipe) {
-      RCLCPP_WARN(node_->get_logger(), "sample_topic: Failed to execute CLI command for topic '%s'",
-                  topic_name.c_str());
+    rclcpp::GenericSubscription::SharedPtr subscription;
+    try {
+      subscription = node_->create_generic_subscription(topic_name, info->type, qos, callback);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(node_->get_logger(), "Failed to create subscription for '%s': %s", topic_name.c_str(), e.what());
       result.has_data = false;
       return result;
     }
 
-    RCLCPP_DEBUG(node_->get_logger(), "sample_topic: CLI started, reading output...");
+    RCLCPP_DEBUG(node_->get_logger(), "sample_topic: Created GenericSubscription for '%s'", topic_name.c_str());
 
-    // Use larger buffer for better performance with large messages
-    std::array<char, 4096> buffer;
-    std::string output;
-    output.reserve(4096);  // Pre-allocate for typical message sizes
+    // Spin with timeout
+    const auto timeout = std::chrono::duration<double>(timeout_sec);
+    const auto start_time = std::chrono::steady_clock::now();
 
-    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
-      output += buffer.data();
+    while (!received.load()) {
+      auto elapsed = std::chrono::steady_clock::now() - start_time;
+      if (elapsed >= timeout) {
+        RCLCPP_DEBUG(node_->get_logger(), "sample_topic: Timeout waiting for message on '%s'", topic_name.c_str());
+        result.has_data = false;
+        return result;
+      }
+
+      // Spin with small timeout to allow checking received flag
+      rclcpp::spin_some(node_->get_node_base_interface());
+
+      if (!received.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
     }
 
-    // Get exit code - release pipe to get exit code before RAII cleanup
-    int exit_code = pclose(pipe.release());
-
-    RCLCPP_DEBUG(node_->get_logger(), "sample_topic: CLI finished, exit_code=%d, output_len=%zu", exit_code,
-                 output.length());
-
-    // Check for success (exit code 0 and non-empty output without warnings)
-    if (exit_code == 0 && !output.empty() && output.find("WARNING") == std::string::npos) {
-      result.data = parse_message_yaml(output);
-      // Check if result.data has a value AND is not null
-      if (result.data && !result.data->is_null()) {
-        result.has_data = true;
-        RCLCPP_DEBUG(node_->get_logger(), "sample_topic: Sampled data from topic '%s'", topic_name.c_str());
-      }
-    } else {
-      RCLCPP_DEBUG(node_->get_logger(), "sample_topic: No data received from topic '%s' (exit_code=%d)",
-                   topic_name.c_str(), exit_code);
+    // Deserialize message using JsonSerializer
+    try {
+      auto serialized_msg = message_future.get();
+      result.data = serializer_->deserialize(info->type, serialized_msg);
+      result.has_data = true;
+      RCLCPP_DEBUG(node_->get_logger(), "sample_topic: Sampled data from topic '%s'", topic_name.c_str());
+    } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
+      RCLCPP_WARN(node_->get_logger(), "Unknown type '%s' for topic '%s': %s", info->type.c_str(), topic_name.c_str(),
+                  e.what());
+      result.has_data = false;
+    } catch (const ros2_medkit_serialization::SerializationError & e) {
+      RCLCPP_WARN(node_->get_logger(), "Failed to deserialize message from '%s': %s", topic_name.c_str(), e.what());
+      result.has_data = false;
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(node_->get_logger(), "Failed to process message from '%s': %s", topic_name.c_str(), e.what());
       result.has_data = false;
     }
+
   } catch (const std::exception & e) {
     RCLCPP_WARN(node_->get_logger(), "Exception sampling topic '%s': %s", topic_name.c_str(), e.what());
     result.has_data = false;

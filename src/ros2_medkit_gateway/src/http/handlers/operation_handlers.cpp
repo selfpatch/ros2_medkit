@@ -72,13 +72,19 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
     for (const auto & svc : services) {
       json svc_json = {{"name", svc.name}, {"path", svc.full_path}, {"type", svc.type}, {"kind", "service"}};
 
-      // Try to get schema for service type
+      // Build type_info with request/response schemas for services
       try {
-        auto type_info = type_introspection->get_type_info(svc.type);
-        svc_json["type_info"] = {{"schema", type_info.schema}, {"default_value", type_info.default_value}};
+        json type_info_json;
+        // Service types: pkg/srv/Type -> Request: pkg/srv/Type_Request, Response: pkg/srv/Type_Response
+        auto request_info = type_introspection->get_type_info(svc.type + "_Request");
+        auto response_info = type_introspection->get_type_info(svc.type + "_Response");
+        type_info_json["request"] = request_info.schema;
+        type_info_json["response"] = response_info.schema;
+        svc_json["type_info"] = type_info_json;
       } catch (const std::exception & e) {
         RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(),
                      e.what());
+        svc_json["type_info"] = json::object();
       }
 
       operations.push_back(svc_json);
@@ -87,13 +93,21 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
     for (const auto & act : actions) {
       json act_json = {{"name", act.name}, {"path", act.full_path}, {"type", act.type}, {"kind", "action"}};
 
-      // Try to get schema for action type
+      // Build type_info with goal/result/feedback schemas for actions
       try {
-        auto type_info = type_introspection->get_type_info(act.type);
-        act_json["type_info"] = {{"schema", type_info.schema}, {"default_value", type_info.default_value}};
+        json type_info_json;
+        // Action types: pkg/action/Type -> Goal: pkg/action/Type_Goal, etc.
+        auto goal_info = type_introspection->get_type_info(act.type + "_Goal");
+        auto result_info = type_introspection->get_type_info(act.type + "_Result");
+        auto feedback_info = type_introspection->get_type_info(act.type + "_Feedback");
+        type_info_json["goal"] = goal_info.schema;
+        type_info_json["result"] = result_info.schema;
+        type_info_json["feedback"] = feedback_info.schema;
+        act_json["type_info"] = type_info_json;
       } catch (const std::exception & e) {
         RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(),
                      e.what());
+        act_json["type_info"] = json::object();
       }
 
       operations.push_back(act_json);

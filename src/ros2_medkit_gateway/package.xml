@@ -22,6 +22,7 @@
   <!-- OpenSSL is found via CMake find_package (system package) -->
   <depend>yaml_cpp_vendor</depend>
   <depend>ros2_medkit_msgs</depend>
+  <depend>ros2_medkit_serialization</depend>
   <exec_depend>rosidl_runtime_py</exec_depend>
   <exec_depend>rosidl_parser</exec_depend>
 

@@ -20,11 +20,9 @@
 #include <string>
 #include <unordered_map>
 
-namespace ros2_medkit_gateway {
+#include "ros2_medkit_serialization/json_serializer.hpp"
 
-// Forward declarations
-class ROS2CLIWrapper;
-class OutputParser;
+namespace ros2_medkit_gateway {
 
 /**
  * @brief Information about a ROS 2 message type including schema and template
@@ -39,23 +37,23 @@ struct TopicTypeInfo {
  * @brief Provides type introspection capabilities for ROS 2 message types
  *
  * This class allows querying information about ROS 2 topics and message types
- * without requiring actual message data. It uses CLI commands and a Python
- * helper script to gather type information.
+ * without requiring actual message data. It uses the native JsonSerializer
+ * to gather type information via dynmsg.
  *
- * Type information is cached to avoid repeated CLI calls for the same types.
+ * Type information is cached to avoid repeated introspection calls for the same types.
  */
 class TypeIntrospection {
  public:
   /**
    * @brief Construct a new TypeIntrospection object
    *
-   * @param scripts_path Path to the directory containing helper scripts
+   * The scripts_path parameter is deprecated and ignored - native serialization is used.
    */
   explicit TypeIntrospection(const std::string & scripts_path = "");
 
   ~TypeIntrospection() = default;
 
-  // Disable copy (due to mutex and unique_ptrs)
+  // Disable copy (due to mutex)
   TypeIntrospection(const TypeIntrospection &) = delete;
   TypeIntrospection & operator=(const TypeIntrospection &) = delete;
 
@@ -75,7 +73,7 @@ class TypeIntrospection {
   /**
    * @brief Get the default value template for a message type
    *
-   * Uses `ros2 interface proto` to generate a template with default values.
+   * Uses native JsonSerializer to generate a template with default values.
    *
    * @param type_name Full type name
    * @return nlohmann::json Template with default field values
@@ -86,7 +84,7 @@ class TypeIntrospection {
   /**
    * @brief Get the JSON schema for a message type
    *
-   * Uses a Python helper script to generate recursive type schema.
+   * Uses native JsonSerializer to generate type schema.
    *
    * @param type_name Full type name
    * @return nlohmann::json Schema with field types
@@ -95,9 +93,8 @@ class TypeIntrospection {
   nlohmann::json get_type_schema(const std::string & type_name);
 
  private:
-  std::string scripts_path_;                     ///< Path to helper scripts
-  std::unique_ptr<ROS2CLIWrapper> cli_wrapper_;  ///< CLI wrapper for commands
-  std::unique_ptr<OutputParser> output_parser_;  ///< Parser for CLI output
+  /// Native JSON serializer for type introspection
+  std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
 
   std::unordered_map<std::string, TopicTypeInfo> type_cache_;  ///< Cache for type info
   mutable std::mutex cache_mutex_;                             ///< Mutex for thread-safe cache access

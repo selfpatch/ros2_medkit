@@ -17,91 +17,33 @@
 #include <sstream>
 #include <stdexcept>
 
-#include "ros2_medkit_gateway/output_parser.hpp"
-#include "ros2_medkit_gateway/ros2_cli_wrapper.hpp"
+#include "ros2_medkit_serialization/json_serializer.hpp"
+#include "ros2_medkit_serialization/serialization_error.hpp"
 
 namespace ros2_medkit_gateway {
 
-TypeIntrospection::TypeIntrospection(const std::string & scripts_path)
-  : scripts_path_(scripts_path)
-  , cli_wrapper_(std::make_unique<ROS2CLIWrapper>())
-  , output_parser_(std::make_unique<OutputParser>()) {
+TypeIntrospection::TypeIntrospection(const std::string & /* scripts_path */)
+  : serializer_(std::make_shared<ros2_medkit_serialization::JsonSerializer>()) {
+  // scripts_path is deprecated and ignored - we use native serialization now
 }
 
 nlohmann::json TypeIntrospection::get_type_template(const std::string & type_name) {
-  // Call: ros2 interface proto {type_name}
-  std::string cmd = "ros2 interface proto " + ROS2CLIWrapper::escape_shell_arg(type_name);
-  std::string output = cli_wrapper_->exec(cmd);
-
-  // The output is a quoted YAML string, e.g.:
-  // "header:\n  stamp:\n    sec: 0\n..."
-  // We need to remove the surrounding quotes and parse as YAML
-
-  // Remove surrounding quotes if present
-  if (output.size() >= 2 && output.front() == '"' && output.back() == '"') {
-    output = output.substr(1, output.size() - 2);
+  try {
+    return serializer_->get_defaults(type_name);
+  } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
+    throw std::runtime_error("Unknown type: " + type_name + " (" + e.what() + ")");
+  } catch (const std::exception & e) {
+    throw std::runtime_error("Failed to get type template: " + std::string(e.what()));
   }
-
-  // Unescape common escape sequences (\n, \t, \r, \\, \")
-  std::string unescaped;
-  for (size_t i = 0; i < output.size(); ++i) {
-    if (i + 1 < output.size() && output[i] == '\\') {
-      char next = output[i + 1];
-      switch (next) {
-        case 'n':
-          unescaped += '\n';
-          ++i;
-          break;
-        case 't':
-          unescaped += '\t';
-          ++i;
-          break;
-        case 'r':
-          unescaped += '\r';
-          ++i;
-          break;
-        case '\\':
-          unescaped += '\\';
-          ++i;
-          break;
-        case '"':
-          unescaped += '"';
-          ++i;
-          break;
-        default:
-          unescaped += output[i];
-          break;
-      }
-    } else {
-      unescaped += output[i];
-    }
-  }
-
-  return output_parser_->parse_yaml(unescaped);
 }
 
 nlohmann::json TypeIntrospection::get_type_schema(const std::string & type_name) {
-  // Call Python script for recursive schema
-  if (scripts_path_.empty()) {
-    throw std::runtime_error("scripts_path not configured for TypeIntrospection");
-  }
-
-  std::string script_path = "python3 " + ROS2CLIWrapper::escape_shell_arg(scripts_path_ + "/get_type_schema.py") + " " +
-                            ROS2CLIWrapper::escape_shell_arg(type_name);
-
-  std::string output = cli_wrapper_->exec(script_path);
-
   try {
-    nlohmann::json result = nlohmann::json::parse(output);
-
-    // Check for error in result
-    if (result.contains("error")) {
-      throw std::runtime_error(result["error"].get<std::string>());
-    }
-
-    return result;
-  } catch (const nlohmann::json::parse_error & e) {
-    throw std::runtime_error("Failed to parse schema output: " + std::string(e.what()));
+    return serializer_->get_schema(type_name);
+  } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
+    throw std::runtime_error("Unknown type: " + type_name + " (" + e.what() + ")");
+  } catch (const std::exception & e) {
+    throw std::runtime_error("Failed to get type schema: " + std::string(e.what()));
   }
 }
 
@@ -115,7 +57,7 @@ TopicTypeInfo TypeIntrospection::get_type_info(const std::string & type_name) {
     }
   }
 
-  // Build type info
+  // Build type info using native serializer
   TopicTypeInfo info;
   info.name = type_name;
 
@@ -127,14 +69,9 @@ TopicTypeInfo TypeIntrospection::get_type_info(const std::string & type_name) {
     info.default_value = nlohmann::json::object();
   }
 
-  // Get schema (recursive type info)
+  // Get schema (type structure)
   try {
-    nlohmann::json schema_result = get_type_schema(type_name);
-    if (schema_result.contains("schema")) {
-      info.schema = schema_result["schema"];
-    } else {
-      info.schema = nlohmann::json::object();
-    }
+    info.schema = get_type_schema(type_name);
   } catch (const std::exception & e) {
     // If schema fails, use empty object
     info.schema = nlohmann::json::object();

@@ -24,6 +24,10 @@
 #include <sstream>
 
 #include "ros2_medkit_gateway/output_parser.hpp"
+#include "ros2_medkit_serialization/json_serializer.hpp"
+#include "ros2_medkit_serialization/serialization_error.hpp"
+#include "ros2_medkit_serialization/service_action_types.hpp"
+#include "ros2_medkit_serialization/type_cache.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -36,14 +40,11 @@ constexpr int kDefaultServiceCallTimeoutSec = 10;
 OperationManager::OperationManager(rclcpp::Node * node, DiscoveryManager * discovery_manager)
   : node_(node)
   , discovery_manager_(discovery_manager)
-  , cli_wrapper_(std::make_unique<ROS2CLIWrapper>())
+  , rng_(std::random_device{}())
+  , serializer_(std::make_shared<ros2_medkit_serialization::JsonSerializer>())
   , service_call_timeout_sec_(
         static_cast<int>(node->declare_parameter<int64_t>("service_call_timeout_sec", kDefaultServiceCallTimeoutSec))) {
-  if (!cli_wrapper_->is_command_available("ros2")) {
-    RCLCPP_WARN(node_->get_logger(), "ROS 2 CLI not found, service calls may not be available");
-  }
-
-  RCLCPP_INFO(node_->get_logger(), "OperationManager initialized");
+  RCLCPP_INFO(node_->get_logger(), "OperationManager initialized with native serialization");
 }
 
 bool OperationManager::is_valid_message_type(const std::string & type) {
@@ -119,6 +120,7 @@ std::string OperationManager::json_to_yaml(const json & j) {
 }
 
 json OperationManager::parse_service_response(const std::string & yaml_output) {
+  // Legacy method - kept for action CLI parsing
   try {
     // ros2 service call output format:
     // requester: making request: ...
@@ -247,44 +249,153 @@ json OperationManager::parse_service_response(const std::string & yaml_output) {
   }
 }
 
+std::string OperationManager::make_client_key(const std::string & service_path, const std::string & service_type) {
+  return service_path + "|" + service_type;
+}
+
+rclcpp::GenericClient::SharedPtr OperationManager::get_or_create_service_client(const std::string & service_path,
+                                                                                const std::string & service_type) {
+  const std::string key = make_client_key(service_path, service_type);
+
+  // Try read lock first (fast path)
+  {
+    std::shared_lock<std::shared_mutex> lock(clients_mutex_);
+    auto it = generic_clients_.find(key);
+    if (it != generic_clients_.end()) {
+      return it->second;
+    }
+  }
+
+  // Need to create - take exclusive lock
+  std::unique_lock<std::shared_mutex> lock(clients_mutex_);
+
+  // Double-check (another thread might have created it)
+  auto it = generic_clients_.find(key);
+  if (it != generic_clients_.end()) {
+    return it->second;
+  }
+
+  // Create new client
+  auto client = node_->create_generic_client(service_path, service_type);
+  generic_clients_[key] = client;
+
+  RCLCPP_DEBUG(node_->get_logger(), "Created generic client for %s (%s)", service_path.c_str(), service_type.c_str());
+
+  return client;
+}
+
 ServiceCallResult OperationManager::call_service(const std::string & service_path, const std::string & service_type,
                                                  const json & request) {
   ServiceCallResult result;
 
   try {
-    // Build ros2 service call command with timeout
-    // -1 = single call (don't wait for response if service unavailable)
-    // timeout = overall timeout to prevent hanging (configurable via service_call_timeout_sec param)
-    std::ostringstream cmd;
-    cmd << "timeout " << service_call_timeout_sec_ << " ros2 service call "
-        << ROS2CLIWrapper::escape_shell_arg(service_path) << " " << ROS2CLIWrapper::escape_shell_arg(service_type);
+    using ros2_medkit_serialization::ServiceActionTypes;
 
-    // Add request data if not empty
-    if (!request.empty() && !request.is_null()) {
-      cmd << " " << ROS2CLIWrapper::escape_shell_arg(json_to_yaml(request));
+    // Step 1: Get or create cached client
+    auto client = get_or_create_service_client(service_path, service_type);
+
+    // Step 2: Wait for service availability
+    if (!client->wait_for_service(std::chrono::seconds(5))) {
+      result.success = false;
+      result.error_message = "Service not available: " + service_path;
+      return result;
     }
+
+    // Step 3: Build request/response type names
+    std::string request_type = ServiceActionTypes::get_service_request_type(service_type);
+    std::string response_type = ServiceActionTypes::get_service_response_type(service_type);
+
+    // Step 4: Serialize request JSON to CDR
+    json request_data = request.empty() || request.is_null() ? json::object() : request;
+
+    // Get defaults for request type and merge with provided data
+    try {
+      json defaults = serializer_->get_defaults(request_type);
+      // Merge: request overrides defaults
+      for (auto it = request_data.begin(); it != request_data.end(); ++it) {
+        defaults[it.key()] = it.value();
+      }
+      request_data = defaults;
+    } catch (const ros2_medkit_serialization::TypeNotFoundError &) {
+      // If we can't get defaults, just use provided data
+    }
+
+    rclcpp::SerializedMessage serialized_request = serializer_->serialize(request_type, request_data);
 
     RCLCPP_INFO(node_->get_logger(), "Calling service: %s (type: %s)", service_path.c_str(), service_type.c_str());
 
-    std::string output = cli_wrapper_->exec(cmd.str());
+    // Step 5: Send request using GenericClient (expects void*)
+    auto future_and_id = client->async_send_request(serialized_request.get_rcl_serialized_message().buffer);
 
-    RCLCPP_DEBUG(node_->get_logger(), "Service call output: %s", output.c_str());
+    // Step 6: Wait for response with timeout
+    auto timeout = std::chrono::seconds(service_call_timeout_sec_);
+    auto future_status = future_and_id.wait_for(timeout);
 
-    result.success = true;
-    result.response = parse_service_response(output);
+    if (future_status != std::future_status::ready) {
+      // Clean up pending request on timeout
+      client->remove_pending_request(future_and_id.request_id);
+      result.success = false;
+      result.error_message =
+          "Service call timed out (" + std::to_string(service_call_timeout_sec_) + "s): " + service_path;
+      return result;
+    }
+
+    // Step 7: Get response and deserialize
+    auto response_ptr = future_and_id.get();
+
+    // The response is a void* pointing to the deserialized response message data
+    // We need to convert it back to JSON via the serializer
+    // GenericClient returns a SharedResponse (shared_ptr<void>)
+    // The data is already deserialized by rclcpp internally
+
+    // For now, we need to serialize the response back to get JSON
+    // This is a bit roundabout but works with the current GenericClient API
+    // TODO: Optimize by accessing response data directly when possible
+
+    if (response_ptr != nullptr) {
+      // Create a temporary serialized message to deserialize from
+      // The response_ptr points to deserialized message data
+      // We need to re-serialize it to use our deserializer
+
+      // Alternative approach: use the type info to read fields directly
+      // For now, try to get the response via YAML (simpler but less efficient)
+
+      // Actually, GenericClient gives us a deserialized message already
+      // We can use dynmsg to convert it to JSON directly
+      try {
+        auto type_info = ros2_medkit_serialization::TypeCache::instance().get_message_type_info(response_type);
+        if (type_info != nullptr) {
+          result.response = serializer_->to_json(type_info, response_ptr.get());
+          result.success = true;
+          RCLCPP_DEBUG(node_->get_logger(), "Service call succeeded: %s", result.response.dump().c_str());
+        } else {
+          result.success = false;
+          result.error_message = "Unknown response type: " + response_type;
+        }
+      } catch (const std::exception & e) {
+        result.success = false;
+        result.error_message = std::string("Failed to deserialize response: ") + e.what();
+      }
+    } else {
+      result.success = false;
+      result.error_message = "Service returned null response";
+    }
+
+  } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
+    RCLCPP_ERROR(node_->get_logger(), "Type not found for service '%s': %s", service_path.c_str(), e.what());
+    result.success = false;
+    result.error_message = std::string("Unknown service type: ") + e.what();
+
+  } catch (const ros2_medkit_serialization::SerializationError & e) {
+    RCLCPP_ERROR(node_->get_logger(), "Serialization failed for service '%s': %s", service_path.c_str(), e.what());
+    result.success = false;
+    result.error_message = std::string("Invalid request format: ") + e.what();
 
   } catch (const std::exception & e) {
     std::string error_msg = e.what();
-    // Check if it was a timeout
-    if (error_msg.find("exit code 124") != std::string::npos) {
-      RCLCPP_WARN(node_->get_logger(), "Service call timed out for '%s'", service_path.c_str());
-      result.error_message = "Service call timed out (" + std::to_string(service_call_timeout_sec_) +
-                             "s). The service may be unavailable or slow to respond.";
-    } else {
-      RCLCPP_ERROR(node_->get_logger(), "Service call failed for '%s': %s", service_path.c_str(), e.what());
-      result.error_message = error_msg;
-    }
+    RCLCPP_ERROR(node_->get_logger(), "Service call failed for '%s': %s", service_path.c_str(), e.what());
     result.success = false;
+    result.error_message = error_msg;
   }
 
   return result;
@@ -360,71 +471,77 @@ std::string action_status_to_string(ActionGoalStatus status) {
   }
 }
 
-std::string OperationManager::uuid_to_yaml_array(const std::string & uuid_hex) {
-  // Convert hex string to YAML array of byte values [b1, b2, ...]
-  std::ostringstream ss;
-  ss << "[";
-  for (size_t i = 0; i < uuid_hex.length() && i < kUuidHexLength; i += 2) {
-    if (i > 0) {
-      ss << ", ";
-    }
+std::array<uint8_t, 16> OperationManager::generate_uuid() {
+  std::lock_guard<std::mutex> lock(rng_mutex_);
+  std::array<uint8_t, 16> uuid;
+  std::uniform_int_distribution<int> dist(0, 255);
+  for (auto & byte : uuid) {
+    byte = static_cast<uint8_t>(dist(rng_));
+  }
+  // Set version 4 (random UUID)
+  uuid[6] = (uuid[6] & 0x0f) | 0x40;
+  // Set variant bits
+  uuid[8] = (uuid[8] & 0x3f) | 0x80;
+  return uuid;
+}
+
+json OperationManager::uuid_bytes_to_json_array(const std::array<uint8_t, 16> & uuid) {
+  json array = json::array();
+  for (auto byte : uuid) {
+    array.push_back(static_cast<int>(byte));
+  }
+  return array;
+}
+
+json OperationManager::uuid_hex_to_json_array(const std::string & uuid_hex) {
+  json array = json::array();
+  for (size_t i = 0; i + 1 < uuid_hex.length() && i < kUuidHexLength; i += 2) {
     int byte_val = std::stoi(uuid_hex.substr(i, 2), nullptr, 16);
-    ss << byte_val;
+    array.push_back(byte_val);
   }
-  ss << "]";
-  return ss.str();
+  return array;
 }
 
-ActionSendGoalResult OperationManager::parse_send_goal_cli_output(const std::string & output) {
-  ActionSendGoalResult result;
-  result.success = false;
-  result.goal_accepted = false;
+OperationManager::ActionClientSet & OperationManager::get_or_create_action_clients(const std::string & action_path,
+                                                                                   const std::string & action_type) {
+  std::unique_lock<std::shared_mutex> lock(clients_mutex_);
 
-  // Look for "Goal accepted with ID: <uuid>"
-  static const std::regex goal_id_regex(R"(Goal accepted with ID:\s*([a-f0-9]+))");
-  std::smatch match;
-  if (std::regex_search(output, match, goal_id_regex)) {
-    result.goal_id = match[1].str();
-    result.goal_accepted = true;
-    result.success = true;
+  auto it = action_clients_.find(action_path);
+  if (it != action_clients_.end()) {
+    return it->second;
   }
 
-  // Check for rejection
-  if (output.find("Goal rejected") != std::string::npos) {
-    result.success = true;  // Command worked, but goal was rejected
-    result.goal_accepted = false;
-    result.error_message = "Goal rejected by action server";
-  }
+  using namespace ros2_medkit_serialization;
 
-  // Check for server not available
-  if (output.find("Action server is not available") != std::string::npos ||
-      output.find("not available after waiting") != std::string::npos) {
-    result.success = false;
-    result.error_message = "Action server not available";
-  }
+  ActionClientSet clients;
+  clients.action_type = action_type;
 
-  return result;
+  // Send goal service: {action}/_action/send_goal
+  std::string send_goal_service = action_path + "/_action/send_goal";
+  std::string send_goal_type = ServiceActionTypes::get_action_send_goal_service_type(action_type);
+  clients.send_goal_client = node_->create_generic_client(send_goal_service, send_goal_type);
+
+  // Get result service: {action}/_action/get_result
+  std::string get_result_service = action_path + "/_action/get_result";
+  std::string get_result_type = ServiceActionTypes::get_action_get_result_service_type(action_type);
+  clients.get_result_client = node_->create_generic_client(get_result_service, get_result_type);
+
+  // Cancel goal service (standard type for all actions)
+  std::string cancel_service = action_path + "/_action/cancel_goal";
+  clients.cancel_goal_client = node_->create_generic_client(cancel_service, "action_msgs/srv/CancelGoal");
+
+  RCLCPP_DEBUG(node_->get_logger(), "Created action clients for %s (type: %s)", action_path.c_str(),
+               action_type.c_str());
+
+  action_clients_[action_path] = std::move(clients);
+  return action_clients_[action_path];
 }
 
-ActionCancelResult OperationManager::parse_cancel_output(const std::string & output) {
+ActionCancelResult OperationManager::parse_cancel_output(const std::string & /* output */) {
+  // Legacy method - kept for compatibility but not used with native implementation
   ActionCancelResult result;
   result.success = true;
-  result.return_code = 0;  // ERROR_NONE
-
-  // Check output for success/failure
-  if (output.find("Cancel request accepted") != std::string::npos || output.find("canceling") != std::string::npos) {
-    result.return_code = 0;
-  } else if (output.find("not found") != std::string::npos || output.find("unknown") != std::string::npos) {
-    result.return_code = 2;  // ERROR_UNKNOWN_GOAL_ID
-    result.error_message = "Unknown goal ID";
-  } else if (output.find("rejected") != std::string::npos) {
-    result.return_code = 1;  // ERROR_REJECTED
-    result.error_message = "Cancel request rejected";
-  } else if (output.find("terminated") != std::string::npos || output.find("already finished") != std::string::npos) {
-    result.return_code = 3;  // ERROR_GOAL_TERMINATED
-    result.error_message = "Goal already terminated";
-  }
-
+  result.return_code = 0;
   return result;
 }
 
@@ -444,56 +561,81 @@ void OperationManager::track_goal(const std::string & goal_id, const std::string
 ActionSendGoalResult OperationManager::send_action_goal(const std::string & action_path,
                                                         const std::string & action_type, const json & goal) {
   ActionSendGoalResult result;
+  result.success = false;
+  result.goal_accepted = false;
 
   try {
-    // Use ros2 action send_goal with short timeout (3s)
-    // This is enough for discovery + goal acceptance, but not for long-running actions
-    // The action continues running in background after we get the goal_id
-    std::ostringstream cmd;
-    cmd << "ros2 action send_goal " << ROS2CLIWrapper::escape_shell_arg(action_path) << " "
-        << ROS2CLIWrapper::escape_shell_arg(action_type);
+    using namespace ros2_medkit_serialization;
 
-    // Add goal data
-    if (!goal.empty() && !goal.is_null()) {
-      cmd << " " << ROS2CLIWrapper::escape_shell_arg(json_to_yaml(goal));
-    } else {
-      cmd << " '{}'";
+    // Step 1: Get or create action clients
+    auto & clients = get_or_create_action_clients(action_path, action_type);
+
+    // Step 2: Wait for send_goal service
+    if (!clients.send_goal_client->wait_for_service(std::chrono::seconds(5))) {
+      result.error_message = "Action server not available: " + action_path;
+      return result;
     }
 
-    // Short timeout: enough for discovery + acceptance, action continues in background
-    cmd << " -t 3";
+    // Step 3: Generate UUID for goal
+    auto uuid_bytes = generate_uuid();
+
+    // Step 4: Build SendGoal request
+    // The request has structure: {goal_id: {uuid: [...]}, goal: {...}}
+    json send_goal_request;
+    send_goal_request["goal_id"]["uuid"] = uuid_bytes_to_json_array(uuid_bytes);
+    send_goal_request["goal"] = goal.empty() || goal.is_null() ? json::object() : goal;
+
+    // Step 5: Serialize and send
+    std::string request_type = ServiceActionTypes::get_action_send_goal_request_type(action_type);
+    rclcpp::SerializedMessage serialized_request = serializer_->serialize(request_type, send_goal_request);
 
     RCLCPP_INFO(node_->get_logger(), "Sending action goal: %s (type: %s)", action_path.c_str(), action_type.c_str());
 
-    std::string output = cli_wrapper_->exec(cmd.str());
-    RCLCPP_DEBUG(node_->get_logger(), "Action send_goal output: %s", output.c_str());
+    // Send using GenericClient (expects void*)
+    auto future_and_id =
+        clients.send_goal_client->async_send_request(serialized_request.get_rcl_serialized_message().buffer);
 
-    // Parse goal_id from CLI output
-    result = parse_send_goal_cli_output(output);
+    // Wait for response with timeout
+    auto timeout = std::chrono::seconds(service_call_timeout_sec_);
+    auto future_status = future_and_id.wait_for(timeout);
 
-    // Track the goal if accepted
-    if (result.goal_accepted && !result.goal_id.empty()) {
+    if (future_status != std::future_status::ready) {
+      clients.send_goal_client->remove_pending_request(future_and_id.request_id);
+      result.error_message = "Send goal timed out";
+      return result;
+    }
+
+    // Step 6: Deserialize response
+    auto response_ptr = future_and_id.get();
+    if (response_ptr == nullptr) {
+      result.error_message = "Send goal returned null response";
+      return result;
+    }
+
+    std::string response_type = ServiceActionTypes::get_action_send_goal_response_type(action_type);
+    auto type_info = ros2_medkit_serialization::TypeCache::instance().get_message_type_info(response_type);
+    if (type_info == nullptr) {
+      result.error_message = "Unknown response type: " + response_type;
+      return result;
+    }
+    json response = serializer_->to_json(type_info, response_ptr.get());
+
+    // Step 7: Extract goal_id and acceptance
+    result.success = true;
+    result.goal_accepted = response.value("accepted", false);
+
+    if (result.goal_accepted) {
+      result.goal_id = uuid_bytes_to_hex(uuid_bytes);
       track_goal(result.goal_id, action_path, action_type);
-      RCLCPP_INFO(node_->get_logger(), "Action goal accepted with ID: %s", result.goal_id.c_str());
-
-      // Subscribe to status topic for real-time updates
       subscribe_to_action_status(action_path);
-
-      // Check if action already completed (fast actions) or still running
-      if (output.find("Goal finished with status: SUCCEEDED") != std::string::npos) {
-        update_goal_status(result.goal_id, ActionGoalStatus::SUCCEEDED);
-      } else if (output.find("Goal finished with status: CANCELED") != std::string::npos) {
-        update_goal_status(result.goal_id, ActionGoalStatus::CANCELED);
-      } else if (output.find("Goal finished with status: ABORTED") != std::string::npos) {
-        update_goal_status(result.goal_id, ActionGoalStatus::ABORTED);
-      } else {
-        // Still executing (timed out waiting for result, which is expected)
-        update_goal_status(result.goal_id, ActionGoalStatus::EXECUTING);
-      }
+      update_goal_status(result.goal_id, ActionGoalStatus::EXECUTING);
+      RCLCPP_INFO(node_->get_logger(), "Action goal accepted with ID: %s", result.goal_id.c_str());
+    } else {
+      result.error_message = "Goal rejected by action server";
     }
 
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(node_->get_logger(), "Action send_goal failed for '%s': %s", action_path.c_str(), e.what());
+    RCLCPP_ERROR(node_->get_logger(), "Send action goal failed for '%s': %s", action_path.c_str(), e.what());
     result.success = false;
     result.error_message = e.what();
   }
@@ -550,40 +692,90 @@ ActionSendGoalResult OperationManager::send_component_action_goal(const std::str
 
 ActionCancelResult OperationManager::cancel_action_goal(const std::string & action_path, const std::string & goal_id) {
   ActionCancelResult result;
+  result.success = false;
 
   // Validate goal_id format
   if (!is_valid_uuid_hex(goal_id)) {
-    result.success = false;
     result.error_message = "Invalid goal_id format: must be 32 hex characters";
     return result;
   }
 
   try {
-    // Build cancel command - ros2 action doesn't have a direct cancel by goal_id
-    // We need to use the internal service
-    std::ostringstream cmd;
-    cmd << "ros2 service call " << ROS2CLIWrapper::escape_shell_arg(action_path + "/_action/cancel_goal")
-        << " action_msgs/srv/CancelGoal ";
+    // Get the tracked goal to find action type
+    auto goal_info = get_tracked_goal(goal_id);
+    if (!goal_info) {
+      result.error_message = "Unknown goal_id - not tracked";
+      return result;
+    }
 
-    // Convert goal_id hex string to UUID bytes array
-    // Format: {goal_info: {goal_id: {uuid: [b1, b2, ...]}}}
-    cmd << "'{goal_info: {goal_id: {uuid: " << uuid_to_yaml_array(goal_id) << "}}}'";
+    // Get or create action clients (use tracked type)
+    auto & clients = get_or_create_action_clients(action_path, goal_info->action_type);
+
+    if (!clients.cancel_goal_client->wait_for_service(std::chrono::seconds(2))) {
+      result.error_message = "Cancel service not available";
+      return result;
+    }
+
+    // Build cancel request: {goal_info: {goal_id: {uuid: [...]}}}
+    json cancel_request;
+    cancel_request["goal_info"]["goal_id"]["uuid"] = uuid_hex_to_json_array(goal_id);
+
+    rclcpp::SerializedMessage serialized_request =
+        serializer_->serialize("action_msgs/srv/CancelGoal_Request", cancel_request);
 
     RCLCPP_INFO(node_->get_logger(), "Canceling action goal: %s (goal_id: %s)", action_path.c_str(), goal_id.c_str());
 
-    std::string output = cli_wrapper_->exec(cmd.str());
-    RCLCPP_DEBUG(node_->get_logger(), "Action cancel output: %s", output.c_str());
+    // Send using GenericClient (expects void*)
+    auto future_and_id =
+        clients.cancel_goal_client->async_send_request(serialized_request.get_rcl_serialized_message().buffer);
 
-    result = parse_cancel_output(output);
+    auto future_status = future_and_id.wait_for(std::chrono::seconds(5));
+    if (future_status != std::future_status::ready) {
+      clients.cancel_goal_client->remove_pending_request(future_and_id.request_id);
+      result.error_message = "Cancel request timed out";
+      return result;
+    }
 
-    // Update goal status if cancel was accepted
-    if (result.success && result.return_code == 0) {
+    auto response_ptr = future_and_id.get();
+    if (response_ptr == nullptr) {
+      result.error_message = "Cancel returned null response";
+      return result;
+    }
+
+    auto type_info =
+        ros2_medkit_serialization::TypeCache::instance().get_message_type_info("action_msgs/srv/CancelGoal_Response");
+    if (type_info == nullptr) {
+      result.error_message = "Unknown response type: action_msgs/srv/CancelGoal_Response";
+      return result;
+    }
+    json response = serializer_->to_json(type_info, response_ptr.get());
+
+    result.success = true;
+    result.return_code = static_cast<int8_t>(response.value("return_code", 0));
+
+    if (result.return_code == 0) {
       update_goal_status(goal_id, ActionGoalStatus::CANCELING);
+      RCLCPP_INFO(node_->get_logger(), "Cancel request accepted for goal: %s", goal_id.c_str());
+    } else {
+      // Map return codes to error messages
+      switch (result.return_code) {
+        case 1:
+          result.error_message = "Cancel request rejected";
+          break;
+        case 2:
+          result.error_message = "Unknown goal ID";
+          break;
+        case 3:
+          result.error_message = "Goal already terminated";
+          break;
+        default:
+          result.error_message = "Unknown cancel error";
+          break;
+      }
     }
 
   } catch (const std::exception & e) {
     RCLCPP_ERROR(node_->get_logger(), "Action cancel failed for '%s': %s", action_path.c_str(), e.what());
-    result.success = false;
     result.error_message = e.what();
   }
 
@@ -604,27 +796,50 @@ ActionGetResultResult OperationManager::get_action_result(const std::string & ac
   }
 
   try {
-    // Build get_result service call
-    // Service type is {action_type}_GetResult
-    std::string get_result_type = action_type;
-    // Replace /action/ with action:: for service type naming
-    // e.g., example_interfaces/action/Fibonacci -> example_interfaces/action/Fibonacci_GetResult
-    get_result_type += "_GetResult";
+    using namespace ros2_medkit_serialization;
 
-    std::ostringstream cmd;
-    cmd << "ros2 service call " << ROS2CLIWrapper::escape_shell_arg(action_path + "/_action/get_result") << " "
-        << ROS2CLIWrapper::escape_shell_arg(get_result_type) << " ";
+    // Get or create action clients
+    auto & clients = get_or_create_action_clients(action_path, action_type);
 
-    // Convert goal_id to UUID bytes array
-    cmd << "'{goal_id: {uuid: " << uuid_to_yaml_array(goal_id) << "}}'";
+    if (!clients.get_result_client->wait_for_service(std::chrono::seconds(2))) {
+      result.error_message = "Get result service not available";
+      return result;
+    }
+
+    // Build request: {goal_id: {uuid: [...]}}
+    json get_result_request;
+    get_result_request["goal_id"]["uuid"] = uuid_hex_to_json_array(goal_id);
+
+    std::string request_type = ServiceActionTypes::get_action_get_result_request_type(action_type);
+    rclcpp::SerializedMessage serialized_request = serializer_->serialize(request_type, get_result_request);
 
     RCLCPP_INFO(node_->get_logger(), "Getting action result: %s (goal_id: %s)", action_path.c_str(), goal_id.c_str());
 
-    std::string output = cli_wrapper_->exec(cmd.str());
-    RCLCPP_DEBUG(node_->get_logger(), "Action get_result output: %s", output.c_str());
+    // Send using GenericClient (expects void*)
+    auto future_and_id =
+        clients.get_result_client->async_send_request(serialized_request.get_rcl_serialized_message().buffer);
 
-    // Parse the response
-    json response = parse_service_response(output);
+    auto future_status = future_and_id.wait_for(std::chrono::seconds(service_call_timeout_sec_));
+    if (future_status != std::future_status::ready) {
+      clients.get_result_client->remove_pending_request(future_and_id.request_id);
+      result.error_message = "Get result timed out";
+      return result;
+    }
+
+    auto response_ptr = future_and_id.get();
+    if (response_ptr == nullptr) {
+      result.error_message = "Get result returned null response";
+      return result;
+    }
+
+    std::string response_type = ServiceActionTypes::get_action_get_result_response_type(action_type);
+    auto type_info = ros2_medkit_serialization::TypeCache::instance().get_message_type_info(response_type);
+    if (type_info == nullptr) {
+      result.error_message = "Unknown response type: " + response_type;
+      return result;
+    }
+    json response = serializer_->to_json(type_info, response_ptr.get());
+
     result.success = true;
 
     // Extract status from response
@@ -643,9 +858,11 @@ ActionGetResultResult OperationManager::get_action_result(const std::string & ac
     // Update local tracking
     update_goal_status(goal_id, result.status);
 
+    RCLCPP_INFO(node_->get_logger(), "Got action result for %s: status=%s", goal_id.c_str(),
+                action_status_to_string(result.status).c_str());
+
   } catch (const std::exception & e) {
     RCLCPP_ERROR(node_->get_logger(), "Get action result failed for '%s': %s", action_path.c_str(), e.what());
-    result.success = false;
     result.error_message = e.what();
   }
 

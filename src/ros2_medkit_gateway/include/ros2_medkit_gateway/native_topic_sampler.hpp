@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/models.hpp"
+#include "ros2_medkit_serialization/json_serializer.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -281,7 +282,7 @@ class NativeTopicSampler {
 
  private:
   /**
-   * @brief Parse YAML-formatted message string to JSON
+   * @brief Parse YAML-formatted message string to JSON (legacy, kept for compatibility)
    */
   json parse_message_yaml(const std::string & yaml_str);
 
@@ -291,6 +292,9 @@ class NativeTopicSampler {
   std::string get_topic_type(const std::string & topic_name);
 
   rclcpp::Node * node_;
+
+  /// Native JSON serializer for topic deserialization
+  std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
 };
 
 }  // namespace ros2_medkit_gateway

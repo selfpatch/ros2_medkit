@@ -212,9 +212,9 @@ curl http://localhost:8080/api/v1/components/nonexistent/data
 
 **Behavior:**
 - Returns array of all topics under the component's namespace
-- Each topic is sampled once with `ros2 topic echo --once`
+- Each topic is sampled once using native rclcpp GenericSubscription
 - Empty array `[]` returned if component has no topics
-- 3-second timeout per topic to accommodate slow-publishing topics
+- Configurable timeout per topic (default: 2 seconds)
 
 **Use Cases:**
 - Remote diagnostics - Read all sensor values from a component

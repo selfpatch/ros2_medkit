@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <rclcpp/serialized_message.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include "ros2_medkit_serialization/serialization_error.hpp"
@@ -114,6 +115,26 @@ class JsonSerializer {
   /// @return JSON object with default values
   /// @throws TypeNotFoundError if type cannot be loaded
   nlohmann::json get_defaults(const std::string & type_string) const;
+
+  // Serialization for GenericClient/GenericSubscription
+
+  /// Serialize JSON to CDR format for use with GenericClient
+  ///
+  /// @param type_string Full type string (e.g., "std_srvs/srv/SetBool_Request")
+  /// @param json JSON data to serialize
+  /// @return SerializedMessage containing CDR data
+  /// @throws TypeNotFoundError if type cannot be loaded
+  /// @throws SerializationError if serialization fails
+  rclcpp::SerializedMessage serialize(const std::string & type_string, const nlohmann::json & json) const;
+
+  /// Deserialize CDR data to JSON
+  ///
+  /// @param type_string Full type string
+  /// @param serialized_msg SerializedMessage containing CDR data
+  /// @return JSON representation of the message
+  /// @throws TypeNotFoundError if type cannot be loaded
+  /// @throws SerializationError if deserialization fails
+  nlohmann::json deserialize(const std::string & type_string, const rclcpp::SerializedMessage & serialized_msg) const;
 
   // YAML ↔ JSON conversion utilities
 

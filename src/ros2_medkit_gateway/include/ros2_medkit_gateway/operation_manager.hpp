@@ -15,19 +15,24 @@
 #pragma once
 
 #include <action_msgs/msg/goal_status_array.hpp>
+#include <array>
 #include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <random>
+#include <rclcpp/generic_client.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
 #include "ros2_medkit_gateway/discovery_manager.hpp"
 #include "ros2_medkit_gateway/models.hpp"
-#include "ros2_medkit_gateway/ros2_cli_wrapper.hpp"
+#include "ros2_medkit_serialization/json_serializer.hpp"
+#include "ros2_medkit_serialization/service_action_types.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -126,7 +131,7 @@ class OperationManager {
 
   // ==================== ACTION OPERATIONS ====================
 
-  /// Send a goal to an action server using ros2 action send_goal
+  /// Send a goal to an action server using native rclcpp_action internal services
   /// @param action_path Full action path (e.g., "/powertrain/engine/long_calibration")
   /// @param action_type Action type (e.g., "example_interfaces/action/Fibonacci")
   /// @param goal JSON goal data
@@ -203,27 +208,61 @@ class OperationManager {
   void unsubscribe_from_action_status(const std::string & action_path);
 
  private:
-  /// Convert JSON to YAML string for ros2 service call
+  /// Set of clients for an action (internal services)
+  struct ActionClientSet {
+    rclcpp::GenericClient::SharedPtr send_goal_client;
+    rclcpp::GenericClient::SharedPtr get_result_client;
+    rclcpp::GenericClient::SharedPtr cancel_goal_client;
+    std::string action_type;  // Store type for later use
+  };
+
+  /// Convert JSON to YAML string (legacy, kept for potential future use)
   std::string json_to_yaml(const json & j);
 
-  /// Parse YAML output from ros2 service call to JSON
+  /// Parse YAML output to JSON (legacy, kept for potential future use)
   json parse_service_response(const std::string & yaml_output);
 
-  /// Convert UUID hex string to array of byte values for YAML
-  std::string uuid_to_yaml_array(const std::string & uuid_hex);
+  /// Convert UUID hex string to JSON array of byte values
+  json uuid_hex_to_json_array(const std::string & uuid_hex);
 
-  /// Parse ros2 action send_goal CLI output to extract goal_id and status
-  ActionSendGoalResult parse_send_goal_cli_output(const std::string & output);
+  /// Generate a random UUID
+  std::array<uint8_t, 16> generate_uuid();
 
-  /// Parse ros2 action cancel output
+  /// Convert UUID bytes to JSON array
+  json uuid_bytes_to_json_array(const std::array<uint8_t, 16> & uuid);
+
+  /// Parse ros2 action cancel output (legacy, kept for compatibility)
   ActionCancelResult parse_cancel_output(const std::string & output);
 
   /// Track a new goal
   void track_goal(const std::string & goal_id, const std::string & action_path, const std::string & action_type);
 
+  /// Get or create a cached GenericClient for a service
+  rclcpp::GenericClient::SharedPtr get_or_create_service_client(const std::string & service_path,
+                                                                const std::string & service_type);
+
+  /// Get or create cached action clients for an action
+  ActionClientSet & get_or_create_action_clients(const std::string & action_path, const std::string & action_type);
+
+  /// Make cache key from service path and type
+  static std::string make_client_key(const std::string & service_path, const std::string & service_type);
+
   rclcpp::Node * node_;
   DiscoveryManager * discovery_manager_;
-  std::unique_ptr<ROS2CLIWrapper> cli_wrapper_;
+
+  /// Random number generator for UUID generation
+  std::mt19937 rng_;
+  std::mutex rng_mutex_;
+
+  /// Native JSON serializer for service calls
+  std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
+
+  /// Cache for GenericClient instances (key = "service_path|service_type")
+  mutable std::shared_mutex clients_mutex_;
+  std::map<std::string, rclcpp::GenericClient::SharedPtr> generic_clients_;
+
+  /// Cache for action client sets (key = action_path)
+  std::map<std::string, ActionClientSet> action_clients_;
 
   /// Timeout for service calls in seconds (configurable via service_call_timeout_sec param)
   int service_call_timeout_sec_;
