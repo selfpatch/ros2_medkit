@@ -1,8 +1,0 @@
-build:
-  packages-ignore:
-    - test_dynmsg
-    - dynmsg_demo
-test:
-  packages-ignore:
-    - test_dynmsg
-    - dynmsg_demo
