@@ -17,15 +17,17 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <chrono>
 #include <cmath>
+#include <rclcpp/generic_publisher.hpp>
 #include <sstream>
 
 #include "ros2_medkit_gateway/exceptions.hpp"
+#include "ros2_medkit_serialization/serialization_error.hpp"
 
 namespace ros2_medkit_gateway {
 
 DataAccessManager::DataAccessManager(rclcpp::Node * node)
   : node_(node)
-  , cli_wrapper_(std::make_unique<ROS2CLIWrapper>())
+  , serializer_(std::make_shared<ros2_medkit_serialization::JsonSerializer>())
   , output_parser_(std::make_unique<OutputParser>())
   , type_introspection_(
         std::make_unique<TypeIntrospection>(ament_index_cpp::get_package_share_directory("ros2_medkit_gateway") + "/scr"
@@ -49,38 +51,57 @@ DataAccessManager::DataAccessManager(rclcpp::Node * node)
     topic_sample_timeout_sec_ = 1.0;
   }
 
-  // CLI is still needed for publishing (ros2 topic pub)
-  if (!cli_wrapper_->is_command_available("ros2")) {
-    RCLCPP_WARN(node_->get_logger(), "ROS 2 CLI not found, publishing will not be available");
-  }
-
   RCLCPP_INFO(node_->get_logger(),
-              "DataAccessManager initialized (native_sampling=enabled, max_parallel_samples=%d, "
-              "topic_sample_timeout=%.2fs)",
+              "DataAccessManager initialized (native_sampling=enabled, native_publishing=enabled, "
+              "max_parallel_samples=%d, topic_sample_timeout=%.2fs)",
               max_parallel_samples_, topic_sample_timeout_sec_);
 }
 
+rclcpp::GenericPublisher::SharedPtr DataAccessManager::get_or_create_publisher(const std::string & topic_path,
+                                                                               const std::string & msg_type) {
+  const std::string key = topic_path + "|" + msg_type;
+
+  // Try read lock first (fast path)
+  {
+    std::shared_lock<std::shared_mutex> lock(publishers_mutex_);
+    auto it = publishers_.find(key);
+    if (it != publishers_.end()) {
+      return it->second;
+    }
+  }
+
+  // Need to create - take exclusive lock
+  std::unique_lock<std::shared_mutex> lock(publishers_mutex_);
+
+  // Double-check (another thread might have created it)
+  auto it = publishers_.find(key);
+  if (it != publishers_.end()) {
+    return it->second;
+  }
+
+  // Create new publisher with default QoS (reliable, keep last 10)
+  auto publisher = node_->create_generic_publisher(topic_path, msg_type, rclcpp::QoS(10));
+  publishers_[key] = publisher;
+
+  RCLCPP_DEBUG(node_->get_logger(), "Created generic publisher for %s (%s)", topic_path.c_str(), msg_type.c_str());
+
+  return publisher;
+}
+
 json DataAccessManager::publish_to_topic(const std::string & topic_path, const std::string & msg_type,
-                                         const json & data, double timeout_sec) {
+                                         const json & data, double /* timeout_sec */) {
   try {
-    // Convert JSON data to string for ros2 topic pub
-    // Note: data.dump() produces JSON format, but ROS 2 CLI accepts JSON
-    // as valid YAML (JSON is a subset of YAML 1.2)
-    std::string yaml_data = data.dump();
+    // Step 1: Get or create cached publisher
+    auto publisher = get_or_create_publisher(topic_path, msg_type);
 
-    // TODO(mfaferek93) #32: Check timeout command availability
-    // GNU coreutils 'timeout' may not be available on all systems (BSD, containers)
-    // Should check in constructor or provide fallback mechanism
-    std::ostringstream cmd;
-    cmd << "timeout " << static_cast<int>(std::ceil(timeout_sec)) << "s " << "ros2 topic pub --once -w 0 "
-        << ROS2CLIWrapper::escape_shell_arg(topic_path) << " " << ROS2CLIWrapper::escape_shell_arg(msg_type) << " "
-        << ROS2CLIWrapper::escape_shell_arg(yaml_data);
+    // Step 2: Serialize JSON to CDR format
+    rclcpp::SerializedMessage serialized_msg = serializer_->serialize(msg_type, data);
 
-    RCLCPP_INFO(node_->get_logger(), "Executing: %s", cmd.str().c_str());
+    // Step 3: Publish serialized message
+    publisher->publish(serialized_msg);
 
-    std::string output = cli_wrapper_->exec(cmd.str());
-
-    RCLCPP_INFO(node_->get_logger(), "Published to topic '%s' with type '%s'", topic_path.c_str(), msg_type.c_str());
+    RCLCPP_INFO(node_->get_logger(), "Published to topic '%s' with type '%s' (native)", topic_path.c_str(),
+                msg_type.c_str());
 
     json result = {{"topic", topic_path},
                    {"type", msg_type},
@@ -90,6 +111,15 @@ json DataAccessManager::publish_to_topic(const std::string & topic_path, const s
                                      .count()}};
 
     return result;
+
+  } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
+    RCLCPP_ERROR(node_->get_logger(), "Unknown message type '%s': %s", msg_type.c_str(), e.what());
+    throw std::runtime_error("Unknown message type '" + msg_type + "': " + e.what());
+
+  } catch (const ros2_medkit_serialization::SerializationError & e) {
+    RCLCPP_ERROR(node_->get_logger(), "Failed to serialize message for '%s': %s", topic_path.c_str(), e.what());
+    throw std::runtime_error("Failed to serialize message for '" + topic_path + "': " + e.what());
+
   } catch (const std::exception & e) {
     RCLCPP_ERROR(node_->get_logger(), "Failed to publish to topic '%s': %s", topic_path.c_str(), e.what());
     throw std::runtime_error("Failed to publish to topic '" + topic_path + "': " + e.what());

@@ -85,15 +85,16 @@ The following diagram shows the relationships between the main components of the
            + sample_topics_parallel(): vector<TopicSampleResult>
        }
 
-       class ROS2CLIWrapper {
-           + exec(): string
-           + is_command_available(): bool
-           + escape_shell_arg(): string {static}
-       }
-
        class OutputParser {
            + parse_yaml(): json
            + yaml_to_json(): json {static}
+       }
+
+       class JsonSerializer {
+           + serialize(): SerializedMessage
+           + deserialize(): json
+           + to_json(): json
+           + from_json(): RosMessage_Cpp
        }
 
        class Area {
@@ -160,12 +161,12 @@ The following diagram shows the relationships between the main components of the
    RESTServer --> OperationManager : uses
    RESTServer --> ConfigurationManager : uses
 
-   ' OperationManager uses DiscoveryManager and CLI
+   ' OperationManager uses DiscoveryManager and native serialization
    OperationManager --> DiscoveryManager : uses
-   OperationManager *--> ROS2CLIWrapper : owns
+   OperationManager *--> JsonSerializer : owns
 
-   ' DataAccessManager owns utility classes
-   DataAccessManager *--> ROS2CLIWrapper : owns (publishing)
+   ' DataAccessManager owns utility classes and uses native publishing
+   DataAccessManager *--> JsonSerializer : owns (publishing)
    DataAccessManager *--> OutputParser : owns
    DataAccessManager *--> NativeTopicSampler : owns
 
@@ -215,13 +216,14 @@ Main Components
    - Attaches operations (services/actions) to their parent components
    - Uses O(n+m) algorithm with hash maps for efficient service/action attachment
 
-3. **OperationManager** - Executes ROS 2 operations (services and actions)
-   - Calls ROS 2 services synchronously via ``ros2 service call`` CLI
-   - Sends action goals via ``ros2 action send_goal`` CLI (3s timeout for acceptance)
+3. **OperationManager** - Executes ROS 2 operations (services and actions) using native APIs
+   - Calls ROS 2 services via ``rclcpp::GenericClient`` with native serialization
+   - Sends action goals via native action client interfaces
    - Tracks active action goals with status, feedback, and timestamps
    - Subscribes to ``/_action/status`` topics for real-time goal status updates
-   - Supports goal cancellation via ``ros2 action cancel`` CLI
+   - Supports goal cancellation via native cancel service calls
    - Automatically cleans up completed goals older than 5 minutes
+   - Uses ``ros2_medkit_serialization`` for JSON ↔ ROS 2 message conversion
 
 4. **RESTServer** - Provides the HTTP/REST API
    - Discovery endpoints: ``/health``, ``/``, ``/areas``, ``/components``, ``/areas/{area_id}/components``
@@ -241,32 +243,32 @@ Main Components
    - Caches parameter clients per node for efficiency
    - Converts between JSON and ROS 2 parameter types automatically
 
-6. **DataAccessManager** - Reads runtime data from ROS 2 topics
+6. **DataAccessManager** - Reads and writes runtime data from/to ROS 2 topics
    - Uses native rclcpp APIs for fast topic discovery and sampling
    - Checks publisher counts before sampling to skip idle topics instantly
    - Returns metadata (type, schema) for topics without publishers
-   - Falls back to ROS 2 CLI only for publishing (``ros2 topic pub``)
+   - Uses native ``rclcpp::GenericPublisher`` for topic publishing with CDR serialization
    - Returns topic data as JSON with metadata (topic name, timestamp, type info)
    - Parallel topic sampling with configurable concurrency limit (``max_parallel_topic_samples``, default: 10)
 
 7. **NativeTopicSampler** - Fast topic sampling using native rclcpp APIs
    - Discovers topics via ``node->get_topic_names_and_types()``
+   - Uses ``rclcpp::GenericSubscription`` for type-agnostic message sampling
    - Checks ``count_publishers()`` before sampling to skip idle topics
-   - Returns metadata instantly for topics without publishers (no CLI timeout)
+   - Returns metadata instantly for topics without publishers (no timeout)
    - Significantly improves UX when robot has many idle topics
 
-8. **ROS2CLIWrapper** - Executes ROS 2 CLI commands safely
-   - Used for publishing (``ros2 topic pub``), service calls, and action operations
-   - Wraps ``popen()`` with RAII for exception safety during command execution
-   - Checks command exit status to detect failures
-   - Prevents command injection with shell argument escaping
-   - Validates command availability before execution
+8. **JsonSerializer** (ros2_medkit_serialization) - Converts between JSON and ROS 2 messages
+   - Uses ``dynmsg`` library for dynamic type introspection
+   - Serializes JSON to CDR format for publishing via ``serialize()``
+   - Deserializes CDR to JSON for subscriptions via ``deserialize()``
+   - Converts between deserialized ROS 2 messages and JSON via ``to_json()`` / ``from_json()``
+   - Thread-safe and stateless design
 
-9. **OutputParser** - Converts ROS 2 CLI output to JSON
-   - Parses YAML output from ``ros2 topic echo`` and ``ros2 service call``
+9. **OutputParser** - Converts YAML to JSON (utility class)
+   - Parses YAML output from various sources
    - Preserves type information (bool → int → double → string precedence)
    - Handles multi-document YAML streams correctly
-   - Converts ROS message structures to nested JSON objects
    - Provides static ``yaml_to_json()`` utility for reuse
 
 10. **Data Models** - Entity representations

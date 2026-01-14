@@ -91,14 +91,14 @@ ros2_medkit_gateway:
     # Valid range: 0.1-30.0
     topic_sample_timeout_sec: 2.0
 
-    # NOTE: Native sampling is always enabled
+    # NOTE: Native-only implementation
     # The gateway uses native rclcpp APIs for all ROS 2 interactions:
     # - Topic discovery: node->get_topic_names_and_types()
     # - Topic sampling: rclcpp::GenericSubscription + JsonSerializer
+    # - Topic publishing: rclcpp::GenericPublisher + JsonSerializer
     # - Service calls: rclcpp::GenericClient + JsonSerializer
     # - Action operations: Internal action services via GenericClient
-    # CLI is only used for publishing (ros2 topic pub), as native GenericPublisher
-    # requires runtime type support which is being tracked for future implementation.
+    # No ROS 2 CLI dependencies - pure C++ implementation using ros2_medkit_serialization.
 
     # Authentication Configuration (REQ_INTEROP_086, REQ_INTEROP_087)
     # JWT-based authentication with Role-Based Access Control (RBAC)
