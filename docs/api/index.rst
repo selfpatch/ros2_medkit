@@ -81,3 +81,23 @@ Bridge node that converts ROS 2 /diagnostics messages to FaultManager faults.
 
 .. doxygenclass:: ros2_medkit_diagnostic_bridge::DiagnosticBridgeNode
    :members:
+
+ros2_medkit_serialization
+-------------------------
+
+Runtime JSON ↔ ROS 2 message serialization library.
+
+.. doxygenclass:: ros2_medkit_serialization::JsonSerializer
+   :members:
+
+.. doxygenclass:: ros2_medkit_serialization::TypeCache
+   :members:
+
+.. doxygenclass:: ros2_medkit_serialization::SerializationError
+   :members:
+
+.. doxygenclass:: ros2_medkit_serialization::TypeNotFoundError
+   :members:
+
+.. doxygenclass:: ros2_medkit_serialization::JsonConversionError
+   :members:

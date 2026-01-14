@@ -14,6 +14,8 @@ INPUT                  = ../src/ros2_medkit_gateway/include \
                          ../src/ros2_medkit_fault_reporter/src \
                          ../src/ros2_medkit_diagnostic_bridge/include \
                          ../src/ros2_medkit_diagnostic_bridge/src \
+                         ../src/ros2_medkit_serialization/include \
+                         ../src/ros2_medkit_serialization/src \
                          ../src/ros2_medkit_msgs
 RECURSIVE              = YES
 FILE_PATTERNS          = *.hpp *.cpp *.h

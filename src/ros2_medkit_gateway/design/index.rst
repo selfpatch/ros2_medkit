@@ -161,8 +161,7 @@ The following diagram shows the relationships between the main components of the
    OperationManager *--> JsonSerializer : owns
 
    ' DataAccessManager owns utility classes and uses native publishing
-   DataAccessManager *--> JsonSerializer : owns (publishing)
-   DataAccessManager *--> OutputParser : owns
+   DataAccessManager *--> JsonSerializer : owns (serialization)
    DataAccessManager *--> NativeTopicSampler : owns
 
    ' NativeTopicSampler uses Node interface

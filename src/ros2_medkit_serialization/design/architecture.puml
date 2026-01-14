@@ -1,0 +1,97 @@
+@startuml ros2_medkit_serialization_architecture
+
+skinparam linetype ortho
+skinparam classAttributeIconSize 0
+
+title ROS 2 Medkit Serialization - Class Architecture
+
+package "External Libraries" {
+    class "dynmsg" {
+        +ros_message_init()
+        +ros_message_set_from_yaml()
+        +ros_message_to_yaml()
+        +ros_message_serialize()
+        +ros_message_deserialize()
+    }
+
+    class "nlohmann::json" as JSON
+
+    class "YAML::Node" as YAML
+
+    class "rclcpp::SerializedMessage" as SerializedMessage
+}
+
+package "ros2_medkit_serialization" {
+
+    class JsonSerializer {
+        + to_json(type_info, data): json
+        + to_json(type_string, data): json
+        + from_json(type_info, json): RosMessage_Cpp
+        + from_json(type_string, json): RosMessage_Cpp
+        + from_json_to_message(type_info, json, data): void
+        + serialize(type_string, json): SerializedMessage
+        + deserialize(type_string, msg): json
+        + get_schema(type_string): json
+        + get_defaults(type_string): json
+        + {static} yaml_to_json(yaml): json
+        + {static} json_to_yaml(json): YAML::Node
+    }
+
+    class TypeCache <<singleton>> {
+        + {static} instance(): TypeCache&
+        + get(pkg, name): TypeInfo_Cpp*
+        + get(type_string): TypeInfo_Cpp*
+        + clear(): void
+        - cache_: map<string, TypeInfo_Cpp*>
+        - mutex_: shared_mutex
+    }
+
+    class ServiceActionTypes <<utility>> {
+        + {static} get_request_type(srv_type): string
+        + {static} get_response_type(srv_type): string
+        + {static} get_goal_type(action_type): string
+        + {static} get_result_type(action_type): string
+        + {static} get_feedback_type(action_type): string
+        + {static} is_service_type(type): bool
+        + {static} is_action_type(type): bool
+    }
+
+    class SerializationError <<exception>> {
+        + what(): string
+    }
+
+    class TypeNotFoundError <<exception>> {
+        + what(): string
+    }
+
+    class JsonConversionError <<exception>> {
+        + what(): string
+    }
+}
+
+' Relationships
+
+' JsonSerializer uses TypeCache
+JsonSerializer --> TypeCache : uses
+
+' JsonSerializer uses dynmsg
+JsonSerializer --> "dynmsg" : uses
+
+' JsonSerializer converts between formats
+JsonSerializer ..> JSON : produces/consumes
+JsonSerializer ..> YAML : internal conversion
+JsonSerializer ..> SerializedMessage : produces/consumes
+
+' TypeCache caches dynmsg type info
+TypeCache --> "dynmsg" : caches TypeInfo_Cpp
+
+' Exception hierarchy
+TypeNotFoundError -up-|> SerializationError : extends
+JsonConversionError -up-|> SerializationError : extends
+
+' JsonSerializer throws exceptions
+JsonSerializer ..> SerializationError : throws
+JsonSerializer ..> TypeNotFoundError : throws
+JsonSerializer ..> JsonConversionError : throws
+
+@enduml
