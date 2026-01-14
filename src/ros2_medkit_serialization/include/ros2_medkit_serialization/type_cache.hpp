@@ -19,6 +19,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -51,17 +52,27 @@ class TypeCache {
   /// @return Pointer to type info, or nullptr if not found
   const TypeInfo_Cpp * get_message_type_info(const std::string & package_name, const std::string & type_name);
 
+  /// Get type info for any interface type (msg/srv/action)
+  ///
+  /// @param package_name Package name (e.g., "std_srvs")
+  /// @param interface_type Interface type ("msg", "srv", or "action")
+  /// @param type_name Type name (e.g., "Trigger_Request")
+  /// @return Pointer to type info, or nullptr if not found
+  const TypeInfo_Cpp * get_message_type_info(const std::string & package_name,
+                                             const std::string & interface_type,
+                                             const std::string & type_name);
+
   /// Get type info from full type string
   ///
-  /// @param full_type Full type string (e.g., "std_msgs/msg/String")
+  /// @param full_type Full type string (e.g., "std_msgs/msg/String" or "std_srvs/srv/Trigger_Request")
   /// @return Pointer to type info, or nullptr if not found
   const TypeInfo_Cpp * get_message_type_info(const std::string & full_type);
 
-  /// Parse a full type string into package and type name
+  /// Parse a full type string into package, interface type, and type name
   ///
   /// @param full_type Full type string (e.g., "std_msgs/msg/String")
-  /// @return Pair of (package_name, type_name), or nullopt if invalid format
-  static std::optional<std::pair<std::string, std::string>> parse_type_string(const std::string & full_type);
+  /// @return Tuple of (package_name, interface_type, type_name), or nullopt if invalid format
+  static std::optional<std::tuple<std::string, std::string, std::string>> parse_type_string(const std::string & full_type);
 
   /// Check if a type is cached
   ///
@@ -79,8 +90,12 @@ class TypeCache {
  private:
   TypeCache() = default;
 
-  /// Generate cache key from package and type name
+  /// Generate cache key from package and type name (assumes "msg" interface type)
   static std::string make_key(const std::string & package_name, const std::string & type_name);
+
+  /// Generate cache key from package, interface type, and type name
+  static std::string make_key(const std::string & package_name, const std::string & interface_type,
+                              const std::string & type_name);
 
   mutable std::mutex mutex_;
   std::unordered_map<std::string, const TypeInfo_Cpp *> cache_;

@@ -1810,8 +1810,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIsInstance(type_info['response'], dict)
 
         # std_srvs/srv/Trigger has empty request and response with success+message
-        self.assertIn('success', type_info['response'])
-        self.assertIn('message', type_info['response'])
+        # Schema format is JSON Schema: {"type": "object", "properties": {...}}
+        response_schema = type_info['response']
+        self.assertIn('properties', response_schema, 'Response schema should have properties')
+        self.assertIn('success', response_schema['properties'])
+        self.assertIn('message', response_schema['properties'])
 
         print(f'✓ Service operation type_info test passed: {type_info}')
 
@@ -1854,9 +1857,16 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIsInstance(type_info['feedback'], dict)
 
         # example_interfaces/action/Fibonacci has order in goal, sequence in result/feedback
-        self.assertIn('order', type_info['goal'])
-        self.assertIn('sequence', type_info['result'])
-        self.assertIn('sequence', type_info['feedback'])
+        # Schema format is JSON Schema: {"type": "object", "properties": {...}}
+        goal_schema = type_info['goal']
+        result_schema = type_info['result']
+        feedback_schema = type_info['feedback']
+        self.assertIn('properties', goal_schema, 'Goal schema should have properties')
+        self.assertIn('order', goal_schema['properties'])
+        self.assertIn('properties', result_schema, 'Result schema should have properties')
+        self.assertIn('sequence', result_schema['properties'])
+        self.assertIn('properties', feedback_schema, 'Feedback schema should have properties')
+        self.assertIn('sequence', feedback_schema['properties'])
 
         print(f'✓ Action operation type_info test passed: {type_info}')
 

@@ -24,7 +24,14 @@ TypeCache & TypeCache::instance() {
 }
 
 const TypeInfo_Cpp * TypeCache::get_message_type_info(const std::string & package_name, const std::string & type_name) {
-  const std::string key = make_key(package_name, type_name);
+  // This overload assumes "msg" interface type for backward compatibility
+  return get_message_type_info(package_name, "msg", type_name);
+}
+
+const TypeInfo_Cpp * TypeCache::get_message_type_info(const std::string & package_name,
+                                                      const std::string & interface_type,
+                                                      const std::string & type_name) {
+  const std::string key = make_key(package_name, interface_type, type_name);
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -34,9 +41,9 @@ const TypeInfo_Cpp * TypeCache::get_message_type_info(const std::string & packag
     }
   }
 
-  // Load the type info using dynmsg
-  InterfaceTypeName interface_type{package_name, type_name};
-  const TypeInfo_Cpp * type_info = dynmsg::cpp::get_type_info(interface_type);
+  // Load the type info using dynmsg with full interface type
+  FullInterfaceTypeName full_interface_type{package_name, interface_type, type_name};
+  const TypeInfo_Cpp * type_info = dynmsg::cpp::get_type_info(full_interface_type);
 
   if (type_info != nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -51,10 +58,11 @@ const TypeInfo_Cpp * TypeCache::get_message_type_info(const std::string & full_t
   if (!parsed.has_value()) {
     return nullptr;
   }
-  return get_message_type_info(parsed->first, parsed->second);
+  // Now we have (package, interface_type, type_name)
+  return get_message_type_info(std::get<0>(*parsed), std::get<1>(*parsed), std::get<2>(*parsed));
 }
 
-std::optional<std::pair<std::string, std::string>> TypeCache::parse_type_string(const std::string & full_type) {
+std::optional<std::tuple<std::string, std::string, std::string>> TypeCache::parse_type_string(const std::string & full_type) {
   // Pattern: package/msg/TypeName or package/srv/TypeName or package/action/TypeName
   static const std::regex type_regex(R"(^([a-zA-Z_][a-zA-Z0-9_]*)/(msg|srv|action)/(\w+)$)");
 
@@ -63,14 +71,12 @@ std::optional<std::pair<std::string, std::string>> TypeCache::parse_type_string(
     return std::nullopt;
   }
 
-  // Return package and type name (include interface type in the name for srv/action)
+  // Return (package, interface_type, type_name)
   std::string package = match[1].str();
   std::string interface_type = match[2].str();
   std::string type_name = match[3].str();
 
-  // For messages, we just need the type name
-  // For services/actions, the type is already specialized (e.g., SetBool_Request)
-  return std::make_pair(package, type_name);
+  return std::make_tuple(package, interface_type, type_name);
 }
 
 bool TypeCache::is_cached(const std::string & package_name, const std::string & type_name) const {
@@ -89,7 +95,12 @@ size_t TypeCache::size() const {
 }
 
 std::string TypeCache::make_key(const std::string & package_name, const std::string & type_name) {
-  return package_name + "/" + type_name;
+  return package_name + "/msg/" + type_name;
+}
+
+std::string TypeCache::make_key(const std::string & package_name, const std::string & interface_type,
+                                const std::string & type_name) {
+  return package_name + "/" + interface_type + "/" + type_name;
 }
 
 }  // namespace ros2_medkit_serialization

@@ -321,13 +321,14 @@ rclcpp::SerializedMessage JsonSerializer::serialize(const std::string & type_str
     throw SerializationError("Invalid type string format: " + type_string);
   }
 
-  // Load the type support using ament_index
-  InterfaceTypeName interface_type = {parsed->first, parsed->second};
+  const std::string & pkg_name = std::get<0>(*parsed);
+  const std::string & iface_type = std::get<1>(*parsed);
+  const std::string & type_name = std::get<2>(*parsed);
 
   // Get generic type support (for serialization)
-  std::string ts_lib_name = "lib" + parsed->first + "__rosidl_typesupport_cpp.so";
+  std::string ts_lib_name = "lib" + pkg_name + "__rosidl_typesupport_cpp.so";
   std::string ts_func_name =
-      "rosidl_typesupport_cpp__get_message_type_support_handle__" + parsed->first + "__msg__" + parsed->second;
+      "rosidl_typesupport_cpp__get_message_type_support_handle__" + pkg_name + "__" + iface_type + "__" + type_name;
 
   // Use rcpputils to load the library
   try {
@@ -380,10 +381,14 @@ nlohmann::json JsonSerializer::deserialize(const std::string & type_string,
     throw SerializationError("Invalid type string format: " + type_string);
   }
 
+  const std::string & pkg_name = std::get<0>(*parsed);
+  const std::string & iface_type = std::get<1>(*parsed);
+  const std::string & type_name = std::get<2>(*parsed);
+
   // Load the type support
-  std::string ts_lib_name = "lib" + parsed->first + "__rosidl_typesupport_cpp.so";
+  std::string ts_lib_name = "lib" + pkg_name + "__rosidl_typesupport_cpp.so";
   std::string ts_func_name =
-      "rosidl_typesupport_cpp__get_message_type_support_handle__" + parsed->first + "__msg__" + parsed->second;
+      "rosidl_typesupport_cpp__get_message_type_support_handle__" + pkg_name + "__" + iface_type + "__" + type_name;
 
   rcutils_allocator_t allocator = rcutils_get_default_allocator();
 

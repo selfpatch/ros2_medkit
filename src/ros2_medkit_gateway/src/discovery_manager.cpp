@@ -191,10 +191,15 @@ std::vector<ServiceInfo> DiscoveryManager::discover_services() {
     info.type = types.empty() ? "" : types[0];
 
     // Enrich with schema info if TypeIntrospection is available
+    // Service types: pkg/srv/Type -> Request: pkg/srv/Type_Request, Response: pkg/srv/Type_Response
     if (type_introspection_ && !info.type.empty()) {
       try {
-        auto type_info = type_introspection_->get_type_info(info.type);
-        info.type_info = type_info.schema;
+        json type_info_json;
+        auto request_info = type_introspection_->get_type_info(info.type + "_Request");
+        auto response_info = type_introspection_->get_type_info(info.type + "_Response");
+        type_info_json["request"] = request_info.schema;
+        type_info_json["response"] = response_info.schema;
+        info.type_info = type_info_json;
       } catch (const std::exception & e) {
         RCLCPP_DEBUG(node_->get_logger(), "Could not get schema for service '%s': %s", info.type.c_str(), e.what());
       }
@@ -251,10 +256,17 @@ std::vector<ActionInfo> DiscoveryManager::discover_actions() {
         }
 
         // Enrich with schema info if TypeIntrospection is available
+        // Action types: pkg/action/Type -> Goal: pkg/action/Type_Goal, etc.
         if (type_introspection_ && !info.type.empty()) {
           try {
-            auto type_info = type_introspection_->get_type_info(info.type);
-            info.type_info = type_info.schema;
+            json type_info_json;
+            auto goal_info = type_introspection_->get_type_info(info.type + "_Goal");
+            auto result_info = type_introspection_->get_type_info(info.type + "_Result");
+            auto feedback_info = type_introspection_->get_type_info(info.type + "_Feedback");
+            type_info_json["goal"] = goal_info.schema;
+            type_info_json["result"] = result_info.schema;
+            type_info_json["feedback"] = feedback_info.schema;
+            info.type_info = type_info_json;
           } catch (const std::exception & e) {
             RCLCPP_DEBUG(node_->get_logger(), "Could not get schema for action '%s': %s", info.type.c_str(), e.what());
           }

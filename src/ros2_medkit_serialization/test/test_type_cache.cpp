@@ -38,22 +38,25 @@ TEST_F(TypeCacheTest, SingletonInstance) {
 TEST_F(TypeCacheTest, ParseTypeStringValid) {
   auto result = TypeCache::parse_type_string("std_msgs/msg/String");
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result->first, "std_msgs");
-  EXPECT_EQ(result->second, "String");
+  EXPECT_EQ(std::get<0>(*result), "std_msgs");
+  EXPECT_EQ(std::get<1>(*result), "msg");
+  EXPECT_EQ(std::get<2>(*result), "String");
 }
 
 TEST_F(TypeCacheTest, ParseTypeStringSrv) {
   auto result = TypeCache::parse_type_string("std_srvs/srv/SetBool");
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result->first, "std_srvs");
-  EXPECT_EQ(result->second, "SetBool");
+  EXPECT_EQ(std::get<0>(*result), "std_srvs");
+  EXPECT_EQ(std::get<1>(*result), "srv");
+  EXPECT_EQ(std::get<2>(*result), "SetBool");
 }
 
 TEST_F(TypeCacheTest, ParseTypeStringAction) {
   auto result = TypeCache::parse_type_string("example_interfaces/action/Fibonacci");
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result->first, "example_interfaces");
-  EXPECT_EQ(result->second, "Fibonacci");
+  EXPECT_EQ(std::get<0>(*result), "example_interfaces");
+  EXPECT_EQ(std::get<1>(*result), "action");
+  EXPECT_EQ(std::get<2>(*result), "Fibonacci");
 }
 
 TEST_F(TypeCacheTest, ParseTypeStringInvalid) {
@@ -105,6 +108,43 @@ TEST_F(TypeCacheTest, ClearCache) {
 TEST_F(TypeCacheTest, NonExistentTypeReturnsNull) {
   const auto * type_info = TypeCache::instance().get_message_type_info("nonexistent_pkg", "FakeType");
   EXPECT_EQ(type_info, nullptr);
+}
+
+TEST_F(TypeCacheTest, GetServiceRequestType) {
+  // Service request types use srv interface type
+  const auto * type_info = TypeCache::instance().get_message_type_info("std_srvs/srv/Trigger_Request");
+  ASSERT_NE(type_info, nullptr);
+  EXPECT_STREQ(type_info->message_name_, "Trigger_Request");
+}
+
+TEST_F(TypeCacheTest, GetServiceResponseType) {
+  // Service response types use srv interface type
+  const auto * type_info = TypeCache::instance().get_message_type_info("std_srvs/srv/Trigger_Response");
+  ASSERT_NE(type_info, nullptr);
+  EXPECT_STREQ(type_info->message_name_, "Trigger_Response");
+  // Trigger_Response has success (bool) and message (string)
+  EXPECT_EQ(type_info->member_count_, 2U);
+}
+
+TEST_F(TypeCacheTest, GetActionGoalType) {
+  // Action goal types use action interface type
+  const auto * type_info = TypeCache::instance().get_message_type_info("example_interfaces/action/Fibonacci_Goal");
+  ASSERT_NE(type_info, nullptr);
+  EXPECT_STREQ(type_info->message_name_, "Fibonacci_Goal");
+  // Fibonacci_Goal has order (int32)
+  EXPECT_EQ(type_info->member_count_, 1U);
+}
+
+TEST_F(TypeCacheTest, GetActionResultType) {
+  const auto * type_info = TypeCache::instance().get_message_type_info("example_interfaces/action/Fibonacci_Result");
+  ASSERT_NE(type_info, nullptr);
+  EXPECT_STREQ(type_info->message_name_, "Fibonacci_Result");
+}
+
+TEST_F(TypeCacheTest, GetActionFeedbackType) {
+  const auto * type_info = TypeCache::instance().get_message_type_info("example_interfaces/action/Fibonacci_Feedback");
+  ASSERT_NE(type_info, nullptr);
+  EXPECT_STREQ(type_info->message_name_, "Fibonacci_Feedback");
 }
 
 TEST_F(TypeCacheTest, ThreadSafety) {

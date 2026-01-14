@@ -305,7 +305,7 @@ ServiceCallResult OperationManager::call_service(const std::string & service_pat
     std::string request_type = ServiceActionTypes::get_service_request_type(service_type);
     std::string response_type = ServiceActionTypes::get_service_response_type(service_type);
 
-    // Step 4: Serialize request JSON to CDR
+    // Step 4: Create request message from JSON
     json request_data = request.empty() || request.is_null() ? json::object() : request;
 
     // Get defaults for request type and merge with provided data
@@ -320,12 +320,14 @@ ServiceCallResult OperationManager::call_service(const std::string & service_pat
       // If we can't get defaults, just use provided data
     }
 
-    rclcpp::SerializedMessage serialized_request = serializer_->serialize(request_type, request_data);
+    // Convert JSON to ROS message (deserialzied form, not CDR)
+    rcutils_allocator_t allocator = rcutils_get_default_allocator();
+    RosMessage_Cpp ros_request = serializer_->from_json(request_type, request_data);
 
     RCLCPP_INFO(node_->get_logger(), "Calling service: %s (type: %s)", service_path.c_str(), service_type.c_str());
 
-    // Step 5: Send request using GenericClient (expects void*)
-    auto future_and_id = client->async_send_request(serialized_request.get_rcl_serialized_message().buffer);
+    // Step 5: Send request using GenericClient (expects void* to deserialized message)
+    auto future_and_id = client->async_send_request(ros_request.data);
 
     // Step 6: Wait for response with timeout
     auto timeout = std::chrono::seconds(service_call_timeout_sec_);
@@ -334,11 +336,15 @@ ServiceCallResult OperationManager::call_service(const std::string & service_pat
     if (future_status != std::future_status::ready) {
       // Clean up pending request on timeout
       client->remove_pending_request(future_and_id.request_id);
+      dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
       result.success = false;
       result.error_message =
           "Service call timed out (" + std::to_string(service_call_timeout_sec_) + "s): " + service_path;
       return result;
     }
+
+    // Clean up request message after sending
+    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
 
     // Step 7: Get response and deserialize
     auto response_ptr = future_and_id.get();
@@ -585,15 +591,20 @@ ActionSendGoalResult OperationManager::send_action_goal(const std::string & acti
     send_goal_request["goal_id"]["uuid"] = uuid_bytes_to_json_array(uuid_bytes);
     send_goal_request["goal"] = goal.empty() || goal.is_null() ? json::object() : goal;
 
-    // Step 5: Serialize and send
+    // Step 5: Create request message from JSON and send
     std::string request_type = ServiceActionTypes::get_action_send_goal_request_type(action_type);
-    rclcpp::SerializedMessage serialized_request = serializer_->serialize(request_type, send_goal_request);
+
+    RCLCPP_INFO(node_->get_logger(), "SendGoal request type: %s, JSON: %s",
+                request_type.c_str(), send_goal_request.dump().c_str());
+
+    // Convert JSON to ROS message (deserialized form, not CDR)
+    rcutils_allocator_t allocator = rcutils_get_default_allocator();
+    RosMessage_Cpp ros_request = serializer_->from_json(request_type, send_goal_request);
 
     RCLCPP_INFO(node_->get_logger(), "Sending action goal: %s (type: %s)", action_path.c_str(), action_type.c_str());
 
-    // Send using GenericClient (expects void*)
-    auto future_and_id =
-        clients.send_goal_client->async_send_request(serialized_request.get_rcl_serialized_message().buffer);
+    // Send using GenericClient (expects void* to deserialized message)
+    auto future_and_id = clients.send_goal_client->async_send_request(ros_request.data);
 
     // Wait for response with timeout
     auto timeout = std::chrono::seconds(service_call_timeout_sec_);
@@ -601,9 +612,13 @@ ActionSendGoalResult OperationManager::send_action_goal(const std::string & acti
 
     if (future_status != std::future_status::ready) {
       clients.send_goal_client->remove_pending_request(future_and_id.request_id);
+      dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
       result.error_message = "Send goal timed out";
       return result;
     }
+
+    // Clean up request message after sending
+    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
 
     // Step 6: Deserialize response
     auto response_ptr = future_and_id.get();
@@ -720,21 +735,23 @@ ActionCancelResult OperationManager::cancel_action_goal(const std::string & acti
     json cancel_request;
     cancel_request["goal_info"]["goal_id"]["uuid"] = uuid_hex_to_json_array(goal_id);
 
-    rclcpp::SerializedMessage serialized_request =
-        serializer_->serialize("action_msgs/srv/CancelGoal_Request", cancel_request);
+    // Deserialize to ROS message (GenericClient expects void* to deserialized message, not CDR buffer)
+    rcutils_allocator_t allocator = rcutils_get_default_allocator();
+    RosMessage_Cpp ros_request = serializer_->from_json("action_msgs/srv/CancelGoal_Request", cancel_request);
 
     RCLCPP_INFO(node_->get_logger(), "Canceling action goal: %s (goal_id: %s)", action_path.c_str(), goal_id.c_str());
 
-    // Send using GenericClient (expects void*)
-    auto future_and_id =
-        clients.cancel_goal_client->async_send_request(serialized_request.get_rcl_serialized_message().buffer);
+    // Send using GenericClient (expects void* to deserialized message)
+    auto future_and_id = clients.cancel_goal_client->async_send_request(ros_request.data);
 
     auto future_status = future_and_id.wait_for(std::chrono::seconds(5));
     if (future_status != std::future_status::ready) {
       clients.cancel_goal_client->remove_pending_request(future_and_id.request_id);
+      dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
       result.error_message = "Cancel request timed out";
       return result;
     }
+    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
 
     auto response_ptr = future_and_id.get();
     if (response_ptr == nullptr) {
@@ -811,20 +828,24 @@ ActionGetResultResult OperationManager::get_action_result(const std::string & ac
     get_result_request["goal_id"]["uuid"] = uuid_hex_to_json_array(goal_id);
 
     std::string request_type = ServiceActionTypes::get_action_get_result_request_type(action_type);
-    rclcpp::SerializedMessage serialized_request = serializer_->serialize(request_type, get_result_request);
+
+    // Deserialize to ROS message (GenericClient expects void* to deserialized message, not CDR buffer)
+    rcutils_allocator_t allocator = rcutils_get_default_allocator();
+    RosMessage_Cpp ros_request = serializer_->from_json(request_type, get_result_request);
 
     RCLCPP_INFO(node_->get_logger(), "Getting action result: %s (goal_id: %s)", action_path.c_str(), goal_id.c_str());
 
-    // Send using GenericClient (expects void*)
-    auto future_and_id =
-        clients.get_result_client->async_send_request(serialized_request.get_rcl_serialized_message().buffer);
+    // Send using GenericClient (expects void* to deserialized message)
+    auto future_and_id = clients.get_result_client->async_send_request(ros_request.data);
 
     auto future_status = future_and_id.wait_for(std::chrono::seconds(service_call_timeout_sec_));
     if (future_status != std::future_status::ready) {
       clients.get_result_client->remove_pending_request(future_and_id.request_id);
+      dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
       result.error_message = "Get result timed out";
       return result;
     }
+    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
 
     auto response_ptr = future_and_id.get();
     if (response_ptr == nullptr) {
@@ -901,9 +922,9 @@ std::vector<ActionGoalInfo> OperationManager::get_goals_for_action(const std::st
     }
   }  // Release lock before sorting
 
-  // Sort by last_update, newest first
+  // Sort by created_at, newest first (most recently created goal)
   std::sort(goals.begin(), goals.end(), [](const ActionGoalInfo & a, const ActionGoalInfo & b) {
-    return a.last_update > b.last_update;
+    return a.created_at > b.created_at;
   });
   return goals;
 }
