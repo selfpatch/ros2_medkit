@@ -15,6 +15,7 @@
 #include "ros2_medkit_serialization/type_cache.hpp"
 
 #include <regex>
+#include <shared_mutex>
 
 namespace ros2_medkit_serialization {
 
@@ -33,8 +34,9 @@ const TypeInfo_Cpp * TypeCache::get_message_type_info(const std::string & packag
                                                       const std::string & type_name) {
   const std::string key = make_key(package_name, interface_type, type_name);
 
+  // Try read lock first (fast path for cache hits)
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     auto it = cache_.find(key);
     if (it != cache_.end()) {
       return it->second;
@@ -46,7 +48,7 @@ const TypeInfo_Cpp * TypeCache::get_message_type_info(const std::string & packag
   const TypeInfo_Cpp * type_info = dynmsg::cpp::get_type_info(full_interface_type);
 
   if (type_info != nullptr) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     cache_[key] = type_info;
   }
 
@@ -81,17 +83,17 @@ TypeCache::parse_type_string(const std::string & full_type) {
 }
 
 bool TypeCache::is_cached(const std::string & package_name, const std::string & type_name) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   return cache_.find(make_key(package_name, type_name)) != cache_.end();
 }
 
 void TypeCache::clear() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::shared_mutex> lock(mutex_);
   cache_.clear();
 }
 
 size_t TypeCache::size() const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   return cache_.size();
 }
 

@@ -192,7 +192,11 @@ nlohmann::json JsonSerializer::yaml_to_json(const YAML::Node & yaml) {
       return nullptr;
 
     case YAML::NodeType::Scalar: {
-      // Try to parse as different types
+      // Try to parse as different types using type detection heuristics.
+      // Empty catch blocks are intentional - we try each type in order and
+      // fall through to the next on failure. This is a common pattern for
+      // YAML scalar type inference.
+
       // First try boolean
       try {
         bool b = yaml.as<bool>();
@@ -203,6 +207,7 @@ nlohmann::json JsonSerializer::yaml_to_json(const YAML::Node & yaml) {
           return b;
         }
       } catch (...) {
+        // Not a boolean - try next type
       }
 
       // Try integer
@@ -218,9 +223,11 @@ nlohmann::json JsonSerializer::yaml_to_json(const YAML::Node & yaml) {
               return i;
             }
           } catch (...) {
+            // String doesn't parse as integer - continue
           }
         }
       } catch (...) {
+        // Not an integer - try next type
       }
 
       // Try floating point
@@ -236,9 +243,11 @@ nlohmann::json JsonSerializer::yaml_to_json(const YAML::Node & yaml) {
               return d;
             }
           } catch (...) {
+            // String doesn't parse as double - continue
           }
         }
       } catch (...) {
+        // Not a double - fall back to string
       }
 
       // Fall back to string
@@ -326,7 +335,8 @@ rclcpp::SerializedMessage JsonSerializer::serialize(const std::string & type_str
   const std::string & type_name = std::get<2>(*parsed);
 
   // Get generic type support (for serialization)
-  std::string ts_lib_name = "lib" + pkg_name + "__rosidl_typesupport_cpp.so";
+  // Use platform-independent library name resolution
+  std::string ts_lib_name = rcpputils::get_platform_library_name(pkg_name + "__rosidl_typesupport_cpp");
   std::string ts_func_name =
       "rosidl_typesupport_cpp__get_message_type_support_handle__" + pkg_name + "__" + iface_type + "__" + type_name;
 
@@ -386,7 +396,8 @@ nlohmann::json JsonSerializer::deserialize(const std::string & type_string,
   const std::string & type_name = std::get<2>(*parsed);
 
   // Load the type support
-  std::string ts_lib_name = "lib" + pkg_name + "__rosidl_typesupport_cpp.so";
+  // Use platform-independent library name resolution
+  std::string ts_lib_name = rcpputils::get_platform_library_name(pkg_name + "__rosidl_typesupport_cpp");
   std::string ts_func_name =
       "rosidl_typesupport_cpp__get_message_type_support_handle__" + pkg_name + "__" + iface_type + "__" + type_name;
 

@@ -14,7 +14,7 @@
 
 #include "ros2_medkit_serialization/service_action_types.hpp"
 
-#include <regex>
+#include "ros2_medkit_serialization/type_cache.hpp"
 
 namespace ros2_medkit_serialization {
 
@@ -68,16 +68,8 @@ std::string ServiceActionTypes::get_action_feedback_message_type(const std::stri
 
 std::optional<std::tuple<std::string, std::string, std::string>>
 ServiceActionTypes::parse_interface_type(const std::string & full_type) {
-  // Pattern: package/interface_type/TypeName
-  // interface_type is one of: msg, srv, action
-  static const std::regex type_regex(R"(^([a-zA-Z_][a-zA-Z0-9_]*)/(msg|srv|action)/(\w+)$)");
-
-  std::smatch match;
-  if (!std::regex_match(full_type, match, type_regex)) {
-    return std::nullopt;
-  }
-
-  return std::make_tuple(match[1].str(), match[2].str(), match[3].str());
+  // Delegate to TypeCache::parse_type_string to avoid duplicate regex
+  return TypeCache::parse_type_string(full_type);
 }
 
 bool ServiceActionTypes::is_service_type(const std::string & full_type) {

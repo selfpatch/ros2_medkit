@@ -46,11 +46,18 @@ ros2_medkit consists of several ROS 2 packages:
 **ros2_medkit_gateway**
    The main HTTP gateway node. Discovers ROS 2 entities and exposes them via REST API.
 
+**ros2_medkit_serialization**
+   Runtime JSON ↔ ROS 2 message serialization library using dynmsg. Enables native
+   message handling without compile-time type dependencies.
+
 **ros2_medkit_fault_manager**
    Stores and manages fault lifecycle. Provides ROS 2 services for fault operations.
 
 **ros2_medkit_fault_reporter**
    Client library for reporting faults from your ROS 2 nodes.
+
+**ros2_medkit_diagnostic_bridge**
+   Bridge node that converts standard ROS 2 ``/diagnostics`` messages to fault manager faults.
 
 **ros2_medkit_msgs**
    Message and service definitions for fault management.

@@ -140,7 +140,8 @@ ServiceCallResult OperationManager::call_service(const std::string & service_pat
       // If we can't get defaults, just use provided data
     }
 
-    // Convert JSON to ROS message (deserialzied form, not CDR)
+    // Convert JSON to ROS message (deserialized form, not CDR)
+    // Note: GenericClient expects void* pointing to deserialized message structure
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
     RosMessage_Cpp ros_request = serializer_->from_json(request_type, request_data);
 
@@ -410,6 +411,7 @@ ActionSendGoalResult OperationManager::send_action_goal(const std::string & acti
                 send_goal_request.dump().c_str());
 
     // Convert JSON to ROS message (deserialized form, not CDR)
+    // Note: GenericClient expects void* pointing to deserialized message structure
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
     RosMessage_Cpp ros_request = serializer_->from_json(request_type, send_goal_request);
 
@@ -547,7 +549,8 @@ ActionCancelResult OperationManager::cancel_action_goal(const std::string & acti
     json cancel_request;
     cancel_request["goal_info"]["goal_id"]["uuid"] = uuid_hex_to_json_array(goal_id);
 
-    // Deserialize to ROS message (GenericClient expects void* to deserialized message, not CDR buffer)
+    // Convert JSON to ROS message (deserialized form, not CDR)
+    // Note: GenericClient expects void* pointing to deserialized message structure
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
     RosMessage_Cpp ros_request = serializer_->from_json("action_msgs/srv/CancelGoal_Request", cancel_request);
 
@@ -641,7 +644,8 @@ ActionGetResultResult OperationManager::get_action_result(const std::string & ac
 
     std::string request_type = ServiceActionTypes::get_action_get_result_request_type(action_type);
 
-    // Deserialize to ROS message (GenericClient expects void* to deserialized message, not CDR buffer)
+    // Convert JSON to ROS message (deserialized form, not CDR)
+    // Note: GenericClient expects void* pointing to deserialized message structure
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
     RosMessage_Cpp ros_request = serializer_->from_json(request_type, get_result_request);
 

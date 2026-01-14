@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -97,7 +98,7 @@ class TypeCache {
   static std::string make_key(const std::string & package_name, const std::string & interface_type,
                               const std::string & type_name);
 
-  mutable std::mutex mutex_;
+  mutable std::shared_mutex mutex_;
   std::unordered_map<std::string, const TypeInfo_Cpp *> cache_;
 };
 

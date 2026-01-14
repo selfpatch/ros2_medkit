@@ -18,7 +18,7 @@
     // Comment this out if you don't want zsh and oh-my-zsh
     "ghcr.io/devcontainers/features/common-utils:2": {
       "installZsh": true,
-      "configureZshAsDefaultShell": true,
+      "configureZshAsDefaultShell": false,
       "installOhMyZsh": true
     },
     "ghcr.io/devcontainers/features/git:1": {},
@@ -47,7 +47,7 @@
         "christian-kohler.path-intellisense"
       ],
       "settings": {
-        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.defaultProfile.linux": "bash",
         "python.defaultInterpreterPath": "/usr/bin/python3",
         "cmake.configureOnOpen": false
       }
