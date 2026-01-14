@@ -14,10 +14,7 @@
 
 #include "ros2_medkit_gateway/operation_manager.hpp"
 
-#include <yaml-cpp/yaml.h>
-
 #include <algorithm>
-#include <cctype>
 #include <iomanip>
 #include <regex>
 #include <set>
@@ -70,182 +67,6 @@ bool OperationManager::is_valid_uuid_hex(const std::string & uuid_hex) {
   return std::all_of(uuid_hex.begin(), uuid_hex.end(), [](char c) {
     return std::isxdigit(static_cast<unsigned char>(c));
   });
-}
-
-std::string OperationManager::json_to_yaml(const json & j) {
-  // Convert JSON to YAML format for ros2 CLI commands
-  // ros2 action/service commands expect YAML format: {key: value} not {"key": value}
-  std::function<std::string(const json &)> convert = [&convert](const json & val) -> std::string {
-    if (val.is_object()) {
-      std::ostringstream ss;
-      ss << "{";
-      bool first = true;
-      for (auto it = val.begin(); it != val.end(); ++it) {
-        if (!first) {
-          ss << ", ";
-        }
-        first = false;
-        ss << it.key() << ": " << convert(it.value());
-      }
-      ss << "}";
-      return ss.str();
-    } else if (val.is_array()) {
-      std::ostringstream ss;
-      ss << "[";
-      bool first = true;
-      for (const auto & item : val) {
-        if (!first) {
-          ss << ", ";
-        }
-        first = false;
-        ss << convert(item);
-      }
-      ss << "]";
-      return ss.str();
-    } else if (val.is_string()) {
-      // Quote strings that contain special YAML characters or are empty
-      std::string s = val.get<std::string>();
-      // Empty strings must be quoted, otherwise YAML interprets them as null/None
-      if (s.empty() || s.find_first_of(":{}[],\"'") != std::string::npos) {
-        return "'" + s + "'";
-      }
-      return s;
-    } else {
-      return val.dump();  // numbers, bools, null
-    }
-  };
-
-  return convert(j);
-}
-
-json OperationManager::parse_service_response(const std::string & yaml_output) {
-  // Legacy method - kept for action CLI parsing
-  try {
-    // ros2 service call output format:
-    // requester: making request: ...
-    // response:
-    // std_srvs.srv.Trigger_Response(success=True, message='...')
-    //
-    // Or for newer ROS2 (YAML format):
-    // response:
-    // success: true
-    // message: '...'
-
-    // Find the response section
-    std::string response_section;
-    size_t response_pos = yaml_output.find("response:");
-    if (response_pos != std::string::npos) {
-      // Skip "response:" and any newline
-      size_t start = response_pos + 9;  // length of "response:"
-      while (start < yaml_output.size() && (yaml_output[start] == '\n' || yaml_output[start] == ' ')) {
-        start++;
-      }
-      response_section = yaml_output.substr(start);
-      // Trim trailing whitespace and newlines
-      while (!response_section.empty() &&
-             (response_section.back() == '\n' || response_section.back() == ' ' || response_section.back() == '\r')) {
-        response_section.pop_back();
-      }
-    } else {
-      // Try parsing the whole output
-      response_section = yaml_output;
-    }
-
-    // Check if it's in Python repr format: TypeName(field=value, ...)
-    // Example: std_srvs.srv.Trigger_Response(success=True, message='...')
-    static const std::regex repr_regex(R"(^[\w.]+\((.*)\)$)");
-    std::smatch match;
-    if (std::regex_match(response_section, match, repr_regex)) {
-      // Parse Python repr format
-      std::string fields_str = match[1].str();
-      json result = json::object();
-
-      // Parse field=value pairs
-      // Handle nested parentheses and quoted strings
-      size_t pos = 0;
-      while (pos < fields_str.length()) {
-        // Skip whitespace
-        while (pos < fields_str.length() && (fields_str[pos] == ' ' || fields_str[pos] == ',')) {
-          pos++;
-        }
-        if (pos >= fields_str.length()) {
-          break;
-        }
-
-        // Find field name (up to '=')
-        size_t eq_pos = fields_str.find('=', pos);
-        if (eq_pos == std::string::npos) {
-          break;
-        }
-        std::string field_name = fields_str.substr(pos, eq_pos - pos);
-        pos = eq_pos + 1;
-
-        // Parse value
-        std::string value_str;
-        if (pos < fields_str.length() && fields_str[pos] == '\'') {
-          // Quoted string
-          pos++;  // Skip opening quote
-          size_t end_quote = pos;
-          while (end_quote < fields_str.length()) {
-            if (fields_str[end_quote] == '\'') {
-              // Check if it's escaped
-              if (end_quote > 0 && fields_str[end_quote - 1] == '\\') {
-                end_quote++;
-                continue;
-              }
-              break;
-            }
-            end_quote++;
-          }
-          value_str = fields_str.substr(pos, end_quote - pos);
-          pos = end_quote + 1;
-          result[field_name] = value_str;
-        } else {
-          // Non-quoted value (bool, number, etc.)
-          size_t comma_pos = fields_str.find(',', pos);
-          size_t paren_pos = fields_str.find(')', pos);
-          size_t end_pos = std::min(comma_pos, paren_pos);
-          if (end_pos == std::string::npos) {
-            end_pos = fields_str.length();
-          }
-          value_str = fields_str.substr(pos, end_pos - pos);
-          pos = end_pos;
-
-          // Convert to appropriate JSON type
-          if (value_str == "True" || value_str == "true") {
-            result[field_name] = true;
-          } else if (value_str == "False" || value_str == "false") {
-            result[field_name] = false;
-          } else if (value_str == "None" || value_str == "null") {
-            result[field_name] = nullptr;
-          } else {
-            // Try to parse as number
-            try {
-              if (value_str.find('.') != std::string::npos) {
-                result[field_name] = std::stod(value_str);
-              } else {
-                result[field_name] = std::stoll(value_str);
-              }
-            } catch (...) {
-              result[field_name] = value_str;
-            }
-          }
-        }
-      }
-      return result;
-    }
-
-    // Try to parse as YAML (for newer ROS2 format)
-    YAML::Node yaml_node = YAML::Load(response_section);
-
-    // Convert YAML to JSON using JsonSerializer utility
-    return ros2_medkit_serialization::JsonSerializer::yaml_to_json(yaml_node);
-
-  } catch (const std::exception & e) {
-    RCLCPP_WARN(node_->get_logger(), "Failed to parse service response: %s", e.what());
-    // Return raw output as string
-    return json{{"raw_response", yaml_output}};
-  }
 }
 
 std::string OperationManager::make_client_key(const std::string & service_path, const std::string & service_type) {
@@ -540,14 +361,6 @@ OperationManager::ActionClientSet & OperationManager::get_or_create_action_clien
 
   action_clients_[action_path] = std::move(clients);
   return action_clients_[action_path];
-}
-
-ActionCancelResult OperationManager::parse_cancel_output(const std::string & /* output */) {
-  // Legacy method - kept for compatibility but not used with native implementation
-  ActionCancelResult result;
-  result.success = true;
-  result.return_code = 0;
-  return result;
 }
 
 void OperationManager::track_goal(const std::string & goal_id, const std::string & action_path,

@@ -216,12 +216,6 @@ class OperationManager {
     std::string action_type;  // Store type for later use
   };
 
-  /// Convert JSON to YAML string (legacy, kept for potential future use)
-  std::string json_to_yaml(const json & j);
-
-  /// Parse YAML output to JSON (legacy, kept for potential future use)
-  json parse_service_response(const std::string & yaml_output);
-
   /// Convert UUID hex string to JSON array of byte values
   json uuid_hex_to_json_array(const std::string & uuid_hex);
 
@@ -230,9 +224,6 @@ class OperationManager {
 
   /// Convert UUID bytes to JSON array
   json uuid_bytes_to_json_array(const std::array<uint8_t, 16> & uuid);
-
-  /// Parse ros2 action cancel output (legacy, kept for compatibility)
-  ActionCancelResult parse_cancel_output(const std::string & output);
 
   /// Track a new goal
   void track_goal(const std::string & goal_id, const std::string & action_path, const std::string & action_type);

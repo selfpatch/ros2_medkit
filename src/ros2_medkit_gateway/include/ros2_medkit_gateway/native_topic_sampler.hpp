@@ -282,11 +282,6 @@ class NativeTopicSampler {
 
  private:
   /**
-   * @brief Parse YAML-formatted message string to JSON (legacy, kept for compatibility)
-   */
-  json parse_message_yaml(const std::string & yaml_str);
-
-  /**
    * @brief Get the message type for a topic from the graph
    */
   std::string get_topic_type(const std::string & topic_name);
