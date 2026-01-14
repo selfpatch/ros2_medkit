@@ -594,8 +594,8 @@ ActionSendGoalResult OperationManager::send_action_goal(const std::string & acti
     // Step 5: Create request message from JSON and send
     std::string request_type = ServiceActionTypes::get_action_send_goal_request_type(action_type);
 
-    RCLCPP_INFO(node_->get_logger(), "SendGoal request type: %s, JSON: %s",
-                request_type.c_str(), send_goal_request.dump().c_str());
+    RCLCPP_INFO(node_->get_logger(), "SendGoal request type: %s, JSON: %s", request_type.c_str(),
+                send_goal_request.dump().c_str());
 
     // Convert JSON to ROS message (deserialized form, not CDR)
     rcutils_allocator_t allocator = rcutils_get_default_allocator();

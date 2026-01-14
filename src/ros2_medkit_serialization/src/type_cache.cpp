@@ -62,7 +62,8 @@ const TypeInfo_Cpp * TypeCache::get_message_type_info(const std::string & full_t
   return get_message_type_info(std::get<0>(*parsed), std::get<1>(*parsed), std::get<2>(*parsed));
 }
 
-std::optional<std::tuple<std::string, std::string, std::string>> TypeCache::parse_type_string(const std::string & full_type) {
+std::optional<std::tuple<std::string, std::string, std::string>>
+TypeCache::parse_type_string(const std::string & full_type) {
   // Pattern: package/msg/TypeName or package/srv/TypeName or package/action/TypeName
   static const std::regex type_regex(R"(^([a-zA-Z_][a-zA-Z0-9_]*)/(msg|srv|action)/(\w+)$)");
 

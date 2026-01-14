@@ -58,8 +58,7 @@ class TypeCache {
   /// @param interface_type Interface type ("msg", "srv", or "action")
   /// @param type_name Type name (e.g., "Trigger_Request")
   /// @return Pointer to type info, or nullptr if not found
-  const TypeInfo_Cpp * get_message_type_info(const std::string & package_name,
-                                             const std::string & interface_type,
+  const TypeInfo_Cpp * get_message_type_info(const std::string & package_name, const std::string & interface_type,
                                              const std::string & type_name);
 
   /// Get type info from full type string
@@ -72,7 +71,8 @@ class TypeCache {
   ///
   /// @param full_type Full type string (e.g., "std_msgs/msg/String")
   /// @return Tuple of (package_name, interface_type, type_name), or nullopt if invalid format
-  static std::optional<std::tuple<std::string, std::string, std::string>> parse_type_string(const std::string & full_type);
+  static std::optional<std::tuple<std::string, std::string, std::string>>
+  parse_type_string(const std::string & full_type);
 
   /// Check if a type is cached
   ///
