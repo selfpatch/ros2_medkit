@@ -85,11 +85,6 @@ The following diagram shows the relationships between the main components of the
            + sample_topics_parallel(): vector<TopicSampleResult>
        }
 
-       class OutputParser {
-           + parse_yaml(): json
-           + yaml_to_json(): json {static}
-       }
-
        class JsonSerializer {
            + serialize(): SerializedMessage
            + deserialize(): json
@@ -263,15 +258,10 @@ Main Components
    - Serializes JSON to CDR format for publishing via ``serialize()``
    - Deserializes CDR to JSON for subscriptions via ``deserialize()``
    - Converts between deserialized ROS 2 messages and JSON via ``to_json()`` / ``from_json()``
+   - Provides static ``yaml_to_json()`` utility for YAML to JSON conversion
    - Thread-safe and stateless design
 
-9. **OutputParser** - Converts YAML to JSON (utility class)
-   - Parses YAML output from various sources
-   - Preserves type information (bool → int → double → string precedence)
-   - Handles multi-document YAML streams correctly
-   - Provides static ``yaml_to_json()`` utility for reuse
-
-10. **Data Models** - Entity representations
+9. **Data Models** - Entity representations
     - ``Area`` - Physical or logical domain
     - ``Component`` - Hardware or software component with attached operations
     - ``ServiceInfo`` - Service metadata (path, name, type)

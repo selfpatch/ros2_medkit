@@ -51,11 +51,7 @@ package "ros2_medkit_gateway" {
         + deserialize(): json
         + to_json(): json
         + from_json(): RosMessage_Cpp
-    }
-
-    class OutputParser {
-        + parse_yaml(): json
-        - yaml_to_json(): json
+        + yaml_to_json(): json {static}
     }
 
     class Area {
@@ -106,7 +102,6 @@ RESTServer --> DataAccessManager : uses
 
 ' DataAccessManager owns utility classes (native implementation)
 DataAccessManager *--> JsonSerializer : owns (serialization)
-DataAccessManager *--> OutputParser : owns
 DataAccessManager *--> NativeTopicSampler : owns
 
 ' NativeTopicSampler uses Node interface

@@ -27,7 +27,6 @@
 #include <sstream>
 #include <thread>
 
-#include "ros2_medkit_gateway/output_parser.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"
 
@@ -200,8 +199,8 @@ std::string NativeTopicSampler::get_topic_type(const std::string & topic_name) {
 }
 
 json NativeTopicSampler::parse_message_yaml(const std::string & yaml_str) {
-  OutputParser parser;
-  return parser.parse_yaml(yaml_str);
+  YAML::Node yaml_node = YAML::Load(yaml_str);
+  return ros2_medkit_serialization::JsonSerializer::yaml_to_json(yaml_node);
 }
 
 TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_name, double timeout_sec) {

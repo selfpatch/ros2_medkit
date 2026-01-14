@@ -24,7 +24,6 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/native_topic_sampler.hpp"
-#include "ros2_medkit_gateway/output_parser.hpp"
 #include "ros2_medkit_gateway/type_introspection.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 
@@ -122,9 +121,6 @@ class DataAccessManager {
 
   /// Mutex for thread-safe publisher cache access
   mutable std::shared_mutex publishers_mutex_;
-
-  /// Output parser - only used by native_topic_sampler (legacy, may be removed)
-  std::unique_ptr<OutputParser> output_parser_;
 
   std::unique_ptr<TypeIntrospection> type_introspection_;
   std::unique_ptr<NativeTopicSampler> native_sampler_;

@@ -23,7 +23,6 @@
 #include <set>
 #include <sstream>
 
-#include "ros2_medkit_gateway/output_parser.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"
 #include "ros2_medkit_serialization/service_action_types.hpp"
@@ -239,8 +238,8 @@ json OperationManager::parse_service_response(const std::string & yaml_output) {
     // Try to parse as YAML (for newer ROS2 format)
     YAML::Node yaml_node = YAML::Load(response_section);
 
-    // Convert YAML to JSON using shared utility
-    return OutputParser::yaml_to_json(yaml_node);
+    // Convert YAML to JSON using JsonSerializer utility
+    return ros2_medkit_serialization::JsonSerializer::yaml_to_json(yaml_node);
 
   } catch (const std::exception & e) {
     RCLCPP_WARN(node_->get_logger(), "Failed to parse service response: %s", e.what());

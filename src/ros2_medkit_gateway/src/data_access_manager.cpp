@@ -28,7 +28,6 @@ namespace ros2_medkit_gateway {
 DataAccessManager::DataAccessManager(rclcpp::Node * node)
   : node_(node)
   , serializer_(std::make_shared<ros2_medkit_serialization::JsonSerializer>())
-  , output_parser_(std::make_unique<OutputParser>())
   , type_introspection_(
         std::make_unique<TypeIntrospection>(ament_index_cpp::get_package_share_directory("ros2_medkit_gateway") + "/scr"
                                                                                                                   "ipt"
