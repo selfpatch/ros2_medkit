@@ -75,8 +75,14 @@ ros2_medkit is currently distributed as source code. Binary packages will be ava
 
    .. code-block:: bash
 
-      git clone https://github.com/selfpatch/ros2_medkit.git
+      git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
       cd ros2_medkit
+
+   If you already cloned without submodules, initialize them:
+
+   .. code-block:: bash
+
+      git submodule update --init --recursive
 
 3. **Install dependencies**
 

@@ -31,12 +31,18 @@ Prerequisites
 Quick Start
 -----------
 
-1. **Clone the repository:**
+1. **Clone the repository with submodules:**
 
    .. code-block:: bash
 
-      git clone https://github.com/selfpatch/ros2_medkit.git
+      git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
       cd ros2_medkit
+
+   If you already cloned without submodules:
+
+   .. code-block:: bash
+
+      git submodule update --init --recursive
 
 2. **Open in VS Code:**
 

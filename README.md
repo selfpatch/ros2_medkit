@@ -52,10 +52,13 @@ so the same concepts can be used across robots, vehicles, and other embedded sys
 ```bash
 mkdir -p ~/ros2_medkit_ws/src
 cd ~/ros2_medkit_ws/src
-git clone https://github.com/selfpatch/ros2_medkit.git
+git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
 cd ~/ros2_medkit_ws
 rosdep install --from-paths src --ignore-src -r -y
 ```
+
+> **Note:** If you cloned without `--recurse-submodules`, run:
+> `git submodule update --init --recursive`
 
 ### 2. Build
 
