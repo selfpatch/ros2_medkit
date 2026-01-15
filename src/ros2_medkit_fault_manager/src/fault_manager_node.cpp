@@ -54,6 +54,9 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // Create storage backend
   storage_ = create_storage();
 
+  // Create event publisher for SSE streaming
+  event_publisher_ = create_publisher<ros2_medkit_msgs::msg::FaultEvent>("~/events", rclcpp::QoS(100).reliable());
+
   // Configure debounce settings
   DebounceConfig config;
   config.confirmation_threshold = confirmation_threshold_;
@@ -165,11 +168,33 @@ void FaultManagerNode::handle_report_fault(
     return;
   }
 
+  // Get status before update (if fault exists)
+  auto fault_before = storage_->get_fault(request->fault_code);
+  std::string status_before = fault_before ? fault_before->status : "";
+
   // Report the fault event
   bool is_new = storage_->report_fault_event(request->fault_code, request->event_type, request->severity,
                                              request->description, request->source_id, now());
 
   response->accepted = true;
+
+  // Get updated fault state to publish event
+  auto fault_after = storage_->get_fault(request->fault_code);
+  if (fault_after) {
+    // Determine event type based on status transition
+    if (is_new && fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
+      // New fault immediately confirmed (e.g., CRITICAL severity or threshold=-1)
+      publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault_after);
+    } else if (!is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED &&
+               fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
+      // Existing fault transitioned to CONFIRMED
+      publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault_after);
+    } else if (!is_new && fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
+      // Fault was already CONFIRMED, data updated (occurrence_count, sources, etc.)
+      publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_UPDATED, *fault_after);
+    }
+    // Note: PREFAILED/PREPASSED status changes don't emit events (debounce in progress)
+  }
 
   if (request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
     if (is_new) {
@@ -208,6 +233,12 @@ void FaultManagerNode::handle_clear_fault(
   if (cleared) {
     response->message = "Fault cleared: " + request->fault_code;
     RCLCPP_INFO(get_logger(), "Fault cleared: %s", request->fault_code.c_str());
+
+    // Publish EVENT_CLEARED - get the cleared fault to include in event
+    auto fault = storage_->get_fault(request->fault_code);
+    if (fault) {
+      publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CLEARED, *fault);
+    }
   } else {
     response->message = "Fault not found: " + request->fault_code;
     RCLCPP_WARN(get_logger(), "Attempted to clear non-existent fault: %s", request->fault_code.c_str());
@@ -216,6 +247,18 @@ void FaultManagerNode::handle_clear_fault(
 
 bool FaultManagerNode::is_valid_severity(uint8_t severity) {
   return severity <= ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL;
+}
+
+void FaultManagerNode::publish_fault_event(const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault) {
+  ros2_medkit_msgs::msg::FaultEvent event;
+  event.event_type = event_type;
+  event.fault = fault;
+  event.timestamp = now();
+
+  event_publisher_->publish(event);
+
+  RCLCPP_DEBUG(get_logger(), "Published fault event: %s for fault_code=%s", event_type.c_str(),
+               fault.fault_code.c_str());
 }
 
 }  // namespace ros2_medkit_fault_manager

@@ -58,6 +58,7 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   config_handlers_ = std::make_unique<handlers::ConfigHandlers>(*handler_ctx_);
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
   auth_handlers_ = std::make_unique<handlers::AuthHandlers>(*handler_ctx_);
+  sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_);
 
   // Set up pre-routing handler for CORS and Authentication
   setup_pre_routing_handler();
@@ -240,6 +241,11 @@ void RESTServer::setup_routes() {
               });
 
   // Fault endpoints
+  // SSE stream for real-time fault events - must be registered before /faults to avoid regex conflict
+  srv->Get(api_path("/faults/stream"), [this](const httplib::Request & req, httplib::Response & res) {
+    sse_fault_handler_->handle_stream(req, res);
+  });
+
   // GET /faults - convenience API to retrieve all faults across the system
   // Useful for dashboards and monitoring tools that need a complete system health view
   srv->Get(api_path("/faults"), [this](const httplib::Request & req, httplib::Response & res) {

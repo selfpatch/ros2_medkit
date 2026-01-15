@@ -19,6 +19,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_faults.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
@@ -64,6 +65,11 @@ class FaultManagerNode : public rclcpp::Node {
   void handle_clear_fault(const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
                           const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response);
 
+  /// Publish a fault event to the events topic
+  /// @param event_type One of FaultEvent::EVENT_CONFIRMED, EVENT_CLEARED, EVENT_UPDATED
+  /// @param fault The fault data associated with this event
+  void publish_fault_event(const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault);
+
   /// Validate severity value
   static bool is_valid_severity(uint8_t severity);
 
@@ -79,6 +85,9 @@ class FaultManagerNode : public rclcpp::Node {
   rclcpp::Service<ros2_medkit_msgs::srv::GetFaults>::SharedPtr get_faults_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_fault_srv_;
   rclcpp::TimerBase::SharedPtr auto_confirm_timer_;
+
+  /// Publisher for fault events (SSE streaming via gateway)
+  rclcpp::Publisher<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr event_publisher_;
 };
 
 }  // namespace ros2_medkit_fault_manager

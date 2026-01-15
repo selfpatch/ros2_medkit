@@ -121,6 +121,7 @@ add_library(gateway_lib STATIC
   src/http/handlers/operation_handlers.cpp
   src/http/handlers/config_handlers.cpp
   src/http/handlers/fault_handlers.cpp
+  src/http/handlers/sse_fault_handler.cpp
   src/http/handlers/auth_handlers.cpp
   # Auth module (subfolder)
   src/auth/auth_config.cpp

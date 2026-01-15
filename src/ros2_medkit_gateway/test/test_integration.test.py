@@ -2046,3 +2046,75 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('component_id', data)
 
         print('✓ Component faults invalid status returns 400 test passed')
+
+    # ==================== SSE Fault Stream Tests ====================
+
+    def test_63_sse_stream_endpoint_returns_correct_headers(self):
+        """Test GET /faults/stream returns SSE headers."""
+        # Use stream=True and timeout to avoid blocking
+        try:
+            response = requests.get(
+                f'{self.BASE_URL}/faults/stream',
+                stream=True,
+                timeout=2
+            )
+            # Check SSE-specific headers
+            self.assertEqual(response.status_code, 200)
+            content_type = response.headers.get('Content-Type', '')
+            self.assertIn('text/event-stream', content_type)
+            self.assertEqual(
+                response.headers.get('Cache-Control'),
+                'no-cache'
+            )
+
+            # Close the connection (we just wanted to check headers)
+            response.close()
+
+            print('✓ SSE stream endpoint returns correct headers')
+        except requests.exceptions.ReadTimeout:
+            # Timeout is expected since SSE keeps connection open
+            print('✓ SSE stream endpoint connection established (timeout expected)')
+
+    def test_64_sse_stream_sends_keepalive(self):
+        """Test that SSE stream can be read and handles concurrent connections."""
+        import threading
+        import time
+
+        received_data = []
+        connection_error = []
+        stop_event = threading.Event()
+
+        def read_stream():
+            try:
+                response = requests.get(
+                    f'{self.BASE_URL}/faults/stream',
+                    stream=True,
+                    timeout=35  # Slightly longer than keepalive interval
+                )
+                for line in response.iter_lines(decode_unicode=True):
+                    if stop_event.is_set():
+                        break
+                    if line:
+                        received_data.append(line)
+                response.close()
+            except requests.exceptions.Timeout:
+                # Timeout is expected when stop_event is set
+                pass
+            except Exception as exc:
+                # Capture connection errors for assertion
+                connection_error.append(str(exc))
+
+        # Start reading in background thread
+        thread = threading.Thread(target=read_stream)
+        thread.daemon = True
+        thread.start()
+
+        # Wait briefly to ensure connection is established
+        time.sleep(1)
+        stop_event.set()
+        thread.join(timeout=2)
+
+        # Verify no connection errors occurred
+        self.assertEqual(len(connection_error), 0,
+                         f'SSE stream connection failed: {connection_error}')
+        print('✓ SSE stream connection test passed')

@@ -1017,6 +1017,25 @@
       "name": "Faults",
       "item": [
         {
+          "name": "GET Fault Events Stream (SSE)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/faults/stream",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "faults",
+                "stream"
+              ]
+            },
+            "description": "Server-Sent Events (SSE) stream for real-time fault notifications.\n\nEvents:\n- fault_confirmed: Fault transitioned to CONFIRMED status\n- fault_cleared: Fault was manually cleared\n- fault_updated: Fault data changed (occurrence_count, sources)\n\nSSE Format:\n```\nevent: fault_confirmed\ndata: {\"event_type\":\"fault_confirmed\",\"fault\":{...},\"timestamp\":1234567890.123}\n```\n\nNote: Postman has limited SSE support. For testing, use:\n- Browser: `new EventSource('http://localhost:8080/api/v1/faults/stream')`\n- curl: `curl -N {{base_url}}/faults/stream`\n\nFeatures:\n- Keepalive every 30 seconds\n- Reconnection support via Last-Event-ID header\n- Multiple simultaneous clients supported"
+          },
+          "response": []
+        },
+        {
           "name": "GET List All Faults (System-wide)",
           "request": {
             "method": "GET",
