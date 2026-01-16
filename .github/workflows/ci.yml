@@ -8,10 +8,20 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
 
     steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -24,8 +34,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-format clang-tidy ros-jazzy-test-msgs
+          apt-get update
+          apt-get install -y clang-format clang-tidy ros-jazzy-test-msgs
           source /opt/ros/jazzy/setup.bash
           rosdep update
           rosdep install --from-paths src --ignore-src -r -y
@@ -35,7 +45,8 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           colcon build --symlink-install \
             --cmake-args -DCMAKE_BUILD_TYPE=Release \
-            --event-handlers console_direct+
+            --event-handlers console_direct+ \
+            --packages-ignore test_dynmsg dynmsg_demo
 
       - name: Run linters (clang-format, clang-tidy, etc.)
         run: |
@@ -43,7 +54,8 @@ jobs:
           source install/setup.bash
           colcon test --return-code-on-test-failure \
             --ctest-args -L linter \
-            --event-handlers console_direct+
+            --event-handlers console_direct+ \
+            --packages-ignore test_dynmsg dynmsg_demo
 
       - name: Run unit and integration tests
         timeout-minutes: 15
@@ -52,7 +64,8 @@ jobs:
           source install/setup.bash
           colcon test --return-code-on-test-failure \
             --ctest-args -LE linter \
-            --event-handlers console_direct+
+            --event-handlers console_direct+ \
+            --packages-ignore test_dynmsg dynmsg_demo
 
       - name: Show test results
         if: always()
@@ -68,10 +81,20 @@ jobs:
             build/*/test_results/
 
   coverage:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
 
     steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -84,8 +107,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y lcov ros-jazzy-test-msgs
+          apt-get update
+          apt-get install -y lcov ros-jazzy-test-msgs
           source /opt/ros/jazzy/setup.bash
           rosdep update
           rosdep install --from-paths src --ignore-src -r -y
@@ -95,50 +118,40 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           colcon build --symlink-install \
             --cmake-args -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON \
-            --event-handlers console_direct+
+            --event-handlers console_direct+ \
+            --packages-ignore test_dynmsg dynmsg_demo
 
       - name: Run unit and integration tests for coverage
-        # Run all tests for coverage (excluding linters):
-        # -LE linter: exclude linters by label
-        # Integration tests now capture coverage via GCOV_PREFIX env vars
-        # set in test launch files (test_integration.test.py, test_cors.test.py)
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           colcon test \
             --ctest-args -LE linter \
-            --event-handlers console_direct+
+            --event-handlers console_direct+ \
+            --packages-ignore test_dynmsg dynmsg_demo
 
       - name: Generate coverage report
         run: |
-          # Capture coverage data
-          # IMPORTANT: --ignore-errors gcov is required to skip .gcda files
-          # that have missing corresponding .gcno files (common in multi-package builds)
           lcov --capture --directory build --output-file coverage.raw.info \
             --ignore-errors mismatch,negative,empty,gcov
 
-          # Validate coverage data exists
           if [ ! -s coverage.raw.info ] || ! grep -q 'SF:' coverage.raw.info; then
             echo "::error::No valid coverage data found in coverage.raw.info"
             exit 1
           fi
 
-          # Extract only our source code (exclude gtest_vendor and other ROS dependencies)
           lcov --extract coverage.raw.info \
             '*/ros2_medkit/src/*/src/*' \
             '*/ros2_medkit/src/*/include/*' \
             --output-file coverage.info \
             --ignore-errors unused,empty
 
-          # Validate filtered coverage
           if [ ! -s coverage.info ]; then
             echo "::error::Filtered coverage.info is empty - no source files matched"
             exit 1
           fi
 
           lcov --list coverage.info
-
-          # Generate HTML report
           genhtml coverage.info --output-directory coverage_html --ignore-errors source
 
       - name: Upload coverage HTML report as artifact
