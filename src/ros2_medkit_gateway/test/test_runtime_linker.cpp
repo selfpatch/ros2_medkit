@@ -298,9 +298,8 @@ TEST_F(RuntimeLinkerTest, EnrichApp_CopiesServices) {
   std::vector<App> apps = {create_app("app1", "server", "*")};
 
   Component comp = create_component("server", "/");
-  comp.services = {
-      {"srv1", "/srv1", "std_srvs/srv/Trigger", std::nullopt},
-      {"srv2", "/srv2", "std_srvs/srv/Empty", std::nullopt}};
+  comp.services = {{"srv1", "/srv1", "std_srvs/srv/Trigger", std::nullopt},
+                   {"srv2", "/srv2", "std_srvs/srv/Empty", std::nullopt}};
 
   std::vector<Component> components = {comp};
 

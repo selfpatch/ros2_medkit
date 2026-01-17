@@ -65,7 +65,7 @@ Create a file named ``system_manifest.yaml``:
 .. code-block:: yaml
 
    # SOVD System Manifest
-   sovd_version: "1.0"
+   manifest_version: "1.0"
 
    metadata:
      name: "my-robot"
@@ -423,5 +423,4 @@ Next Steps
 
 .. seealso::
 
-   - `ASAM SOVD Standard <https://www.asam.net/standards/detail/sovd/>`_
    - `Example Manifests <config/examples>`_ in the repository

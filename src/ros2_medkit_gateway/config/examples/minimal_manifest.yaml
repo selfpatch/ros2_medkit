@@ -3,7 +3,7 @@
 # A minimal manifest demonstrating the basic structure.
 # Start with this template and expand as needed.
 
-sovd_version: "1.0"
+manifest_version: "1.0"
 
 metadata:
   name: "minimal-robot"

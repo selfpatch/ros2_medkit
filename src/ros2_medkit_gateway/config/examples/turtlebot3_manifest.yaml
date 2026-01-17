@@ -5,7 +5,7 @@
 # Use this manifest as a template for your own robot systems.
 # See documentation: https://ros2-medkit.readthedocs.io/tutorials/manifest-discovery.html
 
-sovd_version: "1.0"
+manifest_version: "1.0"
 
 metadata:
   name: "turtlebot3-nav2"

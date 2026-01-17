@@ -270,7 +270,7 @@ Combine all sections into a complete manifest:
 
 .. code-block:: yaml
 
-   sovd_version: "1.0"
+   manifest_version: "1.0"
 
    metadata:
      name: "my-robot"
@@ -363,7 +363,7 @@ Before finalizing your manifest:
 
 .. code-block:: text
 
-   [ ] All required fields present (sovd_version, entity ids and names)
+   [ ] All required fields present (manifest_version, entity ids and names)
    [ ] All area references are valid (component.area, subarea.parent)
    [ ] All component references are valid (app.is_located_on)
    [ ] All app references are valid (depends_on, function.hosted_by)

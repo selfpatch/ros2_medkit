@@ -14,7 +14,7 @@ A manifest file has the following top-level structure:
 
 .. code-block:: yaml
 
-   sovd_version: "1.0"    # Required - manifest schema version
+   manifest_version: "1.0"    # Required - manifest schema version
 
    metadata:              # Optional - document metadata
      name: string
@@ -31,14 +31,14 @@ A manifest file has the following top-level structure:
    apps: []               # Optional - app definitions
    functions: []          # Optional - function definitions
 
-sovd_version (Required)
+manifest_version (Required)
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 The manifest schema version. Currently must be ``"1.0"``.
 
 .. code-block:: yaml
 
-   sovd_version: "1.0"
+   manifest_version: "1.0"
 
 metadata (Optional)
 ~~~~~~~~~~~~~~~~~~~
@@ -599,7 +599,7 @@ Here's a complete manifest for a TurtleBot3 robot:
 
 .. code-block:: yaml
 
-   sovd_version: "1.0"
+   manifest_version: "1.0"
 
    metadata:
      name: "turtlebot3-nav2"
@@ -672,7 +672,7 @@ Manifests are validated during loading. The validator checks:
 
 **Required fields:**
 
-- ``sovd_version`` must be present and equal to "1.0"
+- ``manifest_version`` must be present and equal to "1.0"
 - All entities must have ``id`` and ``name``
 - Apps with ``ros_binding`` must have ``node_name`` or ``topic_namespace``
 - Functions must have at least one entry in ``hosted_by``

@@ -3,7 +3,7 @@
 # Example manifest for a multi-robot system with namespaced nodes.
 # Demonstrates wildcard namespace matching and hierarchical areas.
 
-sovd_version: "1.0"
+manifest_version: "1.0"
 
 metadata:
   name: "multi-robot-fleet"
