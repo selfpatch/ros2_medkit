@@ -112,6 +112,9 @@ add_library(gateway_lib STATIC
   # Discovery module
   src/discovery/discovery_manager.cpp
   src/discovery/runtime_discovery.cpp
+  # Discovery models (with .cpp serialization)
+  src/discovery/models/app.cpp
+  src/discovery/models/function.cpp
   # HTTP module (subfolder)
   src/http/http_server.cpp
   src/http/rest_server.cpp
@@ -254,6 +257,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fault_manager test/test_fault_manager.cpp)
   target_link_libraries(test_fault_manager gateway_lib)
   ament_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
+  # Add discovery models tests (TASK_002)
+  ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
+  target_link_libraries(test_discovery_models gateway_lib)
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
@@ -273,6 +279,8 @@ if(BUILD_TESTING)
     target_link_options(test_tls_config PRIVATE --coverage)
     target_compile_options(test_fault_manager PRIVATE --coverage -O0 -g)
     target_link_options(test_fault_manager PRIVATE --coverage)
+    target_compile_options(test_discovery_models PRIVATE --coverage -O0 -g)
+    target_link_options(test_discovery_models PRIVATE --coverage)
   endif()
 
   # Integration testing

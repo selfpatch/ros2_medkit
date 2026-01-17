@@ -79,6 +79,24 @@ struct Area {
     j["self"] = base_url + "/areas/" + id;
     return j;
   }
+
+  /**
+   * @brief Create SOVD Entity Capabilities format
+   * @param base_url Base URL for capability links
+   * @return JSON object listing available sub-resources
+   */
+  json to_capabilities(const std::string & base_url) const {
+    json capabilities = json::array();
+    std::string area_url = base_url + "/areas/" + id;
+
+    // Areas contain components
+    capabilities.push_back({{"name", "components"}, {"href", area_url + "/components"}});
+
+    // Sub-areas if this area has children
+    capabilities.push_back({{"name", "areas"}, {"href", area_url + "/areas"}});
+
+    return {{"id", id}, {"type", type}, {"capabilities", capabilities}};
+  }
 };
 
 }  // namespace ros2_medkit_gateway

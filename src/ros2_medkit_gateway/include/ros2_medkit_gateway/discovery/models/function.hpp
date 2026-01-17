@@ -24,70 +24,49 @@ namespace ros2_medkit_gateway {
 using json = nlohmann::json;
 
 /**
- * @brief SOVD Function entity - represents a functional grouping
+ * @brief SOVD Function entity - represents a functional group
  *
- * Functions are defined in manifests and represent logical groupings
- * of capabilities that can span multiple apps or components.
+ * Functions are higher-level abstractions that group Apps and/or Components
+ * representing a complete capability (e.g., "Autonomous Navigation").
  *
- * @note This is a stub for TASK_002. Full implementation pending.
+ * Functions are always manifest-defined and don't exist at runtime by themselves.
+ * They aggregate data, operations, and faults from their hosted entities.
  */
 struct Function {
-  std::string id;                       ///< Unique identifier
-  std::string name;                     ///< Human-readable name
-  std::string translation_id;           ///< Internationalization key
-  std::string description;              ///< Human-readable description
-  std::vector<std::string> hosts;       ///< Host app or component IDs
-  std::vector<std::string> depends_on;  ///< Dependencies on other functions
-  std::vector<std::string> tags;        ///< Tags for filtering
+  // === Required fields ===
+  std::string id;    ///< Unique identifier
+  std::string name;  ///< Human-readable name
+
+  // === Optional SOVD fields ===
+  std::string translation_id;     ///< For i18n support
+  std::string description;        ///< Detailed description
+  std::vector<std::string> tags;  ///< Tags for filtering
+
+  // === Relationships ===
+  std::vector<std::string> hosts;       ///< App or Component IDs this function hosts
+  std::vector<std::string> depends_on;  ///< depends-on relationship (Function IDs)
+
+  // === Discovery metadata ===
+  std::string source = "manifest";  ///< Always "manifest" (functions don't exist at runtime)
+
+  // === Serialization methods ===
 
   /**
-   * @brief Convert to JSON representation
-   * @return JSON object with function data
-   *
-   * @note TODO: Implement in TASK_002
+   * @brief Serialize to full JSON representation
    */
-  json to_json() const {
-    // Stub implementation - will be expanded in TASK_002
-    json j = {{"id", id}, {"type", "Function"}};
-
-    if (!name.empty()) {
-      j["name"] = name;
-    }
-    if (!translation_id.empty()) {
-      j["translationId"] = translation_id;
-    }
-    if (!description.empty()) {
-      j["description"] = description;
-    }
-    if (!hosts.empty()) {
-      j["hosts"] = hosts;
-    }
-    if (!depends_on.empty()) {
-      j["dependsOn"] = depends_on;
-    }
-    if (!tags.empty()) {
-      j["tags"] = tags;
-    }
-
-    return j;
-  }
+  json to_json() const;
 
   /**
    * @brief Create SOVD EntityReference format
-   * @param base_url Base URL for self links
-   * @return JSON object in EntityReference format
-   *
-   * @note TODO: Implement in TASK_002
+   * @param base_url Base URL for href (e.g., "/api/v1")
    */
-  json to_entity_reference(const std::string & base_url) const {
-    // Stub implementation
-    json j = {{"id", id}, {"type", "Function"}};
-    if (!name.empty()) {
-      j["name"] = name;
-    }
-    j["self"] = base_url + "/functions/" + id;
-    return j;
-  }
+  json to_entity_reference(const std::string & base_url) const;
+
+  /**
+   * @brief Create SOVD Entity Capabilities format
+   * @param base_url Base URL for capability URIs
+   */
+  json to_capabilities(const std::string & base_url) const;
 };
 
 }  // namespace ros2_medkit_gateway

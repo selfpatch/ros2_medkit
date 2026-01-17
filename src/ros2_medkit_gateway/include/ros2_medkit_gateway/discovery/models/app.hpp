@@ -15,7 +15,10 @@
 #ifndef ROS2_MEDKIT_GATEWAY__DISCOVERY__MODELS__APP_HPP_
 #define ROS2_MEDKIT_GATEWAY__DISCOVERY__MODELS__APP_HPP_
 
+#include "ros2_medkit_gateway/discovery/models/common.hpp"
+
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -26,72 +29,89 @@ using json = nlohmann::json;
 /**
  * @brief SOVD App entity - represents a software application
  *
- * Apps are defined in manifests and represent software applications
- * that run on components. They can expose operations, data, and configurations.
+ * In the ROS 2 context, an App typically corresponds to a ROS node.
+ * Apps are located on Components and can depend on other Apps.
  *
- * @note This is a stub for TASK_002. Full implementation pending.
+ * Apps can be:
+ * - Manifest-defined: Declared in YAML manifest with ROS binding
+ * - Runtime-discovered: Automatically created from ROS nodes (future)
  */
 struct App {
-  std::string id;                       ///< Unique identifier
-  std::string name;                     ///< Human-readable name
-  std::string translation_id;           ///< Internationalization key
-  std::string description;              ///< Human-readable description
-  std::string component_id;             ///< Host component (is-located-on relationship)
-  std::vector<std::string> depends_on;  ///< Dependencies on other apps
-  std::vector<std::string> tags;        ///< Tags for filtering
-  bool external{false};                 ///< True if not a ROS 2 node
+  // === Required fields ===
+  std::string id;    ///< Unique identifier
+  std::string name;  ///< Human-readable name
+
+  // === Optional SOVD fields ===
+  std::string translation_id;     ///< For i18n support
+  std::string description;        ///< Detailed description
+  std::vector<std::string> tags;  ///< Tags for filtering
+
+  // === Relationships ===
+  std::string component_id;             ///< is-located-on relationship
+  std::vector<std::string> depends_on;  ///< depends-on relationship (App IDs)
+
+  // === ROS binding (for manifest) ===
+  /**
+   * @brief ROS 2 binding configuration for manifest-defined apps
+   *
+   * Specifies how to bind this App to a ROS 2 node at runtime.
+   */
+  struct RosBinding {
+    std::string node_name;          ///< ROS node name to bind to
+    std::string namespace_pattern;  ///< Namespace (can be "*" for wildcard)
+    std::string topic_namespace;    ///< Alternative: bind by topic prefix
+
+    bool is_empty() const {
+      return node_name.empty() && topic_namespace.empty();
+    }
+
+    json to_json() const {
+      json j;
+      if (!node_name.empty()) {
+        j["nodeName"] = node_name;
+        if (!namespace_pattern.empty()) {
+          j["namespace"] = namespace_pattern;
+        }
+      }
+      if (!topic_namespace.empty()) {
+        j["topicNamespace"] = topic_namespace;
+      }
+      return j;
+    }
+  };
+  std::optional<RosBinding> ros_binding;
+
+  // === Runtime state (populated after linking) ===
+  std::optional<std::string> bound_fqn;  ///< Bound ROS node FQN
+  bool is_online{false};                 ///< Whether the bound node is running
+  bool external{false};                  ///< True if not a ROS node
+
+  // === Resources (populated from bound node) ===
+  ComponentTopics topics;
+  std::vector<ServiceInfo> services;
+  std::vector<ActionInfo> actions;
+
+  // === Discovery metadata ===
+  std::string source = "manifest";  ///< "manifest" or "runtime"
+
+  // === Serialization methods ===
 
   /**
-   * @brief Convert to JSON representation
-   * @return JSON object with app data
-   *
-   * @note TODO: Implement in TASK_002
+   * @brief Serialize to full JSON representation
    */
-  json to_json() const {
-    // Stub implementation - will be expanded in TASK_002
-    json j = {{"id", id}, {"type", "App"}};
-
-    if (!name.empty()) {
-      j["name"] = name;
-    }
-    if (!translation_id.empty()) {
-      j["translationId"] = translation_id;
-    }
-    if (!description.empty()) {
-      j["description"] = description;
-    }
-    if (!component_id.empty()) {
-      j["componentId"] = component_id;
-    }
-    if (!depends_on.empty()) {
-      j["dependsOn"] = depends_on;
-    }
-    if (!tags.empty()) {
-      j["tags"] = tags;
-    }
-    if (external) {
-      j["external"] = external;
-    }
-
-    return j;
-  }
+  json to_json() const;
 
   /**
    * @brief Create SOVD EntityReference format
-   * @param base_url Base URL for self links
-   * @return JSON object in EntityReference format
-   *
-   * @note TODO: Implement in TASK_002
+   * @param base_url Base URL for href (e.g., "/api/v1")
    */
-  json to_entity_reference(const std::string & base_url) const {
-    // Stub implementation
-    json j = {{"id", id}, {"type", "App"}};
-    if (!name.empty()) {
-      j["name"] = name;
-    }
-    j["self"] = base_url + "/apps/" + id;
-    return j;
-  }
+  json to_entity_reference(const std::string & base_url) const;
+
+  /**
+   * @brief Create SOVD Entity Capabilities format
+   * @param base_url Base URL for capability URIs
+   */
+  json to_capabilities(const std::string & base_url) const;
 };
 
 }  // namespace ros2_medkit_gateway
