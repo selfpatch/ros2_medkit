@@ -115,9 +115,10 @@ add_library(gateway_lib STATIC
   # Discovery models (with .cpp serialization)
   src/discovery/models/app.cpp
   src/discovery/models/function.cpp
-  # Manifest parser and validator
+  # Manifest parser, validator and manager
   src/discovery/manifest/manifest_parser.cpp
   src/discovery/manifest/manifest_validator.cpp
+  src/discovery/manifest/manifest_manager.cpp
   # HTTP module (subfolder)
   src/http/http_server.cpp
   src/http/rest_server.cpp
@@ -271,6 +272,10 @@ if(BUILD_TESTING)
   # Add manifest validator tests (TASK_003)
   ament_add_gtest(test_manifest_validator test/test_manifest_validator.cpp)
   target_link_libraries(test_manifest_validator gateway_lib)
+
+  # Add manifest manager tests (TASK_004)
+  ament_add_gtest(test_manifest_manager test/test_manifest_manager.cpp)
+  target_link_libraries(test_manifest_manager gateway_lib)
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
