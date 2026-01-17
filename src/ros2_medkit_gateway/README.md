@@ -643,8 +643,10 @@ Faults represent errors or warnings reported by system components. The gateway p
 
 - `GET /api/v1/faults` - List all faults across the system (convenience API for dashboards)
 - `GET /api/v1/faults/stream` - Real-time fault event stream via Server-Sent Events (SSE)
+- `GET /api/v1/faults/{fault_code}/snapshots` - Get topic snapshots captured when fault was confirmed
 - `GET /api/v1/components/{component_id}/faults` - List faults for a specific component
 - `GET /api/v1/components/{component_id}/faults/{fault_code}` - Get a specific fault
+- `GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots` - Get snapshots for a component's fault
 - `DELETE /api/v1/components/{component_id}/faults/{fault_code}` - Clear a fault
 
 #### GET /api/v1/faults
@@ -758,6 +760,88 @@ curl http://localhost:8080/api/v1/components/nav2_controller/faults
   "count": 1
 }
 ```
+
+#### GET /api/v1/faults/{fault_code}/snapshots
+
+Get topic snapshots captured when a fault transitioned to CONFIRMED status. Snapshots provide system state at the moment of fault confirmation for debugging purposes.
+
+**Query Parameters:**
+- `topic` - (optional) Filter by specific topic name
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
+curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots?topic=/joint_states
+```
+
+**Response (200 OK):**
+```json
+{
+  "fault_code": "MOTOR_OVERHEAT",
+  "snapshots": [
+    {
+      "topic": "/joint_states",
+      "message_type": "sensor_msgs/msg/JointState",
+      "data": "{\"name\":[\"joint1\"],\"position\":[1.57]}",
+      "captured_at": 1735830000.123
+    },
+    {
+      "topic": "/cmd_vel",
+      "message_type": "geometry_msgs/msg/Twist",
+      "data": "{\"linear\":{\"x\":0.5},\"angular\":{\"z\":0.1}}",
+      "captured_at": 1735830000.125
+    }
+  ],
+  "count": 2
+}
+```
+
+**Response (404 Not Found):**
+```json
+{
+  "error": "Fault not found",
+  "fault_code": "NONEXISTENT_FAULT"
+}
+```
+
+#### GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots
+
+Get topic snapshots for a specific component's fault. Same as the system-wide endpoint but scoped to a component.
+
+**Query Parameters:**
+- `topic` - (optional) Filter by specific topic name
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/components/motor_controller/faults/MOTOR_OVERHEAT/snapshots
+```
+
+**Response (200 OK):**
+```json
+{
+  "component_id": "motor_controller",
+  "fault_code": "MOTOR_OVERHEAT",
+  "snapshots": [...],
+  "count": 2
+}
+```
+
+**Snapshot Configuration:**
+
+Snapshots are configured via FaultManager parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `snapshots.enabled` | bool | `true` | Enable/disable snapshot capture |
+| `snapshots.background_capture` | bool | `false` | Use background subscriptions (caches latest message) vs on-demand capture |
+| `snapshots.timeout_sec` | double | `1.0` | Timeout waiting for topic message (on-demand mode) |
+| `snapshots.max_message_size` | int | `65536` | Maximum message size in bytes (larger messages skipped) |
+| `snapshots.default_topics` | string[] | `[]` | Topics to capture for all faults |
+
+**Topic Resolution Priority:**
+1. `fault_specific` - Exact match for fault code (TODO: YAML config)
+2. `patterns` - Regex pattern match (TODO: YAML config)
+3. `default_topics` - Fallback for all faults
 
 ## Quick Start
 

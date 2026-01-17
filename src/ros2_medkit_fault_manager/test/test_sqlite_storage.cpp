@@ -501,6 +501,7 @@ TEST_F(SqliteFaultStorageTest, TimeBasedConfirmationWhenEnabled) {
 }
 
 // Snapshot storage tests
+// @verifies REQ_INTEROP_088
 TEST_F(SqliteFaultStorageTest, StoreAndRetrieveSnapshot) {
   using ros2_medkit_fault_manager::SnapshotData;
 
@@ -530,6 +531,7 @@ TEST_F(SqliteFaultStorageTest, StoreAndRetrieveSnapshot) {
   EXPECT_EQ(snapshots[0].captured_at_ns, snapshot.captured_at_ns);
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(SqliteFaultStorageTest, MultipleSnapshotsForSameFault) {
   using ros2_medkit_fault_manager::SnapshotData;
 
@@ -559,6 +561,7 @@ TEST_F(SqliteFaultStorageTest, MultipleSnapshotsForSameFault) {
   EXPECT_EQ(snapshots.size(), 2u);
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(SqliteFaultStorageTest, FilterSnapshotsByTopic) {
   using ros2_medkit_fault_manager::SnapshotData;
 
@@ -589,6 +592,7 @@ TEST_F(SqliteFaultStorageTest, FilterSnapshotsByTopic) {
   EXPECT_EQ(filtered[0].topic, "/motor/temperature");
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(SqliteFaultStorageTest, NoSnapshotsForUnknownFault) {
   auto snapshots = storage_->get_snapshots("UNKNOWN_FAULT");
   EXPECT_TRUE(snapshots.empty());
