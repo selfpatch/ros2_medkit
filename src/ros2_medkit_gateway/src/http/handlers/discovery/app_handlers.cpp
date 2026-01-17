@@ -26,12 +26,37 @@ void AppHandlers::handle_list_apps(const httplib::Request & req, httplib::Respon
   (void)req;  // Unused parameter
 
   try {
-    // TODO: Implement in TASK_007
-    // For now, return empty array since apps require manifest
-    json apps_json = json::array();
-    HandlerContext::send_json(res, apps_json);
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto apps = discovery->discover_apps();
+
+    json items = json::array();
+    for (const auto & app : apps) {
+      json app_item;
+      app_item["id"] = app.id;
+      app_item["name"] = app.name;
+      if (!app.description.empty()) {
+        app_item["description"] = app.description;
+      }
+      if (!app.tags.empty()) {
+        app_item["tags"] = app.tags;
+      }
+      if (app.is_online) {
+        app_item["is_online"] = true;
+      }
+      if (!app.component_id.empty()) {
+        app_item["component_id"] = app.component_id;
+      }
+      items.push_back(app_item);
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = apps.size();
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_apps: %s", e.what());
   }
 }
@@ -54,12 +79,293 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
       return;
     }
 
-    // TODO: Implement in TASK_007
-    // For now, return 404 since apps require manifest
-    HandlerContext::send_error(res, StatusCode::NotFound_404, "App not found", {{"app_id", app_id}});
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto app_opt = discovery->get_app(app_id);
+
+    if (!app_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "App not found", {{"app_id", app_id}});
+      return;
+    }
+
+    const auto & app = *app_opt;
+
+    // Build response with capabilities (SOVD entity/{id} pattern)
+    json response;
+    response["id"] = app.id;
+    response["name"] = app.name;
+
+    if (!app.description.empty()) {
+      response["description"] = app.description;
+    }
+    if (!app.translation_id.empty()) {
+      response["translation_id"] = app.translation_id;
+    }
+    if (!app.tags.empty()) {
+      response["tags"] = app.tags;
+    }
+    if (app.is_online) {
+      response["is_online"] = true;
+    }
+    if (app.bound_fqn) {
+      response["bound_fqn"] = *app.bound_fqn;
+    }
+    response["source"] = app.source;
+
+    // Capabilities
+    json capabilities = json::array();
+    capabilities.push_back({{"name", "data"}, {"href", "/api/v1/apps/" + app.id + "/data"}});
+    capabilities.push_back({{"name", "operations"}, {"href", "/api/v1/apps/" + app.id + "/operations"}});
+    capabilities.push_back({{"name", "configurations"}, {"href", "/api/v1/apps/" + app.id + "/configurations"}});
+    response["capabilities"] = capabilities;
+
+    // HATEOAS links
+    json links;
+    links["self"] = "/api/v1/apps/" + app.id;
+    if (!app.component_id.empty()) {
+      links["is-located-on"] = "/api/v1/components/" + app.component_id;
+    }
+    if (!app.depends_on.empty()) {
+      json depends_links = json::array();
+      for (const auto & dep_id : app.depends_on) {
+        depends_links.push_back("/api/v1/apps/" + dep_id);
+      }
+      links["depends-on"] = depends_links;
+    }
+    response["_links"] = links;
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_app: %s", e.what());
+  }
+}
+
+void AppHandlers::handle_get_app_data(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string app_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(app_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid app ID",
+                                 {{"details", validation_result.error()}, {"app_id", app_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto app_opt = discovery->get_app(app_id);
+
+    if (!app_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "App not found", {{"app_id", app_id}});
+      return;
+    }
+
+    const auto & app = *app_opt;
+
+    // Build data items from app's topics
+    json items = json::array();
+
+    // Publishers
+    for (const auto & topic_name : app.topics.publishes) {
+      json item;
+      item["id"] = topic_name;
+      item["name"] = topic_name;
+      item["direction"] = "publish";
+      item["href"] = "/api/v1/apps/" + app.id + "/data/" + topic_name;
+      items.push_back(item);
+    }
+
+    // Subscribers
+    for (const auto & topic_name : app.topics.subscribes) {
+      json item;
+      item["id"] = topic_name;
+      item["name"] = topic_name;
+      item["direction"] = "subscribe";
+      item["href"] = "/api/v1/apps/" + app.id + "/data/" + topic_name;
+      items.push_back(item);
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_app_data: %s", e.what());
+  }
+}
+
+void AppHandlers::handle_get_app_data_item(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 3) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string app_id = req.matches[1];
+    std::string data_id = req.matches[2];
+
+    auto validation_result = ctx_.validate_entity_id(app_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid app ID",
+                                 {{"details", validation_result.error()}, {"app_id", app_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto app_opt = discovery->get_app(app_id);
+
+    if (!app_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "App not found", {{"app_id", app_id}});
+      return;
+    }
+
+    const auto & app = *app_opt;
+
+    // Search in publishers
+    for (const auto & topic_name : app.topics.publishes) {
+      if (topic_name == data_id) {
+        json response;
+        response["id"] = topic_name;
+        response["name"] = topic_name;
+        response["direction"] = "publish";
+        // TODO: Sample topic value via native sampler
+        HandlerContext::send_json(res, response);
+        return;
+      }
+    }
+
+    // Search in subscribers
+    for (const auto & topic_name : app.topics.subscribes) {
+      if (topic_name == data_id) {
+        json response;
+        response["id"] = topic_name;
+        response["name"] = topic_name;
+        response["direction"] = "subscribe";
+        // TODO: Sample topic value via native sampler
+        HandlerContext::send_json(res, response);
+        return;
+      }
+    }
+
+    HandlerContext::send_error(res, StatusCode::NotFound_404, "Data item not found",
+                               {{"app_id", app_id}, {"data_id", data_id}});
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_app_data_item: %s", e.what());
+  }
+}
+
+void AppHandlers::handle_list_app_operations(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string app_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(app_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid app ID",
+                                 {{"details", validation_result.error()}, {"app_id", app_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto app_opt = discovery->get_app(app_id);
+
+    if (!app_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "App not found", {{"app_id", app_id}});
+      return;
+    }
+
+    const auto & app = *app_opt;
+
+    json items = json::array();
+
+    // Add services
+    for (const auto & svc : app.services) {
+      json item;
+      item["id"] = svc.name;
+      item["name"] = svc.name;
+      item["type"] = "service";
+      item["service_type"] = svc.type;
+      items.push_back(item);
+    }
+
+    // Add actions
+    for (const auto & act : app.actions) {
+      json item;
+      item["id"] = act.name;
+      item["name"] = act.name;
+      item["type"] = "action";
+      item["action_type"] = act.type;
+      items.push_back(item);
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_app_operations: %s", e.what());
+  }
+}
+
+void AppHandlers::handle_list_app_configurations(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string app_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(app_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid app ID",
+                                 {{"details", validation_result.error()}, {"app_id", app_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto app_opt = discovery->get_app(app_id);
+
+    if (!app_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "App not found", {{"app_id", app_id}});
+      return;
+    }
+
+    const auto & app = *app_opt;
+
+    // TODO: If app is linked to a runtime node, fetch parameters from it
+    // For now, return empty list as placeholder
+    json response;
+    response["items"] = json::array();
+    response["total_count"] = 0;
+
+    // If app has a bound FQN, we could potentially list parameters
+    if (app.bound_fqn) {
+      response["note"] = "Parameters available via bound node: " + *app.bound_fqn;
+    }
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_app_configurations: %s", e.what());
   }
 }
 
@@ -81,12 +387,13 @@ void AppHandlers::handle_related_apps(const httplib::Request & req, httplib::Res
       return;
     }
 
-    // TODO: Implement in TASK_009
+    // TODO: Implement in TASK_009 - use discovery->get_apps_for_component()
     // For now, return empty array since apps require manifest
     json apps_json = json::array();
     HandlerContext::send_json(res, apps_json);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_related_apps: %s", e.what());
   }
 }

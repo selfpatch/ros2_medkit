@@ -54,6 +54,7 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_);
   area_handlers_ = std::make_unique<handlers::AreaHandlers>(*handler_ctx_);
   component_handlers_ = std::make_unique<handlers::ComponentHandlers>(*handler_ctx_);
+  app_handlers_ = std::make_unique<handlers::AppHandlers>(*handler_ctx_);
   operation_handlers_ = std::make_unique<handlers::OperationHandlers>(*handler_ctx_);
   config_handlers_ = std::make_unique<handlers::ConfigHandlers>(*handler_ctx_);
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
@@ -146,6 +147,39 @@ void RESTServer::setup_routes() {
   // Areas
   srv->Get(api_path("/areas"), [this](const httplib::Request & req, httplib::Response & res) {
     area_handlers_->handle_list_areas(req, res);
+  });
+
+  // Apps - must register before /apps/{id} to avoid regex conflict
+  srv->Get(api_path("/apps"), [this](const httplib::Request & req, httplib::Response & res) {
+    app_handlers_->handle_list_apps(req, res);
+  });
+
+  // App data item (specific topic) - register before /apps/{id}/data
+  srv->Get((api_path("/apps") + R"(/([^/]+)/data/(.+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             app_handlers_->handle_get_app_data_item(req, res);
+           });
+
+  // App data (all topics)
+  srv->Get((api_path("/apps") + R"(/([^/]+)/data$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    app_handlers_->handle_get_app_data(req, res);
+  });
+
+  // App operations
+  srv->Get((api_path("/apps") + R"(/([^/]+)/operations$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             app_handlers_->handle_list_app_operations(req, res);
+           });
+
+  // App configurations
+  srv->Get((api_path("/apps") + R"(/([^/]+)/configurations$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             app_handlers_->handle_list_app_configurations(req, res);
+           });
+
+  // Single app (capabilities) - must be after more specific routes
+  srv->Get((api_path("/apps") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    app_handlers_->handle_get_app(req, res);
   });
 
   // Components

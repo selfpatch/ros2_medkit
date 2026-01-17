@@ -23,15 +23,19 @@ namespace handlers {
 /**
  * @brief Handlers for app-related REST API endpoints.
  *
+ * Apps represent software applications (typically 1:1 with ROS nodes)
+ * that provide functionality within the system.
+ *
  * Provides handlers for:
  * - GET /apps - List all apps
  * - GET /apps/{app-id} - Get app capabilities
- * - GET /apps/{app-id}/data - Get app data
- * - GET /apps/{app-id}/operations - Get app operations
+ * - GET /apps/{app-id}/data - Get app topic data
+ * - GET /apps/{app-id}/data/{data-id} - Get specific data item
+ * - GET /apps/{app-id}/operations - List app operations
  * - GET /apps/{app-id}/configurations - Get app configurations
  * - GET /components/{id}/related-apps - List apps on component
  *
- * @note TODO: Implement in TASK_007
+ * @verifies REQ_DISCOVERY_002 Apps discovery
  */
 class AppHandlers {
  public:
@@ -42,19 +46,69 @@ class AppHandlers {
   explicit AppHandlers(HandlerContext & ctx) : ctx_(ctx) {
   }
 
+  // =========================================================================
+  // Collection endpoints
+  // =========================================================================
+
   /**
    * @brief Handle GET /apps - list all apps.
    *
-   * @note TODO: Implement in TASK_007
+   * Returns all apps discovered from manifest or runtime.
+   * In runtime-only mode, returns empty list.
    */
   void handle_list_apps(const httplib::Request & req, httplib::Response & res);
 
   /**
    * @brief Handle GET /apps/{app-id} - get app capabilities.
    *
-   * @note TODO: Implement in TASK_007
+   * Returns app details with capabilities (data, operations, configurations)
+   * and HATEOAS links.
    */
   void handle_get_app(const httplib::Request & req, httplib::Response & res);
+
+  // =========================================================================
+  // App data endpoints
+  // =========================================================================
+
+  /**
+   * @brief Handle GET /apps/{app-id}/data - list app topics.
+   *
+   * Returns all topics associated with the app.
+   */
+  void handle_get_app_data(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /apps/{app-id}/data/{data-id} - get specific data item.
+   *
+   * Returns metadata for a specific topic. Value sampling is TODO.
+   */
+  void handle_get_app_data_item(const httplib::Request & req, httplib::Response & res);
+
+  // =========================================================================
+  // App operations
+  // =========================================================================
+
+  /**
+   * @brief Handle GET /apps/{app-id}/operations - list app operations.
+   *
+   * Returns all services and actions associated with the app.
+   */
+  void handle_list_app_operations(const httplib::Request & req, httplib::Response & res);
+
+  // =========================================================================
+  // App configurations
+  // =========================================================================
+
+  /**
+   * @brief Handle GET /apps/{app-id}/configurations - list app parameters.
+   *
+   * Returns parameters if app is linked to a runtime node.
+   */
+  void handle_list_app_configurations(const httplib::Request & req, httplib::Response & res);
+
+  // =========================================================================
+  // Relationship endpoints
+  // =========================================================================
 
   /**
    * @brief Handle GET /components/{id}/related-apps - list apps on component.
