@@ -36,9 +36,6 @@ SnapshotCapture::SnapshotCapture(rclcpp::Node * node, FaultStorage * storage, co
     throw std::invalid_argument("SnapshotCapture requires a valid storage pointer");
   }
 
-  // Create dedicated callback group to avoid reentrancy with service callbacks
-  snapshot_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-
   // Compile regex patterns for performance
   size_t failed_patterns = 0;
   for (const auto & [pattern, topics] : config_.patterns) {
@@ -159,6 +156,9 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
     }
   }
 
+  // Create a local callback group for this capture operation (ensures clean executor lifecycle)
+  auto local_callback_group = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
   rclcpp::GenericSubscription::SharedPtr subscription;
   try {
     // NOLINTNEXTLINE(performance-unnecessary-value-param)
@@ -170,9 +170,9 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
       }
     };
 
-    // Use dedicated callback group to avoid reentrancy with service callbacks
+    // Use local callback group to avoid reentrancy with service callbacks
     rclcpp::SubscriptionOptions sub_options;
-    sub_options.callback_group = snapshot_callback_group_;
+    sub_options.callback_group = local_callback_group;
 
     subscription = node_->create_generic_subscription(topic, msg_type, qos, callback, sub_options);
   } catch (const std::exception & e) {
@@ -180,9 +180,9 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
     return false;
   }
 
-  // Use a local executor to spin only snapshot subscriptions (avoids reentrancy)
+  // Use a local executor with the local callback group (both destroyed together on exit)
   rclcpp::executors::SingleThreadedExecutor executor;
-  executor.add_callback_group(snapshot_callback_group_, node_->get_node_base_interface());
+  executor.add_callback_group(local_callback_group, node_->get_node_base_interface());
 
   // Wait for message with timeout
   const auto timeout = std::chrono::duration<double>(config_.timeout_sec);
@@ -192,6 +192,7 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
     auto elapsed = std::chrono::steady_clock::now() - start_time;
     if (elapsed >= timeout) {
       RCLCPP_DEBUG(node_->get_logger(), "Timeout waiting for message on '%s'", topic.c_str());
+      // Subscription and callback group destroyed on return, executor cleanup is automatic
       return false;
     }
 

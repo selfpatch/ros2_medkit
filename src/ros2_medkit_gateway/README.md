@@ -778,21 +778,25 @@ curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots?topic=/joint_s
 ```json
 {
   "fault_code": "MOTOR_OVERHEAT",
-  "snapshots": [
-    {
-      "topic": "/joint_states",
+  "captured_at": 1735830000.123,
+  "topics": {
+    "/joint_states": {
       "message_type": "sensor_msgs/msg/JointState",
-      "data": "{\"name\":[\"joint1\"],\"position\":[1.57]}",
-      "captured_at": 1735830000.123
+      "data": {"name": ["joint1"], "position": [1.57]}
     },
-    {
-      "topic": "/cmd_vel",
+    "/cmd_vel": {
       "message_type": "geometry_msgs/msg/Twist",
-      "data": "{\"linear\":{\"x\":0.5},\"angular\":{\"z\":0.1}}",
-      "captured_at": 1735830000.125
+      "data": {"linear": {"x": 0.5}, "angular": {"z": 0.1}}
     }
-  ],
-  "count": 2
+  }
+}
+```
+
+**Response (200 OK - No snapshots):**
+```json
+{
+  "fault_code": "MOTOR_OVERHEAT",
+  "topics": {}
 }
 ```
 
@@ -821,8 +825,13 @@ curl http://localhost:8080/api/v1/components/motor_controller/faults/MOTOR_OVERH
 {
   "component_id": "motor_controller",
   "fault_code": "MOTOR_OVERHEAT",
-  "snapshots": [...],
-  "count": 2
+  "captured_at": 1735830000.123,
+  "topics": {
+    "/motor/temperature": {
+      "message_type": "sensor_msgs/msg/Temperature",
+      "data": {"temperature": 85.5, "variance": 0.1}
+    }
+  }
 }
 ```
 

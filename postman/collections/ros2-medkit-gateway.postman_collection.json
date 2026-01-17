@@ -1202,7 +1202,7 @@
                 "snapshots"
               ]
             },
-            "description": "Get topic snapshots captured when a fault transitioned to CONFIRMED status. Snapshots provide system state at the moment of fault confirmation for post-mortem debugging. Returns array of snapshots with topic, message_type, JSON data, and capture timestamp."
+            "description": "Get topic snapshots captured when a fault transitioned to CONFIRMED status. Snapshots provide system state at the moment of fault confirmation for post-mortem debugging. Returns object with fault_code, captured_at timestamp, and topics object keyed by topic name containing message_type and parsed data."
           },
           "response": []
         },

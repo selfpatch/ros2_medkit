@@ -133,9 +133,6 @@ class SnapshotCapture {
 
   /// Background subscriptions (kept alive for continuous caching)
   std::vector<rclcpp::GenericSubscription::SharedPtr> background_subscriptions_;
-
-  /// Callback group for on-demand subscriptions (avoids reentrancy with service callbacks)
-  rclcpp::CallbackGroup::SharedPtr snapshot_callback_group_;
 };
 
 }  // namespace ros2_medkit_fault_manager
