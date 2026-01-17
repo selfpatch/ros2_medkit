@@ -1,0 +1,269 @@
+# SOVD System Manifest: Demo Nodes for Integration Testing
+# ========================================================
+# This manifest describes the demo nodes used for ros2_medkit gateway
+# integration testing. It models an automotive system with subsystems.
+#
+# Use with: ros2 launch ros2_medkit_gateway demo_nodes.launch.py
+
+sovd_version: "1.0"
+
+metadata:
+  name: "demo-vehicle"
+  version: "1.0.0"
+  description: "Demo vehicle system for integration testing"
+
+config:
+  # Fail on orphan nodes during testing to catch manifest mismatches
+  unmanifested_nodes: warn
+  inherit_runtime_resources: true
+
+# =============================================================================
+# AREAS - Vehicle subsystems (matches demo_nodes.launch.py hierarchy)
+# =============================================================================
+areas:
+  - id: powertrain
+    name: "Powertrain"
+    category: "propulsion"
+    namespace: /powertrain
+    description: "Engine and transmission systems"
+    subareas:
+      - id: engine
+        name: "Engine"
+        namespace: /powertrain/engine
+        description: "Engine sensors and calibration services"
+
+  - id: chassis
+    name: "Chassis"
+    category: "vehicle-dynamics"
+    namespace: /chassis
+    description: "Braking and suspension systems"
+    subareas:
+      - id: brakes
+        name: "Brakes"
+        namespace: /chassis/brakes
+        description: "Brake sensors and actuators"
+
+  - id: body
+    name: "Body"
+    category: "comfort"
+    namespace: /body
+    description: "Body electronics and comfort systems"
+    subareas:
+      - id: door
+        name: "Door"
+        namespace: /body/door
+        description: "Door sensors and actuators"
+        subareas:
+          - id: front-left-door
+            name: "Front Left Door"
+            namespace: /body/door/front_left
+
+      - id: lights
+        name: "Lights"
+        namespace: /body/lights
+        description: "Interior and exterior lighting"
+
+  - id: perception
+    name: "Perception"
+    category: "adas"
+    namespace: /perception
+    description: "ADAS sensors and processing"
+    subareas:
+      - id: lidar
+        name: "LiDAR"
+        namespace: /perception/lidar
+        description: "LiDAR sensor system"
+
+# =============================================================================
+# COMPONENTS - Hardware units
+# =============================================================================
+components:
+  # Powertrain components
+  - id: engine-ecu
+    name: "Engine ECU"
+    type: "controller"
+    area: engine
+    description: "Engine control unit"
+
+  - id: temp-sensor-hw
+    name: "Temperature Sensor"
+    type: "sensor"
+    area: engine
+
+  - id: rpm-sensor-hw
+    name: "RPM Sensor"
+    type: "sensor"
+    area: engine
+
+  # Chassis components
+  - id: brake-ecu
+    name: "Brake ECU"
+    type: "controller"
+    area: brakes
+
+  - id: brake-pressure-sensor-hw
+    name: "Brake Pressure Sensor"
+    type: "sensor"
+    area: brakes
+
+  - id: brake-actuator-hw
+    name: "Brake Actuator"
+    type: "actuator"
+    area: brakes
+
+  # Body components
+  - id: door-sensor-hw
+    name: "Door Sensor"
+    type: "sensor"
+    area: front-left-door
+
+  - id: light-module
+    name: "Light Module"
+    type: "actuator"
+    area: lights
+
+  # Perception components
+  - id: lidar-unit
+    name: "LiDAR Unit"
+    type: "sensor"
+    area: lidar
+    description: "360° laser scanner with fault reporting"
+
+# =============================================================================
+# APPS - ROS 2 nodes (matches demo_nodes.launch.py exactly)
+# =============================================================================
+apps:
+  # === Powertrain/Engine Apps ===
+  - id: engine-temp-sensor
+    name: "Engine Temperature Sensor"
+    category: "sensor"
+    is_located_on: temp-sensor-hw
+    description: "Publishes engine temperature readings"
+    ros_binding:
+      node_name: temp_sensor
+      namespace: /powertrain/engine
+
+  - id: engine-rpm-sensor
+    name: "Engine RPM Sensor"
+    category: "sensor"
+    is_located_on: rpm-sensor-hw
+    description: "Publishes engine RPM readings"
+    ros_binding:
+      node_name: rpm_sensor
+      namespace: /powertrain/engine
+
+  - id: engine-calibration-service
+    name: "Engine Calibration Service"
+    category: "service"
+    is_located_on: engine-ecu
+    description: "Provides synchronous calibration service (Trigger)"
+    ros_binding:
+      node_name: calibration
+      namespace: /powertrain/engine
+
+  - id: engine-long-calibration
+    name: "Engine Long Calibration"
+    category: "action"
+    is_located_on: engine-ecu
+    description: "Provides async long-running calibration action (Fibonacci)"
+    depends_on:
+      - engine-calibration-service
+    ros_binding:
+      node_name: long_calibration
+      namespace: /powertrain/engine
+
+  # === Chassis/Brakes Apps ===
+  - id: brake-pressure-sensor
+    name: "Brake Pressure Sensor"
+    category: "sensor"
+    is_located_on: brake-pressure-sensor-hw
+    description: "Publishes brake pressure readings"
+    ros_binding:
+      node_name: pressure_sensor
+      namespace: /chassis/brakes
+
+  - id: brake-actuator
+    name: "Brake Actuator"
+    category: "actuator"
+    is_located_on: brake-actuator-hw
+    description: "Controls brake pressure via command topic"
+    ros_binding:
+      node_name: actuator
+      namespace: /chassis/brakes
+
+  # === Body Apps ===
+  - id: door-status-sensor
+    name: "Door Status Sensor"
+    category: "sensor"
+    is_located_on: door-sensor-hw
+    description: "Publishes door open/closed status"
+    ros_binding:
+      node_name: status_sensor
+      namespace: /body/door/front_left
+
+  - id: light-controller
+    name: "Light Controller"
+    category: "actuator"
+    is_located_on: light-module
+    description: "Controls lights via command topic"
+    ros_binding:
+      node_name: controller
+      namespace: /body/lights
+
+  # === Perception Apps ===
+  - id: lidar-sensor
+    name: "LiDAR Sensor"
+    category: "sensor"
+    is_located_on: lidar-unit
+    description: "LiDAR with fault reporting and calibration service"
+    tags:
+      - fault-reporter
+      - safety-critical
+    ros_binding:
+      node_name: lidar_sensor
+      namespace: /perception/lidar
+
+# =============================================================================
+# FUNCTIONS - High-level capabilities
+# =============================================================================
+functions:
+  - id: engine-monitoring
+    name: "Engine Monitoring"
+    category: "monitoring"
+    description: "Monitor engine health via temperature and RPM"
+    hosted_by:
+      - engine-temp-sensor
+      - engine-rpm-sensor
+
+  - id: engine-calibration
+    name: "Engine Calibration"
+    category: "maintenance"
+    description: "Engine calibration capabilities (sync and async)"
+    hosted_by:
+      - engine-calibration-service
+      - engine-long-calibration
+
+  - id: brake-system
+    name: "Brake System"
+    category: "safety"
+    description: "Complete brake monitoring and control"
+    tags:
+      - safety-critical
+    hosted_by:
+      - brake-pressure-sensor
+      - brake-actuator
+
+  - id: body-electronics
+    name: "Body Electronics"
+    category: "comfort"
+    description: "Door and lighting control"
+    hosted_by:
+      - door-status-sensor
+      - light-controller
+
+  - id: perception-system
+    name: "Perception System"
+    category: "adas"
+    description: "Environment perception via LiDAR"
+    hosted_by:
+      - lidar-sensor

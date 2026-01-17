@@ -1,0 +1,173 @@
+# SOVD System Manifest: Multi-Robot System
+# =========================================
+# Example manifest for a multi-robot system with namespaced nodes.
+# Demonstrates wildcard namespace matching and hierarchical areas.
+
+sovd_version: "1.0"
+
+metadata:
+  name: "multi-robot-fleet"
+  version: "1.0.0"
+  description: "Fleet of mobile robots with central coordinator"
+
+config:
+  # Include orphan nodes (useful for discovering new robots)
+  unmanifested_nodes: include_as_orphan
+  inherit_runtime_resources: true
+
+# =============================================================================
+# AREAS - Hierarchical organization
+# =============================================================================
+areas:
+  - id: fleet-management
+    name: "Fleet Management"
+    category: "coordination"
+    description: "Central fleet coordination and task allocation"
+
+  - id: robot-1
+    name: "Robot 1"
+    category: "mobile-robot"
+    namespace: /robot1
+    subareas:
+      - id: robot-1-perception
+        name: "Robot 1 Perception"
+        namespace: /robot1/perception
+
+      - id: robot-1-navigation
+        name: "Robot 1 Navigation"
+        namespace: /robot1/navigation
+
+  - id: robot-2
+    name: "Robot 2"
+    category: "mobile-robot"
+    namespace: /robot2
+    subareas:
+      - id: robot-2-perception
+        name: "Robot 2 Perception"
+        namespace: /robot2/perception
+
+      - id: robot-2-navigation
+        name: "Robot 2 Navigation"
+        namespace: /robot2/navigation
+
+# =============================================================================
+# COMPONENTS
+# =============================================================================
+components:
+  # Fleet server (central)
+  - id: fleet-server
+    name: "Fleet Server"
+    type: "controller"
+    area: fleet-management
+    description: "Central server for fleet coordination"
+
+  # Robot 1 components
+  - id: robot-1-computer
+    name: "Robot 1 Computer"
+    type: "controller"
+    area: robot-1
+
+  - id: robot-1-lidar
+    name: "Robot 1 LiDAR"
+    type: "sensor"
+    area: robot-1-perception
+
+  # Robot 2 components
+  - id: robot-2-computer
+    name: "Robot 2 Computer"
+    type: "controller"
+    area: robot-2
+
+  - id: robot-2-lidar
+    name: "Robot 2 LiDAR"
+    type: "sensor"
+    area: robot-2-perception
+
+# =============================================================================
+# APPS
+# =============================================================================
+apps:
+  # Fleet coordinator
+  - id: fleet-coordinator
+    name: "Fleet Coordinator"
+    category: "coordination"
+    is_located_on: fleet-server
+    description: "Coordinates task allocation across robots"
+    ros_binding:
+      node_name: fleet_coordinator
+      namespace: /fleet
+
+  # Robot 1 apps - using explicit namespace
+  - id: robot-1-lidar-driver
+    name: "Robot 1 LiDAR Driver"
+    category: "driver"
+    is_located_on: robot-1-lidar
+    ros_binding:
+      node_name: lidar_driver
+      namespace: /robot1
+
+  - id: robot-1-navigation
+    name: "Robot 1 Navigation"
+    category: "navigation"
+    is_located_on: robot-1-computer
+    depends_on:
+      - robot-1-lidar-driver
+    ros_binding:
+      node_name: navigation
+      namespace: /robot1
+
+  # Robot 2 apps - using explicit namespace
+  - id: robot-2-lidar-driver
+    name: "Robot 2 LiDAR Driver"
+    category: "driver"
+    is_located_on: robot-2-lidar
+    ros_binding:
+      node_name: lidar_driver
+      namespace: /robot2
+
+  - id: robot-2-navigation
+    name: "Robot 2 Navigation"
+    category: "navigation"
+    is_located_on: robot-2-computer
+    depends_on:
+      - robot-2-lidar-driver
+    ros_binding:
+      node_name: navigation
+      namespace: /robot2
+
+  # Generic apps using wildcard namespace (matches any robot)
+  # Useful for template definitions
+  - id: generic-teleop
+    name: "Teleop Controller"
+    category: "control"
+    description: "Matches teleop node in any robot namespace"
+    ros_binding:
+      node_name: teleop_keyboard
+      namespace: "*"
+
+# =============================================================================
+# FUNCTIONS
+# =============================================================================
+functions:
+  - id: fleet-operations
+    name: "Fleet Operations"
+    category: "coordination"
+    description: "Complete fleet operation capability"
+    hosted_by:
+      - fleet-coordinator
+      - robot-1-navigation
+      - robot-2-navigation
+
+  - id: robot-1-autonomy
+    name: "Robot 1 Autonomy"
+    category: "autonomy"
+    hosted_by:
+      - robot-1-lidar-driver
+      - robot-1-navigation
+
+  - id: robot-2-autonomy
+    name: "Robot 2 Autonomy"
+    category: "autonomy"
+    hosted_by:
+      - robot-2-lidar-driver
+      - robot-2-navigation

@@ -1,0 +1,248 @@
+# SOVD System Manifest: TurtleBot3 Navigation
+# ============================================
+# This manifest describes a TurtleBot3 robot running the Nav2 navigation stack.
+#
+# Use this manifest as a template for your own robot systems.
+# See documentation: https://ros2-medkit.readthedocs.io/tutorials/manifest-discovery.html
+
+sovd_version: "1.0"
+
+metadata:
+  name: "turtlebot3-nav2"
+  version: "2.0.0"
+  description: "TurtleBot3 robot with Nav2 navigation stack for autonomous navigation"
+
+config:
+  # Policy for ROS nodes not declared in manifest
+  # Options: ignore, warn, error, include_as_orphan
+  unmanifested_nodes: warn
+
+  # Copy topics/services from runtime nodes to manifest apps
+  inherit_runtime_resources: true
+
+# =============================================================================
+# AREAS - Logical subsystems
+# =============================================================================
+areas:
+  - id: perception
+    name: "Perception"
+    category: "sensor-processing"
+    description: "Sensor data acquisition and processing"
+    tags:
+      - sensors
+      - realtime
+
+  - id: localization
+    name: "Localization"
+    category: "state-estimation"
+    description: "Robot pose estimation and map management"
+
+  - id: navigation
+    name: "Navigation"
+    category: "motion-planning"
+    description: "Path planning and trajectory execution"
+
+  - id: control
+    name: "Control"
+    category: "motion-control"
+    description: "Low-level motor control and hardware interface"
+
+# =============================================================================
+# COMPONENTS - Hardware and virtual units
+# =============================================================================
+components:
+  # Sensors
+  - id: lidar-sensor
+    name: "LiDAR Sensor"
+    type: "sensor"
+    area: perception
+    description: "360° laser distance sensor (LDS-01 or LDS-02)"
+    tags:
+      - laser
+      - 360-degree
+
+  - id: imu-sensor
+    name: "IMU Sensor"
+    type: "sensor"
+    area: perception
+    description: "Inertial Measurement Unit on OpenCR board"
+
+  - id: wheel-encoders
+    name: "Wheel Encoders"
+    type: "sensor"
+    area: control
+    description: "Wheel rotation encoders for odometry"
+
+  # Compute units
+  - id: main-computer
+    name: "Main Computer"
+    type: "controller"
+    area: control
+    description: "Raspberry Pi 4 running ROS 2 Jazzy"
+    variant: "rpi4-4gb"
+    tags:
+      - compute
+      - ros2
+
+  - id: opencr-board
+    name: "OpenCR Board"
+    type: "controller"
+    area: control
+    description: "Motor controller and sensor interface board"
+    tags:
+      - embedded
+      - realtime
+
+# =============================================================================
+# APPS - Software applications (ROS 2 nodes)
+# =============================================================================
+apps:
+  # --- Perception Apps ---
+  - id: lidar-driver
+    name: "LiDAR Driver"
+    category: "driver"
+    is_located_on: lidar-sensor
+    description: "Publishes laser scans from LDS sensor"
+    ros_binding:
+      node_name: ld08_driver
+      namespace: /
+
+  # --- Localization Apps ---
+  - id: amcl-node
+    name: "AMCL Localization"
+    category: "localization"
+    is_located_on: main-computer
+    description: "Adaptive Monte Carlo Localization for pose estimation"
+    depends_on:
+      - lidar-driver
+    ros_binding:
+      node_name: amcl
+      namespace: /
+
+  - id: map-server
+    name: "Map Server"
+    category: "localization"
+    is_located_on: main-computer
+    description: "Serves static map for localization"
+    ros_binding:
+      node_name: map_server
+      namespace: /
+
+  # --- Navigation Apps ---
+  - id: planner-server
+    name: "Planner Server"
+    category: "navigation"
+    is_located_on: main-computer
+    description: "Global path planning using NavFn or Smac planners"
+    depends_on:
+      - amcl-node
+      - map-server
+    ros_binding:
+      node_name: planner_server
+      namespace: /
+
+  - id: controller-server
+    name: "Controller Server"
+    category: "navigation"
+    is_located_on: main-computer
+    description: "Local trajectory tracking using DWB or MPPI controllers"
+    depends_on:
+      - planner-server
+    ros_binding:
+      node_name: controller_server
+      namespace: /
+
+  - id: bt-navigator
+    name: "Behavior Tree Navigator"
+    category: "navigation"
+    is_located_on: main-computer
+    description: "High-level navigation behavior using behavior trees"
+    depends_on:
+      - planner-server
+      - controller-server
+    ros_binding:
+      node_name: bt_navigator
+      namespace: /
+
+  - id: recoveries-server
+    name: "Recoveries Server"
+    category: "navigation"
+    is_located_on: main-computer
+    description: "Recovery behaviors (spin, backup, wait)"
+    ros_binding:
+      node_name: recoveries_server
+      namespace: /
+
+  - id: waypoint-follower
+    name: "Waypoint Follower"
+    category: "navigation"
+    is_located_on: main-computer
+    description: "Follows a sequence of waypoints"
+    depends_on:
+      - bt-navigator
+    ros_binding:
+      node_name: waypoint_follower
+      namespace: /
+
+  # --- Control Apps ---
+  - id: turtlebot3-node
+    name: "TurtleBot3 Node"
+    category: "control"
+    is_located_on: opencr-board
+    description: "Differential drive controller and odometry publisher"
+    ros_binding:
+      node_name: turtlebot3_node
+      namespace: /
+
+  - id: robot-state-publisher
+    name: "Robot State Publisher"
+    category: "control"
+    is_located_on: main-computer
+    description: "Publishes robot URDF transforms"
+    ros_binding:
+      node_name: robot_state_publisher
+      namespace: /
+
+# =============================================================================
+# FUNCTIONS - High-level capabilities
+# =============================================================================
+functions:
+  - id: autonomous-navigation
+    name: "Autonomous Navigation"
+    category: "mobility"
+    description: "Complete autonomous navigation capability including planning, control, and recovery"
+    tags:
+      - autonomous
+      - safety-critical
+    hosted_by:
+      - amcl-node
+      - map-server
+      - planner-server
+      - controller-server
+      - bt-navigator
+      - recoveries-server
+
+  - id: localization-function
+    name: "Localization"
+    category: "state-estimation"
+    description: "Robot pose estimation on known map"
+    hosted_by:
+      - amcl-node
+      - map-server
+
+  - id: perception-function
+    name: "Environment Perception"
+    category: "sensing"
+    description: "LiDAR-based environment sensing"
+    hosted_by:
+      - lidar-driver
+
+  - id: waypoint-mission
+    name: "Waypoint Mission"
+    category: "mission"
+    description: "Execute multi-waypoint navigation missions"
+    depends_on:
+      - autonomous-navigation
+    hosted_by:
+      - waypoint-follower
+      - bt-navigator

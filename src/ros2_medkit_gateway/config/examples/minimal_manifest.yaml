@@ -1,0 +1,33 @@
+# SOVD System Manifest: Minimal Example
+# ======================================
+# A minimal manifest demonstrating the basic structure.
+# Start with this template and expand as needed.
+
+sovd_version: "1.0"
+
+metadata:
+  name: "minimal-robot"
+  version: "1.0.0"
+  description: "Minimal manifest example"
+
+# Single area for all components
+areas:
+  - id: robot
+    name: "Robot"
+    description: "Main robot system"
+
+# Single component representing the robot
+components:
+  - id: robot-controller
+    name: "Robot Controller"
+    type: "controller"
+    area: robot
+
+# Apps mapping to ROS 2 nodes
+apps:
+  - id: example-node
+    name: "Example Node"
+    is_located_on: robot-controller
+    ros_binding:
+      node_name: example_node
+      namespace: /
