@@ -598,6 +598,45 @@ TEST_F(SqliteFaultStorageTest, NoSnapshotsForUnknownFault) {
   EXPECT_TRUE(snapshots.empty());
 }
 
+// @verifies REQ_INTEROP_088
+TEST_F(SqliteFaultStorageTest, ClearFaultDeletesAssociatedSnapshots) {
+  using ros2_medkit_fault_manager::SnapshotData;
+  rclcpp::Clock clock;
+
+  // Create a fault using report_fault_event
+  storage_->report_fault_event("SNAPSHOT_CLEAR_TEST", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                               "Test fault for snapshot cleanup", "/test_node", clock.now());
+
+  // Store snapshots for this fault
+  SnapshotData snapshot1;
+  snapshot1.fault_code = "SNAPSHOT_CLEAR_TEST";
+  snapshot1.topic = "/test/topic1";
+  snapshot1.message_type = "std_msgs/msg/String";
+  snapshot1.data = R"({"data": "test1"})";
+  snapshot1.captured_at_ns = clock.now().nanoseconds();
+  storage_->store_snapshot(snapshot1);
+
+  SnapshotData snapshot2;
+  snapshot2.fault_code = "SNAPSHOT_CLEAR_TEST";
+  snapshot2.topic = "/test/topic2";
+  snapshot2.message_type = "std_msgs/msg/String";
+  snapshot2.data = R"({"data": "test2"})";
+  snapshot2.captured_at_ns = clock.now().nanoseconds();
+  storage_->store_snapshot(snapshot2);
+
+  // Verify snapshots exist
+  auto snapshots_before = storage_->get_snapshots("SNAPSHOT_CLEAR_TEST");
+  ASSERT_EQ(snapshots_before.size(), 2u);
+
+  // Clear the fault
+  bool cleared = storage_->clear_fault("SNAPSHOT_CLEAR_TEST");
+  EXPECT_TRUE(cleared);
+
+  // Verify snapshots are deleted
+  auto snapshots_after = storage_->get_snapshots("SNAPSHOT_CLEAR_TEST");
+  EXPECT_TRUE(snapshots_after.empty());
+}
+
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
   ::testing::InitGoogleTest(&argc, argv);

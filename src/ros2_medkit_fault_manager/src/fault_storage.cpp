@@ -224,6 +224,13 @@ bool InMemoryFaultStorage::clear_fault(const std::string & fault_code) {
     return false;
   }
 
+  // Delete associated snapshots when fault is cleared
+  snapshots_.erase(std::remove_if(snapshots_.begin(), snapshots_.end(),
+                                  [&fault_code](const SnapshotData & s) {
+                                    return s.fault_code == fault_code;
+                                  }),
+                   snapshots_.end());
+
   it->second.status = ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
   return true;
 }

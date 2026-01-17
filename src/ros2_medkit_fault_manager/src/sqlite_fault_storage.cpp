@@ -595,6 +595,13 @@ std::optional<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_fault(const 
 bool SqliteFaultStorage::clear_fault(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  // Delete associated snapshots when fault is cleared
+  SqliteStatement delete_snapshots(db_, "DELETE FROM snapshots WHERE fault_code = ?");
+  delete_snapshots.bind_text(1, fault_code);
+  if (delete_snapshots.step() != SQLITE_DONE) {
+    throw std::runtime_error(std::string("Failed to delete snapshots: ") + sqlite3_errmsg(db_));
+  }
+
   SqliteStatement stmt(db_, "UPDATE faults SET status = ? WHERE fault_code = ?");
   stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
   stmt.bind_text(2, fault_code);
