@@ -103,21 +103,26 @@ include_directories(include)
 add_library(gateway_lib STATIC
   src/config.cpp
   src/gateway_node.cpp
-  src/discovery_manager.cpp
   src/data_access_manager.cpp
   src/type_introspection.cpp
   src/native_topic_sampler.cpp
   src/operation_manager.cpp
   src/configuration_manager.cpp
   src/fault_manager.cpp
+  # Discovery module
+  src/discovery/discovery_manager.cpp
+  src/discovery/runtime_discovery.cpp
   # HTTP module (subfolder)
   src/http/http_server.cpp
   src/http/rest_server.cpp
-  # HTTP handlers (subfolder)
+  # HTTP handlers - discovery
+  src/http/handlers/discovery/area_handlers.cpp
+  src/http/handlers/discovery/component_handlers.cpp
+  src/http/handlers/discovery/app_handlers.cpp
+  src/http/handlers/discovery/function_handlers.cpp
+  # HTTP handlers - other
   src/http/handlers/handler_context.cpp
   src/http/handlers/health_handlers.cpp
-  src/http/handlers/area_handlers.cpp
-  src/http/handlers/component_handlers.cpp
   src/http/handlers/operation_handlers.cpp
   src/http/handlers/config_handlers.cpp
   src/http/handlers/fault_handlers.cpp

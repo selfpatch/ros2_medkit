@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__AREA_HANDLERS_HPP_
-#define ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__AREA_HANDLERS_HPP_
+#ifndef ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__DISCOVERY__AREA_HANDLERS_HPP_
+#define ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__DISCOVERY__AREA_HANDLERS_HPP_
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
@@ -53,4 +53,4 @@ class AreaHandlers {
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway
 
-#endif  // ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__AREA_HANDLERS_HPP_
+#endif  // ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__DISCOVERY__AREA_HANDLERS_HPP_
