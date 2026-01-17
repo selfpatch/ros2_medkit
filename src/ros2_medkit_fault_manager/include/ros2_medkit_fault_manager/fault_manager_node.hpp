@@ -19,9 +19,11 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_faults.hpp"
+#include "ros2_medkit_msgs/srv/get_snapshots.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
 namespace ros2_medkit_fault_manager {
@@ -65,6 +67,18 @@ class FaultManagerNode : public rclcpp::Node {
   void handle_clear_fault(const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
                           const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response);
 
+  /// Handle GetSnapshots service request
+  void handle_get_snapshots(const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Request> & request,
+                            const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> & response);
+
+  /// Create snapshot configuration from parameters
+  SnapshotConfig create_snapshot_config();
+
+  /// Load snapshot configuration from YAML file
+  /// @param config_file Path to the YAML configuration file
+  /// @param config SnapshotConfig to populate with loaded values
+  void load_snapshot_config_from_yaml(const std::string & config_file, SnapshotConfig & config);
+
   /// Publish a fault event to the events topic
   /// @param event_type One of FaultEvent::EVENT_CONFIRMED, EVENT_CLEARED, EVENT_UPDATED
   /// @param fault The fault data associated with this event
@@ -84,10 +98,14 @@ class FaultManagerNode : public rclcpp::Node {
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetFaults>::SharedPtr get_faults_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_fault_srv_;
+  rclcpp::Service<ros2_medkit_msgs::srv::GetSnapshots>::SharedPtr get_snapshots_srv_;
   rclcpp::TimerBase::SharedPtr auto_confirm_timer_;
 
   /// Publisher for fault events (SSE streaming via gateway)
   rclcpp::Publisher<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr event_publisher_;
+
+  /// Snapshot capture for capturing topic data on fault confirmation
+  std::unique_ptr<SnapshotCapture> snapshot_capture_;
 };
 
 }  // namespace ros2_medkit_fault_manager

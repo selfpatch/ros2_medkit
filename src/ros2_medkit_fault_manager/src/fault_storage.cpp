@@ -224,6 +224,13 @@ bool InMemoryFaultStorage::clear_fault(const std::string & fault_code) {
     return false;
   }
 
+  // Delete associated snapshots when fault is cleared
+  snapshots_.erase(std::remove_if(snapshots_.begin(), snapshots_.end(),
+                                  [&fault_code](const SnapshotData & s) {
+                                    return s.fault_code == fault_code;
+                                  }),
+                   snapshots_.end());
+
   it->second.status = ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
   return true;
 }
@@ -259,6 +266,26 @@ size_t InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & 
   }
 
   return confirmed_count;
+}
+
+void InMemoryFaultStorage::store_snapshot(const SnapshotData & snapshot) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  snapshots_.push_back(snapshot);
+}
+
+std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(const std::string & fault_code,
+                                                              const std::string & topic_filter) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  std::vector<SnapshotData> result;
+  for (const auto & snapshot : snapshots_) {
+    if (snapshot.fault_code == fault_code) {
+      if (topic_filter.empty() || snapshot.topic == topic_filter) {
+        result.push_back(snapshot);
+      }
+    }
+  }
+  return result;
 }
 
 }  // namespace ros2_medkit_fault_manager

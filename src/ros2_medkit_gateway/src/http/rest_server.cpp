@@ -270,6 +270,19 @@ void RESTServer::setup_routes() {
                 fault_handlers_->handle_clear_fault(req, res);
               });
 
+  // Snapshot endpoints for fault debugging
+  // GET /faults/{fault_code}/snapshots - system-wide snapshot access
+  srv->Get((api_path("/faults") + R"(/([^/]+)/snapshots$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             fault_handlers_->handle_get_snapshots(req, res);
+           });
+
+  // GET /components/{component_id}/faults/{fault_code}/snapshots - component-scoped snapshot access
+  srv->Get((api_path("/components") + R"(/([^/]+)/faults/([^/]+)/snapshots$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             fault_handlers_->handle_get_component_snapshots(req, res);
+           });
+
   // Authentication endpoints (REQ_INTEROP_086, REQ_INTEROP_087)
   // POST /auth/authorize - Authenticate and get tokens (client_credentials grant)
   srv->Post(api_path("/auth/authorize"), [this](const httplib::Request & req, httplib::Response & res) {

@@ -36,6 +36,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 | `~/report_fault` | `ros2_medkit_msgs/srv/ReportFault` | Report a fault occurrence |
 | `~/get_faults` | `ros2_medkit_msgs/srv/GetFaults` | Query faults with filtering |
 | `~/clear_fault` | `ros2_medkit_msgs/srv/ClearFault` | Clear/acknowledge a fault |
+| `~/get_snapshots` | `ros2_medkit_msgs/srv/GetSnapshots` | Get topic snapshots for a fault |
 
 ## Features
 
@@ -44,6 +45,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
 - **Persistent storage**: SQLite backend ensures faults survive node restarts
 - **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation
+- **Snapshot capture**: Captures topic data when faults are confirmed for debugging (snapshots are deleted when fault is cleared)
 
 ## Parameters
 
@@ -55,6 +57,36 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 | `healing_enabled` | bool | `false` | Enable automatic healing via PASSED events |
 | `healing_threshold` | int | `3` | Counter value at which faults are healed |
 | `auto_confirm_after_sec` | double | `0.0` | Auto-confirm PREFAILED faults after timeout (0 = disabled) |
+
+### Snapshot Parameters
+
+Snapshots capture topic data when faults are confirmed for post-mortem debugging.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `snapshots.enabled` | bool | `true` | Enable/disable snapshot capture |
+| `snapshots.background_capture` | bool | `false` | Use background subscriptions (caches latest message) vs on-demand capture |
+| `snapshots.timeout_sec` | double | `1.0` | Timeout waiting for topic message (on-demand mode) |
+| `snapshots.max_message_size` | int | `65536` | Maximum message size in bytes (larger messages skipped) |
+| `snapshots.default_topics` | string[] | `[]` | Topics to capture for all faults |
+| `snapshots.config_file` | string | `""` | Path to YAML config for `fault_specific` and `patterns` |
+
+**Topic Resolution Priority:**
+1. `fault_specific` - Exact match for fault code (configured via YAML config file)
+2. `patterns` - Regex pattern match (configured via YAML config file)
+3. `default_topics` - Fallback for all faults
+
+**Example YAML config file** (`snapshots.yaml`):
+```yaml
+fault_specific:
+  MOTOR_OVERHEAT:
+    - /joint_states
+    - /motor/temperature
+patterns:
+  "MOTOR_.*":
+    - /joint_states
+    - /cmd_vel
+```
 
 ### Storage Backends
 

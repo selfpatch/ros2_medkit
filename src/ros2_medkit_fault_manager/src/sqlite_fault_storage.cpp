@@ -144,7 +144,7 @@ DebounceConfig SqliteFaultStorage::get_debounce_config() const {
 }
 
 void SqliteFaultStorage::initialize_schema() {
-  const char * create_table_sql = R"(
+  const char * create_faults_table_sql = R"(
     CREATE TABLE IF NOT EXISTS faults (
       fault_code TEXT PRIMARY KEY,
       severity INTEGER NOT NULL,
@@ -161,10 +161,30 @@ void SqliteFaultStorage::initialize_schema() {
   )";
 
   char * err_msg = nullptr;
-  if (sqlite3_exec(db_, create_table_sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
+  if (sqlite3_exec(db_, create_faults_table_sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
     std::string error = err_msg ? err_msg : "Unknown error";
     sqlite3_free(err_msg);
-    throw std::runtime_error("Failed to create schema: " + error);
+    throw std::runtime_error("Failed to create faults table: " + error);
+  }
+
+  // Create snapshots table for storing topic data captured when faults are confirmed
+  const char * create_snapshots_table_sql = R"(
+    CREATE TABLE IF NOT EXISTS snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      fault_code TEXT NOT NULL,
+      topic TEXT NOT NULL,
+      message_type TEXT NOT NULL,
+      data TEXT NOT NULL,
+      captured_at_ns INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_snapshots_fault_code ON snapshots(fault_code);
+    CREATE INDEX IF NOT EXISTS idx_snapshots_fault_topic ON snapshots(fault_code, topic);
+  )";
+
+  if (sqlite3_exec(db_, create_snapshots_table_sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
+    std::string error = err_msg ? err_msg : "Unknown error";
+    sqlite3_free(err_msg);
+    throw std::runtime_error("Failed to create snapshots table: " + error);
   }
 }
 
@@ -575,6 +595,13 @@ std::optional<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_fault(const 
 bool SqliteFaultStorage::clear_fault(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  // Delete associated snapshots when fault is cleared
+  SqliteStatement delete_snapshots(db_, "DELETE FROM snapshots WHERE fault_code = ?");
+  delete_snapshots.bind_text(1, fault_code);
+  if (delete_snapshots.step() != SQLITE_DONE) {
+    throw std::runtime_error(std::string("Failed to delete snapshots: ") + sqlite3_errmsg(db_));
+  }
+
   SqliteStatement stmt(db_, "UPDATE faults SET status = ? WHERE fault_code = ?");
   stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
   stmt.bind_text(2, fault_code);
@@ -629,6 +656,55 @@ size_t SqliteFaultStorage::check_time_based_confirmation(const rclcpp::Time & cu
   }
 
   return static_cast<size_t>(sqlite3_changes(db_));
+}
+
+void SqliteFaultStorage::store_snapshot(const SnapshotData & snapshot) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  SqliteStatement stmt(db_,
+                       "INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns) "
+                       "VALUES (?, ?, ?, ?, ?)");
+
+  stmt.bind_text(1, snapshot.fault_code);
+  stmt.bind_text(2, snapshot.topic);
+  stmt.bind_text(3, snapshot.message_type);
+  stmt.bind_text(4, snapshot.data);
+  stmt.bind_int64(5, snapshot.captured_at_ns);
+
+  if (stmt.step() != SQLITE_DONE) {
+    throw std::runtime_error(std::string("Failed to store snapshot: ") + sqlite3_errmsg(db_));
+  }
+}
+
+std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(const std::string & fault_code,
+                                                            const std::string & topic_filter) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  std::vector<SnapshotData> result;
+
+  std::string sql = "SELECT fault_code, topic, message_type, data, captured_at_ns FROM snapshots WHERE fault_code = ?";
+  if (!topic_filter.empty()) {
+    sql += " AND topic = ?";
+  }
+  sql += " ORDER BY captured_at_ns DESC";
+
+  SqliteStatement stmt(db_, sql.c_str());
+  stmt.bind_text(1, fault_code);
+  if (!topic_filter.empty()) {
+    stmt.bind_text(2, topic_filter);
+  }
+
+  while (stmt.step() == SQLITE_ROW) {
+    SnapshotData snapshot;
+    snapshot.fault_code = stmt.column_text(0);
+    snapshot.topic = stmt.column_text(1);
+    snapshot.message_type = stmt.column_text(2);
+    snapshot.data = stmt.column_text(3);
+    snapshot.captured_at_ns = stmt.column_int64(4);
+    result.push_back(snapshot);
+  }
+
+  return result;
 }
 
 }  // namespace ros2_medkit_fault_manager

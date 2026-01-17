@@ -61,6 +61,10 @@ class SqliteFaultStorage : public FaultStorage {
 
   size_t check_time_based_confirmation(const rclcpp::Time & current_time) override;
 
+  void store_snapshot(const SnapshotData & snapshot) override;
+  std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
+                                          const std::string & topic_filter = "") const override;
+
   /// Get the database path
   const std::string & db_path() const {
     return db_path_;

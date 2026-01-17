@@ -245,6 +245,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_tls_config test/test_tls_config.cpp)
   target_link_libraries(test_tls_config gateway_lib)
 
+  # Add FaultManager tests
+  ament_add_gtest(test_fault_manager test/test_fault_manager.cpp)
+  target_link_libraries(test_fault_manager gateway_lib)
+  ament_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
@@ -261,6 +266,8 @@ if(BUILD_TESTING)
     target_link_options(test_discovery_manager PRIVATE --coverage)
     target_compile_options(test_tls_config PRIVATE --coverage -O0 -g)
     target_link_options(test_tls_config PRIVATE --coverage)
+    target_compile_options(test_fault_manager PRIVATE --coverage -O0 -g)
+    target_link_options(test_fault_manager PRIVATE --coverage)
   endif()
 
   # Integration testing

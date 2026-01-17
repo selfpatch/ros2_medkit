@@ -1185,6 +1185,74 @@
             "description": "Example of requesting a non-existent fault. Returns 404 with error details."
           },
           "response": []
+        },
+        {
+          "name": "GET Fault Snapshots (System-wide)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/faults/SENSOR_OVERTEMP/snapshots",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "faults",
+                "SENSOR_OVERTEMP",
+                "snapshots"
+              ]
+            },
+            "description": "Get topic snapshots captured when a fault transitioned to CONFIRMED status. Snapshots provide system state at the moment of fault confirmation for post-mortem debugging. Returns object with fault_code, captured_at timestamp, and topics object keyed by topic name containing message_type and parsed data."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Fault Snapshots (Filtered by Topic)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/faults/SENSOR_OVERTEMP/snapshots?topic=/joint_states",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "faults",
+                "SENSOR_OVERTEMP",
+                "snapshots"
+              ],
+              "query": [
+                {
+                  "key": "topic",
+                  "value": "/joint_states"
+                }
+              ]
+            },
+            "description": "Get snapshots filtered by specific topic name. Use this when you only need data from a particular topic."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Component Fault Snapshots",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/temp_sensor/faults/SENSOR_OVERTEMP/snapshots",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "temp_sensor",
+                "faults",
+                "SENSOR_OVERTEMP",
+                "snapshots"
+              ]
+            },
+            "description": "Get topic snapshots for a specific component's fault. Same as the system-wide endpoint but scoped to a component context. Useful when working within a component-centric workflow."
+          },
+          "response": []
         }
       ]
     },

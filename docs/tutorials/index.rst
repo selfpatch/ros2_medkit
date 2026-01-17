@@ -8,6 +8,7 @@ Step-by-step guides for common use cases with ros2_medkit.
 
    authentication
    https
+   snapshots
    docker
    devcontainer
    integration
@@ -21,6 +22,9 @@ Basic Tutorials
 
 :doc:`https`
    Enable TLS/HTTPS for secure communication.
+
+:doc:`snapshots`
+   Configure snapshot capture for fault debugging.
 
 :doc:`docker`
    Deploy ros2_medkit in Docker containers.

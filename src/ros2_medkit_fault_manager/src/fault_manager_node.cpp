@@ -15,6 +15,11 @@
 #include "ros2_medkit_fault_manager/fault_manager_node.hpp"
 
 #include <filesystem>
+#include <fstream>
+#include <sstream>
+
+#include <nlohmann/json.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 
@@ -83,6 +88,18 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
                               const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response) {
         handle_clear_fault(request, response);
       });
+
+  get_snapshots_srv_ = create_service<ros2_medkit_msgs::srv::GetSnapshots>(
+      "~/get_snapshots", [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Request> & request,
+                                const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> & response) {
+        handle_get_snapshots(request, response);
+      });
+
+  // Initialize snapshot capture
+  auto snapshot_config = create_snapshot_config();
+  if (snapshot_config.enabled) {
+    snapshot_capture_ = std::make_unique<SnapshotCapture>(this, storage_.get(), snapshot_config);
+  }
 
   // Create auto-confirmation timer if enabled
   if (auto_confirm_after_sec_ > 0.0) {
@@ -182,18 +199,26 @@ void FaultManagerNode::handle_report_fault(
   auto fault_after = storage_->get_fault(request->fault_code);
   if (fault_after) {
     // Determine event type based on status transition
+    bool just_confirmed = false;
     if (is_new && fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
       // New fault immediately confirmed (e.g., CRITICAL severity or threshold=-1)
       publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault_after);
+      just_confirmed = true;
     } else if (!is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED &&
                fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
       // Existing fault transitioned to CONFIRMED
       publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault_after);
+      just_confirmed = true;
     } else if (!is_new && fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
       // Fault was already CONFIRMED, data updated (occurrence_count, sources, etc.)
       publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_UPDATED, *fault_after);
     }
     // Note: PREFAILED/PREPASSED status changes don't emit events (debounce in progress)
+
+    // Capture snapshots when fault is confirmed
+    if (just_confirmed && snapshot_capture_) {
+      snapshot_capture_->capture(request->fault_code);
+    }
   }
 
   if (request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
@@ -259,6 +284,165 @@ void FaultManagerNode::publish_fault_event(const std::string & event_type, const
 
   RCLCPP_DEBUG(get_logger(), "Published fault event: %s for fault_code=%s", event_type.c_str(),
                fault.fault_code.c_str());
+}
+
+SnapshotConfig FaultManagerNode::create_snapshot_config() {
+  SnapshotConfig config;
+
+  // Declare snapshot parameters
+  config.enabled = declare_parameter<bool>("snapshots.enabled", true);
+  config.background_capture = declare_parameter<bool>("snapshots.background_capture", false);
+
+  // Validate timeout_sec (must be positive)
+  config.timeout_sec = declare_parameter<double>("snapshots.timeout_sec", 1.0);
+  if (config.timeout_sec <= 0.0) {
+    RCLCPP_WARN(get_logger(), "snapshots.timeout_sec must be positive, got %.2f. Using default 1.0s",
+                config.timeout_sec);
+    config.timeout_sec = 1.0;
+  }
+
+  // Validate max_message_size (must be positive before casting to size_t)
+  auto max_message_size_param = declare_parameter<int>("snapshots.max_message_size", 65536);
+  if (max_message_size_param <= 0) {
+    RCLCPP_WARN(get_logger(), "snapshots.max_message_size must be positive, got %d. Using default 65536",
+                max_message_size_param);
+    max_message_size_param = 65536;
+  }
+  config.max_message_size = static_cast<size_t>(max_message_size_param);
+
+  // Default topics (catch-all)
+  config.default_topics =
+      declare_parameter<std::vector<std::string>>("snapshots.default_topics", std::vector<std::string>{});
+
+  // Load fault_specific and patterns from YAML config file if provided
+  auto config_file = declare_parameter<std::string>("snapshots.config_file", "");
+  if (!config_file.empty()) {
+    load_snapshot_config_from_yaml(config_file, config);
+  }
+
+  if (config.enabled) {
+    RCLCPP_INFO(get_logger(),
+                "Snapshot capture enabled (background=%s, timeout=%.1fs, max_size=%zu, "
+                "fault_specific=%zu, patterns=%zu, default_topics=%zu)",
+                config.background_capture ? "true" : "false", config.timeout_sec, config.max_message_size,
+                config.fault_specific.size(), config.patterns.size(), config.default_topics.size());
+  } else {
+    RCLCPP_INFO(get_logger(), "Snapshot capture disabled");
+  }
+
+  return config;
+}
+
+void FaultManagerNode::load_snapshot_config_from_yaml(const std::string & config_file, SnapshotConfig & config) {
+  if (!std::filesystem::exists(config_file)) {
+    RCLCPP_ERROR(get_logger(), "Snapshot config file not found: %s", config_file.c_str());
+    return;
+  }
+
+  try {
+    YAML::Node yaml_config = YAML::LoadFile(config_file);
+
+    // Load fault_specific: map<fault_code, vector<topics>>
+    if (yaml_config["fault_specific"]) {
+      for (const auto & item : yaml_config["fault_specific"]) {
+        std::string fault_code = item.first.as<std::string>();
+        std::vector<std::string> topics;
+        for (const auto & topic : item.second) {
+          topics.push_back(topic.as<std::string>());
+        }
+        config.fault_specific[fault_code] = topics;
+        RCLCPP_DEBUG(get_logger(), "Loaded fault_specific[%s] with %zu topics", fault_code.c_str(), topics.size());
+      }
+    }
+
+    // Load patterns: map<regex_pattern, vector<topics>>
+    if (yaml_config["patterns"]) {
+      for (const auto & item : yaml_config["patterns"]) {
+        std::string pattern = item.first.as<std::string>();
+        std::vector<std::string> topics;
+        for (const auto & topic : item.second) {
+          topics.push_back(topic.as<std::string>());
+        }
+        config.patterns[pattern] = topics;
+        RCLCPP_DEBUG(get_logger(), "Loaded pattern[%s] with %zu topics", pattern.c_str(), topics.size());
+      }
+    }
+
+    // Optionally override default_topics from YAML (if specified and not already set via parameter)
+    if (yaml_config["default_topics"] && config.default_topics.empty()) {
+      for (const auto & topic : yaml_config["default_topics"]) {
+        config.default_topics.push_back(topic.as<std::string>());
+      }
+      RCLCPP_DEBUG(get_logger(), "Loaded %zu default_topics from config file", config.default_topics.size());
+    }
+
+    RCLCPP_INFO(get_logger(), "Loaded snapshot config from %s (fault_specific=%zu, patterns=%zu)", config_file.c_str(),
+                config.fault_specific.size(), config.patterns.size());
+
+  } catch (const YAML::Exception & e) {
+    RCLCPP_ERROR(get_logger(), "Failed to parse snapshot config file %s: %s", config_file.c_str(), e.what());
+  }
+}
+
+void FaultManagerNode::handle_get_snapshots(
+    const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> & response) {
+  // Validate fault_code
+  if (request->fault_code.empty()) {
+    response->success = false;
+    response->error_message = "fault_code cannot be empty";
+    return;
+  }
+
+  // Check if fault exists
+  auto fault = storage_->get_fault(request->fault_code);
+  if (!fault) {
+    response->success = false;
+    response->error_message = "Fault not found: " + request->fault_code;
+    return;
+  }
+
+  // Get snapshots from storage
+  auto snapshots = storage_->get_snapshots(request->fault_code, request->topic);
+
+  // Build JSON response
+  nlohmann::json result;
+  result["fault_code"] = request->fault_code;
+
+  // Find the latest capture time (only include if snapshots exist)
+  if (!snapshots.empty()) {
+    int64_t latest_captured_at = 0;
+    for (const auto & snapshot : snapshots) {
+      if (snapshot.captured_at_ns > latest_captured_at) {
+        latest_captured_at = snapshot.captured_at_ns;
+      }
+    }
+    result["captured_at"] = static_cast<double>(latest_captured_at) / 1e9;
+  }
+
+  // Build topics object
+  nlohmann::json topics_json = nlohmann::json::object();
+  for (const auto & snapshot : snapshots) {
+    nlohmann::json topic_entry;
+    topic_entry["message_type"] = snapshot.message_type;
+
+    // Parse the stored JSON data
+    try {
+      topic_entry["data"] = nlohmann::json::parse(snapshot.data);
+    } catch (const nlohmann::json::exception & e) {
+      RCLCPP_WARN(get_logger(), "Failed to parse snapshot data for topic '%s': %s", snapshot.topic.c_str(), e.what());
+      topic_entry["data"] = snapshot.data;  // Store as raw string if parsing fails
+    }
+
+    topics_json[snapshot.topic] = topic_entry;
+  }
+  result["topics"] = topics_json;
+
+  response->success = true;
+  response->data = result.dump();
+
+  RCLCPP_DEBUG(get_logger(), "GetSnapshots returned %zu topics for fault '%s'", snapshots.size(),
+               request->fault_code.c_str());
 }
 
 }  // namespace ros2_medkit_fault_manager
