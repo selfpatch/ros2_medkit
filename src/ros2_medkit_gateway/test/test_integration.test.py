@@ -2118,3 +2118,115 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(len(connection_error), 0,
                          f'SSE stream connection failed: {connection_error}')
         print('✓ SSE stream connection test passed')
+
+    # ==================== Snapshot API Tests ====================
+
+    def test_65_root_endpoint_includes_snapshots(self):
+        """
+        Test that root endpoint lists snapshots endpoints.
+
+        @verifies REQ_INTEROP_088
+        """
+        data = self._get_json('/')
+
+        # Verify snapshots endpoints are listed
+        self.assertIn('endpoints', data)
+        self.assertIn(
+            'GET /api/v1/faults/{fault_code}/snapshots',
+            data['endpoints']
+        )
+        self.assertIn(
+            'GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots',
+            data['endpoints']
+        )
+
+        print('✓ Root endpoint includes snapshots test passed')
+
+    def test_66_get_snapshots_nonexistent_fault(self):
+        """
+        Test GET /faults/{fault_code}/snapshots returns 404 for unknown fault.
+
+        @verifies REQ_INTEROP_088
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/faults/NONEXISTENT_FAULT_CODE/snapshots',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertIn('fault_code', data)
+        self.assertEqual(data['fault_code'], 'NONEXISTENT_FAULT_CODE')
+
+        print('✓ Get snapshots nonexistent fault test passed')
+
+    def test_67_get_component_snapshots_nonexistent_fault(self):
+        """
+        Test GET /components/{id}/faults/{code}/snapshots returns 404 for unknown fault.
+
+        @verifies REQ_INTEROP_088
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/components/temp_sensor/faults/NONEXISTENT_FAULT/snapshots',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertIn('component_id', data)
+        self.assertEqual(data['component_id'], 'temp_sensor')
+        self.assertIn('fault_code', data)
+        self.assertEqual(data['fault_code'], 'NONEXISTENT_FAULT')
+
+        print('✓ Get component snapshots nonexistent fault test passed')
+
+    def test_68_get_snapshots_nonexistent_component(self):
+        """
+        Test GET /components/{id}/faults/{code}/snapshots returns 404 for unknown component.
+
+        @verifies REQ_INTEROP_088
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/components/nonexistent_component/faults/ANY_FAULT/snapshots',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Component not found')
+        self.assertIn('component_id', data)
+        self.assertEqual(data['component_id'], 'nonexistent_component')
+
+        print('✓ Get snapshots nonexistent component test passed')
+
+    def test_69_get_snapshots_invalid_component_id(self):
+        """
+        Test GET /components/{id}/faults/{code}/snapshots returns 400 for invalid component ID.
+
+        @verifies REQ_INTEROP_088
+        """
+        invalid_ids = [
+            'component;drop',
+            'component<script>',
+            'component-name',
+        ]
+
+        for invalid_id in invalid_ids:
+            response = requests.get(
+                f'{self.BASE_URL}/components/{invalid_id}/faults/ANY_FAULT/snapshots',
+                timeout=10
+            )
+            self.assertEqual(
+                response.status_code,
+                400,
+                f'Expected 400 for component_id: {invalid_id}'
+            )
+
+            data = response.json()
+            self.assertIn('error', data)
+            self.assertEqual(data['error'], 'Invalid component ID')
+
+        print('✓ Get snapshots invalid component ID test passed')

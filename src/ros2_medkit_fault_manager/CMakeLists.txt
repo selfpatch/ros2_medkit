@@ -113,12 +113,19 @@ if(BUILD_TESTING)
   target_link_libraries(test_sqlite_storage fault_manager_lib)
   ament_target_dependencies(test_sqlite_storage rclcpp ros2_medkit_msgs)
 
+  # Snapshot capture tests
+  ament_add_gtest(test_snapshot_capture test/test_snapshot_capture.cpp)
+  target_link_libraries(test_snapshot_capture fault_manager_lib)
+  ament_target_dependencies(test_snapshot_capture rclcpp ros2_medkit_msgs)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_fault_manager PRIVATE --coverage -O0 -g)
     target_link_options(test_fault_manager PRIVATE --coverage)
     target_compile_options(test_sqlite_storage PRIVATE --coverage -O0 -g)
     target_link_options(test_sqlite_storage PRIVATE --coverage)
+    target_compile_options(test_snapshot_capture PRIVATE --coverage -O0 -g)
+    target_link_options(test_snapshot_capture PRIVATE --coverage)
   endif()
 
   # Integration tests
