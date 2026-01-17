@@ -62,6 +62,7 @@ ament_target_dependencies(fault_manager_lib PUBLIC
 target_link_libraries(fault_manager_lib PUBLIC
   SQLite::SQLite3
   nlohmann_json::nlohmann_json
+  yaml-cpp::yaml-cpp
 )
 
 if(ENABLE_COVERAGE)
@@ -88,7 +89,7 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
-install(DIRECTORY launch
+install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 

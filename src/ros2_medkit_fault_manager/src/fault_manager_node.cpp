@@ -15,9 +15,11 @@
 #include "ros2_medkit_fault_manager/fault_manager_node.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 
@@ -297,20 +299,74 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
   config.default_topics =
       declare_parameter<std::vector<std::string>>("snapshots.default_topics", std::vector<std::string>{});
 
-  // Note: fault_specific and patterns require YAML map parsing which is complex
-  // For now, they can be set programmatically or via a YAML config file
-  // TODO: Add support for parsing fault_specific and patterns from parameters
+  // Load fault_specific and patterns from YAML config file if provided
+  auto config_file = declare_parameter<std::string>("snapshots.config_file", "");
+  if (!config_file.empty()) {
+    load_snapshot_config_from_yaml(config_file, config);
+  }
 
   if (config.enabled) {
     RCLCPP_INFO(get_logger(),
-                "Snapshot capture enabled (background=%s, timeout=%.1fs, max_size=%zu, default_topics=%zu)",
+                "Snapshot capture enabled (background=%s, timeout=%.1fs, max_size=%zu, "
+                "fault_specific=%zu, patterns=%zu, default_topics=%zu)",
                 config.background_capture ? "true" : "false", config.timeout_sec, config.max_message_size,
-                config.default_topics.size());
+                config.fault_specific.size(), config.patterns.size(), config.default_topics.size());
   } else {
     RCLCPP_INFO(get_logger(), "Snapshot capture disabled");
   }
 
   return config;
+}
+
+void FaultManagerNode::load_snapshot_config_from_yaml(const std::string & config_file, SnapshotConfig & config) {
+  if (!std::filesystem::exists(config_file)) {
+    RCLCPP_ERROR(get_logger(), "Snapshot config file not found: %s", config_file.c_str());
+    return;
+  }
+
+  try {
+    YAML::Node yaml_config = YAML::LoadFile(config_file);
+
+    // Load fault_specific: map<fault_code, vector<topics>>
+    if (yaml_config["fault_specific"]) {
+      for (const auto & item : yaml_config["fault_specific"]) {
+        std::string fault_code = item.first.as<std::string>();
+        std::vector<std::string> topics;
+        for (const auto & topic : item.second) {
+          topics.push_back(topic.as<std::string>());
+        }
+        config.fault_specific[fault_code] = topics;
+        RCLCPP_DEBUG(get_logger(), "Loaded fault_specific[%s] with %zu topics", fault_code.c_str(), topics.size());
+      }
+    }
+
+    // Load patterns: map<regex_pattern, vector<topics>>
+    if (yaml_config["patterns"]) {
+      for (const auto & item : yaml_config["patterns"]) {
+        std::string pattern = item.first.as<std::string>();
+        std::vector<std::string> topics;
+        for (const auto & topic : item.second) {
+          topics.push_back(topic.as<std::string>());
+        }
+        config.patterns[pattern] = topics;
+        RCLCPP_DEBUG(get_logger(), "Loaded pattern[%s] with %zu topics", pattern.c_str(), topics.size());
+      }
+    }
+
+    // Optionally override default_topics from YAML (if specified and not already set via parameter)
+    if (yaml_config["default_topics"] && config.default_topics.empty()) {
+      for (const auto & topic : yaml_config["default_topics"]) {
+        config.default_topics.push_back(topic.as<std::string>());
+      }
+      RCLCPP_DEBUG(get_logger(), "Loaded %zu default_topics from config file", config.default_topics.size());
+    }
+
+    RCLCPP_INFO(get_logger(), "Loaded snapshot config from %s (fault_specific=%zu, patterns=%zu)", config_file.c_str(),
+                config.fault_specific.size(), config.patterns.size());
+
+  } catch (const YAML::Exception & e) {
+    RCLCPP_ERROR(get_logger(), "Failed to parse snapshot config file %s: %s", config_file.c_str(), e.what());
+  }
 }
 
 void FaultManagerNode::handle_get_snapshots(

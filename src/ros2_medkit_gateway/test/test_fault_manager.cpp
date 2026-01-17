@@ -41,10 +41,9 @@ class FaultManagerTest : public ::testing::Test {
 
   void SetUp() override {
     // Create node with short timeout for faster tests
-    node_ = std::make_shared<rclcpp::Node>("test_fault_manager_node",
-                                           rclcpp::NodeOptions().parameter_overrides({
-                                               {"fault_service_timeout_sec", 1.0},
-                                           }));
+    node_ = std::make_shared<rclcpp::Node>("test_fault_manager_node", rclcpp::NodeOptions().parameter_overrides({
+                                                                          {"fault_service_timeout_sec", 1.0},
+                                                                      }));
 
     // Create executor for spinning
     executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
@@ -61,7 +60,9 @@ class FaultManagerTest : public ::testing::Test {
   }
 
   void start_spinning() {
-    spin_thread_ = std::thread([this]() { executor_->spin(); });
+    spin_thread_ = std::thread([this]() {
+      executor_->spin();
+    });
   }
 
   std::shared_ptr<rclcpp::Node> node_;
@@ -85,8 +86,7 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithValidJson) {
   // Create mock service
   auto service = node_->create_service<GetSnapshots>(
       "/fault_manager/get_snapshots",
-      [](const std::shared_ptr<GetSnapshots::Request> request,
-         std::shared_ptr<GetSnapshots::Response> response) {
+      [](const std::shared_ptr<GetSnapshots::Request> request, std::shared_ptr<GetSnapshots::Response> response) {
         response->success = true;
         nlohmann::json snapshot_data;
         snapshot_data["fault_code"] = request->fault_code;
@@ -115,9 +115,8 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithTopicFilter) {
   // Create mock service that verifies topic filter is passed
   std::string received_topic;
   auto service = node_->create_service<GetSnapshots>(
-      "/fault_manager/get_snapshots",
-      [&received_topic](const std::shared_ptr<GetSnapshots::Request> request,
-                        std::shared_ptr<GetSnapshots::Response> response) {
+      "/fault_manager/get_snapshots", [&received_topic](const std::shared_ptr<GetSnapshots::Request> request,
+                                                        std::shared_ptr<GetSnapshots::Response> response) {
         received_topic = request->topic;
         response->success = true;
         response->data = "{}";
@@ -135,8 +134,7 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithTopicFilter) {
 TEST_F(FaultManagerTest, GetSnapshotsErrorResponse) {
   auto service = node_->create_service<GetSnapshots>(
       "/fault_manager/get_snapshots",
-      [](const std::shared_ptr<GetSnapshots::Request> /*request*/,
-         std::shared_ptr<GetSnapshots::Response> response) {
+      [](const std::shared_ptr<GetSnapshots::Request> /*request*/, std::shared_ptr<GetSnapshots::Response> response) {
         response->success = false;
         response->error_message = "Fault not found";
       });
@@ -154,8 +152,7 @@ TEST_F(FaultManagerTest, GetSnapshotsErrorResponse) {
 TEST_F(FaultManagerTest, GetSnapshotsInvalidJsonFallback) {
   auto service = node_->create_service<GetSnapshots>(
       "/fault_manager/get_snapshots",
-      [](const std::shared_ptr<GetSnapshots::Request> /*request*/,
-         std::shared_ptr<GetSnapshots::Response> response) {
+      [](const std::shared_ptr<GetSnapshots::Request> /*request*/, std::shared_ptr<GetSnapshots::Response> response) {
         response->success = true;
         response->data = "not valid json {{{";
       });
@@ -175,8 +172,7 @@ TEST_F(FaultManagerTest, GetSnapshotsInvalidJsonFallback) {
 TEST_F(FaultManagerTest, GetSnapshotsEmptyResponse) {
   auto service = node_->create_service<GetSnapshots>(
       "/fault_manager/get_snapshots",
-      [](const std::shared_ptr<GetSnapshots::Request> /*request*/,
-         std::shared_ptr<GetSnapshots::Response> response) {
+      [](const std::shared_ptr<GetSnapshots::Request> /*request*/, std::shared_ptr<GetSnapshots::Response> response) {
         response->success = true;
         response->data = "{}";
       });

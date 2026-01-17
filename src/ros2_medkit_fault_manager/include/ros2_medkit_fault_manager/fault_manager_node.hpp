@@ -74,6 +74,11 @@ class FaultManagerNode : public rclcpp::Node {
   /// Create snapshot configuration from parameters
   SnapshotConfig create_snapshot_config();
 
+  /// Load snapshot configuration from YAML file
+  /// @param config_file Path to the YAML configuration file
+  /// @param config SnapshotConfig to populate with loaded values
+  void load_snapshot_config_from_yaml(const std::string & config_file, SnapshotConfig & config);
+
   /// Publish a fault event to the events topic
   /// @param event_type One of FaultEvent::EVENT_CONFIRMED, EVENT_CLEARED, EVENT_UPDATED
   /// @param fault The fault data associated with this event

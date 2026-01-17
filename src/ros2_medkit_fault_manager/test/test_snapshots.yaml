@@ -1,0 +1,14 @@
+# Test configuration for snapshot capture integration tests
+#
+# This config maps fault codes to specific topics for testing.
+
+fault_specific:
+  TEST_SNAPSHOT_FAULT:
+    - /test/temperature
+
+patterns:
+  "MOTOR_.*":
+    - /test/motor_state
+
+default_topics:
+  - /test/default_data

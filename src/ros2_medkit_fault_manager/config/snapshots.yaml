@@ -1,0 +1,49 @@
+# Snapshot Capture Configuration
+#
+# This file configures which topics to capture when specific faults are confirmed.
+# The captured data provides debugging context at the moment of fault occurrence.
+#
+# Topic resolution priority:
+#   1. fault_specific - exact fault code match (highest priority)
+#   2. patterns - regex pattern match on fault code
+#   3. default_topics - fallback for all other faults (lowest priority)
+#
+# Usage:
+#   ros2 run ros2_medkit_fault_manager fault_manager_node \
+#     --ros-args -p snapshots.config_file:=/path/to/snapshots.yaml
+
+# Exact fault code to topic mapping (highest priority)
+# Use this for specific faults that need particular topics captured
+fault_specific:
+  MOTOR_OVERHEAT:
+    - /joint_states
+    - /motor/temperature
+    - /motor/current
+  BATTERY_LOW:
+    - /battery_state
+    - /power/consumption
+  LIDAR_COMM_FAILURE:
+    - /perception/lidar/scan
+    - /perception/lidar/diagnostics
+
+# Regex pattern to topic mapping (second priority)
+# Patterns are matched against fault codes using std::regex_match
+# First matching pattern wins
+patterns:
+  # All motor-related faults
+  "MOTOR_.*":
+    - /joint_states
+    - /cmd_vel
+  # All sensor faults
+  "SENSOR_.*":
+    - /diagnostics
+    - /sensor_data
+  # All communication failures
+  ".*_COMM_FAILURE":
+    - /diagnostics
+
+# Default topics captured for all faults not matching above (lowest priority)
+# These are captured as a fallback when no specific or pattern match is found
+default_topics:
+  - /diagnostics
+  - /rosout
