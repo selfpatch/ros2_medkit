@@ -16,17 +16,18 @@
 
 #include <chrono>
 #include <cinttypes>
-#include <cstddef>
 #include <sstream>
 
-#include <nlohmann/json.hpp>
-
+#include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
 
 SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx) : ctx_(ctx) {
+  // Read max clients limit from parameter
+  max_sse_clients_ = static_cast<size_t>(ctx_.node()->get_parameter("sse.max_clients").as_int());
+
   // Create subscription to fault events topic
   // Use fully qualified topic name since FaultManager publishes on ~/events
   subscription_ = ctx_.node()->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
@@ -35,7 +36,10 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx) : ctx_(ctx) {
         on_fault_event(msg);
       });
 
-  RCLCPP_INFO(HandlerContext::logger(), "SSE fault handler initialized, subscribed to /fault_manager/events");
+  RCLCPP_INFO(HandlerContext::logger(),
+              "SSE fault handler initialized, subscribed to /fault_manager/events, "
+              "max_clients=%zu",
+              max_sse_clients_);
 }
 
 SSEFaultHandler::~SSEFaultHandler() {
@@ -67,7 +71,17 @@ void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::Co
 }
 
 void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Response & res) {
-  RCLCPP_INFO(HandlerContext::logger(), "SSE client connected from %s", req.remote_addr.c_str());
+  // Check if we're at the client limit before accepting connection
+  if (client_count_.load() >= max_sse_clients_) {
+    RCLCPP_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
+                max_sse_clients_, req.remote_addr.c_str());
+    HandlerContext::send_error(res, httplib::StatusCode::ServiceUnavailable_503,
+                               "Maximum number of SSE clients reached. Please try again later.");
+    return;
+  }
+
+  RCLCPP_INFO(HandlerContext::logger(), "SSE client connected from %s (%zu/%zu)", req.remote_addr.c_str(),
+              client_count_.load() + 1, max_sse_clients_);
 
   // Parse Last-Event-ID header for reconnection support
   uint64_t last_event_id = 0;
@@ -170,7 +184,7 @@ size_t SSEFaultHandler::connected_clients() const {
 std::string SSEFaultHandler::format_sse_event(const ros2_medkit_msgs::msg::FaultEvent & event, uint64_t event_id) {
   nlohmann::json json_event;
   json_event["event_type"] = event.event_type;
-  json_event["fault"] = fault_to_json(event.fault);
+  json_event["fault"] = FaultManager::fault_to_json(event.fault);
 
   // Convert timestamp to seconds with nanosecond precision
   double timestamp_sec = static_cast<double>(event.timestamp.sec) + static_cast<double>(event.timestamp.nanosec) * 1e-9;
@@ -182,34 +196,6 @@ std::string SSEFaultHandler::format_sse_event(const ros2_medkit_msgs::msg::Fault
   sse << "data: " << json_event.dump() << "\n\n";
 
   return sse.str();
-}
-
-nlohmann::json SSEFaultHandler::fault_to_json(const ros2_medkit_msgs::msg::Fault & fault) {
-  nlohmann::json j;
-  j["fault_code"] = fault.fault_code;
-  j["severity"] = fault.severity;
-  j["description"] = fault.description;
-  j["status"] = fault.status;
-  j["occurrence_count"] = fault.occurrence_count;
-
-  // Add human-readable severity label
-  static const char * severity_labels[] = {"INFO", "WARN", "ERROR", "CRITICAL"};
-  if (fault.severity < std::size(severity_labels)) {
-    j["severity_label"] = severity_labels[fault.severity];
-  } else {
-    j["severity_label"] = "UNKNOWN";
-  }
-
-  // Convert timestamps to seconds
-  j["first_occurred"] =
-      static_cast<double>(fault.first_occurred.sec) + static_cast<double>(fault.first_occurred.nanosec) * 1e-9;
-  j["last_occurred"] =
-      static_cast<double>(fault.last_occurred.sec) + static_cast<double>(fault.last_occurred.nanosec) * 1e-9;
-
-  // Reporting sources array
-  j["reporting_sources"] = fault.reporting_sources;
-
-  return j;
 }
 
 }  // namespace handlers

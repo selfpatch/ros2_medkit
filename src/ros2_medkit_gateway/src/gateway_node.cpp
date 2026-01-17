@@ -33,6 +33,9 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("cors.allow_credentials", false);
   declare_parameter("cors.max_age_seconds", 86400);
 
+  // SSE (Server-Sent Events) parameters
+  declare_parameter("sse.max_clients", 10);  // Limit concurrent SSE connections to prevent resource exhaustion
+
   // TLS/HTTPS parameters
   declare_parameter("server.tls.enabled", false);
   declare_parameter("server.tls.cert_file", "");

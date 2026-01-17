@@ -76,10 +76,10 @@ class FaultManager {
   /// @return true if services are available
   bool is_available() const;
 
- private:
-  /// Convert Fault message to JSON
+  /// Convert Fault message to JSON (static utility for reuse by SSE handler)
   static json fault_to_json(const ros2_medkit_msgs::msg::Fault & fault);
 
+ private:
   /// Wait for services to become available
   bool wait_for_services(std::chrono::duration<double> timeout);
 

@@ -22,8 +22,6 @@
 #include <mutex>
 #include <string>
 
-#include <nlohmann/json.hpp>
-
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
@@ -93,9 +91,6 @@ class SSEFaultHandler {
   /// Format a fault event as SSE message
   static std::string format_sse_event(const ros2_medkit_msgs::msg::FaultEvent & event, uint64_t event_id);
 
-  /// Convert fault message to JSON
-  static nlohmann::json fault_to_json(const ros2_medkit_msgs::msg::Fault & fault);
-
   HandlerContext & ctx_;
 
   /// Subscription to fault events topic
@@ -111,6 +106,9 @@ class SSEFaultHandler {
 
   /// Number of connected clients (for monitoring)
   std::atomic<size_t> client_count_{0};
+
+  /// Maximum allowed concurrent SSE clients (from sse.max_clients parameter)
+  size_t max_sse_clients_{10};
 
   /// Shutdown flag for clean termination
   std::atomic<bool> shutdown_flag_{false};

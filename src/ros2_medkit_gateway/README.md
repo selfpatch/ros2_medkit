@@ -642,6 +642,7 @@ curl -X DELETE http://localhost:8080/api/v1/components/temp_sensor/configuration
 Faults represent errors or warnings reported by system components. The gateway provides access to faults stored in `ros2_medkit_fault_manager`.
 
 - `GET /api/v1/faults` - List all faults across the system (convenience API for dashboards)
+- `GET /api/v1/faults/stream` - Real-time fault event stream via Server-Sent Events (SSE)
 - `GET /api/v1/components/{component_id}/faults` - List faults for a specific component
 - `GET /api/v1/components/{component_id}/faults/{fault_code}` - Get a specific fault
 - `DELETE /api/v1/components/{component_id}/faults/{fault_code}` - Clear a fault
@@ -688,6 +689,53 @@ curl http://localhost:8080/api/v1/faults?status=all
   "value": "invalid"
 }
 ```
+
+#### GET /api/v1/faults/stream
+
+Real-time fault event stream using Server-Sent Events (SSE). Clients receive instant notifications when faults are confirmed, updated, or cleared.
+
+**Features:**
+- **Real-time notifications**: Events pushed instantly when fault state changes
+- **Automatic reconnection**: Supports `Last-Event-ID` header for seamless reconnection
+- **Keepalive**: Sends `:keepalive` comment every 30 seconds to prevent timeouts
+- **Event buffer**: Buffers up to 100 recent events for reconnecting clients
+
+**Event Types:**
+- `fault_confirmed` - Fault transitioned to CONFIRMED status
+- `fault_updated` - Fault data changed (occurrence_count, sources, etc.)
+- `fault_cleared` - Fault was cleared via ClearFault service
+
+**Example:**
+```bash
+curl -N http://localhost:8080/api/v1/faults/stream
+```
+
+**Response (SSE Stream):**
+```
+:keepalive
+
+id: 1
+event: fault_confirmed
+data: {"event_type":"fault_confirmed","fault":{"fault_code":"MOTOR_OVERHEAT",...},"timestamp":1735830000.123}
+
+id: 2
+event: fault_cleared
+data: {"event_type":"fault_cleared","fault":{"fault_code":"MOTOR_OVERHEAT",...},"timestamp":1735830060.456}
+```
+
+**Response (503 Service Unavailable - Client Limit Reached):**
+```json
+{
+  "error": "Maximum number of SSE clients reached. Please try again later."
+}
+```
+
+**Reconnection with Last-Event-ID:**
+```bash
+curl -N -H "Last-Event-ID: 5" http://localhost:8080/api/v1/faults/stream
+```
+
+This replays any buffered events with ID > 5, then continues streaming new events.
 
 #### GET /api/v1/components/{component_id}/faults
 
@@ -768,6 +816,12 @@ The gateway can be configured via parameters in `config/gateway_params.yaml` or 
 | `server.port`                | int    | `8080`      | Port for the REST API (range: 1024-65535)                                              |
 | `refresh_interval_ms`        | int    | `2000`      | Cache refresh interval in milliseconds (range: 100-60000)                              |
 | `max_parallel_topic_samples` | int    | `10`        | Max concurrent topic samples when fetching data (range: 1-50)                          |
+
+#### SSE (Server-Sent Events) Configuration
+
+| Parameter        | Type | Default | Description                                                                |
+| ---------------- | ---- | ------- | -------------------------------------------------------------------------- |
+| `sse.max_clients` | int  | `10`    | Maximum concurrent SSE connections. Prevents resource exhaustion attacks. Returns 503 when limit reached. |
 
 #### Native Sampling
 
