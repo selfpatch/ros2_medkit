@@ -703,5 +703,5 @@ Validation errors are reported with the path to the invalid field:
 
 .. seealso::
 
-   - :doc:`manifest-discovery` - User guide for manifest-based discovery
-   - :doc:`migration-to-manifest` - Migration guide
+   - :doc:`/tutorials/manifest-discovery` - User guide for manifest-based discovery
+   - :doc:`/tutorials/migration-to-manifest` - Migration guide

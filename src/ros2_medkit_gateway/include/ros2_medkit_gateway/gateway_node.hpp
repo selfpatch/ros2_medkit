@@ -27,7 +27,7 @@
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/configuration_manager.hpp"
 #include "ros2_medkit_gateway/data_access_manager.hpp"
-#include "ros2_medkit_gateway/discovery_manager.hpp"
+#include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/http/rest_server.hpp"
 #include "ros2_medkit_gateway/models.hpp"

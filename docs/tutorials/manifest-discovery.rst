@@ -423,5 +423,5 @@ Next Steps
 
 .. seealso::
 
-   - `SOVD V1.1.0 Specification <https://asam-ev.github.io/public_draft-rasic-diagnostics_over_ip_service_oriented_vehicle_diagnostics/asamstd/ASAM_SOVD_V1_1_0/>`_
-   - `Example Manifests <https://github.com/selfpatch/ros2_medkit/tree/main/src/ros2_medkit_gateway/config/examples>`_
+   - `ASAM SOVD Standard <https://www.asam.net/standards/detail/sovd/>`_
+   - `Example Manifests <config/examples>`_ in the repository
