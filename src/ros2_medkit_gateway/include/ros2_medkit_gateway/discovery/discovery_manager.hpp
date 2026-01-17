@@ -15,6 +15,9 @@
 #ifndef ROS2_MEDKIT_GATEWAY__DISCOVERY__DISCOVERY_MANAGER_HPP_
 #define ROS2_MEDKIT_GATEWAY__DISCOVERY__DISCOVERY_MANAGER_HPP_
 
+#include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
+#include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
+#include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/discovery/models/common.hpp"
@@ -35,19 +38,55 @@ class NativeTopicSampler;
 class TypeIntrospection;
 
 /**
+ * @brief Discovery mode determining which strategy is used
+ */
+enum class DiscoveryMode {
+  RUNTIME_ONLY,   ///< Traditional ROS graph introspection only
+  MANIFEST_ONLY,  ///< Only expose manifest-declared entities
+  HYBRID          ///< Manifest as source of truth + runtime linking
+};
+
+/**
+ * @brief Parse DiscoveryMode from string
+ * @param str Mode string: "runtime_only", "manifest_only", or "hybrid"
+ * @return Parsed mode (defaults to RUNTIME_ONLY)
+ */
+DiscoveryMode parse_discovery_mode(const std::string & str);
+
+/**
+ * @brief Convert DiscoveryMode to string
+ * @param mode Discovery mode
+ * @return String representation
+ */
+std::string discovery_mode_to_string(DiscoveryMode mode);
+
+/**
+ * @brief Configuration for discovery
+ */
+struct DiscoveryConfig {
+  DiscoveryMode mode{DiscoveryMode::RUNTIME_ONLY};
+  std::string manifest_path;
+  bool manifest_strict_validation{true};
+};
+
+/**
  * @brief Orchestrates entity discovery using pluggable strategies
  *
- * This class delegates discovery to strategy implementations.
- * Currently uses RuntimeDiscoveryStrategy; will support ManifestDiscoveryStrategy
- * and HybridDiscoveryStrategy in the future.
+ * This class delegates discovery to strategy implementations based on
+ * the configured mode:
+ * - RUNTIME_ONLY: Uses RuntimeDiscoveryStrategy (traditional ROS graph)
+ * - MANIFEST_ONLY: Uses manifest as sole source of truth
+ * - HYBRID: Combines manifest definitions with runtime linking
  *
  * The DiscoveryManager provides a unified interface for discovering:
- * - Areas: Logical groupings (ROS 2 namespaces)
+ * - Areas: Logical groupings (ROS 2 namespaces or manifest areas)
  * - Components: Software/hardware units (ROS 2 nodes)
- * - Apps: Software applications (manifest-defined, stub for now)
- * - Functions: Functional groupings (manifest-defined, stub for now)
+ * - Apps: Software applications (manifest-defined)
+ * - Functions: Functional groupings (manifest-defined)
  *
  * @see discovery::RuntimeDiscoveryStrategy
+ * @see discovery::HybridDiscoveryStrategy
+ * @see discovery::ManifestManager
  */
 class DiscoveryManager {
  public:
@@ -56,6 +95,17 @@ class DiscoveryManager {
    * @param node ROS 2 node for graph introspection (must outlive this manager)
    */
   explicit DiscoveryManager(rclcpp::Node * node);
+
+  /**
+   * @brief Initialize with configuration
+   *
+   * Loads manifest if configured, creates appropriate strategy.
+   * For RUNTIME_ONLY mode, this is a no-op.
+   *
+   * @param config Discovery configuration
+   * @return true if initialization succeeded
+   */
+  bool initialize(const DiscoveryConfig & config);
 
   // =========================================================================
   // Main discovery methods (delegate to strategy)
@@ -84,6 +134,77 @@ class DiscoveryManager {
    * @return Vector of discovered Function entities (empty in runtime-only mode)
    */
   std::vector<Function> discover_functions();
+
+  // =========================================================================
+  // Entity lookup by ID
+  // =========================================================================
+
+  /**
+   * @brief Get area by ID
+   * @param id Area identifier
+   * @return Area if found
+   */
+  std::optional<Area> get_area(const std::string & id);
+
+  /**
+   * @brief Get component by ID
+   * @param id Component identifier
+   * @return Component if found
+   */
+  std::optional<Component> get_component(const std::string & id);
+
+  /**
+   * @brief Get app by ID
+   * @param id App identifier
+   * @return App if found
+   */
+  std::optional<App> get_app(const std::string & id);
+
+  /**
+   * @brief Get function by ID
+   * @param id Function identifier
+   * @return Function if found
+   */
+  std::optional<Function> get_function(const std::string & id);
+
+  // =========================================================================
+  // Relationship queries
+  // =========================================================================
+
+  /**
+   * @brief Get subareas of an area
+   * @param area_id Parent area ID
+   * @return Vector of child areas
+   */
+  std::vector<Area> get_subareas(const std::string & area_id);
+
+  /**
+   * @brief Get subcomponents of a component
+   * @param component_id Parent component ID
+   * @return Vector of child components
+   */
+  std::vector<Component> get_subcomponents(const std::string & component_id);
+
+  /**
+   * @brief Get components in an area
+   * @param area_id Area ID
+   * @return Vector of components in the area
+   */
+  std::vector<Component> get_components_for_area(const std::string & area_id);
+
+  /**
+   * @brief Get apps for a component
+   * @param component_id Component ID
+   * @return Vector of apps associated with the component
+   */
+  std::vector<App> get_apps_for_component(const std::string & component_id);
+
+  /**
+   * @brief Get host component IDs for a function
+   * @param function_id Function ID
+   * @return Vector of component IDs that host the function
+   */
+  std::vector<std::string> get_hosts_for_function(const std::string & function_id);
 
   // =========================================================================
   // Runtime-specific methods (delegate to runtime strategy)
@@ -147,6 +268,37 @@ class DiscoveryManager {
    */
   bool is_topic_map_ready() const;
 
+  // =========================================================================
+  // Manifest management
+  // =========================================================================
+
+  /**
+   * @brief Get the manifest manager
+   * @return Pointer to manifest manager (nullptr if not using manifest)
+   */
+  discovery::ManifestManager * get_manifest_manager();
+
+  /**
+   * @brief Reload manifest from file
+   *
+   * Only works if a manifest was loaded during initialize().
+   *
+   * @return true if reload succeeded
+   */
+  bool reload_manifest();
+
+  // =========================================================================
+  // Status
+  // =========================================================================
+
+  /**
+   * @brief Get current discovery mode
+   * @return Active discovery mode
+   */
+  DiscoveryMode get_mode() const {
+    return config_.mode;
+  }
+
   /**
    * @brief Get the current discovery strategy name
    * @return Strategy name (e.g., "runtime", "manifest", "hybrid")
@@ -154,9 +306,21 @@ class DiscoveryManager {
   std::string get_strategy_name() const;
 
  private:
+  /**
+   * @brief Create and activate the appropriate strategy
+   */
+  void create_strategy();
+
   rclcpp::Node * node_;
+  DiscoveryConfig config_;
+
+  // Strategies
   std::unique_ptr<discovery::RuntimeDiscoveryStrategy> runtime_strategy_;
-  // Future: std::unique_ptr<discovery::ManifestDiscoveryStrategy> manifest_strategy_;
+  std::unique_ptr<discovery::ManifestManager> manifest_manager_;
+  std::unique_ptr<discovery::HybridDiscoveryStrategy> hybrid_strategy_;
+
+  // Active strategy pointer (points to one of the above)
+  discovery::DiscoveryStrategy * active_strategy_{nullptr};
 };
 
 }  // namespace ros2_medkit_gateway

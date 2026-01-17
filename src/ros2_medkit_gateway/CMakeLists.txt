@@ -112,6 +112,7 @@ add_library(gateway_lib STATIC
   # Discovery module
   src/discovery/discovery_manager.cpp
   src/discovery/runtime_discovery.cpp
+  src/discovery/hybrid_discovery.cpp
   # Discovery models (with .cpp serialization)
   src/discovery/models/app.cpp
   src/discovery/models/function.cpp
