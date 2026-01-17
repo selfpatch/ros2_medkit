@@ -235,5 +235,114 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
   }
 }
 
+void FaultHandlers::handle_get_snapshots(const httplib::Request & req, httplib::Response & res) {
+  std::string fault_code;
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    fault_code = req.matches[1];
+
+    // Validate fault code
+    if (fault_code.empty() || fault_code.length() > 256) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
+                                 {{"details", "Fault code is empty or too long"}});
+      return;
+    }
+
+    // Optional topic filter from query parameter
+    std::string topic_filter = req.get_param_value("topic");
+
+    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto result = fault_mgr->get_snapshots(fault_code, topic_filter);
+
+    if (result.success) {
+      HandlerContext::send_json(res, result.data);
+    } else {
+      // Check if it's a "not found" error
+      if (result.error_message.find("not found") != std::string::npos ||
+          result.error_message.find("Fault not found") != std::string::npos) {
+        HandlerContext::send_error(res, StatusCode::NotFound_404, "Failed to get snapshots",
+                                   {{"details", result.error_message}, {"fault_code", fault_code}});
+      } else {
+        HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, "Failed to get snapshots",
+                                   {{"details", result.error_message}, {"fault_code", fault_code}});
+      }
+    }
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get snapshots",
+                               {{"details", e.what()}, {"fault_code", fault_code}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_snapshots for fault '%s': %s", fault_code.c_str(),
+                 e.what());
+  }
+}
+
+void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req, httplib::Response & res) {
+  std::string component_id;
+  std::string fault_code;
+  try {
+    if (req.matches.size() < 3) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    component_id = req.matches[1];
+    fault_code = req.matches[2];
+
+    auto component_validation = ctx_.validate_entity_id(component_id);
+    if (!component_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+      return;
+    }
+
+    // Validate fault code
+    if (fault_code.empty() || fault_code.length() > 256) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
+                                 {{"details", "Fault code is empty or too long"}});
+      return;
+    }
+
+    auto namespace_result = ctx_.get_component_namespace_path(component_id);
+    if (!namespace_result) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, namespace_result.error(),
+                                 {{"component_id", component_id}});
+      return;
+    }
+
+    // Optional topic filter from query parameter
+    std::string topic_filter = req.get_param_value("topic");
+
+    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto result = fault_mgr->get_snapshots(fault_code, topic_filter);
+
+    if (result.success) {
+      // Add component context to response
+      json response = result.data;
+      response["component_id"] = component_id;
+      HandlerContext::send_json(res, response);
+    } else {
+      // Check if it's a "not found" error
+      if (result.error_message.find("not found") != std::string::npos ||
+          result.error_message.find("Fault not found") != std::string::npos) {
+        HandlerContext::send_error(
+            res, StatusCode::NotFound_404, "Failed to get snapshots",
+            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+      } else {
+        HandlerContext::send_error(
+            res, StatusCode::ServiceUnavailable_503, "Failed to get snapshots",
+            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+      }
+    }
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get snapshots",
+                               {{"details", e.what()}, {"component_id", component_id}, {"fault_code", fault_code}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_component_snapshots for component '%s', fault '%s': %s",
+                 component_id.c_str(), fault_code.c_str(), e.what());
+  }
+}
+
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway

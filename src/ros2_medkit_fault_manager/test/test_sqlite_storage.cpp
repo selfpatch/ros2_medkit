@@ -500,6 +500,100 @@ TEST_F(SqliteFaultStorageTest, TimeBasedConfirmationWhenEnabled) {
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
+// Snapshot storage tests
+TEST_F(SqliteFaultStorageTest, StoreAndRetrieveSnapshot) {
+  using ros2_medkit_fault_manager::SnapshotData;
+
+  // First, create a fault to associate the snapshot with
+  rclcpp::Clock clock;
+  storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                               "Motor overheated", "/motor_node", clock.now());
+
+  // Store a snapshot
+  SnapshotData snapshot;
+  snapshot.fault_code = "MOTOR_OVERHEAT";
+  snapshot.topic = "/motor/temperature";
+  snapshot.message_type = "sensor_msgs/msg/Temperature";
+  snapshot.data = R"({"temperature": 85.5, "variance": 0.1})";
+  snapshot.captured_at_ns = clock.now().nanoseconds();
+
+  storage_->store_snapshot(snapshot);
+
+  // Retrieve snapshots
+  auto snapshots = storage_->get_snapshots("MOTOR_OVERHEAT");
+  ASSERT_EQ(snapshots.size(), 1u);
+
+  EXPECT_EQ(snapshots[0].fault_code, "MOTOR_OVERHEAT");
+  EXPECT_EQ(snapshots[0].topic, "/motor/temperature");
+  EXPECT_EQ(snapshots[0].message_type, "sensor_msgs/msg/Temperature");
+  EXPECT_EQ(snapshots[0].data, R"({"temperature": 85.5, "variance": 0.1})");
+  EXPECT_EQ(snapshots[0].captured_at_ns, snapshot.captured_at_ns);
+}
+
+TEST_F(SqliteFaultStorageTest, MultipleSnapshotsForSameFault) {
+  using ros2_medkit_fault_manager::SnapshotData;
+
+  rclcpp::Clock clock;
+  storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                               "Motor overheated", "/motor_node", clock.now());
+
+  // Store multiple snapshots for the same fault
+  SnapshotData snapshot1;
+  snapshot1.fault_code = "MOTOR_OVERHEAT";
+  snapshot1.topic = "/motor/temperature";
+  snapshot1.message_type = "sensor_msgs/msg/Temperature";
+  snapshot1.data = R"({"temperature": 85.5})";
+  snapshot1.captured_at_ns = clock.now().nanoseconds();
+
+  SnapshotData snapshot2;
+  snapshot2.fault_code = "MOTOR_OVERHEAT";
+  snapshot2.topic = "/motor/rpm";
+  snapshot2.message_type = "std_msgs/msg/Float64";
+  snapshot2.data = R"({"data": 5500.0})";
+  snapshot2.captured_at_ns = clock.now().nanoseconds();
+
+  storage_->store_snapshot(snapshot1);
+  storage_->store_snapshot(snapshot2);
+
+  auto snapshots = storage_->get_snapshots("MOTOR_OVERHEAT");
+  EXPECT_EQ(snapshots.size(), 2u);
+}
+
+TEST_F(SqliteFaultStorageTest, FilterSnapshotsByTopic) {
+  using ros2_medkit_fault_manager::SnapshotData;
+
+  rclcpp::Clock clock;
+  storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                               "Motor overheated", "/motor_node", clock.now());
+
+  SnapshotData snapshot1;
+  snapshot1.fault_code = "MOTOR_OVERHEAT";
+  snapshot1.topic = "/motor/temperature";
+  snapshot1.message_type = "sensor_msgs/msg/Temperature";
+  snapshot1.data = R"({"temperature": 85.5})";
+  snapshot1.captured_at_ns = clock.now().nanoseconds();
+
+  SnapshotData snapshot2;
+  snapshot2.fault_code = "MOTOR_OVERHEAT";
+  snapshot2.topic = "/motor/rpm";
+  snapshot2.message_type = "std_msgs/msg/Float64";
+  snapshot2.data = R"({"data": 5500.0})";
+  snapshot2.captured_at_ns = clock.now().nanoseconds();
+
+  storage_->store_snapshot(snapshot1);
+  storage_->store_snapshot(snapshot2);
+
+  // Filter by topic
+  auto filtered = storage_->get_snapshots("MOTOR_OVERHEAT", "/motor/temperature");
+  ASSERT_EQ(filtered.size(), 1u);
+  EXPECT_EQ(filtered[0].topic, "/motor/temperature");
+}
+
+TEST_F(SqliteFaultStorageTest, NoSnapshotsForUnknownFault) {
+  auto snapshots = storage_->get_snapshots("UNKNOWN_FAULT");
+  EXPECT_TRUE(snapshots.empty());
+}
+
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
   ::testing::InitGoogleTest(&argc, argv);

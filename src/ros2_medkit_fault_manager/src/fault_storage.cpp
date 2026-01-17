@@ -261,4 +261,24 @@ size_t InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & 
   return confirmed_count;
 }
 
+void InMemoryFaultStorage::store_snapshot(const SnapshotData & snapshot) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  snapshots_.push_back(snapshot);
+}
+
+std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(const std::string & fault_code,
+                                                              const std::string & topic_filter) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  std::vector<SnapshotData> result;
+  for (const auto & snapshot : snapshots_) {
+    if (snapshot.fault_code == fault_code) {
+      if (topic_filter.empty() || snapshot.topic == topic_filter) {
+        result.push_back(snapshot);
+      }
+    }
+  }
+  return result;
+}
+
 }  // namespace ros2_medkit_fault_manager

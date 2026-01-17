@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -72,6 +73,15 @@ struct FaultState {
 /// Event type alias for convenience
 using EventType = ros2_medkit_msgs::srv::ReportFault::Request;
 
+/// Snapshot data captured when a fault is confirmed
+struct SnapshotData {
+  std::string fault_code;
+  std::string topic;
+  std::string message_type;
+  std::string data;  ///< JSON-encoded message data
+  int64_t captured_at_ns{0};
+};
+
 /// Abstract interface for fault storage backends
 class FaultStorage {
  public:
@@ -124,6 +134,17 @@ class FaultStorage {
   /// @return Number of faults that were confirmed
   virtual size_t check_time_based_confirmation(const rclcpp::Time & current_time) = 0;
 
+  /// Store a snapshot captured when a fault was confirmed
+  /// @param snapshot The snapshot data to store
+  virtual void store_snapshot(const SnapshotData & snapshot) = 0;
+
+  /// Get snapshots for a fault
+  /// @param fault_code The fault code to get snapshots for
+  /// @param topic_filter Optional topic filter (empty = all topics)
+  /// @return Vector of snapshots for the fault
+  virtual std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
+                                                  const std::string & topic_filter = "") const = 0;
+
  protected:
   FaultStorage() = default;
   FaultStorage(const FaultStorage &) = default;
@@ -157,12 +178,17 @@ class InMemoryFaultStorage : public FaultStorage {
 
   size_t check_time_based_confirmation(const rclcpp::Time & current_time) override;
 
+  void store_snapshot(const SnapshotData & snapshot) override;
+  std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
+                                          const std::string & topic_filter = "") const override;
+
  private:
   /// Update fault status based on debounce counter
   void update_status(FaultState & state);
 
   mutable std::mutex mutex_;
   std::map<std::string, FaultState> faults_;
+  std::vector<SnapshotData> snapshots_;
   DebounceConfig config_;
 };
 

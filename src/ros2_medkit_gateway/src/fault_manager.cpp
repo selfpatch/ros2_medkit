@@ -28,6 +28,7 @@ FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
   report_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
   get_faults_client_ = node_->create_client<ros2_medkit_msgs::srv::GetFaults>("/fault_manager/get_faults");
   clear_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ClearFault>("/fault_manager/clear_fault");
+  get_snapshots_client_ = node_->create_client<ros2_medkit_msgs::srv::GetSnapshots>("/fault_manager/get_snapshots");
 
   // Get configurable timeout
   service_timeout_sec_ = node_->declare_parameter("fault_service_timeout_sec", 5.0);
@@ -239,6 +240,46 @@ FaultResult FaultManager::clear_fault(const std::string & fault_code) {
   result.data = {{"success", response->success}, {"message", response->message}};
   if (!response->success) {
     result.error_message = response->message;
+  }
+
+  return result;
+}
+
+FaultResult FaultManager::get_snapshots(const std::string & fault_code, const std::string & topic) {
+  std::lock_guard<std::mutex> lock(service_mutex_);
+  FaultResult result;
+
+  auto timeout = std::chrono::duration<double>(service_timeout_sec_);
+  if (!get_snapshots_client_->wait_for_service(timeout)) {
+    result.success = false;
+    result.error_message = "GetSnapshots service not available";
+    return result;
+  }
+
+  auto request = std::make_shared<ros2_medkit_msgs::srv::GetSnapshots::Request>();
+  request->fault_code = fault_code;
+  request->topic = topic;
+
+  auto future = get_snapshots_client_->async_send_request(request);
+
+  if (future.wait_for(timeout) != std::future_status::ready) {
+    result.success = false;
+    result.error_message = "GetSnapshots service call timed out";
+    return result;
+  }
+
+  auto response = future.get();
+  result.success = response->success;
+
+  if (response->success) {
+    // Parse the JSON data from the service response
+    try {
+      result.data = json::parse(response->data);
+    } catch (const json::exception & e) {
+      result.data = {{"raw_data", response->data}};
+    }
+  } else {
+    result.error_message = response->error_message;
   }
 
   return result;

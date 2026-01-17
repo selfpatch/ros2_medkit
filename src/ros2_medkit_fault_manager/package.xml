@@ -12,7 +12,9 @@
 
   <depend>rclcpp</depend>
   <depend>ros2_medkit_msgs</depend>
+  <depend>ros2_medkit_serialization</depend>
   <depend>sqlite3</depend>
+  <depend>nlohmann-json-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

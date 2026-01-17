@@ -25,8 +25,10 @@ namespace handlers {
  *
  * Provides handlers for:
  * - GET /faults - List all faults
+ * - GET /faults/{fault_code}/snapshots - Get snapshots for a fault
  * - GET /components/{component_id}/faults - List faults for a component
  * - GET /components/{component_id}/faults/{fault_code} - Get specific fault
+ * - GET /components/{component_id}/faults/{fault_code}/snapshots - Get snapshots for a fault
  * - DELETE /components/{component_id}/faults/{fault_code} - Clear fault
  */
 class FaultHandlers {
@@ -57,6 +59,16 @@ class FaultHandlers {
    * @brief Handle DELETE /components/{component_id}/faults/{fault_code} - clear fault.
    */
   void handle_clear_fault(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /faults/{fault_code}/snapshots - get snapshots for a fault (system-wide).
+   */
+  void handle_get_snapshots(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /components/{component_id}/faults/{fault_code}/snapshots - get snapshots for a fault.
+   */
+  void handle_get_component_snapshots(const httplib::Request & req, httplib::Response & res);
 
  private:
   HandlerContext & ctx_;
