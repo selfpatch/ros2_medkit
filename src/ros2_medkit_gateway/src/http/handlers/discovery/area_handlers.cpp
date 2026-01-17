@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/http/handlers/discovery/area_handlers.hpp"
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
@@ -37,6 +38,62 @@ void AreaHandlers::handle_list_areas(const httplib::Request & req, httplib::Resp
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_areas: %s", e.what());
+  }
+}
+
+void AreaHandlers::handle_get_area(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string area_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(area_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid area ID",
+                                 {{"details", validation_result.error()}, {"area_id", area_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto area_opt = discovery->get_area(area_id);
+
+    if (!area_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Area not found", {{"area_id", area_id}});
+      return;
+    }
+
+    const auto & area = *area_opt;
+
+    json response;
+    response["id"] = area.id;
+    response["name"] = area.name;
+    response["type"] = area.type;
+
+    if (!area.description.empty()) {
+      response["description"] = area.description;
+    }
+
+    // Build capabilities for areas
+    using Cap = CapabilityBuilder::Capability;
+    std::vector<Cap> caps = {Cap::SUBAREAS, Cap::RELATED_COMPONENTS};
+    response["capabilities"] = CapabilityBuilder::build_capabilities("areas", area.id, caps);
+
+    // Build HATEOAS links
+    LinksBuilder links;
+    links.self("/api/v1/areas/" + area.id).collection("/api/v1/areas");
+    if (!area.parent_area_id.empty()) {
+      links.parent("/api/v1/areas/" + area.parent_area_id);
+    }
+    response["_links"] = links.build();
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_area: %s", e.what());
   }
 }
 

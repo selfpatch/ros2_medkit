@@ -234,6 +234,11 @@ void RESTServer::setup_routes() {
              area_handlers_->handle_get_related_components(req, res);
            });
 
+  // Single area (capabilities) - must be after more specific routes
+  srv->Get((api_path("/areas") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    area_handlers_->handle_get_area(req, res);
+  });
+
   // Component topic data (specific topic) - register before general route
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
   srv->Get((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
@@ -258,6 +263,11 @@ void RESTServer::setup_routes() {
            [this](const httplib::Request & req, httplib::Response & res) {
              component_handlers_->handle_get_related_apps(req, res);
            });
+
+  // Single component (capabilities) - must be after more specific routes
+  srv->Get((api_path("/components") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    component_handlers_->handle_get_component(req, res);
+  });
 
   // Component topic publish (PUT)
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)

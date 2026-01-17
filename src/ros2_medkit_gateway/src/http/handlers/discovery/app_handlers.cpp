@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/http/handlers/discovery/app_handlers.hpp"
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
@@ -111,27 +112,27 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
     }
     response["source"] = app.source;
 
-    // Capabilities
-    json capabilities = json::array();
-    capabilities.push_back({{"name", "data"}, {"href", "/api/v1/apps/" + app.id + "/data"}});
-    capabilities.push_back({{"name", "operations"}, {"href", "/api/v1/apps/" + app.id + "/operations"}});
-    capabilities.push_back({{"name", "configurations"}, {"href", "/api/v1/apps/" + app.id + "/configurations"}});
-    response["capabilities"] = capabilities;
+    // Build capabilities using CapabilityBuilder
+    using Cap = CapabilityBuilder::Capability;
+    std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS};
+    response["capabilities"] = CapabilityBuilder::build_capabilities("apps", app.id, caps);
 
-    // HATEOAS links
-    json links;
-    links["self"] = "/api/v1/apps/" + app.id;
+    // Build HATEOAS links using LinksBuilder
+    LinksBuilder links;
+    links.self("/api/v1/apps/" + app.id).collection("/api/v1/apps");
     if (!app.component_id.empty()) {
-      links["is-located-on"] = "/api/v1/components/" + app.component_id;
+      links.add("is-located-on", "/api/v1/components/" + app.component_id);
     }
+    response["_links"] = links.build();
+
+    // Add depends-on as array if present (special case - multiple links)
     if (!app.depends_on.empty()) {
       json depends_links = json::array();
       for (const auto & dep_id : app.depends_on) {
         depends_links.push_back("/api/v1/apps/" + dep_id);
       }
-      links["depends-on"] = depends_links;
+      response["_links"]["depends-on"] = depends_links;
     }
-    response["_links"] = links;
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {

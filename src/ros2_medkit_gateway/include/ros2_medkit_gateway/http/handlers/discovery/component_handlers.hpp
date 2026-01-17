@@ -25,6 +25,7 @@ namespace handlers {
  *
  * Provides handlers for:
  * - GET /components - List all components
+ * - GET /components/{component_id} - Get a specific component with capabilities
  * - GET /components/{component_id}/data - Get all topic data for a component
  * - GET /components/{component_id}/data/{topic_name} - Get specific topic data
  * - PUT /components/{component_id}/data/{topic_name} - Publish to a topic
@@ -46,6 +47,11 @@ class ComponentHandlers {
    * @brief Handle GET /components - list all components.
    */
   void handle_list_components(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /components/{component_id} - get a specific component with capabilities.
+   */
+  void handle_get_component(const httplib::Request & req, httplib::Response & res);
 
   /**
    * @brief Handle GET /components/{component_id}/data - get all topic data.

@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/http/handlers/discovery/function_handlers.hpp"
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
@@ -99,24 +100,24 @@ void FunctionHandlers::handle_get_function(const httplib::Request & req, httplib
     }
     response["source"] = func.source;
 
-    // Capabilities
-    json capabilities = json::array();
-    capabilities.push_back({{"name", "hosts"}, {"href", "/api/v1/functions/" + func.id + "/hosts"}});
-    capabilities.push_back({{"name", "data"}, {"href", "/api/v1/functions/" + func.id + "/data"}});
-    capabilities.push_back({{"name", "operations"}, {"href", "/api/v1/functions/" + func.id + "/operations"}});
-    response["capabilities"] = capabilities;
+    // Build capabilities using CapabilityBuilder
+    using Cap = CapabilityBuilder::Capability;
+    std::vector<Cap> caps = {Cap::HOSTS, Cap::DATA, Cap::OPERATIONS};
+    response["capabilities"] = CapabilityBuilder::build_capabilities("functions", func.id, caps);
 
-    // HATEOAS links
-    json links;
-    links["self"] = "/api/v1/functions/" + func.id;
+    // Build HATEOAS links using LinksBuilder
+    LinksBuilder links;
+    links.self("/api/v1/functions/" + func.id).collection("/api/v1/functions");
+    response["_links"] = links.build();
+
+    // Add depends-on as array if present (special case - multiple links)
     if (!func.depends_on.empty()) {
       json depends_links = json::array();
       for (const auto & dep_id : func.depends_on) {
         depends_links.push_back("/api/v1/functions/" + dep_id);
       }
-      links["depends-on"] = depends_links;
+      response["_links"]["depends-on"] = depends_links;
     }
-    response["_links"] = links;
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {

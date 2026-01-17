@@ -25,6 +25,7 @@ namespace handlers {
  *
  * Provides handlers for:
  * - GET /areas - List all areas
+ * - GET /areas/{area_id} - Get a specific area with capabilities
  * - GET /areas/{area_id}/components - List components in an area
  * - GET /areas/{area_id}/subareas - List nested areas within an area
  * - GET /areas/{area_id}/related-components - List components related to area
@@ -44,6 +45,11 @@ class AreaHandlers {
    * @brief Handle GET /areas - list all discovery areas.
    */
   void handle_list_areas(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /areas/{area_id} - get a specific area with capabilities.
+   */
+  void handle_get_area(const httplib::Request & req, httplib::Response & res);
 
   /**
    * @brief Handle GET /areas/{area_id}/components - list components in area.

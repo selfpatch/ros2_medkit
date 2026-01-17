@@ -19,6 +19,7 @@
 
 #include "ros2_medkit_gateway/exceptions.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
@@ -41,6 +42,67 @@ void ComponentHandlers::handle_list_components(const httplib::Request & req, htt
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_components: %s", e.what());
+  }
+}
+
+void ComponentHandlers::handle_get_component(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string component_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(component_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+                                 {{"details", validation_result.error()}, {"component_id", component_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto comp_opt = discovery->get_component(component_id);
+
+    if (!comp_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
+                                 {{"component_id", component_id}});
+      return;
+    }
+
+    const auto & comp = *comp_opt;
+
+    json response;
+    response["id"] = comp.id;
+    response["name"] = comp.name;
+    response["type"] = comp.type;
+
+    if (!comp.description.empty()) {
+      response["description"] = comp.description;
+    }
+
+    // Build capabilities for components
+    using Cap = CapabilityBuilder::Capability;
+    std::vector<Cap> caps = {Cap::DATA,   Cap::OPERATIONS,    Cap::CONFIGURATIONS,
+                             Cap::FAULTS, Cap::SUBCOMPONENTS, Cap::RELATED_APPS};
+    response["capabilities"] = CapabilityBuilder::build_capabilities("components", comp.id, caps);
+
+    // Build HATEOAS links
+    LinksBuilder links;
+    links.self("/api/v1/components/" + comp.id).collection("/api/v1/components");
+    if (!comp.area.empty()) {
+      links.add("area", "/api/v1/areas/" + comp.area);
+    }
+    if (!comp.parent_component_id.empty()) {
+      links.parent("/api/v1/components/" + comp.parent_component_id);
+    }
+    response["_links"] = links.build();
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_component: %s", e.what());
   }
 }
 

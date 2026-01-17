@@ -129,6 +129,8 @@ add_library(gateway_lib STATIC
   src/http/handlers/discovery/component_handlers.cpp
   src/http/handlers/discovery/app_handlers.cpp
   src/http/handlers/discovery/function_handlers.cpp
+  # HTTP handlers - utilities
+  src/http/handlers/capability_builder.cpp
   # HTTP handlers - other
   src/http/handlers/handler_context.cpp
   src/http/handlers/health_handlers.cpp
@@ -226,7 +228,7 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_BINARY_DIR}"
     CONFIG_FILE "${ament_cmake_clang_tidy_CONFIG_FILE}"
     HEADER_FILTER "${ament_cmake_clang_tidy_HEADER_FILTER}"
-    TIMEOUT 600
+    TIMEOUT 1200
   )
 
   # Add GTest
@@ -282,6 +284,10 @@ if(BUILD_TESTING)
   # Add runtime linker tests (TASK_005)
   ament_add_gtest(test_runtime_linker test/test_runtime_linker.cpp)
   target_link_libraries(test_runtime_linker gateway_lib)
+
+  # Add capability builder tests (TASK_010)
+  ament_add_gtest(test_capability_builder test/test_capability_builder.cpp)
+  target_link_libraries(test_capability_builder gateway_lib)
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
