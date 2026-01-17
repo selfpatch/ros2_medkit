@@ -26,6 +26,10 @@ namespace handlers {
  * Provides handlers for:
  * - GET /areas - List all areas
  * - GET /areas/{area_id}/components - List components in an area
+ * - GET /areas/{area_id}/subareas - List nested areas within an area
+ * - GET /areas/{area_id}/related-components - List components related to area
+ *
+ * @verifies REQ_DISCOVERY_004 Entity relationships
  */
 class AreaHandlers {
  public:
@@ -45,6 +49,16 @@ class AreaHandlers {
    * @brief Handle GET /areas/{area_id}/components - list components in area.
    */
   void handle_area_components(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /areas/{area_id}/subareas - list nested areas.
+   */
+  void handle_get_subareas(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /areas/{area_id}/related-components - list related components.
+   */
+  void handle_get_related_components(const httplib::Request & req, httplib::Response & res);
 
  private:
   HandlerContext & ctx_;

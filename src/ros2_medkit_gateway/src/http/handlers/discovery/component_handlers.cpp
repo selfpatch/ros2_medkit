@@ -336,5 +336,118 @@ void ComponentHandlers::handle_component_topic_publish(const httplib::Request & 
   }
 }
 
+void ComponentHandlers::handle_get_subcomponents(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string component_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(component_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+                                 {{"details", validation_result.error()}, {"component_id", component_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto comp_opt = discovery->get_component(component_id);
+
+    if (!comp_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
+                                 {{"component_id", component_id}});
+      return;
+    }
+
+    // Get subcomponents
+    auto subcomponents = discovery->get_subcomponents(component_id);
+
+    json items = json::array();
+    for (const auto & sub : subcomponents) {
+      json item;
+      item["id"] = sub.id;
+      item["name"] = sub.name;
+      item["href"] = "/api/v1/components/" + sub.id;
+      items.push_back(item);
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    // HATEOAS links
+    json links;
+    links["self"] = "/api/v1/components/" + component_id + "/subcomponents";
+    links["parent"] = "/api/v1/components/" + component_id;
+    response["_links"] = links;
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_subcomponents: %s", e.what());
+  }
+}
+
+void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string component_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(component_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+                                 {{"details", validation_result.error()}, {"component_id", component_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto comp_opt = discovery->get_component(component_id);
+
+    if (!comp_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
+                                 {{"component_id", component_id}});
+      return;
+    }
+
+    // Get apps for this component (via is-located-on relationship)
+    auto apps = discovery->get_apps_for_component(component_id);
+
+    json items = json::array();
+    for (const auto & app : apps) {
+      json item;
+      item["id"] = app.id;
+      item["name"] = app.name;
+      item["href"] = "/api/v1/apps/" + app.id;
+      if (app.is_online) {
+        item["is_online"] = true;
+      }
+      items.push_back(item);
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    // HATEOAS links
+    json links;
+    links["self"] = "/api/v1/components/" + component_id + "/related-apps";
+    links["component"] = "/api/v1/components/" + component_id;
+    response["_links"] = links;
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_related_apps: %s", e.what());
+  }
+}
+
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway

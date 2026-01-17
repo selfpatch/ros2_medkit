@@ -89,5 +89,113 @@ void AreaHandlers::handle_area_components(const httplib::Request & req, httplib:
   }
 }
 
+void AreaHandlers::handle_get_subareas(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string area_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(area_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid area ID",
+                                 {{"details", validation_result.error()}, {"area_id", area_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto area_opt = discovery->get_area(area_id);
+
+    if (!area_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Area not found", {{"area_id", area_id}});
+      return;
+    }
+
+    // Get subareas
+    auto subareas = discovery->get_subareas(area_id);
+
+    json items = json::array();
+    for (const auto & subarea : subareas) {
+      json item;
+      item["id"] = subarea.id;
+      item["name"] = subarea.name;
+      item["href"] = "/api/v1/areas/" + subarea.id;
+      items.push_back(item);
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    // HATEOAS links
+    json links;
+    links["self"] = "/api/v1/areas/" + area_id + "/subareas";
+    links["parent"] = "/api/v1/areas/" + area_id;
+    response["_links"] = links;
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_subareas: %s", e.what());
+  }
+}
+
+void AreaHandlers::handle_get_related_components(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string area_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(area_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid area ID",
+                                 {{"details", validation_result.error()}, {"area_id", area_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto area_opt = discovery->get_area(area_id);
+
+    if (!area_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Area not found", {{"area_id", area_id}});
+      return;
+    }
+
+    // Get components for this area
+    auto components = discovery->get_components_for_area(area_id);
+
+    json items = json::array();
+    for (const auto & comp : components) {
+      json item;
+      item["id"] = comp.id;
+      item["name"] = comp.name;
+      item["href"] = "/api/v1/components/" + comp.id;
+      items.push_back(item);
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    // HATEOAS links
+    json links;
+    links["self"] = "/api/v1/areas/" + area_id + "/related-components";
+    links["area"] = "/api/v1/areas/" + area_id;
+    response["_links"] = links;
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_related_components: %s", e.what());
+  }
+}
+
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway

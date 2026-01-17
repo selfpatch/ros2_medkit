@@ -28,6 +28,10 @@ namespace handlers {
  * - GET /components/{component_id}/data - Get all topic data for a component
  * - GET /components/{component_id}/data/{topic_name} - Get specific topic data
  * - PUT /components/{component_id}/data/{topic_name} - Publish to a topic
+ * - GET /components/{component_id}/subcomponents - List nested components
+ * - GET /components/{component_id}/related-apps - List apps on component
+ *
+ * @verifies REQ_DISCOVERY_004 Entity relationships
  */
 class ComponentHandlers {
  public:
@@ -57,6 +61,16 @@ class ComponentHandlers {
    * @brief Handle PUT /components/{component_id}/data/{topic_name} - publish to topic.
    */
   void handle_component_topic_publish(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /components/{component_id}/subcomponents - list nested components.
+   */
+  void handle_get_subcomponents(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /components/{component_id}/related-apps - list apps on component.
+   */
+  void handle_get_related_apps(const httplib::Request & req, httplib::Response & res);
 
  private:
   HandlerContext & ctx_;
