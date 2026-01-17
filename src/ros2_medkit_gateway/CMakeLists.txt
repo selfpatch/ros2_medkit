@@ -119,6 +119,7 @@ add_library(gateway_lib STATIC
   src/discovery/manifest/manifest_parser.cpp
   src/discovery/manifest/manifest_validator.cpp
   src/discovery/manifest/manifest_manager.cpp
+  src/discovery/manifest/runtime_linker.cpp
   # HTTP module (subfolder)
   src/http/http_server.cpp
   src/http/rest_server.cpp
@@ -276,6 +277,10 @@ if(BUILD_TESTING)
   # Add manifest manager tests (TASK_004)
   ament_add_gtest(test_manifest_manager test/test_manifest_manager.cpp)
   target_link_libraries(test_manifest_manager gateway_lib)
+
+  # Add runtime linker tests (TASK_005)
+  ament_add_gtest(test_runtime_linker test/test_runtime_linker.cpp)
+  target_link_libraries(test_runtime_linker gateway_lib)
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
