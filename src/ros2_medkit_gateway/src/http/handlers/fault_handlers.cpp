@@ -132,7 +132,7 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
     // Fault codes may contain dots and underscores, validate basic constraints
     if (fault_code.empty() || fault_code.length() > 256) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
-                                 {{"details", "Fault code is empty or too long"}});
+                                 {{"details", "Fault code must be between 1 and 256 characters"}});
       return;
     }
 
@@ -193,7 +193,7 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     // Validate fault code
     if (fault_code.empty() || fault_code.length() > 256) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
-                                 {{"details", "Fault code is empty or too long"}});
+                                 {{"details", "Fault code must be between 1 and 256 characters"}});
       return;
     }
 
@@ -248,7 +248,7 @@ void FaultHandlers::handle_get_snapshots(const httplib::Request & req, httplib::
     // Validate fault code
     if (fault_code.empty() || fault_code.length() > 256) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
-                                 {{"details", "Fault code is empty or too long"}});
+                                 {{"details", "Fault code must be between 1 and 256 characters"}});
       return;
     }
 
@@ -301,7 +301,7 @@ void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req,
     // Validate fault code
     if (fault_code.empty() || fault_code.length() > 256) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
-                                 {{"details", "Fault code is empty or too long"}});
+                                 {{"details", "Fault code must be between 1 and 256 characters"}});
       return;
     }
 

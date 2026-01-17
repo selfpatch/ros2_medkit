@@ -1,4 +1,4 @@
-// Copyright 2025 mfaferek93
+// Copyright 2026 mfaferek93
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,12 +36,18 @@ SnapshotCapture::SnapshotCapture(rclcpp::Node * node, FaultStorage * storage, co
     throw std::invalid_argument("SnapshotCapture requires a valid storage pointer");
   }
 
+  // Create dedicated callback group to avoid reentrancy with service callbacks
+  snapshot_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
   // Compile regex patterns for performance
+  size_t failed_patterns = 0;
   for (const auto & [pattern, topics] : config_.patterns) {
     try {
       compiled_patterns_.emplace_back(std::regex(pattern), topics);
     } catch (const std::regex_error & e) {
-      RCLCPP_WARN(node_->get_logger(), "Invalid regex pattern '%s' in snapshot config: %s", pattern.c_str(), e.what());
+      RCLCPP_ERROR(node_->get_logger(), "Invalid regex pattern '%s' in snapshot config will be IGNORED: %s",
+                   pattern.c_str(), e.what());
+      ++failed_patterns;
     }
   }
 
@@ -50,8 +56,15 @@ SnapshotCapture::SnapshotCapture(rclcpp::Node * node, FaultStorage * storage, co
     init_background_subscriptions();
   }
 
-  RCLCPP_INFO(node_->get_logger(), "SnapshotCapture initialized (enabled=%s, background=%s, timeout=%.1fs)",
-              config_.enabled ? "true" : "false", config_.background_capture ? "true" : "false", config_.timeout_sec);
+  if (failed_patterns > 0) {
+    RCLCPP_WARN(node_->get_logger(), "SnapshotCapture initialized with %zu/%zu patterns failed to compile",
+                failed_patterns, config_.patterns.size());
+  }
+
+  RCLCPP_INFO(node_->get_logger(),
+              "SnapshotCapture initialized (enabled=%s, background=%s, timeout=%.1fs, patterns=%zu)",
+              config_.enabled ? "true" : "false", config_.background_capture ? "true" : "false", config_.timeout_sec,
+              compiled_patterns_.size());
 }
 
 SnapshotCapture::~SnapshotCapture() {
@@ -71,7 +84,8 @@ void SnapshotCapture::capture(const std::string & fault_code) {
     return;
   }
 
-  RCLCPP_INFO(node_->get_logger(), "Capturing snapshots for fault '%s' (%zu topics)", fault_code.c_str(), topics.size());
+  RCLCPP_INFO(node_->get_logger(), "Capturing snapshots for fault '%s' (%zu topics)", fault_code.c_str(),
+              topics.size());
 
   size_t captured_count = 0;
   for (const auto & topic : topics) {
@@ -156,11 +170,19 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
       }
     };
 
-    subscription = node_->create_generic_subscription(topic, msg_type, qos, callback);
+    // Use dedicated callback group to avoid reentrancy with service callbacks
+    rclcpp::SubscriptionOptions sub_options;
+    sub_options.callback_group = snapshot_callback_group_;
+
+    subscription = node_->create_generic_subscription(topic, msg_type, qos, callback, sub_options);
   } catch (const std::exception & e) {
     RCLCPP_WARN(node_->get_logger(), "Failed to create subscription for '%s': %s", topic.c_str(), e.what());
     return false;
   }
+
+  // Use a local executor to spin only snapshot subscriptions (avoids reentrancy)
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_callback_group(snapshot_callback_group_, node_->get_node_base_interface());
 
   // Wait for message with timeout
   const auto timeout = std::chrono::duration<double>(config_.timeout_sec);
@@ -173,10 +195,7 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
       return false;
     }
 
-    rclcpp::spin_some(node_->get_node_base_interface());
-    if (!received.load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    executor.spin_some(std::chrono::milliseconds(10));
   }
 
   // Deserialize to JSON

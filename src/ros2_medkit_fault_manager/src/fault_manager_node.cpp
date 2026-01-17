@@ -338,14 +338,16 @@ void FaultManagerNode::handle_get_snapshots(
   nlohmann::json result;
   result["fault_code"] = request->fault_code;
 
-  // Find the latest capture time
-  int64_t latest_captured_at = 0;
-  for (const auto & snapshot : snapshots) {
-    if (snapshot.captured_at_ns > latest_captured_at) {
-      latest_captured_at = snapshot.captured_at_ns;
+  // Find the latest capture time (only include if snapshots exist)
+  if (!snapshots.empty()) {
+    int64_t latest_captured_at = 0;
+    for (const auto & snapshot : snapshots) {
+      if (snapshot.captured_at_ns > latest_captured_at) {
+        latest_captured_at = snapshot.captured_at_ns;
+      }
     }
+    result["captured_at"] = static_cast<double>(latest_captured_at) / 1e9;
   }
-  result["captured_at"] = static_cast<double>(latest_captured_at) / 1e9;
 
   // Build topics object
   nlohmann::json topics_json = nlohmann::json::object();

@@ -37,6 +37,7 @@ find_package(ros2_medkit_msgs REQUIRED)
 find_package(ros2_medkit_serialization REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
+# yaml-cpp is required as transitive dependency from ros2_medkit_serialization
 find_package(yaml-cpp REQUIRED)
 
 # Library target (shared between executable and tests)

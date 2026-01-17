@@ -1,4 +1,4 @@
-// Copyright 2025 mfaferek93
+// Copyright 2026 mfaferek93
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -133,6 +133,9 @@ class SnapshotCapture {
 
   /// Background subscriptions (kept alive for continuous caching)
   std::vector<rclcpp::GenericSubscription::SharedPtr> background_subscriptions_;
+
+  /// Callback group for on-demand subscriptions (avoids reentrancy with service callbacks)
+  rclcpp::CallbackGroup::SharedPtr snapshot_callback_group_;
 };
 
 }  // namespace ros2_medkit_fault_manager
