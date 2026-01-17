@@ -14,18 +14,25 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <memory>
+#include <thread>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_manager_node.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
+#include "ros2_medkit_msgs/msg/fault_event.hpp"
+#include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
 using ros2_medkit_fault_manager::DebounceConfig;
 using ros2_medkit_fault_manager::FaultManagerNode;
 using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_msgs::msg::Fault;
+using ros2_medkit_msgs::msg::FaultEvent;
+using ros2_medkit_msgs::srv::ClearFault;
 using ros2_medkit_msgs::srv::ReportFault;
 
 class FaultStorageTest : public ::testing::Test {
@@ -601,6 +608,184 @@ TEST(FaultManagerNodeParameterTest, AutoConfirmAfterSec) {
 
   auto config = node->get_storage().get_debounce_config();
   EXPECT_DOUBLE_EQ(config.auto_confirm_after_sec, 15.0);
+}
+
+// FaultEvent Publishing Tests
+class FaultEventPublishingTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    // Create fault manager node with immediate confirmation
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+        {"storage_type", "memory"}, {"confirmation_threshold", -1},  // Immediate confirmation
+    });
+    fault_manager_ = std::make_shared<FaultManagerNode>(options);
+
+    // Create test node for subscribing and calling services
+    test_node_ = std::make_shared<rclcpp::Node>("test_event_subscriber");
+
+    // Subscribe to fault events
+    event_subscription_ = test_node_->create_subscription<FaultEvent>(
+        "/fault_manager/events", rclcpp::QoS(100).reliable(), [this](const FaultEvent::SharedPtr msg) {
+          received_events_.push_back(*msg);
+        });
+
+    // Create service clients
+    report_fault_client_ = test_node_->create_client<ReportFault>("/fault_manager/report_fault");
+    clear_fault_client_ = test_node_->create_client<ClearFault>("/fault_manager/clear_fault");
+
+    // Wait for services
+    ASSERT_TRUE(report_fault_client_->wait_for_service(std::chrono::seconds(5)));
+    ASSERT_TRUE(clear_fault_client_->wait_for_service(std::chrono::seconds(5)));
+  }
+
+  void TearDown() override {
+    event_subscription_.reset();
+    report_fault_client_.reset();
+    clear_fault_client_.reset();
+    test_node_.reset();
+    fault_manager_.reset();
+    received_events_.clear();
+  }
+
+  void spin_for(std::chrono::milliseconds duration) {
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < duration) {
+      rclcpp::spin_some(fault_manager_);
+      rclcpp::spin_some(test_node_);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+  bool call_report_fault(const std::string & fault_code, uint8_t severity, const std::string & source_id) {
+    auto request = std::make_shared<ReportFault::Request>();
+    request->fault_code = fault_code;
+    request->event_type = ReportFault::Request::EVENT_FAILED;
+    request->severity = severity;
+    request->description = "Test fault";
+    request->source_id = source_id;
+
+    auto future = report_fault_client_->async_send_request(request);
+    spin_for(std::chrono::milliseconds(100));
+    if (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      return false;
+    }
+    return future.get()->accepted;
+  }
+
+  bool call_clear_fault(const std::string & fault_code) {
+    auto request = std::make_shared<ClearFault::Request>();
+    request->fault_code = fault_code;
+
+    auto future = clear_fault_client_->async_send_request(request);
+    spin_for(std::chrono::milliseconds(100));
+    if (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      return false;
+    }
+    return future.get()->success;
+  }
+
+  std::shared_ptr<FaultManagerNode> fault_manager_;
+  std::shared_ptr<rclcpp::Node> test_node_;
+  rclcpp::Subscription<FaultEvent>::SharedPtr event_subscription_;
+  rclcpp::Client<ReportFault>::SharedPtr report_fault_client_;
+  rclcpp::Client<ClearFault>::SharedPtr clear_fault_client_;
+  std::vector<FaultEvent> received_events_;
+};
+
+TEST_F(FaultEventPublishingTest, NewFaultPublishesConfirmedEvent) {
+  // Report a new fault - with threshold=-1, it should immediately confirm
+  ASSERT_TRUE(call_report_fault("TEST_FAULT_1", Fault::SEVERITY_ERROR, "/test_node"));
+
+  // Allow time for event to be received
+  spin_for(std::chrono::milliseconds(100));
+
+  // Verify EVENT_CONFIRMED was published
+  ASSERT_EQ(received_events_.size(), 1u);
+  EXPECT_EQ(received_events_[0].event_type, FaultEvent::EVENT_CONFIRMED);
+  EXPECT_EQ(received_events_[0].fault.fault_code, "TEST_FAULT_1");
+  EXPECT_EQ(received_events_[0].fault.severity, Fault::SEVERITY_ERROR);
+  EXPECT_EQ(received_events_[0].fault.status, Fault::STATUS_CONFIRMED);
+}
+
+TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
+  // Report a new fault first
+  ASSERT_TRUE(call_report_fault("TEST_FAULT_2", Fault::SEVERITY_WARN, "/test_node1"));
+  spin_for(std::chrono::milliseconds(100));
+
+  // Clear received events
+  received_events_.clear();
+
+  // Report same fault again - should trigger EVENT_UPDATED
+  ASSERT_TRUE(call_report_fault("TEST_FAULT_2", Fault::SEVERITY_ERROR, "/test_node2"));
+  spin_for(std::chrono::milliseconds(100));
+
+  // Verify EVENT_UPDATED was published
+  ASSERT_EQ(received_events_.size(), 1u);
+  EXPECT_EQ(received_events_[0].event_type, FaultEvent::EVENT_UPDATED);
+  EXPECT_EQ(received_events_[0].fault.fault_code, "TEST_FAULT_2");
+  EXPECT_EQ(received_events_[0].fault.occurrence_count, 2u);
+}
+
+TEST_F(FaultEventPublishingTest, ClearFaultPublishesClearedEvent) {
+  // Report a fault first
+  ASSERT_TRUE(call_report_fault("TEST_FAULT_3", Fault::SEVERITY_ERROR, "/test_node"));
+  spin_for(std::chrono::milliseconds(100));
+
+  // Clear received events
+  received_events_.clear();
+
+  // Clear the fault
+  ASSERT_TRUE(call_clear_fault("TEST_FAULT_3"));
+  spin_for(std::chrono::milliseconds(100));
+
+  // Verify EVENT_CLEARED was published
+  ASSERT_EQ(received_events_.size(), 1u);
+  EXPECT_EQ(received_events_[0].event_type, FaultEvent::EVENT_CLEARED);
+  EXPECT_EQ(received_events_[0].fault.fault_code, "TEST_FAULT_3");
+  EXPECT_EQ(received_events_[0].fault.status, Fault::STATUS_CLEARED);
+}
+
+TEST_F(FaultEventPublishingTest, ClearNonExistentFaultNoEvent) {
+  // Clear non-existent fault - should not publish event
+  ASSERT_FALSE(call_clear_fault("NON_EXISTENT_FAULT"));
+  spin_for(std::chrono::milliseconds(100));
+
+  // Verify no events published
+  EXPECT_EQ(received_events_.size(), 0u);
+}
+
+TEST_F(FaultEventPublishingTest, EventContainsCorrectTimestamp) {
+  auto before = fault_manager_->now();
+
+  ASSERT_TRUE(call_report_fault("TEST_FAULT_4", Fault::SEVERITY_WARN, "/test_node"));
+  spin_for(std::chrono::milliseconds(100));
+
+  auto after = fault_manager_->now();
+
+  ASSERT_EQ(received_events_.size(), 1u);
+
+  // Verify timestamp is within expected range
+  rclcpp::Time event_time(received_events_[0].timestamp);
+  EXPECT_GE(event_time, before);
+  EXPECT_LE(event_time, after);
+}
+
+TEST_F(FaultEventPublishingTest, EventContainsFullFaultData) {
+  ASSERT_TRUE(call_report_fault("FULL_DATA_TEST", Fault::SEVERITY_CRITICAL, "/sensor/temperature"));
+  spin_for(std::chrono::milliseconds(100));
+
+  ASSERT_EQ(received_events_.size(), 1u);
+  const auto & fault = received_events_[0].fault;
+
+  // Verify all fault fields are populated
+  EXPECT_EQ(fault.fault_code, "FULL_DATA_TEST");
+  EXPECT_EQ(fault.severity, Fault::SEVERITY_CRITICAL);
+  EXPECT_EQ(fault.description, "Test fault");
+  EXPECT_EQ(fault.status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(fault.occurrence_count, 1u);
+  ASSERT_EQ(fault.reporting_sources.size(), 1u);
+  EXPECT_EQ(fault.reporting_sources[0], "/sensor/temperature");
 }
 
 int main(int argc, char ** argv) {
