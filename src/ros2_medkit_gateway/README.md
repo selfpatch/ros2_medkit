@@ -846,11 +846,26 @@ Snapshots are configured via FaultManager parameters:
 | `snapshots.timeout_sec` | double | `1.0` | Timeout waiting for topic message (on-demand mode) |
 | `snapshots.max_message_size` | int | `65536` | Maximum message size in bytes (larger messages skipped) |
 | `snapshots.default_topics` | string[] | `[]` | Topics to capture for all faults |
+| `snapshots.config_file` | string | `""` | Path to YAML config file for `fault_specific` and `patterns` |
 
 **Topic Resolution Priority:**
-1. `fault_specific` - Exact match for fault code (TODO: YAML config)
-2. `patterns` - Regex pattern match (TODO: YAML config)
+1. `fault_specific` - Exact match for fault code (configured via YAML config file)
+2. `patterns` - Regex pattern match (configured via YAML config file)
 3. `default_topics` - Fallback for all faults
+
+**Example YAML config file** (`snapshots.yaml`):
+```yaml
+fault_specific:
+  MOTOR_OVERHEAT:
+    - /joint_states
+    - /motor/temperature
+patterns:
+  "MOTOR_.*":
+    - /joint_states
+    - /cmd_vel
+default_topics:
+  - /diagnostics
+```
 
 ## Quick Start
 

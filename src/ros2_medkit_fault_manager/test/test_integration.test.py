@@ -609,7 +609,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
         snap_response = self._call_service(self.get_snapshots_client, snap_request)
 
         self.assertTrue(snap_response.success)
-        self.assertTrue(len(snap_response.data) > 0)
+        self.assertGreater(len(snap_response.data), 0)
 
         # Parse and verify snapshot data
         snapshot_data = json.loads(snap_response.data)
