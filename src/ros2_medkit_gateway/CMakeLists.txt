@@ -115,6 +115,9 @@ add_library(gateway_lib STATIC
   # Discovery models (with .cpp serialization)
   src/discovery/models/app.cpp
   src/discovery/models/function.cpp
+  # Manifest parser and validator
+  src/discovery/manifest/manifest_parser.cpp
+  src/discovery/manifest/manifest_validator.cpp
   # HTTP module (subfolder)
   src/http/http_server.cpp
   src/http/rest_server.cpp
@@ -261,6 +264,14 @@ if(BUILD_TESTING)
   ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
   target_link_libraries(test_discovery_models gateway_lib)
 
+  # Add manifest parser tests (TASK_003)
+  ament_add_gtest(test_manifest_parser test/test_manifest_parser.cpp)
+  target_link_libraries(test_manifest_parser gateway_lib)
+
+  # Add manifest validator tests (TASK_003)
+  ament_add_gtest(test_manifest_validator test/test_manifest_validator.cpp)
+  target_link_libraries(test_manifest_validator gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
@@ -281,6 +292,10 @@ if(BUILD_TESTING)
     target_link_options(test_fault_manager PRIVATE --coverage)
     target_compile_options(test_discovery_models PRIVATE --coverage -O0 -g)
     target_link_options(test_discovery_models PRIVATE --coverage)
+    target_compile_options(test_manifest_parser PRIVATE --coverage -O0 -g)
+    target_link_options(test_manifest_parser PRIVATE --coverage)
+    target_compile_options(test_manifest_validator PRIVATE --coverage -O0 -g)
+    target_link_options(test_manifest_validator PRIVATE --coverage)
   endif()
 
   # Integration testing
