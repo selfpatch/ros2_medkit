@@ -23,13 +23,17 @@ namespace handlers {
 /**
  * @brief Handlers for function-related REST API endpoints.
  *
+ * Functions are high-level capability groupings (e.g., "navigation",
+ * "localization") that may be hosted by multiple apps.
+ *
  * Provides handlers for:
  * - GET /functions - List all functions
  * - GET /functions/{function-id} - Get function capabilities
- * - GET /functions/{function-id}/data - Get function data
- * - GET /functions/{function-id}/hosts - Get hosts for function
+ * - GET /functions/{function-id}/hosts - Get apps that host this function
+ * - GET /functions/{function-id}/data - Get aggregated function data
+ * - GET /functions/{function-id}/operations - List function operations
  *
- * @note TODO: Implement in TASK_008
+ * @verifies REQ_DISCOVERY_003 Functions discovery
  */
 class FunctionHandlers {
  public:
@@ -40,26 +44,54 @@ class FunctionHandlers {
   explicit FunctionHandlers(HandlerContext & ctx) : ctx_(ctx) {
   }
 
+  // =========================================================================
+  // Collection endpoints
+  // =========================================================================
+
   /**
    * @brief Handle GET /functions - list all functions.
    *
-   * @note TODO: Implement in TASK_008
+   * Returns all functions discovered from manifest.
+   * In runtime-only mode, returns empty list.
    */
   void handle_list_functions(const httplib::Request & req, httplib::Response & res);
 
   /**
    * @brief Handle GET /functions/{function-id} - get function capabilities.
    *
-   * @note TODO: Implement in TASK_008
+   * Returns function details with capabilities (hosts, data, operations)
+   * and HATEOAS links.
    */
   void handle_get_function(const httplib::Request & req, httplib::Response & res);
+
+  // =========================================================================
+  // Function hosts
+  // =========================================================================
 
   /**
    * @brief Handle GET /functions/{function-id}/hosts - get hosts for function.
    *
-   * @note TODO: Implement in TASK_008
+   * Returns apps that provide this function.
    */
   void handle_function_hosts(const httplib::Request & req, httplib::Response & res);
+
+  // =========================================================================
+  // Function data & operations (aggregated from host apps)
+  // =========================================================================
+
+  /**
+   * @brief Handle GET /functions/{function-id}/data - get aggregated data.
+   *
+   * Returns topics aggregated from all host apps.
+   */
+  void handle_get_function_data(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /functions/{function-id}/operations - list operations.
+   *
+   * Returns services and actions aggregated from all host apps.
+   */
+  void handle_list_function_operations(const httplib::Request & req, httplib::Response & res);
 
  private:
   HandlerContext & ctx_;

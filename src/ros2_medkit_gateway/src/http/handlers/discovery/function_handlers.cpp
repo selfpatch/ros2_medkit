@@ -26,12 +26,31 @@ void FunctionHandlers::handle_list_functions(const httplib::Request & req, httpl
   (void)req;  // Unused parameter
 
   try {
-    // TODO: Implement in TASK_008
-    // For now, return empty array since functions require manifest
-    json functions_json = json::array();
-    HandlerContext::send_json(res, functions_json);
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto functions = discovery->discover_functions();
+
+    json items = json::array();
+    for (const auto & func : functions) {
+      json func_item;
+      func_item["id"] = func.id;
+      func_item["name"] = func.name;
+      if (!func.description.empty()) {
+        func_item["description"] = func.description;
+      }
+      if (!func.tags.empty()) {
+        func_item["tags"] = func.tags;
+      }
+      items.push_back(func_item);
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = functions.size();
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_functions: %s", e.what());
   }
 }
@@ -54,11 +73,55 @@ void FunctionHandlers::handle_get_function(const httplib::Request & req, httplib
       return;
     }
 
-    // TODO: Implement in TASK_008
-    // For now, return 404 since functions require manifest
-    HandlerContext::send_error(res, StatusCode::NotFound_404, "Function not found", {{"function_id", function_id}});
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto func_opt = discovery->get_function(function_id);
+
+    if (!func_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Function not found", {{"function_id", function_id}});
+      return;
+    }
+
+    const auto & func = *func_opt;
+
+    // Build response with capabilities (SOVD entity/{id} pattern)
+    json response;
+    response["id"] = func.id;
+    response["name"] = func.name;
+
+    if (!func.description.empty()) {
+      response["description"] = func.description;
+    }
+    if (!func.translation_id.empty()) {
+      response["translation_id"] = func.translation_id;
+    }
+    if (!func.tags.empty()) {
+      response["tags"] = func.tags;
+    }
+    response["source"] = func.source;
+
+    // Capabilities
+    json capabilities = json::array();
+    capabilities.push_back({{"name", "hosts"}, {"href", "/api/v1/functions/" + func.id + "/hosts"}});
+    capabilities.push_back({{"name", "data"}, {"href", "/api/v1/functions/" + func.id + "/data"}});
+    capabilities.push_back({{"name", "operations"}, {"href", "/api/v1/functions/" + func.id + "/operations"}});
+    response["capabilities"] = capabilities;
+
+    // HATEOAS links
+    json links;
+    links["self"] = "/api/v1/functions/" + func.id;
+    if (!func.depends_on.empty()) {
+      json depends_links = json::array();
+      for (const auto & dep_id : func.depends_on) {
+        depends_links.push_back("/api/v1/functions/" + dep_id);
+      }
+      links["depends-on"] = depends_links;
+    }
+    response["_links"] = links;
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_function: %s", e.what());
   }
 }
@@ -81,12 +144,177 @@ void FunctionHandlers::handle_function_hosts(const httplib::Request & req, httpl
       return;
     }
 
-    // TODO: Implement in TASK_008
-    // For now, return 404 since functions require manifest
-    HandlerContext::send_error(res, StatusCode::NotFound_404, "Function not found", {{"function_id", function_id}});
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto func_opt = discovery->get_function(function_id);
+
+    if (!func_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Function not found", {{"function_id", function_id}});
+      return;
+    }
+
+    // Get host app IDs
+    auto host_ids = discovery->get_hosts_for_function(function_id);
+
+    json items = json::array();
+    for (const auto & app_id : host_ids) {
+      auto app_opt = discovery->get_app(app_id);
+      if (app_opt) {
+        json item;
+        item["id"] = app_opt->id;
+        item["name"] = app_opt->name;
+        item["href"] = "/api/v1/apps/" + app_opt->id;
+        if (app_opt->is_online) {
+          item["is_online"] = true;
+        }
+        items.push_back(item);
+      }
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_function_hosts: %s", e.what());
+  }
+}
+
+void FunctionHandlers::handle_get_function_data(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string function_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(function_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid function ID",
+                                 {{"details", validation_result.error()}, {"function_id", function_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto func_opt = discovery->get_function(function_id);
+
+    if (!func_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Function not found", {{"function_id", function_id}});
+      return;
+    }
+
+    // Aggregate data from all host apps
+    auto host_ids = discovery->get_hosts_for_function(function_id);
+
+    json items = json::array();
+    for (const auto & app_id : host_ids) {
+      auto app_opt = discovery->get_app(app_id);
+      if (app_opt) {
+        // Publishers
+        for (const auto & topic_name : app_opt->topics.publishes) {
+          json item;
+          item["id"] = topic_name;
+          item["name"] = topic_name;
+          item["direction"] = "publish";
+          item["source_app"] = app_id;
+          std::string href = "/api/v1/apps/";
+          href.append(app_id).append("/data/").append(topic_name);
+          item["href"] = href;
+          items.push_back(item);
+        }
+        // Subscribers
+        for (const auto & topic_name : app_opt->topics.subscribes) {
+          json item;
+          item["id"] = topic_name;
+          item["name"] = topic_name;
+          item["direction"] = "subscribe";
+          item["source_app"] = app_id;
+          std::string href = "/api/v1/apps/";
+          href.append(app_id).append("/data/").append(topic_name);
+          item["href"] = href;
+          items.push_back(item);
+        }
+      }
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_function_data: %s", e.what());
+  }
+}
+
+void FunctionHandlers::handle_list_function_operations(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string function_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(function_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid function ID",
+                                 {{"details", validation_result.error()}, {"function_id", function_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto func_opt = discovery->get_function(function_id);
+
+    if (!func_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Function not found", {{"function_id", function_id}});
+      return;
+    }
+
+    // Aggregate operations from all host apps
+    auto host_ids = discovery->get_hosts_for_function(function_id);
+
+    json items = json::array();
+    for (const auto & app_id : host_ids) {
+      auto app_opt = discovery->get_app(app_id);
+      if (app_opt) {
+        // Services
+        for (const auto & svc : app_opt->services) {
+          json item;
+          item["id"] = svc.name;
+          item["name"] = svc.name;
+          item["type"] = "service";
+          item["service_type"] = svc.type;
+          item["source_app"] = app_id;
+          items.push_back(item);
+        }
+        // Actions
+        for (const auto & act : app_opt->actions) {
+          json item;
+          item["id"] = act.name;
+          item["name"] = act.name;
+          item["type"] = "action";
+          item["action_type"] = act.type;
+          item["source_app"] = app_id;
+          items.push_back(item);
+        }
+      }
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_function_operations: %s", e.what());
   }
 }
 

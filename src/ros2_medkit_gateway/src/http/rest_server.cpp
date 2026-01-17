@@ -55,6 +55,7 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   area_handlers_ = std::make_unique<handlers::AreaHandlers>(*handler_ctx_);
   component_handlers_ = std::make_unique<handlers::ComponentHandlers>(*handler_ctx_);
   app_handlers_ = std::make_unique<handlers::AppHandlers>(*handler_ctx_);
+  function_handlers_ = std::make_unique<handlers::FunctionHandlers>(*handler_ctx_);
   operation_handlers_ = std::make_unique<handlers::OperationHandlers>(*handler_ctx_);
   config_handlers_ = std::make_unique<handlers::ConfigHandlers>(*handler_ctx_);
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
@@ -180,6 +181,34 @@ void RESTServer::setup_routes() {
   // Single app (capabilities) - must be after more specific routes
   srv->Get((api_path("/apps") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
     app_handlers_->handle_get_app(req, res);
+  });
+
+  // Functions - list all functions
+  srv->Get(api_path("/functions"), [this](const httplib::Request & req, httplib::Response & res) {
+    function_handlers_->handle_list_functions(req, res);
+  });
+
+  // Function hosts
+  srv->Get((api_path("/functions") + R"(/([^/]+)/hosts$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             function_handlers_->handle_function_hosts(req, res);
+           });
+
+  // Function data (aggregated from host apps)
+  srv->Get((api_path("/functions") + R"(/([^/]+)/data$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             function_handlers_->handle_get_function_data(req, res);
+           });
+
+  // Function operations (aggregated from host apps)
+  srv->Get((api_path("/functions") + R"(/([^/]+)/operations$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             function_handlers_->handle_list_function_operations(req, res);
+           });
+
+  // Single function (capabilities) - must be after more specific routes
+  srv->Get((api_path("/functions") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    function_handlers_->handle_get_function(req, res);
   });
 
   // Components
