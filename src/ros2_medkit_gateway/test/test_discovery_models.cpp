@@ -14,7 +14,7 @@
 
 /**
  * @file test_discovery_models.cpp
- * @brief Unit tests for SOVD discovery model serialization (TASK_002)
+ * @brief Unit tests for SOVD discovery model serialization
  *
  * @verifies REQ_DISCOVERY_002 App/Function model serialization
  */

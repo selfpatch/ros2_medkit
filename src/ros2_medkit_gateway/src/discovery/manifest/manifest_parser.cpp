@@ -157,7 +157,7 @@ Component ManifestParser::parse_component(const YAML::Node & node) const {
   comp.description = get_string(node, "description");
   comp.variant = get_string(node, "variant");
   comp.tags = get_string_vector(node, "tags");
-  comp.parent_component_id = get_string(node, "parent_component");
+  comp.parent_component_id = get_string(node, "parent_component_id");
   comp.source = "manifest";
 
   // Parse type if provided (e.g., "controller", "sensor", "actuator")

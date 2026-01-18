@@ -172,7 +172,7 @@ Create an app entry for each ROS 2 node. Key decisions:
 1. **Choose a stable ID**: Use lowercase with hyphens (e.g., ``lidar-driver``)
 2. **Set human-readable name**: Clear, descriptive name
 3. **Configure ros_binding**: How to match the ROS 2 node
-4. **Set is_located_on**: Which component hosts this app
+4. **Set component**: Which component hosts this app
 5. **Set depends_on**: Dependencies on other apps
 
 Example app mapping:
@@ -184,7 +184,7 @@ Example app mapping:
      - id: lidar-driver
        name: "LiDAR Driver"
        category: "driver"
-       is_located_on: lidar-sensor
+       component: lidar-sensor
        ros_binding:
          node_name: ld08_driver
 
@@ -192,7 +192,7 @@ Example app mapping:
      - id: amcl-node
        name: "AMCL Localization"
        category: "localization"
-       is_located_on: main-computer
+       component: main-computer
        depends_on:
          - lidar-driver
        ros_binding:
@@ -202,7 +202,7 @@ Example app mapping:
      - id: planner-server
        name: "Planner Server"
        category: "navigation"
-       is_located_on: main-computer
+       component: main-computer
        depends_on:
          - amcl-node
        ros_binding:
@@ -365,7 +365,7 @@ Before finalizing your manifest:
 
    [ ] All required fields present (manifest_version, entity ids and names)
    [ ] All area references are valid (component.area, subarea.parent)
-   [ ] All component references are valid (app.is_located_on)
+   [ ] All component references are valid (app.component)
    [ ] All app references are valid (depends_on, function.hosted_by)
    [ ] IDs are unique within each entity type
    [ ] ros_binding configured for all apps that map to ROS nodes
@@ -398,14 +398,14 @@ The ``hosted_by`` list references an app ID that doesn't exist.
 
 **"Component X not found for app Y"**
 
-The ``is_located_on`` references a component that doesn't exist.
+The ``component`` references a component that doesn't exist.
 
 .. code-block:: yaml
 
    # Wrong - component doesn't exist
    apps:
      - id: my-app
-       is_located_on: nonexistent-component
+       component: nonexistent-component
 
 **"Duplicate ID: X"**
 

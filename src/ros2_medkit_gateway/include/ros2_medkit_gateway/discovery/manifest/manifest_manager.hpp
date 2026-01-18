@@ -53,16 +53,22 @@ class ManifestManager {
   /**
    * @brief Load manifest from file
    * @param file_path Path to manifest YAML file
-   * @param strict If true, fail on any validation error; if false, warn only
+   * @param strict If true, also fail on warnings; errors always cause failure
    * @return true if loaded and validated successfully
+   *
+   * @note ERRORs (broken references, circular deps, duplicate bindings) always
+   *       cause failure regardless of strict mode, as they indicate a fundamentally
+   *       broken manifest. Only WARNINGs are affected by the strict flag.
    */
   bool load_manifest(const std::string & file_path, bool strict = true);
 
   /**
    * @brief Load manifest from YAML string (useful for testing)
    * @param yaml_content YAML content
-   * @param strict If true, fail on any validation error
+   * @param strict If true, also fail on warnings; errors always cause failure
    * @return true if loaded and validated successfully
+   *
+   * @note See load_manifest() for behavior details.
    */
   bool load_manifest_from_string(const std::string & yaml_content, bool strict = true);
 

@@ -73,7 +73,7 @@ components:
   - id: "comp2"
     name: "Component 2"
     area: "area1"
-    parent_component: "comp1"
+    parent_component_id: "comp1"
   - id: "comp3"
     name: "Component 3"
     area: "area2"
@@ -200,9 +200,10 @@ TEST_F(ManifestManagerTest, LoadInvalidManifestStrict) {
 
 TEST_F(ManifestManagerTest, LoadInvalidManifestNonStrict) {
   ManifestManager manager;
-  // In non-strict mode, it should still load but have errors
-  EXPECT_TRUE(manager.load_manifest_from_string(invalid_manifest, false));
-  EXPECT_TRUE(manager.is_manifest_active());
+  // Even in non-strict mode, ERRORs (broken references) always cause failure
+  // This is intentional: ERRORs indicate fundamentally broken manifests
+  EXPECT_FALSE(manager.load_manifest_from_string(invalid_manifest, false));
+  EXPECT_FALSE(manager.is_manifest_active());
 
   auto result = manager.get_validation_result();
   EXPECT_TRUE(result.has_errors());

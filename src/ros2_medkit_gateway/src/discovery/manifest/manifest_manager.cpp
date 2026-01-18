@@ -33,18 +33,23 @@ bool ManifestManager::load_manifest(const std::string & file_path, bool strict) 
     // Validate
     validation_result_ = validator_.validate(loaded);
 
+    // Always fail on ERRORs (broken references, circular deps, duplicate bindings)
+    // These indicate a fundamentally broken manifest that would cause runtime issues
     if (validation_result_.has_errors()) {
       for (const auto & err : validation_result_.errors) {
         log_error("Manifest error: " + err.to_string());
       }
-      if (strict) {
-        log_error("Manifest validation failed (strict mode)");
-        return false;
-      }
+      log_error("Manifest validation failed: " + std::to_string(validation_result_.errors.size()) + " errors found");
+      return false;
     }
 
+    // In strict mode, also fail on warnings; otherwise just log them
     for (const auto & warn : validation_result_.warnings) {
       log_warn("Manifest warning: " + warn.to_string());
+    }
+    if (strict && validation_result_.has_warnings()) {
+      log_error("Manifest validation failed (strict mode): warnings treated as errors");
+      return false;
     }
 
     manifest_ = std::move(loaded);
@@ -72,17 +77,22 @@ bool ManifestManager::load_manifest_from_string(const std::string & yaml_content
     Manifest loaded = parser_.parse_string(yaml_content);
     validation_result_ = validator_.validate(loaded);
 
+    // Always fail on ERRORs (broken references, circular deps, duplicate bindings)
     if (validation_result_.has_errors()) {
       for (const auto & err : validation_result_.errors) {
         log_error("Manifest error: " + err.to_string());
       }
-      if (strict) {
-        return false;
-      }
+      log_error("Manifest validation failed: " + std::to_string(validation_result_.errors.size()) + " errors found");
+      return false;
     }
 
+    // In strict mode, also fail on warnings; otherwise just log them
     for (const auto & warn : validation_result_.warnings) {
       log_warn("Manifest warning: " + warn.to_string());
+    }
+    if (strict && validation_result_.has_warnings()) {
+      log_error("Manifest validation failed (strict mode): warnings treated as errors");
+      return false;
     }
 
     manifest_ = std::move(loaded);

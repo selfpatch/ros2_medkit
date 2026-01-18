@@ -14,7 +14,7 @@
 
 /**
  * @file test_manifest_validator.cpp
- * @brief Unit tests for manifest validator (TASK_003)
+ * @brief Unit tests for manifest validator
  *
  * @verifies REQ_DISCOVERY_003 Manifest validation rules R001-R011
  */

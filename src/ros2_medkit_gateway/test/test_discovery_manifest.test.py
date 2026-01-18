@@ -53,6 +53,7 @@ def get_coverage_env():
                 'GCOV_PREFIX_STRIP': str(build_dir.count(os.sep)),
             }
     except Exception:
+        # Coverage env is optional - gracefully continue without coverage settings
         pass
     return {}
 
@@ -159,6 +160,7 @@ class TestDiscoveryManifestMode(unittest.TestCase):
                     time.sleep(2)
                     return
             except requests.exceptions.RequestException:
+                # Gateway not ready yet, retry after sleep
                 pass
             time.sleep(1)
         raise unittest.SkipTest('Gateway not responding')

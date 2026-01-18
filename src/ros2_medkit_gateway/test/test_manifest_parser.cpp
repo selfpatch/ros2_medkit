@@ -14,7 +14,7 @@
 
 /**
  * @file test_manifest_parser.cpp
- * @brief Unit tests for manifest YAML parser (TASK_003)
+ * @brief Unit tests for manifest YAML parser
  *
  * @verifies REQ_DISCOVERY_003 Manifest parsing
  */
