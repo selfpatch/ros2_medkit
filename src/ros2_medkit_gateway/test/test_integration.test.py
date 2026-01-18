@@ -2220,10 +2220,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_088
         """
+        # Note: hyphens are now allowed in IDs (for manifest entity IDs like 'engine-ecu')
         invalid_ids = [
             'component;drop',
             'component<script>',
-            'component-name',
         ]
 
         for invalid_id in invalid_ids:

@@ -343,9 +343,9 @@ class TestDiscoveryHybridMode(unittest.TestCase):
         self.assertIn('temp-sensor-hw', component_ids)
         self.assertIn('rpm-sensor-hw', component_ids)
 
-    def test_component_subcomponents(self):
+    def test_hybrid_component_subcomponents(self):
         """
-        Test GET /components/{id}/subcomponents returns subcomponents.
+        Test GET /components/{id}/subcomponents returns subcomponents in hybrid mode.
 
         @verifies REQ_INTEROP_005
         """
@@ -359,9 +359,9 @@ class TestDiscoveryHybridMode(unittest.TestCase):
         # Subcomponents may be empty but format should be correct
         self.assertIsInstance(data['items'], list)
 
-    def test_component_subcomponents_not_found(self):
+    def test_hybrid_component_subcomponents_not_found(self):
         """
-        Test GET /components/{id}/subcomponents returns 404 for unknown component.
+        Test GET /components/{id}/subcomponents returns 404 for unknown component in hybrid mode.
 
         @verifies REQ_INTEROP_005
         """

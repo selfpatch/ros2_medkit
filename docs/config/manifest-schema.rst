@@ -32,7 +32,7 @@ A manifest file has the following top-level structure:
    functions: []          # Optional - function definitions
 
 manifest_version (Required)
-~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The manifest schema version. Currently must be ``"1.0"``.
 
