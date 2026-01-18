@@ -142,7 +142,9 @@ TEST_F(TestGatewayNode, test_list_areas_endpoint) {
   EXPECT_EQ(res->get_header_value("Content-Type"), "application/json");
 
   auto json_response = nlohmann::json::parse(res->body);
-  EXPECT_TRUE(json_response.is_array());
+  EXPECT_TRUE(json_response.is_object());
+  EXPECT_TRUE(json_response.contains("items"));
+  EXPECT_TRUE(json_response["items"].is_array());
 }
 
 TEST_F(TestGatewayNode, test_list_components_endpoint) {
@@ -156,7 +158,9 @@ TEST_F(TestGatewayNode, test_list_components_endpoint) {
   EXPECT_EQ(res->get_header_value("Content-Type"), "application/json");
 
   auto json_response = nlohmann::json::parse(res->body);
-  EXPECT_TRUE(json_response.is_array());
+  EXPECT_TRUE(json_response.is_object());
+  EXPECT_TRUE(json_response.contains("items"));
+  EXPECT_TRUE(json_response["items"].is_array());
 }
 
 int main(int argc, char ** argv) {

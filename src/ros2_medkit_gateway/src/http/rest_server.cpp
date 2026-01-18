@@ -54,6 +54,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_);
   area_handlers_ = std::make_unique<handlers::AreaHandlers>(*handler_ctx_);
   component_handlers_ = std::make_unique<handlers::ComponentHandlers>(*handler_ctx_);
+  app_handlers_ = std::make_unique<handlers::AppHandlers>(*handler_ctx_);
+  function_handlers_ = std::make_unique<handlers::FunctionHandlers>(*handler_ctx_);
   operation_handlers_ = std::make_unique<handlers::OperationHandlers>(*handler_ctx_);
   config_handlers_ = std::make_unique<handlers::ConfigHandlers>(*handler_ctx_);
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
@@ -148,6 +150,67 @@ void RESTServer::setup_routes() {
     area_handlers_->handle_list_areas(req, res);
   });
 
+  // Apps - must register before /apps/{id} to avoid regex conflict
+  srv->Get(api_path("/apps"), [this](const httplib::Request & req, httplib::Response & res) {
+    app_handlers_->handle_list_apps(req, res);
+  });
+
+  // App data item (specific topic) - register before /apps/{id}/data
+  srv->Get((api_path("/apps") + R"(/([^/]+)/data/(.+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             app_handlers_->handle_get_app_data_item(req, res);
+           });
+
+  // App data (all topics)
+  srv->Get((api_path("/apps") + R"(/([^/]+)/data$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    app_handlers_->handle_get_app_data(req, res);
+  });
+
+  // App operations
+  srv->Get((api_path("/apps") + R"(/([^/]+)/operations$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             app_handlers_->handle_list_app_operations(req, res);
+           });
+
+  // App configurations
+  srv->Get((api_path("/apps") + R"(/([^/]+)/configurations$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             app_handlers_->handle_list_app_configurations(req, res);
+           });
+
+  // Single app (capabilities) - must be after more specific routes
+  srv->Get((api_path("/apps") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    app_handlers_->handle_get_app(req, res);
+  });
+
+  // Functions - list all functions
+  srv->Get(api_path("/functions"), [this](const httplib::Request & req, httplib::Response & res) {
+    function_handlers_->handle_list_functions(req, res);
+  });
+
+  // Function hosts
+  srv->Get((api_path("/functions") + R"(/([^/]+)/hosts$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             function_handlers_->handle_function_hosts(req, res);
+           });
+
+  // Function data (aggregated from host apps)
+  srv->Get((api_path("/functions") + R"(/([^/]+)/data$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             function_handlers_->handle_get_function_data(req, res);
+           });
+
+  // Function operations (aggregated from host apps)
+  srv->Get((api_path("/functions") + R"(/([^/]+)/operations$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             function_handlers_->handle_list_function_operations(req, res);
+           });
+
+  // Single function (capabilities) - must be after more specific routes
+  srv->Get((api_path("/functions") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    function_handlers_->handle_get_function(req, res);
+  });
+
   // Components
   srv->Get(api_path("/components"), [this](const httplib::Request & req, httplib::Response & res) {
     component_handlers_->handle_list_components(req, res);
@@ -158,6 +221,23 @@ void RESTServer::setup_routes() {
            [this](const httplib::Request & req, httplib::Response & res) {
              area_handlers_->handle_area_components(req, res);
            });
+
+  // Area subareas (relationship endpoint)
+  srv->Get((api_path("/areas") + R"(/([^/]+)/subareas$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             area_handlers_->handle_get_subareas(req, res);
+           });
+
+  // Area related-components (relationship endpoint)
+  srv->Get((api_path("/areas") + R"(/([^/]+)/related-components$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             area_handlers_->handle_get_related_components(req, res);
+           });
+
+  // Single area (capabilities) - must be after more specific routes
+  srv->Get((api_path("/areas") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    area_handlers_->handle_get_area(req, res);
+  });
 
   // Component topic data (specific topic) - register before general route
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
@@ -171,6 +251,23 @@ void RESTServer::setup_routes() {
            [this](const httplib::Request & req, httplib::Response & res) {
              component_handlers_->handle_component_data(req, res);
            });
+
+  // Component subcomponents (relationship endpoint)
+  srv->Get((api_path("/components") + R"(/([^/]+)/subcomponents$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             component_handlers_->handle_get_subcomponents(req, res);
+           });
+
+  // Component related-apps (relationship endpoint)
+  srv->Get((api_path("/components") + R"(/([^/]+)/related-apps$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             component_handlers_->handle_get_related_apps(req, res);
+           });
+
+  // Single component (capabilities) - must be after more specific routes
+  srv->Get((api_path("/components") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    component_handlers_->handle_get_component(req, res);
+  });
 
   // Component topic publish (PUT)
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)

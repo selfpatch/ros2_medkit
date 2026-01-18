@@ -270,5 +270,4 @@ See Also
 --------
 
 - :doc:`integration` - Basic integration guide
-- `SOVD Standard <https://www.autosar.org>`_ - AUTOSAR SOVD specification
 - `REP-149 <https://ros.org/reps/rep-0149.html>`_ - ROS 2 package naming conventions

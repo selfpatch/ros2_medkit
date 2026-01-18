@@ -33,13 +33,13 @@ tl::expected<void, std::string> HandlerContext::validate_entity_id(const std::st
     return tl::unexpected("Entity ID too long (max 256 characters)");
   }
 
-  // Validate characters according to ROS 2 naming conventions
-  // Allow: alphanumeric (a-z, A-Z, 0-9), underscore (_)
-  // Reject: hyphen (not allowed in ROS 2 names), forward slash (conflicts with URL routing),
-  //         special characters, escape sequences
+  // Validate characters according to naming conventions
+  // Allow: alphanumeric (a-z, A-Z, 0-9), underscore (_), hyphen (-)
+  // Reject: forward slash (conflicts with URL routing), special characters, escape sequences
+  // Note: Hyphens are allowed in manifest entity IDs (e.g., "engine-ecu", "front-left-door")
   for (char c : entity_id) {
     bool is_alphanumeric = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
-    bool is_allowed_special = (c == '_');
+    bool is_allowed_special = (c == '_' || c == '-');
 
     if (!is_alphanumeric && !is_allowed_special) {
       // For non-printable characters, show the character code
@@ -53,7 +53,7 @@ tl::expected<void, std::string> HandlerContext::validate_entity_id(const std::st
         char_repr = std::string(1, c);
       }
       return tl::unexpected("Entity ID contains invalid character: '" + char_repr +
-                            "'. Only alphanumeric and underscore are allowed");
+                            "'. Only alphanumeric, underscore and hyphen are allowed");
     }
   }
 

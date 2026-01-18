@@ -56,6 +56,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("auth.issuer", "ros2_medkit_gateway");
   declare_parameter("auth.clients", std::vector<std::string>{});
 
+  // Discovery mode parameters
+  declare_parameter("discovery_mode", "runtime_only");  // runtime_only, manifest_only, hybrid
+  declare_parameter("manifest_path", "");
+  declare_parameter("manifest_strict_validation", true);
+
   // Get parameter values
   server_host_ = get_parameter("server.host").as_string();
   server_port_ = static_cast<int>(get_parameter("server.port").as_int());
@@ -202,6 +207,18 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
 
   // Initialize managers
   discovery_mgr_ = std::make_unique<DiscoveryManager>(this);
+
+  // Configure and initialize discovery manager
+  DiscoveryConfig discovery_config;
+  discovery_config.mode = parse_discovery_mode(get_parameter("discovery_mode").as_string());
+  discovery_config.manifest_path = get_parameter("manifest_path").as_string();
+  discovery_config.manifest_strict_validation = get_parameter("manifest_strict_validation").as_bool();
+
+  if (!discovery_mgr_->initialize(discovery_config)) {
+    RCLCPP_ERROR(get_logger(), "Failed to initialize discovery manager");
+    throw std::runtime_error("Discovery initialization failed");
+  }
+
   data_access_mgr_ = std::make_unique<DataAccessManager>(this);
   operation_mgr_ = std::make_unique<OperationManager>(this, discovery_mgr_.get());
   config_mgr_ = std::make_unique<ConfigurationManager>(this);
