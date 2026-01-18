@@ -80,14 +80,14 @@ components:
 apps:
   - id: "app1"
     name: "App 1"
-    component: "comp1"
+    is_located_on: "comp1"
     description: "First application"
   - id: "app2"
     name: "App 2"
-    component: "comp1"
+    is_located_on: "comp1"
   - id: "app3"
     name: "App 3"
-    component: "comp2"
+    is_located_on: "comp2"
 functions:
   - id: "func1"
     name: "Function 1"
@@ -121,7 +121,7 @@ components:
 apps:
   - id: "app1"
     name: "Unreferenced App"
-    component: "comp1"
+    is_located_on: "comp1"
     description: "This app is not referenced by any function"
 functions: []
 )";

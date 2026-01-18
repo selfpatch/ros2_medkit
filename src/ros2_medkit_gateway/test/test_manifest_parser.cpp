@@ -160,7 +160,7 @@ manifest_version: "1.0"
 apps:
   - id: "nav2"
     name: "Navigation 2"
-    component: "navigation_server"
+    is_located_on: "navigation_server"
     description: "Navigation stack"
     depends_on:
       - localization
@@ -250,7 +250,7 @@ components:
     area: "perception"
 apps:
   - id: "nav2"
-    component: "nav_server"
+    is_located_on: "nav_server"
 functions:
   - id: "path_planning"
     hosts:

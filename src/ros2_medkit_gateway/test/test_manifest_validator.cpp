@@ -231,7 +231,7 @@ components:
   - id: "nav_server"
 apps:
   - id: "nav2"
-    component: "nav_server"
+    is_located_on: "nav_server"
 )";
 
   auto manifest = parser_.parse_string(yaml);
@@ -245,7 +245,7 @@ TEST_F(ManifestValidatorTest, R007_AppReferencesInvalidComponent) {
 manifest_version: "1.0"
 apps:
   - id: "nav2"
-    component: "nonexistent"
+    is_located_on: "nonexistent"
 )";
 
   auto manifest = parser_.parse_string(yaml);
@@ -542,12 +542,12 @@ components:
     area: "perception"
 apps:
   - id: "nav2"
-    component: "nav_server"
+    is_located_on: "nav_server"
     ros_binding:
       node_name: "nav2_controller"
       namespace: "/nav2"
   - id: "slam"
-    component: "lidar_driver"
+    is_located_on: "lidar_driver"
     depends_on:
       - nav2
 functions:

@@ -409,6 +409,67 @@ class TestDiscoveryManifestMode(unittest.TestCase):
         )
         self.assertIn(response.status_code, [200, 404])
 
+    def test_app_data_item_endpoint(self):
+        """
+        Test GET /apps/{id}/data/{data_id} returns sampled topic data.
+
+        @verifies REQ_INTEROP_003
+        """
+        # First get the list of data items for the app
+        response = requests.get(f'{self.BASE_URL}/apps/engine-temp-sensor/data', timeout=5)
+        if response.status_code != 200:
+            self.skipTest('App data endpoint not available')
+
+        data = response.json()
+        if not data.get('items'):
+            self.skipTest('No data items for app')
+
+        # Get the first data item
+        data_id = data['items'][0]['id']
+        response = requests.get(
+            f'{self.BASE_URL}/apps/engine-temp-sensor/data/{data_id}', timeout=5
+        )
+        self.assertIn(response.status_code, [200, 404])
+
+        if response.status_code == 200:
+            item = response.json()
+            self.assertIn('id', item)
+            self.assertIn('direction', item)
+
+    def test_component_related_apps(self):
+        """
+        Test GET /components/{id}/related-apps returns apps hosted on component.
+
+        @verifies REQ_INTEROP_003
+        """
+        # temp-sensor-hw hosts engine-temp-sensor according to manifest
+        url = f'{self.BASE_URL}/components/temp-sensor-hw/related-apps'
+        response = requests.get(url, timeout=5)
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+        self.assertIn('total_count', data)
+
+        # Apps hosted on temp-sensor-hw should be returned
+        app_ids = [a['id'] for a in data['items']]
+        self.assertIn('engine-temp-sensor', app_ids)
+
+    def test_component_related_apps_empty(self):
+        """Test GET /components/{id}/related-apps returns empty for component with no apps."""
+        # engine-ecu doesn't have apps directly hosted on it
+        response = requests.get(f'{self.BASE_URL}/components/engine-ecu/related-apps', timeout=5)
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+
+    def test_component_related_apps_not_found(self):
+        """Test GET /components/{id}/related-apps returns 404 for unknown component."""
+        response = requests.get(f'{self.BASE_URL}/components/nonexistent/related-apps', timeout=5)
+        self.assertEqual(response.status_code, 404)
+
     # =========================================================================
     # Functions Endpoints
     # =========================================================================

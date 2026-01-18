@@ -230,6 +230,10 @@ void AppHandlers::handle_get_app_data_item(const httplib::Request & req, httplib
 
     const auto & app = *app_opt;
 
+    // Get data access manager for topic sampling
+    auto data_access_mgr = ctx_.node()->get_data_access_manager();
+    auto native_sampler = data_access_mgr->get_native_sampler();
+
     // Search in publishers
     for (const auto & topic_name : app.topics.publishes) {
       if (topic_name == data_id) {
@@ -237,7 +241,24 @@ void AppHandlers::handle_get_app_data_item(const httplib::Request & req, httplib
         response["id"] = topic_name;
         response["name"] = topic_name;
         response["direction"] = "publish";
-        // TODO: Sample topic value via native sampler
+
+        // Sample topic value via native sampler
+        auto sample = native_sampler->sample_topic(topic_name, data_access_mgr->get_topic_sample_timeout());
+        response["timestamp"] = sample.timestamp_ns;
+        response["publisher_count"] = sample.publisher_count;
+        response["subscriber_count"] = sample.subscriber_count;
+
+        if (sample.has_data && sample.data) {
+          response["status"] = "data";
+          response["data"] = *sample.data;
+        } else {
+          response["status"] = "metadata_only";
+        }
+
+        if (!sample.message_type.empty()) {
+          response["type"] = sample.message_type;
+        }
+
         HandlerContext::send_json(res, response);
         return;
       }
@@ -250,7 +271,24 @@ void AppHandlers::handle_get_app_data_item(const httplib::Request & req, httplib
         response["id"] = topic_name;
         response["name"] = topic_name;
         response["direction"] = "subscribe";
-        // TODO: Sample topic value via native sampler
+
+        // Sample topic value via native sampler
+        auto sample = native_sampler->sample_topic(topic_name, data_access_mgr->get_topic_sample_timeout());
+        response["timestamp"] = sample.timestamp_ns;
+        response["publisher_count"] = sample.publisher_count;
+        response["subscriber_count"] = sample.subscriber_count;
+
+        if (sample.has_data && sample.data) {
+          response["status"] = "data";
+          response["data"] = *sample.data;
+        } else {
+          response["status"] = "metadata_only";
+        }
+
+        if (!sample.message_type.empty()) {
+          response["type"] = sample.message_type;
+        }
+
         HandlerContext::send_json(res, response);
         return;
       }
@@ -351,16 +389,29 @@ void AppHandlers::handle_list_app_configurations(const httplib::Request & req, h
 
     const auto & app = *app_opt;
 
-    // TODO: If app is linked to a runtime node, fetch parameters from it
-    // For now, return empty list as placeholder
     json response;
-    response["items"] = json::array();
-    response["total_count"] = 0;
+    json items = json::array();
 
-    // If app has a bound FQN, we could potentially list parameters
+    // If app is linked to a runtime node, fetch parameters from it
     if (app.bound_fqn) {
-      response["note"] = "Parameters available via bound node: " + *app.bound_fqn;
+      auto config_mgr = ctx_.node()->get_configuration_manager();
+      auto result = config_mgr->list_parameters(*app.bound_fqn);
+
+      if (result.success && result.data.is_array()) {
+        for (const auto & param : result.data) {
+          json item;
+          item["id"] = param["name"];
+          item["name"] = param["name"];
+          item["value"] = param["value"];
+          item["type"] = param["type"];
+          items.push_back(item);
+        }
+      }
+      response["bound_node"] = *app.bound_fqn;
     }
+
+    response["items"] = items;
+    response["total_count"] = items.size();
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
@@ -388,10 +439,29 @@ void AppHandlers::handle_related_apps(const httplib::Request & req, httplib::Res
       return;
     }
 
-    // TODO: use discovery->get_apps_for_component()
-    // For now, return empty array since apps require manifest
-    json apps_json = json::array();
-    HandlerContext::send_json(res, apps_json);
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto apps = discovery->get_apps_for_component(component_id);
+
+    json items = json::array();
+    for (const auto & app : apps) {
+      json app_item;
+      app_item["id"] = app.id;
+      app_item["name"] = app.name;
+      if (!app.description.empty()) {
+        app_item["description"] = app.description;
+      }
+      if (app.is_online) {
+        app_item["is_online"] = true;
+      }
+      app_item["_links"] = {{"self", {{"href", "/api/v1/apps/" + app.id}}}};
+      items.push_back(app_item);
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = apps.size();
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
                                {{"details", e.what()}});

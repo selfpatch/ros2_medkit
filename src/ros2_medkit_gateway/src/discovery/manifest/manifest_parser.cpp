@@ -182,7 +182,7 @@ App ManifestParser::parse_app(const YAML::Node & node) const {
   app.name = get_string(node, "name", app.id);
   app.translation_id = get_string(node, "translation_id");
   app.description = get_string(node, "description");
-  app.component_id = get_string(node, "component");
+  app.component_id = get_string(node, "is_located_on");
   app.depends_on = get_string_vector(node, "depends_on");
   app.tags = get_string_vector(node, "tags");
   app.external = node["external"] ? node["external"].as<bool>() : false;
