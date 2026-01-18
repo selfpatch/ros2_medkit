@@ -80,7 +80,7 @@ class AppHandlers {
   /**
    * @brief Handle GET /apps/{app-id}/data/{data-id} - get specific data item.
    *
-   * Returns metadata for a specific topic. Value sampling is TODO.
+   * Returns metadata for a specific topic.
    */
   void handle_get_app_data_item(const httplib::Request & req, httplib::Response & res);
 
@@ -112,8 +112,6 @@ class AppHandlers {
 
   /**
    * @brief Handle GET /components/{id}/related-apps - list apps on component.
-   *
-   * @note TODO: Implement in TASK_009
    */
   void handle_related_apps(const httplib::Request & req, httplib::Response & res);
 

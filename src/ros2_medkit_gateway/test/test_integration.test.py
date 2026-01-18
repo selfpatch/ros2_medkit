@@ -366,7 +366,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_003
         """
-        areas = self._get_json('/areas')
+        data = self._get_json('/areas')
+        self.assertIn('items', data)
+        areas = data['items']
         self.assertIsInstance(areas, list)
         self.assertGreaterEqual(len(areas), 1)
         area_ids = [area['id'] for area in areas]
@@ -379,7 +381,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_003
         """
-        components = self._get_json('/components')
+        data = self._get_json('/components')
+        self.assertIn('items', data)
+        components = data['items']
         self.assertIsInstance(components, list)
         # Should have at least 7 demo nodes + gateway node
         self.assertGreaterEqual(len(components), 7)
@@ -407,7 +411,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_003
         """
-        areas = self._get_json('/areas')
+        data = self._get_json('/areas')
+        areas = data['items']
         area_ids = [area['id'] for area in areas]
 
         expected_areas = ['powertrain', 'chassis', 'body']
@@ -423,7 +428,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         @verifies REQ_INTEROP_006
         """
         # Test powertrain area
-        components = self._get_json('/areas/powertrain/components')
+        data = self._get_json('/areas/powertrain/components')
+        self.assertIn('items', data)
+        components = data['items']
         self.assertIsInstance(components, list)
         self.assertGreater(len(components), 0)
 
@@ -709,16 +716,17 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print('✓ Valid IDs with underscores test passed')
 
-    def test_16_invalid_ids_with_hyphens(self):
+    def test_16_invalid_ids_with_special_chars(self):
         """
-        Test that IDs with hyphens are rejected (not allowed in ROS 2 names).
+        Test that IDs with special chars (except underscore/hyphen) are rejected.
 
         @verifies REQ_INTEROP_018
         """
         invalid_ids = [
-            'component-name',
-            'component-name-123',
-            'my-component',
+            'component@name',
+            'component name',
+            'component!name',
+            'component$name',
         ]
 
         for invalid_id in invalid_ids:
@@ -728,14 +736,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.assertEqual(
                 response.status_code,
                 400,
-                f'Expected 400 for hyphenated ID: {invalid_id}',
+                f'Expected 400 for invalid ID: {invalid_id}',
             )
 
             data = response.json()
             self.assertIn('error', data)
             self.assertEqual(data['error'], 'Invalid component ID')
 
-        print('✓ Invalid IDs with hyphens test passed')
+        print('✓ Invalid IDs with special chars test passed')
 
     def test_17_component_topic_temperature(self):
         """
@@ -1182,7 +1190,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         invalid_ids = [
             'component;drop',
             'component<script>',
-            'component-name',
+            'component name',
         ]
 
         for invalid_id in invalid_ids:
@@ -1214,7 +1222,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         invalid_names = [
             'op;drop',
             'op<script>',
-            'op-name',
+            'op name',
         ]
 
         for invalid_name in invalid_names:
@@ -1263,7 +1271,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_021
         """
-        components = self._get_json('/components')
+        data = self._get_json('/components')
+        components = data['items']
 
         # Find calibration component
         calibration = None
@@ -1465,7 +1474,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_022
         """
-        components = self._get_json('/components')
+        data = self._get_json('/components')
+        components = data['items']
 
         # Find long_calibration component
         long_cal = None
@@ -1779,7 +1789,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_025
         """
-        components = self._get_json('/components')
+        data = self._get_json('/components')
+        components = data['items']
 
         # Find calibration component with the calibrate service
         calibration = None
@@ -1824,7 +1835,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_025
         """
-        components = self._get_json('/components')
+        data = self._get_json('/components')
+        components = data['items']
 
         # Find long_calibration component with the action
         long_cal = None

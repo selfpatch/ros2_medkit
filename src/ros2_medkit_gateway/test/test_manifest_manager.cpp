@@ -381,9 +381,11 @@ TEST_F(ManifestManagerTest, GetComponentsForArea) {
   ManifestManager manager;
   ASSERT_TRUE(manager.load_manifest_from_string(valid_manifest_yaml));
 
+  // area1 has comp1, comp2 directly, plus comp3 from subarea area2
   auto comps = manager.get_components_for_area("area1");
-  EXPECT_EQ(comps.size(), 2);
+  EXPECT_EQ(comps.size(), 3);
 
+  // area2 only has comp3 (it's a subarea, not a parent)
   auto comps2 = manager.get_components_for_area("area2");
   EXPECT_EQ(comps2.size(), 1);
   EXPECT_EQ(comps2[0].id, "comp3");

@@ -420,7 +420,3 @@ Next Steps
 - :doc:`/config/manifest-schema` - Complete YAML schema reference
 - :doc:`migration-to-manifest` - Migrate from runtime-only mode
 - :doc:`/getting_started` - Basic gateway setup
-
-.. seealso::
-
-   - `Example Manifests <config/examples>`_ in the repository

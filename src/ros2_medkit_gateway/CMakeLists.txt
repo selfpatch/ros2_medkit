@@ -265,27 +265,28 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fault_manager test/test_fault_manager.cpp)
   target_link_libraries(test_fault_manager gateway_lib)
   ament_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
-  # Add discovery models tests (TASK_002)
+
+  # Add discovery models tests
   ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
   target_link_libraries(test_discovery_models gateway_lib)
 
-  # Add manifest parser tests (TASK_003)
+  # Add manifest parser tests
   ament_add_gtest(test_manifest_parser test/test_manifest_parser.cpp)
   target_link_libraries(test_manifest_parser gateway_lib)
 
-  # Add manifest validator tests (TASK_003)
+  # Add manifest validator tests
   ament_add_gtest(test_manifest_validator test/test_manifest_validator.cpp)
   target_link_libraries(test_manifest_validator gateway_lib)
 
-  # Add manifest manager tests (TASK_004)
+  # Add manifest manager tests
   ament_add_gtest(test_manifest_manager test/test_manifest_manager.cpp)
   target_link_libraries(test_manifest_manager gateway_lib)
 
-  # Add runtime linker tests (TASK_005)
+  # Add runtime linker tests
   ament_add_gtest(test_runtime_linker test/test_runtime_linker.cpp)
   target_link_libraries(test_runtime_linker gateway_lib)
 
-  # Add capability builder tests (TASK_010)
+  # Add capability builder tests
   ament_add_gtest(test_capability_builder test/test_capability_builder.cpp)
   target_link_libraries(test_capability_builder gateway_lib)
 
@@ -349,6 +350,20 @@ if(BUILD_TESTING)
   add_launch_test(
     test/test_tls.test.py
     TARGET test_tls
+    TIMEOUT 120
+  )
+
+  # Add manifest-only discovery integration tests
+  add_launch_test(
+    test/test_discovery_manifest.test.py
+    TARGET test_discovery_manifest
+    TIMEOUT 120
+  )
+
+  # Add hybrid discovery integration tests
+  add_launch_test(
+    test/test_discovery_hybrid.test.py
+    TARGET test_discovery_hybrid
     TIMEOUT 120
   )
 

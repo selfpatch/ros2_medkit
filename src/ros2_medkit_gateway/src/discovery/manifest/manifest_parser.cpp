@@ -59,10 +59,10 @@ Manifest ManifestParser::parse_string(const std::string & yaml_content) const {
     manifest.config = parse_config(root["discovery"]);
   }
 
-  // Parse areas
+  // Parse areas (with recursive subareas)
   if (root["areas"] && root["areas"].IsSequence()) {
     for (const auto & node : root["areas"]) {
-      manifest.areas.push_back(parse_area(node));
+      parse_area_recursive(node, "", manifest.areas);
     }
   }
 
@@ -125,7 +125,8 @@ ManifestConfig ManifestParser::parse_config(const YAML::Node & node) const {
   return config;
 }
 
-Area ManifestParser::parse_area(const YAML::Node & node) const {
+void ManifestParser::parse_area_recursive(const YAML::Node & node, const std::string & parent_id,
+                                          std::vector<Area> & areas) const {
   Area area;
   area.id = get_string(node, "id");
   area.name = get_string(node, "name", area.id);  // Default to id if no name
@@ -133,9 +134,17 @@ Area ManifestParser::parse_area(const YAML::Node & node) const {
   area.translation_id = get_string(node, "translation_id");
   area.description = get_string(node, "description");
   area.tags = get_string_vector(node, "tags");
-  area.parent_area_id = get_string(node, "parent_area");
+  // Set parent from recursive call, or from explicit parent_area field
+  area.parent_area_id = parent_id.empty() ? get_string(node, "parent_area") : parent_id;
 
-  return area;
+  areas.push_back(area);
+
+  // Recursively parse nested subareas
+  if (node["subareas"] && node["subareas"].IsSequence()) {
+    for (const auto & subarea_node : node["subareas"]) {
+      parse_area_recursive(subarea_node, area.id, areas);
+    }
+  }
 }
 
 Component ManifestParser::parse_component(const YAML::Node & node) const {
@@ -150,6 +159,12 @@ Component ManifestParser::parse_component(const YAML::Node & node) const {
   comp.tags = get_string_vector(node, "tags");
   comp.parent_component_id = get_string(node, "parent_component");
   comp.source = "manifest";
+
+  // Parse type if provided (e.g., "controller", "sensor", "actuator")
+  std::string type_val = get_string(node, "type");
+  if (!type_val.empty()) {
+    comp.type = type_val;
+  }
 
   // Compute FQN if namespace and id are provided
   if (!comp.namespace_path.empty()) {
@@ -191,7 +206,11 @@ Function ManifestParser::parse_function(const YAML::Node & node) const {
   func.name = get_string(node, "name", func.id);
   func.translation_id = get_string(node, "translation_id");
   func.description = get_string(node, "description");
-  func.hosts = get_string_vector(node, "hosts");
+  // Support both "hosted_by" (manifest) and "hosts" (internal)
+  func.hosts = get_string_vector(node, "hosted_by");
+  if (func.hosts.empty()) {
+    func.hosts = get_string_vector(node, "hosts");
+  }
   func.depends_on = get_string_vector(node, "depends_on");
   func.tags = get_string_vector(node, "tags");
   func.source = "manifest";

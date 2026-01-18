@@ -263,8 +263,30 @@ std::vector<Component> ManifestManager::get_components_for_area(const std::strin
     return result;
   }
 
+  // Collect all area IDs that are descendants of area_id (including area_id itself)
+  std::vector<std::string> area_ids;
+  area_ids.push_back(area_id);
+
+  // Find all descendant areas (areas whose parent is in our list)
+  bool found_new = true;
+  while (found_new) {
+    found_new = false;
+    for (const auto & area : manifest_->areas) {
+      // Check if this area's parent is in our list
+      if (!area.parent_area_id.empty()) {
+        bool parent_in_list = std::find(area_ids.begin(), area_ids.end(), area.parent_area_id) != area_ids.end();
+        bool area_in_list = std::find(area_ids.begin(), area_ids.end(), area.id) != area_ids.end();
+        if (parent_in_list && !area_in_list) {
+          area_ids.push_back(area.id);
+          found_new = true;
+        }
+      }
+    }
+  }
+
+  // Now collect components from all matching areas
   for (const auto & comp : manifest_->components) {
-    if (comp.area == area_id) {
+    if (std::find(area_ids.begin(), area_ids.end(), comp.area) != area_ids.end()) {
       result.push_back(comp);
     }
   }

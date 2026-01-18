@@ -266,8 +266,10 @@ class TestHttpsEndpoints(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        # Areas endpoint returns a list directly
-        self.assertIsInstance(data, list)
+        # Areas endpoint returns {items: [...], total_count: N}
+        self.assertIsInstance(data, dict)
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
 
     def test_https_connection_uses_tls(self):
         """Verify that the connection is actually using TLS."""

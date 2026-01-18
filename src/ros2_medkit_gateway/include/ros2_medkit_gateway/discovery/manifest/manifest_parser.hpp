@@ -53,7 +53,8 @@ class ManifestParser {
   Manifest parse_string(const std::string & yaml_content) const;
 
  private:
-  Area parse_area(const YAML::Node & node) const;
+  /// Recursively parse area and its nested subareas
+  void parse_area_recursive(const YAML::Node & node, const std::string & parent_id, std::vector<Area> & areas) const;
   Component parse_component(const YAML::Node & node) const;
   App parse_app(const YAML::Node & node) const;
   Function parse_function(const YAML::Node & node) const;

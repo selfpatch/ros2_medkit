@@ -33,12 +33,16 @@ void ComponentHandlers::handle_list_components(const httplib::Request & req, htt
   try {
     const auto cache = ctx_.node()->get_entity_cache();
 
-    json components_json = json::array();
+    json items = json::array();
     for (const auto & component : cache.components) {
-      components_json.push_back(component.to_json());
+      items.push_back(component.to_json());
     }
 
-    HandlerContext::send_json(res, components_json);
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_components: %s", e.what());

@@ -29,12 +29,16 @@ void AreaHandlers::handle_list_areas(const httplib::Request & req, httplib::Resp
   try {
     const auto cache = ctx_.node()->get_entity_cache();
 
-    json areas_json = json::array();
+    json items = json::array();
     for (const auto & area : cache.areas) {
-      areas_json.push_back(area.to_json());
+      items.push_back(area.to_json());
     }
 
-    HandlerContext::send_json(res, areas_json);
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_areas: %s", e.what());
@@ -132,14 +136,18 @@ void AreaHandlers::handle_area_components(const httplib::Request & req, httplib:
     }
 
     // Filter components by area
-    json components_json = json::array();
+    json items = json::array();
     for (const auto & component : cache.components) {
       if (component.area == area_id) {
-        components_json.push_back(component.to_json());
+        items.push_back(component.to_json());
       }
     }
 
-    HandlerContext::send_json(res, components_json);
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_area_components: %s", e.what());

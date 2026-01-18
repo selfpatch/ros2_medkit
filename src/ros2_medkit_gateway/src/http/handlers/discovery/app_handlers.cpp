@@ -388,7 +388,7 @@ void AppHandlers::handle_related_apps(const httplib::Request & req, httplib::Res
       return;
     }
 
-    // TODO: Implement in TASK_009 - use discovery->get_apps_for_component()
+    // TODO: use discovery->get_apps_for_component()
     // For now, return empty array since apps require manifest
     json apps_json = json::array();
     HandlerContext::send_json(res, apps_json);
