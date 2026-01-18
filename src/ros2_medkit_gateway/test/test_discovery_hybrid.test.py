@@ -472,9 +472,16 @@ class TestDiscoveryHybridMode(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         app = response.json()
-        # Should be located on temp-sensor-hw
-        if 'component_id' in app:
-            self.assertEqual(app['component_id'], 'temp-sensor-hw')
+        # Should be located on temp-sensor-hw via HATEOAS link
+        self.assertIn('_links', app, 'App response should contain _links')
+        self.assertIn(
+            'is-located-on', app['_links'],
+            'App should have is-located-on link when component is specified'
+        )
+        self.assertEqual(
+            app['_links']['is-located-on'],
+            '/api/v1/components/temp-sensor-hw'
+        )
 
     def test_app_depends_on_relationship(self):
         """
