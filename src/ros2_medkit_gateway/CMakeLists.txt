@@ -298,6 +298,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_auth_config test/test_auth_config.cpp)
   target_link_libraries(test_auth_config gateway_lib)
 
+  # Add data access manager tests
+  ament_add_gtest(test_data_access_manager test/test_data_access_manager.cpp)
+  target_link_libraries(test_data_access_manager gateway_lib)
+  ament_target_dependencies(test_data_access_manager rclcpp std_msgs)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
@@ -328,6 +333,8 @@ if(BUILD_TESTING)
     target_link_options(test_handler_context PRIVATE --coverage)
     target_compile_options(test_auth_config PRIVATE --coverage -O0 -g)
     target_link_options(test_auth_config PRIVATE --coverage)
+    target_compile_options(test_data_access_manager PRIVATE --coverage -O0 -g)
+    target_link_options(test_data_access_manager PRIVATE --coverage)
   endif()
 
   # Integration testing

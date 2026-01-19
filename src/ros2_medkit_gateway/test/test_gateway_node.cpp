@@ -163,10 +163,6 @@ TEST_F(TestGatewayNode, test_list_components_endpoint) {
   EXPECT_TRUE(json_response["items"].is_array());
 }
 
-// =============================================================================
-// Additional endpoint tests for improved coverage
-// =============================================================================
-
 TEST_F(TestGatewayNode, test_nonexistent_endpoint_404) {
   auto client = create_client();
 
