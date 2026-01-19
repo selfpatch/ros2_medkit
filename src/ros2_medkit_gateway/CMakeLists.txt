@@ -290,6 +290,14 @@ if(BUILD_TESTING)
   ament_add_gtest(test_capability_builder test/test_capability_builder.cpp)
   target_link_libraries(test_capability_builder gateway_lib)
 
+  # Add handler context tests
+  ament_add_gtest(test_handler_context test/test_handler_context.cpp)
+  target_link_libraries(test_handler_context gateway_lib)
+
+  # Add auth config tests
+  ament_add_gtest(test_auth_config test/test_auth_config.cpp)
+  target_link_libraries(test_auth_config gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
@@ -314,6 +322,12 @@ if(BUILD_TESTING)
     target_link_options(test_manifest_parser PRIVATE --coverage)
     target_compile_options(test_manifest_validator PRIVATE --coverage -O0 -g)
     target_link_options(test_manifest_validator PRIVATE --coverage)
+    target_compile_options(test_capability_builder PRIVATE --coverage -O0 -g)
+    target_link_options(test_capability_builder PRIVATE --coverage)
+    target_compile_options(test_handler_context PRIVATE --coverage -O0 -g)
+    target_link_options(test_handler_context PRIVATE --coverage)
+    target_compile_options(test_auth_config PRIVATE --coverage -O0 -g)
+    target_link_options(test_auth_config PRIVATE --coverage)
   endif()
 
   # Integration testing

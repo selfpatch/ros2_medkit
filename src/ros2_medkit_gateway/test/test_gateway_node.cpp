@@ -163,6 +163,200 @@ TEST_F(TestGatewayNode, test_list_components_endpoint) {
   EXPECT_TRUE(json_response["items"].is_array());
 }
 
+// =============================================================================
+// Additional endpoint tests for improved coverage
+// =============================================================================
+
+TEST_F(TestGatewayNode, test_nonexistent_endpoint_404) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/nonexistent/path");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_invalid_area_id_bad_request) {
+  auto client = create_client();
+
+  // Test with special characters that should be rejected
+  // Note: URL-encoded slash (%2F) is decoded by server, but @#$ characters are invalid
+  auto res = client.Get(std::string(API_BASE_PATH) + "/areas/test@invalid");
+
+  ASSERT_TRUE(res);
+  // Should return 400 for invalid entity ID with special characters
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+}
+
+TEST_F(TestGatewayNode, test_nonexistent_area_404) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/areas/nonexistent_area");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_nonexistent_component_404) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/nonexistent_component");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_invalid_component_id_bad_request) {
+  auto client = create_client();
+
+  // Test with special characters that are invalid
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/test@invalid#id");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+
+  auto json_response = nlohmann::json::parse(res->body);
+  EXPECT_TRUE(json_response.contains("error"));
+}
+
+TEST_F(TestGatewayNode, test_list_apps_endpoint) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/apps");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::OK_200);
+  EXPECT_EQ(res->get_header_value("Content-Type"), "application/json");
+
+  auto json_response = nlohmann::json::parse(res->body);
+  EXPECT_TRUE(json_response.is_object());
+  EXPECT_TRUE(json_response.contains("items"));
+  EXPECT_TRUE(json_response["items"].is_array());
+}
+
+TEST_F(TestGatewayNode, test_list_functions_endpoint) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/functions");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::OK_200);
+  EXPECT_EQ(res->get_header_value("Content-Type"), "application/json");
+
+  auto json_response = nlohmann::json::parse(res->body);
+  EXPECT_TRUE(json_response.is_object());
+  EXPECT_TRUE(json_response.contains("items"));
+}
+
+TEST_F(TestGatewayNode, test_options_request_for_cors) {
+  auto client = create_client();
+
+  // OPTIONS request for CORS preflight
+  auto res = client.Options(std::string(API_BASE_PATH) + "/components");
+
+  ASSERT_TRUE(res);
+  // Without CORS configured, server may return various success codes or 404
+  // The main purpose is to verify the server handles OPTIONS without crashing
+  EXPECT_TRUE(res->status == StatusCode::OK_200 || res->status == StatusCode::NoContent_204 ||
+              res->status == StatusCode::NotFound_404 || res->status == StatusCode::MethodNotAllowed_405);
+}
+
+TEST_F(TestGatewayNode, test_component_data_nonexistent_component) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/nonexistent_component/data");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_component_operations_nonexistent_component) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/nonexistent_component/operations");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_component_configurations_nonexistent_component) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/nonexistent_component/configurations");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_component_faults_nonexistent_component) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/nonexistent_component/faults");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+// Note: test_global_faults_endpoint is skipped in unit tests because it requires
+// the fault_manager external service which isn't available. This endpoint is
+// properly tested in test_integration.test.py which starts all required nodes.
+
+TEST_F(TestGatewayNode, test_root_endpoint_contains_api_base_path) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/");
+
+  ASSERT_TRUE(res);
+  auto json_response = nlohmann::json::parse(res->body);
+
+  EXPECT_TRUE(json_response.contains("api_base"));
+  EXPECT_EQ(json_response["api_base"], API_BASE_PATH);
+}
+
+TEST_F(TestGatewayNode, test_root_endpoint_lists_all_capabilities) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/");
+
+  ASSERT_TRUE(res);
+  auto json_response = nlohmann::json::parse(res->body);
+
+  EXPECT_TRUE(json_response["capabilities"]["discovery"]);
+  EXPECT_TRUE(json_response["capabilities"]["data_access"]);
+  EXPECT_TRUE(json_response["capabilities"]["operations"]);
+  EXPECT_TRUE(json_response["capabilities"]["async_actions"]);
+  EXPECT_TRUE(json_response["capabilities"]["configurations"]);
+  EXPECT_TRUE(json_response["capabilities"]["faults"]);
+}
+
+TEST_F(TestGatewayNode, test_area_components_nonexistent_area) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/areas/nonexistent_area/components");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_area_subareas_nonexistent_area) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/areas/nonexistent_area/subareas");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_post_to_nonexistent_operation) {
+  auto client = create_client();
+
+  auto res = client.Post(std::string(API_BASE_PATH) + "/components/nonexistent/operations/do_something", "",
+                         "application/json");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
