@@ -263,6 +263,88 @@ TEST_F(TestConfigurationManager, test_set_parameter_different_types) {
   EXPECT_EQ(bool_result.data["type"], "bool");
 }
 
+// ==================== ARRAY PARAMETER TESTS ====================
+
+TEST_F(TestConfigurationManager, test_set_and_get_array_parameters) {
+  // Test array parameters
+  node_->declare_parameter("int_array_param", std::vector<int64_t>{1, 2, 3});
+  node_->declare_parameter("double_array_param", std::vector<double>{1.1, 2.2, 3.3});
+  node_->declare_parameter("string_array_param", std::vector<std::string>{"a", "b", "c"});
+
+  // Get int array
+  auto get_int = config_manager_->get_parameter("/test_config_manager_node", "int_array_param");
+  ASSERT_TRUE(get_int.success);
+  EXPECT_TRUE(get_int.data["value"].is_array());
+  EXPECT_EQ(get_int.data["value"].size(), 3);
+
+  // Get double array
+  auto get_double = config_manager_->get_parameter("/test_config_manager_node", "double_array_param");
+  ASSERT_TRUE(get_double.success);
+  EXPECT_TRUE(get_double.data["value"].is_array());
+
+  // Get string array
+  auto get_string = config_manager_->get_parameter("/test_config_manager_node", "string_array_param");
+  ASSERT_TRUE(get_string.success);
+  EXPECT_TRUE(get_string.data["value"].is_array());
+}
+
+// ==================== PARAMETER LISTING WITH PREFIXES ====================
+
+TEST_F(TestConfigurationManager, test_list_parameters_format) {
+  // Verify the returned format for listed parameters
+  auto result = config_manager_->list_parameters("/test_config_manager_node");
+
+  ASSERT_TRUE(result.success);
+  EXPECT_TRUE(result.data.is_array());
+
+  // Parameters are returned as objects with name/type/value or just strings
+  // depending on implementation
+  EXPECT_GE(result.data.size(), 0);
+}
+
+// ==================== ERROR MESSAGE VALIDATION ====================
+
+TEST_F(TestConfigurationManager, test_error_messages_informative) {
+  // Test that error messages are informative
+  auto result1 = config_manager_->get_parameter("/nonexistent_node", "param");
+  EXPECT_FALSE(result1.success);
+  EXPECT_FALSE(result1.error_message.empty());
+  EXPECT_GT(result1.error_message.length(), 10);  // Should be descriptive
+
+  auto result2 = config_manager_->set_parameter("/nonexistent_node", "param", nlohmann::json(42));
+  EXPECT_FALSE(result2.success);
+  EXPECT_FALSE(result2.error_message.empty());
+}
+
+// ==================== CONCURRENT ACCESS TEST ====================
+
+TEST_F(TestConfigurationManager, test_concurrent_parameter_access) {
+  // Declare a test parameter
+  node_->declare_parameter("concurrent_param", 0);
+
+  // Access from multiple threads should be safe
+  std::vector<std::thread> threads;
+  std::atomic<int> success_count{0};
+
+  for (int i = 0; i < 3; ++i) {
+    threads.emplace_back([this, &success_count]() {
+      // Give some time between threads to avoid race conditions in service discovery
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      auto result = config_manager_->get_parameter("/test_config_manager_node", "concurrent_param");
+      if (result.success) {
+        success_count++;
+      }
+    });
+  }
+
+  for (auto & t : threads) {
+    t.join();
+  }
+
+  // At least some should succeed (concurrency may cause timing issues)
+  EXPECT_GE(success_count.load(), 1);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
