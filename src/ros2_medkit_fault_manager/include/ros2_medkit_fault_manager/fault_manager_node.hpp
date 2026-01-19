@@ -18,6 +18,7 @@
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
+#include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
@@ -79,10 +80,19 @@ class FaultManagerNode : public rclcpp::Node {
   /// @param config SnapshotConfig to populate with loaded values
   void load_snapshot_config_from_yaml(const std::string & config_file, SnapshotConfig & config);
 
+  /// Initialize correlation engine from configuration file
+  /// @return CorrelationEngine instance if enabled and config is valid, nullptr otherwise
+  std::unique_ptr<correlation::CorrelationEngine> create_correlation_engine();
+
+  /// Convert severity string to uint8_t
+  static std::string severity_to_string(uint8_t severity);
+
   /// Publish a fault event to the events topic
   /// @param event_type One of FaultEvent::EVENT_CONFIRMED, EVENT_CLEARED, EVENT_UPDATED
   /// @param fault The fault data associated with this event
-  void publish_fault_event(const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault);
+  /// @param auto_cleared_codes Optional list of auto-cleared symptom fault codes (for EVENT_CLEARED)
+  void publish_fault_event(const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault,
+                           const std::vector<std::string> & auto_cleared_codes = {});
 
   /// Validate severity value
   static bool is_valid_severity(uint8_t severity);
@@ -106,6 +116,9 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Snapshot capture for capturing topic data on fault confirmation
   std::unique_ptr<SnapshotCapture> snapshot_capture_;
+
+  /// Correlation engine for fault correlation/muting (nullptr if disabled)
+  std::unique_ptr<correlation::CorrelationEngine> correlation_engine_;
 };
 
 }  // namespace ros2_medkit_fault_manager

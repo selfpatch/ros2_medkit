@@ -35,6 +35,32 @@ uint8 severity
 # Example: ["CONFIRMED", "PREFAILED"] to include confirmed and pre-failed faults.
 # Invalid status strings are silently ignored.
 string[] statuses
+
+# Correlation-related options (only effective when correlation is enabled)
+
+# If true, include muted faults (symptoms) in the response.
+# Muted faults are correlated symptoms that were not published as events.
+# Default: false (only active, non-muted faults are returned)
+bool include_muted
+
+# If true, include cluster information in the response.
+# Clusters are auto-detected groups of related faults.
+# Default: false
+bool include_clusters
 ---
 # Response fields
 Fault[] faults           # Array of faults matching the filter criteria
+
+# Correlation-related response fields (populated when correlation is enabled)
+
+# Total count of muted faults (always returned when correlation is enabled)
+uint32 muted_count
+
+# Muted fault details (only populated when include_muted=true)
+MutedFaultInfo[] muted_faults
+
+# Total count of active clusters (always returned when correlation is enabled)
+uint32 cluster_count
+
+# Cluster details (only populated when include_clusters=true)
+ClusterInfo[] clusters

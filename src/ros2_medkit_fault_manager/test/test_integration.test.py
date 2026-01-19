@@ -75,6 +75,7 @@ def generate_test_description():
     # Get path to test snapshot config
     pkg_share = get_package_share_directory('ros2_medkit_fault_manager')
     snapshot_config = os.path.join(pkg_share, 'test', 'test_snapshots.yaml')
+    correlation_config = os.path.join(pkg_share, 'test', 'test_correlation.yaml')
 
     fault_manager_node = launch_ros.actions.Node(
         package='ros2_medkit_fault_manager',
@@ -89,6 +90,7 @@ def generate_test_description():
             'snapshots.config_file': snapshot_config,
             'snapshots.timeout_sec': 3.0,
             'snapshots.background_capture': False,  # On-demand for testing
+            'correlation.config_file': correlation_config,  # Enable correlation
         }],
     )
 
@@ -723,6 +725,194 @@ class TestFaultManagerIntegration(unittest.TestCase):
         # Success indicates fault exists (even if no snapshots captured due to no publishers)
         self.assertTrue(snap_response.success)
         print('Pattern-matched fault processed successfully')
+
+    # ==================== Correlation Tests ====================
+    # Tests for fault correlation feature (#105)
+
+    def test_21_correlation_hierarchical_root_cause(self):
+        """
+        Test hierarchical correlation: root cause is recognized.
+
+        When ESTOP_001 is reported, it should be identified as a root cause.
+        """
+        # Report root cause fault (CRITICAL bypasses debounce)
+        request = ReportFault.Request()
+        request.fault_code = 'ESTOP_001'
+        request.event_type = ReportFault.Request.EVENT_FAILED
+        request.severity = Fault.SEVERITY_CRITICAL
+        request.description = 'E-Stop triggered'
+        request.source_id = '/estop_node'
+
+        response = self._call_service(self.report_fault_client, request)
+        self.assertTrue(response.accepted)
+
+        # Verify fault is confirmed
+        get_request = GetFaults.Request()
+        get_request.filter_by_severity = False
+        get_request.statuses = [Fault.STATUS_CONFIRMED]
+
+        get_response = self._call_service(self.get_faults_client, get_request)
+
+        fault_codes = [f.fault_code for f in get_response.faults]
+        self.assertIn('ESTOP_001', fault_codes)
+        print('Root cause ESTOP_001 confirmed')
+
+    def test_22_correlation_symptoms_muted(self):
+        """
+        Test hierarchical correlation: symptoms are muted.
+
+        After ESTOP_001 is reported, subsequent MOTOR_COMM_* faults
+        should be muted (stored but not returned in default query).
+        """
+        # First ensure root cause exists (from test_21 or report it again)
+        root_request = ReportFault.Request()
+        root_request.fault_code = 'ESTOP_001'
+        root_request.event_type = ReportFault.Request.EVENT_FAILED
+        root_request.severity = Fault.SEVERITY_CRITICAL
+        root_request.description = 'E-Stop triggered'
+        root_request.source_id = '/estop_node'
+        self._call_service(self.report_fault_client, root_request)
+
+        # Report symptom faults (CRITICAL to bypass debounce)
+        symptoms = ['MOTOR_COMM_FL', 'MOTOR_COMM_FR', 'DRIVE_FAULT_1']
+        for symptom in symptoms:
+            request = ReportFault.Request()
+            request.fault_code = symptom
+            request.event_type = ReportFault.Request.EVENT_FAILED
+            request.severity = Fault.SEVERITY_CRITICAL
+            request.description = f'Symptom: {symptom}'
+            request.source_id = '/motor_node'
+
+            response = self._call_service(self.report_fault_client, request)
+            self.assertTrue(response.accepted)
+
+        # Query with include_muted=true to see muted faults
+        get_request = GetFaults.Request()
+        get_request.filter_by_severity = False
+        get_request.statuses = [Fault.STATUS_CONFIRMED]
+        get_request.include_muted = True
+
+        get_response = self._call_service(self.get_faults_client, get_request)
+
+        # Check muted_count > 0
+        self.assertGreater(get_response.muted_count, 0)
+        print(f'Muted count: {get_response.muted_count}')
+
+        # Check muted_faults contains our symptoms
+        muted_codes = [m.fault_code for m in get_response.muted_faults]
+        for symptom in symptoms:
+            self.assertIn(symptom, muted_codes)
+            print(f'Symptom {symptom} is muted')
+
+        # Verify muted faults have correct root cause
+        for muted in get_response.muted_faults:
+            if muted.fault_code in symptoms:
+                self.assertEqual(muted.root_cause_code, 'ESTOP_001')
+                self.assertEqual(muted.rule_id, 'estop_cascade')
+
+    def test_23_correlation_auto_clear_with_root(self):
+        """
+        Test hierarchical correlation: clearing root cause clears symptoms.
+
+        When ESTOP_001 is cleared, all its correlated symptoms should
+        also be cleared (auto_clear_with_root=true).
+        """
+        # Clear the root cause
+        clear_request = ClearFault.Request()
+        clear_request.fault_code = 'ESTOP_001'
+
+        clear_response = self._call_service(self.clear_fault_client, clear_request)
+
+        self.assertTrue(clear_response.success)
+
+        # Check auto_cleared_codes contains our symptoms
+        auto_cleared = clear_response.auto_cleared_codes
+        print(f'Auto-cleared codes: {auto_cleared}')
+
+        # At least some symptoms should be auto-cleared
+        self.assertGreater(len(auto_cleared), 0)
+
+        # Verify muted count is now 0
+        get_request = GetFaults.Request()
+        get_request.filter_by_severity = False
+        get_request.statuses = [Fault.STATUS_CONFIRMED]
+        get_request.include_muted = True
+
+        get_response = self._call_service(self.get_faults_client, get_request)
+
+        # Muted faults related to ESTOP_001 should be cleared
+        remaining_muted = [m for m in get_response.muted_faults
+                          if m.root_cause_code == 'ESTOP_001']
+        self.assertEqual(len(remaining_muted), 0)
+        print('All symptoms auto-cleared with root cause')
+
+    def test_24_correlation_auto_cluster(self):
+        """
+        Test auto-cluster correlation: sensor errors are grouped.
+
+        When 2+ SENSOR_* faults occur within the window, they form a cluster.
+        """
+        # Report sensor faults (CRITICAL to bypass debounce)
+        sensors = ['SENSOR_LIDAR_FAIL', 'SENSOR_IMU_TIMEOUT']
+        for sensor in sensors:
+            request = ReportFault.Request()
+            request.fault_code = sensor
+            request.event_type = ReportFault.Request.EVENT_FAILED
+            request.severity = Fault.SEVERITY_CRITICAL
+            request.description = f'Sensor error: {sensor}'
+            request.source_id = '/sensor_node'
+
+            response = self._call_service(self.report_fault_client, request)
+            self.assertTrue(response.accepted)
+            time.sleep(0.1)  # Small delay to stay within window
+
+        # Query with include_clusters=true
+        get_request = GetFaults.Request()
+        get_request.filter_by_severity = False
+        get_request.statuses = [Fault.STATUS_CONFIRMED]
+        get_request.include_clusters = True
+
+        get_response = self._call_service(self.get_faults_client, get_request)
+
+        # Check cluster_count > 0
+        self.assertGreater(get_response.cluster_count, 0)
+        print(f'Cluster count: {get_response.cluster_count}')
+
+        # Check clusters contain our sensor faults
+        self.assertGreater(len(get_response.clusters), 0)
+        cluster = get_response.clusters[0]
+        print(f'Cluster: {cluster.cluster_id}, representative: {cluster.representative_code}')
+        print(f'Fault codes in cluster: {cluster.fault_codes}')
+
+        # Verify cluster properties
+        self.assertEqual(cluster.rule_id, 'sensor_storm')
+        self.assertGreaterEqual(cluster.count, 2)
+
+    def test_25_correlation_include_muted_false_excludes_details(self):
+        """
+        Test that include_muted=false excludes muted_faults details.
+
+        The muted_count should still be returned, but muted_faults array
+        should be empty when include_muted=false (default).
+        """
+        get_request = GetFaults.Request()
+        get_request.filter_by_severity = False
+        get_request.statuses = [Fault.STATUS_CONFIRMED]
+        get_request.include_muted = False  # Default
+        get_request.include_clusters = False  # Default
+
+        get_response = self._call_service(self.get_faults_client, get_request)
+
+        # muted_count is always returned
+        self.assertIsNotNone(get_response.muted_count)
+
+        # muted_faults should be empty when include_muted=false
+        self.assertEqual(len(get_response.muted_faults), 0)
+
+        # clusters should be empty when include_clusters=false
+        self.assertEqual(len(get_response.clusters), 0)
+
+        print('Default query excludes muted/cluster details as expected')
 
 
 @launch_testing.post_shutdown_test()

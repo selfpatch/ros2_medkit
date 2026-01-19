@@ -125,7 +125,7 @@ FaultResult FaultManager::report_fault(const std::string & fault_code, uint8_t s
 }
 
 FaultResult FaultManager::get_faults(const std::string & source_id, bool include_prefailed, bool include_confirmed,
-                                     bool include_cleared) {
+                                     bool include_cleared, bool include_muted, bool include_clusters) {
   std::lock_guard<std::mutex> lock(service_mutex_);
   FaultResult result;
 
@@ -150,6 +150,10 @@ FaultResult FaultManager::get_faults(const std::string & source_id, bool include
   if (include_cleared) {
     request->statuses.push_back(ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
   }
+
+  // Correlation options
+  request->include_muted = include_muted;
+  request->include_clusters = include_clusters;
 
   auto future = get_faults_client_->async_send_request(request);
 
@@ -185,6 +189,42 @@ FaultResult FaultManager::get_faults(const std::string & source_id, bool include
 
   result.success = true;
   result.data = {{"faults", faults_array}, {"count", faults_array.size()}};
+
+  // Add correlation data (always include counts, details only if requested)
+  result.data["muted_count"] = response->muted_count;
+  result.data["cluster_count"] = response->cluster_count;
+
+  if (include_muted && !response->muted_faults.empty()) {
+    json muted_array = json::array();
+    for (const auto & muted : response->muted_faults) {
+      muted_array.push_back({{"fault_code", muted.fault_code},
+                             {"root_cause_code", muted.root_cause_code},
+                             {"rule_id", muted.rule_id},
+                             {"delay_ms", muted.delay_ms}});
+    }
+    result.data["muted_faults"] = muted_array;
+  }
+
+  if (include_clusters && !response->clusters.empty()) {
+    auto to_seconds = [](const builtin_interfaces::msg::Time & t) {
+      return t.sec + static_cast<double>(t.nanosec) / 1e9;
+    };
+
+    json clusters_array = json::array();
+    for (const auto & cluster : response->clusters) {
+      clusters_array.push_back({{"cluster_id", cluster.cluster_id},
+                                {"rule_id", cluster.rule_id},
+                                {"rule_name", cluster.rule_name},
+                                {"label", cluster.label},
+                                {"representative_code", cluster.representative_code},
+                                {"representative_severity", cluster.representative_severity},
+                                {"fault_codes", cluster.fault_codes},
+                                {"count", cluster.count},
+                                {"first_at", to_seconds(cluster.first_at)},
+                                {"last_at", to_seconds(cluster.last_at)}});
+    }
+    result.data["clusters"] = clusters_array;
+  }
 
   return result;
 }
@@ -240,6 +280,11 @@ FaultResult FaultManager::clear_fault(const std::string & fault_code) {
   result.data = {{"success", response->success}, {"message", response->message}};
   if (!response->success) {
     result.error_message = response->message;
+  }
+
+  // Include auto-cleared symptom codes if correlation is enabled
+  if (!response->auto_cleared_codes.empty()) {
+    result.data["auto_cleared_codes"] = response->auto_cleared_codes;
   }
 
   return result;

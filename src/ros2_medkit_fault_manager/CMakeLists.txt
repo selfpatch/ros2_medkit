@@ -46,6 +46,10 @@ add_library(fault_manager_lib STATIC
   src/fault_storage.cpp
   src/sqlite_fault_storage.cpp
   src/snapshot_capture.cpp
+  src/correlation/types.cpp
+  src/correlation/config_parser.cpp
+  src/correlation/pattern_matcher.cpp
+  src/correlation/correlation_engine.cpp
 )
 
 target_include_directories(fault_manager_lib PUBLIC
@@ -119,6 +123,18 @@ if(BUILD_TESTING)
   target_link_libraries(test_snapshot_capture fault_manager_lib)
   ament_target_dependencies(test_snapshot_capture rclcpp ros2_medkit_msgs)
 
+  # Correlation config parser tests
+  ament_add_gtest(test_correlation_config_parser test/test_correlation_config_parser.cpp)
+  target_link_libraries(test_correlation_config_parser fault_manager_lib)
+
+  # Pattern matcher tests
+  ament_add_gtest(test_pattern_matcher test/test_pattern_matcher.cpp)
+  target_link_libraries(test_pattern_matcher fault_manager_lib)
+
+  # Correlation engine tests
+  ament_add_gtest(test_correlation_engine test/test_correlation_engine.cpp)
+  target_link_libraries(test_correlation_engine fault_manager_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_fault_manager PRIVATE --coverage -O0 -g)
@@ -127,6 +143,12 @@ if(BUILD_TESTING)
     target_link_options(test_sqlite_storage PRIVATE --coverage)
     target_compile_options(test_snapshot_capture PRIVATE --coverage -O0 -g)
     target_link_options(test_snapshot_capture PRIVATE --coverage)
+    target_compile_options(test_correlation_config_parser PRIVATE --coverage -O0 -g)
+    target_link_options(test_correlation_config_parser PRIVATE --coverage)
+    target_compile_options(test_pattern_matcher PRIVATE --coverage -O0 -g)
+    target_link_options(test_pattern_matcher PRIVATE --coverage)
+    target_compile_options(test_correlation_engine PRIVATE --coverage -O0 -g)
+    target_link_options(test_correlation_engine PRIVATE --coverage)
   endif()
 
   # Integration tests

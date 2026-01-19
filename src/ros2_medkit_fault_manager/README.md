@@ -46,6 +46,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 - **Persistent storage**: SQLite backend ensures faults survive node restarts
 - **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation
 - **Snapshot capture**: Captures topic data when faults are confirmed for debugging (snapshots are deleted when fault is cleared)
+- **Fault correlation** (optional): Root cause analysis with symptom muting and auto-clear
 
 ## Parameters
 
@@ -180,6 +181,155 @@ Event types: `0` = EVENT_FAILED, `1` = EVENT_PASSED
 ### Immediate Confirmation
 
 CRITICAL severity faults bypass debounce and are immediately CONFIRMED, regardless of threshold.
+
+## Advanced: Fault Correlation
+
+Fault correlation reduces noise by identifying relationships between faults. When enabled, symptom faults
+(effects of a root cause) can be muted and auto-cleared when the root cause is resolved.
+
+### Correlation Modes
+
+**Hierarchical**: Defines explicit root cause → symptoms relationships. When a root cause fault occurs,
+subsequent matching symptom faults within a time window are correlated and optionally muted.
+
+**Auto-Cluster**: Automatically groups related faults that match a pattern within a time window.
+Useful for detecting "storms" of related faults (e.g., communication errors).
+
+### Configuration
+
+Enable correlation by providing a YAML configuration file:
+
+```bash
+ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
+  -p correlation.config_file:=/path/to/correlation.yaml
+```
+
+### Correlation Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `correlation.config_file` | string | `""` | Path to correlation YAML config (empty = disabled) |
+
+### Configuration File Format
+
+```yaml
+correlation:
+  enabled: true
+  default_window_ms: 500  # Default time window for symptom detection
+
+  # Reusable fault patterns (supports wildcards with *)
+  patterns:
+    motor_errors:
+      codes: ["MOTOR_COMM_*", "MOTOR_TIMEOUT_*"]
+    drive_faults:
+      codes: ["DRIVE_*"]
+    comm_errors:
+      codes: ["*_COMM_*", "*_TIMEOUT"]
+
+  rules:
+    # Hierarchical rule: E-Stop causes motor and drive faults
+    - id: estop_cascade
+      name: "E-Stop Cascade"
+      mode: hierarchical
+      root_cause:
+        codes: ["ESTOP_001", "ESTOP_002"]
+      symptoms:
+        - pattern: motor_errors
+        - pattern: drive_faults
+      window_ms: 1000           # Symptoms within 1s of root cause
+      mute_symptoms: true       # Don't publish symptom events
+      auto_clear_with_root: true # Clear symptoms when root cause clears
+
+    # Auto-cluster rule: Group communication errors
+    - id: comm_storm
+      name: "Communication Storm"
+      mode: auto_cluster
+      match:
+        - pattern: comm_errors
+      min_count: 3              # Need 3 faults to form cluster
+      window_ms: 500            # Within 500ms
+      show_as_single: true      # Only show representative fault
+      representative: highest_severity  # first | most_recent | highest_severity
+```
+
+### Pattern Wildcards
+
+Patterns support `*` wildcard matching:
+- `MOTOR_*` matches `MOTOR_COMM`, `MOTOR_TIMEOUT`, `MOTOR_DRIVE_FAULT`
+- `*_COMM_*` matches `MOTOR_COMM_FL`, `SENSOR_COMM_TIMEOUT`
+- `*_TIMEOUT` matches `MOTOR_TIMEOUT`, `SENSOR_TIMEOUT`
+
+### Querying Correlation Data
+
+Use `include_muted` and `include_clusters` to retrieve correlation information:
+
+```bash
+# Get faults with muted fault details
+ros2 service call /fault_manager/get_faults ros2_medkit_msgs/srv/GetFaults \
+  "{statuses: ['CONFIRMED'], include_muted: true, include_clusters: true}"
+```
+
+Response includes:
+- `muted_count`: Number of muted symptom faults
+- `cluster_count`: Number of active fault clusters
+- `muted_faults[]`: Details of muted faults (when `include_muted=true`)
+- `clusters[]`: Details of active clusters (when `include_clusters=true`)
+
+### REST API (via Gateway)
+
+Query parameters for GET `/api/v1/faults`:
+- `include_muted=true`: Include muted fault details in response
+- `include_clusters=true`: Include cluster details in response
+
+Response fields:
+```json
+{
+  "faults": [...],
+  "count": 5,
+  "muted_count": 2,
+  "cluster_count": 1,
+  "muted_faults": [
+    {
+      "fault_code": "MOTOR_COMM_FL",
+      "root_cause_code": "ESTOP_001",
+      "rule_id": "estop_cascade",
+      "delay_ms": 50
+    }
+  ],
+  "clusters": [
+    {
+      "cluster_id": "comm_storm_1",
+      "rule_id": "comm_storm",
+      "rule_name": "Communication Storm",
+      "representative_code": "SENSOR_TIMEOUT",
+      "representative_severity": "CRITICAL",
+      "fault_codes": ["MOTOR_COMM_FL", "SENSOR_TIMEOUT", "DRIVE_COMM_ERR"],
+      "count": 3,
+      "first_at": 1705678901.123,
+      "last_at": 1705678901.456
+    }
+  ]
+}
+```
+
+When clearing a root cause fault, `auto_cleared_codes` lists symptoms that were auto-cleared:
+```json
+{
+  "status": "success",
+  "fault_code": "ESTOP_001",
+  "message": "Fault cleared",
+  "auto_cleared_codes": ["MOTOR_COMM_FL", "MOTOR_COMM_FR", "DRIVE_FAULT"]
+}
+```
+
+### Example: E-Stop Cascade
+
+1. E-Stop is triggered → `ESTOP_001` fault reported
+2. Motors lose power → `MOTOR_COMM_FL`, `MOTOR_COMM_FR` faults reported
+3. Correlation engine detects motor faults are symptoms of E-Stop
+4. Motor faults are muted (not published as events, but stored)
+5. Dashboard shows only `ESTOP_001` (root cause)
+6. When E-Stop is cleared → Motor faults are auto-cleared
 
 ## Building
 

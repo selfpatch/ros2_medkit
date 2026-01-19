@@ -25,3 +25,10 @@ string fault_code        # The fault_code to clear
 # Response fields
 bool success             # True if the fault was found and cleared
 string message           # Status message or error description
+
+# Correlation-related response fields (populated when correlation is enabled)
+
+# List of symptom fault codes that were automatically cleared along with this root cause.
+# Only populated when clearing a root cause fault that has correlated symptoms
+# and the correlation rule has auto_clear_with_root=true.
+string[] auto_cleared_codes

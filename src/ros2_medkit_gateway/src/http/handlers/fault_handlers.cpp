@@ -34,12 +34,29 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
       return;
     }
 
+    // Parse correlation query parameters
+    bool include_muted = req.get_param_value("include_muted") == "true";
+    bool include_clusters = req.get_param_value("include_clusters") == "true";
+
     auto fault_mgr = ctx_.node()->get_fault_manager();
     // Empty source_id = no filtering, return all faults
-    auto result = fault_mgr->get_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared);
+    auto result = fault_mgr->get_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
+                                        include_muted, include_clusters);
 
     if (result.success) {
-      json response = {{"faults", result.data["faults"]}, {"count", result.data["count"]}};
+      json response = {{"faults", result.data["faults"]},
+                       {"count", result.data["count"]},
+                       {"muted_count", result.data["muted_count"]},
+                       {"cluster_count", result.data["cluster_count"]}};
+
+      // Include detailed correlation data if requested and present
+      if (result.data.contains("muted_faults")) {
+        response["muted_faults"] = result.data["muted_faults"];
+      }
+      if (result.data.contains("clusters")) {
+        response["clusters"] = result.data["clusters"];
+      }
+
       res.status = StatusCode::OK_200;
       HandlerContext::send_json(res, response);
     } else {
@@ -88,15 +105,30 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       return;
     }
 
+    // Parse correlation query parameters
+    bool include_muted = req.get_param_value("include_muted") == "true";
+    bool include_clusters = req.get_param_value("include_clusters") == "true";
+
     auto fault_mgr = ctx_.node()->get_fault_manager();
-    auto result =
-        fault_mgr->get_faults(namespace_path, filter.include_pending, filter.include_confirmed, filter.include_cleared);
+    auto result = fault_mgr->get_faults(namespace_path, filter.include_pending, filter.include_confirmed,
+                                        filter.include_cleared, include_muted, include_clusters);
 
     if (result.success) {
       json response = {{"component_id", component_id},
                        {"source_id", namespace_path},
                        {"faults", result.data["faults"]},
-                       {"count", result.data["count"]}};
+                       {"count", result.data["count"]},
+                       {"muted_count", result.data["muted_count"]},
+                       {"cluster_count", result.data["cluster_count"]}};
+
+      // Include detailed correlation data if requested and present
+      if (result.data.contains("muted_faults")) {
+        response["muted_faults"] = result.data["muted_faults"];
+      }
+      if (result.data.contains("clusters")) {
+        response["clusters"] = result.data["clusters"];
+      }
+
       HandlerContext::send_json(res, response);
     } else {
       HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, "Failed to get faults",
@@ -213,6 +245,12 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
                        {"component_id", component_id},
                        {"fault_code", fault_code},
                        {"message", result.data.value("message", "Fault cleared")}};
+
+      // Include auto-cleared symptom codes if present (correlation feature)
+      if (result.data.contains("auto_cleared_codes")) {
+        response["auto_cleared_codes"] = result.data["auto_cleared_codes"];
+      }
+
       HandlerContext::send_json(res, response);
     } else {
       // Check if it's a "not found" error

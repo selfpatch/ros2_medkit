@@ -26,6 +26,8 @@ find_package(builtin_interfaces REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Fault.msg"
   "msg/FaultEvent.msg"
+  "msg/MutedFaultInfo.msg"
+  "msg/ClusterInfo.msg"
   "srv/ReportFault.srv"
   "srv/GetFaults.srv"
   "srv/ClearFault.srv"

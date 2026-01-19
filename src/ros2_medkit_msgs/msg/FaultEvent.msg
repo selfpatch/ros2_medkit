@@ -35,3 +35,10 @@ string EVENT_CLEARED = "fault_cleared"
 # Emitted when fault data changes without status transition
 # (e.g., occurrence_count incremented, new source added to reporting_sources).
 string EVENT_UPDATED = "fault_updated"
+
+# Correlation-related fields (populated when correlation is enabled)
+
+# List of symptom fault codes that were automatically cleared along with a root cause.
+# Only populated for EVENT_CLEARED when the cleared fault was a root cause with
+# correlated symptoms and auto_clear_with_root=true.
+string[] auto_cleared_codes
