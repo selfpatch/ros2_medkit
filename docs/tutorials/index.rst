@@ -11,6 +11,7 @@ Step-by-step guides for common use cases with ros2_medkit.
    authentication
    https
    snapshots
+   fault-correlation
    docker
    devcontainer
    integration
@@ -38,6 +39,9 @@ Basic Tutorials
 
 :doc:`snapshots`
    Configure snapshot capture for fault debugging.
+
+:doc:`fault-correlation`
+   Configure fault correlation for root-cause analysis and noise reduction.
 
 :doc:`docker`
    Deploy ros2_medkit in Docker containers.

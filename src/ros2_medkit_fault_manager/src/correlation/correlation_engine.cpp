@@ -280,8 +280,11 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_as_symptom(const std::s
       result.rule_id = rule.id;
       result.delay_ms = static_cast<uint32_t>(elapsed);
 
-      // Track the symptom
-      root_to_symptoms_[prc.fault_code].push_back(fault_code);
+      // Track the symptom (avoid duplicates)
+      auto & symptoms = root_to_symptoms_[prc.fault_code];
+      if (std::find(symptoms.begin(), symptoms.end(), fault_code) == symptoms.end()) {
+        symptoms.push_back(fault_code);
+      }
 
       if (rule.mute_symptoms) {
         MutedFaultData muted;
@@ -366,9 +369,13 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
 
     // Check for duplicate
     if (std::find(cluster.fault_codes.begin(), cluster.fault_codes.end(), fault_code) != cluster.fault_codes.end()) {
-      // Already in cluster
+      // Already in cluster - ensure consistent muting for duplicates
       ProcessFaultResult result;
       result.cluster_id = cluster.cluster_id;
+      if (rule.show_as_single && fault_code != cluster.representative_code &&
+          cluster.fault_codes.size() >= rule.min_count) {
+        result.should_mute = true;
+      }
       return result;
     }
 
