@@ -1015,6 +1015,7 @@
     },
     {
       "name": "Faults",
+      "description": "Fault management API for reporting, querying, and clearing faults.\n\n**Features:**\n- Query faults by status (pending/confirmed/cleared)\n- Real-time SSE streaming for fault events\n- Topic snapshots captured at fault confirmation\n- **Fault Correlation**: Automatic root-cause analysis and fault clustering (configure via correlation.config_file parameter)",
       "item": [
         {
           "name": "GET Fault Events Stream (SSE)",
@@ -1049,7 +1050,7 @@
                 "faults"
               ]
             },
-            "description": "List all faults across the entire system. Convenience API for dashboards and monitoring tools. By default returns PENDING and CONFIRMED faults."
+            "description": "List all faults across the entire system. Convenience API for dashboards and monitoring tools. By default returns PENDING and CONFIRMED faults.\n\n**Correlation fields (always included when correlation enabled):**\n- `muted_count`: Number of symptom faults muted by correlation rules\n- `cluster_count`: Number of active fault clusters\n\nUse `include_muted=true` or `include_clusters=true` for detailed correlation data."
           },
           "response": []
         },
@@ -1161,7 +1162,7 @@
                 "SENSOR_OVERTEMP"
               ]
             },
-            "description": "Clear a fault by fault_code (REQ_INTEROP_015). Changes fault status to CLEARED. Returns success status with component_id and fault_code."
+            "description": "Clear a fault by fault_code (REQ_INTEROP_015). Changes fault status to CLEARED. Returns success status with component_id and fault_code.\n\n**With correlation enabled:**\nIf the cleared fault is a root cause with `auto_clear_with_root=true`, the response includes `auto_cleared_codes[]` listing all symptom faults that were automatically cleared."
           },
           "response": []
         },
@@ -1183,6 +1184,84 @@
               ]
             },
             "description": "Example of requesting a non-existent fault. Returns 404 with error details."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Faults with Correlation Data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/faults?include_muted=true&include_clusters=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "faults"
+              ],
+              "query": [
+                {
+                  "key": "include_muted",
+                  "value": "true",
+                  "description": "Include detailed muted fault information"
+                },
+                {
+                  "key": "include_clusters",
+                  "value": "true",
+                  "description": "Include detailed cluster information"
+                }
+              ]
+            },
+            "description": "List faults with full correlation data. When correlation is enabled:\n\n**Response always includes:**\n- `muted_count`: Number of faults muted as symptoms of root causes\n- `cluster_count`: Number of active fault clusters\n\n**With include_muted=true:**\n- `muted_faults[]`: Array of muted fault details (fault_code, root_cause_code, rule_id, delay_ms)\n\n**With include_clusters=true:**\n- `clusters[]`: Array of cluster details (cluster_id, representative_code, fault_codes[], rule_name, first_at, last_at)\n\n**Correlation Modes:**\n1. HIERARCHICAL: Identifies root cause → symptom relationships. Symptoms are muted.\n2. AUTO_CLUSTER: Groups similar faults within a time window into clusters."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Faults with Muted Details Only",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/faults?include_muted=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "faults"
+              ],
+              "query": [
+                {
+                  "key": "include_muted",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "List faults with muted fault details. Muted faults are symptoms that were suppressed because a root cause was detected.\n\nEach muted fault includes:\n- `fault_code`: The symptom fault code\n- `root_cause_code`: The root cause that triggered muting\n- `rule_id`: Which correlation rule matched\n- `delay_ms`: Time delay from root cause to symptom"
+          },
+          "response": []
+        },
+        {
+          "name": "GET Faults with Cluster Details Only",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/faults?include_clusters=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "faults"
+              ],
+              "query": [
+                {
+                  "key": "include_clusters",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "List faults with cluster details. Clusters are groups of similar faults that occurred within a time window.\n\nEach cluster includes:\n- `cluster_id`: Unique cluster identifier\n- `rule_id`, `rule_name`: The auto-cluster rule that created this cluster\n- `representative_code`: The fault shown as the cluster representative (based on rule config: first, most_recent, or highest_severity)\n- `representative_severity`: Severity of the representative fault\n- `fault_codes[]`: All fault codes in the cluster\n- `first_at`, `last_at`: Timestamps of first and last faults in cluster"
           },
           "response": []
         },
