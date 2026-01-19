@@ -357,6 +357,268 @@ TEST_F(TestGatewayNode, test_post_to_nonexistent_operation) {
   EXPECT_EQ(res->status, StatusCode::NotFound_404);
 }
 
+// =============================================================================
+// Configuration endpoint tests
+// =============================================================================
+
+TEST_F(TestGatewayNode, test_set_configuration_invalid_json) {
+  auto client = create_client();
+
+  // POST with invalid JSON body
+  auto res = client.Put(std::string(API_BASE_PATH) + "/components/gateway_node/configurations/test_param",
+                        "{ invalid json }", "application/json");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+
+  auto json_response = nlohmann::json::parse(res->body);
+  EXPECT_TRUE(json_response.contains("error"));
+}
+
+TEST_F(TestGatewayNode, test_set_configuration_missing_value_field) {
+  auto client = create_client();
+
+  // POST with valid JSON but missing 'value' field
+  auto res = client.Put(std::string(API_BASE_PATH) + "/components/gateway_node/configurations/test_param",
+                        R"({"name": "test_param"})", "application/json");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+
+  auto json_response = nlohmann::json::parse(res->body);
+  EXPECT_TRUE(json_response.contains("error"));
+  // Error should mention missing 'value' field
+  EXPECT_TRUE(json_response["error"].get<std::string>().find("value") != std::string::npos ||
+              json_response.contains("details"));
+}
+
+TEST_F(TestGatewayNode, test_set_configuration_invalid_component_id) {
+  auto client = create_client();
+
+  auto res = client.Put(std::string(API_BASE_PATH) + "/components/invalid@id/configurations/param", R"({"value": 42})",
+                        "application/json");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+}
+
+TEST_F(TestGatewayNode, test_get_configuration_nonexistent_component) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/nonexistent_comp/configurations/some_param");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_delete_configuration_nonexistent_component) {
+  auto client = create_client();
+
+  auto res = client.Delete(std::string(API_BASE_PATH) + "/components/nonexistent_comp/configurations/some_param");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+// =============================================================================
+// Operation endpoint tests
+// =============================================================================
+
+TEST_F(TestGatewayNode, test_post_operation_invalid_json_body) {
+  auto client = create_client();
+
+  // First we need a valid component - use the gateway_node itself
+  auto res = client.Post(std::string(API_BASE_PATH) + "/components/gateway_node/operations/some_service",
+                         "{ not valid json }", "application/json");
+
+  ASSERT_TRUE(res);
+  // Should be 400 for invalid JSON or 404 if component not found
+  EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_post_operation_invalid_component_id) {
+  auto client = create_client();
+
+  auto res = client.Post(std::string(API_BASE_PATH) + "/components/invalid@component/operations/test", R"({})",
+                         "application/json");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+}
+
+TEST_F(TestGatewayNode, test_post_operation_invalid_operation_id) {
+  auto client = create_client();
+
+  auto res = client.Post(std::string(API_BASE_PATH) + "/components/gateway_node/operations/invalid@op", R"({})",
+                         "application/json");
+
+  ASSERT_TRUE(res);
+  // 400 for invalid operation name or 404 if component not found
+  EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_action_status_invalid_component_id) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/invalid@id/operations/test/status");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+}
+
+TEST_F(TestGatewayNode, test_action_cancel_missing_goal_id) {
+  auto client = create_client();
+
+  // Cancel without goal_id query parameter
+  auto res = client.Delete(std::string(API_BASE_PATH) + "/components/gateway_node/operations/test/cancel");
+
+  ASSERT_TRUE(res);
+  // Should be 400 for missing goal_id or 404 if component/operation not found
+  EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_action_result_missing_goal_id) {
+  auto client = create_client();
+
+  // Result without goal_id query parameter
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/gateway_node/operations/test/result");
+
+  ASSERT_TRUE(res);
+  // Should be 400 for missing goal_id or 404 if not found
+  EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
+}
+
+// =============================================================================
+// Data endpoint tests
+// =============================================================================
+
+TEST_F(TestGatewayNode, test_publish_to_topic_invalid_json) {
+  auto client = create_client();
+
+  auto res = client.Post(std::string(API_BASE_PATH) + "/components/gateway_node/data/some_topic", "invalid{json}",
+                         "application/json");
+
+  ASSERT_TRUE(res);
+  // 400 for invalid JSON or 404 if component not found
+  EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_publish_to_topic_missing_type_field) {
+  auto client = create_client();
+
+  // Missing 'type' field in request body
+  auto res = client.Post(std::string(API_BASE_PATH) + "/components/gateway_node/data/some_topic",
+                         R"({"data": {"value": 1.0}})", "application/json");
+
+  ASSERT_TRUE(res);
+  // 400 for missing type or 404 if component not found
+  EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_publish_to_topic_missing_data_field) {
+  auto client = create_client();
+
+  // Missing 'data' field in request body
+  auto res = client.Post(std::string(API_BASE_PATH) + "/components/gateway_node/data/some_topic",
+                         R"({"type": "std_msgs/msg/Float32"})", "application/json");
+
+  ASSERT_TRUE(res);
+  // 400 for missing data or 404 if component not found
+  EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_publish_to_topic_invalid_message_type_format) {
+  auto client = create_client();
+
+  // Invalid message type format (should be pkg/msg/Type)
+  auto res = client.Post(std::string(API_BASE_PATH) + "/components/gateway_node/data/some_topic",
+                         R"({"type": "invalid_type", "data": {}})", "application/json");
+
+  ASSERT_TRUE(res);
+  // 400 for invalid type format or 404 if component not found
+  EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
+}
+
+// =============================================================================
+// Subresource tests
+// =============================================================================
+
+TEST_F(TestGatewayNode, test_area_related_components_nonexistent) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/areas/nonexistent_area/related-components");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_component_subcomponents_nonexistent) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/nonexistent_comp/subcomponents");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_component_related_apps_nonexistent) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/nonexistent_comp/related-apps");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_app_nonexistent) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/apps/nonexistent_app");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_function_nonexistent) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/functions/nonexistent_function");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_function_hosts_nonexistent) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/functions/nonexistent_function/hosts");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+// =============================================================================
+// Invalid ID pattern tests for various entity types
+// =============================================================================
+
+TEST_F(TestGatewayNode, test_invalid_app_id_bad_request) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/apps/invalid@app#id");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+}
+
+TEST_F(TestGatewayNode, test_invalid_function_id_bad_request) {
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/functions/invalid@func#id");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
