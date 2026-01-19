@@ -86,6 +86,8 @@ class RESTServer {
   std::unique_ptr<handlers::HealthHandlers> health_handlers_;
   std::unique_ptr<handlers::AreaHandlers> area_handlers_;
   std::unique_ptr<handlers::ComponentHandlers> component_handlers_;
+  std::unique_ptr<handlers::AppHandlers> app_handlers_;
+  std::unique_ptr<handlers::FunctionHandlers> function_handlers_;
   std::unique_ptr<handlers::OperationHandlers> operation_handlers_;
   std::unique_ptr<handlers::ConfigHandlers> config_handlers_;
   std::unique_ptr<handlers::FaultHandlers> fault_handlers_;

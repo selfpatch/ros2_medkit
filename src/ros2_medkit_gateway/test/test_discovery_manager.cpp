@@ -21,7 +21,7 @@
 #include <string>
 #include <thread>
 
-#include "ros2_medkit_gateway/discovery_manager.hpp"
+#include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/native_topic_sampler.hpp"
 
 using ros2_medkit_gateway::DiscoveryManager;

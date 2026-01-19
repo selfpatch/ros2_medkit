@@ -1,4 +1,4 @@
-// Copyright 2025 mfaferek93
+// Copyright 2025 selfpatch
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,16 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/discovery_manager.hpp"
+#include "ros2_medkit_gateway/discovery/runtime_discovery.hpp"
 
 #include <algorithm>
 #include <set>
 #include <unordered_map>
 
 namespace ros2_medkit_gateway {
+namespace discovery {
 
 // Helper function to check if a service path is internal ROS2 infrastructure
-bool DiscoveryManager::is_internal_service(const std::string & service_path) {
+bool RuntimeDiscoveryStrategy::is_internal_service(const std::string & service_path) {
   return service_path.find("/get_parameters") != std::string::npos ||
          service_path.find("/set_parameters") != std::string::npos ||
          service_path.find("/list_parameters") != std::string::npos ||
@@ -32,10 +33,10 @@ bool DiscoveryManager::is_internal_service(const std::string & service_path) {
          service_path.find("/_action/") != std::string::npos;  // Action internal services
 }
 
-DiscoveryManager::DiscoveryManager(rclcpp::Node * node) : node_(node) {
+RuntimeDiscoveryStrategy::RuntimeDiscoveryStrategy(rclcpp::Node * node) : node_(node) {
 }
 
-std::vector<Area> DiscoveryManager::discover_areas() {
+std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
   // Extract unique areas from namespaces
   std::set<std::string> area_set;
 
@@ -71,7 +72,7 @@ std::vector<Area> DiscoveryManager::discover_areas() {
   return areas;
 }
 
-std::vector<Component> DiscoveryManager::discover_components() {
+std::vector<Component> RuntimeDiscoveryStrategy::discover_components() {
   std::vector<Component> components;
 
   // Pre-build service info map for schema lookups
@@ -173,7 +174,19 @@ std::vector<Component> DiscoveryManager::discover_components() {
   return components;
 }
 
-std::vector<ServiceInfo> DiscoveryManager::discover_services() {
+std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
+  // Apps are not supported in runtime-only mode
+  // They require manifest definitions
+  return {};
+}
+
+std::vector<Function> RuntimeDiscoveryStrategy::discover_functions() {
+  // Functions are not supported in runtime-only mode
+  // They require manifest definitions
+  return {};
+}
+
+std::vector<ServiceInfo> RuntimeDiscoveryStrategy::discover_services() {
   std::vector<ServiceInfo> services;
 
   // Use native rclcpp API to get service names and types
@@ -214,7 +227,7 @@ std::vector<ServiceInfo> DiscoveryManager::discover_services() {
   return services;
 }
 
-std::vector<ActionInfo> DiscoveryManager::discover_actions() {
+std::vector<ActionInfo> RuntimeDiscoveryStrategy::discover_actions() {
   std::vector<ActionInfo> actions;
 
   // Use native rclcpp API to get action names and types
@@ -283,8 +296,8 @@ std::vector<ActionInfo> DiscoveryManager::discover_actions() {
   return actions;
 }
 
-std::optional<ServiceInfo> DiscoveryManager::find_service(const std::string & component_ns,
-                                                          const std::string & operation_name) const {
+std::optional<ServiceInfo> RuntimeDiscoveryStrategy::find_service(const std::string & component_ns,
+                                                                  const std::string & operation_name) const {
   // Construct expected service path
   std::string expected_path = component_ns;
   if (!expected_path.empty() && expected_path.back() != '/') {
@@ -304,8 +317,8 @@ std::optional<ServiceInfo> DiscoveryManager::find_service(const std::string & co
   return std::nullopt;
 }
 
-std::optional<ActionInfo> DiscoveryManager::find_action(const std::string & component_ns,
-                                                        const std::string & operation_name) const {
+std::optional<ActionInfo> RuntimeDiscoveryStrategy::find_action(const std::string & component_ns,
+                                                                const std::string & operation_name) const {
   // Construct expected action path
   std::string expected_path = component_ns;
   if (!expected_path.empty() && expected_path.back() != '/') {
@@ -325,15 +338,15 @@ std::optional<ActionInfo> DiscoveryManager::find_action(const std::string & comp
   return std::nullopt;
 }
 
-void DiscoveryManager::set_topic_sampler(NativeTopicSampler * sampler) {
+void RuntimeDiscoveryStrategy::set_topic_sampler(NativeTopicSampler * sampler) {
   topic_sampler_ = sampler;
 }
 
-void DiscoveryManager::set_type_introspection(TypeIntrospection * introspection) {
+void RuntimeDiscoveryStrategy::set_type_introspection(TypeIntrospection * introspection) {
   type_introspection_ = introspection;
 }
 
-void DiscoveryManager::refresh_topic_map() {
+void RuntimeDiscoveryStrategy::refresh_topic_map() {
   if (!topic_sampler_) {
     return;
   }
@@ -342,11 +355,11 @@ void DiscoveryManager::refresh_topic_map() {
   RCLCPP_DEBUG(node_->get_logger(), "Topic map refreshed: %zu components", cached_topic_map_.size());
 }
 
-bool DiscoveryManager::is_topic_map_ready() const {
+bool RuntimeDiscoveryStrategy::is_topic_map_ready() const {
   return topic_map_ready_;
 }
 
-std::string DiscoveryManager::extract_area_from_namespace(const std::string & ns) {
+std::string RuntimeDiscoveryStrategy::extract_area_from_namespace(const std::string & ns) {
   if (ns == "/" || ns.empty()) {
     return "root";
   }
@@ -366,7 +379,7 @@ std::string DiscoveryManager::extract_area_from_namespace(const std::string & ns
   return cleaned;
 }
 
-std::string DiscoveryManager::extract_name_from_path(const std::string & path) {
+std::string RuntimeDiscoveryStrategy::extract_name_from_path(const std::string & path) {
   if (path.empty()) {
     return "";
   }
@@ -380,7 +393,7 @@ std::string DiscoveryManager::extract_name_from_path(const std::string & path) {
   return path;
 }
 
-std::set<std::string> DiscoveryManager::get_node_namespaces() {
+std::set<std::string> RuntimeDiscoveryStrategy::get_node_namespaces() {
   std::set<std::string> namespaces;
 
   auto node_graph = node_->get_node_graph_interface();
@@ -397,7 +410,7 @@ std::set<std::string> DiscoveryManager::get_node_namespaces() {
   return namespaces;
 }
 
-std::vector<Component> DiscoveryManager::discover_topic_components() {
+std::vector<Component> RuntimeDiscoveryStrategy::discover_topic_components() {
   std::vector<Component> components;
 
   if (!topic_sampler_) {
@@ -445,7 +458,7 @@ std::vector<Component> DiscoveryManager::discover_topic_components() {
   return components;
 }
 
-bool DiscoveryManager::path_belongs_to_namespace(const std::string & path, const std::string & ns) const {
+bool RuntimeDiscoveryStrategy::path_belongs_to_namespace(const std::string & path, const std::string & ns) const {
   if (ns.empty() || ns == "/") {
     // Root namespace - check if path has only one segment after leading slash
     if (path.empty() || path[0] != '/') {
@@ -474,4 +487,5 @@ bool DiscoveryManager::path_belongs_to_namespace(const std::string & path, const
   return remainder.find('/') == std::string::npos;
 }
 
+}  // namespace discovery
 }  // namespace ros2_medkit_gateway

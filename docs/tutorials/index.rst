@@ -6,6 +6,8 @@ Step-by-step guides for common use cases with ros2_medkit.
 .. toctree::
    :maxdepth: 1
 
+   manifest-discovery
+   migration-to-manifest
    authentication
    https
    snapshots
@@ -13,6 +15,17 @@ Step-by-step guides for common use cases with ros2_medkit.
    devcontainer
    integration
    custom_areas
+
+Manifest Discovery
+------------------
+
+:doc:`manifest-discovery`
+   Use YAML manifests to define your ROS 2 system structure with stable IDs,
+   semantic groupings, and offline detection.
+
+:doc:`migration-to-manifest`
+   Migrate from runtime-only discovery to hybrid mode for better control
+   over entity organization.
 
 Basic Tutorials
 ---------------

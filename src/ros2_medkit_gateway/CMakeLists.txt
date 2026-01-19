@@ -103,21 +103,37 @@ include_directories(include)
 add_library(gateway_lib STATIC
   src/config.cpp
   src/gateway_node.cpp
-  src/discovery_manager.cpp
   src/data_access_manager.cpp
   src/type_introspection.cpp
   src/native_topic_sampler.cpp
   src/operation_manager.cpp
   src/configuration_manager.cpp
   src/fault_manager.cpp
+  # Discovery module
+  src/discovery/discovery_manager.cpp
+  src/discovery/runtime_discovery.cpp
+  src/discovery/hybrid_discovery.cpp
+  # Discovery models (with .cpp serialization)
+  src/discovery/models/app.cpp
+  src/discovery/models/function.cpp
+  # Manifest parser, validator and manager
+  src/discovery/manifest/manifest_parser.cpp
+  src/discovery/manifest/manifest_validator.cpp
+  src/discovery/manifest/manifest_manager.cpp
+  src/discovery/manifest/runtime_linker.cpp
   # HTTP module (subfolder)
   src/http/http_server.cpp
   src/http/rest_server.cpp
-  # HTTP handlers (subfolder)
+  # HTTP handlers - discovery
+  src/http/handlers/discovery/area_handlers.cpp
+  src/http/handlers/discovery/component_handlers.cpp
+  src/http/handlers/discovery/app_handlers.cpp
+  src/http/handlers/discovery/function_handlers.cpp
+  # HTTP handlers - utilities
+  src/http/handlers/capability_builder.cpp
+  # HTTP handlers - other
   src/http/handlers/handler_context.cpp
   src/http/handlers/health_handlers.cpp
-  src/http/handlers/area_handlers.cpp
-  src/http/handlers/component_handlers.cpp
   src/http/handlers/operation_handlers.cpp
   src/http/handlers/config_handlers.cpp
   src/http/handlers/fault_handlers.cpp
@@ -212,7 +228,7 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_BINARY_DIR}"
     CONFIG_FILE "${ament_cmake_clang_tidy_CONFIG_FILE}"
     HEADER_FILTER "${ament_cmake_clang_tidy_HEADER_FILTER}"
-    TIMEOUT 600
+    TIMEOUT 1200
   )
 
   # Add GTest
@@ -250,6 +266,30 @@ if(BUILD_TESTING)
   target_link_libraries(test_fault_manager gateway_lib)
   ament_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
 
+  # Add discovery models tests
+  ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
+  target_link_libraries(test_discovery_models gateway_lib)
+
+  # Add manifest parser tests
+  ament_add_gtest(test_manifest_parser test/test_manifest_parser.cpp)
+  target_link_libraries(test_manifest_parser gateway_lib)
+
+  # Add manifest validator tests
+  ament_add_gtest(test_manifest_validator test/test_manifest_validator.cpp)
+  target_link_libraries(test_manifest_validator gateway_lib)
+
+  # Add manifest manager tests
+  ament_add_gtest(test_manifest_manager test/test_manifest_manager.cpp)
+  target_link_libraries(test_manifest_manager gateway_lib)
+
+  # Add runtime linker tests
+  ament_add_gtest(test_runtime_linker test/test_runtime_linker.cpp)
+  target_link_libraries(test_runtime_linker gateway_lib)
+
+  # Add capability builder tests
+  ament_add_gtest(test_capability_builder test/test_capability_builder.cpp)
+  target_link_libraries(test_capability_builder gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
@@ -268,6 +308,12 @@ if(BUILD_TESTING)
     target_link_options(test_tls_config PRIVATE --coverage)
     target_compile_options(test_fault_manager PRIVATE --coverage -O0 -g)
     target_link_options(test_fault_manager PRIVATE --coverage)
+    target_compile_options(test_discovery_models PRIVATE --coverage -O0 -g)
+    target_link_options(test_discovery_models PRIVATE --coverage)
+    target_compile_options(test_manifest_parser PRIVATE --coverage -O0 -g)
+    target_link_options(test_manifest_parser PRIVATE --coverage)
+    target_compile_options(test_manifest_validator PRIVATE --coverage -O0 -g)
+    target_link_options(test_manifest_validator PRIVATE --coverage)
   endif()
 
   # Integration testing
@@ -304,6 +350,20 @@ if(BUILD_TESTING)
   add_launch_test(
     test/test_tls.test.py
     TARGET test_tls
+    TIMEOUT 120
+  )
+
+  # Add manifest-only discovery integration tests
+  add_launch_test(
+    test/test_discovery_manifest.test.py
+    TARGET test_discovery_manifest
+    TIMEOUT 120
+  )
+
+  # Add hybrid discovery integration tests
+  add_launch_test(
+    test/test_discovery_hybrid.test.py
+    TARGET test_discovery_hybrid
     TIMEOUT 120
   )
 

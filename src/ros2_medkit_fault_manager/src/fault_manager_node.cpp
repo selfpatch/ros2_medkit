@@ -304,8 +304,8 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
   // Validate max_message_size (must be positive before casting to size_t)
   auto max_message_size_param = declare_parameter<int>("snapshots.max_message_size", 65536);
   if (max_message_size_param <= 0) {
-    RCLCPP_WARN(get_logger(), "snapshots.max_message_size must be positive, got %d. Using default 65536",
-                max_message_size_param);
+    RCLCPP_WARN(get_logger(), "snapshots.max_message_size must be positive, got %ld. Using default 65536",
+                static_cast<long>(max_message_size_param));
     max_message_size_param = 65536;
   }
   config.max_message_size = static_cast<size_t>(max_message_size_param);
