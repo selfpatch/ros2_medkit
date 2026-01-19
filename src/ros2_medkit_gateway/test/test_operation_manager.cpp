@@ -221,6 +221,161 @@ TEST_F(TestOperationManager, test_get_action_result_invalid_uuid) {
   EXPECT_TRUE(result.error_message.find("Invalid goal_id format") != std::string::npos);
 }
 
+// ==================== UUID GENERATION AND CONVERSION TESTS ====================
+
+TEST_F(TestOperationManager, test_is_valid_uuid_hex_boundary_cases) {
+  // Test boundary - exactly 31 characters
+  EXPECT_FALSE(OperationManager::is_valid_uuid_hex("0123456789abcdef0123456789abcde"));
+  // Test boundary - exactly 33 characters
+  EXPECT_FALSE(OperationManager::is_valid_uuid_hex("0123456789abcdef0123456789abcdef0"));
+  // Mixed case should work
+  EXPECT_TRUE(OperationManager::is_valid_uuid_hex("0123456789AbCdEf0123456789aBcDeF"));
+}
+
+// ==================== ACTION STATUS ADDITIONAL TESTS ====================
+
+TEST_F(TestOperationManager, test_action_status_to_string_all_values) {
+  // Test all status values including edge case
+  EXPECT_EQ(action_status_to_string(static_cast<ActionGoalStatus>(99)), "unknown");
+}
+
+// ==================== GOAL TRACKING LIFECYCLE TESTS ====================
+
+TEST_F(TestOperationManager, test_cleanup_old_goals_with_zero_timeout) {
+  // Cleanup with 0 timeout should clean all completed goals immediately
+  EXPECT_NO_THROW(operation_manager_->cleanup_old_goals(std::chrono::seconds(0)));
+  EXPECT_TRUE(operation_manager_->list_tracked_goals().empty());
+}
+
+TEST_F(TestOperationManager, test_update_goal_status_nonexistent) {
+  // Updating a nonexistent goal should not throw
+  EXPECT_NO_THROW(operation_manager_->update_goal_status("nonexistent_goal", ActionGoalStatus::SUCCEEDED));
+}
+
+TEST_F(TestOperationManager, test_update_goal_feedback_nonexistent) {
+  // Updating feedback for a nonexistent goal should not throw
+  nlohmann::json feedback = {{"progress", 50}};
+  EXPECT_NO_THROW(operation_manager_->update_goal_feedback("nonexistent_goal", feedback));
+}
+
+// ==================== SERVICE TYPE VALIDATION ADDITIONAL TESTS ====================
+
+TEST_F(TestOperationManager, test_is_valid_message_type_edge_cases) {
+  // Single character package name
+  EXPECT_TRUE(OperationManager::is_valid_message_type("a/srv/Type"));
+  // Single character type name
+  EXPECT_TRUE(OperationManager::is_valid_message_type("pkg/srv/T"));
+  // Package with numbers
+  EXPECT_TRUE(OperationManager::is_valid_message_type("pkg2/srv/Type"));
+  // Type with numbers
+  EXPECT_TRUE(OperationManager::is_valid_message_type("pkg/srv/Type2"));
+  // Underscore in package
+  EXPECT_TRUE(OperationManager::is_valid_message_type("my_pkg/srv/Type"));
+  // Underscore in type
+  EXPECT_TRUE(OperationManager::is_valid_message_type("pkg/srv/My_Type"));
+}
+
+TEST_F(TestOperationManager, test_is_valid_message_type_invalid_edge_cases) {
+  // Package starting with number
+  EXPECT_FALSE(OperationManager::is_valid_message_type("2pkg/srv/Type"));
+  // Type starting with number
+  EXPECT_FALSE(OperationManager::is_valid_message_type("pkg/srv/2Type"));
+  // Hyphen in package (not allowed in ROS2 naming)
+  EXPECT_FALSE(OperationManager::is_valid_message_type("my-pkg/srv/Type"));
+  // Empty type name
+  EXPECT_FALSE(OperationManager::is_valid_message_type("pkg/srv/"));
+  // Empty package name
+  EXPECT_FALSE(OperationManager::is_valid_message_type("/srv/Type"));
+  // Space in type
+  EXPECT_FALSE(OperationManager::is_valid_message_type("pkg/srv/My Type"));
+}
+
+// ==================== SERVICE CALL ERROR HANDLING TESTS ====================
+
+TEST_F(TestOperationManager, test_call_service_with_empty_request) {
+  // Call with empty JSON object
+  auto result = operation_manager_->call_service("/nonexistent/service", "std_srvs/srv/Trigger", nlohmann::json{});
+
+  // Should fail because service doesn't exist
+  EXPECT_FALSE(result.success);
+}
+
+TEST_F(TestOperationManager, test_call_service_with_null_request) {
+  // Call with null JSON
+  auto result =
+      operation_manager_->call_service("/nonexistent/service", "std_srvs/srv/Trigger", nlohmann::json(nullptr));
+
+  // Should fail because service doesn't exist
+  EXPECT_FALSE(result.success);
+}
+
+TEST_F(TestOperationManager, test_call_component_service_not_found) {
+  // Call service without providing type - should fail because discovery won't find it
+  auto result = operation_manager_->call_component_service("/nonexistent/component", "nonexistent_service",
+                                                           std::nullopt, nlohmann::json{});
+
+  EXPECT_FALSE(result.success);
+  EXPECT_TRUE(result.error_message.find("not found") != std::string::npos);
+}
+
+// ==================== ACTION CALL ERROR HANDLING TESTS ====================
+
+TEST_F(TestOperationManager, test_send_action_goal_unavailable) {
+  // Try to send goal to action that doesn't exist
+  auto result = operation_manager_->send_action_goal("/nonexistent/action", "example_interfaces/action/Fibonacci",
+                                                     nlohmann::json{{"order", 5}});
+
+  EXPECT_FALSE(result.success);
+  EXPECT_FALSE(result.goal_accepted);
+  EXPECT_TRUE(result.error_message.find("not available") != std::string::npos);
+}
+
+TEST_F(TestOperationManager, test_send_component_action_goal_not_found) {
+  // Try to send goal without providing type - should fail because discovery won't find it
+  auto result = operation_manager_->send_component_action_goal("/nonexistent/component", "nonexistent_action",
+                                                               std::nullopt, nlohmann::json{});
+
+  EXPECT_FALSE(result.success);
+  EXPECT_TRUE(result.error_message.find("not found") != std::string::npos);
+}
+
+TEST_F(TestOperationManager, test_cancel_action_goal_not_tracked) {
+  // Valid UUID format but not tracked
+  auto result = operation_manager_->cancel_action_goal("/test/action", "00000000000000000000000000000000");
+
+  EXPECT_FALSE(result.success);
+  EXPECT_TRUE(result.error_message.find("not tracked") != std::string::npos);
+}
+
+TEST_F(TestOperationManager, test_get_action_result_action_unavailable) {
+  // Try to get result with valid UUID but unavailable action
+  auto result = operation_manager_->get_action_result("/nonexistent/action", "example_interfaces/action/Fibonacci",
+                                                      "00000000000000000000000000000000");
+
+  EXPECT_FALSE(result.success);
+  EXPECT_TRUE(result.error_message.find("not available") != std::string::npos);
+}
+
+// ==================== SUBSCRIPTION TESTS ====================
+
+TEST_F(TestOperationManager, test_subscribe_unsubscribe_action_status) {
+  // Subscribe and unsubscribe should not throw
+  EXPECT_NO_THROW(operation_manager_->subscribe_to_action_status("/test/action"));
+  EXPECT_NO_THROW(operation_manager_->unsubscribe_from_action_status("/test/action"));
+}
+
+TEST_F(TestOperationManager, test_subscribe_same_action_twice) {
+  // Subscribing twice should be idempotent
+  EXPECT_NO_THROW(operation_manager_->subscribe_to_action_status("/test/action"));
+  EXPECT_NO_THROW(operation_manager_->subscribe_to_action_status("/test/action"));
+  EXPECT_NO_THROW(operation_manager_->unsubscribe_from_action_status("/test/action"));
+}
+
+TEST_F(TestOperationManager, test_unsubscribe_without_subscribe) {
+  // Unsubscribing without first subscribing should not throw
+  EXPECT_NO_THROW(operation_manager_->unsubscribe_from_action_status("/never/subscribed"));
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
