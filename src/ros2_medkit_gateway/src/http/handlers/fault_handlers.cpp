@@ -54,29 +54,28 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
 }
 
 void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
   try {
     if (req.matches.size() < 2) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
 
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
-    auto namespace_result = ctx_.get_component_namespace_path(component_id);
-    if (!namespace_result) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, namespace_result.error(),
-                                 {{"component_id", component_id}});
+    auto entity_info = ctx_.get_entity_info(entity_id);
+    if (entity_info.type == EntityType::UNKNOWN) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
     }
-    std::string namespace_path = namespace_result.value();
+    std::string namespace_path = entity_info.namespace_path;
 
     auto filter = parse_fault_status_param(req);
     if (!filter.is_valid) {
@@ -84,7 +83,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
                                  {{"details", "Valid values: pending, confirmed, cleared, all"},
                                   {"parameter", "status"},
                                   {"value", req.get_param_value("status")},
-                                  {"component_id", component_id}});
+                                  {entity_info.id_field, entity_id}});
       return;
     }
 
@@ -93,25 +92,25 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
         fault_mgr->get_faults(namespace_path, filter.include_pending, filter.include_confirmed, filter.include_cleared);
 
     if (result.success) {
-      json response = {{"component_id", component_id},
+      json response = {{entity_info.id_field, entity_id},
                        {"source_id", namespace_path},
                        {"faults", result.data["faults"]},
                        {"count", result.data["count"]}};
       HandlerContext::send_json(res, response);
     } else {
       HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, "Failed to get faults",
-                                 {{"details", result.error_message}, {"component_id", component_id}});
+                                 {{"details", result.error_message}, {entity_info.id_field, entity_id}});
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to list faults",
-                               {{"details", e.what()}, {"component_id", component_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_faults for component '%s': %s", component_id.c_str(),
+                               {{"details", e.what()}, {"entity_id", entity_id}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_faults for entity '%s': %s", entity_id.c_str(),
                  e.what());
   }
 }
 
 void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
   std::string fault_code;
   try {
     if (req.matches.size() < 3) {
@@ -119,13 +118,13 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
     fault_code = req.matches[2];
 
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
@@ -136,19 +135,18 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
       return;
     }
 
-    auto namespace_result = ctx_.get_component_namespace_path(component_id);
-    if (!namespace_result) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, namespace_result.error(),
-                                 {{"component_id", component_id}});
+    auto entity_info = ctx_.get_entity_info(entity_id);
+    if (entity_info.type == EntityType::UNKNOWN) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
     }
-    std::string namespace_path = namespace_result.value();
+    std::string namespace_path = entity_info.namespace_path;
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
     auto result = fault_mgr->get_fault(fault_code, namespace_path);
 
     if (result.success) {
-      json response = {{"component_id", component_id}, {"fault", result.data}};
+      json response = {{entity_info.id_field, entity_id}, {"fault", result.data}};
       HandlerContext::send_json(res, response);
     } else {
       // Check if it's a "not found" error
@@ -156,23 +154,23 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
           result.error_message.find("Fault not found") != std::string::npos) {
         HandlerContext::send_error(
             res, StatusCode::NotFound_404, "Failed to get fault",
-            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+            {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       } else {
         HandlerContext::send_error(
             res, StatusCode::ServiceUnavailable_503, "Failed to get fault",
-            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+            {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       }
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get fault",
-                               {{"details", e.what()}, {"component_id", component_id}, {"fault_code", fault_code}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_fault for component '%s', fault '%s': %s",
-                 component_id.c_str(), fault_code.c_str(), e.what());
+                               {{"details", e.what()}, {"entity_id", entity_id}, {"fault_code", fault_code}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_fault for entity '%s', fault '%s': %s",
+                 entity_id.c_str(), fault_code.c_str(), e.what());
   }
 }
 
 void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
   std::string fault_code;
   try {
     if (req.matches.size() < 3) {
@@ -180,13 +178,13 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
     fault_code = req.matches[2];
 
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
@@ -197,11 +195,10 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
       return;
     }
 
-    // Verify component exists (we don't need namespace_path for clearing)
-    auto namespace_result = ctx_.get_component_namespace_path(component_id);
-    if (!namespace_result) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, namespace_result.error(),
-                                 {{"component_id", component_id}});
+    // Verify entity exists
+    auto entity_info = ctx_.get_entity_info(entity_id);
+    if (entity_info.type == EntityType::UNKNOWN) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
     }
 
@@ -210,7 +207,7 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
 
     if (result.success) {
       json response = {{"status", "success"},
-                       {"component_id", component_id},
+                       {entity_info.id_field, entity_id},
                        {"fault_code", fault_code},
                        {"message", result.data.value("message", "Fault cleared")}};
       HandlerContext::send_json(res, response);
@@ -220,18 +217,18 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
           result.error_message.find("Fault not found") != std::string::npos) {
         HandlerContext::send_error(
             res, StatusCode::NotFound_404, "Failed to clear fault",
-            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+            {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       } else {
         HandlerContext::send_error(
             res, StatusCode::ServiceUnavailable_503, "Failed to clear fault",
-            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+            {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       }
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to clear fault",
-                               {{"details", e.what()}, {"component_id", component_id}, {"fault_code", fault_code}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_clear_fault for component '%s', fault '%s': %s",
-                 component_id.c_str(), fault_code.c_str(), e.what());
+                               {{"details", e.what()}, {"entity_id", entity_id}, {"fault_code", fault_code}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_clear_fault for entity '%s', fault '%s': %s",
+                 entity_id.c_str(), fault_code.c_str(), e.what());
   }
 }
 
@@ -280,7 +277,7 @@ void FaultHandlers::handle_get_snapshots(const httplib::Request & req, httplib::
 }
 
 void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
   std::string fault_code;
   try {
     if (req.matches.size() < 3) {
@@ -288,13 +285,13 @@ void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req,
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
     fault_code = req.matches[2];
 
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
@@ -305,10 +302,9 @@ void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req,
       return;
     }
 
-    auto namespace_result = ctx_.get_component_namespace_path(component_id);
-    if (!namespace_result) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, namespace_result.error(),
-                                 {{"component_id", component_id}});
+    auto entity_info = ctx_.get_entity_info(entity_id);
+    if (entity_info.type == EntityType::UNKNOWN) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
     }
 
@@ -319,9 +315,9 @@ void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req,
     auto result = fault_mgr->get_snapshots(fault_code, topic_filter);
 
     if (result.success) {
-      // Add component context to response
+      // Add entity context to response
       json response = result.data;
-      response["component_id"] = component_id;
+      response[entity_info.id_field] = entity_id;
       HandlerContext::send_json(res, response);
     } else {
       // Check if it's a "not found" error
@@ -329,18 +325,18 @@ void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req,
           result.error_message.find("Fault not found") != std::string::npos) {
         HandlerContext::send_error(
             res, StatusCode::NotFound_404, "Failed to get snapshots",
-            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+            {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       } else {
         HandlerContext::send_error(
             res, StatusCode::ServiceUnavailable_503, "Failed to get snapshots",
-            {{"details", result.error_message}, {"component_id", component_id}, {"fault_code", fault_code}});
+            {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       }
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get snapshots",
-                               {{"details", e.what()}, {"component_id", component_id}, {"fault_code", fault_code}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_component_snapshots for component '%s', fault '%s': %s",
-                 component_id.c_str(), fault_code.c_str(), e.what());
+                               {{"details", e.what()}, {"entity_id", entity_id}, {"fault_code", fault_code}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_component_snapshots for entity '%s', fault '%s': %s",
+                 entity_id.c_str(), fault_code.c_str(), e.what());
   }
 }
 

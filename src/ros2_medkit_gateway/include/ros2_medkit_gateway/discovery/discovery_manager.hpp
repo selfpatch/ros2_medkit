@@ -61,12 +61,78 @@ DiscoveryMode parse_discovery_mode(const std::string & str);
 std::string discovery_mode_to_string(DiscoveryMode mode);
 
 /**
+ * @brief Strategy for grouping nodes into synthetic components
+ */
+enum class ComponentGroupingStrategy {
+  NONE,       ///< Each node = 1 component (current behavior)
+  NAMESPACE,  ///< Group by first namespace segment (area)
+  // PROCESS  // Group by OS process (future - requires R&D)
+};
+
+/**
+ * @brief Parse ComponentGroupingStrategy from string
+ * @param str Strategy string: "none" or "namespace"
+ * @return Parsed strategy (defaults to NONE)
+ */
+ComponentGroupingStrategy parse_grouping_strategy(const std::string & str);
+
+/**
+ * @brief Convert ComponentGroupingStrategy to string
+ * @param strategy Grouping strategy
+ * @return String representation
+ */
+std::string grouping_strategy_to_string(ComponentGroupingStrategy strategy);
+
+/**
  * @brief Configuration for discovery
  */
 struct DiscoveryConfig {
   DiscoveryMode mode{DiscoveryMode::RUNTIME_ONLY};
   std::string manifest_path;
   bool manifest_strict_validation{true};
+
+  /**
+   * @brief Runtime (heuristic) discovery options
+   *
+   * These options control how the heuristic discovery strategy
+   * maps ROS 2 graph entities to SOVD entities.
+   */
+  struct RuntimeOptions {
+    /**
+     * @brief Expose ROS 2 nodes as App entities
+     *
+     * When true, discover_apps() returns nodes as Apps instead of
+     * only returning empty (manifest-only behavior).
+     * Default: true (new behavior for initial release)
+     */
+    bool expose_nodes_as_apps{true};
+
+    /**
+     * @brief Create synthetic Component entities that group Apps
+     *
+     * When true, Components are synthetic groupings (by namespace).
+     * When false, each node is a Component (legacy behavior).
+     * Default: true (new behavior for initial release)
+     */
+    bool create_synthetic_components{true};
+
+    /**
+     * @brief How to group nodes into synthetic components
+     *
+     * Only used when create_synthetic_components is true.
+     * - NONE: Each node = 1 component
+     * - NAMESPACE: Group by first namespace segment (area)
+     */
+    ComponentGroupingStrategy grouping{ComponentGroupingStrategy::NAMESPACE};
+
+    /**
+     * @brief Naming pattern for synthetic components
+     *
+     * Placeholders: {area}
+     * Default: "{area}" - uses area name as component ID
+     */
+    std::string synthetic_component_name_pattern{"{area}"};
+  } runtime;
 };
 
 /**

@@ -129,33 +129,39 @@ void ComponentHandlers::handle_component_data(const httplib::Request & req, http
       return;
     }
 
-    const auto cache = ctx_.node()->get_entity_cache();
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto comp_opt = discovery->get_component(component_id);
 
-    // Find component in cache and get its topics from the topic map
-    ComponentTopics component_topics;
-    bool component_found = false;
-
-    for (const auto & component : cache.components) {
-      if (component.id == component_id) {
-        component_topics = component.topics;
-        component_found = true;
-        break;
-      }
-    }
-
-    if (!component_found) {
+    if (!comp_opt) {
       HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
 
-    // Combine publishes and subscribes into unique set of topics
+    const auto & component = *comp_opt;
+
+    // Collect all topics - from component directly OR aggregated from related Apps
     std::set<std::string> all_topics;
-    for (const auto & topic : component_topics.publishes) {
+
+    // First, check component's own topics
+    for (const auto & topic : component.topics.publishes) {
       all_topics.insert(topic);
     }
-    for (const auto & topic : component_topics.subscribes) {
+    for (const auto & topic : component.topics.subscribes) {
       all_topics.insert(topic);
+    }
+
+    // If component has no direct topics (synthetic component), aggregate from Apps
+    if (all_topics.empty()) {
+      auto apps = discovery->get_apps_for_component(component_id);
+      for (const auto & app : apps) {
+        for (const auto & topic : app.topics.publishes) {
+          all_topics.insert(topic);
+        }
+        for (const auto & topic : app.topics.subscribes) {
+          all_topics.insert(topic);
+        }
+      }
     }
 
     // Sample all topics for this component
@@ -251,20 +257,10 @@ void ComponentHandlers::handle_component_topic_data(const httplib::Request & req
     // Skip topic_name validation - it may contain slashes after URL decoding
     // The actual validation happens when we try to find the topic in the ROS graph
 
-    const auto cache = ctx_.node()->get_entity_cache();
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto comp_opt = discovery->get_component(component_id);
 
-    // Find component in cache - only needed to verify it exists
-    // We use the full topic path from the URL, not the component namespace
-    bool component_found = false;
-
-    for (const auto & component : cache.components) {
-      if (component.id == component_id) {
-        component_found = true;
-        break;
-      }
-    }
-
-    if (!component_found) {
+    if (!comp_opt) {
       HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
                                  {{"component_id", component_id}});
       return;
@@ -362,19 +358,10 @@ void ComponentHandlers::handle_component_topic_publish(const httplib::Request & 
       return;
     }
 
-    const auto cache = ctx_.node()->get_entity_cache();
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto comp_opt = discovery->get_component(component_id);
 
-    // Find component in cache - only needed to verify it exists
-    bool component_found = false;
-
-    for (const auto & component : cache.components) {
-      if (component.id == component_id) {
-        component_found = true;
-        break;
-      }
-    }
-
-    if (!component_found) {
+    if (!comp_opt) {
       HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
                                  {{"component_id", component_id}});
       return;

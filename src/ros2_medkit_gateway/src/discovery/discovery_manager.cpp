@@ -39,6 +39,22 @@ std::string discovery_mode_to_string(DiscoveryMode mode) {
   }
 }
 
+ComponentGroupingStrategy parse_grouping_strategy(const std::string & str) {
+  if (str == "namespace") {
+    return ComponentGroupingStrategy::NAMESPACE;
+  }
+  return ComponentGroupingStrategy::NONE;
+}
+
+std::string grouping_strategy_to_string(ComponentGroupingStrategy strategy) {
+  switch (strategy) {
+    case ComponentGroupingStrategy::NAMESPACE:
+      return "namespace";
+    default:
+      return "none";
+  }
+}
+
 DiscoveryManager::DiscoveryManager(rclcpp::Node * node)
   : node_(node), runtime_strategy_(std::make_unique<discovery::RuntimeDiscoveryStrategy>(node)) {
   // Default to runtime strategy
@@ -75,6 +91,14 @@ bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
 }
 
 void DiscoveryManager::create_strategy() {
+  // Configure runtime strategy with runtime options
+  discovery::RuntimeDiscoveryStrategy::RuntimeConfig runtime_config;
+  runtime_config.expose_nodes_as_apps = config_.runtime.expose_nodes_as_apps;
+  runtime_config.create_synthetic_components = config_.runtime.create_synthetic_components;
+  runtime_config.grouping = config_.runtime.grouping;
+  runtime_config.synthetic_component_name_pattern = config_.runtime.synthetic_component_name_pattern;
+  runtime_strategy_->set_config(runtime_config);
+
   switch (config_.mode) {
     case DiscoveryMode::MANIFEST_ONLY:
       // In manifest_only mode, we use a special mode where we return manifest entities
@@ -93,7 +117,9 @@ void DiscoveryManager::create_strategy() {
 
     default:
       active_strategy_ = runtime_strategy_.get();
-      RCLCPP_INFO(node_->get_logger(), "Discovery mode: runtime_only");
+      RCLCPP_INFO(node_->get_logger(), "Discovery mode: runtime_only (expose_apps=%s, synthetic_components=%s)",
+                  config_.runtime.expose_nodes_as_apps ? "true" : "false",
+                  config_.runtime.create_synthetic_components ? "true" : "false");
       break;
   }
 }
@@ -157,7 +183,16 @@ std::optional<App> DiscoveryManager::get_app(const std::string & id) {
   if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_app(id);
   }
-  return std::nullopt;  // No apps in runtime-only mode
+  // Check runtime apps when expose_nodes_as_apps is enabled
+  if (config_.runtime.expose_nodes_as_apps) {
+    auto apps = discover_apps();
+    for (const auto & app : apps) {
+      if (app.id == id) {
+        return app;
+      }
+    }
+  }
+  return std::nullopt;
 }
 
 std::optional<Function> DiscoveryManager::get_function(const std::string & id) {
@@ -200,7 +235,18 @@ std::vector<App> DiscoveryManager::get_apps_for_component(const std::string & co
   if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_apps_for_component(component_id);
   }
-  return {};  // No apps in runtime mode
+  // Filter runtime apps by component_id when expose_nodes_as_apps is enabled
+  if (config_.runtime.expose_nodes_as_apps) {
+    std::vector<App> result;
+    auto apps = discover_apps();
+    for (const auto & app : apps) {
+      if (app.component_id == component_id) {
+        result.push_back(app);
+      }
+    }
+    return result;
+  }
+  return {};
 }
 
 std::vector<std::string> DiscoveryManager::get_hosts_for_function(const std::string & function_id) {

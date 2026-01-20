@@ -61,6 +61,13 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("manifest_path", "");
   declare_parameter("manifest_strict_validation", true);
 
+  // Runtime (heuristic) discovery options
+  // These control how nodes are mapped to SOVD entities in runtime mode
+  declare_parameter("discovery.runtime.expose_nodes_as_apps", true);
+  declare_parameter("discovery.runtime.create_synthetic_components", true);
+  declare_parameter("discovery.runtime.grouping_strategy", "namespace");
+  declare_parameter("discovery.runtime.synthetic_component_name_pattern", "{area}");
+
   // Get parameter values
   server_host_ = get_parameter("server.host").as_string();
   server_port_ = static_cast<int>(get_parameter("server.port").as_int());
@@ -214,6 +221,15 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   discovery_config.manifest_path = get_parameter("manifest_path").as_string();
   discovery_config.manifest_strict_validation = get_parameter("manifest_strict_validation").as_bool();
 
+  // Runtime discovery options
+  discovery_config.runtime.expose_nodes_as_apps = get_parameter("discovery.runtime.expose_nodes_as_apps").as_bool();
+  discovery_config.runtime.create_synthetic_components =
+      get_parameter("discovery.runtime.create_synthetic_components").as_bool();
+  discovery_config.runtime.grouping =
+      parse_grouping_strategy(get_parameter("discovery.runtime.grouping_strategy").as_string());
+  discovery_config.runtime.synthetic_component_name_pattern =
+      get_parameter("discovery.runtime.synthetic_component_name_pattern").as_string();
+
   if (!discovery_mgr_->initialize(discovery_config)) {
     RCLCPP_ERROR(get_logger(), "Failed to initialize discovery manager");
     throw std::runtime_error("Discovery initialization failed");
@@ -300,6 +316,9 @@ void GatewayNode::refresh_cache() {
     // publish topics without creating proper ROS 2 nodes)
     auto topic_components = discovery_mgr_->discover_topic_components();
 
+    // Discover apps (nodes as Apps when heuristic discovery is enabled)
+    auto apps = discovery_mgr_->discover_apps();
+
     // Merge both component lists
     std::vector<Component> all_components;
     all_components.reserve(node_components.size() + topic_components.size());
@@ -312,17 +331,20 @@ void GatewayNode::refresh_cache() {
     const size_t area_count = areas.size();
     const size_t node_component_count = node_components.size();
     const size_t topic_component_count = topic_components.size();
+    const size_t app_count = apps.size();
 
     // Lock only for the actual cache update
     {
       std::lock_guard<std::mutex> lock(cache_mutex_);
       entity_cache_.areas = std::move(areas);
       entity_cache_.components = std::move(all_components);
+      entity_cache_.apps = std::move(apps);
       entity_cache_.last_update = timestamp;
     }
 
-    RCLCPP_DEBUG(get_logger(), "Cache refreshed: %zu areas, %zu components (%zu node-based, %zu topic-based)",
-                 area_count, node_component_count + topic_component_count, node_component_count, topic_component_count);
+    RCLCPP_DEBUG(get_logger(), "Cache refreshed: %zu areas, %zu components (%zu node-based, %zu topic-based), %zu apps",
+                 area_count, node_component_count + topic_component_count, node_component_count, topic_component_count,
+                 app_count);
   } catch (const std::exception & e) {
     RCLCPP_ERROR(get_logger(), "Failed to refresh cache: %s", e.what());
   } catch (...) {

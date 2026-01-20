@@ -125,8 +125,9 @@ void HybridDiscoveryStrategy::perform_linking() {
   // Get manifest apps
   auto apps = manifest_manager_->get_apps();
 
-  // Get runtime components
-  auto runtime_components = runtime_strategy_->discover_components();
+  // Get runtime node components (raw nodes, not synthetic groupings)
+  // Runtime linking needs individual node FQNs to match against manifest bindings
+  auto runtime_components = runtime_strategy_->discover_node_components();
 
   // Get config for orphan policy
   auto config = manifest_manager_->get_config();

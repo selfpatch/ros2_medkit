@@ -169,14 +169,62 @@ void RESTServer::setup_routes() {
   // App operations
   srv->Get((api_path("/apps") + R"(/([^/]+)/operations$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             app_handlers_->handle_list_app_operations(req, res);
+             operation_handlers_->handle_list_operations(req, res);
            });
 
-  // App configurations
+  // App operation (POST) - sync operations like service calls, async action goals
+  srv->Post((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)$)"),
+            [this](const httplib::Request & req, httplib::Response & res) {
+              operation_handlers_->handle_component_operation(req, res);
+            });
+
+  // App action status (GET)
+  srv->Get((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/status$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_action_status(req, res);
+           });
+
+  // App action result (GET)
+  srv->Get((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/result$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_action_result(req, res);
+           });
+
+  // App action cancel (DELETE)
+  srv->Delete((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                operation_handlers_->handle_action_cancel(req, res);
+              });
+
+  // App configurations - list all
   srv->Get((api_path("/apps") + R"(/([^/]+)/configurations$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             app_handlers_->handle_list_app_configurations(req, res);
+             config_handlers_->handle_list_configurations(req, res);
            });
+
+  // App configurations - get specific
+  srv->Get((api_path("/apps") + R"(/([^/]+)/configurations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             config_handlers_->handle_get_configuration(req, res);
+           });
+
+  // App configurations - set
+  srv->Put((api_path("/apps") + R"(/([^/]+)/configurations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             config_handlers_->handle_set_configuration(req, res);
+           });
+
+  // App configurations - delete single
+  srv->Delete((api_path("/apps") + R"(/([^/]+)/configurations/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                config_handlers_->handle_delete_configuration(req, res);
+              });
+
+  // App configurations - delete all
+  srv->Delete((api_path("/apps") + R"(/([^/]+)/configurations$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                config_handlers_->handle_delete_all_configurations(req, res);
+              });
 
   // Single app (capabilities) - must be after more specific routes
   srv->Get((api_path("/apps") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
@@ -355,14 +403,31 @@ void RESTServer::setup_routes() {
              fault_handlers_->handle_list_faults(req, res);
            });
 
+  // List all faults for an app (same handler, entity-agnostic)
+  srv->Get((api_path("/apps") + R"(/([^/]+)/faults$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    fault_handlers_->handle_list_faults(req, res);
+  });
+
   // Get specific fault by code (REQ_INTEROP_013)
   srv->Get((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              fault_handlers_->handle_get_fault(req, res);
            });
 
+  // Get specific fault by code for an app
+  srv->Get((api_path("/apps") + R"(/([^/]+)/faults/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             fault_handlers_->handle_get_fault(req, res);
+           });
+
   // Clear a fault (REQ_INTEROP_015)
   srv->Delete((api_path("/components") + R"(/([^/]+)/faults/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                fault_handlers_->handle_clear_fault(req, res);
+              });
+
+  // Clear a fault for an app
+  srv->Delete((api_path("/apps") + R"(/([^/]+)/faults/([^/]+)$)"),
               [this](const httplib::Request & req, httplib::Response & res) {
                 fault_handlers_->handle_clear_fault(req, res);
               });
@@ -376,6 +441,12 @@ void RESTServer::setup_routes() {
 
   // GET /components/{component_id}/faults/{fault_code}/snapshots - component-scoped snapshot access
   srv->Get((api_path("/components") + R"(/([^/]+)/faults/([^/]+)/snapshots$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             fault_handlers_->handle_get_component_snapshots(req, res);
+           });
+
+  // GET /apps/{app_id}/faults/{fault_code}/snapshots - app-scoped snapshot access
+  srv->Get((api_path("/apps") + R"(/([^/]+)/faults/([^/]+)/snapshots$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              fault_handlers_->handle_get_component_snapshots(req, res);
            });

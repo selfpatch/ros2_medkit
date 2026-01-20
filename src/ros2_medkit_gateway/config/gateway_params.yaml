@@ -100,6 +100,49 @@ ros2_medkit_gateway:
     # - Action operations: Internal action services via GenericClient
     # No ROS 2 CLI dependencies - pure C++ implementation using ros2_medkit_serialization.
 
+    # Discovery Configuration
+    # Controls how ROS 2 graph entities are mapped to SOVD entities
+    discovery:
+      # Discovery mode
+      # Options:
+      #   - "runtime_only": Use ROS 2 graph introspection only (default)
+      #   - "manifest_only": Only expose manifest-declared entities
+      #   - "hybrid": Manifest as source of truth + runtime linking
+      mode: "runtime_only"
+
+      # Path to manifest file (required for manifest_only and hybrid modes)
+      manifest_path: ""
+
+      # Strict manifest validation (reject invalid manifests)
+      manifest_strict_validation: true
+
+      # Runtime (heuristic) discovery options
+      # These control how nodes are mapped to SOVD entities in runtime mode
+      runtime:
+        # Expose ROS 2 nodes as App entities
+        # When true, GET /apps returns nodes as Apps (with source="heuristic")
+        # When false, /apps is empty in runtime mode
+        # Default: true (new behavior for initial release)
+        expose_nodes_as_apps: true
+
+        # Create synthetic Component entities that group Apps
+        # When true, Components are synthetic groupings (by namespace)
+        # When false, each node is a Component
+        # Default: true (new behavior for initial release)
+        create_synthetic_components: true
+
+        # How to group nodes into synthetic components
+        # Options:
+        #   - "none": Each node = 1 component (default when synthetic off)
+        #   - "namespace": Group by first namespace segment (area)
+        # Note: "process" grouping is planned for future (requires R&D)
+        grouping_strategy: "namespace"
+
+        # Naming pattern for synthetic components
+        # Placeholders: {area}
+        # Examples: "{area}", "{area}_group", "component_{area}"
+        synthetic_component_name_pattern: "{area}"
+
     # Authentication Configuration (REQ_INTEROP_086, REQ_INTEROP_087)
     # JWT-based authentication with Role-Based Access Control (RBAC)
     auth:

@@ -71,6 +71,66 @@ HandlerContext::get_component_namespace_path(const std::string & component_id) c
   return tl::unexpected("Component not found");
 }
 
+EntityInfo HandlerContext::get_entity_info(const std::string & entity_id) const {
+  const auto cache = node_->get_entity_cache();
+  EntityInfo info;
+  info.id = entity_id;
+
+  // Search components first
+  for (const auto & component : cache.components) {
+    if (component.id == entity_id) {
+      info.type = EntityType::COMPONENT;
+      info.namespace_path = component.namespace_path;
+      info.fqn = component.fqn;
+      info.id_field = "component_id";
+      info.error_name = "Component";
+      return info;
+    }
+  }
+
+  // Search apps
+  for (const auto & app : cache.apps) {
+    if (app.id == entity_id) {
+      info.type = EntityType::APP;
+      // Apps use bound_fqn as namespace_path for fault filtering
+      info.namespace_path = app.bound_fqn.value_or("");
+      info.fqn = app.bound_fqn.value_or("");
+      info.id_field = "app_id";
+      info.error_name = "App";
+      return info;
+    }
+  }
+
+  // Search areas
+  for (const auto & area : cache.areas) {
+    if (area.id == entity_id) {
+      info.type = EntityType::AREA;
+      info.namespace_path = "";  // Areas don't have namespace_path
+      info.fqn = "";
+      info.id_field = "area_id";
+      info.error_name = "Area";
+      return info;
+    }
+  }
+
+  // Search functions
+  for (const auto & func : cache.functions) {
+    if (func.id == entity_id) {
+      info.type = EntityType::FUNCTION;
+      info.namespace_path = "";
+      info.fqn = "";
+      info.id_field = "function_id";
+      info.error_name = "Function";
+      return info;
+    }
+  }
+
+  // Not found - return UNKNOWN type
+  info.type = EntityType::UNKNOWN;
+  info.error_name = "Entity";
+  return info;
+}
+
 void HandlerContext::set_cors_headers(httplib::Response & res, const std::string & origin) const {
   res.set_header("Access-Control-Allow-Origin", origin);
 

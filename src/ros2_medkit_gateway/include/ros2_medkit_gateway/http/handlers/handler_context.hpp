@@ -30,6 +30,23 @@
 
 namespace ros2_medkit_gateway {
 
+/**
+ * @brief Entity type enumeration for SOVD entities
+ */
+enum class EntityType { COMPONENT, APP, AREA, FUNCTION, UNKNOWN };
+
+/**
+ * @brief Information about a resolved entity
+ */
+struct EntityInfo {
+  EntityType type{EntityType::UNKNOWN};
+  std::string id;
+  std::string namespace_path;
+  std::string fqn;         ///< Fully qualified name (for ROS 2 nodes)
+  std::string id_field;    ///< JSON field name for ID ("component_id", "app_id", etc.)
+  std::string error_name;  ///< Human-readable name for errors ("Component", "App", etc.)
+};
+
 // Forward declarations
 class GatewayNode;
 class AuthManager;
@@ -89,8 +106,20 @@ class HandlerContext {
    * @brief Get namespace path for a component
    * @param component_id Component ID
    * @return Namespace path or error message
+   * @deprecated Use get_entity_info instead for unified entity handling
    */
   tl::expected<std::string, std::string> get_component_namespace_path(const std::string & component_id) const;
+
+  /**
+   * @brief Get information about any entity (Component, App, Area, Function)
+   *
+   * Searches through all entity types in order: Component, App, Area, Function.
+   * Returns the first match found.
+   *
+   * @param entity_id Entity ID to look up
+   * @return EntityInfo with resolved details, or EntityInfo with UNKNOWN type if not found
+   */
+  EntityInfo get_entity_info(const std::string & entity_id) const;
 
   /**
    * @brief Set CORS headers on response if origin is allowed

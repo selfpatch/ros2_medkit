@@ -24,41 +24,66 @@ namespace ros2_medkit_gateway {
 namespace handlers {
 
 void OperationHandlers::handle_list_operations(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
   try {
     if (req.matches.size() < 2) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
 
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
     const auto cache = ctx_.node()->get_entity_cache();
 
-    // Find component in cache
-    bool component_found = false;
+    // Find entity in cache - check components first, then apps
+    bool entity_found = false;
     std::vector<ServiceInfo> services;
     std::vector<ActionInfo> actions;
+    std::string entity_type = "component";
 
+    // Try to find in components
     for (const auto & component : cache.components) {
-      if (component.id == component_id) {
+      if (component.id == entity_id) {
         services = component.services;
         actions = component.actions;
-        component_found = true;
+
+        // For synthetic components with no direct operations, aggregate from apps
+        if (services.empty() && actions.empty()) {
+          auto discovery = ctx_.node()->get_discovery_manager();
+          auto apps = discovery->get_apps_for_component(entity_id);
+          for (const auto & app : apps) {
+            services.insert(services.end(), app.services.begin(), app.services.end());
+            actions.insert(actions.end(), app.actions.begin(), app.actions.end());
+          }
+        }
+
+        entity_found = true;
         break;
       }
     }
 
-    if (!component_found) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
-                                 {{"component_id", component_id}});
+    // If not found in components, try apps
+    if (!entity_found) {
+      for (const auto & app : cache.apps) {
+        if (app.id == entity_id) {
+          services = app.services;
+          actions = app.actions;
+          entity_found = true;
+          entity_type = "app";
+          break;
+        }
+      }
+    }
+
+    if (!entity_found) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
     }
 
@@ -113,33 +138,37 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
       operations.push_back(act_json);
     }
 
-    HandlerContext::send_json(res, operations);
+    // Return SOVD-compliant response with items array
+    json response;
+    response["items"] = operations;
+    response["total_count"] = operations.size();
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to list operations",
-                               {{"details", e.what()}, {"component_id", component_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_operations for component '%s': %s",
-                 component_id.c_str(), e.what());
+                               {{"details", e.what()}, {"entity_id", entity_id}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_operations for entity '%s': %s", entity_id.c_str(),
+                 e.what());
   }
 }
 
 void OperationHandlers::handle_component_operation(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
   std::string operation_name;
   try {
-    // Extract component_id and operation_name from URL path
+    // Extract entity_id and operation_name from URL path
     if (req.matches.size() < 3) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
     operation_name = req.matches[2];
 
-    // Validate component_id
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+    // Validate entity_id
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
@@ -176,15 +205,18 @@ void OperationHandlers::handle_component_operation(const httplib::Request & req,
     }
 
     const auto cache = ctx_.node()->get_entity_cache();
+    auto discovery = ctx_.node()->get_discovery_manager();
 
-    // Find component in cache and look up service/action with full_path
-    const Component * found_component = nullptr;
+    // Find entity and operation - check components first, then apps
+    bool entity_found = false;
+    std::string entity_type = "component";
     std::optional<ServiceInfo> service_info;
     std::optional<ActionInfo> action_info;
 
+    // Try to find in components
     for (const auto & component : cache.components) {
-      if (component.id == component_id) {
-        found_component = &component;
+      if (component.id == entity_id) {
+        entity_found = true;
 
         // Search in component's services list (has full_path)
         for (const auto & svc : component.services) {
@@ -195,24 +227,83 @@ void OperationHandlers::handle_component_operation(const httplib::Request & req,
         }
 
         // Search in component's actions list (has full_path)
-        for (const auto & act : component.actions) {
-          if (act.name == operation_name) {
-            action_info = act;
-            break;
+        if (!service_info.has_value()) {
+          for (const auto & act : component.actions) {
+            if (act.name == operation_name) {
+              action_info = act;
+              break;
+            }
+          }
+        }
+
+        // For synthetic components, try to find operation in apps
+        if (!service_info.has_value() && !action_info.has_value()) {
+          auto apps = discovery->get_apps_for_component(entity_id);
+          for (const auto & app : apps) {
+            for (const auto & svc : app.services) {
+              if (svc.name == operation_name) {
+                service_info = svc;
+                break;
+              }
+            }
+            if (service_info.has_value()) {
+              break;
+            }
+
+            for (const auto & act : app.actions) {
+              if (act.name == operation_name) {
+                action_info = act;
+                break;
+              }
+            }
+            if (action_info.has_value()) {
+              break;
+            }
           }
         }
         break;
       }
     }
 
-    if (!found_component) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
-                                 {{"component_id", component_id}});
+    // If not found in components, try apps
+    if (!entity_found) {
+      for (const auto & app : cache.apps) {
+        if (app.id == entity_id) {
+          entity_found = true;
+          entity_type = "app";
+
+          // Search in app's services list
+          for (const auto & svc : app.services) {
+            if (svc.name == operation_name) {
+              service_info = svc;
+              break;
+            }
+          }
+
+          // Search in app's actions list
+          if (!service_info.has_value()) {
+            for (const auto & act : app.actions) {
+              if (act.name == operation_name) {
+                action_info = act;
+                break;
+              }
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    if (!entity_found) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
     }
 
     // Check if operation is a service or action
     auto operation_mgr = ctx_.node()->get_operation_manager();
+
+    // Determine response field name based on entity type
+    std::string id_field = (entity_type == "app") ? "app_id" : "component_id";
 
     // First, check if it's an action (use full_path from cache)
     if (action_info.has_value()) {
@@ -240,7 +331,7 @@ void OperationHandlers::handle_component_operation(const httplib::Request & req,
 
         json response = {{"status", "success"},
                          {"kind", "action"},
-                         {"component_id", component_id},
+                         {id_field, entity_id},
                          {"operation", operation_name},
                          {"goal_id", action_result.goal_id},
                          {"goal_status", status_str}};
@@ -249,20 +340,20 @@ void OperationHandlers::handle_component_operation(const httplib::Request & req,
         HandlerContext::send_error(
             res, StatusCode::BadRequest_400, "rejected",
             {{"kind", "action"},
-             {"component_id", component_id},
+             {id_field, entity_id},
              {"operation", operation_name},
              {"error", action_result.error_message.empty() ? "Goal rejected" : action_result.error_message}});
       } else {
         HandlerContext::send_error(res, StatusCode::InternalServerError_500, "error",
                                    {{"kind", "action"},
-                                    {"component_id", component_id},
+                                    {id_field, entity_id},
                                     {"operation", operation_name},
                                     {"error", action_result.error_message}});
       }
       return;
     }
 
-    // Otherwise, check if it's a service call (must exist in component.services)
+    // Otherwise, check if it's a service call
     if (service_info.has_value()) {
       // Use service type from cache or request body
       std::string resolved_service_type = service_info->type;
@@ -276,49 +367,48 @@ void OperationHandlers::handle_component_operation(const httplib::Request & req,
       if (result.success) {
         json response = {{"status", "success"},
                          {"kind", "service"},
-                         {"component_id", component_id},
+                         {id_field, entity_id},
                          {"operation", operation_name},
                          {"response", result.response}};
         HandlerContext::send_json(res, response);
       } else {
         HandlerContext::send_error(res, StatusCode::InternalServerError_500, "error",
                                    {{"kind", "service"},
-                                    {"component_id", component_id},
+                                    {id_field, entity_id},
                                     {"operation", operation_name},
                                     {"error", result.error_message}});
       }
     } else {
       // Neither service nor action found
       HandlerContext::send_error(res, StatusCode::NotFound_404, "Operation not found",
-                                 {{"component_id", component_id}, {"operation_name", operation_name}});
+                                 {{id_field, entity_id}, {"operation_name", operation_name}});
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(
-        res, StatusCode::InternalServerError_500, "Failed to execute operation",
-        {{"details", e.what()}, {"component_id", component_id}, {"operation_name", operation_name}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_component_operation for component '%s', operation '%s': %s",
-                 component_id.c_str(), operation_name.c_str(), e.what());
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to execute operation",
+                               {{"details", e.what()}, {"entity_id", entity_id}, {"operation_name", operation_name}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_component_operation for entity '%s', operation '%s': %s",
+                 entity_id.c_str(), operation_name.c_str(), e.what());
   }
 }
 
 void OperationHandlers::handle_action_status(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
   std::string operation_name;
   try {
-    // Extract component_id and operation_name from URL path
+    // Extract entity_id and operation_name from URL path
     if (req.matches.size() < 3) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
     operation_name = req.matches[2];
 
     // Validate IDs
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}});
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}});
       return;
     }
 
@@ -361,24 +451,47 @@ void OperationHandlers::handle_action_status(const httplib::Request & req, httpl
     }
 
     // No goal_id provided - find goals by action path
-    // First, find the component to get its namespace
-    auto discovery_mgr = ctx_.node()->get_discovery_manager();
-    auto components = discovery_mgr->discover_components();
-    std::optional<Component> component;
-    for (const auto & c : components) {
-      if (c.id == component_id) {
-        component = c;
+    // Find entity (component or app) to get its namespace
+    const auto cache = ctx_.node()->get_entity_cache();
+
+    std::string namespace_path;
+    bool entity_found = false;
+
+    // Try components first
+    for (const auto & c : cache.components) {
+      if (c.id == entity_id) {
+        namespace_path = c.namespace_path;
+        entity_found = true;
         break;
       }
     }
-    if (!component.has_value()) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
-                                 {{"component_id", component_id}});
+
+    // Try apps if not found in components
+    if (!entity_found) {
+      for (const auto & app : cache.apps) {
+        if (app.id == entity_id) {
+          // For apps, find the action in the app's actions list
+          for (const auto & act : app.actions) {
+            if (act.name == operation_name) {
+              namespace_path = act.full_path.substr(0, act.full_path.rfind('/'));
+              entity_found = true;
+              break;
+            }
+          }
+          if (entity_found) {
+            break;
+          }
+        }
+      }
+    }
+
+    if (!entity_found) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
     }
 
     // Build the action path: namespace + operation_name
-    std::string action_path = component->namespace_path + "/" + operation_name;
+    std::string action_path = namespace_path + "/" + operation_name;
 
     if (get_all) {
       // Return all goals for this action

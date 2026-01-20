@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/discovery/runtime_discovery.hpp"
 
+#include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
+
 #include <algorithm>
 #include <set>
 #include <unordered_map>
@@ -34,6 +36,13 @@ bool RuntimeDiscoveryStrategy::is_internal_service(const std::string & service_p
 }
 
 RuntimeDiscoveryStrategy::RuntimeDiscoveryStrategy(rclcpp::Node * node) : node_(node) {
+}
+
+void RuntimeDiscoveryStrategy::set_config(const RuntimeConfig & config) {
+  config_ = config;
+  RCLCPP_DEBUG(node_->get_logger(), "Runtime discovery config: expose_apps=%s, synthetic_components=%s, grouping=%s",
+               config_.expose_nodes_as_apps ? "true" : "false", config_.create_synthetic_components ? "true" : "false",
+               grouping_strategy_to_string(config_.grouping).c_str());
 }
 
 std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
@@ -73,6 +82,15 @@ std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
 }
 
 std::vector<Component> RuntimeDiscoveryStrategy::discover_components() {
+  // If synthetic components are enabled, use grouping logic
+  if (config_.create_synthetic_components) {
+    return discover_synthetic_components();
+  }
+  // Default: each node = 1 component (backward compatible)
+  return discover_node_components();
+}
+
+std::vector<Component> RuntimeDiscoveryStrategy::discover_node_components() {
   std::vector<Component> components;
 
   // Pre-build service info map for schema lookups
@@ -99,14 +117,25 @@ std::vector<Component> RuntimeDiscoveryStrategy::discover_components() {
     refresh_topic_map();
   }
 
+  // Deduplicate nodes - ROS 2 RMW can report duplicates for nodes with multiple interfaces
+  std::set<std::string> seen_fqns;
+
   for (const auto & name_and_ns : names_and_namespaces) {
     const auto & name = name_and_ns.first;
     const auto & ns = name_and_ns.second;
 
+    std::string fqn = (ns == "/") ? std::string("/").append(name) : std::string(ns).append("/").append(name);
+
+    // Skip duplicate nodes - ROS 2 RMW may report same node multiple times
+    if (seen_fqns.count(fqn) > 0) {
+      continue;
+    }
+    seen_fqns.insert(fqn);
+
     Component comp;
     comp.id = name;
     comp.namespace_path = ns;
-    comp.fqn = (ns == "/") ? std::string("/").append(name) : std::string(ns).append("/").append(name);
+    comp.fqn = fqn;
     comp.area = extract_area_from_namespace(ns);
 
     // Use ROS 2 introspection API to get services for this specific node
@@ -175,9 +204,38 @@ std::vector<Component> RuntimeDiscoveryStrategy::discover_components() {
 }
 
 std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
-  // Apps are not supported in runtime-only mode
-  // They require manifest definitions
-  return {};
+  // Only expose nodes as apps if configured
+  if (!config_.expose_nodes_as_apps) {
+    return {};  // Old behavior - apps require manifest
+  }
+
+  std::vector<App> apps;
+  auto node_components = discover_node_components();
+
+  for (const auto & comp : node_components) {
+    // Skip topic-based components (source="topic")
+    if (comp.source == "topic") {
+      continue;
+    }
+
+    App app;
+    app.id = comp.id;
+    app.name = comp.id;
+    app.component_id = derive_component_id(comp);
+    app.source = "heuristic";
+    app.is_online = true;
+    app.bound_fqn = comp.fqn;
+
+    // Copy resources from component
+    app.topics = comp.topics;
+    app.services = comp.services;
+    app.actions = comp.actions;
+
+    apps.push_back(app);
+  }
+
+  RCLCPP_DEBUG(node_->get_logger(), "Discovered %zu apps from runtime nodes", apps.size());
+  return apps;
 }
 
 std::vector<Function> RuntimeDiscoveryStrategy::discover_functions() {
@@ -485,6 +543,68 @@ bool RuntimeDiscoveryStrategy::path_belongs_to_namespace(const std::string & pat
 
   std::string remainder = path.substr(ns.length() + 1);
   return remainder.find('/') == std::string::npos;
+}
+
+std::vector<Component> RuntimeDiscoveryStrategy::discover_synthetic_components() {
+  // Group nodes by their derived component ID (based on grouping strategy)
+  std::map<std::string, std::vector<Component>> groups;
+  auto node_components = discover_node_components();
+
+  for (const auto & node : node_components) {
+    std::string group_id = derive_component_id(node);
+    groups[group_id].push_back(node);
+  }
+
+  // Create synthetic components from groups
+  std::vector<Component> result;
+  for (const auto & [group_id, nodes] : groups) {
+    Component comp;
+    comp.id = group_id;
+    comp.source = "synthetic";
+    comp.type = "ComponentGroup";
+
+    // Use first node's namespace and area as representative
+    if (!nodes.empty()) {
+      comp.namespace_path = nodes[0].namespace_path;
+      comp.area = nodes[0].area;
+      comp.fqn = "/" + group_id;
+    }
+
+    // Note: Topics/services are NOT aggregated here - they stay with Apps
+    // This is intentional: synthetic components are just groupings
+
+    RCLCPP_DEBUG(node_->get_logger(), "Created synthetic component '%s' with %zu apps", group_id.c_str(), nodes.size());
+    result.push_back(comp);
+  }
+
+  RCLCPP_DEBUG(node_->get_logger(), "Discovered %zu synthetic components from %zu nodes", result.size(),
+               node_components.size());
+  return result;
+}
+
+std::string RuntimeDiscoveryStrategy::derive_component_id(const Component & node) {
+  switch (config_.grouping) {
+    case ComponentGroupingStrategy::NAMESPACE:
+      // Group by area (first namespace segment)
+      return apply_component_name_pattern(node.area);
+    case ComponentGroupingStrategy::NONE:
+    default:
+      // 1:1 mapping - each node is its own component
+      return node.id;
+  }
+}
+
+std::string RuntimeDiscoveryStrategy::apply_component_name_pattern(const std::string & area) {
+  std::string result = config_.synthetic_component_name_pattern;
+
+  // Replace {area} placeholder
+  const std::string placeholder = "{area}";
+  size_t pos = result.find(placeholder);
+  if (pos != std::string::npos) {
+    result.replace(pos, placeholder.length(), area);
+  }
+
+  return result;
 }
 
 }  // namespace discovery

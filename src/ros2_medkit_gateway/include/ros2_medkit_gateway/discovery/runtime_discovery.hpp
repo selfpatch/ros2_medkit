@@ -32,6 +32,11 @@
 #include <vector>
 
 namespace ros2_medkit_gateway {
+
+// Forward declaration
+struct DiscoveryConfig;
+enum class ComponentGroupingStrategy;
+
 namespace discovery {
 
 /**
@@ -45,17 +50,36 @@ namespace discovery {
  * - Discovers components from ROS 2 nodes
  * - Discovers topic-based "virtual" components for systems like Isaac Sim
  * - Enriches components with services, actions, and topics
+ * - (NEW) Can expose nodes as Apps when configured
+ * - (NEW) Can create synthetic Components that group Apps
  *
- * @note Apps and Functions are not supported in runtime-only mode.
- *       Use ManifestDiscoveryStrategy (future) for those entities.
+ * @note Apps and Functions are not supported in runtime-only mode by default.
+ *       Enable expose_nodes_as_apps to get Apps from runtime discovery.
+ *       Use ManifestDiscoveryStrategy for custom entity definitions.
  */
 class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
  public:
+  /**
+   * @brief Runtime discovery configuration options
+   */
+  struct RuntimeConfig {
+    bool expose_nodes_as_apps{true};
+    bool create_synthetic_components{true};
+    ComponentGroupingStrategy grouping{};
+    std::string synthetic_component_name_pattern{"{area}"};
+  };
+
   /**
    * @brief Construct runtime discovery strategy
    * @param node ROS 2 node for graph introspection (must outlive this strategy)
    */
   explicit RuntimeDiscoveryStrategy(rclcpp::Node * node);
+
+  /**
+   * @brief Set runtime discovery configuration
+   * @param config Runtime options from DiscoveryConfig
+   */
+  void set_config(const RuntimeConfig & config);
 
   /// @copydoc DiscoveryStrategy::discover_areas
   std::vector<Area> discover_areas() override;
@@ -64,7 +88,7 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   std::vector<Component> discover_components() override;
 
   /// @copydoc DiscoveryStrategy::discover_apps
-  /// @note Returns empty vector - apps require manifest
+  /// @note Returns nodes as Apps when expose_nodes_as_apps is enabled
   std::vector<App> discover_apps() override;
 
   /// @copydoc DiscoveryStrategy::discover_functions
@@ -79,6 +103,27 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   // =========================================================================
   // Runtime-specific methods (from current DiscoveryManager)
   // =========================================================================
+
+  /**
+   * @brief Discover node-based components (individual ROS 2 nodes)
+   *
+   * This returns the traditional component discovery where each node
+   * becomes a Component. Used internally when synthetic components
+   * are not enabled or for building Apps.
+   *
+   * @return Vector of node-based components
+   */
+  std::vector<Component> discover_node_components();
+
+  /**
+   * @brief Discover synthetic components (grouped by namespace)
+   *
+   * Creates aggregated Components that group multiple nodes by namespace.
+   * Only used when create_synthetic_components is enabled.
+   *
+   * @return Vector of synthetic components
+   */
+  std::vector<Component> discover_synthetic_components();
 
   /**
    * @brief Discover components from topic namespaces (topic-based discovery)
@@ -158,7 +203,14 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   /// Check if a service path is an internal ROS2 service
   static bool is_internal_service(const std::string & service_path);
 
+  /// Derive component ID for a node based on grouping strategy
+  std::string derive_component_id(const Component & node);
+
+  /// Apply naming pattern for synthetic component ID
+  std::string apply_component_name_pattern(const std::string & area);
+
   rclcpp::Node * node_;
+  RuntimeConfig config_;
   NativeTopicSampler * topic_sampler_{nullptr};
   TypeIntrospection * type_introspection_{nullptr};
 

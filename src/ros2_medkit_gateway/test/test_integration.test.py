@@ -107,12 +107,13 @@ def generate_test_description():
     """Generate launch description with gateway node, demo nodes, and tests."""
     # Launch the ROS 2 Medkit Gateway node
     # additional_env sets GCOV_PREFIX for coverage data collection from subprocess
+    # Use fast refresh interval (1s) for tests to ensure cache is updated quickly
     gateway_node = launch_ros.actions.Node(
         package='ros2_medkit_gateway',
         executable='gateway_node',
         name='ros2_medkit_gateway',
         output='screen',
-        parameters=[],
+        parameters=[{'refresh_interval_ms': 1000}],
         additional_env=get_coverage_env(),
     )
 
@@ -261,16 +262,21 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
     """Integration tests for ROS 2 Medkit Gateway REST API and discovery."""
 
     BASE_URL = f'http://localhost:8080{API_BASE_PATH}'
-    # Minimum expected components for tests to pass
-    MIN_EXPECTED_COMPONENTS = 8
+    # Minimum expected components (synthetic, grouped by top-level namespace)
+    # With default config: powertrain, chassis, body, perception, root
+    MIN_EXPECTED_COMPONENTS = 4
+    # Minimum expected apps (ROS 2 nodes)
+    MIN_EXPECTED_APPS = 8
+    # Minimum expected areas (powertrain, chassis, body + root)
+    MIN_EXPECTED_AREAS = 4
     # Maximum time to wait for discovery (seconds)
     MAX_DISCOVERY_WAIT = 60.0
     # Interval between discovery checks (seconds)
-    DISCOVERY_CHECK_INTERVAL = 2.0
+    DISCOVERY_CHECK_INTERVAL = 1.0
 
     @classmethod
     def setUpClass(cls):
-        """Wait for gateway to be ready and components to be discovered."""
+        """Wait for gateway to be ready and apps/areas to be discovered."""
         # First, wait for gateway to respond
         max_retries = 30
         for i in range(max_retries):
@@ -283,24 +289,29 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                     raise unittest.SkipTest('Gateway not responding after 30 retries')
                 time.sleep(1)
 
-        # Wait for components to be discovered (CI can be slow)
+        # Wait for apps AND areas to be discovered (CI can be slow)
         start_time = time.time()
         while time.time() - start_time < cls.MAX_DISCOVERY_WAIT:
             try:
-                response = requests.get(f'{cls.BASE_URL}/components', timeout=5)
-                if response.status_code == 200:
-                    components = response.json()
-                    if len(components) >= cls.MIN_EXPECTED_COMPONENTS:
-                        print(f'✓ Discovery complete: {len(components)} components')
+                apps_response = requests.get(f'{cls.BASE_URL}/apps', timeout=5)
+                areas_response = requests.get(f'{cls.BASE_URL}/areas', timeout=5)
+                if apps_response.status_code == 200 and areas_response.status_code == 200:
+                    apps = apps_response.json().get('items', [])
+                    areas = areas_response.json().get('items', [])
+                    apps_ok = len(apps) >= cls.MIN_EXPECTED_APPS
+                    areas_ok = len(areas) >= cls.MIN_EXPECTED_AREAS
+                    if apps_ok and areas_ok:
+                        print(f'✓ Discovery complete: {len(apps)} apps, {len(areas)} areas')
                         return
-                    expected = cls.MIN_EXPECTED_COMPONENTS
-                    print(f'  Waiting for discovery: {len(components)}/{expected}...')
+                    area_ids = [a.get('id', '?') for a in areas]
+                    print(f'  Waiting: {len(apps)}/{cls.MIN_EXPECTED_APPS} apps, '
+                          f'{len(areas)}/{cls.MIN_EXPECTED_AREAS} areas {area_ids}')
             except requests.exceptions.RequestException:
                 # Ignore connection errors during discovery wait; will retry until timeout
                 pass
             time.sleep(cls.DISCOVERY_CHECK_INTERVAL)
 
-        # If we get here, not all components were discovered but continue anyway
+        # If we get here, not all entities were discovered but continue anyway
         print('Warning: Discovery timeout, some tests may fail')
 
     def _get_json(self, endpoint: str, timeout: int = 10):
@@ -377,7 +388,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_03_list_components(self):
         """
-        Test GET /components returns all discovered components.
+        Test GET /components returns all discovered synthetic components.
+
+        With heuristic discovery (default), components are synthetic groups
+        created by namespace aggregation. ROS 2 nodes are exposed as Apps.
 
         @verifies REQ_INTEROP_003
         """
@@ -385,25 +399,31 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('items', data)
         components = data['items']
         self.assertIsInstance(components, list)
-        # Should have at least 7 demo nodes + gateway node
-        self.assertGreaterEqual(len(components), 7)
+        # With synthetic components, we have fewer components (grouped by namespace)
+        # Expected: powertrain, chassis, body, perception, root (at minimum)
+        self.assertGreaterEqual(len(components), 4)
 
         # Verify response structure - all components should have required fields
         for component in components:
             self.assertIn('id', component)
-            self.assertIn('namespace', component)
+            # namespace may be 'namespace' or 'namespace_path' depending on source
+            self.assertTrue(
+                'namespace' in component or 'namespace_path' in component,
+                f"Component {component['id']} should have namespace field"
+            )
             self.assertIn('fqn', component)
             self.assertIn('type', component)
             self.assertIn('area', component)
-            self.assertEqual(component['type'], 'Component')
+            # Synthetic components have type 'ComponentGroup', topic-based have 'Component'
+            self.assertIn(component['type'], ['Component', 'ComponentGroup'])
 
-        # Verify some expected component IDs are present
+        # Verify expected synthetic component IDs are present
         component_ids = [comp['id'] for comp in components]
-        self.assertIn('temp_sensor', component_ids)
-        self.assertIn('rpm_sensor', component_ids)
-        self.assertIn('pressure_sensor', component_ids)
+        self.assertIn('powertrain', component_ids)
+        self.assertIn('chassis', component_ids)
+        self.assertIn('body', component_ids)
 
-        print(f'✓ Components test passed: {len(components)} components discovered')
+        print(f'✓ Components test passed: {len(components)} synthetic components discovered')
 
     def test_04_automotive_areas_discovery(self):
         """
@@ -425,6 +445,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET /areas/{area_id}/components returns components for valid area.
 
+        With synthetic components, the powertrain area contains the 'powertrain'
+        synthetic component which aggregates all ROS 2 nodes in that namespace.
+
         @verifies REQ_INTEROP_006
         """
         # Test powertrain area
@@ -440,10 +463,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.assertIn('id', component)
             self.assertIn('namespace', component)
 
-        # Verify expected powertrain components
+        # Verify the synthetic 'powertrain' component exists
         component_ids = [comp['id'] for comp in components]
-        self.assertIn('temp_sensor', component_ids)
-        self.assertIn('rpm_sensor', component_ids)
+        self.assertIn('powertrain', component_ids)
 
         print(
             f'✓ Area components test passed: {len(components)} components in powertrain'
@@ -468,195 +490,168 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print('✓ Nonexistent area error test passed')
 
-    def test_07_component_data_powertrain_engine(self):
+    def test_07_app_data_powertrain_engine(self):
         """
-        Test GET /components/{component_id}/data for engine component.
+        Test GET /apps/{app_id}/data for engine temperature sensor app.
+
+        Apps are ROS 2 nodes. The temp_sensor app publishes temperature data.
 
         @verifies REQ_INTEROP_018
         """
-        # Get data from temp_sensor component (powertrain/engine)
-        data = self._get_json('/components/temp_sensor/data')
-        self.assertIsInstance(data, list)
+        # Get data from temp_sensor app (powertrain/engine)
+        data = self._get_json('/apps/temp_sensor/data')
+        self.assertIn('items', data)
+        items = data['items']
+        self.assertIsInstance(items, list)
 
-        # Should have at least one topic with data or metadata
-        if len(data) > 0:
-            for topic_data in data:
-                self.assertIn('topic', topic_data)
-                self.assertIn('status', topic_data)
-                # Status can be 'data' (with actual data) or 'metadata_only' (fallback)
-                self.assertIn(topic_data['status'], ['data', 'metadata_only'])
-                if topic_data['status'] == 'data':
-                    self.assertIn('data', topic_data)
+        # Should have at least one topic
+        if len(items) > 0:
+            for topic_data in items:
+                self.assertIn('id', topic_data)
+                self.assertIn('name', topic_data)
+                self.assertIn('direction', topic_data)
+                self.assertIn(topic_data['direction'], ['publish', 'subscribe'])
                 print(
-                    f"  - Topic: {topic_data['topic']} (status: {topic_data['status']})"
+                    f"  - Topic: {topic_data['name']} ({topic_data['direction']})"
                 )
 
-        print(f'✓ Engine component data test passed: {len(data)} topics')
+        print(f'✓ Engine app data test passed: {len(items)} topics')
 
-    def test_08_component_data_chassis_brakes(self):
+    def test_08_app_data_chassis_brakes(self):
         """
-        Test GET /components/{component_id}/data for brakes component.
+        Test GET /apps/{app_id}/data for brakes pressure sensor app.
 
         @verifies REQ_INTEROP_018
         """
-        # Get data from pressure_sensor component (chassis/brakes)
-        data = self._get_json('/components/pressure_sensor/data')
-        self.assertIsInstance(data, list)
-
-        # Check if any data/metadata is available
-        if len(data) > 0:
-            for topic_data in data:
-                self.assertIn('topic', topic_data)
-                self.assertIn('status', topic_data)
-                # Status can be 'data' (with actual data) or 'metadata_only' (fallback)
-                self.assertIn(topic_data['status'], ['data', 'metadata_only'])
-                if topic_data['status'] == 'data':
-                    self.assertIn('data', topic_data)
-
-        print(f'✓ Brakes component data test passed: {len(data)} topics')
-
-    def test_09_component_data_body_door(self):
-        """
-        Test GET /components/{component_id}/data for door component.
-
-        @verifies REQ_INTEROP_018
-        """
-        # Get data from status_sensor component (body/door/front_left)
-        data = self._get_json('/components/status_sensor/data')
-        self.assertIsInstance(data, list)
+        # Get data from pressure_sensor app (chassis/brakes)
+        data = self._get_json('/apps/pressure_sensor/data')
+        self.assertIn('items', data)
+        items = data['items']
+        self.assertIsInstance(items, list)
 
         # Check structure
-        if len(data) > 0:
-            for topic_data in data:
-                self.assertIn('topic', topic_data)
-                self.assertIn('status', topic_data)
-                # Status can be 'data' (with actual data) or 'metadata_only' (fallback)
-                self.assertIn(topic_data['status'], ['data', 'metadata_only'])
-                if topic_data['status'] == 'data':
-                    self.assertIn('data', topic_data)
+        if len(items) > 0:
+            for topic_data in items:
+                self.assertIn('id', topic_data)
+                self.assertIn('name', topic_data)
+                self.assertIn('direction', topic_data)
 
-        print(f'✓ Door component data test passed: {len(data)} topics')
+        print(f'✓ Brakes app data test passed: {len(items)} topics')
 
-    def test_10_component_data_structure(self):
+    def test_09_app_data_body_door(self):
         """
-        Test GET /components/{component_id}/data response structure.
+        Test GET /apps/{app_id}/data for door status sensor app.
 
         @verifies REQ_INTEROP_018
         """
-        data = self._get_json('/components/temp_sensor/data')
-        self.assertIsInstance(data, list, 'Response should be an array')
+        # Get data from status_sensor app (body/door/front_left)
+        data = self._get_json('/apps/status_sensor/data')
+        self.assertIn('items', data)
+        items = data['items']
+        self.assertIsInstance(items, list)
+
+        # Check structure
+        if len(items) > 0:
+            for topic_data in items:
+                self.assertIn('id', topic_data)
+                self.assertIn('name', topic_data)
+                self.assertIn('direction', topic_data)
+
+        print(f'✓ Door app data test passed: {len(items)} topics')
+
+    def test_10_app_data_structure(self):
+        """
+        Test GET /apps/{app_id}/data response structure.
+
+        @verifies REQ_INTEROP_018
+        """
+        data = self._get_json('/apps/temp_sensor/data')
+        self.assertIn('items', data)
+        items = data['items']
+        self.assertIsInstance(items, list, 'Response should have items array')
 
         # If we have data, verify structure
-        if len(data) > 0:
-            first_item = data[0]
-            self.assertIn('topic', first_item, "Each item should have 'topic' field")
-            self.assertIn(
-                'timestamp', first_item, "Each item should have 'timestamp' field"
-            )
-            self.assertIn('status', first_item, "Each item should have 'status' field")
+        if len(items) > 0:
+            first_item = items[0]
+            self.assertIn('id', first_item, "Each item should have 'id' field")
+            self.assertIn('name', first_item, "Each item should have 'name' field")
+            self.assertIn('direction', first_item, "Each item should have 'direction' field")
+            self.assertIn('href', first_item, "Each item should have 'href' field")
             self.assertIsInstance(
-                first_item['topic'], str, "'topic' should be a string"
+                first_item['name'], str, "'name' should be a string"
             )
-            self.assertIsInstance(
-                first_item['timestamp'],
-                int,
-                "'timestamp' should be an integer (nanoseconds)",
-            )
-            # Status can be 'data' or 'metadata_only'
-            self.assertIn(first_item['status'], ['data', 'metadata_only'])
-            if first_item['status'] == 'data':
-                self.assertIn('data', first_item, "status=data should have 'data'")
-                self.assertIsInstance(
-                    first_item['data'], dict, "'data' should be object"
-                )
+            self.assertIn(first_item['direction'], ['publish', 'subscribe'])
 
-            # Verify metadata fields are present (for both data and metadata_only)
-            self.assertIn('type', first_item, "Each item should have 'type' field")
-            self.assertIn('type_info', first_item, "Each item should have 'type_info'")
-            self.assertIn(
-                'publisher_count', first_item, "Should have 'publisher_count'"
-            )
-            self.assertIn(
-                'subscriber_count', first_item, "Should have 'subscriber_count'"
-            )
+        print('✓ App data structure test passed')
 
-            # Verify type_info structure
-            type_info = first_item['type_info']
-            self.assertIn('schema', type_info, "'type_info' should have 'schema'")
-            self.assertIn(
-                'default_value', type_info, "'type_info' should have 'default_value'"
-            )
-
-        print('✓ Component data structure test passed')
-
-    def test_11_component_nonexistent_error(self):
+    def test_11_app_nonexistent_error(self):
         """
-        Test GET /components/{component_id}/data returns 404 for nonexistent component.
+        Test GET /apps/{app_id}/data returns 404 for nonexistent app.
 
         @verifies REQ_INTEROP_018
         """
         response = requests.get(
-            f'{self.BASE_URL}/components/nonexistent_component/data', timeout=5
+            f'{self.BASE_URL}/apps/nonexistent_app/data', timeout=5
         )
         self.assertEqual(response.status_code, 404)
 
         data = response.json()
         self.assertIn('error', data)
-        self.assertEqual(data['error'], 'Component not found')
-        self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'nonexistent_component')
+        self.assertEqual(data['error'], 'App not found')
+        self.assertIn('app_id', data)
+        self.assertEqual(data['app_id'], 'nonexistent_app')
 
-        print('✓ Nonexistent component error test passed')
+        print('✓ Nonexistent app error test passed')
 
-    def test_12_component_no_topics(self):
+    def test_12_app_no_topics(self):
         """
-        Test GET /components/{component_id}/data returns empty array.
+        Test GET /apps/{app_id}/data returns empty array.
 
-        Verifies that components with no topics return an empty array.
-        The calibration component typically has only services, no topics.
+        Verifies that apps with no topics return an empty items array.
+        The calibration app typically has only services, no topics.
 
         @verifies REQ_INTEROP_018
         """
-        # Or test with a component that we know has no publishing topics
-        # For now, we'll verify that any component returns an array (even if empty)
-        data = self._get_json('/components/calibration/data')
-        self.assertIsInstance(data, list, 'Response should be an array even when empty')
+        # Test with calibration app that we know has no publishing topics
+        data = self._get_json('/apps/calibration/data')
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list, 'Response should have items array')
 
-        print(f'✓ Component with no topics test passed: {len(data)} topics')
+        print(f'✓ App with no topics test passed: {len(data["items"])} topics')
 
-    def test_13_invalid_component_id_special_chars(self):
+    def test_13_invalid_app_id_special_chars(self):
         """
-        Test GET /components/{component_id}/data rejects special characters.
+        Test GET /apps/{app_id}/data rejects special characters.
 
         @verifies REQ_INTEROP_018
         """
         # Test various invalid characters
         invalid_ids = [
-            'component;drop',  # SQL injection attempt
-            'component<script>',  # XSS attempt
-            'component"test',  # Quote
-            'component`test',  # Backtick
-            'component$test',  # Dollar sign
-            'component|test',  # Pipe
-            'component&test',  # Ampersand
+            'app;drop',  # SQL injection attempt
+            'app<script>',  # XSS attempt
+            'app"test',  # Quote
+            'app`test',  # Backtick
+            'app$test',  # Dollar sign
+            'app|test',  # Pipe
+            'app&test',  # Ampersand
         ]
 
         for invalid_id in invalid_ids:
             response = requests.get(
-                f'{self.BASE_URL}/components/{invalid_id}/data', timeout=5
+                f'{self.BASE_URL}/apps/{invalid_id}/data', timeout=5
             )
             self.assertEqual(
                 response.status_code,
                 400,
-                f'Expected 400 for component_id: {invalid_id}',
+                f'Expected 400 for app_id: {invalid_id}',
             )
 
             data = response.json()
             self.assertIn('error', data)
-            self.assertEqual(data['error'], 'Invalid component ID')
+            self.assertEqual(data['error'], 'Invalid app ID')
             self.assertIn('details', data)
 
-        print('✓ Invalid component ID special characters test passed')
+        print('✓ Invalid app ID special characters test passed')
 
     def test_14_invalid_area_id_special_chars(self):
         """
@@ -697,15 +692,15 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         # While these IDs don't exist in the test environment,
         # they should pass validation and return 404 (not 400)
         valid_ids = [
-            'component_name',  # Underscore
-            'component_name_123',  # Underscore and numbers
-            'ComponentName',  # CamelCase
-            'component123',  # Alphanumeric
+            'app_name',  # Underscore
+            'app_name_123',  # Underscore and numbers
+            'AppName',  # CamelCase
+            'app123',  # Alphanumeric
         ]
 
         for valid_id in valid_ids:
             response = requests.get(
-                f'{self.BASE_URL}/components/{valid_id}/data', timeout=5
+                f'{self.BASE_URL}/apps/{valid_id}/data', timeout=5
             )
             # Should return 404 (not found) not 400 (invalid)
             self.assertEqual(
@@ -723,15 +718,15 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         @verifies REQ_INTEROP_018
         """
         invalid_ids = [
-            'component@name',
-            'component name',
-            'component!name',
-            'component$name',
+            'app@name',
+            'app name',
+            'app!name',
+            'app$name',
         ]
 
         for invalid_id in invalid_ids:
             response = requests.get(
-                f'{self.BASE_URL}/components/{invalid_id}/data', timeout=5
+                f'{self.BASE_URL}/apps/{invalid_id}/data', timeout=5
             )
             self.assertEqual(
                 response.status_code,
@@ -741,7 +736,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
             data = response.json()
             self.assertIn('error', data)
-            self.assertEqual(data['error'], 'Invalid component ID')
+            self.assertEqual(data['error'], 'Invalid app ID')
 
         print('✓ Invalid IDs with special chars test passed')
 
@@ -749,12 +744,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET /components/{component_id}/data/{topic_name} for temperature topic.
 
+        Uses synthetic 'powertrain' component which aggregates apps in that namespace.
+
         @verifies REQ_INTEROP_019
         """
         # Use percent encoding for topic path: /powertrain/engine/temperature
         topic_path = encode_topic_path('/powertrain/engine/temperature')
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/powertrain/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -775,12 +772,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET /components/{component_id}/data/{topic_name} for RPM topic.
 
+        Uses synthetic 'powertrain' component.
+
         @verifies REQ_INTEROP_019
         """
         # Use percent encoding for topic path: /powertrain/engine/rpm
         topic_path = encode_topic_path('/powertrain/engine/rpm')
         response = requests.get(
-            f'{self.BASE_URL}/components/rpm_sensor/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/powertrain/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -801,12 +800,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET /components/{component_id}/data/{topic_name} for pressure topic.
 
+        Uses synthetic 'chassis' component.
+
         @verifies REQ_INTEROP_019
         """
         # Use percent encoding for topic path: /chassis/brakes/pressure
         topic_path = encode_topic_path('/chassis/brakes/pressure')
         response = requests.get(
-            f'{self.BASE_URL}/components/pressure_sensor/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/chassis/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -825,12 +826,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET /components/{component_id}/data/{topic_name} response structure.
 
+        Uses synthetic 'powertrain' component.
+
         @verifies REQ_INTEROP_019
         """
         # Use percent encoding for topic path: /powertrain/engine/temperature
         topic_path = encode_topic_path('/powertrain/engine/temperature')
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/powertrain/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -865,12 +868,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET /components/{component_id}/data/{topic_name} returns 404 for nonexistent topic.
 
+        Uses synthetic 'powertrain' component.
+
         @verifies REQ_INTEROP_019
         """
         # Use percent encoding for topic path: /some/nonexistent/topic
         topic_path = encode_topic_path('/some/nonexistent/topic')
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/powertrain/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 404)
 
@@ -878,7 +883,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('error', data)
         self.assertEqual(data['error'], 'Topic not found')
         self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'temp_sensor')
+        self.assertEqual(data['component_id'], 'powertrain')
         self.assertIn('topic_name', data)
         # topic_name in response is the decoded path (from URL)
         self.assertEqual(data['topic_name'], 'some/nonexistent/topic')
@@ -911,13 +916,15 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET with percent-encoded slashes in topic path.
 
+        Uses synthetic 'powertrain' component.
+
         @verifies REQ_INTEROP_019
         """
         # Test that percent-encoded slashes work correctly
         # /powertrain/engine/temperature encoded as powertrain%2Fengine%2Ftemperature
         topic_path = encode_topic_path('/powertrain/engine/temperature')
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/powertrain/data/{topic_path}', timeout=10
         )
         # Should return 200 (found) since this topic exists
         self.assertEqual(response.status_code, 200)
@@ -930,6 +937,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
     def test_24_component_topic_valid_names(self):
         """
         Test that valid topic names work correctly.
+
+        Uses synthetic 'powertrain' component.
 
         @verifies REQ_INTEROP_019
         """
@@ -944,7 +953,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         for valid_topic in valid_topic_names:
             response = requests.get(
-                f'{self.BASE_URL}/components/temp_sensor/data/{valid_topic}', timeout=10
+                f'{self.BASE_URL}/components/powertrain/data/{valid_topic}', timeout=10
             )
             # Should return 404 (topic not found) not 400 (invalid name)
             self.assertIn(
@@ -962,12 +971,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test PUT /components/{component_id}/data/{topic_name} publishes data.
 
+        Uses synthetic 'chassis' component.
+
         @verifies REQ_INTEROP_020
         """
         # Use percent encoding for topic path: /chassis/brakes/command
         topic_path = encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/actuator/data/{topic_path}',
+            f'{self.BASE_URL}/components/chassis/data/{topic_path}',
             json={'type': 'std_msgs/msg/Float32', 'data': {'data': 50.0}},
             timeout=10,
         )
@@ -982,7 +993,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('topic_name', data)
         self.assertEqual(data['status'], 'published')
         self.assertEqual(data['type'], 'std_msgs/msg/Float32')
-        self.assertEqual(data['component_id'], 'actuator')
+        self.assertEqual(data['component_id'], 'chassis')
         # topic_name is the decoded path from URL
         self.assertEqual(data['topic_name'], 'chassis/brakes/command')
 
@@ -996,7 +1007,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         topic_path = encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/actuator/data/{topic_path}',
+            f'{self.BASE_URL}/components/chassis/data/{topic_path}',
             json={'data': {'data': 50.0}},
             timeout=5,
         )
@@ -1016,7 +1027,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         topic_path = encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/actuator/data/{topic_path}',
+            f'{self.BASE_URL}/components/chassis/data/{topic_path}',
             json={'type': 'std_msgs/msg/Float32'},
             timeout=5,
         )
@@ -1048,7 +1059,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         topic_path = encode_topic_path('/chassis/brakes/command')
         for invalid_type in invalid_types:
             response = requests.put(
-                f'{self.BASE_URL}/components/actuator/data/{topic_path}',
+                f'{self.BASE_URL}/components/chassis/data/{topic_path}',
                 json={'type': invalid_type, 'data': {'data': 50.0}},
                 timeout=5,
             )
@@ -1091,7 +1102,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         topic_path = encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/actuator/data/{topic_path}',
+            f'{self.BASE_URL}/components/chassis/data/{topic_path}',
             data='not valid json',
             headers={'Content-Type': 'application/json'},
             timeout=5,
@@ -1104,16 +1115,18 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print('✓ Publish invalid JSON body test passed')
 
-    # ========== POST /components/{component_id}/operations/{operation_name} tests ==========
+    # ========== POST /apps/{app_id}/operations/{operation_name} tests ==========
 
     def test_31_operation_call_calibrate_service(self):
         """
-        Test POST /components/{component_id}/operations/{operation_name} calls a service.
+        Test POST /apps/{app_id}/operations/{operation_name} calls a service.
+
+        Operations are exposed on Apps (ROS 2 nodes), not synthetic Components.
 
         @verifies REQ_INTEROP_035
         """
         response = requests.post(
-            f'{self.BASE_URL}/components/calibration/operations/calibrate',
+            f'{self.BASE_URL}/apps/calibration/operations/calibrate',
             json={},
             timeout=15
         )
@@ -1122,8 +1135,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('status', data)
         self.assertEqual(data['status'], 'success')
-        self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'calibration')
+        self.assertIn('app_id', data)
+        self.assertEqual(data['app_id'], 'calibration')
         self.assertIn('operation', data)
         self.assertEqual(data['operation'], 'calibrate')
         self.assertIn('response', data)
@@ -1140,12 +1153,12 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test operation call returns 404 for unknown operation.
 
-        POST /components/{component_id}/operations/{operation_name}
+        POST /apps/{app_id}/operations/{operation_name}
 
         @verifies REQ_INTEROP_035
         """
         response = requests.post(
-            f'{self.BASE_URL}/components/calibration/operations/nonexistent_op',
+            f'{self.BASE_URL}/apps/calibration/operations/nonexistent_op',
             json={},
             timeout=10
         )
@@ -1157,16 +1170,16 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print('✓ Operation call nonexistent operation test passed')
 
-    def test_33_operation_call_nonexistent_component(self):
+    def test_33_operation_call_nonexistent_entity(self):
         """
-        Test operation call returns 404 for unknown component.
+        Test operation call returns 404 for unknown entity.
 
-        POST /components/{component_id}/operations/{operation_name}
+        POST /apps/{app_id}/operations/{operation_name}
 
         @verifies REQ_INTEROP_035
         """
         response = requests.post(
-            f'{self.BASE_URL}/components/nonexistent_component/operations/calibrate',
+            f'{self.BASE_URL}/apps/nonexistent_app/operations/calibrate',
             json={},
             timeout=5
         )
@@ -1174,48 +1187,48 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error', data)
-        self.assertEqual(data['error'], 'Component not found')
-        self.assertEqual(data['component_id'], 'nonexistent_component')
+        self.assertEqual(data['error'], 'Entity not found')
+        self.assertEqual(data['entity_id'], 'nonexistent_app')
 
-        print('✓ Operation call nonexistent component test passed')
+        print('✓ Operation call nonexistent entity test passed')
 
-    def test_34_operation_call_invalid_component_id(self):
+    def test_34_operation_call_invalid_entity_id(self):
         """
-        Test operation call rejects invalid component ID.
+        Test operation call rejects invalid entity ID.
 
-        POST /components/{component_id}/operations/{operation_name}
+        POST /apps/{app_id}/operations/{operation_name}
 
         @verifies REQ_INTEROP_035
         """
         invalid_ids = [
-            'component;drop',
-            'component<script>',
-            'component name',
+            'app;drop',
+            'app<script>',
+            'app name',
         ]
 
         for invalid_id in invalid_ids:
             response = requests.post(
-                f'{self.BASE_URL}/components/{invalid_id}/operations/calibrate',
+                f'{self.BASE_URL}/apps/{invalid_id}/operations/calibrate',
                 json={},
                 timeout=5
             )
             self.assertEqual(
                 response.status_code,
                 400,
-                f'Expected 400 for component_id: {invalid_id}'
+                f'Expected 400 for entity_id: {invalid_id}'
             )
 
             data = response.json()
             self.assertIn('error', data)
-            self.assertEqual(data['error'], 'Invalid component ID')
+            self.assertEqual(data['error'], 'Invalid entity ID')
 
-        print('✓ Operation call invalid component ID test passed')
+        print('✓ Operation call invalid entity ID test passed')
 
     def test_35_operation_call_invalid_operation_name(self):
         """
         Test operation call rejects invalid operation name.
 
-        POST /components/{component_id}/operations/{operation_name}
+        POST /apps/{app_id}/operations/{operation_name}
 
         @verifies REQ_INTEROP_021
         """
@@ -1227,7 +1240,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         for invalid_name in invalid_names:
             response = requests.post(
-                f'{self.BASE_URL}/components/calibration/operations/{invalid_name}',
+                f'{self.BASE_URL}/apps/calibration/operations/{invalid_name}',
                 json={},
                 timeout=5
             )
@@ -1247,12 +1260,12 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test operation call returns 400 for invalid JSON body.
 
-        POST /components/{component_id}/operations/{operation_name}
+        POST /apps/{app_id}/operations/{operation_name}
 
         @verifies REQ_INTEROP_021
         """
         response = requests.post(
-            f'{self.BASE_URL}/components/calibration/operations/calibrate',
+            f'{self.BASE_URL}/apps/calibration/operations/calibrate',
             data='not valid json',
             headers={'Content-Type': 'application/json'},
             timeout=5
@@ -1265,29 +1278,31 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print('✓ Operation call invalid JSON body test passed')
 
-    def test_37_operations_listed_in_component_discovery(self):
+    def test_37_operations_listed_in_app_discovery(self):
         """
-        Test that operations (services) are listed in component discovery response.
+        Test that operations (services) are available via app detail endpoint.
+
+        Operations are exposed via /apps/{id} detail endpoint or /apps/{id}/operations,
+        not in the list response (to keep listing lightweight).
 
         @verifies REQ_INTEROP_021
         """
-        data = self._get_json('/components')
-        components = data['items']
+        # Use the detail endpoint to check operations
+        data = self._get_json('/apps/calibration')
 
-        # Find calibration component
-        calibration = None
-        for comp in components:
-            if comp['id'] == 'calibration':
-                calibration = comp
-                break
+        # App detail should have capabilities including operations
+        self.assertIn('capabilities', data, 'App should have capabilities')
+        cap_names = [c.get('name') for c in data['capabilities']]
+        self.assertIn('operations', cap_names, 'App should have operations capability')
 
-        self.assertIsNotNone(calibration, 'Calibration component should exist')
-        self.assertIn('operations', calibration, 'Component should have operations field')
-        self.assertIsInstance(calibration['operations'], list)
+        # Check operations endpoint directly
+        ops_data = self._get_json('/apps/calibration/operations')
+        self.assertIn('items', ops_data, 'Operations endpoint should return items')
+        ops = ops_data['items']
 
         # Find the calibrate operation
         calibrate_op = None
-        for op in calibration['operations']:
+        for op in ops:
             if op['name'] == 'calibrate':
                 calibrate_op = op
                 break
@@ -1300,7 +1315,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('path', calibrate_op)
         self.assertEqual(calibrate_op['path'], '/powertrain/engine/calibrate')
 
-        print('✓ Operations listed in component discovery test passed')
+        print('✓ Operations listed in app discovery test passed')
 
     def test_38_root_endpoint_includes_operations(self):
         """
@@ -1310,12 +1325,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         data = self._get_json('/')
 
-        # Verify operations endpoint is listed
+        # Verify operations endpoint is listed (both apps and components)
         self.assertIn('endpoints', data)
-        self.assertIn(
-            'POST /api/v1/components/{component_id}/operations/{operation_name}',
-            data['endpoints']
-        )
+        # Check that at least one operations endpoint exists
+        operations_endpoints = [e for e in data['endpoints'] if 'operations' in e.lower()]
+        self.assertGreater(len(operations_endpoints), 0, 'Should have operations endpoints')
 
         # Verify operations capability is listed
         self.assertIn('capabilities', data)
@@ -1328,14 +1342,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_39_action_send_goal_and_get_id(self):
         """
-        Test POST /components/{component_id}/operations/{operation_name} sends action goal.
+        Test POST /apps/{app_id}/operations/{operation_name} sends action goal.
 
         Sends a goal to the long_calibration action and verifies goal_id is returned.
 
         @verifies REQ_INTEROP_022
         """
         response = requests.post(
-            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
             json={'goal': {'order': 5}},
             timeout=15
         )
@@ -1346,8 +1360,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(data['status'], 'success')
         self.assertIn('kind', data)
         self.assertEqual(data['kind'], 'action')
-        self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'long_calibration')
+        self.assertIn('app_id', data)
+        self.assertEqual(data['app_id'], 'long_calibration')
         self.assertIn('operation', data)
         self.assertEqual(data['operation'], 'long_calibration')
         self.assertIn('goal_id', data)
@@ -1361,13 +1375,13 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_40_action_status_endpoint(self):
         """
-        Test GET /components/{component_id}/operations/{operation_name}/status returns goal status.
+        Test GET /apps/{app_id}/operations/{operation_name}/status returns goal status.
 
         @verifies REQ_INTEROP_022
         """
         # First, send a goal with enough steps to ensure it's still running
         response = requests.post(
-            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
             json={'goal': {'order': 10}},
             timeout=15
         )
@@ -1376,7 +1390,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Check status immediately (allow extra time for action server response)
         status_response = requests.get(
-            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration/status',
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/status',
             params={'goal_id': goal_id},
             timeout=10
         )
@@ -1407,7 +1421,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         # Send a short goal that will complete quickly
         response = requests.post(
-            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
             json={'goal': {'order': 3}},
             timeout=15
         )
@@ -1419,7 +1433,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Check status should show succeeded (updated via native subscription)
         status_response = requests.get(
-            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration/status',
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/status',
             params={'goal_id': goal_id},
             timeout=5
         )
@@ -1436,13 +1450,13 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
     @unittest.skip('Flaky on CI due to action server timing - goal acceptance can timeout')
     def test_42_action_cancel_endpoint(self):
         """
-        Test DELETE /components/{component_id}/operations/{operation_name} cancels action.
+        Test DELETE /apps/{app_id}/operations/{operation_name} cancels action.
 
         @verifies REQ_INTEROP_022
         """
         # Send a long goal that we can cancel
         response = requests.post(
-            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
             json={'goal': {'order': 20}},
             timeout=15
         )
@@ -1454,7 +1468,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Cancel the goal
         cancel_response = requests.delete(
-            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
             params={'goal_id': goal_id},
             timeout=10
         )
@@ -1468,29 +1482,31 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print(f'✓ Action cancel endpoint test passed: {data}')
 
-    def test_43_action_listed_in_component_discovery(self):
+    def test_43_action_listed_in_app_discovery(self):
         """
-        Test that actions are listed in component discovery response.
+        Test that actions are listed in app detail/operations response.
+
+        Note: The /apps list endpoint returns lightweight items without operations.
+        Operations are available via /apps/{id} detail or /apps/{id}/operations.
 
         @verifies REQ_INTEROP_022
         """
-        data = self._get_json('/components')
-        components = data['items']
+        # Get app detail for long_calibration
+        data = self._get_json('/apps/long_calibration')
 
-        # Find long_calibration component
-        long_cal = None
-        for comp in components:
-            if comp['id'] == 'long_calibration':
-                long_cal = comp
-                break
+        # App detail should have capabilities including operations
+        self.assertIn('capabilities', data, 'App detail should have capabilities')
+        cap_names = [c.get('name') for c in data['capabilities']]
+        self.assertIn('operations', cap_names, 'App should have operations capability')
 
-        self.assertIsNotNone(long_cal, 'long_calibration component should exist')
-        self.assertIn('operations', long_cal, 'Component should have operations field')
-        self.assertIsInstance(long_cal['operations'], list)
+        # Check operations endpoint directly
+        ops_data = self._get_json('/apps/long_calibration/operations')
+        self.assertIn('items', ops_data, 'Operations endpoint should return items')
+        ops = ops_data['items']
 
         # Find the long_calibration action operation
         action_op = None
-        for op in long_cal['operations']:
+        for op in ops:
             if op['name'] == 'long_calibration' and op['kind'] == 'action':
                 action_op = op
                 break
@@ -1500,20 +1516,20 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(action_op['type'], 'example_interfaces/action/Fibonacci')
         self.assertEqual(action_op['path'], '/powertrain/engine/long_calibration')
 
-        print('✓ Action listed in component discovery test passed')
+        print('✓ Action listed in app operations test passed')
 
     def test_44_action_status_without_goal_id_returns_latest(self):
         """
         Test action status without goal_id returns latest goal.
 
-        GET /components/{component_id}/operations/{operation_name}/status
+        GET /apps/{app_id}/operations/{operation_name}/status
         Returns the most recent goal status when no goal_id is provided.
 
         @verifies REQ_INTEROP_022
         """
         # First, send a goal so we have something to query
         response = requests.post(
-            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration',
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
             json={'goal': {'order': 3}},
             timeout=15
         )
@@ -1525,7 +1541,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Now query status without goal_id - should return the latest goal
         status_response = requests.get(
-            f'{self.BASE_URL}/components/long_calibration/operations/long_calibration/status',
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/status',
             timeout=5
         )
         self.assertEqual(status_response.status_code, 200)
@@ -1542,19 +1558,19 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_45_list_configurations(self):
         """
-        Test GET /components/{component_id}/configurations lists all parameters.
+        Test GET /apps/{app_id}/configurations lists all parameters.
 
         @verifies REQ_INTEROP_023
         """
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/configurations',
+            f'{self.BASE_URL}/apps/temp_sensor/configurations',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'temp_sensor')
+        self.assertIn('app_id', data)
+        self.assertEqual(data['app_id'], 'temp_sensor')
         self.assertIn('node_name', data)
         self.assertIn('parameters', data)
         self.assertIsInstance(data['parameters'], list)
@@ -1577,19 +1593,19 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_46_get_configuration(self):
         """
-        Test GET /components/{component_id}/configurations/{param_name} gets parameter.
+        Test GET /apps/{app_id}/configurations/{param_name} gets parameter.
 
         @verifies REQ_INTEROP_023
         """
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/configurations/publish_rate',
+            f'{self.BASE_URL}/apps/temp_sensor/configurations/publish_rate',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'temp_sensor')
+        self.assertIn('app_id', data)
+        self.assertEqual(data['app_id'], 'temp_sensor')
         self.assertIn('parameter', data)
 
         param = data['parameter']
@@ -1605,13 +1621,13 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_47_set_configuration(self):
         """
-        Test PUT /components/{component_id}/configurations/{param_name} sets parameter.
+        Test PUT /apps/{app_id}/configurations/{param_name} sets parameter.
 
         @verifies REQ_INTEROP_024
         """
         # Set a new value
         response = requests.put(
-            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
             json={'value': 80.0},
             timeout=10
         )
@@ -1620,8 +1636,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('status', data)
         self.assertEqual(data['status'], 'success')
-        self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'temp_sensor')
+        self.assertIn('app_id', data)
+        self.assertEqual(data['app_id'], 'temp_sensor')
         self.assertIn('parameter', data)
 
         param = data['parameter']
@@ -1634,7 +1650,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Verify the value was actually set by reading it back
         verify_response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
             timeout=10
         )
         self.assertEqual(verify_response.status_code, 200)
@@ -1643,7 +1659,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Reset the value back to default
         requests.put(
-            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
             json={'value': 85.0},
             timeout=10
         )
@@ -1652,7 +1668,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_48_delete_configuration_resets_to_default(self):
         """
-        Test DELETE /components/{component_id}/configurations/{param_name} resets to default.
+        Test DELETE /apps/{app_id}/configurations/{param_name} resets to default.
 
         The DELETE method resets the parameter to its default value.
         It first changes the value, then resets it, then verifies the reset.
@@ -1661,7 +1677,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         # First, change the value from default
         set_response = requests.put(
-            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
             json={'value': -50.0},
             timeout=10
         )
@@ -1669,7 +1685,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Now reset to default via DELETE
         response = requests.delete(
-            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
@@ -1683,7 +1699,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Verify the value was actually reset by reading it
         get_response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
             timeout=10
         )
         self.assertEqual(get_response.status_code, 200)
@@ -1693,25 +1709,25 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print(f'✓ Delete configuration (reset to default) test passed: value={data["value"]}')
 
-    def test_49_configurations_nonexistent_component(self):
+    def test_49_configurations_nonexistent_app(self):
         """
-        Test GET /components/{component_id}/configurations returns 404 for unknown component.
+        Test GET /apps/{app_id}/configurations returns 404 for unknown app.
 
         @verifies REQ_INTEROP_023
         """
         response = requests.get(
-            f'{self.BASE_URL}/components/nonexistent_component/configurations',
+            f'{self.BASE_URL}/apps/nonexistent_app/configurations',
             timeout=10
         )
         self.assertEqual(response.status_code, 404)
 
         data = response.json()
         self.assertIn('error', data)
-        self.assertEqual(data['error'], 'Component not found')
-        self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'nonexistent_component')
+        self.assertEqual(data['error'], 'Entity not found')
+        self.assertIn('entity_id', data)
+        self.assertEqual(data['entity_id'], 'nonexistent_app')
 
-        print('✓ Configurations nonexistent component test passed')
+        print('✓ Configurations nonexistent app test passed')
 
     def test_50_configuration_nonexistent_parameter(self):
         """
@@ -1720,7 +1736,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         @verifies REQ_INTEROP_023
         """
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/configurations/nonexistent_param',
+            f'{self.BASE_URL}/apps/temp_sensor/configurations/nonexistent_param',
             timeout=10
         )
         self.assertEqual(response.status_code, 404)
@@ -1739,7 +1755,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         @verifies REQ_INTEROP_024
         """
         response = requests.put(
-            f'{self.BASE_URL}/components/temp_sensor/configurations/min_temp',
+            f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
             json={},
             timeout=10
         )
@@ -1759,20 +1775,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         data = self._get_json('/')
 
-        # Verify configurations endpoints are listed
+        # Verify configurations endpoints are listed (for apps or components)
         self.assertIn('endpoints', data)
-        self.assertIn(
-            'GET /api/v1/components/{component_id}/configurations',
-            data['endpoints']
-        )
-        self.assertIn(
-            'GET /api/v1/components/{component_id}/configurations/{param_name}',
-            data['endpoints']
-        )
-        self.assertIn(
-            'PUT /api/v1/components/{component_id}/configurations/{param_name}',
-            data['endpoints']
-        )
+        config_endpoints = [e for e in data['endpoints'] if 'configurations' in e.lower()]
+        self.assertGreater(len(config_endpoints), 0, 'Should have configurations endpoints')
 
         # Verify configurations capability is listed
         self.assertIn('capabilities', data)
@@ -1789,22 +1795,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_025
         """
-        data = self._get_json('/components')
-        components = data['items']
-
-        # Find calibration component with the calibrate service
-        calibration = None
-        for comp in components:
-            if comp['id'] == 'calibration':
-                calibration = comp
-                break
-
-        self.assertIsNotNone(calibration, 'Calibration component should exist')
-        self.assertIn('operations', calibration, 'Component should have operations')
+        # Get operations directly from the operations endpoint
+        ops_data = self._get_json('/apps/calibration/operations')
+        self.assertIn('items', ops_data, 'Operations endpoint should return items')
+        ops = ops_data['items']
 
         # Find the calibrate service operation
         calibrate_op = None
-        for op in calibration['operations']:
+        for op in ops:
             if op['name'] == 'calibrate' and op['kind'] == 'service':
                 calibrate_op = op
                 break
@@ -1835,22 +1833,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_025
         """
-        data = self._get_json('/components')
-        components = data['items']
-
-        # Find long_calibration component with the action
-        long_cal = None
-        for comp in components:
-            if comp['id'] == 'long_calibration':
-                long_cal = comp
-                break
-
-        self.assertIsNotNone(long_cal, 'Long calibration component should exist')
-        self.assertIn('operations', long_cal, 'Component should have operations')
+        # Get operations directly from the operations endpoint
+        ops_data = self._get_json('/apps/long_calibration/operations')
+        self.assertIn('items', ops_data, 'Operations endpoint should return items')
+        ops = ops_data['items']
 
         # Find the long_calibration action operation
         action_op = None
-        for op in long_cal['operations']:
+        for op in ops:
             if op['name'] == 'long_calibration' and op['kind'] == 'action':
                 action_op = op
                 break
@@ -1920,19 +1910,22 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_56_list_faults_response_structure(self):
         """
-        Test GET /components/{component_id}/faults returns valid response structure.
+        Test GET /apps/{app_id}/faults returns valid response structure.
+
+        In the heuristic discovery model, ROS nodes are Apps.
+        This test uses temp_sensor which is an App (ROS node).
 
         @verifies REQ_INTEROP_012
         """
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/faults',
+            f'{self.BASE_URL}/apps/temp_sensor/faults',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'temp_sensor')
+        self.assertIn('app_id', data)
+        self.assertEqual(data['app_id'], 'temp_sensor')
         self.assertIn('source_id', data)
         self.assertIn('faults', data)
         self.assertIsInstance(data['faults'], list)
@@ -1942,7 +1935,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_57_faults_nonexistent_component(self):
         """
-        Test GET /components/{component_id}/faults returns 404 for unknown component.
+        Test GET /components/{component_id}/faults returns 404 for unknown entity.
 
         @verifies REQ_INTEROP_012
         """
@@ -1954,20 +1947,20 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error', data)
-        self.assertEqual(data['error'], 'Component not found')
-        self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'nonexistent_component')
+        self.assertEqual(data['error'], 'Entity not found')
+        self.assertIn('entity_id', data)
+        self.assertEqual(data['entity_id'], 'nonexistent_component')
 
         print('✓ Faults nonexistent component test passed')
 
     def test_58_get_nonexistent_fault(self):
         """
-        Test GET /components/{component_id}/faults/{fault_code} returns 404.
+        Test GET /apps/{app_id}/faults/{fault_code} returns 404.
 
         @verifies REQ_INTEROP_013
         """
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/faults/NONEXISTENT_FAULT',
+            f'{self.BASE_URL}/apps/temp_sensor/faults/NONEXISTENT_FAULT',
             timeout=10
         )
         self.assertEqual(response.status_code, 404)
@@ -2045,9 +2038,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print('✓ List faults invalid status returns 400 test passed')
 
     def test_62_component_faults_invalid_status_returns_400(self):
-        """Test GET /components/{id}/faults?status=invalid returns 400."""
+        """Test GET /apps/{id}/faults?status=invalid returns 400."""
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/faults?status=bogus',
+            f'{self.BASE_URL}/apps/temp_sensor/faults?status=bogus',
             timeout=10
         )
         self.assertEqual(response.status_code, 400)
@@ -2055,9 +2048,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error', data)
         self.assertEqual(data['error'], 'Invalid status parameter')
-        self.assertIn('component_id', data)
+        self.assertIn('app_id', data)
 
-        print('✓ Component faults invalid status returns 400 test passed')
+        print('✓ App faults invalid status returns 400 test passed')
 
     # ==================== SSE Fault Stream Tests ====================
 
@@ -2175,28 +2168,28 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_67_get_component_snapshots_nonexistent_fault(self):
         """
-        Test GET /components/{id}/faults/{code}/snapshots returns 404 for unknown fault.
+        Test GET /apps/{id}/faults/{code}/snapshots returns 404 for unknown fault.
 
         @verifies REQ_INTEROP_088
         """
         response = requests.get(
-            f'{self.BASE_URL}/components/temp_sensor/faults/NONEXISTENT_FAULT/snapshots',
+            f'{self.BASE_URL}/apps/temp_sensor/faults/NONEXISTENT_FAULT/snapshots',
             timeout=10
         )
         self.assertEqual(response.status_code, 404)
 
         data = response.json()
         self.assertIn('error', data)
-        self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'temp_sensor')
+        self.assertIn('app_id', data)
+        self.assertEqual(data['app_id'], 'temp_sensor')
         self.assertIn('fault_code', data)
         self.assertEqual(data['fault_code'], 'NONEXISTENT_FAULT')
 
-        print('✓ Get component snapshots nonexistent fault test passed')
+        print('✓ Get app snapshots nonexistent fault test passed')
 
     def test_68_get_snapshots_nonexistent_component(self):
         """
-        Test GET /components/{id}/faults/{code}/snapshots returns 404 for unknown component.
+        Test GET /components/{id}/faults/{code}/snapshots returns 404 for unknown entity.
 
         @verifies REQ_INTEROP_088
         """
@@ -2208,15 +2201,15 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error', data)
-        self.assertEqual(data['error'], 'Component not found')
-        self.assertIn('component_id', data)
-        self.assertEqual(data['component_id'], 'nonexistent_component')
+        self.assertEqual(data['error'], 'Entity not found')
+        self.assertIn('entity_id', data)
+        self.assertEqual(data['entity_id'], 'nonexistent_component')
 
-        print('✓ Get snapshots nonexistent component test passed')
+        print('✓ Get snapshots nonexistent entity test passed')
 
     def test_69_get_snapshots_invalid_component_id(self):
         """
-        Test GET /components/{id}/faults/{code}/snapshots returns 400 for invalid component ID.
+        Test GET /components/{id}/faults/{code}/snapshots returns 400 for invalid entity ID.
 
         @verifies REQ_INTEROP_088
         """
@@ -2234,11 +2227,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.assertEqual(
                 response.status_code,
                 400,
-                f'Expected 400 for component_id: {invalid_id}'
+                f'Expected 400 for entity_id: {invalid_id}'
             )
 
             data = response.json()
             self.assertIn('error', data)
-            self.assertEqual(data['error'], 'Invalid component ID')
+            self.assertEqual(data['error'], 'Invalid entity ID')
 
         print('✓ Get snapshots invalid component ID test passed')

@@ -244,4 +244,6 @@ qtcreator-*
 COLCON_IGNORE
 AMENT_IGNORE
 
-# End of https://www.toptal.com/developers/gitignore/api/ros2,c++,python
+# End of https://www.toptal.com/developers/gitignore/api/ros2,c++,pythonPLAN.md
+
+PLAN.md

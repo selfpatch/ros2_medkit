@@ -82,12 +82,16 @@ TEST_F(DiscoveryManagerTest, DiscoverTopicComponents_SetsSourceField) {
   }
 }
 
-TEST_F(DiscoveryManagerTest, DiscoverComponents_NodeBasedHaveSourceNode) {
+TEST_F(DiscoveryManagerTest, DiscoverComponents_NodeBasedHaveSourceSynthetic) {
+  // With default config (create_synthetic_components=true), components are synthetic
   auto components = discovery_manager_->discover_components();
 
-  // Node-based components should have source="node" (default)
+  // Synthetic components (grouped by namespace) have source="synthetic"
+  // If no runtime nodes, we may have the test node as well
   for (const auto & comp : components) {
-    EXPECT_EQ(comp.source, "node") << "Node-based component should have source='node'";
+    // Components can be "synthetic" (namespace-grouped) or "node" (legacy)
+    EXPECT_TRUE(comp.source == "synthetic" || comp.source == "node")
+        << "Component should have source='synthetic' or 'node', got: " << comp.source;
   }
 }
 

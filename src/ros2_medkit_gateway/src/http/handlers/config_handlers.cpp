@@ -23,47 +23,40 @@ namespace ros2_medkit_gateway {
 namespace handlers {
 
 void ConfigHandlers::handle_list_configurations(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
   try {
     if (req.matches.size() < 2) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
 
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
-    const auto cache = ctx_.node()->get_entity_cache();
-
-    // Find component to get its namespace and node name
-    std::string node_name;
-    bool component_found = false;
-
-    for (const auto & component : cache.components) {
-      if (component.id == component_id) {
-        node_name = component.fqn;  // Use fqn to avoid double slash for root namespace
-        component_found = true;
-        break;
-      }
+    // Use unified entity lookup
+    auto entity_info = ctx_.get_entity_info(entity_id);
+    if (entity_info.type == EntityType::UNKNOWN) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
+      return;
     }
 
-    if (!component_found) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
-                                 {{"component_id", component_id}});
-      return;
+    // Get node name for parameter access
+    std::string node_name = entity_info.fqn;
+    if (node_name.empty()) {
+      node_name = "/" + entity_id;
     }
 
     auto config_mgr = ctx_.node()->get_configuration_manager();
     auto result = config_mgr->list_parameters(node_name);
 
     if (result.success) {
-      json response = {{"component_id", component_id}, {"node_name", node_name}, {"parameters", result.data}};
+      json response = {{entity_info.id_field, entity_id}, {"node_name", node_name}, {"parameters", result.data}};
       HandlerContext::send_json(res, response);
     } else {
       HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, "Failed to list parameters",
@@ -71,14 +64,14 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to list configurations",
-                               {{"details", e.what()}, {"component_id", component_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_configurations for component '%s': %s",
-                 component_id.c_str(), e.what());
+                               {{"details", e.what()}, {"entity_id", entity_id}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_configurations for entity '%s': %s", entity_id.c_str(),
+                 e.what());
   }
 }
 
 void ConfigHandlers::handle_get_configuration(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
   std::string param_name;
   try {
     if (req.matches.size() < 3) {
@@ -86,13 +79,13 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
     param_name = req.matches[2];
 
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
@@ -106,19 +99,33 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
     const auto cache = ctx_.node()->get_entity_cache();
 
     std::string node_name;
-    bool component_found = false;
+    bool entity_found = false;
+    std::string id_field = "component_id";
 
+    // Try components first
     for (const auto & component : cache.components) {
-      if (component.id == component_id) {
-        node_name = component.fqn;  // Use fqn to avoid double slash for root namespace
-        component_found = true;
+      if (component.id == entity_id) {
+        node_name = component.fqn;
+        entity_found = true;
         break;
       }
     }
 
-    if (!component_found) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
-                                 {{"component_id", component_id}});
+    // If not found in components, try apps
+    if (!entity_found) {
+      for (const auto & app : cache.apps) {
+        if (app.id == entity_id) {
+          node_name = app.bound_fqn.value_or("/" + app.id);
+          entity_found = true;
+          id_field = "app_id";
+          break;
+        }
+      }
+    }
+
+    if (!entity_found) {
+      std::string error_msg = (id_field == "app_id") ? "App not found" : "Component not found";
+      HandlerContext::send_error(res, StatusCode::NotFound_404, error_msg, {{id_field, entity_id}});
       return;
     }
 
@@ -126,7 +133,7 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
     auto result = config_mgr->get_parameter(node_name, param_name);
 
     if (result.success) {
-      json response = {{"component_id", component_id}, {"parameter", result.data}};
+      json response = {{id_field, entity_id}, {"parameter", result.data}};
       HandlerContext::send_json(res, response);
     } else {
       // Check if it's a "not found" error
@@ -134,23 +141,23 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
           result.error_message.find("Parameter not found") != std::string::npos) {
         HandlerContext::send_error(
             res, StatusCode::NotFound_404, "Failed to get parameter",
-            {{"details", result.error_message}, {"component_id", component_id}, {"param_name", param_name}});
+            {{"details", result.error_message}, {id_field, entity_id}, {"param_name", param_name}});
       } else {
         HandlerContext::send_error(
             res, StatusCode::ServiceUnavailable_503, "Failed to get parameter",
-            {{"details", result.error_message}, {"component_id", component_id}, {"param_name", param_name}});
+            {{"details", result.error_message}, {id_field, entity_id}, {"param_name", param_name}});
       }
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get configuration",
-                               {{"details", e.what()}, {"component_id", component_id}, {"param_name", param_name}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_configuration for component '%s', param '%s': %s",
-                 component_id.c_str(), param_name.c_str(), e.what());
+                               {{"details", e.what()}, {"entity_id", entity_id}, {"param_name", param_name}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_configuration for entity '%s', param '%s': %s",
+                 entity_id.c_str(), param_name.c_str(), e.what());
   }
 }
 
 void ConfigHandlers::handle_set_configuration(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
   std::string param_name;
   try {
     if (req.matches.size() < 3) {
@@ -158,13 +165,13 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
     param_name = req.matches[2];
 
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
@@ -196,19 +203,33 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     const auto cache = ctx_.node()->get_entity_cache();
 
     std::string node_name;
-    bool component_found = false;
+    bool entity_found = false;
+    std::string id_field = "component_id";
 
+    // Try components first
     for (const auto & component : cache.components) {
-      if (component.id == component_id) {
-        node_name = component.fqn;  // Use fqn to avoid double slash for root namespace
-        component_found = true;
+      if (component.id == entity_id) {
+        node_name = component.fqn;
+        entity_found = true;
         break;
       }
     }
 
-    if (!component_found) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
-                                 {{"component_id", component_id}});
+    // If not found in components, try apps
+    if (!entity_found) {
+      for (const auto & app : cache.apps) {
+        if (app.id == entity_id) {
+          node_name = app.bound_fqn.value_or("/" + app.id);
+          entity_found = true;
+          id_field = "app_id";
+          break;
+        }
+      }
+    }
+
+    if (!entity_found) {
+      std::string error_msg = (id_field == "app_id") ? "App not found" : "Component not found";
+      HandlerContext::send_error(res, StatusCode::NotFound_404, error_msg, {{id_field, entity_id}});
       return;
     }
 
@@ -216,7 +237,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     auto result = config_mgr->set_parameter(node_name, param_name, value);
 
     if (result.success) {
-      json response = {{"status", "success"}, {"component_id", component_id}, {"parameter", result.data}};
+      json response = {{"status", "success"}, {id_field, entity_id}, {"parameter", result.data}};
       HandlerContext::send_json(res, response);
     } else {
       // Check if it's a read-only, not found, or service unavailable error
@@ -236,18 +257,18 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
       }
       HandlerContext::send_error(
           res, status_code, "Failed to set parameter",
-          {{"details", result.error_message}, {"component_id", component_id}, {"param_name", param_name}});
+          {{"details", result.error_message}, {id_field, entity_id}, {"param_name", param_name}});
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to set configuration",
-                               {{"details", e.what()}, {"component_id", component_id}, {"param_name", param_name}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_set_configuration for component '%s', param '%s': %s",
-                 component_id.c_str(), param_name.c_str(), e.what());
+                               {{"details", e.what()}, {"entity_id", entity_id}, {"param_name", param_name}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_set_configuration for entity '%s', param '%s': %s",
+                 entity_id.c_str(), param_name.c_str(), e.what());
   }
 }
 
 void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
   std::string param_name;
 
   try {
@@ -256,33 +277,47 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
     param_name = req.matches[2];
 
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
     const auto cache = ctx_.node()->get_entity_cache();
 
-    // Find component to get its namespace and node name
+    // Find entity to get its namespace and node name
     std::string node_name;
-    bool component_found = false;
+    bool entity_found = false;
+    std::string id_field = "component_id";
 
+    // Try components first
     for (const auto & component : cache.components) {
-      if (component.id == component_id) {
+      if (component.id == entity_id) {
         node_name = component.fqn;
-        component_found = true;
+        entity_found = true;
         break;
       }
     }
 
-    if (!component_found) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
-                                 {{"component_id", component_id}});
+    // If not found in components, try apps
+    if (!entity_found) {
+      for (const auto & app : cache.apps) {
+        if (app.id == entity_id) {
+          node_name = app.bound_fqn.value_or("/" + app.id);
+          entity_found = true;
+          id_field = "app_id";
+          break;
+        }
+      }
+    }
+
+    if (!entity_found) {
+      std::string error_msg = (id_field == "app_id") ? "App not found" : "Component not found";
+      HandlerContext::send_error(res, StatusCode::NotFound_404, error_msg, {{id_field, entity_id}});
       return;
     }
 
@@ -298,13 +333,13 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to reset configuration",
-                               {{"details", e.what()}, {"component_id", component_id}, {"param_name", param_name}});
+                               {{"details", e.what()}, {"entity_id", entity_id}, {"param_name", param_name}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_delete_configuration: %s", e.what());
   }
 }
 
 void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & req, httplib::Response & res) {
-  std::string component_id;
+  std::string entity_id;
 
   try {
     if (req.matches.size() < 2) {
@@ -312,32 +347,46 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
       return;
     }
 
-    component_id = req.matches[1];
+    entity_id = req.matches[1];
 
-    auto component_validation = ctx_.validate_entity_id(component_id);
-    if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
-                                 {{"details", component_validation.error()}, {"component_id", component_id}});
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
     const auto cache = ctx_.node()->get_entity_cache();
 
-    // Find component to get its namespace and node name
+    // Find entity to get its namespace and node name
     std::string node_name;
-    bool component_found = false;
+    bool entity_found = false;
+    std::string id_field = "component_id";
 
+    // Try components first
     for (const auto & component : cache.components) {
-      if (component.id == component_id) {
+      if (component.id == entity_id) {
         node_name = component.fqn;
-        component_found = true;
+        entity_found = true;
         break;
       }
     }
 
-    if (!component_found) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
-                                 {{"component_id", component_id}});
+    // If not found in components, try apps
+    if (!entity_found) {
+      for (const auto & app : cache.apps) {
+        if (app.id == entity_id) {
+          node_name = app.bound_fqn.value_or("/" + app.id);
+          entity_found = true;
+          id_field = "app_id";
+          break;
+        }
+      }
+    }
+
+    if (!entity_found) {
+      std::string error_msg = (id_field == "app_id") ? "App not found" : "Component not found";
+      HandlerContext::send_error(res, StatusCode::NotFound_404, error_msg, {{id_field, entity_id}});
       return;
     }
 
@@ -353,7 +402,7 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to reset configurations",
-                               {{"details", e.what()}, {"component_id", component_id}});
+                               {{"details", e.what()}, {"entity_id", entity_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_delete_all_configurations: %s", e.what());
   }
 }

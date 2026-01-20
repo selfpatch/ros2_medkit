@@ -405,11 +405,18 @@ class TestDiscoveryManifestMode(unittest.TestCase):
         self.assertIn(response.status_code, [200, 404])
 
     def test_app_configurations_endpoint(self):
-        """Test GET /apps/{id}/configurations returns parameters."""
+        """
+        Test GET /apps/{id}/configurations returns parameters.
+
+        May return:
+        - 200 if node is running and has parameters
+        - 404 if app not found
+        - 503 if node is not running (manifest-only mode)
+        """
         response = requests.get(
             f'{self.BASE_URL}/apps/lidar-sensor/configurations', timeout=5
         )
-        self.assertIn(response.status_code, [200, 404])
+        self.assertIn(response.status_code, [200, 404, 503])
 
     def test_app_data_item_endpoint(self):
         """
