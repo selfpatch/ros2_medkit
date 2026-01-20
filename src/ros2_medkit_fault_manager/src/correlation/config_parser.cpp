@@ -275,7 +275,9 @@ ValidationResult validate_config(const CorrelationConfig & config) {
         result.add_warning("Auto-cluster rule '" + rule.id + "' has no match patterns defined");
       }
 
-      if (rule.min_count < 2) {
+      if (rule.min_count == 0) {
+        result.add_error("Rule '" + rule.id + "' has min_count=0, must be at least 1");
+      } else if (rule.min_count < 2) {
         result.add_warning("Rule '" + rule.id + "' has min_count < 2, which may cause false clusters");
       }
     }

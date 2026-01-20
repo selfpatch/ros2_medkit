@@ -139,6 +139,14 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
   if (cluster_it != fault_to_cluster_.end()) {
     const std::string cluster_id = cluster_it->second;
 
+    // TODO(#105): Also clean up pending_clusters_ when fault is cleared.
+    // Currently, if a fault is cleared before cluster reaches min_count,
+    // the pending cluster retains a phantom reference. Low impact since
+    // pending clusters expire after window_ms, but could cause brief
+    // inconsistency if cluster becomes active with cleared fault in list.
+    // Fix requires: iteration (pending_clusters_ keyed by rule_id),
+    // representative reassignment if cleared fault was representative.
+
     // Remove fault from cluster
     auto active_it = active_clusters_.find(cluster_id);
     if (active_it != active_clusters_.end()) {

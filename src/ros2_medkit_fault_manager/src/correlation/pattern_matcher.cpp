@@ -87,8 +87,6 @@ PatternMatcher::CompiledPattern PatternMatcher::compile_pattern(const std::strin
 
   if (!result.has_wildcard) {
     // No wildcard - use simple string comparison (regex not needed)
-    // But we still create a regex for consistency
-    result.regex = std::regex(pattern);
     return result;
   }
 

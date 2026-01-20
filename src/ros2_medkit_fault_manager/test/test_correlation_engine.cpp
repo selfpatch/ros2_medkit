@@ -356,7 +356,7 @@ TEST_F(CorrelationEngineTest, CleanupExpiredRemovesPendingClusters) {
 
   // New fault should start fresh pending cluster, not join expired one
   auto result = engine.process_fault("DRIVE_COMM_ERROR", "ERROR");
-  EXPECT_FALSE(result.should_mute);  // First in new cluster
+  EXPECT_FALSE(result.should_mute);           // First in new cluster
   EXPECT_EQ(0u, engine.get_cluster_count());  // Still not enough
 }
 
@@ -459,7 +459,7 @@ correlation:
 
   // Fault #3 - triggers cluster activation (min_count=3)
   auto result3 = engine.process_fault("SENSOR_003", "ERROR", t0 + std::chrono::milliseconds(20));
-  EXPECT_TRUE(result3.should_mute);  // #3 is muted (not representative)
+  EXPECT_TRUE(result3.should_mute);                      // #3 is muted (not representative)
   EXPECT_EQ(1u, result3.retroactive_mute_codes.size());  // #2 should be retroactively muted
   EXPECT_EQ("SENSOR_002", result3.retroactive_mute_codes[0]);
 
