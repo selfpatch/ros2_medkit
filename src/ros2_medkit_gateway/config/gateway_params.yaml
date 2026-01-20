@@ -143,6 +143,20 @@ ros2_medkit_gateway:
         # Examples: "{area}", "{area}_group", "component_{area}"
         synthetic_component_name_pattern: "{area}"
 
+        # Policy for namespaces with topics but no ROS 2 nodes
+        # Common with Isaac Sim, external bridges, or dead/orphaned topics
+        # Options:
+        #   - "ignore": Don't create any entity for topic-only namespaces
+        #   - "create_component": Create component with source="topic" (default)
+        #   - "create_area_only": Only create the area, no component
+        topic_only_policy: "create_component"
+
+        # Minimum number of topics to create a topic-based component
+        # Only applies when topic_only_policy is "create_component"
+        # Namespaces with fewer topics are skipped
+        # Default: 1 (create component for any namespace with topics)
+        min_topics_for_component: 1
+
     # Authentication Configuration (REQ_INTEROP_086, REQ_INTEROP_087)
     # JWT-based authentication with Role-Based Access Control (RBAC)
     auth:

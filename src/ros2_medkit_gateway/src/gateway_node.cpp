@@ -67,6 +67,8 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("discovery.runtime.create_synthetic_components", true);
   declare_parameter("discovery.runtime.grouping_strategy", "namespace");
   declare_parameter("discovery.runtime.synthetic_component_name_pattern", "{area}");
+  declare_parameter("discovery.runtime.topic_only_policy", "create_component");
+  declare_parameter("discovery.runtime.min_topics_for_component", 1);
 
   // Get parameter values
   server_host_ = get_parameter("server.host").as_string();
@@ -229,6 +231,10 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
       parse_grouping_strategy(get_parameter("discovery.runtime.grouping_strategy").as_string());
   discovery_config.runtime.synthetic_component_name_pattern =
       get_parameter("discovery.runtime.synthetic_component_name_pattern").as_string();
+  discovery_config.runtime.topic_only_policy =
+      parse_topic_only_policy(get_parameter("discovery.runtime.topic_only_policy").as_string());
+  discovery_config.runtime.min_topics_for_component =
+      static_cast<int>(get_parameter("discovery.runtime.min_topics_for_component").as_int());
 
   if (!discovery_mgr_->initialize(discovery_config)) {
     RCLCPP_ERROR(get_logger(), "Failed to initialize discovery manager");

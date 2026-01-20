@@ -15,6 +15,7 @@
 #ifndef ROS2_MEDKIT_GATEWAY__DISCOVERY__DISCOVERY_MANAGER_HPP_
 #define ROS2_MEDKIT_GATEWAY__DISCOVERY__DISCOVERY_MANAGER_HPP_
 
+#include "ros2_medkit_gateway/discovery/discovery_enums.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
 #include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
@@ -36,52 +37,6 @@ namespace ros2_medkit_gateway {
 // Forward declarations
 class NativeTopicSampler;
 class TypeIntrospection;
-
-/**
- * @brief Discovery mode determining which strategy is used
- */
-enum class DiscoveryMode {
-  RUNTIME_ONLY,   ///< Traditional ROS graph introspection only
-  MANIFEST_ONLY,  ///< Only expose manifest-declared entities
-  HYBRID          ///< Manifest as source of truth + runtime linking
-};
-
-/**
- * @brief Parse DiscoveryMode from string
- * @param str Mode string: "runtime_only", "manifest_only", or "hybrid"
- * @return Parsed mode (defaults to RUNTIME_ONLY)
- */
-DiscoveryMode parse_discovery_mode(const std::string & str);
-
-/**
- * @brief Convert DiscoveryMode to string
- * @param mode Discovery mode
- * @return String representation
- */
-std::string discovery_mode_to_string(DiscoveryMode mode);
-
-/**
- * @brief Strategy for grouping nodes into synthetic components
- */
-enum class ComponentGroupingStrategy {
-  NONE,       ///< Each node = 1 component (current behavior)
-  NAMESPACE,  ///< Group by first namespace segment (area)
-  // PROCESS  // Group by OS process (future - requires R&D)
-};
-
-/**
- * @brief Parse ComponentGroupingStrategy from string
- * @param str Strategy string: "none" or "namespace"
- * @return Parsed strategy (defaults to NONE)
- */
-ComponentGroupingStrategy parse_grouping_strategy(const std::string & str);
-
-/**
- * @brief Convert ComponentGroupingStrategy to string
- * @param strategy Grouping strategy
- * @return String representation
- */
-std::string grouping_strategy_to_string(ComponentGroupingStrategy strategy);
 
 /**
  * @brief Configuration for discovery
@@ -132,6 +87,25 @@ struct DiscoveryConfig {
      * Default: "{area}" - uses area name as component ID
      */
     std::string synthetic_component_name_pattern{"{area}"};
+
+    /**
+     * @brief Policy for handling topic-only namespaces
+     *
+     * When topics exist in a namespace without ROS 2 nodes:
+     * - IGNORE: Don't create any entity
+     * - CREATE_COMPONENT: Create component with source="topic" (default)
+     * - CREATE_AREA_ONLY: Only create the area, no component
+     */
+    TopicOnlyPolicy topic_only_policy{TopicOnlyPolicy::CREATE_COMPONENT};
+
+    /**
+     * @brief Minimum number of topics to create a component
+     *
+     * Only applies when topic_only_policy is CREATE_COMPONENT.
+     * Namespaces with fewer topics than this threshold are skipped.
+     * Default: 1 (create component for any namespace with topics)
+     */
+    int min_topics_for_component{1};
   } runtime;
 };
 

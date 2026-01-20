@@ -15,6 +15,7 @@
 #ifndef ROS2_MEDKIT_GATEWAY__DISCOVERY__RUNTIME_DISCOVERY_HPP_
 #define ROS2_MEDKIT_GATEWAY__DISCOVERY__RUNTIME_DISCOVERY_HPP_
 
+#include "ros2_medkit_gateway/discovery/discovery_enums.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/discovery/models/area.hpp"
@@ -35,7 +36,6 @@ namespace ros2_medkit_gateway {
 
 // Forward declaration
 struct DiscoveryConfig;
-enum class ComponentGroupingStrategy;
 
 namespace discovery {
 
@@ -67,6 +67,8 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
     bool create_synthetic_components{true};
     ComponentGroupingStrategy grouping{};
     std::string synthetic_component_name_pattern{"{area}"};
+    TopicOnlyPolicy topic_only_policy{TopicOnlyPolicy::CREATE_COMPONENT};
+    int min_topics_for_component{1};
   };
 
   /**
