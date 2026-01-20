@@ -6,6 +6,7 @@ Step-by-step guides for common use cases with ros2_medkit.
 .. toctree::
    :maxdepth: 1
 
+   heuristic-apps
    manifest-discovery
    migration-to-manifest
    authentication
@@ -15,6 +16,13 @@ Step-by-step guides for common use cases with ros2_medkit.
    devcontainer
    integration
    custom_areas
+
+Discovery Tutorials
+-------------------
+
+:doc:`heuristic-apps`
+   Use heuristic discovery to automatically map ROS 2 nodes to SOVD Apps
+   without any configuration.
 
 Manifest Discovery
 ------------------

@@ -129,12 +129,7 @@ API_BASE_PATH = '/api/v1'
 
 
 class TestHeuristicAppsDiscovery(unittest.TestCase):
-    """
-    Integration tests for heuristic runtime discovery of Apps.
-
-    @verifies REQ_DISCO_001
-    @verifies REQ_DISCO_002
-    """
+    """Integration tests for heuristic runtime discovery of Apps."""
 
     BASE_URL = f'http://localhost:8080{API_BASE_PATH}'
     MIN_EXPECTED_APPS = 3
@@ -176,11 +171,7 @@ class TestHeuristicAppsDiscovery(unittest.TestCase):
         return response.json()
 
     def test_apps_have_heuristic_source(self):
-        """
-        Test that runtime-discovered apps have source='heuristic'.
-
-        @verifies REQ_DISCO_001
-        """
+        """Test that runtime-discovered apps have source='heuristic'."""
         data = self._get_json('/apps')
         self.assertIn('items', data)
         apps = data['items']
@@ -207,11 +198,7 @@ class TestHeuristicAppsDiscovery(unittest.TestCase):
                 pass
 
     def test_synthetic_components_created(self):
-        """
-        Test that synthetic components are created by namespace grouping.
-
-        @verifies REQ_DISCO_002
-        """
+        """Test that synthetic components are created by namespace grouping."""
         data = self._get_json('/components')
         self.assertIn('items', data)
         components = data['items']
@@ -229,11 +216,7 @@ class TestHeuristicAppsDiscovery(unittest.TestCase):
             )
 
     def test_apps_grouped_under_components(self):
-        """
-        Test that apps are properly grouped under synthetic components.
-
-        @verifies REQ_DISCO_002
-        """
+        """Test that apps are properly grouped under synthetic components."""
         data = self._get_json('/apps')
         apps = data.get('items', [])
 
@@ -248,11 +231,7 @@ class TestHeuristicAppsDiscovery(unittest.TestCase):
                 )
 
     def test_areas_created_from_namespaces(self):
-        """
-        Test that areas are created from top-level namespaces.
-
-        @verifies REQ_DISCO_001
-        """
+        """Test that areas are created from top-level namespaces."""
         data = self._get_json('/areas')
         self.assertIn('items', data)
         areas = data['items']

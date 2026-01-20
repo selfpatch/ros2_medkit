@@ -39,10 +39,36 @@ The following diagram shows the relationships between the main components of the
        class DiscoveryManager {
            + discover_areas(): vector<Area>
            + discover_components(): vector<Component>
+           + discover_apps(): vector<App>
            + discover_services(): vector<ServiceInfo>
            + discover_actions(): vector<ActionInfo>
            + find_service_for_component(): optional<ServiceInfo>
            + find_action_for_component(): optional<ActionInfo>
+       }
+
+       interface DiscoveryStrategy <<interface>> {
+           + discover_areas(): vector<Area>
+           + discover_components(): vector<Component>
+           + discover_apps(): vector<App>
+           + discover_functions(): vector<Function>
+           + get_name(): string
+       }
+
+       class RuntimeDiscoveryStrategy {
+           + discover_node_components(): vector<Component>
+           + discover_synthetic_components(): vector<Component>
+           + discover_topic_components(): vector<Component>
+           - config_: RuntimeConfig
+       }
+
+       class ManifestDiscoveryStrategy {
+           + load_manifest(): void
+           - manifest_: Manifest
+       }
+
+       class HybridDiscoveryStrategy {
+           - primary_: ManifestDiscoveryStrategy
+           - runtime_: RuntimeDiscoveryStrategy
        }
 
        class OperationManager {
@@ -105,8 +131,19 @@ The following diagram shows the relationships between the main components of the
            + fqn: string
            + type: string
            + area: string
+           + source: string
            + services: vector<ServiceInfo>
            + actions: vector<ActionInfo>
+           + to_json(): json
+       }
+
+       class App {
+           + id: string
+           + name: string
+           + namespace_path: string
+           + area: string
+           + component: string
+           + source: string
            + to_json(): json
        }
 
@@ -125,6 +162,7 @@ The following diagram shows the relationships between the main components of the
        class EntityCache {
            + areas: vector<Area>
            + components: vector<Component>
+           + apps: vector<App>
            + last_update: time_point
        }
    }
@@ -173,6 +211,7 @@ The following diagram shows the relationships between the main components of the
    ' Entity Cache aggregates entities
    EntityCache o-right-> Area : contains many
    EntityCache o-right-> Component : contains many
+   EntityCache o-right-> App : contains many
 
    ' Component contains operations
    Component o--> ServiceInfo : contains many
@@ -181,8 +220,17 @@ The following diagram shows the relationships between the main components of the
    ' Discovery produces entities
    DiscoveryManager ..> Area : creates
    DiscoveryManager ..> Component : creates
+   DiscoveryManager ..> App : creates
    DiscoveryManager ..> ServiceInfo : creates
    DiscoveryManager ..> ActionInfo : creates
+
+   ' Discovery strategy hierarchy
+   DiscoveryManager --> DiscoveryStrategy : uses
+   RuntimeDiscoveryStrategy .up.|> DiscoveryStrategy : implements
+   ManifestDiscoveryStrategy .up.|> DiscoveryStrategy : implements
+   HybridDiscoveryStrategy .up.|> DiscoveryStrategy : implements
+   HybridDiscoveryStrategy --> ManifestDiscoveryStrategy : delegates
+   HybridDiscoveryStrategy --> RuntimeDiscoveryStrategy : delegates
 
    ' REST Server uses HTTP library
    RESTServer *--> HTTPLibServer : owns
@@ -190,6 +238,7 @@ The following diagram shows the relationships between the main components of the
    ' Models use JSON for serialization
    Area ..> JSON : serializes to
    Component ..> JSON : serializes to
+   App ..> JSON : serializes to
 
    @enduml
 
@@ -205,10 +254,25 @@ Main Components
 
 2. **DiscoveryManager** - Discovers ROS 2 entities and maps them to the SOVD hierarchy
    - Discovers Areas from node namespaces
-   - Discovers Components from nodes, topics, and services
+   - Discovers Components (synthetic groups or node-based, configurable)
+   - Discovers Apps from ROS 2 nodes (when heuristic discovery enabled)
    - Discovers Services and Actions using native rclcpp APIs
    - Attaches operations (services/actions) to their parent components
+   - Uses pluggable strategy pattern: Runtime, Manifest, or Hybrid
    - Uses O(n+m) algorithm with hash maps for efficient service/action attachment
+
+   **Discovery Strategies:**
+
+   - **RuntimeDiscoveryStrategy** - Heuristic discovery via ROS 2 graph introspection
+     - Maps nodes to Apps with ``source: "heuristic"``
+     - Creates synthetic Components grouped by namespace
+     - Handles topic-only namespaces (Isaac Sim, bridges) via TopicOnlyPolicy
+   - **ManifestDiscoveryStrategy** - Static discovery from YAML manifest
+     - Provides stable, semantic entity IDs
+     - Supports offline detection of failed components
+   - **HybridDiscoveryStrategy** - Combines manifest + runtime
+     - Manifest defines structure, runtime links to live nodes
+     - Best for production systems requiring stability + live status
 
 3. **OperationManager** - Executes ROS 2 operations (services and actions) using native APIs
    - Calls ROS 2 services via ``rclcpp::GenericClient`` with native serialization
@@ -261,9 +325,9 @@ Main Components
    - Thread-safe and stateless design
 
 9. **Data Models** - Entity representations
-    - ``Area`` - Physical or logical domain
-    - ``Component`` - Hardware or software component with attached operations
+    - ``Area`` - Physical or logical domain (namespace)
+    - ``Component`` - Hardware/software component with attached operations; can be ``node``, ``synthetic``, or ``topic`` based
+    - ``App`` - Software application (ROS 2 node); linked to parent Component
     - ``ServiceInfo`` - Service metadata (path, name, type)
     - ``ActionInfo`` - Action metadata (path, name, type)
-    - ``EntityCache`` - Thread-safe cache of discovered entities
-
+    - ``EntityCache`` - Thread-safe cache of discovered entities (areas, components, apps)
