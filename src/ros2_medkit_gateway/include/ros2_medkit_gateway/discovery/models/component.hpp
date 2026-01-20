@@ -32,22 +32,22 @@ using json = nlohmann::json;
  * They expose operations (services/actions), data (topics), and configurations (parameters).
  */
 struct Component {
-  std::string id;                     ///< Unique identifier (node name)
-  std::string name;                   ///< Human-readable name
-  std::string namespace_path;         ///< ROS 2 namespace path
-  std::string fqn;                    ///< Fully qualified name (namespace + id)
-  std::string type = "Component";     ///< Entity type (always "Component")
-  std::string area;                   ///< Parent area ID
-  std::string source = "node";        ///< Discovery source: "node", "topic", or "manifest"
-  std::string translation_id;         ///< Internationalization key
-  std::string description;            ///< Human-readable description
-  std::string variant;                ///< Hardware variant identifier
-  std::vector<std::string> tags;      ///< Tags for filtering
-  std::string parent_component_id;    ///< Parent component ID for sub-components
+  std::string id;                       ///< Unique identifier (node name)
+  std::string name;                     ///< Human-readable name
+  std::string namespace_path;           ///< ROS 2 namespace path
+  std::string fqn;                      ///< Fully qualified name (namespace + id)
+  std::string type = "Component";       ///< Entity type (always "Component")
+  std::string area;                     ///< Parent area ID
+  std::string source = "node";          ///< Discovery source: "node", "topic", or "manifest"
+  std::string translation_id;           ///< Internationalization key
+  std::string description;              ///< Human-readable description
+  std::string variant;                  ///< Hardware variant identifier
+  std::vector<std::string> tags;        ///< Tags for filtering
+  std::string parent_component_id;      ///< Parent component ID for sub-components
   std::vector<std::string> depends_on;  ///< Component IDs this component depends on
-  std::vector<ServiceInfo> services;  ///< Services exposed by this component
-  std::vector<ActionInfo> actions;    ///< Actions exposed by this component
-  ComponentTopics topics;             ///< Topics this component publishes/subscribes
+  std::vector<ServiceInfo> services;    ///< Services exposed by this component
+  std::vector<ActionInfo> actions;      ///< Actions exposed by this component
+  ComponentTopics topics;               ///< Topics this component publishes/subscribes
 
   /**
    * @brief Convert to JSON representation

@@ -418,6 +418,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.assertIn(component['type'], ['Component', 'ComponentGroup'])
 
         # Verify expected synthetic component IDs are present
+        # With heuristic discovery, components are synthetic groups created
+        # by namespace aggregation. These IDs (powertrain, chassis, body)
+        # represent namespace-based component groups, not individual ROS 2
+        # nodes. Individual nodes are exposed as Apps instead.
         component_ids = [comp['id'] for comp in components]
         self.assertIn('powertrain', component_ids)
         self.assertIn('chassis', component_ids)
