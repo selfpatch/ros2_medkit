@@ -111,6 +111,9 @@ class FaultManagerNode : public rclcpp::Node {
   rclcpp::Service<ros2_medkit_msgs::srv::GetSnapshots>::SharedPtr get_snapshots_srv_;
   rclcpp::TimerBase::SharedPtr auto_confirm_timer_;
 
+  /// Timer for periodic cleanup of expired correlation data
+  rclcpp::TimerBase::SharedPtr correlation_cleanup_timer_;
+
   /// Publisher for fault events (SSE streaming via gateway)
   rclcpp::Publisher<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr event_publisher_;
 

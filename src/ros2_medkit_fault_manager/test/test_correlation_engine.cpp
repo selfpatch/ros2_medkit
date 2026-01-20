@@ -315,6 +315,51 @@ TEST_F(CorrelationEngineTest, AutoClusterWindowExpires) {
   EXPECT_EQ(0u, engine.get_cluster_count());
 }
 
+TEST_F(CorrelationEngineTest, CleanupExpiredRemovesPendingRootCauses) {
+  auto config = create_hierarchical_config();
+  CorrelationEngine engine(config);
+
+  // Use a fixed timestamp in the past (beyond window_ms=1000ms)
+  auto past = std::chrono::steady_clock::now() - std::chrono::milliseconds(2000);
+
+  // Report root cause with old timestamp
+  engine.process_fault("ESTOP_001", "CRITICAL", past);
+
+  // Symptom reported NOW should NOT be correlated (root cause expired)
+  auto result = engine.process_fault("MOTOR_COMM_FL", "ERROR");
+  EXPECT_FALSE(result.should_mute);  // Not muted - root cause window expired
+  EXPECT_EQ(0u, engine.get_muted_count());
+
+  // Call cleanup to explicitly remove expired entries
+  engine.cleanup_expired();
+
+  // Another symptom should also not be correlated
+  auto result2 = engine.process_fault("MOTOR_TIMEOUT_RR", "ERROR");
+  EXPECT_FALSE(result2.should_mute);
+  EXPECT_EQ(0u, engine.get_muted_count());
+}
+
+TEST_F(CorrelationEngineTest, CleanupExpiredRemovesPendingClusters) {
+  auto config = create_auto_cluster_config();
+  CorrelationEngine engine(config);
+
+  // Create pending cluster with old timestamp
+  auto past = std::chrono::steady_clock::now() - std::chrono::milliseconds(1000);
+  engine.process_fault("MOTOR_COMM_FL", "ERROR", past);
+  engine.process_fault("SENSOR_TIMEOUT", "ERROR", past + 10ms);
+
+  // Cluster should not be active (only 2 faults, need 3)
+  EXPECT_EQ(0u, engine.get_cluster_count());
+
+  // Cleanup should remove expired pending cluster
+  engine.cleanup_expired();
+
+  // New fault should start fresh pending cluster, not join expired one
+  auto result = engine.process_fault("DRIVE_COMM_ERROR", "ERROR");
+  EXPECT_FALSE(result.should_mute);  // First in new cluster
+  EXPECT_EQ(0u, engine.get_cluster_count());  // Still not enough
+}
+
 // ============================================================================
 // Mixed mode tests
 // ============================================================================

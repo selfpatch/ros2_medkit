@@ -107,6 +107,13 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // Initialize correlation engine (nullptr if disabled or not configured)
   correlation_engine_ = create_correlation_engine();
 
+  // Create correlation cleanup timer if correlation is enabled
+  if (correlation_engine_) {
+    correlation_cleanup_timer_ = create_wall_timer(std::chrono::seconds(5), [this]() {
+      correlation_engine_->cleanup_expired();
+    });
+  }
+
   // Create auto-confirmation timer if enabled
   if (auto_confirm_after_sec_ > 0.0) {
     auto_confirm_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() {
