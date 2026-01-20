@@ -52,7 +52,7 @@ Discovery
 
 .. req:: GET /components/{id}/depends-on
    :id: REQ_INTEROP_008
-   :status: open
+   :status: implemented
    :tags: Discovery
 
    The endpoint shall return the list of components that the addressed component depends on.

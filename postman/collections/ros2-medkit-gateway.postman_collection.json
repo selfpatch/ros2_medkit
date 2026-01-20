@@ -383,6 +383,46 @@
             "description": "List components within a specific area. Returns 404 if area doesn't exist. Change 'powertrain' to other areas like 'chassis', 'body', etc."
           },
           "response": []
+        },
+        {
+          "name": "GET Component Dependencies",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/engine-ecu/depends-on",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "engine-ecu",
+                "depends-on"
+              ]
+            },
+            "description": "Get the list of components that the addressed component depends on (REQ_INTEROP_008). Returns array of component references with id, href, name, type, and missing flag (if dependency is unresolved). The 'engine-ecu' component depends on 'temp-sensor-hw' and 'rpm-sensor-hw' in the demo manifest."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Component Dependencies (Not Found)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/nonexistent/depends-on",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "nonexistent",
+                "depends-on"
+              ]
+            },
+            "description": "Example of requesting dependencies for a non-existent component. Returns 404."
+          },
+          "response": []
         }
       ]
     },
@@ -1251,6 +1291,292 @@
               ]
             },
             "description": "Get topic snapshots for a specific component's fault. Same as the system-wide endpoint but scoped to a component context. Useful when working within a component-centric workflow."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Apps",
+      "description": "App entity endpoints for heuristic discovery mode. In heuristic mode, ROS 2 nodes are exposed as Apps with source='heuristic'. Apps have is_online=true when the corresponding node is running.",
+      "item": [
+        {
+          "name": "GET List Apps",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps"
+              ]
+            },
+            "description": "List all discovered apps. In heuristic mode, ROS 2 nodes are exposed as Apps with source='heuristic'. Apps have is_online=true when the corresponding node is running."
+          },
+          "response": []
+        },
+        {
+          "name": "GET App Details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/temp_sensor",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "temp_sensor"
+              ]
+            },
+            "description": "Get details of a specific app including capabilities, links, and online status."
+          },
+          "response": []
+        },
+        {
+          "name": "GET App Data (Topics)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/temp_sensor/data",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "temp_sensor",
+                "data"
+              ]
+            },
+            "description": "Get all topics published/subscribed by the app."
+          },
+          "response": []
+        },
+        {
+          "name": "GET App Operations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/calibration/operations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "calibration",
+                "operations"
+              ]
+            },
+            "description": "List all operations (services and actions) for the app."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Call App Operation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/apps/calibration/operations/calibrate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "calibration",
+                "operations",
+                "calibrate"
+              ]
+            },
+            "description": "Call a service operation on an app."
+          },
+          "response": []
+        },
+        {
+          "name": "GET App Configurations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/temp_sensor/configurations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "temp_sensor",
+                "configurations"
+              ]
+            },
+            "description": "List all parameters (configurations) for the app."
+          },
+          "response": []
+        },
+        {
+          "name": "GET App Configuration Value",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/temp_sensor/configurations/publish_rate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "temp_sensor",
+                "configurations",
+                "publish_rate"
+              ]
+            },
+            "description": "Get a specific parameter value for an app."
+          },
+          "response": []
+        },
+        {
+          "name": "PUT Set App Configuration",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": 5.0\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/apps/temp_sensor/configurations/publish_rate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "temp_sensor",
+                "configurations",
+                "publish_rate"
+              ]
+            },
+            "description": "Set a parameter value for an app."
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE Reset App Configuration",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/temp_sensor/configurations/publish_rate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "temp_sensor",
+                "configurations",
+                "publish_rate"
+              ]
+            },
+            "description": "Reset a configuration to its default value for an app."
+          },
+          "response": []
+        },
+        {
+          "name": "GET App Faults",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/lidar_sensor/faults",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "lidar_sensor",
+                "faults"
+              ]
+            },
+            "description": "List all faults reported by the app."
+          },
+          "response": []
+        },
+        {
+          "name": "GET App Fault",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/lidar_sensor/faults/LIDAR_RANGE_INVALID",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "lidar_sensor",
+                "faults",
+                "LIDAR_RANGE_INVALID"
+              ]
+            },
+            "description": "Get details of a specific fault for an app."
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE Clear App Fault",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/lidar_sensor/faults/LIDAR_RANGE_INVALID",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "lidar_sensor",
+                "faults",
+                "LIDAR_RANGE_INVALID"
+              ]
+            },
+            "description": "Clear a fault for an app."
+          },
+          "response": []
+        },
+        {
+          "name": "GET App (Not Found)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/nonexistent",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                "nonexistent"
+              ]
+            },
+            "description": "Example of requesting a non-existent app. Returns 404."
           },
           "response": []
         }

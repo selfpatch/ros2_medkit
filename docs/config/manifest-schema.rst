@@ -225,6 +225,7 @@ Schema
        tags: [string]          # Optional - tags for filtering
        translation_id: string  # Optional - i18n key
        parent_component_id: string  # Optional - parent component
+       depends_on: [string]    # Optional - component IDs this depends on
        subcomponents: []       # Optional - nested definitions
 
 Fields
@@ -286,6 +287,10 @@ Fields
      - string
      - No
      - Parent component ID
+   * - ``depends_on``
+     - [string]
+     - No
+     - List of component IDs this component depends on
    * - ``subcomponents``
      - [Component]
      - No
