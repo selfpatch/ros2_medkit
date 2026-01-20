@@ -18,43 +18,6 @@
 
 namespace ros2_medkit_gateway {
 
-DiscoveryMode parse_discovery_mode(const std::string & str) {
-  if (str == "manifest_only") {
-    return DiscoveryMode::MANIFEST_ONLY;
-  }
-  if (str == "hybrid") {
-    return DiscoveryMode::HYBRID;
-  }
-  return DiscoveryMode::RUNTIME_ONLY;
-}
-
-std::string discovery_mode_to_string(DiscoveryMode mode) {
-  switch (mode) {
-    case DiscoveryMode::MANIFEST_ONLY:
-      return "manifest_only";
-    case DiscoveryMode::HYBRID:
-      return "hybrid";
-    default:
-      return "runtime_only";
-  }
-}
-
-ComponentGroupingStrategy parse_grouping_strategy(const std::string & str) {
-  if (str == "namespace") {
-    return ComponentGroupingStrategy::NAMESPACE;
-  }
-  return ComponentGroupingStrategy::NONE;
-}
-
-std::string grouping_strategy_to_string(ComponentGroupingStrategy strategy) {
-  switch (strategy) {
-    case ComponentGroupingStrategy::NAMESPACE:
-      return "namespace";
-    default:
-      return "none";
-  }
-}
-
 DiscoveryManager::DiscoveryManager(rclcpp::Node * node)
   : node_(node), runtime_strategy_(std::make_unique<discovery::RuntimeDiscoveryStrategy>(node)) {
   // Default to runtime strategy
@@ -97,6 +60,8 @@ void DiscoveryManager::create_strategy() {
   runtime_config.create_synthetic_components = config_.runtime.create_synthetic_components;
   runtime_config.grouping = config_.runtime.grouping;
   runtime_config.synthetic_component_name_pattern = config_.runtime.synthetic_component_name_pattern;
+  runtime_config.topic_only_policy = config_.runtime.topic_only_policy;
+  runtime_config.min_topics_for_component = config_.runtime.min_topics_for_component;
   runtime_strategy_->set_config(runtime_config);
 
   switch (config_.mode) {

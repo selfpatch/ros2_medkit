@@ -471,6 +471,18 @@ std::set<std::string> RuntimeDiscoveryStrategy::get_node_namespaces() {
 std::vector<Component> RuntimeDiscoveryStrategy::discover_topic_components() {
   std::vector<Component> components;
 
+  // Check policy - if IGNORE, don't create any topic-based entities
+  if (config_.topic_only_policy == TopicOnlyPolicy::IGNORE) {
+    RCLCPP_DEBUG(node_->get_logger(), "Topic-only policy is IGNORE, skipping topic-based discovery");
+    return components;
+  }
+
+  // If CREATE_AREA_ONLY, areas are created in discover() but no components here
+  if (config_.topic_only_policy == TopicOnlyPolicy::CREATE_AREA_ONLY) {
+    RCLCPP_DEBUG(node_->get_logger(), "Topic-only policy is CREATE_AREA_ONLY, skipping component creation");
+    return components;
+  }
+
   if (!topic_sampler_) {
     RCLCPP_DEBUG(node_->get_logger(), "Topic sampler not set, skipping topic-based discovery");
     return components;
@@ -492,19 +504,28 @@ std::vector<Component> RuntimeDiscoveryStrategy::discover_topic_components() {
       continue;
     }
 
+    // Get topics from cached result (no additional graph query)
+    std::string ns_prefix = "/" + ns;
+    auto it = discovery_result.topics_by_ns.find(ns_prefix);
+    if (it == discovery_result.topics_by_ns.end()) {
+      continue;
+    }
+
+    // Check minimum topics threshold
+    size_t topic_count = it->second.publishes.size() + it->second.subscribes.size();
+    if (static_cast<int>(topic_count) < config_.min_topics_for_component) {
+      RCLCPP_DEBUG(node_->get_logger(), "Skipping namespace '%s' - topic count %zu < min %d", ns.c_str(), topic_count,
+                   config_.min_topics_for_component);
+      continue;
+    }
+
     Component comp;
     comp.id = ns;
     comp.namespace_path = "/" + ns;
     comp.fqn = "/" + ns;
     comp.area = ns;
     comp.source = "topic";
-
-    // Get topics from cached result (no additional graph query)
-    std::string ns_prefix = "/" + ns;
-    auto it = discovery_result.topics_by_ns.find(ns_prefix);
-    if (it != discovery_result.topics_by_ns.end()) {
-      comp.topics = it->second;
-    }
+    comp.topics = it->second;
 
     RCLCPP_DEBUG(node_->get_logger(), "Created topic-based component '%s' with %zu topics", ns.c_str(),
                  comp.topics.publishes.size());

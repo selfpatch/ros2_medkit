@@ -110,6 +110,7 @@ add_library(gateway_lib STATIC
   src/configuration_manager.cpp
   src/fault_manager.cpp
   # Discovery module
+  src/discovery/discovery_enums.cpp
   src/discovery/discovery_manager.cpp
   src/discovery/runtime_discovery.cpp
   src/discovery/hybrid_discovery.cpp
@@ -385,6 +386,13 @@ if(BUILD_TESTING)
   add_launch_test(
     test/test_discovery_hybrid.test.py
     TARGET test_discovery_hybrid
+    TIMEOUT 120
+  )
+
+  # Add heuristic apps discovery integration tests
+  add_launch_test(
+    test/test_discovery_heuristic_apps.test.py
+    TARGET test_discovery_heuristic_apps
     TIMEOUT 120
   )
 
