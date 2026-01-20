@@ -159,8 +159,10 @@ class TestHeuristicAppsDiscovery(unittest.TestCase):
                     if len(apps) >= cls.MIN_EXPECTED_APPS:
                         print(f'✓ Discovery complete: {len(apps)} apps')
                         return
-            except requests.exceptions.RequestException:
-                pass
+            except requests.exceptions.RequestException as exc:
+                # Transient connectivity errors are expected while gateway
+                # finishes startup; log and retry.
+                print(f'Apps discovery request failed, will retry: {exc}')
             time.sleep(1)
         print('Warning: Discovery timeout')
 
