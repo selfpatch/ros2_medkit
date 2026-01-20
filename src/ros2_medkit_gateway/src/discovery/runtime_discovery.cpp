@@ -40,8 +40,8 @@ RuntimeDiscoveryStrategy::RuntimeDiscoveryStrategy(rclcpp::Node * node) : node_(
 
 void RuntimeDiscoveryStrategy::set_config(const RuntimeConfig & config) {
   config_ = config;
-  RCLCPP_DEBUG(node_->get_logger(), "Runtime discovery config: expose_apps=%s, synthetic_components=%s, grouping=%s",
-               config_.expose_nodes_as_apps ? "true" : "false", config_.create_synthetic_components ? "true" : "false",
+  RCLCPP_DEBUG(node_->get_logger(), "Runtime discovery config: synthetic_components=%s, grouping=%s",
+               config_.create_synthetic_components ? "true" : "false",
                grouping_strategy_to_string(config_.grouping).c_str());
 }
 
@@ -204,11 +204,6 @@ std::vector<Component> RuntimeDiscoveryStrategy::discover_node_components() {
 }
 
 std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
-  // Only expose nodes as apps if configured
-  if (!config_.expose_nodes_as_apps) {
-    return {};  // Old behavior - apps require manifest
-  }
-
   std::vector<App> apps;
   auto node_components = discover_node_components();
 

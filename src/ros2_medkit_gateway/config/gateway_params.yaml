@@ -119,16 +119,10 @@ ros2_medkit_gateway:
       # Runtime (heuristic) discovery options
       # These control how nodes are mapped to SOVD entities in runtime mode
       runtime:
-        # Expose ROS 2 nodes as App entities
-        # When true, GET /apps returns nodes as Apps (with source="heuristic")
-        # When false, /apps is empty in runtime mode
-        # Default: true (new behavior for initial release)
-        expose_nodes_as_apps: true
-
         # Create synthetic Component entities that group Apps
         # When true, Components are synthetic groupings (by namespace)
         # When false, each node is a Component
-        # Default: true (new behavior for initial release)
+        # Default: true
         create_synthetic_components: true
 
         # How to group nodes into synthetic components

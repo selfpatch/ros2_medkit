@@ -54,15 +54,6 @@ struct DiscoveryConfig {
    */
   struct RuntimeOptions {
     /**
-     * @brief Expose ROS 2 nodes as App entities
-     *
-     * When true, discover_apps() returns nodes as Apps instead of
-     * only returning empty (manifest-only behavior).
-     * Default: true (new behavior for initial release)
-     */
-    bool expose_nodes_as_apps{true};
-
-    /**
      * @brief Create synthetic Component entities that group Apps
      *
      * When true, Components are synthetic groupings (by namespace).

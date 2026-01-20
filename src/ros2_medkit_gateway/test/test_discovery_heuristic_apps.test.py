@@ -71,7 +71,6 @@ def generate_test_description():
         output='screen',
         parameters=[{
             'refresh_interval_ms': 1000,
-            'discovery.runtime.expose_nodes_as_apps': True,
             'discovery.runtime.create_synthetic_components': True,
             'discovery.runtime.grouping_strategy': 'namespace',
             'discovery.runtime.topic_only_policy': 'create_component',

@@ -63,7 +63,6 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
 
   // Runtime (heuristic) discovery options
   // These control how nodes are mapped to SOVD entities in runtime mode
-  declare_parameter("discovery.runtime.expose_nodes_as_apps", true);
   declare_parameter("discovery.runtime.create_synthetic_components", true);
   declare_parameter("discovery.runtime.grouping_strategy", "namespace");
   declare_parameter("discovery.runtime.synthetic_component_name_pattern", "{area}");
@@ -224,7 +223,6 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   discovery_config.manifest_strict_validation = get_parameter("manifest_strict_validation").as_bool();
 
   // Runtime discovery options
-  discovery_config.runtime.expose_nodes_as_apps = get_parameter("discovery.runtime.expose_nodes_as_apps").as_bool();
   discovery_config.runtime.create_synthetic_components =
       get_parameter("discovery.runtime.create_synthetic_components").as_bool();
   discovery_config.runtime.grouping =

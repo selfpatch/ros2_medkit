@@ -56,7 +56,6 @@ bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
 void DiscoveryManager::create_strategy() {
   // Configure runtime strategy with runtime options
   discovery::RuntimeDiscoveryStrategy::RuntimeConfig runtime_config;
-  runtime_config.expose_nodes_as_apps = config_.runtime.expose_nodes_as_apps;
   runtime_config.create_synthetic_components = config_.runtime.create_synthetic_components;
   runtime_config.grouping = config_.runtime.grouping;
   runtime_config.synthetic_component_name_pattern = config_.runtime.synthetic_component_name_pattern;
@@ -82,8 +81,7 @@ void DiscoveryManager::create_strategy() {
 
     default:
       active_strategy_ = runtime_strategy_.get();
-      RCLCPP_INFO(node_->get_logger(), "Discovery mode: runtime_only (expose_apps=%s, synthetic_components=%s)",
-                  config_.runtime.expose_nodes_as_apps ? "true" : "false",
+      RCLCPP_INFO(node_->get_logger(), "Discovery mode: runtime_only (synthetic_components=%s)",
                   config_.runtime.create_synthetic_components ? "true" : "false");
       break;
   }
@@ -148,13 +146,11 @@ std::optional<App> DiscoveryManager::get_app(const std::string & id) {
   if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_app(id);
   }
-  // Check runtime apps when expose_nodes_as_apps is enabled
-  if (config_.runtime.expose_nodes_as_apps) {
-    auto apps = discover_apps();
-    for (const auto & app : apps) {
-      if (app.id == id) {
-        return app;
-      }
+  // Check runtime apps
+  auto apps = discover_apps();
+  for (const auto & app : apps) {
+    if (app.id == id) {
+      return app;
     }
   }
   return std::nullopt;
@@ -200,18 +196,15 @@ std::vector<App> DiscoveryManager::get_apps_for_component(const std::string & co
   if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_apps_for_component(component_id);
   }
-  // Filter runtime apps by component_id when expose_nodes_as_apps is enabled
-  if (config_.runtime.expose_nodes_as_apps) {
-    std::vector<App> result;
-    auto apps = discover_apps();
-    for (const auto & app : apps) {
-      if (app.component_id == component_id) {
-        result.push_back(app);
-      }
+  // Filter runtime apps by component_id
+  std::vector<App> result;
+  auto apps = discover_apps();
+  for (const auto & app : apps) {
+    if (app.component_id == component_id) {
+      result.push_back(app);
     }
-    return result;
   }
-  return {};
+  return result;
 }
 
 std::vector<std::string> DiscoveryManager::get_hosts_for_function(const std::string & function_id) {

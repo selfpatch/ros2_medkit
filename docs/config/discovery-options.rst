@@ -31,21 +31,6 @@ Runtime Discovery Options
 When using ``runtime_only`` or ``hybrid`` mode, the following options control
 how ROS 2 nodes are mapped to SOVD entities.
 
-Node to App Mapping
-^^^^^^^^^^^^^^^^^^^
-
-.. code-block:: yaml
-
-   discovery:
-     runtime:
-       expose_nodes_as_apps: true  # Expose nodes as App entities
-
-When ``expose_nodes_as_apps`` is true:
-
-- Each ROS 2 node becomes an ``App`` entity
-- Apps have ``source: "heuristic"`` to indicate automatic discovery
-- ``GET /apps`` returns all discovered nodes
-
 Synthetic Components
 ^^^^^^^^^^^^^^^^^^^^
 

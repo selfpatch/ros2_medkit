@@ -50,11 +50,10 @@ namespace discovery {
  * - Discovers components from ROS 2 nodes
  * - Discovers topic-based "virtual" components for systems like Isaac Sim
  * - Enriches components with services, actions, and topics
- * - (NEW) Can expose nodes as Apps when configured
- * - (NEW) Can create synthetic Components that group Apps
+ * - Exposes nodes as Apps
+ * - Can create synthetic Components that group Apps
  *
- * @note Apps and Functions are not supported in runtime-only mode by default.
- *       Enable expose_nodes_as_apps to get Apps from runtime discovery.
+ * @note Functions are not supported in runtime-only mode.
  *       Use ManifestDiscoveryStrategy for custom entity definitions.
  */
 class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
@@ -63,7 +62,6 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
    * @brief Runtime discovery configuration options
    */
   struct RuntimeConfig {
-    bool expose_nodes_as_apps{true};
     bool create_synthetic_components{true};
     ComponentGroupingStrategy grouping{};
     std::string synthetic_component_name_pattern{"{area}"};
@@ -90,7 +88,7 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   std::vector<Component> discover_components() override;
 
   /// @copydoc DiscoveryStrategy::discover_apps
-  /// @note Returns nodes as Apps when expose_nodes_as_apps is enabled
+  /// @note Returns nodes as Apps in runtime discovery
   std::vector<App> discover_apps() override;
 
   /// @copydoc DiscoveryStrategy::discover_functions

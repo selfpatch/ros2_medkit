@@ -108,27 +108,9 @@ All options are under ``discovery.runtime`` in the gateway parameters:
          mode: "runtime_only"  # or "hybrid"
 
          runtime:
-           expose_nodes_as_apps: true
            create_synthetic_components: true
            grouping_strategy: "namespace"
            synthetic_component_name_pattern: "{area}"
-
-expose_nodes_as_apps
-^^^^^^^^^^^^^^^^^^^^
-
-When ``true`` (default), ROS 2 nodes appear as App entities:
-
-.. code-block:: bash
-
-   curl http://localhost:8080/api/v1/apps
-   # Returns all discovered nodes as Apps
-
-When ``false``, nodes appear directly as Components (legacy behavior):
-
-.. code-block:: bash
-
-   curl http://localhost:8080/api/v1/apps
-   # Returns empty (Apps require manifest)
 
 create_synthetic_components
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
