@@ -208,21 +208,21 @@ void FaultManagerNode::handle_report_fault(
     // Only process FAILED events with correlation
     bool should_mute = false;
     if (correlation_engine_ && request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
-      auto correlation_result = correlation_engine_->process_fault(
-          request->fault_code, severity_to_string(request->severity));
+      auto correlation_result =
+          correlation_engine_->process_fault(request->fault_code, severity_to_string(request->severity));
 
       should_mute = correlation_result.should_mute;
 
       if (correlation_result.is_root_cause) {
-        RCLCPP_DEBUG(get_logger(), "Fault %s identified as root cause (rule=%s)",
-                     request->fault_code.c_str(), correlation_result.rule_id.c_str());
+        RCLCPP_DEBUG(get_logger(), "Fault %s identified as root cause (rule=%s)", request->fault_code.c_str(),
+                     correlation_result.rule_id.c_str());
       } else if (should_mute) {
-        RCLCPP_DEBUG(get_logger(), "Fault %s muted as symptom of %s (rule=%s, delay=%ums)",
-                     request->fault_code.c_str(), correlation_result.root_cause_code.c_str(),
-                     correlation_result.rule_id.c_str(), correlation_result.delay_ms);
+        RCLCPP_DEBUG(get_logger(), "Fault %s muted as symptom of %s (rule=%s, delay=%ums)", request->fault_code.c_str(),
+                     correlation_result.root_cause_code.c_str(), correlation_result.rule_id.c_str(),
+                     correlation_result.delay_ms);
       } else if (!correlation_result.cluster_id.empty()) {
-        RCLCPP_DEBUG(get_logger(), "Fault %s added to cluster %s",
-                     request->fault_code.c_str(), correlation_result.cluster_id.c_str());
+        RCLCPP_DEBUG(get_logger(), "Fault %s added to cluster %s", request->fault_code.c_str(),
+                     correlation_result.cluster_id.c_str());
       }
     }
 
@@ -308,12 +308,9 @@ void FaultManagerNode::handle_get_faults(const std::shared_ptr<ros2_medkit_msgs:
         info.fault_codes = cluster.fault_codes;
         info.count = static_cast<uint32_t>(cluster.fault_codes.size());
         // Convert chrono time_points to ROS time
-        auto first_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            cluster.first_at.time_since_epoch())
-                            .count();
-        auto last_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           cluster.last_at.time_since_epoch())
-                           .count();
+        auto first_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(cluster.first_at.time_since_epoch()).count();
+        auto last_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(cluster.last_at.time_since_epoch()).count();
         info.first_at = rclcpp::Time(first_ns, RCL_SYSTEM_TIME);
         info.last_at = rclcpp::Time(last_ns, RCL_SYSTEM_TIME);
         response->clusters.push_back(info);
@@ -321,8 +318,8 @@ void FaultManagerNode::handle_get_faults(const std::shared_ptr<ros2_medkit_msgs:
     }
   }
 
-  RCLCPP_DEBUG(get_logger(), "GetFaults returned %zu faults (muted=%u, clusters=%u)",
-               response->faults.size(), response->muted_count, response->cluster_count);
+  RCLCPP_DEBUG(get_logger(), "GetFaults returned %zu faults (muted=%u, clusters=%u)", response->faults.size(),
+               response->muted_count, response->cluster_count);
 }
 
 void FaultManagerNode::handle_clear_fault(
@@ -349,19 +346,19 @@ void FaultManagerNode::handle_clear_fault(
     // Auto-clear correlated symptoms
     for (const auto & symptom_code : auto_cleared_codes) {
       storage_->clear_fault(symptom_code);
-      RCLCPP_DEBUG(get_logger(), "Auto-cleared symptom: %s (root cause: %s)",
-                   symptom_code.c_str(), request->fault_code.c_str());
+      RCLCPP_DEBUG(get_logger(), "Auto-cleared symptom: %s (root cause: %s)", symptom_code.c_str(),
+                   request->fault_code.c_str());
     }
 
     response->auto_cleared_codes = auto_cleared_codes;
     if (auto_cleared_codes.empty()) {
       response->message = "Fault cleared: " + request->fault_code;
     } else {
-      response->message = "Fault cleared: " + request->fault_code +
-                          " (auto-cleared " + std::to_string(auto_cleared_codes.size()) + " symptoms)";
+      response->message = "Fault cleared: " + request->fault_code + " (auto-cleared " +
+                          std::to_string(auto_cleared_codes.size()) + " symptoms)";
     }
-    RCLCPP_INFO(get_logger(), "Fault cleared: %s (auto-cleared %zu symptoms)",
-                request->fault_code.c_str(), auto_cleared_codes.size());
+    RCLCPP_INFO(get_logger(), "Fault cleared: %s (auto-cleared %zu symptoms)", request->fault_code.c_str(),
+                auto_cleared_codes.size());
 
     // Publish EVENT_CLEARED - get the cleared fault to include in event
     auto fault = storage_->get_fault(request->fault_code);
@@ -524,8 +521,7 @@ std::unique_ptr<correlation::CorrelationEngine> FaultManagerNode::create_correla
       return nullptr;
     }
 
-    RCLCPP_INFO(get_logger(),
-                "Correlation engine enabled (default_window=%ums, patterns=%zu, rules=%zu)",
+    RCLCPP_INFO(get_logger(), "Correlation engine enabled (default_window=%ums, patterns=%zu, rules=%zu)",
                 config.default_window_ms, config.patterns.size(), config.rules.size());
 
     return std::make_unique<correlation::CorrelationEngine>(config);

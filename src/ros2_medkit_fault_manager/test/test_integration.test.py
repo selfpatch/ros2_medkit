@@ -842,7 +842,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
 
         # Muted faults related to ESTOP_001 should be cleared
         remaining_muted = [m for m in get_response.muted_faults
-                          if m.root_cause_code == 'ESTOP_001']
+                           if m.root_cause_code == 'ESTOP_001']
         self.assertEqual(len(remaining_muted), 0)
         print('All symptoms auto-cleared with root cause')
 

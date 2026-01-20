@@ -62,8 +62,8 @@ class FaultManager {
   /// @param include_clusters Include cluster info in response
   /// @return FaultResult with array of faults (and optionally muted_faults and clusters)
   FaultResult get_faults(const std::string & source_id = "", bool include_prefailed = true,
-                         bool include_confirmed = true, bool include_cleared = false,
-                         bool include_muted = false, bool include_clusters = false);
+                         bool include_confirmed = true, bool include_cleared = false, bool include_muted = false,
+                         bool include_clusters = false);
 
   /// Get a specific fault by code
   /// @param fault_code Fault identifier
