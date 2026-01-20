@@ -50,7 +50,8 @@ class CapabilityBuilder {
     SUBCOMPONENTS,       ///< Entity has child components (components only)
     RELATED_COMPONENTS,  ///< Entity has related components (areas only)
     RELATED_APPS,        ///< Entity has related apps (components only)
-    HOSTS                ///< Entity has host apps (functions only)
+    HOSTS,               ///< Entity has host apps (functions only)
+    DEPENDS_ON           ///< Entity has dependencies (components only)
   };
 
   /**

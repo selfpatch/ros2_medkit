@@ -89,6 +89,10 @@ void ComponentHandlers::handle_get_component(const httplib::Request & req, httpl
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::DATA,   Cap::OPERATIONS,    Cap::CONFIGURATIONS,
                              Cap::FAULTS, Cap::SUBCOMPONENTS, Cap::RELATED_APPS};
+    // Add depends-on capability only when component has dependencies
+    if (!comp.depends_on.empty()) {
+      caps.push_back(Cap::DEPENDS_ON);
+    }
     response["capabilities"] = CapabilityBuilder::build_capabilities("components", comp.id, caps);
 
     // Build HATEOAS links
@@ -499,6 +503,72 @@ void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, ht
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_related_apps: %s", e.what());
+  }
+}
+
+void ComponentHandlers::handle_get_depends_on(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    std::string component_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(component_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+                                 {{"details", validation_result.error()}, {"component_id", component_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto comp_opt = discovery->get_component(component_id);
+
+    if (!comp_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
+                                 {{"component_id", component_id}});
+      return;
+    }
+
+    const auto & comp = *comp_opt;
+
+    // Build list of dependency references
+    json items = json::array();
+    for (const auto & dep_id : comp.depends_on) {
+      json item;
+      item["id"] = dep_id;
+      item["href"] = "/api/v1/components/" + dep_id;
+
+      // Try to get the dependency component for additional info
+      auto dep_opt = discovery->get_component(dep_id);
+      if (dep_opt) {
+        item["type"] = dep_opt->type;
+        if (!dep_opt->name.empty()) {
+          item["name"] = dep_opt->name;
+        }
+      } else {
+        item["type"] = "Component";
+      }
+
+      items.push_back(item);
+    }
+
+    json response;
+    response["items"] = items;
+    response["total_count"] = items.size();
+
+    // HATEOAS links
+    json links;
+    links["self"] = "/api/v1/components/" + component_id + "/depends-on";
+    links["component"] = "/api/v1/components/" + component_id;
+    response["_links"] = links;
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_depends_on: %s", e.what());
   }
 }
 

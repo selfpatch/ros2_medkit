@@ -371,6 +371,70 @@ class TestDiscoveryHybridMode(unittest.TestCase):
         response = requests.get(f'{self.BASE_URL}/components/nonexistent/subcomponents', timeout=5)
         self.assertEqual(response.status_code, 404)
 
+    def test_component_depends_on_returns_items(self):
+        """
+        Test GET /components/{id}/depends-on returns dependency references.
+
+        @verifies REQ_INTEROP_008
+        """
+        response = requests.get(f'{self.BASE_URL}/components/engine-ecu/depends-on', timeout=5)
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+
+        # engine-ecu depends on temp-sensor-hw and rpm-sensor-hw
+        dep_ids = [d['id'] for d in data['items']]
+        self.assertIn('temp-sensor-hw', dep_ids)
+        self.assertIn('rpm-sensor-hw', dep_ids)
+
+        # Each item should have href link
+        for item in data['items']:
+            self.assertIn('href', item)
+            self.assertTrue(item['href'].startswith('/api/v1/components/'))
+
+    def test_component_depends_on_empty(self):
+        """
+        Test GET /components/{id}/depends-on returns empty list for component without deps.
+
+        @verifies REQ_INTEROP_008
+        """
+        # temp-sensor-hw has no dependencies
+        response = requests.get(f'{self.BASE_URL}/components/temp-sensor-hw/depends-on', timeout=5)
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+        self.assertEqual(len(data['items']), 0)
+
+    def test_component_depends_on_not_found(self):
+        """
+        Test GET /components/{id}/depends-on returns 404 for unknown component.
+
+        @verifies REQ_INTEROP_008
+        """
+        response = requests.get(f'{self.BASE_URL}/components/nonexistent/depends-on', timeout=5)
+        self.assertEqual(response.status_code, 404)
+
+    def test_component_capabilities_includes_depends_on_link(self):
+        """
+        Test component with dependencies has depends-on in capabilities.
+
+        @verifies REQ_INTEROP_008
+        """
+        response = requests.get(f'{self.BASE_URL}/components/engine-ecu', timeout=5)
+        self.assertEqual(response.status_code, 200)
+
+        component = response.json()
+        self.assertIn('capabilities', component)
+
+        # Should have depends-on capability
+        cap_hrefs = [c.get('href', '') for c in component['capabilities']]
+        self.assertTrue(
+            any('/depends-on' in href for href in cap_hrefs),
+            f'Expected depends-on capability in: {cap_hrefs}'
+        )
+
     # =========================================================================
     # Apps - Manifest + Runtime Linking
     # =========================================================================

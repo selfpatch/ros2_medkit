@@ -78,6 +78,12 @@ class ComponentHandlers {
    */
   void handle_get_related_apps(const httplib::Request & req, httplib::Response & res);
 
+  /**
+   * @brief Handle GET /components/{component_id}/depends-on - list component dependencies.
+   * @verifies REQ_INTEROP_008
+   */
+  void handle_get_depends_on(const httplib::Request & req, httplib::Response & res);
+
  private:
   HandlerContext & ctx_;
 };

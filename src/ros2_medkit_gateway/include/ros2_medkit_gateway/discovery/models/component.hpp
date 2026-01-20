@@ -44,6 +44,7 @@ struct Component {
   std::string variant;                ///< Hardware variant identifier
   std::vector<std::string> tags;      ///< Tags for filtering
   std::string parent_component_id;    ///< Parent component ID for sub-components
+  std::vector<std::string> depends_on;  ///< Component IDs this component depends on
   std::vector<ServiceInfo> services;  ///< Services exposed by this component
   std::vector<ActionInfo> actions;    ///< Actions exposed by this component
   ComponentTopics topics;             ///< Topics this component publishes/subscribes
@@ -74,6 +75,9 @@ struct Component {
     }
     if (!parent_component_id.empty()) {
       j["parentComponentId"] = parent_component_id;
+    }
+    if (!depends_on.empty()) {
+      j["dependsOn"] = depends_on;
     }
 
     // Add operations array combining services and actions
@@ -127,6 +131,11 @@ struct Component {
     // Configurations capability (parameters) - always present for ROS 2 nodes
     if (source == "node") {
       capabilities.push_back({{"name", "configurations"}, {"href", component_url + "/configurations"}});
+    }
+
+    // Depends-on capability
+    if (!depends_on.empty()) {
+      capabilities.push_back({{"name", "depends-on"}, {"href", component_url + "/depends-on"}});
     }
 
     return {{"id", id}, {"type", type}, {"capabilities", capabilities}};

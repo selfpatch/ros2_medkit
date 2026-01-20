@@ -84,6 +84,9 @@ components:
     type: "controller"
     area: engine
     description: "Engine control unit"
+    depends_on:
+      - temp-sensor-hw
+      - rpm-sensor-hw
 
   - id: temp-sensor-hw
     name: "Temperature Sensor"
@@ -100,6 +103,9 @@ components:
     name: "Brake ECU"
     type: "controller"
     area: brakes
+    depends_on:
+      - brake-pressure-sensor-hw
+      - brake-actuator-hw
 
   - id: brake-pressure-sensor-hw
     name: "Brake Pressure Sensor"
@@ -110,6 +116,8 @@ components:
     name: "Brake Actuator"
     type: "actuator"
     area: brakes
+    depends_on:
+      - brake-ecu
 
   # Body components
   - id: door-sensor-hw

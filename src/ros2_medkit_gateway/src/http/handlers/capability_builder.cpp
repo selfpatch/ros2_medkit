@@ -37,6 +37,8 @@ std::string CapabilityBuilder::capability_to_name(Capability cap) {
       return "related-apps";
     case Capability::HOSTS:
       return "hosts";
+    case Capability::DEPENDS_ON:
+      return "depends-on";
     default:
       return "unknown";
   }

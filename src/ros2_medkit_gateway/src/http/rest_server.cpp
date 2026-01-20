@@ -312,6 +312,12 @@ void RESTServer::setup_routes() {
              component_handlers_->handle_get_related_apps(req, res);
            });
 
+  // Component depends-on (relationship endpoint)
+  srv->Get((api_path("/components") + R"(/([^/]+)/depends-on$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             component_handlers_->handle_get_depends_on(req, res);
+           });
+
   // Single component (capabilities) - must be after more specific routes
   srv->Get((api_path("/components") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
     component_handlers_->handle_get_component(req, res);
