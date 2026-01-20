@@ -320,6 +320,56 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         response.raise_for_status()
         return response.json()
 
+    def _wait_for_action_status(
+        self, goal_id: str, target_statuses: list, max_wait: float = 15.0
+    ) -> dict:
+        """
+        Poll action status until it reaches one of the target statuses.
+
+        Parameters
+        ----------
+        goal_id : str
+            The goal ID to check status for.
+        target_statuses : list
+            List of status strings to wait for (e.g., ['succeeded', 'aborted']).
+        max_wait : float
+            Maximum time to wait in seconds (default: 15.0).
+
+        Returns
+        -------
+        dict
+            The status response data when target status is reached.
+
+        Raises
+        ------
+        AssertionError
+            If target status is not reached within max_wait.
+
+        """
+        start_time = time.time()
+        last_status = None
+        while time.time() - start_time < max_wait:
+            try:
+                status_response = requests.get(
+                    f'{self.BASE_URL}/apps/long_calibration/operations/'
+                    f'long_calibration/status',
+                    params={'goal_id': goal_id},
+                    timeout=5
+                )
+                if status_response.status_code == 200:
+                    data = status_response.json()
+                    last_status = data.get('status')
+                    if last_status in target_statuses:
+                        return data
+            except requests.exceptions.RequestException:
+                pass  # Retry on transient errors
+            time.sleep(0.5)
+
+        raise AssertionError(
+            f'Action did not reach status {target_statuses} within {max_wait}s. '
+            f'Last status: {last_status}'
+        )
+
     def test_01_root_endpoint(self):
         """
         Test GET / returns server capabilities and entry points.
@@ -1413,7 +1463,6 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print(f'✓ Action status endpoint test passed: status={data["status"]}')
 
-    @unittest.skip('Flaky on CI due to action server timing - goal acceptance can timeout')
     def test_41_action_status_after_completion(self):
         """
         Test that action status is updated to succeeded after completion via native subscription.
@@ -1432,18 +1481,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         goal_id = response.json()['goal_id']
 
-        # Wait for action to complete (3 steps * 0.5s = ~1.5s, plus margin)
-        time.sleep(3)
-
-        # Check status should show succeeded (updated via native subscription)
-        status_response = requests.get(
-            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/status',
-            params={'goal_id': goal_id},
-            timeout=5
+        # Poll for completion instead of fixed sleep (handles CI timing variance)
+        data = self._wait_for_action_status(
+            goal_id, ['succeeded', 'aborted'], max_wait=15.0
         )
-        self.assertEqual(status_response.status_code, 200)
 
-        data = status_response.json()
         self.assertIn('goal_id', data)
         self.assertEqual(data['goal_id'], goal_id)
         self.assertIn('status', data)
@@ -1451,7 +1493,6 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print(f'✓ Action status after completion test passed: status={data["status"]}')
 
-    @unittest.skip('Flaky on CI due to action server timing - goal acceptance can timeout')
     def test_42_action_cancel_endpoint(self):
         """
         Test DELETE /apps/{app_id}/operations/{operation_name} cancels action.
@@ -1467,8 +1508,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         goal_id = response.json()['goal_id']
 
-        # Wait a moment for it to start executing
-        time.sleep(1)
+        # Poll until action is executing (handles CI timing variance)
+        try:
+            self._wait_for_action_status(
+                goal_id, ['executing'], max_wait=10.0
+            )
+        except AssertionError:
+            # If action already completed or is still in accepted, try cancel anyway
+            pass
 
         # Cancel the goal
         cancel_response = requests.delete(
@@ -1480,7 +1527,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = cancel_response.json()
         self.assertIn('status', data)
-        self.assertEqual(data['status'], 'canceling')
+        # Status can be 'canceling' or 'canceled' depending on timing
+        self.assertIn(data['status'], ['canceling', 'canceled'])
         self.assertIn('goal_id', data)
         self.assertEqual(data['goal_id'], goal_id)
 

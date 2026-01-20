@@ -22,14 +22,10 @@
 using json = nlohmann::json;
 using httplib::StatusCode;
 
-namespace ros2_medkit_gateway
-{
-namespace handlers
-{
+namespace ros2_medkit_gateway {
+namespace handlers {
 
-void OperationHandlers::handle_list_operations(
-  const httplib::Request & req, httplib::Response & res)
-{
+void OperationHandlers::handle_list_operations(const httplib::Request & req, httplib::Response & res) {
   std::string entity_id;
   try {
     if (req.matches.size() < 2) {
@@ -41,9 +37,8 @@ void OperationHandlers::handle_list_operations(
 
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(
-        res, StatusCode::BadRequest_400, "Invalid entity ID",
-        {{"details", entity_validation.error()}, {"entity_id", entity_id}});
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
@@ -103,14 +98,12 @@ void OperationHandlers::handle_list_operations(
     }
 
     if (!entity_found) {
-      HandlerContext::send_error(
-        res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
     }
 
-    RCLCPP_DEBUG(
-      HandlerContext::logger(), "Listing operations for %s '%s': %zu services, %zu actions",
-      entity_type.c_str(), entity_id.c_str(), services.size(), actions.size());
+    RCLCPP_DEBUG(HandlerContext::logger(), "Listing operations for %s '%s': %zu services, %zu actions",
+                 entity_type.c_str(), entity_id.c_str(), services.size(), actions.size());
 
     // Build response with services and actions
     json operations = json::array();
@@ -120,8 +113,7 @@ void OperationHandlers::handle_list_operations(
     auto type_introspection = data_access_mgr->get_type_introspection();
 
     for (const auto & svc : services) {
-      json svc_json = {
-        {"name", svc.name}, {"path", svc.full_path}, {"type", svc.type}, {"kind", "service"}};
+      json svc_json = {{"name", svc.name}, {"path", svc.full_path}, {"type", svc.type}, {"kind", "service"}};
 
       // Build type_info with request/response schemas for services
       try {
@@ -133,9 +125,8 @@ void OperationHandlers::handle_list_operations(
         type_info_json["response"] = response_info.schema;
         svc_json["type_info"] = type_info_json;
       } catch (const std::exception & e) {
-        RCLCPP_DEBUG(
-          HandlerContext::logger(), "Could not get type info for service '%s': %s",
-          svc.type.c_str(), e.what());
+        RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(),
+                     e.what());
         svc_json["type_info"] = json::object();
       }
 
@@ -143,8 +134,7 @@ void OperationHandlers::handle_list_operations(
     }
 
     for (const auto & act : actions) {
-      json act_json = {
-        {"name", act.name}, {"path", act.full_path}, {"type", act.type}, {"kind", "action"}};
+      json act_json = {{"name", act.name}, {"path", act.full_path}, {"type", act.type}, {"kind", "action"}};
 
       // Build type_info with goal/result/feedback schemas for actions
       try {
@@ -158,9 +148,8 @@ void OperationHandlers::handle_list_operations(
         type_info_json["feedback"] = feedback_info.schema;
         act_json["type_info"] = type_info_json;
       } catch (const std::exception & e) {
-        RCLCPP_DEBUG(
-          HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(),
-          e.what());
+        RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(),
+                     e.what());
         act_json["type_info"] = json::object();
       }
 
@@ -173,18 +162,14 @@ void OperationHandlers::handle_list_operations(
     response["total_count"] = operations.size();
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(
-      res, StatusCode::InternalServerError_500, "Failed to list operations",
-      {{"details", e.what()}, {"entity_id", entity_id}});
-    RCLCPP_ERROR(
-      HandlerContext::logger(), "Error in handle_list_operations for entity '%s': %s",
-      entity_id.c_str(), e.what());
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to list operations",
+                               {{"details", e.what()}, {"entity_id", entity_id}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_operations for entity '%s': %s", entity_id.c_str(),
+                 e.what());
   }
 }
 
-void OperationHandlers::handle_component_operation(
-  const httplib::Request & req, httplib::Response & res)
-{
+void OperationHandlers::handle_component_operation(const httplib::Request & req, httplib::Response & res) {
   std::string entity_id;
   std::string operation_name;
   try {
@@ -200,18 +185,16 @@ void OperationHandlers::handle_component_operation(
     // Validate entity_id
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(
-        res, StatusCode::BadRequest_400, "Invalid entity ID",
-        {{"details", entity_validation.error()}, {"entity_id", entity_id}});
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
     // Validate operation_name
     auto operation_validation = ctx_.validate_entity_id(operation_name);
     if (!operation_validation) {
-      HandlerContext::send_error(
-        res, StatusCode::BadRequest_400, "Invalid operation name",
-        {{"details", operation_validation.error()}, {"operation_name", operation_name}});
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid operation name",
+                                 {{"details", operation_validation.error()}, {"operation_name", operation_name}});
       return;
     }
 
@@ -221,8 +204,8 @@ void OperationHandlers::handle_component_operation(
       try {
         body = json::parse(req.body);
       } catch (const json::parse_error & e) {
-        HandlerContext::send_error(
-          res, StatusCode::BadRequest_400, "Invalid JSON in request body", {{"details", e.what()}});
+        HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid JSON in request body",
+                                   {{"details", e.what()}});
         return;
       }
     }
@@ -330,8 +313,7 @@ void OperationHandlers::handle_component_operation(
     }
 
     if (!entity_found) {
-      HandlerContext::send_error(
-        res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
     }
 
@@ -359,36 +341,32 @@ void OperationHandlers::handle_component_operation(
       }
 
       // Use full_path from cache (e.g., "/waypoint_follower/navigate_to_pose")
-      auto action_result =
-        operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data);
+      auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data);
 
       if (action_result.success && action_result.goal_accepted) {
         auto tracked = operation_mgr->get_tracked_goal(action_result.goal_id);
         std::string status_str = tracked ? action_status_to_string(tracked->status) : "accepted";
 
-        json response = {
-          {"status", "success"},
-          {"kind", "action"},
-          {id_field, entity_id},
-          {"operation", operation_name},
-          {"goal_id", action_result.goal_id},
-          {"goal_status", status_str}};
+        json response = {{"status", "success"},
+                         {"kind", "action"},
+                         {id_field, entity_id},
+                         {"operation", operation_name},
+                         {"goal_id", action_result.goal_id},
+                         {"goal_status", status_str}};
         HandlerContext::send_json(res, response);
       } else if (action_result.success && !action_result.goal_accepted) {
         HandlerContext::send_error(
-          res, StatusCode::BadRequest_400, "rejected",
-          {{"kind", "action"},
-           {id_field, entity_id},
-           {"operation", operation_name},
-           {"error",
-            action_result.error_message.empty() ? "Goal rejected" : action_result.error_message}});
+            res, StatusCode::BadRequest_400, "rejected",
+            {{"kind", "action"},
+             {id_field, entity_id},
+             {"operation", operation_name},
+             {"error", action_result.error_message.empty() ? "Goal rejected" : action_result.error_message}});
       } else {
-        HandlerContext::send_error(
-          res, StatusCode::InternalServerError_500, "error",
-          {{"kind", "action"},
-           {id_field, entity_id},
-           {"operation", operation_name},
-           {"error", action_result.error_message}});
+        HandlerContext::send_error(res, StatusCode::InternalServerError_500, "error",
+                                   {{"kind", "action"},
+                                    {id_field, entity_id},
+                                    {"operation", operation_name},
+                                    {"error", action_result.error_message}});
       }
       return;
     }
@@ -402,44 +380,36 @@ void OperationHandlers::handle_component_operation(
       }
 
       // Use full_path from cache (e.g., "/waypoint_follower/get_available_states")
-      auto result =
-        operation_mgr->call_service(service_info->full_path, resolved_service_type, request_data);
+      auto result = operation_mgr->call_service(service_info->full_path, resolved_service_type, request_data);
 
       if (result.success) {
-        json response = {
-          {"status", "success"},
-          {"kind", "service"},
-          {id_field, entity_id},
-          {"operation", operation_name},
-          {"response", result.response}};
+        json response = {{"status", "success"},
+                         {"kind", "service"},
+                         {id_field, entity_id},
+                         {"operation", operation_name},
+                         {"response", result.response}};
         HandlerContext::send_json(res, response);
       } else {
-        HandlerContext::send_error(
-          res, StatusCode::InternalServerError_500, "error",
-          {{"kind", "service"},
-           {id_field, entity_id},
-           {"operation", operation_name},
-           {"error", result.error_message}});
+        HandlerContext::send_error(res, StatusCode::InternalServerError_500, "error",
+                                   {{"kind", "service"},
+                                    {id_field, entity_id},
+                                    {"operation", operation_name},
+                                    {"error", result.error_message}});
       }
     } else {
       // Neither service nor action found
-      HandlerContext::send_error(
-        res, StatusCode::NotFound_404, "Operation not found",
-        {{id_field, entity_id}, {"operation_name", operation_name}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Operation not found",
+                                 {{id_field, entity_id}, {"operation_name", operation_name}});
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(
-      res, StatusCode::InternalServerError_500, "Failed to execute operation",
-      {{"details", e.what()}, {"entity_id", entity_id}, {"operation_name", operation_name}});
-    RCLCPP_ERROR(
-      HandlerContext::logger(),
-      "Error in handle_component_operation for entity '%s', operation '%s': %s", entity_id.c_str(),
-      operation_name.c_str(), e.what());
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to execute operation",
+                               {{"details", e.what()}, {"entity_id", entity_id}, {"operation_name", operation_name}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_component_operation for entity '%s', operation '%s': %s",
+                 entity_id.c_str(), operation_name.c_str(), e.what());
   }
 }
 
-void OperationHandlers::handle_action_status(const httplib::Request & req, httplib::Response & res)
-{
+void OperationHandlers::handle_action_status(const httplib::Request & req, httplib::Response & res) {
   std::string entity_id;
   std::string operation_name;
   try {
@@ -455,17 +425,15 @@ void OperationHandlers::handle_action_status(const httplib::Request & req, httpl
     // Validate IDs
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(
-        res, StatusCode::BadRequest_400, "Invalid entity ID",
-        {{"details", entity_validation.error()}});
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}});
       return;
     }
 
     auto operation_validation = ctx_.validate_entity_id(operation_name);
     if (!operation_validation) {
-      HandlerContext::send_error(
-        res, StatusCode::BadRequest_400, "Invalid operation name",
-        {{"details", operation_validation.error()}});
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid operation name",
+                                 {{"details", operation_validation.error()}});
       return;
     }
 
@@ -485,16 +453,14 @@ void OperationHandlers::handle_action_status(const httplib::Request & req, httpl
     if (!goal_id.empty()) {
       auto goal_info = operation_mgr->get_tracked_goal(goal_id);
       if (!goal_info.has_value()) {
-        HandlerContext::send_error(
-          res, StatusCode::NotFound_404, "Goal not found", {{"goal_id", goal_id}});
+        HandlerContext::send_error(res, StatusCode::NotFound_404, "Goal not found", {{"goal_id", goal_id}});
         return;
       }
 
-      json response = {
-        {"goal_id", goal_info->goal_id},
-        {"status", action_status_to_string(goal_info->status)},
-        {"action_path", goal_info->action_path},
-        {"action_type", goal_info->action_type}};
+      json response = {{"goal_id", goal_info->goal_id},
+                       {"status", action_status_to_string(goal_info->status)},
+                       {"action_path", goal_info->action_path},
+                       {"action_type", goal_info->action_type}};
       if (!goal_info->last_feedback.is_null() && !goal_info->last_feedback.empty()) {
         response["last_feedback"] = goal_info->last_feedback;
       }
@@ -538,8 +504,7 @@ void OperationHandlers::handle_action_status(const httplib::Request & req, httpl
     }
 
     if (!entity_found) {
-      HandlerContext::send_error(
-        res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
     }
 
@@ -551,49 +516,43 @@ void OperationHandlers::handle_action_status(const httplib::Request & req, httpl
       auto goals = operation_mgr->get_goals_for_action(action_path);
       json goals_array = json::array();
       for (const auto & goal : goals) {
-        json goal_json = {
-          {"goal_id", goal.goal_id},
-          {"status", action_status_to_string(goal.status)},
-          {"action_path", goal.action_path},
-          {"action_type", goal.action_type}};
+        json goal_json = {{"goal_id", goal.goal_id},
+                          {"status", action_status_to_string(goal.status)},
+                          {"action_path", goal.action_path},
+                          {"action_type", goal.action_type}};
         if (!goal.last_feedback.is_null() && !goal.last_feedback.empty()) {
           goal_json["last_feedback"] = goal.last_feedback;
         }
         goals_array.push_back(goal_json);
       }
-      json response = {
-        {"action_path", action_path}, {"goals", goals_array}, {"count", goals.size()}};
+      json response = {{"action_path", action_path}, {"goals", goals_array}, {"count", goals.size()}};
       HandlerContext::send_json(res, response);
     } else {
       // Return the most recent goal for this action
       auto goal_info = operation_mgr->get_latest_goal_for_action(action_path);
       if (!goal_info.has_value()) {
-        HandlerContext::send_error(
-          res, StatusCode::NotFound_404, "No goals found for this action",
-          {{"action_path", action_path}});
+        HandlerContext::send_error(res, StatusCode::NotFound_404, "No goals found for this action",
+                                   {{"action_path", action_path}});
         return;
       }
 
-      json response = {
-        {"goal_id", goal_info->goal_id},
-        {"status", action_status_to_string(goal_info->status)},
-        {"action_path", goal_info->action_path},
-        {"action_type", goal_info->action_type}};
+      json response = {{"goal_id", goal_info->goal_id},
+                       {"status", action_status_to_string(goal_info->status)},
+                       {"action_path", goal_info->action_path},
+                       {"action_type", goal_info->action_type}};
       if (!goal_info->last_feedback.is_null() && !goal_info->last_feedback.empty()) {
         response["last_feedback"] = goal_info->last_feedback;
       }
       HandlerContext::send_json(res, response);
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(
-      res, StatusCode::InternalServerError_500, "Failed to get action status",
-      {{"details", e.what()}});
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get action status",
+                               {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_action_status: %s", e.what());
   }
 }
 
-void OperationHandlers::handle_action_result(const httplib::Request & req, httplib::Response & res)
-{
+void OperationHandlers::handle_action_result(const httplib::Request & req, httplib::Response & res) {
   std::string component_id;
   std::string operation_name;
   try {
@@ -608,9 +567,8 @@ void OperationHandlers::handle_action_result(const httplib::Request & req, httpl
     // Validate IDs
     auto component_validation = ctx_.validate_entity_id(component_id);
     if (!component_validation) {
-      HandlerContext::send_error(
-        res, StatusCode::BadRequest_400, "Invalid component ID",
-        {{"details", component_validation.error()}});
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+                                 {{"details", component_validation.error()}});
       return;
     }
 
@@ -621,8 +579,7 @@ void OperationHandlers::handle_action_result(const httplib::Request & req, httpl
     }
 
     if (goal_id.empty()) {
-      HandlerContext::send_error(
-        res, StatusCode::BadRequest_400, "Missing goal_id query parameter");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Missing goal_id query parameter");
       return;
     }
 
@@ -631,36 +588,29 @@ void OperationHandlers::handle_action_result(const httplib::Request & req, httpl
     auto goal_info = operation_mgr->get_tracked_goal(goal_id);
 
     if (!goal_info.has_value()) {
-      HandlerContext::send_error(
-        res, StatusCode::NotFound_404, "Goal not found", {{"goal_id", goal_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Goal not found", {{"goal_id", goal_id}});
       return;
     }
 
     // Get the result (this may block until the action completes)
-    auto result =
-      operation_mgr->get_action_result(goal_info->action_path, goal_info->action_type, goal_id);
+    auto result = operation_mgr->get_action_result(goal_info->action_path, goal_info->action_type, goal_id);
 
     if (result.success) {
       json response = {
-        {"goal_id", goal_id},
-        {"status", action_status_to_string(result.status)},
-        {"result", result.result}};
+          {"goal_id", goal_id}, {"status", action_status_to_string(result.status)}, {"result", result.result}};
       HandlerContext::send_json(res, response);
     } else {
-      HandlerContext::send_error(
-        res, StatusCode::InternalServerError_500, "Failed to get action result",
-        {{"details", result.error_message}});
+      HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get action result",
+                                 {{"details", result.error_message}});
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(
-      res, StatusCode::InternalServerError_500, "Failed to get action result",
-      {{"details", e.what()}});
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get action result",
+                               {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_action_result: %s", e.what());
   }
 }
 
-void OperationHandlers::handle_action_cancel(const httplib::Request & req, httplib::Response & res)
-{
+void OperationHandlers::handle_action_cancel(const httplib::Request & req, httplib::Response & res) {
   std::string component_id;
   std::string operation_name;
   try {
@@ -675,9 +625,8 @@ void OperationHandlers::handle_action_cancel(const httplib::Request & req, httpl
     // Validate IDs
     auto component_validation = ctx_.validate_entity_id(component_id);
     if (!component_validation) {
-      HandlerContext::send_error(
-        res, StatusCode::BadRequest_400, "Invalid component ID",
-        {{"details", component_validation.error()}});
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+                                 {{"details", component_validation.error()}});
       return;
     }
 
@@ -688,8 +637,7 @@ void OperationHandlers::handle_action_cancel(const httplib::Request & req, httpl
     }
 
     if (goal_id.empty()) {
-      HandlerContext::send_error(
-        res, StatusCode::BadRequest_400, "Missing goal_id query parameter");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Missing goal_id query parameter");
       return;
     }
 
@@ -698,8 +646,7 @@ void OperationHandlers::handle_action_cancel(const httplib::Request & req, httpl
     auto goal_info = operation_mgr->get_tracked_goal(goal_id);
 
     if (!goal_info.has_value()) {
-      HandlerContext::send_error(
-        res, StatusCode::NotFound_404, "Goal not found", {{"goal_id", goal_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Goal not found", {{"goal_id", goal_id}});
       return;
     }
 
@@ -707,8 +654,7 @@ void OperationHandlers::handle_action_cancel(const httplib::Request & req, httpl
     auto result = operation_mgr->cancel_action_goal(goal_info->action_path, goal_id);
 
     if (result.success && result.return_code == 0) {
-      json response = {
-        {"status", "canceling"}, {"goal_id", goal_id}, {"message", "Cancel request accepted"}};
+      json response = {{"status", "canceling"}, {"goal_id", goal_id}, {"message", "Cancel request accepted"}};
       HandlerContext::send_json(res, response);
     } else {
       std::string error_msg;
@@ -725,13 +671,12 @@ void OperationHandlers::handle_action_cancel(const httplib::Request & req, httpl
         default:
           error_msg = result.error_message.empty() ? "Cancel failed" : result.error_message;
       }
-      HandlerContext::send_error(
-        res, StatusCode::BadRequest_400, error_msg,
-        {{"goal_id", goal_id}, {"return_code", result.return_code}});
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, error_msg,
+                                 {{"goal_id", goal_id}, {"return_code", result.return_code}});
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(
-      res, StatusCode::InternalServerError_500, "Failed to cancel action", {{"details", e.what()}});
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to cancel action",
+                               {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_action_cancel: %s", e.what());
   }
 }
