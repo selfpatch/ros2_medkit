@@ -378,6 +378,53 @@ TEST_F(CorrelationEngineTest, ClearNonExistentFault) {
   EXPECT_TRUE(result.auto_cleared_codes.empty());
 }
 
+TEST_F(CorrelationEngineTest, AutoClusterRetroactiveMuting) {
+  // Create config with FIRST representative policy to have predictable representative
+  const std::string yaml = R"(
+correlation:
+  enabled: true
+  patterns:
+    sensor_errors:
+      codes: ["SENSOR_*"]
+  rules:
+    - id: sensor_cluster
+      mode: auto_cluster
+      match:
+        - pattern: sensor_errors
+      min_count: 3
+      window_ms: 500
+      show_as_single: true
+      representative: first
+)";
+  auto config = parse_config_string(yaml);
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+
+  // Fault #1 - representative (FIRST policy)
+  auto result1 = engine.process_fault("SENSOR_001", "ERROR", t0);
+  EXPECT_FALSE(result1.should_mute);  // First fault is representative
+  EXPECT_FALSE(result1.cluster_id.empty());
+  EXPECT_TRUE(result1.retroactive_mute_codes.empty());  // Cluster not active yet
+
+  // Fault #2 - not muted because cluster not active
+  auto result2 = engine.process_fault("SENSOR_002", "ERROR", t0 + std::chrono::milliseconds(10));
+  EXPECT_FALSE(result2.should_mute);  // Cluster still not active
+  EXPECT_TRUE(result2.retroactive_mute_codes.empty());
+
+  // Fault #3 - triggers cluster activation (min_count=3)
+  auto result3 = engine.process_fault("SENSOR_003", "ERROR", t0 + std::chrono::milliseconds(20));
+  EXPECT_TRUE(result3.should_mute);  // #3 is muted (not representative)
+  EXPECT_EQ(1u, result3.retroactive_mute_codes.size());  // #2 should be retroactively muted
+  EXPECT_EQ("SENSOR_002", result3.retroactive_mute_codes[0]);
+
+  // Cluster should be active with 3 faults
+  EXPECT_EQ(1u, engine.get_cluster_count());
+  auto clusters = engine.get_clusters();
+  EXPECT_EQ(3u, clusters[0].fault_codes.size());
+  EXPECT_EQ("SENSOR_001", clusters[0].representative_code);  // FIRST policy
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

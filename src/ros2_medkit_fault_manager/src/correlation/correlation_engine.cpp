@@ -409,9 +409,21 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
 
     // Check if cluster threshold reached
     if (cluster.fault_codes.size() >= rule.min_count) {
+      // Check if cluster is newly activated (first time reaching threshold)
+      bool newly_activated = (active_clusters_.find(cluster.cluster_id) == active_clusters_.end());
+
       // Move to active clusters
-      if (active_clusters_.find(cluster.cluster_id) == active_clusters_.end()) {
+      if (newly_activated) {
         active_clusters_[cluster.cluster_id] = cluster;
+
+        // Retroactively mute all non-representative faults added before threshold
+        if (rule.show_as_single) {
+          for (const auto & code : cluster.fault_codes) {
+            if (code != cluster.representative_code && code != fault_code) {
+              result.retroactive_mute_codes.push_back(code);
+            }
+          }
+        }
       } else {
         // Update existing
         active_clusters_[cluster.cluster_id] = cluster;

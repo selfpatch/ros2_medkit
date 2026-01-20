@@ -15,6 +15,7 @@
 #pragma once
 
 #include <map>
+#include <mutex>
 #include <regex>
 #include <string>
 #include <vector>
@@ -80,6 +81,9 @@ class PatternMatcher {
 
   /// Compiled pattern cache (pattern string -> compiled)
   mutable std::map<std::string, CompiledPattern> compiled_cache_;
+
+  /// Mutex for thread-safe cache access
+  mutable std::mutex cache_mutex_;
 };
 
 }  // namespace correlation

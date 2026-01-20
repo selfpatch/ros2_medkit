@@ -223,6 +223,11 @@ void FaultManagerNode::handle_report_fault(
       } else if (!correlation_result.cluster_id.empty()) {
         RCLCPP_DEBUG(get_logger(), "Fault %s added to cluster %s", request->fault_code.c_str(),
                      correlation_result.cluster_id.c_str());
+        // Log retroactively muted faults when cluster becomes active
+        if (!correlation_result.retroactive_mute_codes.empty()) {
+          RCLCPP_DEBUG(get_logger(), "Cluster %s activated: retroactively muting %zu faults",
+                       correlation_result.cluster_id.c_str(), correlation_result.retroactive_mute_codes.size());
+        }
       }
     }
 

@@ -47,6 +47,11 @@ struct ProcessFaultResult {
 
   /// For auto-cluster: cluster ID if this fault triggered or joined a cluster
   std::string cluster_id;
+
+  /// For auto-cluster: fault codes that should be retroactively muted
+  /// When cluster reaches min_count threshold, previous non-representative faults
+  /// that were added before threshold was reached need to be muted retroactively
+  std::vector<std::string> retroactive_mute_codes;
 };
 
 /// Result of clearing a fault

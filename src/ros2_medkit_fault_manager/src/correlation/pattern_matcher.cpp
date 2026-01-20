@@ -132,6 +132,8 @@ PatternMatcher::CompiledPattern PatternMatcher::compile_pattern(const std::strin
 }
 
 const PatternMatcher::CompiledPattern & PatternMatcher::get_compiled(const std::string & pattern) const {
+  std::lock_guard<std::mutex> lock(cache_mutex_);
+
   auto it = compiled_cache_.find(pattern);
   if (it != compiled_cache_.end()) {
     return it->second;
