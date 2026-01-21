@@ -73,6 +73,10 @@ struct CorrelationRule {
   /// Pattern IDs that define symptoms (references FaultPattern.id)
   std::vector<std::string> symptom_pattern_ids;
 
+  /// Inline symptom codes (not pattern references, direct codes with wildcard support)
+  /// Used when symptoms are defined with codes: [...] instead of pattern: xxx
+  std::vector<std::string> inline_symptom_codes;
+
   /// Whether to mute (not publish) symptom faults
   bool mute_symptoms{true};
 
@@ -127,6 +131,21 @@ Representative string_to_representative(const std::string & rep_str);
 
 /// Convert Representative to string
 std::string representative_to_string(Representative rep);
+
+/// Convert numeric severity (from Fault.msg) to string
+/// @param severity Numeric severity (0=INFO, 1=WARN, 2=ERROR, 3=CRITICAL)
+/// @return String representation ("INFO", "WARNING", "ERROR", "CRITICAL", or "UNKNOWN")
+std::string severity_to_string(uint8_t severity);
+
+/// Get numeric rank for severity comparison (higher = more severe)
+/// @param severity Numeric severity (0=INFO, 1=WARN, 2=ERROR, 3=CRITICAL)
+/// @return Rank for comparison (0-3)
+int severity_rank(uint8_t severity);
+
+/// Get numeric rank for severity comparison from string
+/// @param severity String severity ("INFO", "WARNING", "ERROR", "CRITICAL")
+/// @return Rank for comparison (0-3)
+int severity_rank(const std::string & severity);
 
 }  // namespace correlation
 }  // namespace ros2_medkit_fault_manager

@@ -84,9 +84,6 @@ class FaultManagerNode : public rclcpp::Node {
   /// @return CorrelationEngine instance if enabled and config is valid, nullptr otherwise
   std::unique_ptr<correlation::CorrelationEngine> create_correlation_engine();
 
-  /// Convert severity string to uint8_t
-  static std::string severity_to_string(uint8_t severity);
-
   /// Publish a fault event to the events topic
   /// @param event_type One of FaultEvent::EVENT_CONFIRMED, EVENT_CLEARED, EVENT_UPDATED
   /// @param fault The fault data associated with this event

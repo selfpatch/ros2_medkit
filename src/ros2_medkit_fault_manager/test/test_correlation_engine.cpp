@@ -223,6 +223,77 @@ TEST_F(CorrelationEngineTest, UnrelatedFaultNotCorrelated) {
   EXPECT_EQ(0u, engine.get_muted_count());
 }
 
+TEST_F(CorrelationEngineTest, InlineSymptomCodesMuted) {
+  // Config with inline codes instead of pattern references
+  const std::string yaml = R"(
+correlation:
+  enabled: true
+  rules:
+    - id: estop_inline
+      mode: hierarchical
+      root_cause:
+        codes: ["ESTOP_001"]
+      symptoms:
+        - codes: ["MOTOR_*", "DRIVE_*"]
+      window_ms: 1000
+      mute_symptoms: true
+)";
+  auto config = parse_config_string(yaml);
+  CorrelationEngine engine(config);
+
+  // Report root cause
+  auto root_result = engine.process_fault("ESTOP_001", "CRITICAL");
+  EXPECT_TRUE(root_result.is_root_cause);
+
+  // Report symptoms matching inline codes
+  auto motor_result = engine.process_fault("MOTOR_COMM_FL", "ERROR");
+  EXPECT_TRUE(motor_result.should_mute);
+  EXPECT_EQ("ESTOP_001", motor_result.root_cause_code);
+
+  auto drive_result = engine.process_fault("DRIVE_FAULT", "ERROR");
+  EXPECT_TRUE(drive_result.should_mute);
+
+  // Unrelated fault should not be muted
+  auto sensor_result = engine.process_fault("SENSOR_ERROR", "ERROR");
+  EXPECT_FALSE(sensor_result.should_mute);
+
+  EXPECT_EQ(2u, engine.get_muted_count());
+}
+
+TEST_F(CorrelationEngineTest, MixedPatternAndInlineSymptoms) {
+  // Config with both pattern references and inline codes
+  const std::string yaml = R"(
+correlation:
+  enabled: true
+  patterns:
+    sensor_errors:
+      codes: ["SENSOR_*"]
+  rules:
+    - id: estop_mixed
+      mode: hierarchical
+      root_cause:
+        codes: ["ESTOP_001"]
+      symptoms:
+        - pattern: sensor_errors
+        - codes: ["MOTOR_*"]
+      window_ms: 1000
+      mute_symptoms: true
+)";
+  auto config = parse_config_string(yaml);
+  CorrelationEngine engine(config);
+
+  engine.process_fault("ESTOP_001", "CRITICAL");
+
+  // Both pattern-matched and inline-matched faults should be muted
+  auto sensor_result = engine.process_fault("SENSOR_TIMEOUT", "ERROR");
+  EXPECT_TRUE(sensor_result.should_mute);
+
+  auto motor_result = engine.process_fault("MOTOR_FAULT", "ERROR");
+  EXPECT_TRUE(motor_result.should_mute);
+
+  EXPECT_EQ(2u, engine.get_muted_count());
+}
+
 // ============================================================================
 // Auto-cluster tests
 // ============================================================================

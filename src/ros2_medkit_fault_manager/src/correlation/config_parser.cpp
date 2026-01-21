@@ -97,9 +97,12 @@ void parse_symptom_refs(const YAML::Node & symptoms_node, CorrelationRule & rule
         rule.symptom_pattern_ids.push_back(symptom["pattern"].as<std::string>());
       }
       // Format: - codes: [CODE1, CODE2]
-      else if (symptom["codes"]) {
-        // Inline codes - we'll expand them later during validation
-        // For now, store them as a special "inline" pattern
+      else if (symptom["codes"] && symptom["codes"].IsSequence()) {
+        for (const auto & code : symptom["codes"]) {
+          if (code.IsScalar()) {
+            rule.inline_symptom_codes.push_back(code.as<std::string>());
+          }
+        }
       }
     }
   }
@@ -259,7 +262,7 @@ ValidationResult validate_config(const CorrelationConfig & config) {
         }
       }
 
-      if (rule.symptom_pattern_ids.empty()) {
+      if (rule.symptom_pattern_ids.empty() && rule.inline_symptom_codes.empty()) {
         result.add_warning("Hierarchical rule '" + rule.id + "' has no symptoms defined");
       }
     } else {

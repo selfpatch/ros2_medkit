@@ -152,6 +152,69 @@ correlation:
   EXPECT_TRUE(rule.auto_clear_with_root);
 }
 
+TEST_F(ConfigParserTest, ParseHierarchicalRuleWithInlineCodes) {
+  const std::string yaml = R"(
+correlation:
+  enabled: true
+  rules:
+    - id: inline_test
+      name: "Inline Codes Test"
+      mode: hierarchical
+      root_cause:
+        codes: ["ESTOP_001"]
+      symptoms:
+        - codes: ["MOTOR_COMM_*", "MOTOR_TIMEOUT_*"]
+        - codes: ["DRIVE_*"]
+      window_ms: 1000
+)";
+  auto config = parse_config_string(yaml);
+  EXPECT_TRUE(config.enabled);
+  ASSERT_EQ(1u, config.rules.size());
+
+  const auto & rule = config.rules[0];
+  EXPECT_EQ("inline_test", rule.id);
+  EXPECT_EQ(CorrelationMode::HIERARCHICAL, rule.mode);
+  EXPECT_TRUE(rule.symptom_pattern_ids.empty());  // No pattern references
+  ASSERT_EQ(3u, rule.inline_symptom_codes.size());
+  EXPECT_EQ("MOTOR_COMM_*", rule.inline_symptom_codes[0]);
+  EXPECT_EQ("MOTOR_TIMEOUT_*", rule.inline_symptom_codes[1]);
+  EXPECT_EQ("DRIVE_*", rule.inline_symptom_codes[2]);
+
+  // Validate should pass - inline codes count as symptoms
+  auto result = validate_config(config);
+  EXPECT_TRUE(result.valid) << "Errors: " << (result.errors.empty() ? "none" : result.errors[0]);
+}
+
+TEST_F(ConfigParserTest, ParseHierarchicalRuleMixedSymptoms) {
+  const std::string yaml = R"(
+correlation:
+  enabled: true
+  patterns:
+    sensor_errors:
+      codes: ["SENSOR_*"]
+  rules:
+    - id: mixed_test
+      mode: hierarchical
+      root_cause:
+        codes: ["ESTOP_001"]
+      symptoms:
+        - pattern: sensor_errors
+        - codes: ["MOTOR_*", "DRIVE_*"]
+)";
+  auto config = parse_config_string(yaml);
+  ASSERT_EQ(1u, config.rules.size());
+
+  const auto & rule = config.rules[0];
+  ASSERT_EQ(1u, rule.symptom_pattern_ids.size());
+  EXPECT_EQ("sensor_errors", rule.symptom_pattern_ids[0]);
+  ASSERT_EQ(2u, rule.inline_symptom_codes.size());
+  EXPECT_EQ("MOTOR_*", rule.inline_symptom_codes[0]);
+  EXPECT_EQ("DRIVE_*", rule.inline_symptom_codes[1]);
+
+  auto result = validate_config(config);
+  EXPECT_TRUE(result.valid);
+}
+
 TEST_F(ConfigParserTest, ParseAutoClusterRule) {
   const std::string yaml = R"(
 correlation:

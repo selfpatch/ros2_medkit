@@ -139,7 +139,7 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
   if (cluster_it != fault_to_cluster_.end()) {
     const std::string cluster_id = cluster_it->second;
 
-    // TODO(#105): Also clean up pending_clusters_ when fault is cleared.
+    // TODO(#127): Clean up pending_clusters_ when fault is cleared.
     // Currently, if a fault is cleared before cluster reaches min_count,
     // the pending cluster retains a phantom reference. Low impact since
     // pending clusters expire after window_ms, but could cause brief
@@ -269,6 +269,11 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_as_symptom(const std::s
           matches_symptom = true;
           break;
         }
+      }
+
+      // Also check inline symptom codes (direct codes with wildcard support)
+      if (!matches_symptom && !rule.inline_symptom_codes.empty()) {
+        matches_symptom = matcher_->matches_any(fault_code, rule.inline_symptom_codes);
       }
 
       if (!matches_symptom) {
@@ -447,21 +452,6 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
   }
 
   return std::nullopt;
-}
-
-int CorrelationEngine::severity_rank(const std::string & severity) {
-  // Match Fault.msg severity constants
-  if (severity == "CRITICAL" || severity == "3") {
-    return 3;
-  }
-  if (severity == "ERROR" || severity == "2") {
-    return 2;
-  }
-  if (severity == "WARN" || severity == "WARNING" || severity == "1") {
-    return 1;
-  }
-  // INFO or unknown
-  return 0;
 }
 
 std::string CorrelationEngine::generate_cluster_id(const std::string & rule_id) {

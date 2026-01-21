@@ -30,6 +30,96 @@ Benefits:
 - Faster root cause identification
 - Cleaner fault lists in dashboards
 
+How It Works
+~~~~~~~~~~~~
+
+**Hierarchical Mode Flow:**
+
+.. uml::
+
+   @startuml
+   skinparam backgroundColor #FEFEFE
+   skinparam sequenceMessageAlign center
+
+   participant "Fault Source" as src
+   participant "FaultManager" as fm
+   participant "CorrelationEngine" as ce
+   database "Fault Storage" as db
+
+   == Root Cause Detected ==
+   src -> fm: ReportFault(ESTOP_001, CRITICAL)
+   fm -> ce: process_fault("ESTOP_001")
+   ce -> ce: Register as root cause\n(rule: estop_cascade, window: 2000ms)
+   ce --> fm: is_root_cause=true
+   fm -> db: Store fault
+   fm --> src: accepted
+
+   == Symptoms Arrive (within window) ==
+   src -> fm: ReportFault(MOTOR_COMM_FL, ERROR)
+   fm -> ce: process_fault("MOTOR_COMM_FL")
+   ce -> ce: Matches MOTOR_* pattern\nWithin 2000ms window
+   ce --> fm: should_mute=true, root_cause="ESTOP_001"
+   fm -> db: Store fault (muted)
+   note right: Fault stored but\nnot published to SSE
+
+   src -> fm: ReportFault(DRIVE_FAULT, ERROR)
+   fm -> ce: process_fault("DRIVE_FAULT")
+   ce --> fm: should_mute=true
+   fm -> db: Store fault (muted)
+
+   == Query Faults ==
+   src -> fm: GetFaults()
+   fm --> src: [ESTOP_001], muted_count=2
+
+   == Clear Root Cause ==
+   src -> fm: ClearFault(ESTOP_001)
+   fm -> ce: process_clear("ESTOP_001")
+   ce --> fm: auto_cleared=[MOTOR_COMM_FL, DRIVE_FAULT]
+   fm -> db: Clear all 3 faults
+   @enduml
+
+**Auto-Cluster Mode Flow:**
+
+.. uml::
+
+   @startuml
+   skinparam backgroundColor #FEFEFE
+
+   participant "Fault Source" as src
+   participant "FaultManager" as fm
+   participant "CorrelationEngine" as ce
+
+   note over ce: min_count=3, window=500ms\nrepresentative=highest_severity
+
+   == Faults Accumulate ==
+   src -> fm: ReportFault(SENSOR_001, ERROR)
+   fm -> ce: process_fault("SENSOR_001", "ERROR")
+   ce -> ce: Start pending cluster\n[SENSOR_001]
+   ce --> fm: cluster_id="sensor_storm_1"
+   note right: Not yet active\n(count=1 < min_count=3)
+
+   src -> fm: ReportFault(SENSOR_002, WARN)
+   fm -> ce: process_fault("SENSOR_002", "WARN")
+   ce -> ce: Add to pending\n[SENSOR_001, SENSOR_002]
+   ce --> fm: cluster_id="sensor_storm_1"
+
+   == Cluster Activates ==
+   src -> fm: ReportFault(SENSOR_003, CRITICAL)
+   fm -> ce: process_fault("SENSOR_003", "CRITICAL")
+   ce -> ce: count=3 >= min_count\n**CLUSTER ACTIVE**
+   ce -> ce: Select representative:\nSENSOR_003 (highest severity)
+   ce --> fm: should_mute=false (is representative)\nretroactive_mute=[SENSOR_001, SENSOR_002]
+   note right #LightGreen: SENSOR_003 shown\nothers muted
+
+   src -> fm: ReportFault(SENSOR_004, ERROR)
+   fm -> ce: process_fault("SENSOR_004", "ERROR")
+   ce --> fm: should_mute=true (not representative)
+
+   == Query Result ==
+   src -> fm: GetFaults(include_clusters=true)
+   fm --> src: [SENSOR_003]\nclusters: [{id: "sensor_storm_1",\n  fault_codes: [001,002,003,004],\n  representative: "SENSOR_003"}]
+   @enduml
+
 Quick Start
 -----------
 

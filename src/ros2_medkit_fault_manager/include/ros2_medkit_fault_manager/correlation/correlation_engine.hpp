@@ -141,9 +141,6 @@ class CorrelationEngine {
   std::optional<ProcessFaultResult> try_auto_cluster(const std::string & fault_code, const std::string & severity,
                                                      std::chrono::steady_clock::time_point timestamp);
 
-  /// Get severity rank for comparison (higher = more severe)
-  static int severity_rank(const std::string & severity);
-
   /// Generate unique cluster ID
   std::string generate_cluster_id(const std::string & rule_id);
 

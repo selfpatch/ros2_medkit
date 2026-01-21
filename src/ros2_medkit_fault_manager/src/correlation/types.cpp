@@ -74,5 +74,39 @@ std::string representative_to_string(Representative rep) {
   }
 }
 
+std::string severity_to_string(uint8_t severity) {
+  switch (severity) {
+    case 0:  // SEVERITY_INFO
+      return "INFO";
+    case 1:  // SEVERITY_WARN
+      return "WARNING";
+    case 2:  // SEVERITY_ERROR
+      return "ERROR";
+    case 3:  // SEVERITY_CRITICAL
+      return "CRITICAL";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+int severity_rank(uint8_t severity) {
+  // Direct mapping: severity value is already the rank (0-3)
+  return (severity <= 3) ? static_cast<int>(severity) : 0;
+}
+
+int severity_rank(const std::string & severity) {
+  if (severity == "CRITICAL" || severity == "3") {
+    return 3;
+  }
+  if (severity == "ERROR" || severity == "2") {
+    return 2;
+  }
+  if (severity == "WARN" || severity == "WARNING" || severity == "1") {
+    return 1;
+  }
+  // INFO or unknown
+  return 0;
+}
+
 }  // namespace correlation
 }  // namespace ros2_medkit_fault_manager

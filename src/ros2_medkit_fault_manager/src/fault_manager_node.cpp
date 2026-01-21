@@ -109,7 +109,14 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
 
   // Create correlation cleanup timer if correlation is enabled
   if (correlation_engine_) {
-    correlation_cleanup_timer_ = create_wall_timer(std::chrono::seconds(5), [this]() {
+    auto cleanup_interval_sec = declare_parameter<double>("correlation.cleanup_interval_sec", 5.0);
+    if (cleanup_interval_sec <= 0.0) {
+      RCLCPP_WARN(get_logger(), "correlation.cleanup_interval_sec must be positive, got %.2f. Using default 5.0s",
+                  cleanup_interval_sec);
+      cleanup_interval_sec = 5.0;
+    }
+    auto cleanup_interval_ms = static_cast<int64_t>(cleanup_interval_sec * 1000);
+    correlation_cleanup_timer_ = create_wall_timer(std::chrono::milliseconds(cleanup_interval_ms), [this]() {
       correlation_engine_->cleanup_expired();
     });
   }
@@ -216,7 +223,7 @@ void FaultManagerNode::handle_report_fault(
     bool should_mute = false;
     if (correlation_engine_ && request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
       auto correlation_result =
-          correlation_engine_->process_fault(request->fault_code, severity_to_string(request->severity));
+          correlation_engine_->process_fault(request->fault_code, correlation::severity_to_string(request->severity));
 
       should_mute = correlation_result.should_mute;
 
@@ -541,21 +548,6 @@ std::unique_ptr<correlation::CorrelationEngine> FaultManagerNode::create_correla
   } catch (const std::exception & e) {
     RCLCPP_ERROR(get_logger(), "Failed to load correlation config: %s", e.what());
     return nullptr;
-  }
-}
-
-std::string FaultManagerNode::severity_to_string(uint8_t severity) {
-  switch (severity) {
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_INFO:
-      return "INFO";
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_WARN:
-      return "WARNING";
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR:
-      return "ERROR";
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL:
-      return "CRITICAL";
-    default:
-      return "UNKNOWN";
   }
 }
 

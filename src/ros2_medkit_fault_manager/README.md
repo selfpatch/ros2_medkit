@@ -209,6 +209,7 @@ ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `correlation.config_file` | string | `""` | Path to correlation YAML config (empty = disabled) |
+| `correlation.cleanup_interval_sec` | double | `5.0` | Interval for cleaning up expired pending correlations (seconds) |
 
 ### Configuration File Format
 
