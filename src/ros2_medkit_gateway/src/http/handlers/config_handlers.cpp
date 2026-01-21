@@ -96,44 +96,24 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
       return;
     }
 
-    const auto cache = ctx_.node()->get_entity_cache();
-
-    std::string node_name;
-    bool entity_found = false;
-    std::string id_field = "component_id";
-
-    // Try components first
-    for (const auto & component : cache.components) {
-      if (component.id == entity_id) {
-        node_name = component.fqn;
-        entity_found = true;
-        break;
-      }
-    }
-
-    // If not found in components, try apps
-    if (!entity_found) {
-      for (const auto & app : cache.apps) {
-        if (app.id == entity_id) {
-          node_name = app.bound_fqn.value_or("/" + app.id);
-          entity_found = true;
-          id_field = "app_id";
-          break;
-        }
-      }
-    }
-
-    if (!entity_found) {
-      std::string error_msg = (id_field == "app_id") ? "App not found" : "Component not found";
-      HandlerContext::send_error(res, StatusCode::NotFound_404, error_msg, {{id_field, entity_id}});
+    // Use unified entity lookup
+    auto entity_info = ctx_.get_entity_info(entity_id);
+    if (entity_info.type == EntityType::UNKNOWN) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
+    }
+
+    // Get node name for parameter access
+    std::string node_name = entity_info.fqn;
+    if (node_name.empty()) {
+      node_name = "/" + entity_id;
     }
 
     auto config_mgr = ctx_.node()->get_configuration_manager();
     auto result = config_mgr->get_parameter(node_name, param_name);
 
     if (result.success) {
-      json response = {{id_field, entity_id}, {"parameter", result.data}};
+      json response = {{entity_info.id_field, entity_id}, {"parameter", result.data}};
       HandlerContext::send_json(res, response);
     } else {
       // Check if it's a "not found" error
@@ -141,11 +121,11 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
           result.error_message.find("Parameter not found") != std::string::npos) {
         HandlerContext::send_error(
             res, StatusCode::NotFound_404, "Failed to get parameter",
-            {{"details", result.error_message}, {id_field, entity_id}, {"param_name", param_name}});
+            {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"param_name", param_name}});
       } else {
         HandlerContext::send_error(
             res, StatusCode::ServiceUnavailable_503, "Failed to get parameter",
-            {{"details", result.error_message}, {id_field, entity_id}, {"param_name", param_name}});
+            {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"param_name", param_name}});
       }
     }
   } catch (const std::exception & e) {
@@ -200,44 +180,24 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
 
     json value = body["value"];
 
-    const auto cache = ctx_.node()->get_entity_cache();
-
-    std::string node_name;
-    bool entity_found = false;
-    std::string id_field = "component_id";
-
-    // Try components first
-    for (const auto & component : cache.components) {
-      if (component.id == entity_id) {
-        node_name = component.fqn;
-        entity_found = true;
-        break;
-      }
-    }
-
-    // If not found in components, try apps
-    if (!entity_found) {
-      for (const auto & app : cache.apps) {
-        if (app.id == entity_id) {
-          node_name = app.bound_fqn.value_or("/" + app.id);
-          entity_found = true;
-          id_field = "app_id";
-          break;
-        }
-      }
-    }
-
-    if (!entity_found) {
-      std::string error_msg = (id_field == "app_id") ? "App not found" : "Component not found";
-      HandlerContext::send_error(res, StatusCode::NotFound_404, error_msg, {{id_field, entity_id}});
+    // Use unified entity lookup
+    auto entity_info = ctx_.get_entity_info(entity_id);
+    if (entity_info.type == EntityType::UNKNOWN) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
+    }
+
+    // Get node name for parameter access
+    std::string node_name = entity_info.fqn;
+    if (node_name.empty()) {
+      node_name = "/" + entity_id;
     }
 
     auto config_mgr = ctx_.node()->get_configuration_manager();
     auto result = config_mgr->set_parameter(node_name, param_name, value);
 
     if (result.success) {
-      json response = {{"status", "success"}, {id_field, entity_id}, {"parameter", result.data}};
+      json response = {{"status", "success"}, {entity_info.id_field, entity_id}, {"parameter", result.data}};
       HandlerContext::send_json(res, response);
     } else {
       // Check if it's a read-only, not found, or service unavailable error
@@ -257,7 +217,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
       }
       HandlerContext::send_error(
           res, status_code, "Failed to set parameter",
-          {{"details", result.error_message}, {id_field, entity_id}, {"param_name", param_name}});
+          {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"param_name", param_name}});
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to set configuration",
@@ -287,38 +247,17 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
       return;
     }
 
-    const auto cache = ctx_.node()->get_entity_cache();
-
-    // Find entity to get its namespace and node name
-    std::string node_name;
-    bool entity_found = false;
-    std::string id_field = "component_id";
-
-    // Try components first
-    for (const auto & component : cache.components) {
-      if (component.id == entity_id) {
-        node_name = component.fqn;
-        entity_found = true;
-        break;
-      }
-    }
-
-    // If not found in components, try apps
-    if (!entity_found) {
-      for (const auto & app : cache.apps) {
-        if (app.id == entity_id) {
-          node_name = app.bound_fqn.value_or("/" + app.id);
-          entity_found = true;
-          id_field = "app_id";
-          break;
-        }
-      }
-    }
-
-    if (!entity_found) {
-      std::string error_msg = (id_field == "app_id") ? "App not found" : "Component not found";
-      HandlerContext::send_error(res, StatusCode::NotFound_404, error_msg, {{id_field, entity_id}});
+    // Use unified entity lookup
+    auto entity_info = ctx_.get_entity_info(entity_id);
+    if (entity_info.type == EntityType::UNKNOWN) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
+    }
+
+    // Get node name for parameter access
+    std::string node_name = entity_info.fqn;
+    if (node_name.empty()) {
+      node_name = "/" + entity_id;
     }
 
     auto config_mgr = ctx_.node()->get_configuration_manager();
@@ -356,38 +295,17 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
       return;
     }
 
-    const auto cache = ctx_.node()->get_entity_cache();
-
-    // Find entity to get its namespace and node name
-    std::string node_name;
-    bool entity_found = false;
-    std::string id_field = "component_id";
-
-    // Try components first
-    for (const auto & component : cache.components) {
-      if (component.id == entity_id) {
-        node_name = component.fqn;
-        entity_found = true;
-        break;
-      }
-    }
-
-    // If not found in components, try apps
-    if (!entity_found) {
-      for (const auto & app : cache.apps) {
-        if (app.id == entity_id) {
-          node_name = app.bound_fqn.value_or("/" + app.id);
-          entity_found = true;
-          id_field = "app_id";
-          break;
-        }
-      }
-    }
-
-    if (!entity_found) {
-      std::string error_msg = (id_field == "app_id") ? "App not found" : "Component not found";
-      HandlerContext::send_error(res, StatusCode::NotFound_404, error_msg, {{id_field, entity_id}});
+    // Use unified entity lookup
+    auto entity_info = ctx_.get_entity_info(entity_id);
+    if (entity_info.type == EntityType::UNKNOWN) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
       return;
+    }
+
+    // Get node name for parameter access
+    std::string node_name = entity_info.fqn;
+    if (node_name.empty()) {
+      node_name = "/" + entity_id;
     }
 
     auto config_mgr = ctx_.node()->get_configuration_manager();

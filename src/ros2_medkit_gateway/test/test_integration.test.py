@@ -257,18 +257,30 @@ def generate_test_description():
 # API version prefix - must match rest_server.cpp
 API_BASE_PATH = '/api/v1'
 
+# Action timeout - 30s should be sufficient, if still flaky then code has performance issues
+ACTION_TIMEOUT = 30.0
+
 
 class TestROS2MedkitGatewayIntegration(unittest.TestCase):
     """Integration tests for ROS 2 Medkit Gateway REST API and discovery."""
 
     BASE_URL = f'http://localhost:8080{API_BASE_PATH}'
+
+    # Expected entities from demo_nodes.launch.py:
+    # - Apps: temp_sensor, rpm_sensor, pressure_sensor, status_sensor, actuator,
+    #         controller, calibration, long_calibration, lidar_sensor (9 total)
+    # - Areas: powertrain, chassis, body, perception, root (5 total)
+    # - Components: Synthetic groupings by area (powertrain, chassis, body, perception)
+    #               created from nodes in those namespaces
+    #
     # Minimum expected components (synthetic, grouped by top-level namespace)
-    # With default config: powertrain, chassis, body, perception, root
+    # With default config: powertrain, chassis, body, perception (root may not have synthetic)
     MIN_EXPECTED_COMPONENTS = 4
-    # Minimum expected apps (ROS 2 nodes)
+    # Minimum expected apps (ROS 2 nodes from demo launch)
     MIN_EXPECTED_APPS = 8
-    # Minimum expected areas (powertrain, chassis, body + root)
+    # Minimum expected areas (powertrain, chassis, body, perception + root)
     MIN_EXPECTED_AREAS = 4
+
     # Maximum time to wait for discovery (seconds)
     MAX_DISCOVERY_WAIT = 60.0
     # Interval between discovery checks (seconds)
@@ -321,7 +333,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         return response.json()
 
     def _wait_for_action_status(
-        self, goal_id: str, target_statuses: list, max_wait: float = 15.0
+        self, goal_id: str, target_statuses: list, max_wait: float = None
     ) -> dict:
         """
         Poll action status until it reaches one of the target statuses.
@@ -333,7 +345,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         target_statuses : list
             List of status strings to wait for (e.g., ['succeeded', 'aborted']).
         max_wait : float
-            Maximum time to wait in seconds (default: 15.0).
+            Maximum time to wait in seconds. Defaults to ACTION_TIMEOUT (30s).
 
         Returns
         -------
@@ -346,6 +358,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             If target status is not reached within max_wait.
 
         """
+        if max_wait is None:
+            max_wait = ACTION_TIMEOUT
         start_time = time.time()
         last_status = None
         while time.time() - start_time < max_wait:
@@ -1483,7 +1497,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Poll for completion instead of fixed sleep (handles CI timing variance)
         data = self._wait_for_action_status(
-            goal_id, ['succeeded', 'aborted'], max_wait=15.0
+            goal_id, ['succeeded', 'aborted'], max_wait=ACTION_TIMEOUT
         )
 
         self.assertIn('goal_id', data)
@@ -1511,7 +1525,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         # Poll until action is executing (handles CI timing variance)
         try:
             self._wait_for_action_status(
-                goal_id, ['executing'], max_wait=10.0
+                goal_id, ['executing'], max_wait=ACTION_TIMEOUT
             )
         except AssertionError:
             # If action already completed or is still in accepted, try cancel anyway

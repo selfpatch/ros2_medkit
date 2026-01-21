@@ -128,6 +128,7 @@ std::vector<Component> RuntimeDiscoveryStrategy::discover_node_components() {
 
     // Skip duplicate nodes - ROS 2 RMW may report same node multiple times
     if (seen_fqns.count(fqn) > 0) {
+      RCLCPP_DEBUG(node_->get_logger(), "Skipping duplicate node: %s", fqn.c_str());
       continue;
     }
     seen_fqns.insert(fqn);
@@ -611,6 +612,17 @@ std::string RuntimeDiscoveryStrategy::derive_component_id(const Component & node
 }
 
 std::string RuntimeDiscoveryStrategy::apply_component_name_pattern(const std::string & area) {
+  // Validate inputs to prevent unexpected empty component IDs
+  if (area.empty()) {
+    RCLCPP_WARN(node_->get_logger(), "apply_component_name_pattern called with empty area, using 'unknown'");
+    return apply_component_name_pattern("unknown");
+  }
+
+  if (config_.synthetic_component_name_pattern.empty()) {
+    RCLCPP_WARN(node_->get_logger(), "Empty synthetic_component_name_pattern, using area directly: %s", area.c_str());
+    return area;
+  }
+
   std::string result = config_.synthetic_component_name_pattern;
 
   // Replace {area} placeholder
