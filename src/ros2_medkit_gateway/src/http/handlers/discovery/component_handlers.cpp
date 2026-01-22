@@ -21,6 +21,8 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
+#include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
@@ -146,88 +148,80 @@ void ComponentHandlers::handle_component_data(const httplib::Request & req, http
     const auto & component = *comp_opt;
 
     // Collect all topics - from component directly OR aggregated from related Apps
-    std::set<std::string> all_topics;
+    // Track publisher vs subscriber for direction info
+    std::set<std::string> publish_topics;
+    std::set<std::string> subscribe_topics;
 
     // First, check component's own topics
     for (const auto & topic : component.topics.publishes) {
-      all_topics.insert(topic);
+      publish_topics.insert(topic);
     }
     for (const auto & topic : component.topics.subscribes) {
-      all_topics.insert(topic);
+      subscribe_topics.insert(topic);
     }
 
     // If component has no direct topics (synthetic component), aggregate from Apps
-    if (all_topics.empty()) {
+    if (publish_topics.empty() && subscribe_topics.empty()) {
       auto apps = discovery->get_apps_for_component(component_id);
       for (const auto & app : apps) {
         for (const auto & topic : app.topics.publishes) {
-          all_topics.insert(topic);
+          publish_topics.insert(topic);
         }
         for (const auto & topic : app.topics.subscribes) {
-          all_topics.insert(topic);
+          subscribe_topics.insert(topic);
         }
       }
     }
 
-    // Sample all topics for this component
-    auto data_access_mgr = ctx_.node()->get_data_access_manager();
-    json component_data = json::array();
+    // Build SOVD-compliant items array with ValueMetadata format
+    json items = json::array();
 
-    if (!all_topics.empty()) {
-      // Convert set to vector for parallel sampling
-      std::vector<std::string> topics_vec(all_topics.begin(), all_topics.end());
+    // Add publisher topics
+    for (const auto & topic_name : publish_topics) {
+      json item;
+      // SOVD required fields
+      item["id"] = normalize_topic_to_id(topic_name);
+      item["name"] = topic_name;
+      item["category"] = "currentData";
 
-      // Use native sampler for parallel sampling with fallback to metadata
-      auto native_sampler = data_access_mgr->get_native_sampler();
-      auto samples =
-          native_sampler->sample_topics_parallel(topics_vec, data_access_mgr->get_topic_sample_timeout(), 10);
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.ros2_topic(topic_name).add_ros2("direction", "publish");
+      item["x-medkit"] = ext.build();
 
-      for (const auto & sample : samples) {
-        json topic_json;
-        topic_json["topic"] = sample.topic_name;
-        topic_json["timestamp"] = sample.timestamp_ns;
-        topic_json["publisher_count"] = sample.publisher_count;
-        topic_json["subscriber_count"] = sample.subscriber_count;
-
-        if (sample.has_data && sample.data) {
-          topic_json["status"] = "data";
-          topic_json["data"] = *sample.data;
-        } else {
-          topic_json["status"] = "metadata_only";
-        }
-
-        // Add endpoint information with QoS
-        json publishers_json = json::array();
-        for (const auto & pub : sample.publishers) {
-          publishers_json.push_back(pub.to_json());
-        }
-        topic_json["publishers"] = publishers_json;
-
-        json subscribers_json = json::array();
-        for (const auto & sub : sample.subscribers) {
-          subscribers_json.push_back(sub.to_json());
-        }
-        topic_json["subscribers"] = subscribers_json;
-
-        // Enrich with message type and schema
-        if (!sample.message_type.empty()) {
-          topic_json["type"] = sample.message_type;
-
-          try {
-            auto type_introspection = data_access_mgr->get_type_introspection();
-            auto type_info = type_introspection->get_type_info(sample.message_type);
-            topic_json["type_info"] = {{"schema", type_info.schema}, {"default_value", type_info.default_value}};
-          } catch (const std::exception & e) {
-            RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for '%s': %s", sample.message_type.c_str(),
-                         e.what());
-          }
-        }
-
-        component_data.push_back(topic_json);
-      }
+      items.push_back(item);
     }
 
-    HandlerContext::send_json(res, component_data);
+    // Add subscriber topics (avoid duplicates)
+    for (const auto & topic_name : subscribe_topics) {
+      // Skip if already added as publisher
+      if (publish_topics.count(topic_name) > 0) {
+        continue;
+      }
+
+      json item;
+      // SOVD required fields
+      item["id"] = normalize_topic_to_id(topic_name);
+      item["name"] = topic_name;
+      item["category"] = "currentData";
+
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.ros2_topic(topic_name).add_ros2("direction", "subscribe");
+      item["x-medkit"] = ext.build();
+
+      items.push_back(item);
+    }
+
+    // Build response with x-medkit for total_count
+    json response;
+    response["items"] = items;
+
+    XMedkit resp_ext;
+    resp_ext.entity_id(component_id).add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
                                "Failed to retrieve component data",
@@ -273,16 +267,47 @@ void ComponentHandlers::handle_component_topic_data(const httplib::Request & req
     }
 
     // cpp-httplib has already decoded %2F to / in topic_name
-    // Now just add leading slash to make it a full ROS topic path
-    // e.g., "powertrain/engine/temperature" -> "/powertrain/engine/temperature"
-    std::string full_topic_path = "/" + topic_name;
+    // Determine the full ROS topic path
+    std::string full_topic_path;
+    if (topic_name.empty() || topic_name[0] == '/') {
+      full_topic_path = topic_name;
+    } else {
+      full_topic_path = "/" + topic_name;
+    }
 
-    // Get topic data from DataAccessManager (with fallback to metadata if data unavailable)
-    // Uses topic_sample_timeout_sec parameter (default: 1.0s)
+    // Also support normalized data IDs (sensor_temperature -> /sensor/temperature search)
+    // Try both the normalized ID and the raw topic name
+
+    // Get topic data from DataAccessManager
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
-    json topic_data = data_access_mgr->get_topic_sample_with_fallback(full_topic_path);
+    auto native_sampler = data_access_mgr->get_native_sampler();
+    auto sample = native_sampler->sample_topic(full_topic_path, data_access_mgr->get_topic_sample_timeout());
 
-    HandlerContext::send_json(res, topic_data);
+    // Build SOVD ReadValue response
+    json response;
+    // SOVD required fields
+    response["id"] = normalize_topic_to_id(full_topic_path);
+
+    // SOVD "data" field contains the actual value
+    if (sample.has_data && sample.data) {
+      response["data"] = *sample.data;
+    } else {
+      response["data"] = json::object();  // Empty object if no data available
+    }
+
+    // Build x-medkit extension with ROS2-specific data
+    XMedkit ext;
+    ext.ros2_topic(full_topic_path).entity_id(component_id);
+    if (!sample.message_type.empty()) {
+      ext.ros2_type(sample.message_type);
+    }
+    ext.add("timestamp", sample.timestamp_ns);
+    ext.add("publisher_count", sample.publisher_count);
+    ext.add("subscriber_count", sample.subscriber_count);
+    ext.add("status", sample.has_data ? "data" : "metadata_only");
+    response["x-medkit"] = ext.build();
+
+    HandlerContext::send_json(res, response);
   } catch (const TopicNotAvailableException & e) {
     // Topic doesn't exist or metadata retrieval failed
     HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE, "Topic not found",
@@ -384,11 +409,24 @@ void ComponentHandlers::handle_component_topic_publish(const httplib::Request & 
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
     json result = data_access_mgr->publish_to_topic(full_topic_path, msg_type, data);
 
-    // Add component info to result
-    result["component_id"] = component_id;
-    result["topic_name"] = topic_name;
+    // Build SOVD-compliant response with x-medkit extension
+    json response;
+    // SOVD required fields
+    response["id"] = normalize_topic_to_id(full_topic_path);
+    response["data"] = data;  // Echo back the written data
 
-    HandlerContext::send_json(res, result);
+    // Build x-medkit extension with ROS2-specific data
+    XMedkit ext;
+    ext.ros2_topic(full_topic_path).ros2_type(msg_type).entity_id(component_id);
+    if (result.contains("status")) {
+      ext.add("status", result["status"]);
+    }
+    if (result.contains("publisher_created")) {
+      ext.add("publisher_created", result["publisher_created"]);
+    }
+    response["x-medkit"] = ext.build();
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
                                "Failed to publish to topic",

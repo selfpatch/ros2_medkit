@@ -117,10 +117,8 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
 
     for (const auto & svc : services) {
       // SOVD-compliant response format
-      json svc_json = {{"id", svc.name},
-                       {"name", svc.name},
-                       {"proximity_proof_required", false},
-                       {"asynchronous_execution", false}};
+      json svc_json = {
+          {"id", svc.name}, {"name", svc.name}, {"proximity_proof_required", false}, {"asynchronous_execution", false}};
 
       // Build x-medkit extension with ROS2-specific data
       auto x_medkit = XMedkit()
@@ -150,10 +148,8 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
 
     for (const auto & act : actions) {
       // SOVD-compliant response format
-      json act_json = {{"id", act.name},
-                       {"name", act.name},
-                       {"proximity_proof_required", false},
-                       {"asynchronous_execution", true}};
+      json act_json = {
+          {"id", act.name}, {"name", act.name}, {"proximity_proof_required", false}, {"asynchronous_execution", true}};
 
       // Build x-medkit extension with ROS2-specific data
       auto x_medkit = XMedkit()
@@ -1082,8 +1078,8 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
 
         // Add Location header pointing to execution status endpoint
         std::string base_path = (entity_type == "app") ? "/api/v1/apps/" : "/api/v1/components/";
-        std::string location = base_path + entity_id + "/operations/" + operation_id + "/executions/" +
-                               action_result.goal_id;
+        std::string location =
+            base_path + entity_id + "/operations/" + operation_id + "/executions/" + action_result.goal_id;
         res.set_header("Location", location);
 
         res.status = StatusCode::Accepted_202;
@@ -1095,11 +1091,9 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
              {"operation_id", operation_id},
              {"details", action_result.error_message.empty() ? "Goal rejected" : action_result.error_message}});
       } else {
-        HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_X_MEDKIT_ROS2_ACTION_UNAVAILABLE,
-                                   "Action execution failed",
-                                   {{id_field, entity_id},
-                                    {"operation_id", operation_id},
-                                    {"details", action_result.error_message}});
+        HandlerContext::send_error(
+            res, StatusCode::InternalServerError_500, ERR_X_MEDKIT_ROS2_ACTION_UNAVAILABLE, "Action execution failed",
+            {{id_field, entity_id}, {"operation_id", operation_id}, {"details", action_result.error_message}});
       }
       return;
     }
@@ -1245,10 +1239,9 @@ void OperationHandlers::handle_get_execution(const httplib::Request & req, httpl
     auto goal_info = operation_mgr->get_tracked_goal(execution_id);
 
     if (!goal_info.has_value()) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
-                                 {{"entity_id", entity_id},
-                                  {"operation_id", operation_id},
-                                  {"execution_id", execution_id}});
+      HandlerContext::send_error(
+          res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
+          {{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}});
       return;
     }
 
@@ -1261,12 +1254,11 @@ void OperationHandlers::handle_get_execution(const httplib::Request & req, httpl
     }
 
     // Add x-medkit extension for ROS2-specific details
-    auto x_medkit =
-        XMedkit()
-            .add("goal_id", execution_id)
-            .add("ros2_status", action_status_to_string(goal_info->status))
-            .ros2_action(goal_info->action_path)
-            .ros2_type(goal_info->action_type);
+    auto x_medkit = XMedkit()
+                        .add("goal_id", execution_id)
+                        .add("ros2_status", action_status_to_string(goal_info->status))
+                        .ros2_action(goal_info->action_path)
+                        .ros2_type(goal_info->action_type);
     response["x-medkit"] = x_medkit.build();
 
     HandlerContext::send_json(res, response);
@@ -1307,10 +1299,9 @@ void OperationHandlers::handle_cancel_execution(const httplib::Request & req, ht
     auto goal_info = operation_mgr->get_tracked_goal(execution_id);
 
     if (!goal_info.has_value()) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
-                                 {{"entity_id", entity_id},
-                                  {"operation_id", operation_id},
-                                  {"execution_id", execution_id}});
+      HandlerContext::send_error(
+          res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
+          {{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}});
       return;
     }
 
