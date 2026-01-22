@@ -27,6 +27,7 @@
 #include "ros2_medkit_gateway/auth/auth_config.hpp"
 #include "ros2_medkit_gateway/auth/auth_manager.hpp"
 #include "ros2_medkit_gateway/config.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -136,15 +137,30 @@ class HandlerContext {
   bool is_origin_allowed(const std::string & origin) const;
 
   /**
-   * @brief Send JSON error response with simple message
+   * @brief Send JSON error response following SOVD GenericError schema
+   *
+   * Creates a response with the following structure:
+   * {
+   *   "error_code": "entity-not-found",
+   *   "message": "Entity not found",
+   *   "parameters": { ... }  // optional
+   * }
+   *
+   * For vendor-specific errors (x-medkit-*), the response includes:
+   * {
+   *   "error_code": "vendor-error",
+   *   "vendor_code": "x-medkit-ros2-service-unavailable",
+   *   "message": "..."
+   * }
+   *
+   * @param res HTTP response object
+   * @param status HTTP status code
+   * @param error_code SOVD error code (use constants from error_codes.hpp)
+   * @param message Human-readable error message
+   * @param parameters Optional additional parameters for context
    */
-  static void send_error(httplib::Response & res, httplib::StatusCode status, const std::string & error);
-
-  /**
-   * @brief Send JSON error response with additional fields
-   */
-  static void send_error(httplib::Response & res, httplib::StatusCode status, const std::string & error,
-                         const nlohmann::json & extra_fields);
+  static void send_error(httplib::Response & res, httplib::StatusCode status, const std::string & error_code,
+                         const std::string & message, const nlohmann::json & parameters = {});
 
   /**
    * @brief Send JSON success response

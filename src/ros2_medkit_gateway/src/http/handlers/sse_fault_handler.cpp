@@ -20,6 +20,7 @@
 
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -75,7 +76,7 @@ void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Respo
   if (client_count_.load() >= max_sse_clients_) {
     RCLCPP_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
                 max_sse_clients_, req.remote_addr.c_str());
-    HandlerContext::send_error(res, httplib::StatusCode::ServiceUnavailable_503,
+    HandlerContext::send_error(res, httplib::StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
                                "Maximum number of SSE clients reached. Please try again later.");
     return;
   }

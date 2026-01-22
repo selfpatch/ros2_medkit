@@ -19,6 +19,7 @@
 
 #include "ros2_medkit_gateway/auth/auth_middleware.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 
 using httplib::StatusCode;
@@ -62,6 +63,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   auth_handlers_ = std::make_unique<handlers::AuthHandlers>(*handler_ctx_);
   sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_);
 
+  // Set up global error handlers for SOVD GenericError compliance
+  setup_global_error_handlers();
   // Set up pre-routing handler for CORS and Authentication
   setup_pre_routing_handler();
   setup_routes();
@@ -118,6 +121,55 @@ void RESTServer::setup_pre_routing_handler() {
 
     return httplib::Server::HandlerResponse::Unhandled;
   });
+}
+
+void RESTServer::setup_global_error_handlers() {
+  httplib::Server * srv = http_server_->get_server();
+  if (!srv) {
+    return;
+  }
+
+  // Global error handler - catches HTTP errors like 404 Not Found
+  // Only set error content if no content has been set by a handler
+  srv->set_error_handler([](const httplib::Request & /*req*/, httplib::Response & res) {
+    // If the response already has content (from a handler's send_error), don't overwrite it
+    if (!res.body.empty()) {
+      return;
+    }
+
+    nlohmann::json error;
+    error["error_code"] = ERR_RESOURCE_NOT_FOUND;
+    error["message"] = "Resource not found";
+    error["parameters"] = nlohmann::json::object();
+    error["parameters"]["status"] = res.status;
+
+    res.set_content(error.dump(2), "application/json");
+  });
+
+  // Global exception handler - catches unhandled exceptions in route handlers
+  srv->set_exception_handler(
+      [](const httplib::Request & /*req*/, httplib::Response & res, const std::exception_ptr & ep) {
+        nlohmann::json error;
+        error["error_code"] = ERR_INTERNAL_ERROR;
+
+        try {
+          if (ep) {
+            std::rethrow_exception(ep);
+          }
+        } catch (const std::exception & e) {
+          error["message"] = "Internal server error";
+          error["parameters"] = nlohmann::json::object();
+          error["parameters"]["details"] = e.what();
+          RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
+        } catch (...) {
+          error["message"] = "Unknown internal server error";
+          error["parameters"] = nlohmann::json::object();
+          RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unknown exception caught");
+        }
+
+        res.status = httplib::StatusCode::InternalServerError_500;
+        res.set_content(error.dump(2), "application/json");
+      });
 }
 
 RESTServer::~RESTServer() {

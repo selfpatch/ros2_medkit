@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 
 using json = nlohmann::json;
@@ -27,8 +28,9 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
   try {
     auto filter = parse_fault_status_param(req);
     if (!filter.is_valid) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid status parameter",
-                                 {{"details", "Valid values: pending, confirmed, cleared, all"},
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid status parameter value",
+                                 {{"allowed_values", "pending, confirmed, cleared, all"},
                                   {"parameter", "status"},
                                   {"value", req.get_param_value("status")}});
       return;
@@ -60,11 +62,11 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
       res.status = StatusCode::OK_200;
       HandlerContext::send_json(res, response);
     } else {
-      HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, "Failed to get faults",
-                                 {{"details", result.error_message}});
+      HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
+                                 "Failed to get faults", {{"details", result.error_message}});
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to list faults",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Failed to list faults",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_all_faults: %s", e.what());
   }
@@ -74,7 +76,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
   std::string entity_id;
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -82,22 +84,24 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
 
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                                  {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
     auto entity_info = ctx_.get_entity_info(entity_id);
     if (entity_info.type == EntityType::UNKNOWN) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                 {{"entity_id", entity_id}});
       return;
     }
     std::string namespace_path = entity_info.namespace_path;
 
     auto filter = parse_fault_status_param(req);
     if (!filter.is_valid) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid status parameter",
-                                 {{"details", "Valid values: pending, confirmed, cleared, all"},
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid status parameter value",
+                                 {{"allowed_values", "pending, confirmed, cleared, all"},
                                   {"parameter", "status"},
                                   {"value", req.get_param_value("status")},
                                   {entity_info.id_field, entity_id}});
@@ -127,11 +131,12 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
 
       HandlerContext::send_json(res, response);
     } else {
-      HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, "Failed to get faults",
+      HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
+                                 "Failed to get faults",
                                  {{"details", result.error_message}, {entity_info.id_field, entity_id}});
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to list faults",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Failed to list faults",
                                {{"details", e.what()}, {"entity_id", entity_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_faults for entity '%s': %s", entity_id.c_str(),
                  e.what());
@@ -143,7 +148,7 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
   std::string fault_code;
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -152,21 +157,22 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
 
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                                  {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
     // Fault codes may contain dots and underscores, validate basic constraints
     if (fault_code.empty() || fault_code.length() > 256) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid fault code",
                                  {{"details", "Fault code must be between 1 and 256 characters"}});
       return;
     }
 
     auto entity_info = ctx_.get_entity_info(entity_id);
     if (entity_info.type == EntityType::UNKNOWN) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                 {{"entity_id", entity_id}});
       return;
     }
     std::string namespace_path = entity_info.namespace_path;
@@ -182,16 +188,16 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
       if (result.error_message.find("not found") != std::string::npos ||
           result.error_message.find("Fault not found") != std::string::npos) {
         HandlerContext::send_error(
-            res, StatusCode::NotFound_404, "Failed to get fault",
+            res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
             {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       } else {
         HandlerContext::send_error(
-            res, StatusCode::ServiceUnavailable_503, "Failed to get fault",
+            res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE, "Failed to get fault",
             {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       }
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get fault",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Failed to get fault",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"fault_code", fault_code}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_fault for entity '%s', fault '%s': %s",
                  entity_id.c_str(), fault_code.c_str(), e.what());
@@ -203,7 +209,7 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
   std::string fault_code;
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -212,14 +218,14 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
 
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                                  {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
     // Validate fault code
     if (fault_code.empty() || fault_code.length() > 256) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid fault code",
                                  {{"details", "Fault code must be between 1 and 256 characters"}});
       return;
     }
@@ -227,7 +233,8 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     // Verify entity exists
     auto entity_info = ctx_.get_entity_info(entity_id);
     if (entity_info.type == EntityType::UNKNOWN) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                 {{"entity_id", entity_id}});
       return;
     }
 
@@ -251,16 +258,16 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
       if (result.error_message.find("not found") != std::string::npos ||
           result.error_message.find("Fault not found") != std::string::npos) {
         HandlerContext::send_error(
-            res, StatusCode::NotFound_404, "Failed to clear fault",
+            res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
             {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       } else {
         HandlerContext::send_error(
-            res, StatusCode::ServiceUnavailable_503, "Failed to clear fault",
+            res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE, "Failed to clear fault",
             {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       }
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to clear fault",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Failed to clear fault",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"fault_code", fault_code}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_clear_fault for entity '%s', fault '%s': %s",
                  entity_id.c_str(), fault_code.c_str(), e.what());
@@ -271,7 +278,7 @@ void FaultHandlers::handle_get_snapshots(const httplib::Request & req, httplib::
   std::string fault_code;
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -279,7 +286,7 @@ void FaultHandlers::handle_get_snapshots(const httplib::Request & req, httplib::
 
     // Validate fault code
     if (fault_code.empty() || fault_code.length() > 256) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid fault code",
                                  {{"details", "Fault code must be between 1 and 256 characters"}});
       return;
     }
@@ -296,15 +303,16 @@ void FaultHandlers::handle_get_snapshots(const httplib::Request & req, httplib::
       // Check if it's a "not found" error
       if (result.error_message.find("not found") != std::string::npos ||
           result.error_message.find("Fault not found") != std::string::npos) {
-        HandlerContext::send_error(res, StatusCode::NotFound_404, "Failed to get snapshots",
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
                                    {{"details", result.error_message}, {"fault_code", fault_code}});
       } else {
-        HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, "Failed to get snapshots",
+        HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
+                                   "Failed to get snapshots",
                                    {{"details", result.error_message}, {"fault_code", fault_code}});
       }
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get snapshots",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Failed to get snapshots",
                                {{"details", e.what()}, {"fault_code", fault_code}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_snapshots for fault '%s': %s", fault_code.c_str(),
                  e.what());
@@ -316,7 +324,7 @@ void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req,
   std::string fault_code;
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -325,21 +333,22 @@ void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req,
 
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid entity ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                                  {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
     // Validate fault code
     if (fault_code.empty() || fault_code.length() > 256) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid fault code",
                                  {{"details", "Fault code must be between 1 and 256 characters"}});
       return;
     }
 
     auto entity_info = ctx_.get_entity_info(entity_id);
     if (entity_info.type == EntityType::UNKNOWN) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Entity not found", {{"entity_id", entity_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                 {{"entity_id", entity_id}});
       return;
     }
 
@@ -359,16 +368,16 @@ void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req,
       if (result.error_message.find("not found") != std::string::npos ||
           result.error_message.find("Fault not found") != std::string::npos) {
         HandlerContext::send_error(
-            res, StatusCode::NotFound_404, "Failed to get snapshots",
+            res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
             {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       } else {
         HandlerContext::send_error(
-            res, StatusCode::ServiceUnavailable_503, "Failed to get snapshots",
+            res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE, "Failed to get snapshots",
             {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
       }
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to get snapshots",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Failed to get snapshots",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"fault_code", fault_code}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_component_snapshots for entity '%s', fault '%s': %s",
                  entity_id.c_str(), fault_code.c_str(), e.what());

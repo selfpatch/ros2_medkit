@@ -161,20 +161,25 @@ bool HandlerContext::is_origin_allowed(const std::string & origin) const {
   return false;
 }
 
-void HandlerContext::send_error(httplib::Response & res, httplib::StatusCode status, const std::string & error) {
+void HandlerContext::send_error(httplib::Response & res, httplib::StatusCode status, const std::string & error_code,
+                                const std::string & message, const json & parameters) {
   res.status = status;
-  json error_json = {{"error", error}};
-  res.set_content(error_json.dump(2), "application/json");
-}
+  json error_json;
 
-void HandlerContext::send_error(httplib::Response & res, httplib::StatusCode status, const std::string & error,
-                                const json & extra_fields) {
-  res.status = status;
-  json error_json = {{"error", error}};
-  // Merge extra fields into the error object
-  for (const auto & [key, value] : extra_fields.items()) {
-    error_json[key] = value;
+  // Handle vendor-specific error codes (x-medkit-*)
+  if (is_vendor_error_code(error_code)) {
+    error_json["error_code"] = ERR_VENDOR_ERROR;
+    error_json["vendor_code"] = error_code;
+  } else {
+    error_json["error_code"] = error_code;
   }
+
+  error_json["message"] = message;
+
+  if (!parameters.empty()) {
+    error_json["parameters"] = parameters;
+  }
+
   res.set_content(error_json.dump(2), "application/json");
 }
 

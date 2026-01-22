@@ -212,7 +212,8 @@ TEST_F(TestGatewayNode, test_invalid_component_id_bad_request) {
   EXPECT_EQ(res->status, StatusCode::BadRequest_400);
 
   auto json_response = nlohmann::json::parse(res->body);
-  EXPECT_TRUE(json_response.contains("error"));
+  EXPECT_TRUE(json_response.contains("error_code"));
+  EXPECT_TRUE(json_response.contains("message"));
 }
 
 TEST_F(TestGatewayNode, test_list_apps_endpoint) {
@@ -368,7 +369,8 @@ TEST_F(TestGatewayNode, test_set_configuration_invalid_json) {
   EXPECT_EQ(res->status, StatusCode::BadRequest_400);
 
   auto json_response = nlohmann::json::parse(res->body);
-  EXPECT_TRUE(json_response.contains("error"));
+  EXPECT_TRUE(json_response.contains("error_code"));
+  EXPECT_TRUE(json_response.contains("message"));
 }
 
 TEST_F(TestGatewayNode, test_set_configuration_missing_value_field) {
@@ -382,10 +384,11 @@ TEST_F(TestGatewayNode, test_set_configuration_missing_value_field) {
   EXPECT_EQ(res->status, StatusCode::BadRequest_400);
 
   auto json_response = nlohmann::json::parse(res->body);
-  EXPECT_TRUE(json_response.contains("error"));
-  // Error should mention missing 'value' field
-  EXPECT_TRUE(json_response["error"].get<std::string>().find("value") != std::string::npos ||
-              json_response.contains("details"));
+  EXPECT_TRUE(json_response.contains("error_code"));
+  EXPECT_TRUE(json_response.contains("message"));
+  // Error should mention missing 'value' field in message or parameters
+  EXPECT_TRUE(json_response["message"].get<std::string>().find("value") != std::string::npos ||
+              (json_response.contains("parameters") && json_response["parameters"].contains("details")));
 }
 
 TEST_F(TestGatewayNode, test_set_configuration_invalid_component_id) {

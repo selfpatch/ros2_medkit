@@ -64,6 +64,7 @@ class RESTServer {
  private:
   void setup_routes();
   void setup_pre_routing_handler();
+  void setup_global_error_handlers();
 
   // CORS helper methods
   void set_cors_headers(httplib::Response & res, const std::string & origin) const;

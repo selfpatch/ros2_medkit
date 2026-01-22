@@ -17,6 +17,7 @@
 #include <chrono>
 
 #include "ros2_medkit_gateway/auth/auth_models.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 
 using json = nlohmann::json;
@@ -33,7 +34,7 @@ void HealthHandlers::handle_health(const httplib::Request & req, httplib::Respon
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_health: %s", e.what());
   }
 }
@@ -114,7 +115,7 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_root: %s", e.what());
   }
 }
@@ -129,7 +130,7 @@ void HealthHandlers::handle_version_info(const httplib::Request & req, httplib::
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_version_info: %s", e.what());
   }
 }

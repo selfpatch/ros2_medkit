@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/http/handlers/discovery/function_handlers.hpp"
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
 
 using json = nlohmann::json;
@@ -50,7 +51,7 @@ void FunctionHandlers::handle_list_functions(const httplib::Request & req, httpl
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_functions: %s", e.what());
   }
@@ -60,7 +61,7 @@ void FunctionHandlers::handle_get_function(const httplib::Request & req, httplib
   try {
     // Extract function_id from URL path
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -69,7 +70,7 @@ void FunctionHandlers::handle_get_function(const httplib::Request & req, httplib
     // Validate function_id
     auto validation_result = ctx_.validate_entity_id(function_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid function ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid function ID",
                                  {{"details", validation_result.error()}, {"function_id", function_id}});
       return;
     }
@@ -78,7 +79,8 @@ void FunctionHandlers::handle_get_function(const httplib::Request & req, httplib
     auto func_opt = discovery->get_function(function_id);
 
     if (!func_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Function not found", {{"function_id", function_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Function not found",
+                                 {{"function_id", function_id}});
       return;
     }
 
@@ -121,7 +123,7 @@ void FunctionHandlers::handle_get_function(const httplib::Request & req, httplib
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_function: %s", e.what());
   }
@@ -131,7 +133,7 @@ void FunctionHandlers::handle_function_hosts(const httplib::Request & req, httpl
   try {
     // Extract function_id from URL path
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -140,7 +142,7 @@ void FunctionHandlers::handle_function_hosts(const httplib::Request & req, httpl
     // Validate function_id
     auto validation_result = ctx_.validate_entity_id(function_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid function ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid function ID",
                                  {{"details", validation_result.error()}, {"function_id", function_id}});
       return;
     }
@@ -149,7 +151,8 @@ void FunctionHandlers::handle_function_hosts(const httplib::Request & req, httpl
     auto func_opt = discovery->get_function(function_id);
 
     if (!func_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Function not found", {{"function_id", function_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Function not found",
+                                 {{"function_id", function_id}});
       return;
     }
 
@@ -177,7 +180,7 @@ void FunctionHandlers::handle_function_hosts(const httplib::Request & req, httpl
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_function_hosts: %s", e.what());
   }
@@ -186,7 +189,7 @@ void FunctionHandlers::handle_function_hosts(const httplib::Request & req, httpl
 void FunctionHandlers::handle_get_function_data(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -194,7 +197,7 @@ void FunctionHandlers::handle_get_function_data(const httplib::Request & req, ht
 
     auto validation_result = ctx_.validate_entity_id(function_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid function ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid function ID",
                                  {{"details", validation_result.error()}, {"function_id", function_id}});
       return;
     }
@@ -203,7 +206,8 @@ void FunctionHandlers::handle_get_function_data(const httplib::Request & req, ht
     auto func_opt = discovery->get_function(function_id);
 
     if (!func_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Function not found", {{"function_id", function_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Function not found",
+                                 {{"function_id", function_id}});
       return;
     }
 
@@ -247,7 +251,7 @@ void FunctionHandlers::handle_get_function_data(const httplib::Request & req, ht
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_function_data: %s", e.what());
   }
@@ -256,7 +260,7 @@ void FunctionHandlers::handle_get_function_data(const httplib::Request & req, ht
 void FunctionHandlers::handle_list_function_operations(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -264,7 +268,7 @@ void FunctionHandlers::handle_list_function_operations(const httplib::Request & 
 
     auto validation_result = ctx_.validate_entity_id(function_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid function ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid function ID",
                                  {{"details", validation_result.error()}, {"function_id", function_id}});
       return;
     }
@@ -273,7 +277,8 @@ void FunctionHandlers::handle_list_function_operations(const httplib::Request & 
     auto func_opt = discovery->get_function(function_id);
 
     if (!func_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Function not found", {{"function_id", function_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Function not found",
+                                 {{"function_id", function_id}});
       return;
     }
 
@@ -313,7 +318,7 @@ void FunctionHandlers::handle_list_function_operations(const httplib::Request & 
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_function_operations: %s", e.what());
   }

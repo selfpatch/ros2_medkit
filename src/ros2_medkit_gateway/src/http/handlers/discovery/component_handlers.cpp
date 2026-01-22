@@ -19,6 +19,7 @@
 
 #include "ros2_medkit_gateway/exceptions.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
 
 using json = nlohmann::json;
@@ -44,7 +45,7 @@ void ComponentHandlers::handle_list_components(const httplib::Request & req, htt
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_components: %s", e.what());
   }
 }
@@ -52,7 +53,7 @@ void ComponentHandlers::handle_list_components(const httplib::Request & req, htt
 void ComponentHandlers::handle_get_component(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -60,7 +61,7 @@ void ComponentHandlers::handle_get_component(const httplib::Request & req, httpl
 
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", validation_result.error()}, {"component_id", component_id}});
       return;
     }
@@ -69,7 +70,7 @@ void ComponentHandlers::handle_get_component(const httplib::Request & req, httpl
     auto comp_opt = discovery->get_component(component_id);
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
@@ -108,7 +109,7 @@ void ComponentHandlers::handle_get_component(const httplib::Request & req, httpl
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_component: %s", e.what());
   }
@@ -119,7 +120,7 @@ void ComponentHandlers::handle_component_data(const httplib::Request & req, http
   try {
     // Extract component_id from URL path
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -128,7 +129,7 @@ void ComponentHandlers::handle_component_data(const httplib::Request & req, http
     // Validate component_id
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", validation_result.error()}, {"component_id", component_id}});
       return;
     }
@@ -137,7 +138,7 @@ void ComponentHandlers::handle_component_data(const httplib::Request & req, http
     auto comp_opt = discovery->get_component(component_id);
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
@@ -228,7 +229,8 @@ void ComponentHandlers::handle_component_data(const httplib::Request & req, http
 
     HandlerContext::send_json(res, component_data);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to retrieve component data",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                               "Failed to retrieve component data",
                                {{"details", e.what()}, {"component_id", component_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_component_data for component '%s': %s",
                  component_id.c_str(), e.what());
@@ -241,7 +243,7 @@ void ComponentHandlers::handle_component_topic_data(const httplib::Request & req
   try {
     // Extract component_id and topic_name from URL path
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -253,7 +255,7 @@ void ComponentHandlers::handle_component_topic_data(const httplib::Request & req
     // Validate component_id
     auto component_validation = ctx_.validate_entity_id(component_id);
     if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", component_validation.error()}, {"component_id", component_id}});
       return;
     }
@@ -265,7 +267,7 @@ void ComponentHandlers::handle_component_topic_data(const httplib::Request & req
     auto comp_opt = discovery->get_component(component_id);
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
@@ -283,12 +285,13 @@ void ComponentHandlers::handle_component_topic_data(const httplib::Request & req
     HandlerContext::send_json(res, topic_data);
   } catch (const TopicNotAvailableException & e) {
     // Topic doesn't exist or metadata retrieval failed
-    HandlerContext::send_error(res, StatusCode::NotFound_404, "Topic not found",
+    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE, "Topic not found",
                                {{"component_id", component_id}, {"topic_name", topic_name}});
     RCLCPP_ERROR(HandlerContext::logger(), "Topic not available for component '%s', topic '%s': %s",
                  component_id.c_str(), topic_name.c_str(), e.what());
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to retrieve topic data",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                               "Failed to retrieve topic data",
                                {{"details", e.what()}, {"component_id", component_id}, {"topic_name", topic_name}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_component_topic_data for component '%s', topic '%s': %s",
                  component_id.c_str(), topic_name.c_str(), e.what());
@@ -301,7 +304,7 @@ void ComponentHandlers::handle_component_topic_publish(const httplib::Request & 
   try {
     // Extract component_id and topic_name from URL path
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -313,7 +316,7 @@ void ComponentHandlers::handle_component_topic_publish(const httplib::Request & 
     // Validate component_id
     auto component_validation = ctx_.validate_entity_id(component_id);
     if (!component_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", component_validation.error()}, {"component_id", component_id}});
       return;
     }
@@ -326,20 +329,21 @@ void ComponentHandlers::handle_component_topic_publish(const httplib::Request & 
     try {
       body = json::parse(req.body);
     } catch (const json::parse_error & e) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid JSON in request body",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
                                  {{"details", e.what()}});
       return;
     }
 
     // Validate required fields: type and data
     if (!body.contains("type") || !body["type"].is_string()) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Missing or invalid 'type' field",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Missing or invalid 'type' field",
                                  {{"details", "Request body must contain 'type' string field"}});
       return;
     }
 
     if (!body.contains("data")) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Missing 'data' field",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Missing 'data' field",
                                  {{"details", "Request body must contain 'data' field"}});
       return;
     }
@@ -357,7 +361,7 @@ void ComponentHandlers::handle_component_topic_publish(const httplib::Request & 
 
     if (!valid_format) {
       HandlerContext::send_error(
-          res, StatusCode::BadRequest_400, "Invalid message type format",
+          res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid message type format",
           {{"details", "Message type should be in format: package/msg/Type"}, {"type", msg_type}});
       return;
     }
@@ -366,7 +370,7 @@ void ComponentHandlers::handle_component_topic_publish(const httplib::Request & 
     auto comp_opt = discovery->get_component(component_id);
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
@@ -386,7 +390,8 @@ void ComponentHandlers::handle_component_topic_publish(const httplib::Request & 
 
     HandlerContext::send_json(res, result);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to publish to topic",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                               "Failed to publish to topic",
                                {{"details", e.what()}, {"component_id", component_id}, {"topic_name", topic_name}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_component_topic_publish for component '%s', topic '%s': %s",
                  component_id.c_str(), topic_name.c_str(), e.what());
@@ -396,7 +401,7 @@ void ComponentHandlers::handle_component_topic_publish(const httplib::Request & 
 void ComponentHandlers::handle_get_subcomponents(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -404,7 +409,7 @@ void ComponentHandlers::handle_get_subcomponents(const httplib::Request & req, h
 
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", validation_result.error()}, {"component_id", component_id}});
       return;
     }
@@ -413,7 +418,7 @@ void ComponentHandlers::handle_get_subcomponents(const httplib::Request & req, h
     auto comp_opt = discovery->get_component(component_id);
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
@@ -442,7 +447,7 @@ void ComponentHandlers::handle_get_subcomponents(const httplib::Request & req, h
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_subcomponents: %s", e.what());
   }
@@ -451,7 +456,7 @@ void ComponentHandlers::handle_get_subcomponents(const httplib::Request & req, h
 void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -459,7 +464,7 @@ void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, ht
 
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", validation_result.error()}, {"component_id", component_id}});
       return;
     }
@@ -468,7 +473,7 @@ void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, ht
     auto comp_opt = discovery->get_component(component_id);
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
@@ -500,7 +505,7 @@ void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, ht
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_related_apps: %s", e.what());
   }
@@ -509,7 +514,7 @@ void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, ht
 void ComponentHandlers::handle_get_depends_on(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -517,7 +522,7 @@ void ComponentHandlers::handle_get_depends_on(const httplib::Request & req, http
 
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", validation_result.error()}, {"component_id", component_id}});
       return;
     }
@@ -526,7 +531,7 @@ void ComponentHandlers::handle_get_depends_on(const httplib::Request & req, http
     auto comp_opt = discovery->get_component(component_id);
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Component not found",
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
@@ -570,7 +575,7 @@ void ComponentHandlers::handle_get_depends_on(const httplib::Request & req, http
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_depends_on: %s", e.what());
   }

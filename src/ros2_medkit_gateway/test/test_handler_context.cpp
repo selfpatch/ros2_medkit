@@ -18,6 +18,7 @@
 #include <cstring>
 
 #include "ros2_medkit_gateway/config.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 using namespace ros2_medkit_gateway;
@@ -31,37 +32,40 @@ using json = nlohmann::json;
 TEST(HandlerContextStaticTest, SendErrorSetsStatusAndBody) {
   httplib::Response res;
 
-  HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, "Test error message");
+  HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Test error message");
 
   EXPECT_EQ(res.status, 400);
   EXPECT_EQ(res.get_header_value("Content-Type"), "application/json");
 
   auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "Test error message");
+  EXPECT_EQ(body["error_code"], ERR_INVALID_REQUEST);
+  EXPECT_EQ(body["message"], "Test error message");
 }
 
 TEST(HandlerContextStaticTest, SendErrorWithExtraFields) {
   httplib::Response res;
   json extra = {{"details", "More info"}, {"code", 42}};
 
-  HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, "Not found", extra);
+  HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Not found", extra);
 
   EXPECT_EQ(res.status, 404);
 
   auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "Not found");
-  EXPECT_EQ(body["details"], "More info");
-  EXPECT_EQ(body["code"], 42);
+  EXPECT_EQ(body["error_code"], ERR_ENTITY_NOT_FOUND);
+  EXPECT_EQ(body["message"], "Not found");
+  EXPECT_EQ(body["parameters"]["details"], "More info");
+  EXPECT_EQ(body["parameters"]["code"], 42);
 }
 
 TEST(HandlerContextStaticTest, SendErrorInternalServerError) {
   httplib::Response res;
 
-  HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, "Server error");
+  HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Server error");
 
   EXPECT_EQ(res.status, 500);
   auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "Server error");
+  EXPECT_EQ(body["error_code"], ERR_INTERNAL_ERROR);
+  EXPECT_EQ(body["message"], "Server error");
 }
 
 TEST(HandlerContextStaticTest, SendJsonSetsContentTypeAndBody) {

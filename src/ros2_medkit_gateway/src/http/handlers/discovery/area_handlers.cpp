@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/http/handlers/discovery/area_handlers.hpp"
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
 
 using json = nlohmann::json;
@@ -40,7 +41,7 @@ void AreaHandlers::handle_list_areas(const httplib::Request & req, httplib::Resp
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_areas: %s", e.what());
   }
 }
@@ -48,7 +49,7 @@ void AreaHandlers::handle_list_areas(const httplib::Request & req, httplib::Resp
 void AreaHandlers::handle_get_area(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -56,7 +57,7 @@ void AreaHandlers::handle_get_area(const httplib::Request & req, httplib::Respon
 
     auto validation_result = ctx_.validate_entity_id(area_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid area ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid area ID",
                                  {{"details", validation_result.error()}, {"area_id", area_id}});
       return;
     }
@@ -65,7 +66,8 @@ void AreaHandlers::handle_get_area(const httplib::Request & req, httplib::Respon
     auto area_opt = discovery->get_area(area_id);
 
     if (!area_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Area not found", {{"area_id", area_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Area not found",
+                                 {{"area_id", area_id}});
       return;
     }
 
@@ -95,7 +97,7 @@ void AreaHandlers::handle_get_area(const httplib::Request & req, httplib::Respon
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_area: %s", e.what());
   }
@@ -105,7 +107,7 @@ void AreaHandlers::handle_area_components(const httplib::Request & req, httplib:
   try {
     // Extract area_id from URL path
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -114,7 +116,7 @@ void AreaHandlers::handle_area_components(const httplib::Request & req, httplib:
     // Validate area_id
     auto validation_result = ctx_.validate_entity_id(area_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid area ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid area ID",
                                  {{"details", validation_result.error()}, {"area_id", area_id}});
       return;
     }
@@ -131,7 +133,8 @@ void AreaHandlers::handle_area_components(const httplib::Request & req, httplib:
     }
 
     if (!area_exists) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Area not found", {{"area_id", area_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Area not found",
+                                 {{"area_id", area_id}});
       return;
     }
 
@@ -149,7 +152,7 @@ void AreaHandlers::handle_area_components(const httplib::Request & req, httplib:
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error");
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_area_components: %s", e.what());
   }
 }
@@ -157,7 +160,7 @@ void AreaHandlers::handle_area_components(const httplib::Request & req, httplib:
 void AreaHandlers::handle_get_subareas(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -165,7 +168,7 @@ void AreaHandlers::handle_get_subareas(const httplib::Request & req, httplib::Re
 
     auto validation_result = ctx_.validate_entity_id(area_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid area ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid area ID",
                                  {{"details", validation_result.error()}, {"area_id", area_id}});
       return;
     }
@@ -174,7 +177,8 @@ void AreaHandlers::handle_get_subareas(const httplib::Request & req, httplib::Re
     auto area_opt = discovery->get_area(area_id);
 
     if (!area_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Area not found", {{"area_id", area_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Area not found",
+                                 {{"area_id", area_id}});
       return;
     }
 
@@ -202,7 +206,7 @@ void AreaHandlers::handle_get_subareas(const httplib::Request & req, httplib::Re
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_subareas: %s", e.what());
   }
@@ -211,7 +215,7 @@ void AreaHandlers::handle_get_subareas(const httplib::Request & req, httplib::Re
 void AreaHandlers::handle_get_related_components(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -219,7 +223,7 @@ void AreaHandlers::handle_get_related_components(const httplib::Request & req, h
 
     auto validation_result = ctx_.validate_entity_id(area_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid area ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid area ID",
                                  {{"details", validation_result.error()}, {"area_id", area_id}});
       return;
     }
@@ -228,7 +232,8 @@ void AreaHandlers::handle_get_related_components(const httplib::Request & req, h
     auto area_opt = discovery->get_area(area_id);
 
     if (!area_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "Area not found", {{"area_id", area_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Area not found",
+                                 {{"area_id", area_id}});
       return;
     }
 
@@ -256,7 +261,7 @@ void AreaHandlers::handle_get_related_components(const httplib::Request & req, h
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_related_components: %s", e.what());
   }

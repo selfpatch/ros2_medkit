@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/http/handlers/discovery/app_handlers.hpp"
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
 
 using json = nlohmann::json;
@@ -56,7 +57,7 @@ void AppHandlers::handle_list_apps(const httplib::Request & req, httplib::Respon
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_apps: %s", e.what());
   }
@@ -66,7 +67,7 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
   try {
     // Extract app_id from URL path
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -75,7 +76,7 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
     // Validate app_id
     auto validation_result = ctx_.validate_entity_id(app_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid app ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid app ID",
                                  {{"details", validation_result.error()}, {"app_id", app_id}});
       return;
     }
@@ -84,7 +85,8 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
     auto app_opt = discovery->get_app(app_id);
 
     if (!app_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "App not found", {{"app_id", app_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "App not found",
+                                 {{"app_id", app_id}});
       return;
     }
 
@@ -136,7 +138,7 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_app: %s", e.what());
   }
@@ -145,7 +147,7 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
 void AppHandlers::handle_get_app_data(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -153,7 +155,7 @@ void AppHandlers::handle_get_app_data(const httplib::Request & req, httplib::Res
 
     auto validation_result = ctx_.validate_entity_id(app_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid app ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid app ID",
                                  {{"details", validation_result.error()}, {"app_id", app_id}});
       return;
     }
@@ -162,7 +164,8 @@ void AppHandlers::handle_get_app_data(const httplib::Request & req, httplib::Res
     auto app_opt = discovery->get_app(app_id);
 
     if (!app_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "App not found", {{"app_id", app_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "App not found",
+                                 {{"app_id", app_id}});
       return;
     }
 
@@ -197,7 +200,7 @@ void AppHandlers::handle_get_app_data(const httplib::Request & req, httplib::Res
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_app_data: %s", e.what());
   }
@@ -206,7 +209,7 @@ void AppHandlers::handle_get_app_data(const httplib::Request & req, httplib::Res
 void AppHandlers::handle_get_app_data_item(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -215,7 +218,7 @@ void AppHandlers::handle_get_app_data_item(const httplib::Request & req, httplib
 
     auto validation_result = ctx_.validate_entity_id(app_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid app ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid app ID",
                                  {{"details", validation_result.error()}, {"app_id", app_id}});
       return;
     }
@@ -224,7 +227,8 @@ void AppHandlers::handle_get_app_data_item(const httplib::Request & req, httplib
     auto app_opt = discovery->get_app(app_id);
 
     if (!app_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "App not found", {{"app_id", app_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "App not found",
+                                 {{"app_id", app_id}});
       return;
     }
 
@@ -294,10 +298,10 @@ void AppHandlers::handle_get_app_data_item(const httplib::Request & req, httplib
       }
     }
 
-    HandlerContext::send_error(res, StatusCode::NotFound_404, "Data item not found",
+    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Data item not found",
                                {{"app_id", app_id}, {"data_id", data_id}});
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_app_data_item: %s", e.what());
   }
@@ -306,7 +310,7 @@ void AppHandlers::handle_get_app_data_item(const httplib::Request & req, httplib
 void AppHandlers::handle_list_app_operations(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -314,7 +318,7 @@ void AppHandlers::handle_list_app_operations(const httplib::Request & req, httpl
 
     auto validation_result = ctx_.validate_entity_id(app_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid app ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid app ID",
                                  {{"details", validation_result.error()}, {"app_id", app_id}});
       return;
     }
@@ -323,7 +327,8 @@ void AppHandlers::handle_list_app_operations(const httplib::Request & req, httpl
     auto app_opt = discovery->get_app(app_id);
 
     if (!app_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "App not found", {{"app_id", app_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "App not found",
+                                 {{"app_id", app_id}});
       return;
     }
 
@@ -357,7 +362,7 @@ void AppHandlers::handle_list_app_operations(const httplib::Request & req, httpl
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_app_operations: %s", e.what());
   }
@@ -366,7 +371,7 @@ void AppHandlers::handle_list_app_operations(const httplib::Request & req, httpl
 void AppHandlers::handle_list_app_configurations(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -374,7 +379,7 @@ void AppHandlers::handle_list_app_configurations(const httplib::Request & req, h
 
     auto validation_result = ctx_.validate_entity_id(app_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid app ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid app ID",
                                  {{"details", validation_result.error()}, {"app_id", app_id}});
       return;
     }
@@ -383,7 +388,8 @@ void AppHandlers::handle_list_app_configurations(const httplib::Request & req, h
     auto app_opt = discovery->get_app(app_id);
 
     if (!app_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, "App not found", {{"app_id", app_id}});
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "App not found",
+                                 {{"app_id", app_id}});
       return;
     }
 
@@ -415,7 +421,7 @@ void AppHandlers::handle_list_app_configurations(const httplib::Request & req, h
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_app_configurations: %s", e.what());
   }
@@ -425,7 +431,7 @@ void AppHandlers::handle_related_apps(const httplib::Request & req, httplib::Res
   try {
     // Extract component_id from URL path
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -434,7 +440,7 @@ void AppHandlers::handle_related_apps(const httplib::Request & req, httplib::Res
     // Validate component_id
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid component ID",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", validation_result.error()}, {"component_id", component_id}});
       return;
     }
@@ -463,7 +469,7 @@ void AppHandlers::handle_related_apps(const httplib::Request & req, httplib::Res
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Internal server error",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_related_apps: %s", e.what());
   }
