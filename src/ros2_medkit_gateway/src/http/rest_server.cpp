@@ -224,13 +224,46 @@ void RESTServer::setup_routes() {
              operation_handlers_->handle_list_operations(req, res);
            });
 
-  // App operation (POST) - sync operations like service calls, async action goals
+  // App operation details (GET) - get single operation info
+  srv->Get((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_get_operation(req, res);
+           });
+
+  // SOVD-compliant execution endpoints for apps
+  // POST /{entity}/operations/{op-id}/executions - start execution
+  srv->Post((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/executions$)"),
+            [this](const httplib::Request & req, httplib::Response & res) {
+              operation_handlers_->handle_create_execution(req, res);
+            });
+
+  // GET /{entity}/operations/{op-id}/executions - list executions
+  srv->Get((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/executions$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_list_executions(req, res);
+           });
+
+  // GET /{entity}/operations/{op-id}/executions/{exec-id} - get execution status
+  srv->Get((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_get_execution(req, res);
+           });
+
+  // DELETE /{entity}/operations/{op-id}/executions/{exec-id} - cancel execution
+  srv->Delete((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                operation_handlers_->handle_cancel_execution(req, res);
+              });
+
+  // Legacy app operation (POST) - kept for backward compatibility
+  // @deprecated Use POST /{entity}/operations/{op-id}/executions instead
   srv->Post((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)$)"),
             [this](const httplib::Request & req, httplib::Response & res) {
               operation_handlers_->handle_component_operation(req, res);
             });
 
-  // App action status (GET)
+  // App action status (GET) - legacy endpoint
+  // @deprecated Use GET /{entity}/operations/{op-id}/executions/{exec-id} instead
   srv->Get((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/status$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              operation_handlers_->handle_action_status(req, res);
@@ -382,19 +415,52 @@ void RESTServer::setup_routes() {
              component_handlers_->handle_component_topic_publish(req, res);
            });
 
-  // Component operation (POST) - sync operations like service calls, async action goals
-  srv->Post((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)"),
-            [this](const httplib::Request & req, httplib::Response & res) {
-              operation_handlers_->handle_component_operation(req, res);
-            });
-
   // List component operations (GET) - list all services and actions for a component
   srv->Get((api_path("/components") + R"(/([^/]+)/operations$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              operation_handlers_->handle_list_operations(req, res);
            });
 
-  // Action status (GET) - get current status of an action goal
+  // Component operation details (GET) - get single operation info
+  srv->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_get_operation(req, res);
+           });
+
+  // SOVD-compliant execution endpoints for components
+  // POST /{entity}/operations/{op-id}/executions - start execution
+  srv->Post((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/executions$)"),
+            [this](const httplib::Request & req, httplib::Response & res) {
+              operation_handlers_->handle_create_execution(req, res);
+            });
+
+  // GET /{entity}/operations/{op-id}/executions - list executions
+  srv->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/executions$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_list_executions(req, res);
+           });
+
+  // GET /{entity}/operations/{op-id}/executions/{exec-id} - get execution status
+  srv->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_get_execution(req, res);
+           });
+
+  // DELETE /{entity}/operations/{op-id}/executions/{exec-id} - cancel execution
+  srv->Delete((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                operation_handlers_->handle_cancel_execution(req, res);
+              });
+
+  // Legacy component operation (POST) - kept for backward compatibility
+  // @deprecated Use POST /{entity}/operations/{op-id}/executions instead
+  srv->Post((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)"),
+            [this](const httplib::Request & req, httplib::Response & res) {
+              operation_handlers_->handle_component_operation(req, res);
+            });
+
+  // Legacy action status (GET) - kept for backward compatibility
+  // @deprecated Use GET /{entity}/operations/{op-id}/executions/{exec-id} instead
   srv->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/status$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              operation_handlers_->handle_action_status(req, res);
@@ -488,6 +554,18 @@ void RESTServer::setup_routes() {
   srv->Delete((api_path("/apps") + R"(/([^/]+)/faults/([^/]+)$)"),
               [this](const httplib::Request & req, httplib::Response & res) {
                 fault_handlers_->handle_clear_fault(req, res);
+              });
+
+  // Clear all faults for a component (SOVD-compliant)
+  srv->Delete((api_path("/components") + R"(/([^/]+)/faults$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                fault_handlers_->handle_clear_all_faults(req, res);
+              });
+
+  // Clear all faults for an app (SOVD-compliant)
+  srv->Delete((api_path("/apps") + R"(/([^/]+)/faults$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                fault_handlers_->handle_clear_all_faults(req, res);
               });
 
   // Snapshot endpoints for fault debugging

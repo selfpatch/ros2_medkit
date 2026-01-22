@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
+#include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
@@ -46,17 +47,25 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
                                         include_muted, include_clusters);
 
     if (result.success) {
-      json response = {{"faults", result.data["faults"]},
-                       {"count", result.data["count"]},
-                       {"muted_count", result.data["muted_count"]},
-                       {"cluster_count", result.data["cluster_count"]}};
+      // SOVD-compliant format: items array at top level
+      json response = {{"items", result.data["faults"]}};
+
+      // x-medkit extension for ros2_medkit-specific fields
+      XMedkit ext;
+      ext.add("count", result.data["count"]);
+      ext.add("muted_count", result.data["muted_count"]);
+      ext.add("cluster_count", result.data["cluster_count"]);
 
       // Include detailed correlation data if requested and present
       if (result.data.contains("muted_faults")) {
-        response["muted_faults"] = result.data["muted_faults"];
+        ext.add("muted_faults", result.data["muted_faults"]);
       }
       if (result.data.contains("clusters")) {
-        response["clusters"] = result.data["clusters"];
+        ext.add("clusters", result.data["clusters"]);
+      }
+
+      if (!ext.empty()) {
+        response["x-medkit"] = ext.build();
       }
 
       res.status = StatusCode::OK_200;
@@ -117,18 +126,26 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
                                         filter.include_cleared, include_muted, include_clusters);
 
     if (result.success) {
-      json response = {{entity_info.id_field, entity_id},           {"source_id", namespace_path},
-                       {"faults", result.data["faults"]},           {"count", result.data["count"]},
-                       {"muted_count", result.data["muted_count"]}, {"cluster_count", result.data["cluster_count"]}};
+      // SOVD-compliant format: items array at top level
+      json response = {{"items", result.data["faults"]}};
+
+      // x-medkit extension for ros2_medkit-specific fields
+      XMedkit ext;
+      ext.entity_id(entity_id);
+      ext.add("source_id", namespace_path);
+      ext.add("count", result.data["count"]);
+      ext.add("muted_count", result.data["muted_count"]);
+      ext.add("cluster_count", result.data["cluster_count"]);
 
       // Include detailed correlation data if requested and present
       if (result.data.contains("muted_faults")) {
-        response["muted_faults"] = result.data["muted_faults"];
+        ext.add("muted_faults", result.data["muted_faults"]);
       }
       if (result.data.contains("clusters")) {
-        response["clusters"] = result.data["clusters"];
+        ext.add("clusters", result.data["clusters"]);
       }
 
+      response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
     } else {
       HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
@@ -181,7 +198,14 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
     auto result = fault_mgr->get_fault(fault_code, namespace_path);
 
     if (result.success) {
-      json response = {{entity_info.id_field, entity_id}, {"fault", result.data}};
+      // SOVD-compliant format: single item wrapped
+      json response = {{"item", result.data}};
+
+      // x-medkit extension for entity context
+      XMedkit ext;
+      ext.entity_id(entity_id);
+      response["x-medkit"] = ext.build();
+
       HandlerContext::send_json(res, response);
     } else {
       // Check if it's a "not found" error
@@ -242,17 +266,8 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     auto result = fault_mgr->clear_fault(fault_code);
 
     if (result.success) {
-      json response = {{"status", "success"},
-                       {entity_info.id_field, entity_id},
-                       {"fault_code", fault_code},
-                       {"message", result.data.value("message", "Fault cleared")}};
-
-      // Include auto-cleared symptom codes if present (correlation feature)
-      if (result.data.contains("auto_cleared_codes")) {
-        response["auto_cleared_codes"] = result.data["auto_cleared_codes"];
-      }
-
-      HandlerContext::send_json(res, response);
+      // SOVD-compliant: return 204 No Content on successful delete
+      res.status = StatusCode::NoContent_204;
     } else {
       // Check if it's a "not found" error
       if (result.error_message.find("not found") != std::string::npos ||
@@ -271,6 +286,67 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
                                {{"details", e.what()}, {"entity_id", entity_id}, {"fault_code", fault_code}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_clear_fault for entity '%s', fault '%s': %s",
                  entity_id.c_str(), fault_code.c_str(), e.what());
+  }
+}
+
+void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httplib::Response & res) {
+  std::string entity_id;
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      return;
+    }
+
+    entity_id = req.matches[1];
+
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
+      return;
+    }
+
+    // Verify entity exists
+    auto entity_info = ctx_.get_entity_info(entity_id);
+    if (entity_info.type == EntityType::UNKNOWN) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                 {{"entity_id", entity_id}});
+      return;
+    }
+
+    // Get all faults for this entity
+    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto faults_result = fault_mgr->get_faults(entity_info.namespace_path, "", "");
+
+    if (!faults_result.success) {
+      HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
+                                 "Failed to retrieve faults",
+                                 {{"details", faults_result.error_message}, {entity_info.id_field, entity_id}});
+      return;
+    }
+
+    // Clear each fault
+    if (faults_result.data.contains("faults") && faults_result.data["faults"].is_array()) {
+      for (const auto & fault : faults_result.data["faults"]) {
+        if (fault.contains("faultCode")) {
+          std::string fault_code = fault["faultCode"].get<std::string>();
+          auto clear_result = fault_mgr->clear_fault(fault_code);
+          if (!clear_result.success) {
+            RCLCPP_WARN(HandlerContext::logger(), "Failed to clear fault '%s' for entity '%s': %s", fault_code.c_str(),
+                        entity_id.c_str(), clear_result.error_message.c_str());
+          }
+        }
+      }
+    }
+
+    // SOVD-compliant: return 204 No Content on successful delete
+    res.status = StatusCode::NoContent_204;
+
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Failed to clear faults",
+                               {{"details", e.what()}, {"entity_id", entity_id}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_clear_all_faults for entity '%s': %s", entity_id.c_str(),
+                 e.what());
   }
 }
 

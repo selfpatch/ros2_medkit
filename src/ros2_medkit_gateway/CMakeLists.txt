@@ -109,6 +109,11 @@ add_library(gateway_lib STATIC
   src/operation_manager.cpp
   src/configuration_manager.cpp
   src/fault_manager.cpp
+  # Entity resource model (SOVD architecture)
+  src/models/entity_types.cpp
+  src/models/entity_capabilities.cpp
+  src/models/thread_safe_entity_cache.cpp
+  src/models/aggregation_service.cpp
   # Discovery module
   src/discovery/discovery_enums.cpp
   src/discovery/discovery_manager.cpp
@@ -309,6 +314,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_data_access_manager test/test_data_access_manager.cpp)
   target_link_libraries(test_data_access_manager gateway_lib)
   ament_target_dependencies(test_data_access_manager rclcpp std_msgs)
+
+  # Add entity resource model tests (SOVD architecture)
+  ament_add_gtest(test_entity_resource_model test/test_entity_resource_model.cpp)
+  target_link_libraries(test_entity_resource_model gateway_lib)
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)

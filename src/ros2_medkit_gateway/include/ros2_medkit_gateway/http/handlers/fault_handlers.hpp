@@ -61,6 +61,11 @@ class FaultHandlers {
   void handle_clear_fault(const httplib::Request & req, httplib::Response & res);
 
   /**
+   * @brief Handle DELETE /components/{component_id}/faults - clear all faults for entity.
+   */
+  void handle_clear_all_faults(const httplib::Request & req, httplib::Response & res);
+
+  /**
    * @brief Handle GET /faults/{fault_code}/snapshots - get snapshots for a fault (system-wide).
    */
   void handle_get_snapshots(const httplib::Request & req, httplib::Response & res);

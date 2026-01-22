@@ -19,6 +19,7 @@
 #include <iomanip>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <sstream>
 #include <string>
@@ -28,13 +29,35 @@
 #include "ros2_medkit_gateway/auth/auth_manager.hpp"
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/models/entity_capabilities.hpp"
+#include "ros2_medkit_gateway/models/entity_types.hpp"
 
 namespace ros2_medkit_gateway {
 
 /**
  * @brief Entity type enumeration for SOVD entities
+ * @note This is the legacy EntityType enum. For new code, prefer using SovdEntityType.
  */
 enum class EntityType { COMPONENT, APP, AREA, FUNCTION, UNKNOWN };
+
+/**
+ * @brief Convert legacy EntityType to SovdEntityType
+ */
+inline SovdEntityType to_sovd_entity_type(EntityType type) {
+  switch (type) {
+    case EntityType::COMPONENT:
+      return SovdEntityType::COMPONENT;
+    case EntityType::APP:
+      return SovdEntityType::APP;
+    case EntityType::AREA:
+      return SovdEntityType::AREA;
+    case EntityType::FUNCTION:
+      return SovdEntityType::FUNCTION;
+    case EntityType::UNKNOWN:
+    default:
+      return SovdEntityType::UNKNOWN;
+  }
+}
 
 /**
  * @brief Information about a resolved entity
@@ -46,6 +69,20 @@ struct EntityInfo {
   std::string fqn;         ///< Fully qualified name (for ROS 2 nodes)
   std::string id_field;    ///< JSON field name for ID ("component_id", "app_id", etc.)
   std::string error_name;  ///< Human-readable name for errors ("Component", "App", etc.)
+
+  /**
+   * @brief Get SovdEntityType equivalent
+   */
+  SovdEntityType sovd_type() const {
+    return to_sovd_entity_type(type);
+  }
+
+  /**
+   * @brief Check if entity supports a resource collection
+   */
+  bool supports_collection(ResourceCollection col) const {
+    return EntityCapabilities::for_type(sovd_type()).supports_collection(col);
+  }
 };
 
 // Forward declarations
@@ -121,6 +158,19 @@ class HandlerContext {
    * @return EntityInfo with resolved details, or EntityInfo with UNKNOWN type if not found
    */
   EntityInfo get_entity_info(const std::string & entity_id) const;
+
+  /**
+   * @brief Validate that entity supports a resource collection
+   *
+   * Checks EntityCapabilities based on SOVD spec (Table 8).
+   * Returns error if the entity type doesn't support the collection.
+   *
+   * @param entity Entity information (from get_entity_info)
+   * @param collection Resource collection to validate
+   * @return std::nullopt if valid, error message if invalid
+   */
+  static std::optional<std::string> validate_collection_access(const EntityInfo & entity,
+                                                               ResourceCollection collection);
 
   /**
    * @brief Set CORS headers on response if origin is allowed

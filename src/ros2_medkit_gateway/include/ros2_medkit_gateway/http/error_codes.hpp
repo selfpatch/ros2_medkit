@@ -47,6 +47,9 @@ constexpr const char * ERR_SERVICE_UNAVAILABLE = "service-unavailable";
 /// Internal server error
 constexpr const char * ERR_INTERNAL_ERROR = "internal-error";
 
+/// Collection not supported on entity type
+constexpr const char * ERR_COLLECTION_NOT_SUPPORTED = "collection-not-supported";
+
 /// Authentication required
 constexpr const char * ERR_UNAUTHORIZED = "unauthorized";
 

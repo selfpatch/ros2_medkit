@@ -20,8 +20,9 @@ using ros2_medkit_gateway::XMedkit;
 using json = nlohmann::json;
 
 class XMedkitTest : public ::testing::Test {
-protected:
-  void SetUp() override {}
+ protected:
+  void SetUp() override {
+  }
 };
 
 // ==================== Basic functionality tests ====================
@@ -158,8 +159,7 @@ TEST_F(XMedkitTest, BuildsTypeInfoCorrectly) {
 TEST_F(XMedkitTest, BuildsTypeSchemaCorrectly) {
   XMedkit ext;
   // ROS2 IDL-derived type schema (distinct from SOVD OpenAPI schema)
-  json schema = {{"type", "object"},
-                 {"properties", {{"data", {{"type", "string"}}}}}};
+  json schema = {{"type", "object"}, {"properties", {{"data", {{"type", "string"}}}}}};
   ext.type_schema(schema);
 
   auto result = ext.build();

@@ -15,6 +15,8 @@
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/models/entity_capabilities.hpp"
+#include "ros2_medkit_gateway/models/entity_types.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
@@ -129,6 +131,17 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id) const 
   info.type = EntityType::UNKNOWN;
   info.error_name = "Entity";
   return info;
+}
+
+std::optional<std::string> HandlerContext::validate_collection_access(const EntityInfo & entity,
+                                                                      ResourceCollection collection) {
+  auto caps = EntityCapabilities::for_type(entity.sovd_type());
+
+  if (!caps.supports_collection(collection)) {
+    return entity.error_name + " entities do not support " + to_string(collection) + " collection";
+  }
+
+  return std::nullopt;
 }
 
 void HandlerContext::set_cors_headers(httplib::Response & res, const std::string & origin) const {

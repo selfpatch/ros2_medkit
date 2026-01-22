@@ -58,7 +58,7 @@ namespace ros2_medkit_gateway {
  * @endcode
  */
 class XMedkit {
-public:
+ public:
   XMedkit() = default;
 
   // ==================== ROS2 metadata ====================
@@ -197,7 +197,7 @@ public:
    */
   bool empty() const;
 
-private:
+ private:
   nlohmann::json ros2_;   ///< ROS2-specific metadata
   nlohmann::json other_;  ///< Other extension fields
 };

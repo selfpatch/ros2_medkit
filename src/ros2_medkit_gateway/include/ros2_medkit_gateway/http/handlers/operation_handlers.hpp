@@ -45,9 +45,35 @@ class OperationHandlers {
   void handle_list_operations(const httplib::Request & req, httplib::Response & res);
 
   /**
+   * @brief Handle GET /{entity}/operations/{op-id} - get operation details.
+   */
+  void handle_get_operation(const httplib::Request & req, httplib::Response & res);
+
+  /**
    * @brief Handle POST /components/{component_id}/operations/{operation_name} - execute.
+   * @deprecated Use handle_create_execution for SOVD-compliant execution via /executions path.
    */
   void handle_component_operation(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle POST /{entity}/operations/{op-id}/executions - SOVD-compliant execution start.
+   */
+  void handle_create_execution(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /{entity}/operations/{op-id}/executions - list executions.
+   */
+  void handle_list_executions(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /{entity}/operations/{op-id}/executions/{exec-id} - execution status.
+   */
+  void handle_get_execution(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle DELETE /{entity}/operations/{op-id}/executions/{exec-id} - cancel execution.
+   */
+  void handle_cancel_execution(const httplib::Request & req, httplib::Response & res);
 
   /**
    * @brief Handle GET /components/{component_id}/operations/{operation_name}/status.
