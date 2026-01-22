@@ -1275,6 +1275,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_035
         """
+        # Ensure calibration app is available via REST (handles discovery race)
+        self._ensure_calibration_app_ready()
+
         response = requests.post(
             f'{self.BASE_URL}/apps/calibration/operations/nonexistent_op',
             json={},
