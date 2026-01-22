@@ -113,12 +113,9 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
                                         filter.include_cleared, include_muted, include_clusters);
 
     if (result.success) {
-      json response = {{entity_info.id_field, entity_id},
-                       {"source_id", namespace_path},
-                       {"faults", result.data["faults"]},
-                       {"count", result.data["count"]},
-                       {"muted_count", result.data["muted_count"]},
-                       {"cluster_count", result.data["cluster_count"]}};
+      json response = {{entity_info.id_field, entity_id},           {"source_id", namespace_path},
+                       {"faults", result.data["faults"]},           {"count", result.data["count"]},
+                       {"muted_count", result.data["muted_count"]}, {"cluster_count", result.data["cluster_count"]}};
 
       // Include detailed correlation data if requested and present
       if (result.data.contains("muted_faults")) {
