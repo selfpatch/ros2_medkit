@@ -140,6 +140,8 @@ add_library(gateway_lib STATIC
   src/http/handlers/fault_handlers.cpp
   src/http/handlers/sse_fault_handler.cpp
   src/http/handlers/auth_handlers.cpp
+  # HTTP utilities
+  src/http/x_medkit.cpp
   # Auth module (subfolder)
   src/auth/auth_config.cpp
   src/auth/auth_models.cpp
@@ -294,6 +296,10 @@ if(BUILD_TESTING)
   # Add handler context tests
   ament_add_gtest(test_handler_context test/test_handler_context.cpp)
   target_link_libraries(test_handler_context gateway_lib)
+
+  # Add x-medkit extension tests
+  ament_add_gtest(test_x_medkit test/test_x_medkit.cpp)
+  target_link_libraries(test_x_medkit gateway_lib)
 
   # Add auth config tests
   ament_add_gtest(test_auth_config test/test_auth_config.cpp)
