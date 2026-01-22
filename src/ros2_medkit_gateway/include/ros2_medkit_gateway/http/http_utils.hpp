@@ -75,4 +75,49 @@ inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req) 
   return filter;
 }
 
+/**
+ * @brief Normalize a ROS2 topic name to a URL-safe SOVD data ID.
+ *
+ * Converts topic names like "/sensor/temperature" to "sensor_temperature".
+ * - Strips leading slash
+ * - Replaces slashes with underscores
+ *
+ * @param topic ROS2 topic name (e.g., "/sensor/temperature")
+ * @return URL-safe data ID (e.g., "sensor_temperature")
+ */
+inline std::string normalize_topic_to_id(const std::string & topic) {
+  std::string result = topic;
+  // Strip leading slash
+  if (!result.empty() && result[0] == '/') {
+    result = result.substr(1);
+  }
+  // Replace remaining slashes with underscores
+  for (auto & c : result) {
+    if (c == '/') {
+      c = '_';
+    }
+  }
+  return result;
+}
+
+/**
+ * @brief Convert a normalized SOVD data ID back to a ROS2 topic name.
+ *
+ * Converts IDs like "sensor_temperature" to "/sensor/temperature".
+ * Note: This is a best-effort conversion since underscore could be part
+ * of original topic name. For exact matching, lookups should try both
+ * the normalized ID and the original topic name.
+ *
+ * @param id SOVD data ID (e.g., "sensor_temperature")
+ * @return ROS2 topic name (e.g., "/sensor_temperature" - keeps underscores)
+ */
+inline std::string id_to_topic(const std::string & id) {
+  // Simply prepend slash - don't try to guess where slashes were
+  // The handler should try matching both normalized ID and original topic
+  if (id.empty() || id[0] == '/') {
+    return id;
+  }
+  return "/" + id;
+}
+
 }  // namespace ros2_medkit_gateway

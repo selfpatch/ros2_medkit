@@ -16,6 +16,7 @@
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
@@ -58,7 +59,29 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
     auto result = config_mgr->list_parameters(node_name);
 
     if (result.success) {
-      json response = {{entity_info.id_field, entity_id}, {"node_name", node_name}, {"parameters", result.data}};
+      // SOVD format: items array with ConfigurationMetaData objects
+      json items = json::array();
+      if (result.data.is_array()) {
+        for (const auto & param : result.data) {
+          json config_meta;
+          // SOVD required fields
+          std::string param_name = param.value("name", "");
+          config_meta["id"] = param_name;
+          config_meta["name"] = param_name;
+          config_meta["type"] = "parameter";  // ROS2 parameters are always parameter type (not bulk)
+          items.push_back(config_meta);
+        }
+      }
+
+      // Build x-medkit extension with ROS2-specific data
+      XMedkit ext;
+      ext.ros2_node(node_name).entity_id(entity_id).source("runtime");
+      // Add original parameter details to x-medkit
+      ext.add("parameters", result.data);
+
+      json response;
+      response["items"] = items;
+      response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
     } else {
       HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE,
@@ -117,19 +140,35 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
     auto result = config_mgr->get_parameter(node_name, param_name);
 
     if (result.success) {
-      json response = {{entity_info.id_field, entity_id}, {"parameter", result.data}};
+      // SOVD format: ReadConfigurations response with id and data
+      json response;
+      response["id"] = param_name;
+
+      // Extract value from parameter data
+      if (result.data.contains("value")) {
+        response["data"] = result.data["value"];
+      } else {
+        response["data"] = result.data;
+      }
+
+      // Build x-medkit extension with ROS2-specific data
+      XMedkit ext;
+      ext.ros2_node(node_name).entity_id(entity_id).source("runtime");
+      // Add original parameter object to x-medkit for full type info
+      ext.add("parameter", result.data);
+      response["x-medkit"] = ext.build();
+
       HandlerContext::send_json(res, response);
     } else {
       // Check if it's a "not found" error
       if (result.error_message.find("not found") != std::string::npos ||
           result.error_message.find("Parameter not found") != std::string::npos) {
-        HandlerContext::send_error(
-            res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Parameter not found",
-            {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"param_name", param_name}});
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Parameter not found",
+                                   {{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_name}});
       } else {
-        HandlerContext::send_error(
-            res, StatusCode::ServiceUnavailable_503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE, "Failed to get parameter",
-            {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"param_name", param_name}});
+        HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE,
+                                   "Failed to get parameter",
+                                   {{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_name}});
       }
     }
   } catch (const std::exception & e) {
@@ -176,14 +215,17 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
       return;
     }
 
-    // Extract value from request body
-    if (!body.contains("value")) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing 'value' field",
-                                 {{"details", "Request body must contain 'value' field"}});
+    // SOVD uses "data" field, but also support legacy "value" field
+    json value;
+    if (body.contains("data")) {
+      value = body["data"];
+    } else if (body.contains("value")) {
+      value = body["value"];
+    } else {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing 'data' field",
+                                 {{"details", "Request body must contain 'data' field"}});
       return;
     }
-
-    json value = body["value"];
 
     // Use unified entity lookup
     auto entity_info = ctx_.get_entity_info(entity_id);
@@ -203,7 +245,23 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     auto result = config_mgr->set_parameter(node_name, param_name, value);
 
     if (result.success) {
-      json response = {{"status", "success"}, {entity_info.id_field, entity_id}, {"parameter", result.data}};
+      // SOVD format: return updated configuration with id and data
+      json response;
+      response["id"] = param_name;
+
+      // Extract value from parameter data
+      if (result.data.contains("value")) {
+        response["data"] = result.data["value"];
+      } else {
+        response["data"] = result.data;
+      }
+
+      // Build x-medkit extension with ROS2-specific data
+      XMedkit ext;
+      ext.ros2_node(node_name).entity_id(entity_id).source("runtime");
+      ext.add("parameter", result.data);
+      response["x-medkit"] = ext.build();
+
       HandlerContext::send_json(res, response);
     } else {
       // Check if it's a read-only, not found, or service unavailable error
@@ -226,9 +284,8 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
         status_code = StatusCode::BadRequest_400;
         error_code = ERR_INVALID_REQUEST;
       }
-      HandlerContext::send_error(
-          res, status_code, error_code, "Failed to set parameter",
-          {{"details", result.error_message}, {entity_info.id_field, entity_id}, {"param_name", param_name}});
+      HandlerContext::send_error(res, status_code, error_code, "Failed to set parameter",
+                                 {{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_name}});
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
@@ -277,7 +334,8 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
     auto result = config_mgr->reset_parameter(node_name, param_name);
 
     if (result.success) {
-      HandlerContext::send_json(res, result.data);
+      // SOVD compliance: DELETE returns 204 No Content on success
+      res.status = StatusCode::NoContent_204;
     } else {
       HandlerContext::send_error(
           res, StatusCode::ServiceUnavailable_503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE, "Failed to reset parameter",
@@ -327,9 +385,10 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
     auto result = config_mgr->reset_all_parameters(node_name);
 
     if (result.success) {
-      HandlerContext::send_json(res, result.data);
+      // SOVD compliance: DELETE returns 204 No Content on complete success
+      res.status = StatusCode::NoContent_204;
     } else {
-      // Partial success - some parameters were reset
+      // Partial success - some parameters were reset, return 207 Multi-Status
       res.status = StatusCode::MultiStatus_207;
       res.set_content(result.data.dump(2), "application/json");
     }

@@ -17,6 +17,8 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
+#include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
@@ -171,32 +173,48 @@ void AppHandlers::handle_get_app_data(const httplib::Request & req, httplib::Res
 
     const auto & app = *app_opt;
 
-    // Build data items from app's topics
+    // Build SOVD-compliant data items from app's topics
     json items = json::array();
 
-    // Publishers
+    // Publishers - SOVD category "currentData"
     for (const auto & topic_name : app.topics.publishes) {
       json item;
-      item["id"] = topic_name;
-      item["name"] = topic_name;
-      item["direction"] = "publish";
-      item["href"] = "/api/v1/apps/" + app.id + "/data/" + topic_name;
+      // SOVD required fields
+      item["id"] = normalize_topic_to_id(topic_name);
+      item["name"] = topic_name;  // Use topic name as display name
+      item["category"] = "currentData";
+
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.ros2_topic(topic_name).add_ros2("direction", "publish");
+      item["x-medkit"] = ext.build();
+
       items.push_back(item);
     }
 
-    // Subscribers
+    // Subscribers - SOVD category "currentData"
     for (const auto & topic_name : app.topics.subscribes) {
       json item;
-      item["id"] = topic_name;
+      // SOVD required fields
+      item["id"] = normalize_topic_to_id(topic_name);
       item["name"] = topic_name;
-      item["direction"] = "subscribe";
-      item["href"] = "/api/v1/apps/" + app.id + "/data/" + topic_name;
+      item["category"] = "currentData";
+
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.ros2_topic(topic_name).add_ros2("direction", "subscribe");
+      item["x-medkit"] = ext.build();
+
       items.push_back(item);
     }
 
+    // Build response with x-medkit for total_count
     json response;
     response["items"] = items;
-    response["total_count"] = items.size();
+
+    XMedkit resp_ext;
+    resp_ext.entity_id(app_id).add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
@@ -238,62 +256,50 @@ void AppHandlers::handle_get_app_data_item(const httplib::Request & req, httplib
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
     auto native_sampler = data_access_mgr->get_native_sampler();
 
+    // Helper lambda to build SOVD ReadValue response
+    auto build_data_response = [&](const std::string & topic_name, const std::string & direction) {
+      json response;
+      // SOVD required fields
+      response["id"] = normalize_topic_to_id(topic_name);
+
+      // Sample topic value via native sampler
+      auto sample = native_sampler->sample_topic(topic_name, data_access_mgr->get_topic_sample_timeout());
+
+      // SOVD "data" field contains the actual value
+      if (sample.has_data && sample.data) {
+        response["data"] = *sample.data;
+      } else {
+        response["data"] = json::object();  // Empty object if no data available
+      }
+
+      // Build x-medkit extension with ROS2-specific data
+      XMedkit ext;
+      ext.ros2_topic(topic_name).add_ros2("direction", direction);
+      if (!sample.message_type.empty()) {
+        ext.ros2_type(sample.message_type);
+      }
+      ext.add("timestamp", sample.timestamp_ns);
+      ext.add("publisher_count", sample.publisher_count);
+      ext.add("subscriber_count", sample.subscriber_count);
+      ext.add("status", sample.has_data ? "data" : "metadata_only");
+      response["x-medkit"] = ext.build();
+
+      return response;
+    };
+
+    // Try matching by normalized ID or original topic name
     // Search in publishers
     for (const auto & topic_name : app.topics.publishes) {
-      if (topic_name == data_id) {
-        json response;
-        response["id"] = topic_name;
-        response["name"] = topic_name;
-        response["direction"] = "publish";
-
-        // Sample topic value via native sampler
-        auto sample = native_sampler->sample_topic(topic_name, data_access_mgr->get_topic_sample_timeout());
-        response["timestamp"] = sample.timestamp_ns;
-        response["publisher_count"] = sample.publisher_count;
-        response["subscriber_count"] = sample.subscriber_count;
-
-        if (sample.has_data && sample.data) {
-          response["status"] = "data";
-          response["data"] = *sample.data;
-        } else {
-          response["status"] = "metadata_only";
-        }
-
-        if (!sample.message_type.empty()) {
-          response["type"] = sample.message_type;
-        }
-
-        HandlerContext::send_json(res, response);
+      if (normalize_topic_to_id(topic_name) == data_id || topic_name == data_id) {
+        HandlerContext::send_json(res, build_data_response(topic_name, "publish"));
         return;
       }
     }
 
     // Search in subscribers
     for (const auto & topic_name : app.topics.subscribes) {
-      if (topic_name == data_id) {
-        json response;
-        response["id"] = topic_name;
-        response["name"] = topic_name;
-        response["direction"] = "subscribe";
-
-        // Sample topic value via native sampler
-        auto sample = native_sampler->sample_topic(topic_name, data_access_mgr->get_topic_sample_timeout());
-        response["timestamp"] = sample.timestamp_ns;
-        response["publisher_count"] = sample.publisher_count;
-        response["subscriber_count"] = sample.subscriber_count;
-
-        if (sample.has_data && sample.data) {
-          response["status"] = "data";
-          response["data"] = *sample.data;
-        } else {
-          response["status"] = "metadata_only";
-        }
-
-        if (!sample.message_type.empty()) {
-          response["type"] = sample.message_type;
-        }
-
-        HandlerContext::send_json(res, response);
+      if (normalize_topic_to_id(topic_name) == data_id || topic_name == data_id) {
+        HandlerContext::send_json(res, build_data_response(topic_name, "subscribe"));
         return;
       }
     }
