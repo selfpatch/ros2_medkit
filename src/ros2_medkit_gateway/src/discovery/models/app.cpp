@@ -17,38 +17,45 @@
 namespace ros2_medkit_gateway {
 
 json App::to_json() const {
-  json j = {{"id", id}, {"name", name}, {"type", "App"}, {"source", source}};
+  // SOVD-compliant base fields
+  json j = {{"id", id}};
 
+  if (!name.empty()) {
+    j["name"] = name;
+  }
   if (!translation_id.empty()) {
     j["translationId"] = translation_id;
-  }
-  if (!description.empty()) {
-    j["description"] = description;
   }
   if (!tags.empty()) {
     j["tags"] = tags;
   }
+
+  // ROS 2 extensions in x-medkit (SOVD vendor extension)
+  json x_medkit = {{"entityType", "App"}, {"source", source}};
+  if (!description.empty()) {
+    x_medkit["description"] = description;
+  }
   if (!component_id.empty()) {
-    j["componentId"] = component_id;
+    x_medkit["componentId"] = component_id;
   }
   if (!depends_on.empty()) {
-    j["dependsOn"] = depends_on;
+    x_medkit["dependsOn"] = depends_on;
   }
   if (ros_binding.has_value() && !ros_binding->is_empty()) {
-    j["rosBinding"] = ros_binding->to_json();
+    x_medkit["rosBinding"] = ros_binding->to_json();
   }
   if (bound_fqn.has_value()) {
-    j["boundFqn"] = bound_fqn.value();
+    x_medkit["boundFqn"] = bound_fqn.value();
   }
-  j["isOnline"] = is_online;
+  x_medkit["isOnline"] = is_online;
   if (external) {
-    j["external"] = external;
+    x_medkit["external"] = external;
   }
-
   // Add topics if present
   if (!topics.publishes.empty() || !topics.subscribes.empty()) {
-    j["topics"] = topics.to_json();
+    x_medkit["topics"] = topics.to_json();
   }
+  j["x-medkit"] = x_medkit;
 
   // Add operations (combine services and actions)
   json operations = json::array();
@@ -66,8 +73,12 @@ json App::to_json() const {
 }
 
 json App::to_entity_reference(const std::string & base_url) const {
-  json j = {{"id", id}, {"name", name}, {"href", base_url + "/apps/" + id}};
+  // SOVD-compliant EntityReference: id, name, href, [translationId, tags]
+  json j = {{"id", id}, {"href", base_url + "/apps/" + id}};
 
+  if (!name.empty()) {
+    j["name"] = name;
+  }
   if (!translation_id.empty()) {
     j["translationId"] = translation_id;
   }
@@ -81,13 +92,17 @@ json App::to_entity_reference(const std::string & base_url) const {
 json App::to_capabilities(const std::string & base_url) const {
   std::string app_base = base_url + "/apps/" + id;
 
-  json j = {{"id", id}, {"name", name}};
+  // SOVD-compliant capabilities response
+  json j = {{"id", id}};
 
+  if (!name.empty()) {
+    j["name"] = name;
+  }
   if (!translation_id.empty()) {
     j["translationId"] = translation_id;
   }
 
-  // Add capability URIs
+  // Capabilities as URI references (SOVD compliant)
   if (!topics.publishes.empty() || !topics.subscribes.empty()) {
     j["data"] = app_base + "/data";
   }
@@ -101,13 +116,20 @@ json App::to_capabilities(const std::string & base_url) const {
   // Always include faults
   j["faults"] = app_base + "/faults";
 
-  // Relationships
+  // Relationships (SOVD standard)
   if (!component_id.empty()) {
-    j["isLocatedOn"] = base_url + "/components/" + component_id;
+    j["is-located-on"] = base_url + "/components/" + component_id;
   }
   if (!depends_on.empty()) {
-    j["dependsOn"] = app_base + "/depends-on";
+    j["depends-on"] = app_base + "/depends-on";
   }
+
+  // x-medkit extension for ROS 2 specific info
+  json x_medkit = {{"entityType", "App"}, {"source", source}, {"isOnline", is_online}};
+  if (bound_fqn.has_value()) {
+    x_medkit["boundFqn"] = bound_fqn.value();
+  }
+  j["x-medkit"] = x_medkit;
 
   return j;
 }

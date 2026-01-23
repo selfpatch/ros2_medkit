@@ -160,8 +160,8 @@ Response:
 
    Topic paths use URL encoding: ``/`` becomes ``%2F``
 
-Step 5: Call Services
----------------------
+Step 5: Call Services and Actions
+----------------------------------
 
 The operations endpoints let you call ROS 2 services and actions.
 
@@ -171,11 +171,13 @@ The operations endpoints let you call ROS 2 services and actions.
 
    curl http://localhost:8080/api/v1/components/calibration/operations
 
-**Call a service:**
+**Call a service (synchronous execution):**
+
+Services return immediately with status ``200 OK``:
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/components/calibration/operations/calibrate \
+   curl -X POST http://localhost:8080/api/v1/components/calibration/operations/calibrate/executions \
      -H "Content-Type: application/json" \
      -d '{}'
 
@@ -184,10 +186,47 @@ Response:
 .. code-block:: json
 
    {
-     "status": "success",
-     "kind": "service",
-     "response": {"success": true, "message": "Calibration triggered"}
+     "id": "exec-12345",
+     "status": "completed",
+     "capability": "execute",
+     "x-medkit": {
+       "kind": "service",
+       "response": {"success": true, "message": "Calibration triggered"}
+     }
    }
+
+**Send an action goal (asynchronous execution):**
+
+Actions return ``202 Accepted`` immediately with an execution ID for polling:
+
+.. code-block:: bash
+
+   curl -X POST http://localhost:8080/api/v1/apps/long_calibration/operations/long_calibration/executions \
+     -H "Content-Type: application/json" \
+     -d '{"parameters": {"order": 5}}'
+
+Response (202 Accepted):
+
+.. code-block:: json
+
+   {
+     "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+     "status": "running"
+   }
+
+**Poll action status:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/apps/long_calibration/operations/long_calibration/executions/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+
+**Cancel a running action:**
+
+.. code-block:: bash
+
+   curl -X DELETE http://localhost:8080/api/v1/apps/long_calibration/operations/long_calibration/executions/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+
+Returns ``204 No Content`` on success.
 
 Step 6: Manage Parameters
 -------------------------

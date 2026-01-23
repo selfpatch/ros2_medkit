@@ -29,9 +29,11 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 
 ### Operations Endpoints (Services & Actions)
 - ✅ GET `/api/v1/components/{component_id}/operations` - List all operations (services & actions) with schema info
-- ✅ POST `/api/v1/components/{component_id}/operations/{operation}` - Call service or send action goal
-- ✅ GET `/api/v1/components/{component_id}/operations/{operation}/status` - Get action status
-- ✅ DELETE `/api/v1/components/{component_id}/operations/{operation}?goal_id=...` - Cancel action
+- ✅ GET `/api/v1/components/{component_id}/operations/{operation_id}` - Get operation details
+- ✅ POST `/api/v1/components/{component_id}/operations/{operation_id}/executions` - Execute operation
+- ✅ GET `/api/v1/components/{component_id}/operations/{operation_id}/executions` - List executions
+- ✅ GET `/api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}` - Get execution status
+- ✅ DELETE `/api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}` - Cancel execution
 
 ### Configurations Endpoints (ROS 2 Parameters)
 - ✅ GET `/api/v1/components/{component_id}/configurations` - List all parameters

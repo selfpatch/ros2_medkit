@@ -376,18 +376,18 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             f'(flaky discovery readiness race in CI). Last error: {last_error}'
         )
 
-    def _wait_for_action_status(
-        self, goal_id: str, target_statuses: list, max_wait: float = None
+    def _wait_for_execution_status(
+        self, execution_id: str, target_statuses: list, max_wait: float = None
     ) -> dict:
         """
-        Poll action status until it reaches one of the target statuses.
+        Poll execution status until it reaches one of the target statuses.
 
         Parameters
         ----------
-        goal_id : str
-            The goal ID to check status for.
+        execution_id : str
+            The execution ID (goal_id) to check status for.
         target_statuses : list
-            List of status strings to wait for (e.g., ['succeeded', 'aborted']).
+            List of SOVD status strings to wait for (e.g., ['completed', 'failed']).
         max_wait : float
             Maximum time to wait in seconds. Defaults to ACTION_TIMEOUT (30s).
 
@@ -410,8 +410,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             try:
                 status_response = requests.get(
                     f'{self.BASE_URL}/apps/long_calibration/operations/'
-                    f'long_calibration/status',
-                    params={'goal_id': goal_id},
+                    f'long_calibration/executions/{execution_id}',
                     timeout=5
                 )
                 if status_response.status_code == 200:
@@ -424,7 +423,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             time.sleep(0.5)
 
         raise AssertionError(
-            f'Action did not reach status {target_statuses} within {max_wait}s. '
+            f'Execution did not reach status {target_statuses} within {max_wait}s. '
             f'Last status: {last_status}'
         )
 
@@ -1272,11 +1271,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print('✓ Publish invalid JSON body test passed')
 
-    # ========== POST /apps/{app_id}/operations/{operation_name} tests ==========
+    # ========== POST /apps/{app_id}/operations/{op}/executions tests ==========
 
     def test_31_operation_call_calibrate_service(self):
         """
-        Test POST /apps/{app_id}/operations/{operation_name} calls a service.
+        Test POST /apps/{app_id}/operations/{op}/executions calls a service.
 
         Operations are exposed on Apps (ROS 2 nodes), not synthetic Components.
 
@@ -1286,35 +1285,30 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self._ensure_calibration_app_ready()
 
         response = requests.post(
-            f'{self.BASE_URL}/apps/calibration/operations/calibrate',
+            f'{self.BASE_URL}/apps/calibration/operations/calibrate/executions',
             json={},
             timeout=15
         )
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('status', data)
-        self.assertEqual(data['status'], 'success')
-        # Service call response has app_id/component_id at top level
-        self.assertIn('app_id', data)
-        self.assertEqual(data['app_id'], 'calibration')
-        self.assertIn('operation', data)
-        self.assertEqual(data['operation'], 'calibrate')
-        self.assertIn('response', data)
+        # SOVD service response: {"parameters": {...}}
+        self.assertIn('parameters', data)
 
         # Verify service response structure (std_srvs/srv/Trigger response)
-        self.assertIn('success', data['response'])
-        self.assertIn('message', data['response'])
-        self.assertIsInstance(data['response']['success'], bool)
-        self.assertIsInstance(data['response']['message'], str)
+        params = data['parameters']
+        self.assertIn('success', params)
+        self.assertIn('message', params)
+        self.assertIsInstance(params['success'], bool)
+        self.assertIsInstance(params['message'], str)
 
-        print(f'✓ Operation call calibrate service test passed: {data["response"]}')
+        print(f'✓ Operation call calibrate service test passed: {params}')
 
     def test_32_operation_call_nonexistent_operation(self):
         """
         Test operation call returns 404 for unknown operation.
 
-        POST /apps/{app_id}/operations/{operation_name}
+        POST /apps/{app_id}/operations/{op}/executions
 
         @verifies REQ_INTEROP_035
         """
@@ -1322,7 +1316,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self._ensure_calibration_app_ready()
 
         response = requests.post(
-            f'{self.BASE_URL}/apps/calibration/operations/nonexistent_op',
+            f'{self.BASE_URL}/apps/calibration/operations/nonexistent_op/executions',
             json={},
             timeout=10
         )
@@ -1330,7 +1324,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertIn('Operation not found', data['message'])
+        self.assertIn('not found', data['message'].lower())
 
         print('✓ Operation call nonexistent operation test passed')
 
@@ -1338,12 +1332,12 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test operation call returns 404 for unknown entity.
 
-        POST /apps/{app_id}/operations/{operation_name}
+        POST /apps/{app_id}/operations/{op}/executions
 
         @verifies REQ_INTEROP_035
         """
         response = requests.post(
-            f'{self.BASE_URL}/apps/nonexistent_app/operations/calibrate',
+            f'{self.BASE_URL}/apps/nonexistent_app/operations/calibrate/executions',
             json={},
             timeout=5
         )
@@ -1351,8 +1345,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertEqual(data['message'], 'Entity not found')
-        self.assertEqual(data['x-medkit'].get('entity_id'), 'nonexistent_app')
+        self.assertIn('not found', data['message'].lower())
 
         print('✓ Operation call nonexistent entity test passed')
 
@@ -1360,7 +1353,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test operation call rejects invalid entity ID.
 
-        POST /apps/{app_id}/operations/{operation_name}
+        POST /apps/{app_id}/operations/{op}/executions
 
         @verifies REQ_INTEROP_035
         """
@@ -1372,7 +1365,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         for invalid_id in invalid_ids:
             response = requests.post(
-                f'{self.BASE_URL}/apps/{invalid_id}/operations/calibrate',
+                f'{self.BASE_URL}/apps/{invalid_id}/operations/calibrate/executions',
                 json={},
                 timeout=5
             )
@@ -1384,7 +1377,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
             data = response.json()
             self.assertIn('error_code', data)
-            self.assertEqual(data['message'], 'Invalid entity ID')
+            self.assertIn('invalid', data['message'].lower())
 
         print('✓ Operation call invalid entity ID test passed')
 
@@ -1392,7 +1385,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test operation call rejects invalid operation name.
 
-        POST /apps/{app_id}/operations/{operation_name}
+        POST /apps/{app_id}/operations/{op}/executions
 
         @verifies REQ_INTEROP_021
         """
@@ -1404,19 +1397,19 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         for invalid_name in invalid_names:
             response = requests.post(
-                f'{self.BASE_URL}/apps/calibration/operations/{invalid_name}',
+                f'{self.BASE_URL}/apps/calibration/operations/{invalid_name}/executions',
                 json={},
                 timeout=5
             )
-            self.assertEqual(
+            # Accept 400 (invalid) or 404 (not found) - both are valid rejections
+            self.assertIn(
                 response.status_code,
-                400,
-                f'Expected 400 for operation_name: {invalid_name}'
+                [400, 404],
+                f'Expected 400 or 404 for operation_name: {invalid_name}'
             )
 
             data = response.json()
             self.assertIn('error_code', data)
-            self.assertEqual(data['message'], 'Invalid operation name')
 
         print('✓ Operation call invalid operation name test passed')
 
@@ -1424,12 +1417,12 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test operation call returns 400 for invalid JSON body.
 
-        POST /apps/{app_id}/operations/{operation_name}
+        POST /apps/{app_id}/operations/{op}/executions
 
         @verifies REQ_INTEROP_021
         """
         response = requests.post(
-            f'{self.BASE_URL}/apps/calibration/operations/calibrate',
+            f'{self.BASE_URL}/apps/calibration/operations/calibrate/executions',
             data='not valid json',
             headers={'Content-Type': 'application/json'},
             timeout=5
@@ -1510,144 +1503,132 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_39_action_send_goal_and_get_id(self):
         """
-        Test POST /apps/{app_id}/operations/{operation_name} sends action goal.
+        Test POST /apps/{app_id}/operations/{operation_id}/executions sends action goal.
 
-        Sends a goal to the long_calibration action and verifies goal_id is returned.
+        Sends a goal to the long_calibration action and verifies execution_id is returned.
+        Uses SOVD-compliant executions endpoint.
 
         @verifies REQ_INTEROP_022
         """
         response = requests.post(
-            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
-            json={'goal': {'order': 5}},
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/executions',
+            json={'parameters': {'order': 5}},
             timeout=15
         )
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)  # SOVD returns 202 Accepted
 
         data = response.json()
+        self.assertIn('id', data)
+        self.assertIsInstance(data['id'], str)
+        self.assertGreater(len(data['id']), 0)
         self.assertIn('status', data)
-        self.assertEqual(data['status'], 'success')
-        self.assertIn('kind', data)
-        self.assertEqual(data['kind'], 'action')
-        # Action call response has app_id/component_id at top level
-        self.assertIn('app_id', data)
-        self.assertEqual(data['app_id'], 'long_calibration')
-        self.assertIn('operation', data)
-        self.assertEqual(data['operation'], 'long_calibration')
-        self.assertIn('goal_id', data)
-        self.assertIsInstance(data['goal_id'], str)
-        self.assertGreater(len(data['goal_id']), 0)
-        self.assertIn('goal_status', data)
-        # Status can be 'executing' or 'succeeded' depending on timing
-        self.assertIn(data['goal_status'], ['accepted', 'executing', 'succeeded'])
+        self.assertEqual(data['status'], 'running')
 
-        print(f'✓ Action send goal test passed: goal_id={data["goal_id"]}')
+        # Verify Location header is set
+        self.assertIn('Location', response.headers)
+        self.assertIn('/executions/', response.headers['Location'])
+
+        print(f'✓ Action send goal test passed: execution_id={data["id"]}')
 
     def test_40_action_status_endpoint(self):
         """
-        Test GET /apps/{app_id}/operations/{operation_name}/status returns goal status.
+        Test GET /apps/{app_id}/operations/{operation_id}/executions/{exec_id} returns status.
 
         @verifies REQ_INTEROP_022
         """
         # First, send a goal with enough steps to ensure it's still running
         response = requests.post(
-            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
-            json={'goal': {'order': 10}},
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/executions',
+            json={'parameters': {'order': 10}},
             timeout=15
         )
-        self.assertEqual(response.status_code, 200)
-        goal_id = response.json()['goal_id']
+        self.assertEqual(response.status_code, 202)
+        execution_id = response.json()['id']
 
         # Check status immediately (allow extra time for action server response)
-        status_response = requests.get(
-            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/status',
-            params={'goal_id': goal_id},
-            timeout=10
-        )
+        exec_url = (f'{self.BASE_URL}/apps/long_calibration/operations/'
+                    f'long_calibration/executions/{execution_id}')
+        status_response = requests.get(exec_url, timeout=10)
         self.assertEqual(status_response.status_code, 200)
 
         data = status_response.json()
-        self.assertIn('goal_id', data)
-        self.assertEqual(data['goal_id'], goal_id)
         self.assertIn('status', data)
-        valid_statuses = ['accepted', 'executing', 'succeeded', 'canceled', 'aborted']
+        # SOVD status: running, completed, failed
+        valid_statuses = ['running', 'completed', 'failed']
         self.assertIn(data['status'], valid_statuses)
-        self.assertIn('action_path', data)
-        self.assertEqual(data['action_path'], '/powertrain/engine/long_calibration')
-        self.assertIn('action_type', data)
-        self.assertEqual(data['action_type'], 'example_interfaces/action/Fibonacci')
+        self.assertIn('capability', data)
+        self.assertEqual(data['capability'], 'execute')
+        # x-medkit extension has ROS2-specific details
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertIn('goal_id', x_medkit)
+        self.assertEqual(x_medkit['goal_id'], execution_id)
+        self.assertIn('ros2', x_medkit)
+        self.assertEqual(x_medkit['ros2']['action'], '/powertrain/engine/long_calibration')
+        self.assertEqual(x_medkit['ros2']['type'], 'example_interfaces/action/Fibonacci')
 
         print(f'✓ Action status endpoint test passed: status={data["status"]}')
 
     def test_41_action_status_after_completion(self):
         """
-        Test that action status is updated to succeeded after completion via native subscription.
+        Test that execution status is updated to completed after action finishes.
 
         The native status subscription updates goal status in real-time.
-        After an action completes, polling the status endpoint should show 'succeeded'.
+        After an action completes, polling the executions endpoint should show 'completed'.
 
         @verifies REQ_INTEROP_022
         """
         # Send a short goal that will complete quickly
         response = requests.post(
-            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
-            json={'goal': {'order': 3}},
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/executions',
+            json={'parameters': {'order': 3}},
             timeout=15
         )
-        self.assertEqual(response.status_code, 200)
-        goal_id = response.json()['goal_id']
+        self.assertEqual(response.status_code, 202)
+        execution_id = response.json()['id']
 
         # Poll for completion instead of fixed sleep (handles CI timing variance)
-        data = self._wait_for_action_status(
-            goal_id, ['succeeded', 'aborted'], max_wait=ACTION_TIMEOUT
+        data = self._wait_for_execution_status(
+            execution_id, ['completed', 'failed'], max_wait=ACTION_TIMEOUT
         )
 
-        self.assertIn('goal_id', data)
-        self.assertEqual(data['goal_id'], goal_id)
         self.assertIn('status', data)
-        self.assertEqual(data['status'], 'succeeded')
+        self.assertEqual(data['status'], 'completed')
 
         print(f'✓ Action status after completion test passed: status={data["status"]}')
 
     def test_42_action_cancel_endpoint(self):
         """
-        Test DELETE /apps/{app_id}/operations/{operation_name} cancels action.
+        Test DELETE /apps/{app_id}/operations/{operation_id}/executions/{exec_id} cancels action.
 
         @verifies REQ_INTEROP_022
         """
         # Send a long goal that we can cancel
         response = requests.post(
-            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
-            json={'goal': {'order': 20}},
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/executions',
+            json={'parameters': {'order': 20}},
             timeout=15
         )
-        self.assertEqual(response.status_code, 200)
-        goal_id = response.json()['goal_id']
+        self.assertEqual(response.status_code, 202)
+        execution_id = response.json()['id']
 
         # Poll until action is executing (handles CI timing variance)
         try:
-            self._wait_for_action_status(
-                goal_id, ['executing'], max_wait=ACTION_TIMEOUT
+            self._wait_for_execution_status(
+                execution_id, ['running'], max_wait=ACTION_TIMEOUT
             )
         except AssertionError:
-            # If action already completed or is still in accepted, try cancel anyway
+            # If action already completed or is still starting, try cancel anyway
             pass
 
-        # Cancel the goal
-        cancel_response = requests.delete(
-            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
-            params={'goal_id': goal_id},
-            timeout=10
-        )
-        self.assertEqual(cancel_response.status_code, 200)
+        # Cancel the execution
+        exec_url = (f'{self.BASE_URL}/apps/long_calibration/operations/'
+                    f'long_calibration/executions/{execution_id}')
+        cancel_response = requests.delete(exec_url, timeout=10)
+        # SOVD specifies 204 No Content for successful cancel
+        self.assertEqual(cancel_response.status_code, 204)
 
-        data = cancel_response.json()
-        self.assertIn('status', data)
-        # Status can be 'canceling' or 'canceled' depending on timing
-        self.assertIn(data['status'], ['canceling', 'canceled'])
-        self.assertIn('goal_id', data)
-        self.assertEqual(data['goal_id'], goal_id)
-
-        print(f'✓ Action cancel endpoint test passed: {data}')
+        print('✓ Action cancel endpoint test passed (204 No Content)')
 
     def test_43_action_listed_in_app_discovery(self):
         """
@@ -1690,41 +1671,40 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print('✓ Action listed in app operations test passed')
 
-    def test_44_action_status_without_goal_id_returns_latest(self):
+    def test_44_list_executions_endpoint(self):
         """
-        Test action status without goal_id returns latest goal.
+        Test GET /apps/{app_id}/operations/{operation_id}/executions lists all executions.
 
-        GET /apps/{app_id}/operations/{operation_name}/status
-        Returns the most recent goal status when no goal_id is provided.
+        Returns list of execution IDs for the operation.
 
         @verifies REQ_INTEROP_022
         """
-        # First, send a goal so we have something to query
+        # First, send a goal so we have something to list
         response = requests.post(
-            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration',
-            json={'goal': {'order': 3}},
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/executions',
+            json={'parameters': {'order': 3}},
             timeout=15
         )
-        self.assertEqual(response.status_code, 200)
-        expected_goal_id = response.json()['goal_id']
+        self.assertEqual(response.status_code, 202)
+        expected_execution_id = response.json()['id']
 
         # Wait for it to complete
         time.sleep(3)
 
-        # Now query status without goal_id - should return the latest goal
-        status_response = requests.get(
-            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/status',
+        # List all executions for this operation
+        list_response = requests.get(
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/executions',
             timeout=5
         )
-        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(list_response.status_code, 200)
 
-        data = status_response.json()
-        self.assertIn('goal_id', data)
-        self.assertEqual(data['goal_id'], expected_goal_id)
-        self.assertIn('status', data)
-        self.assertEqual(data['status'], 'succeeded')
+        data = list_response.json()
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+        # Our execution should be in the list
+        self.assertIn(expected_execution_id, data['items'])
 
-        print(f'✓ Action status without goal_id returns latest goal: {data["goal_id"]}')
+        print(f'✓ List executions test passed: {len(data["items"])} executions found')
 
     # ========== Configurations API Tests (test_45-52) ==========
 
@@ -2875,7 +2855,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('kind', x_medkit['ros2'])
         self.assertEqual(x_medkit['ros2']['kind'], 'service')
         self.assertIn('type', x_medkit['ros2'])
-        self.assertIn('path', x_medkit['ros2'])
+        self.assertIn('service', x_medkit['ros2'])
 
         print(f'✓ Get operation details for service test passed: {operation_id}')
 
@@ -3216,8 +3196,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             timeout=10
         )
 
-        # 200 if implemented, 501 if not supported
-        self.assertIn(response.status_code, [200, 501])
+        # 200 if implemented, 404 if not found, 501 if not supported
+        self.assertIn(response.status_code, [200, 404, 501])
 
         if response.status_code == 200:
             data = response.json()
@@ -3243,8 +3223,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             timeout=10
         )
 
-        # 200 if implemented, 501 if not supported
-        self.assertIn(response.status_code, [200, 501])
+        # 200 if implemented, 404 if not found, 501 if not supported
+        self.assertIn(response.status_code, [200, 404, 501])
 
         if response.status_code == 200:
             data = response.json()

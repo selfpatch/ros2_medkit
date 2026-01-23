@@ -17,30 +17,42 @@
 namespace ros2_medkit_gateway {
 
 json Function::to_json() const {
-  json j = {{"id", id}, {"name", name}, {"type", "Function"}, {"source", source}};
+  // SOVD-compliant base fields
+  json j = {{"id", id}};
 
+  if (!name.empty()) {
+    j["name"] = name;
+  }
   if (!translation_id.empty()) {
     j["translationId"] = translation_id;
-  }
-  if (!description.empty()) {
-    j["description"] = description;
   }
   if (!tags.empty()) {
     j["tags"] = tags;
   }
+
+  // ROS 2 extensions in x-medkit (SOVD vendor extension)
+  json x_medkit = {{"entityType", "Function"}, {"source", source}};
+  if (!description.empty()) {
+    x_medkit["description"] = description;
+  }
   if (!hosts.empty()) {
-    j["hosts"] = hosts;
+    x_medkit["hosts"] = hosts;
   }
   if (!depends_on.empty()) {
-    j["dependsOn"] = depends_on;
+    x_medkit["dependsOn"] = depends_on;
   }
+  j["x-medkit"] = x_medkit;
 
   return j;
 }
 
 json Function::to_entity_reference(const std::string & base_url) const {
-  json j = {{"id", id}, {"name", name}, {"href", base_url + "/functions/" + id}};
+  // SOVD-compliant EntityReference: id, name, href, [translationId, tags]
+  json j = {{"id", id}, {"href", base_url + "/functions/" + id}};
 
+  if (!name.empty()) {
+    j["name"] = name;
+  }
   if (!translation_id.empty()) {
     j["translationId"] = translation_id;
   }
@@ -54,24 +66,31 @@ json Function::to_entity_reference(const std::string & base_url) const {
 json Function::to_capabilities(const std::string & base_url) const {
   std::string func_base = base_url + "/functions/" + id;
 
-  json j = {{"id", id}, {"name", name}};
+  // SOVD-compliant capabilities response
+  json j = {{"id", id}};
 
+  if (!name.empty()) {
+    j["name"] = name;
+  }
   if (!translation_id.empty()) {
     j["translationId"] = translation_id;
   }
 
-  // Function-specific capabilities
+  // Function-specific capabilities (SOVD compliant)
   if (!hosts.empty()) {
     j["hosts"] = func_base + "/hosts";
   }
   if (!depends_on.empty()) {
-    j["dependsOn"] = func_base + "/depends-on";
+    j["depends-on"] = func_base + "/depends-on";
   }
 
   // Functions can also have data, operations, faults aggregated from hosted entities
   j["data"] = func_base + "/data";
   j["operations"] = func_base + "/operations";
   j["faults"] = func_base + "/faults";
+
+  // x-medkit extension for ROS 2 specific info
+  j["x-medkit"] = {{"entityType", "Function"}, {"source", source}};
 
   return j;
 }

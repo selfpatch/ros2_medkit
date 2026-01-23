@@ -184,12 +184,12 @@ Services and actions under your namespace become Operations:
 
 .. code-block:: cpp
 
-   // Service: POST /api/v1/components/my_node/operations/reset
+   // Service: POST /api/v1/components/my_node/operations/reset/executions
    srv_reset_ = create_service<std_srvs::srv::Trigger>(
      "reset",
      std::bind(&MyNode::handle_reset, this, _1, _2));
 
-   // Action: POST /api/v1/components/my_node/operations/calibrate
+   // Action: POST /api/v1/components/my_node/operations/calibrate/executions
    action_calibrate_ = rclcpp_action::create_server<Calibrate>(
      this, "calibrate",
      std::bind(&MyNode::handle_goal, this, _1, _2),

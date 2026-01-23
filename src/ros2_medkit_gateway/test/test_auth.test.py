@@ -382,16 +382,16 @@ class TestAuthorizationIntegration(unittest.TestCase):
         """Operator role should be able to trigger operations."""
         headers = self._auth_header('operator')
 
-        # POST operation - may return 404 if component doesn't exist,
+        # POST operation execution - may return 404 if component doesn't exist,
         # but should not return 401 or 403
         response = requests.post(
-            f'{self.BASE_URL}/components/test_component/operations/test_op',
+            f'{self.BASE_URL}/components/test_component/operations/test_op/executions',
             json={},
             headers=headers,
             timeout=5,
         )
         # 404 (not found) is acceptable - means auth passed but resource doesn't exist
-        self.assertIn(response.status_code, [200, 400, 404, 500])
+        self.assertIn(response.status_code, [200, 202, 400, 404, 500])
 
     def test_06_operator_cannot_modify_configurations(self):
         """Operator role should not be able to modify configurations."""

@@ -362,8 +362,9 @@ TEST_F(AuthManagerTest, AuthorizeViewerCannotWrite) {
 }
 
 TEST_F(AuthManagerTest, AuthorizeOperatorCanTriggerOperations) {
-  auto result =
-      auth_manager_->check_authorization(UserRole::OPERATOR, "POST", "/api/v1/components/engine/operations/calibrate");
+  // SOVD-compliant executions endpoint
+  auto result = auth_manager_->check_authorization(UserRole::OPERATOR, "POST",
+                                                   "/api/v1/components/engine/operations/calibrate/executions");
   EXPECT_TRUE(result.authorized);
 
   result = auth_manager_->check_authorization(UserRole::OPERATOR, "DELETE", "/api/v1/components/engine/faults/F001");

@@ -33,10 +33,11 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 ### Operations Endpoints (Services & Actions)
 
 - `GET /api/v1/components/{component_id}/operations` - List all services and actions for a component
-- `POST /api/v1/components/{component_id}/operations/{operation}` - Call service or send action goal
-- `GET /api/v1/components/{component_id}/operations/{operation}/status` - Get action goal status
-- `GET /api/v1/components/{component_id}/operations/{operation}/result` - Get action goal result
-- `DELETE /api/v1/components/{component_id}/operations/{operation}` - Cancel action goal
+- `GET /api/v1/components/{component_id}/operations/{operation_id}` - Get operation details
+- `POST /api/v1/components/{component_id}/operations/{operation_id}/executions` - Execute operation (call service or send action goal)
+- `GET /api/v1/components/{component_id}/operations/{operation_id}/executions` - List all executions for an operation
+- `GET /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}` - Get execution status
+- `DELETE /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}` - Cancel action execution
 
 ### Configurations Endpoints (ROS 2 Parameters)
 
@@ -335,25 +336,21 @@ curl http://localhost:8080/api/v1/components/calibration/operations
 ]
 ```
 
-#### POST /api/v1/components/{component_id}/operations/{operation}
+#### POST /api/v1/components/{component_id}/operations/{operation_id}/executions
 
-Call a service or send an action goal.
+Execute an operation (call a service or send an action goal).
 
 **Example (Service Call):**
 ```bash
-curl -X POST http://localhost:8080/api/v1/components/calibration/operations/calibrate \
+curl -X POST http://localhost:8080/api/v1/components/calibration/operations/calibrate/executions \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d '{"parameters": {}}'
 ```
 
 **Response (200 OK - Service):**
 ```json
 {
-  "status": "success",
-  "kind": "service",
-  "component_id": "calibration",
-  "operation": "calibrate",
-  "response": {
+  "parameters": {
     "success": true,
     "message": "Calibration triggered"
   }
@@ -362,59 +359,58 @@ curl -X POST http://localhost:8080/api/v1/components/calibration/operations/cali
 
 **Example (Action Goal):**
 ```bash
-curl -X POST http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration \
+curl -X POST http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions \
   -H "Content-Type: application/json" \
-  -d '{"goal": {"order": 10}}'
+  -d '{"parameters": {"order": 10}}'
 ```
 
 **Response (202 Accepted - Action):**
 ```json
 {
-  "status": "accepted",
-  "kind": "action",
-  "component_id": "long_calibration",
-  "operation": "long_calibration",
-  "goal_id": "abc123def456...",
-  "goal_status": "executing"
+  "id": "abc123def456...",
+  "status": "running"
 }
 ```
 
-#### GET /api/v1/components/{component_id}/operations/{operation}/status
+**Headers:** `Location: /api/v1/components/long_calibration/operations/long_calibration/executions/abc123def456...`
 
-Get the status of an action goal.
+#### GET /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}
 
-**Example (Latest Goal):**
+Get the status of an action execution.
+
+**Example:**
 ```bash
-curl http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/status
-```
-
-**Example (Specific Goal):**
-```bash
-curl "http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/status?goal_id=abc123"
-```
-
-**Example (All Goals):**
-```bash
-curl "http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/status?all=true"
+curl http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions/abc123def456
 ```
 
 **Response (200 OK):**
 ```json
 {
-  "goal_id": "abc123def456...",
-  "status": "succeeded",
-  "action_path": "/long_calibration/long_calibration",
-  "action_type": "example_interfaces/action/Fibonacci"
+  "status": "running",
+  "capability": "execute",
+  "parameters": {
+    "sequence": [0, 1, 1, 2, 3]
+  },
+  "x-medkit": {
+    "goal_id": "abc123def456...",
+    "ros2_status": "executing",
+    "ros2": {
+      "action": "/powertrain/engine/long_calibration",
+      "type": "example_interfaces/action/Fibonacci"
+    }
+  }
 }
 ```
 
-#### DELETE /api/v1/components/{component_id}/operations/{operation}
+**SOVD Status Values:** `running`, `completed`, `failed`
 
-Cancel a running action goal.
+#### DELETE /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}
+
+Cancel a running action execution.
 
 **Example:**
 ```bash
-curl -X DELETE "http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration?goal_id=abc123"
+curl -X DELETE http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions/abc123def456
 ```
 
 **Response (200 OK):**

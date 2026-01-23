@@ -40,62 +40,83 @@ struct Area {
   std::string parent_area_id;     ///< Parent area ID for sub-areas
 
   /**
-   * @brief Convert to JSON representation
+   * @brief Convert to JSON representation (SOVD-compliant)
    * @return JSON object with area data
+   *
+   * SOVD EntityReference fields: id, name, href, translation_id, tags
+   * ROS 2 extensions in x-medkit: namespace, type, description, parentAreaId
    */
   json to_json() const {
-    json j = {{"id", id}, {"namespace", namespace_path}, {"type", type}};
+    // SOVD-compliant base fields
+    json j = {{"id", id}};
 
-    // Include optional fields only if set
     if (!name.empty()) {
       j["name"] = name;
     }
     if (!translation_id.empty()) {
       j["translationId"] = translation_id;
     }
+    if (!tags.empty()) {
+      j["tags"] = tags;
+    }
+
+    // ROS 2 extensions in x-medkit (SOVD vendor extension)
+    json x_medkit = {{"entityType", type}, {"namespace", namespace_path}};
     if (!description.empty()) {
-      j["description"] = description;
+      x_medkit["description"] = description;
+    }
+    if (!parent_area_id.empty()) {
+      x_medkit["parentAreaId"] = parent_area_id;
+    }
+    j["x-medkit"] = x_medkit;
+
+    return j;
+  }
+
+  /**
+   * @brief Create SOVD EntityReference format (strictly compliant)
+   * @param base_url Base URL for self links
+   * @return JSON object in EntityReference format: id, name, href, [translationId, tags]
+   */
+  json to_entity_reference(const std::string & base_url) const {
+    json j = {{"id", id}, {"href", base_url + "/areas/" + id}};
+    if (!name.empty()) {
+      j["name"] = name;
+    }
+    if (!translation_id.empty()) {
+      j["translationId"] = translation_id;
     }
     if (!tags.empty()) {
       j["tags"] = tags;
     }
-    if (!parent_area_id.empty()) {
-      j["parentAreaId"] = parent_area_id;
-    }
-
     return j;
   }
 
   /**
-   * @brief Create SOVD EntityReference format
-   * @param base_url Base URL for self links
-   * @return JSON object in EntityReference format
-   */
-  json to_entity_reference(const std::string & base_url) const {
-    json j = {{"id", id}, {"type", type}};
-    if (!name.empty()) {
-      j["name"] = name;
-    }
-    j["self"] = base_url + "/areas/" + id;
-    return j;
-  }
-
-  /**
-   * @brief Create SOVD Entity Capabilities format
+   * @brief Create SOVD Entity Capabilities format (strictly compliant)
    * @param base_url Base URL for capability links
    * @return JSON object listing available sub-resources
    */
   json to_capabilities(const std::string & base_url) const {
-    json capabilities = json::array();
     std::string area_url = base_url + "/areas/" + id;
 
-    // Areas contain components
-    capabilities.push_back({{"name", "components"}, {"href", area_url + "/components"}});
+    // SOVD-compliant capabilities response
+    json j = {{"id", id}};
+    if (!name.empty()) {
+      j["name"] = name;
+    }
+    if (!translation_id.empty()) {
+      j["translationId"] = translation_id;
+    }
 
-    // Sub-areas if this area has children
-    capabilities.push_back({{"name", "areas"}, {"href", area_url + "/areas"}});
+    // Capabilities as URI references (SOVD compliant)
+    j["subareas"] = area_url + "/subareas";
+    j["related-components"] = area_url + "/related-components";
 
-    return {{"id", id}, {"type", type}, {"capabilities", capabilities}};
+    // x-medkit extension for ROS 2 specific info
+    j["x-medkit"] = {{"entityType", type}, {"namespace", namespace_path}};
+
+    return j;
   }
 };
 

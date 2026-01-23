@@ -137,7 +137,7 @@ Response:
    TOKEN="eyJhbGciOiJIUzI1NiIs..."
 
    # Protected endpoint (POST requires auth in "write" mode)
-   curl -X POST http://localhost:8080/api/v1/components/calibration/operations/calibrate \
+   curl -X POST http://localhost:8080/api/v1/components/calibration/operations/calibrate/executions \
      -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
      -d '{}'

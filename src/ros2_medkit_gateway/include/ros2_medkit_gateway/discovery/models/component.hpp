@@ -50,35 +50,43 @@ struct Component {
   ComponentTopics topics;               ///< Topics this component publishes/subscribes
 
   /**
-   * @brief Convert to JSON representation
+   * @brief Convert to JSON representation (SOVD-compliant)
    * @return JSON object with component data
+   *
+   * SOVD EntityReference fields: id, name, href, translation_id, tags
+   * ROS 2 extensions in x-medkit: namespace, fqn, entityType, area, source, variant, etc.
    */
   json to_json() const {
-    json j = {{"id", id},         {"namespace", namespace_path}, {"fqn", fqn}, {"type", type}, {"area", area},
-              {"source", source}, {"topics", topics.to_json()}};
+    // SOVD-compliant base fields
+    json j = {{"id", id}};
 
-    // Include optional fields only if set
     if (!name.empty()) {
       j["name"] = name;
     }
     if (!translation_id.empty()) {
       j["translationId"] = translation_id;
     }
-    if (!description.empty()) {
-      j["description"] = description;
-    }
-    if (!variant.empty()) {
-      j["variant"] = variant;
-    }
     if (!tags.empty()) {
       j["tags"] = tags;
     }
+
+    // ROS 2 extensions in x-medkit (SOVD vendor extension)
+    json x_medkit = {
+        {"entityType", type}, {"namespace", namespace_path}, {"fqn", fqn}, {"area", area}, {"source", source}};
+    if (!description.empty()) {
+      x_medkit["description"] = description;
+    }
+    if (!variant.empty()) {
+      x_medkit["variant"] = variant;
+    }
     if (!parent_component_id.empty()) {
-      j["parentComponentId"] = parent_component_id;
+      x_medkit["parentComponentId"] = parent_component_id;
     }
     if (!depends_on.empty()) {
-      j["dependsOn"] = depends_on;
+      x_medkit["dependsOn"] = depends_on;
     }
+    x_medkit["topics"] = topics.to_json();
+    j["x-medkit"] = x_medkit;
 
     // Add operations array combining services and actions
     json operations = json::array();
@@ -96,49 +104,63 @@ struct Component {
   }
 
   /**
-   * @brief Create SOVD EntityReference format
+   * @brief Create SOVD EntityReference format (strictly compliant)
    * @param base_url Base URL for self links
-   * @return JSON object in EntityReference format
+   * @return JSON object in EntityReference format: id, name, href, [translationId, tags]
    */
   json to_entity_reference(const std::string & base_url) const {
-    json j = {{"id", id}, {"type", type}};
+    json j = {{"id", id}, {"href", base_url + "/components/" + id}};
     if (!name.empty()) {
       j["name"] = name;
     }
-    j["self"] = base_url + "/components/" + id;
+    if (!translation_id.empty()) {
+      j["translationId"] = translation_id;
+    }
+    if (!tags.empty()) {
+      j["tags"] = tags;
+    }
     return j;
   }
 
   /**
-   * @brief Create SOVD Entity Capabilities format
+   * @brief Create SOVD Entity Capabilities format (strictly compliant)
    * @param base_url Base URL for capability links
    * @return JSON object listing available sub-resources
    */
   json to_capabilities(const std::string & base_url) const {
-    json capabilities = json::array();
     std::string component_url = base_url + "/components/" + id;
 
-    // Data capability (topics)
+    // SOVD-compliant capabilities response
+    json j = {{"id", id}};
+    if (!name.empty()) {
+      j["name"] = name;
+    }
+    if (!translation_id.empty()) {
+      j["translationId"] = translation_id;
+    }
+
+    // Capabilities as URI references (SOVD compliant)
     if (!topics.publishes.empty() || !topics.subscribes.empty()) {
-      capabilities.push_back({{"name", "data"}, {"href", component_url + "/data"}});
+      j["data"] = component_url + "/data";
     }
-
-    // Operations capability (services + actions)
     if (!services.empty() || !actions.empty()) {
-      capabilities.push_back({{"name", "operations"}, {"href", component_url + "/operations"}});
+      j["operations"] = component_url + "/operations";
     }
-
-    // Configurations capability (parameters) - always present for ROS 2 nodes
+    // ROS 2 nodes always have parameters
     if (source == "node") {
-      capabilities.push_back({{"name", "configurations"}, {"href", component_url + "/configurations"}});
+      j["configurations"] = component_url + "/configurations";
     }
-
-    // Depends-on capability
+    j["faults"] = component_url + "/faults";
+    j["subcomponents"] = component_url + "/subcomponents";
+    j["related-apps"] = component_url + "/related-apps";
     if (!depends_on.empty()) {
-      capabilities.push_back({{"name", "depends-on"}, {"href", component_url + "/depends-on"}});
+      j["depends-on"] = component_url + "/depends-on";
     }
 
-    return {{"id", id}, {"type", type}, {"capabilities", capabilities}};
+    // x-medkit extension for ROS 2 specific info
+    j["x-medkit"] = {{"entityType", type}, {"namespace", namespace_path}, {"fqn", fqn}, {"source", source}};
+
+    return j;
   }
 };
 

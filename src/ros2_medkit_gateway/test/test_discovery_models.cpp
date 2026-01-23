@@ -60,8 +60,9 @@ TEST_F(AreaModelTest, ToJson_ContainsRequiredFields) {
   json j = area_.to_json();
 
   EXPECT_EQ(j["id"], "powertrain");
-  EXPECT_EQ(j["namespace"], "/powertrain");
-  EXPECT_EQ(j["type"], "Area");
+  EXPECT_TRUE(j.contains("x-medkit"));
+  EXPECT_EQ(j["x-medkit"]["namespace"], "/powertrain");
+  EXPECT_EQ(j["x-medkit"]["entityType"], "Area");
 }
 
 TEST_F(AreaModelTest, ToJson_ContainsOptionalFields) {
@@ -69,9 +70,9 @@ TEST_F(AreaModelTest, ToJson_ContainsOptionalFields) {
 
   EXPECT_EQ(j["name"], "Powertrain System");
   EXPECT_EQ(j["translationId"], "area.powertrain");
-  EXPECT_EQ(j["description"], "Powertrain control systems");
+  EXPECT_EQ(j["x-medkit"]["description"], "Powertrain control systems");
   EXPECT_EQ(j["tags"].size(), 2);
-  EXPECT_EQ(j["parentAreaId"], "vehicle");
+  EXPECT_EQ(j["x-medkit"]["parentAreaId"], "vehicle");
 }
 
 TEST_F(AreaModelTest, ToJson_OmitsEmptyOptionalFields) {
@@ -83,26 +84,27 @@ TEST_F(AreaModelTest, ToJson_OmitsEmptyOptionalFields) {
 
   EXPECT_FALSE(j.contains("name"));
   EXPECT_FALSE(j.contains("translationId"));
-  EXPECT_FALSE(j.contains("description"));
+  EXPECT_FALSE(j["x-medkit"].contains("description"));
   EXPECT_FALSE(j.contains("tags"));
-  EXPECT_FALSE(j.contains("parentAreaId"));
+  EXPECT_FALSE(j["x-medkit"].contains("parentAreaId"));
 }
 
 TEST_F(AreaModelTest, ToEntityReference_ContainsRequiredFields) {
   json j = area_.to_entity_reference("http://localhost:8080/api/v1");
 
   EXPECT_EQ(j["id"], "powertrain");
-  EXPECT_EQ(j["type"], "Area");
-  EXPECT_EQ(j["self"], "http://localhost:8080/api/v1/areas/powertrain");
+  EXPECT_EQ(j["href"], "http://localhost:8080/api/v1/areas/powertrain");
+  EXPECT_FALSE(j.contains("type"));  // SOVD compliant: no type in EntityReference
 }
 
 TEST_F(AreaModelTest, ToCapabilities_ContainsSubResources) {
   json j = area_.to_capabilities("http://localhost:8080/api/v1");
 
   EXPECT_EQ(j["id"], "powertrain");
-  EXPECT_EQ(j["type"], "Area");
-  EXPECT_TRUE(j.contains("capabilities"));
-  EXPECT_EQ(j["capabilities"].size(), 2);
+  EXPECT_TRUE(j.contains("x-medkit"));
+  EXPECT_EQ(j["x-medkit"]["entityType"], "Area");
+  EXPECT_TRUE(j.contains("subareas"));
+  EXPECT_TRUE(j.contains("related-components"));
 }
 
 // =============================================================================
@@ -132,11 +134,12 @@ TEST_F(ComponentModelTest, ToJson_ContainsRequiredFields) {
   json j = comp_.to_json();
 
   EXPECT_EQ(j["id"], "motor_controller");
-  EXPECT_EQ(j["namespace"], "/powertrain");
-  EXPECT_EQ(j["fqn"], "/powertrain/motor_controller");
-  EXPECT_EQ(j["type"], "Component");
-  EXPECT_EQ(j["area"], "powertrain");
-  EXPECT_EQ(j["source"], "node");
+  EXPECT_TRUE(j.contains("x-medkit"));
+  EXPECT_EQ(j["x-medkit"]["namespace"], "/powertrain");
+  EXPECT_EQ(j["x-medkit"]["fqn"], "/powertrain/motor_controller");
+  EXPECT_EQ(j["x-medkit"]["entityType"], "Component");
+  EXPECT_EQ(j["x-medkit"]["area"], "powertrain");
+  EXPECT_EQ(j["x-medkit"]["source"], "node");
 }
 
 TEST_F(ComponentModelTest, ToJson_ContainsOptionalFields) {
@@ -144,8 +147,8 @@ TEST_F(ComponentModelTest, ToJson_ContainsOptionalFields) {
 
   EXPECT_EQ(j["name"], "Motor Controller");
   EXPECT_EQ(j["translationId"], "comp.motor");
-  EXPECT_EQ(j["description"], "Controls the electric motor");
-  EXPECT_EQ(j["variant"], "v2");
+  EXPECT_EQ(j["x-medkit"]["description"], "Controls the electric motor");
+  EXPECT_EQ(j["x-medkit"]["variant"], "v2");
   EXPECT_EQ(j["tags"].size(), 1);
 }
 
@@ -153,26 +156,20 @@ TEST_F(ComponentModelTest, ToEntityReference_ContainsRequiredFields) {
   json j = comp_.to_entity_reference("http://localhost:8080/api/v1");
 
   EXPECT_EQ(j["id"], "motor_controller");
-  EXPECT_EQ(j["type"], "Component");
-  EXPECT_EQ(j["self"], "http://localhost:8080/api/v1/components/motor_controller");
+  EXPECT_EQ(j["href"], "http://localhost:8080/api/v1/components/motor_controller");
+  EXPECT_FALSE(j.contains("type"));  // SOVD compliant: no type in EntityReference
 }
 
 TEST_F(ComponentModelTest, ToCapabilities_ContainsConfigurationsForNodes) {
   json j = comp_.to_capabilities("http://localhost:8080/api/v1");
 
   EXPECT_EQ(j["id"], "motor_controller");
-  EXPECT_EQ(j["type"], "Component");
-  EXPECT_TRUE(j.contains("capabilities"));
+  EXPECT_TRUE(j.contains("x-medkit"));
+  EXPECT_EQ(j["x-medkit"]["entityType"], "Component");
 
   // Node-based components should have configurations capability
-  bool has_configurations = false;
-  for (const auto & cap : j["capabilities"]) {
-    if (cap["name"] == "configurations") {
-      has_configurations = true;
-      EXPECT_EQ(cap["href"], "http://localhost:8080/api/v1/components/motor_controller/configurations");
-    }
-  }
-  EXPECT_TRUE(has_configurations);
+  EXPECT_TRUE(j.contains("configurations"));
+  EXPECT_EQ(j["configurations"], "http://localhost:8080/api/v1/components/motor_controller/configurations");
 }
 
 // =============================================================================
@@ -213,40 +210,41 @@ TEST_F(AppModelTest, ToJson_ContainsRequiredFields) {
 
   EXPECT_EQ(j["id"], "nav2");
   EXPECT_EQ(j["name"], "Navigation 2");
-  EXPECT_EQ(j["type"], "App");
-  EXPECT_EQ(j["source"], "manifest");
+  EXPECT_TRUE(j.contains("x-medkit"));
+  EXPECT_EQ(j["x-medkit"]["entityType"], "App");
+  EXPECT_EQ(j["x-medkit"]["source"], "manifest");
 }
 
 TEST_F(AppModelTest, ToJson_ContainsOptionalFields) {
   json j = app_.to_json();
 
   EXPECT_EQ(j["translationId"], "app.nav2");
-  EXPECT_EQ(j["description"], "Navigation stack for ROS 2");
+  EXPECT_EQ(j["x-medkit"]["description"], "Navigation stack for ROS 2");
   EXPECT_EQ(j["tags"].size(), 2);
 }
 
 TEST_F(AppModelTest, ToJson_ContainsRosBinding) {
   json j = app_.to_json();
 
-  ASSERT_TRUE(j.contains("rosBinding"));
-  EXPECT_EQ(j["rosBinding"]["nodeName"], "nav2_controller");
-  EXPECT_EQ(j["rosBinding"]["namespace"], "/nav2");
+  ASSERT_TRUE(j["x-medkit"].contains("rosBinding"));
+  EXPECT_EQ(j["x-medkit"]["rosBinding"]["nodeName"], "nav2_controller");
+  EXPECT_EQ(j["x-medkit"]["rosBinding"]["namespace"], "/nav2");
 }
 
 TEST_F(AppModelTest, ToJson_ContainsRuntimeState) {
   json j = app_.to_json();
 
-  EXPECT_EQ(j["boundFqn"], "/nav2/controller_server");
-  EXPECT_EQ(j["isOnline"], true);
+  EXPECT_EQ(j["x-medkit"]["boundFqn"], "/nav2/controller_server");
+  EXPECT_EQ(j["x-medkit"]["isOnline"], true);
   // external is only included when true, so should not be present when false
-  EXPECT_FALSE(j.contains("external"));
+  EXPECT_FALSE(j["x-medkit"].contains("external"));
 }
 
 TEST_F(AppModelTest, ToJson_ExternalWhenTrue) {
   app_.external = true;
   json j = app_.to_json();
 
-  EXPECT_EQ(j["external"], true);
+  EXPECT_EQ(j["x-medkit"]["external"], true);
 }
 
 TEST_F(AppModelTest, ToJson_OmitsEmptyOptionalFields) {
@@ -258,10 +256,10 @@ TEST_F(AppModelTest, ToJson_OmitsEmptyOptionalFields) {
   json j = minimal.to_json();
 
   EXPECT_FALSE(j.contains("translationId"));
-  EXPECT_FALSE(j.contains("description"));
+  EXPECT_FALSE(j["x-medkit"].contains("description"));
   EXPECT_FALSE(j.contains("tags"));
-  EXPECT_FALSE(j.contains("rosBinding"));
-  EXPECT_FALSE(j.contains("boundFqn"));
+  EXPECT_FALSE(j["x-medkit"].contains("rosBinding"));
+  EXPECT_FALSE(j["x-medkit"].contains("boundFqn"));
 }
 
 TEST_F(AppModelTest, ToEntityReference_ContainsRequiredFields) {
@@ -303,6 +301,7 @@ TEST_F(AppModelTest, ToCapabilities_OmitsDataWithoutTopics) {
   EXPECT_FALSE(j.contains("operations"));
   EXPECT_TRUE(j.contains("faults"));
   EXPECT_TRUE(j.contains("configurations"));
+  EXPECT_TRUE(j.contains("x-medkit"));
 }
 
 // =============================================================================
@@ -330,18 +329,19 @@ TEST_F(FunctionModelTest, ToJson_ContainsRequiredFields) {
 
   EXPECT_EQ(j["id"], "path_planning");
   EXPECT_EQ(j["name"], "Path Planning");
-  EXPECT_EQ(j["type"], "Function");
-  EXPECT_EQ(j["source"], "manifest");
+  EXPECT_TRUE(j.contains("x-medkit"));
+  EXPECT_EQ(j["x-medkit"]["entityType"], "Function");
+  EXPECT_EQ(j["x-medkit"]["source"], "manifest");
 }
 
 TEST_F(FunctionModelTest, ToJson_ContainsOptionalFields) {
   json j = func_.to_json();
 
   EXPECT_EQ(j["translationId"], "func.path_planning");
-  EXPECT_EQ(j["description"], "Computes optimal paths to goal");
+  EXPECT_EQ(j["x-medkit"]["description"], "Computes optimal paths to goal");
   EXPECT_EQ(j["tags"].size(), 2);
-  EXPECT_EQ(j["hosts"].size(), 1);
-  EXPECT_EQ(j["dependsOn"].size(), 1);
+  EXPECT_EQ(j["x-medkit"]["hosts"].size(), 1);
+  EXPECT_EQ(j["x-medkit"]["dependsOn"].size(), 1);
 }
 
 TEST_F(FunctionModelTest, ToJson_OmitsEmptyOptionalFields) {
@@ -353,10 +353,10 @@ TEST_F(FunctionModelTest, ToJson_OmitsEmptyOptionalFields) {
   json j = minimal.to_json();
 
   EXPECT_FALSE(j.contains("translationId"));
-  EXPECT_FALSE(j.contains("description"));
+  EXPECT_FALSE(j["x-medkit"].contains("description"));
   EXPECT_FALSE(j.contains("tags"));
-  EXPECT_FALSE(j.contains("hosts"));
-  EXPECT_FALSE(j.contains("dependsOn"));
+  EXPECT_FALSE(j["x-medkit"].contains("hosts"));
+  EXPECT_FALSE(j["x-medkit"].contains("dependsOn"));
 }
 
 TEST_F(FunctionModelTest, ToEntityReference_ContainsRequiredFields) {
@@ -365,6 +365,7 @@ TEST_F(FunctionModelTest, ToEntityReference_ContainsRequiredFields) {
   EXPECT_EQ(j["id"], "path_planning");
   EXPECT_EQ(j["name"], "Path Planning");
   EXPECT_EQ(j["href"], "http://localhost:8080/api/v1/functions/path_planning");
+  EXPECT_FALSE(j.contains("type"));  // SOVD compliant: no type in EntityReference
 }
 
 TEST_F(FunctionModelTest, ToCapabilities_ContainsExpectedResources) {
@@ -375,6 +376,7 @@ TEST_F(FunctionModelTest, ToCapabilities_ContainsExpectedResources) {
   EXPECT_TRUE(j.contains("data"));
   EXPECT_TRUE(j.contains("operations"));
   EXPECT_TRUE(j.contains("faults"));
+  EXPECT_TRUE(j.contains("x-medkit"));
 }
 
 // =============================================================================

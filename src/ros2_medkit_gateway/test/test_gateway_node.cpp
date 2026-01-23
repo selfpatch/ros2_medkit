@@ -438,8 +438,8 @@ TEST_F(TestGatewayNode, test_post_operation_invalid_json_body) {
 TEST_F(TestGatewayNode, test_post_operation_invalid_component_id) {
   auto client = create_client();
 
-  auto res = client.Post(std::string(API_BASE_PATH) + "/components/invalid@component/operations/test", R"({})",
-                         "application/json");
+  auto res = client.Post(std::string(API_BASE_PATH) + "/components/invalid@component/operations/test/executions",
+                         R"({})", "application/json");
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, StatusCode::BadRequest_400);
@@ -448,43 +448,44 @@ TEST_F(TestGatewayNode, test_post_operation_invalid_component_id) {
 TEST_F(TestGatewayNode, test_post_operation_invalid_operation_id) {
   auto client = create_client();
 
-  auto res = client.Post(std::string(API_BASE_PATH) + "/components/gateway_node/operations/invalid@op", R"({})",
-                         "application/json");
+  auto res = client.Post(std::string(API_BASE_PATH) + "/components/gateway_node/operations/invalid@op/executions",
+                         R"({})", "application/json");
 
   ASSERT_TRUE(res);
   // 400 for invalid operation name or 404 if component not found
   EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
 }
 
-TEST_F(TestGatewayNode, test_action_status_invalid_component_id) {
+TEST_F(TestGatewayNode, test_execution_status_invalid_component_id) {
   auto client = create_client();
 
-  auto res = client.Get(std::string(API_BASE_PATH) + "/components/invalid@id/operations/test/status");
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/invalid@id/operations/test/executions/some-id");
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, StatusCode::BadRequest_400);
 }
 
-TEST_F(TestGatewayNode, test_action_cancel_missing_goal_id) {
+TEST_F(TestGatewayNode, test_execution_cancel_invalid_component_id) {
   auto client = create_client();
 
-  // Cancel without goal_id query parameter
-  auto res = client.Delete(std::string(API_BASE_PATH) + "/components/gateway_node/operations/test/cancel");
+  // Cancel with invalid component ID
+  auto res = client.Delete(std::string(API_BASE_PATH) + "/components/invalid@id/operations/test/executions/some-id");
 
   ASSERT_TRUE(res);
-  // Should be 400 for missing goal_id or 404 if component/operation not found
-  EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
 }
 
-TEST_F(TestGatewayNode, test_action_result_missing_goal_id) {
+TEST_F(TestGatewayNode, test_execution_not_found) {
   auto client = create_client();
 
-  // Result without goal_id query parameter
-  auto res = client.Get(std::string(API_BASE_PATH) + "/components/gateway_node/operations/test/result");
+  // Get execution status for non-existent execution
+  const std::string path =
+      std::string(API_BASE_PATH) + "/components/gateway_node/operations/test/executions/nonexistent-id";
+  auto res = client.Get(path);
 
   ASSERT_TRUE(res);
-  // Should be 400 for missing goal_id or 404 if not found
-  EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
+  // Should be 404 for not found execution
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
 }
 
 // =============================================================================

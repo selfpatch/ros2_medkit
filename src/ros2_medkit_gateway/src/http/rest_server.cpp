@@ -255,20 +255,6 @@ void RESTServer::setup_routes() {
                 operation_handlers_->handle_cancel_execution(req, res);
               });
 
-  // Legacy app operation (POST) - kept for backward compatibility
-  // @deprecated Use POST /{entity}/operations/{op-id}/executions instead
-  srv->Post((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)$)"),
-            [this](const httplib::Request & req, httplib::Response & res) {
-              operation_handlers_->handle_component_operation(req, res);
-            });
-
-  // App action status (GET) - legacy endpoint
-  // @deprecated Use GET /{entity}/operations/{op-id}/executions/{exec-id} instead
-  srv->Get((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/status$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             operation_handlers_->handle_action_status(req, res);
-           });
-
   // App action result (GET)
   srv->Get((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/result$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
@@ -457,20 +443,6 @@ void RESTServer::setup_routes() {
               [this](const httplib::Request & req, httplib::Response & res) {
                 operation_handlers_->handle_cancel_execution(req, res);
               });
-
-  // Legacy component operation (POST) - kept for backward compatibility
-  // @deprecated Use POST /{entity}/operations/{op-id}/executions instead
-  srv->Post((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)"),
-            [this](const httplib::Request & req, httplib::Response & res) {
-              operation_handlers_->handle_component_operation(req, res);
-            });
-
-  // Legacy action status (GET) - kept for backward compatibility
-  // @deprecated Use GET /{entity}/operations/{op-id}/executions/{exec-id} instead
-  srv->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/status$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             operation_handlers_->handle_action_status(req, res);
-           });
 
   // Action result (GET) - get result of a completed action goal
   srv->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/result$)"),

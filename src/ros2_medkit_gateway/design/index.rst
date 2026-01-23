@@ -286,7 +286,7 @@ Main Components
 4. **RESTServer** - Provides the HTTP/REST API
    - Discovery endpoints: ``/health``, ``/``, ``/areas``, ``/components``, ``/areas/{area_id}/components``
    - Data endpoints: ``/components/{component_id}/data``, ``/components/{component_id}/data/{topic_name}``
-   - Operations endpoints: ``POST .../operations/{op}`` (execute), ``GET .../operations/{op}/status`` (status), ``DELETE .../operations/{op}`` (cancel)
+   - Operations endpoints: ``POST .../operations/{op}/executions`` (execute), ``GET .../operations/{op}/executions/{exec-id}`` (status), ``DELETE .../operations/{op}/executions/{exec-id}`` (cancel)
    - Configurations endpoints: ``GET/PUT .../configurations``, ``GET/PUT .../configurations/{param}``
    - Retrieves cached entities from the GatewayNode
    - Uses DataAccessManager for runtime topic data access

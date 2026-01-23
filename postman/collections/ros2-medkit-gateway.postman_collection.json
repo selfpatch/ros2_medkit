@@ -615,7 +615,7 @@
                   "raw": "{}"
                 },
                 "url": {
-                  "raw": "{{base_url}}/components/calibration/operations/calibrate",
+                  "raw": "{{base_url}}/components/calibration/operations/calibrate/executions",
                   "host": [
                     "{{base_url}}"
                   ],
@@ -623,10 +623,11 @@
                     "components",
                     "calibration",
                     "operations",
-                    "calibrate"
+                    "calibrate",
+                    "executions"
                   ]
                 },
-                "description": "Call a ROS 2 service operation on a component. This example calls the std_srvs/srv/Trigger calibrate service. The service type is auto-discovered from the component's registered services. Response includes success status and service response data."
+                "description": "Call a ROS 2 service operation on a component. This example calls the std_srvs/srv/Trigger calibrate service. The service type is auto-discovered from the component's registered services. Response includes execution id, status, and service response in x-medkit extension."
               },
               "response": []
             },
@@ -645,7 +646,7 @@
                   "raw": "{\n  \"type\": \"std_srvs/srv/Trigger\",\n  \"request\": {}\n}"
                 },
                 "url": {
-                  "raw": "{{base_url}}/components/calibration/operations/calibrate",
+                  "raw": "{{base_url}}/components/calibration/operations/calibrate/executions",
                   "host": [
                     "{{base_url}}"
                   ],
@@ -653,7 +654,8 @@
                     "components",
                     "calibration",
                     "operations",
-                    "calibrate"
+                    "calibrate",
+                    "executions"
                   ]
                 },
                 "description": "Call a ROS 2 service with explicit type override. Use 'type' field to specify the service type (e.g., 'std_srvs/srv/Trigger') and 'request' field for the service request data. Useful when the service type cannot be auto-discovered."
@@ -675,7 +677,7 @@
                   "raw": "{}"
                 },
                 "url": {
-                  "raw": "{{base_url}}/components/calibration/operations/nonexistent",
+                  "raw": "{{base_url}}/components/calibration/operations/nonexistent/executions",
                   "host": [
                     "{{base_url}}"
                   ],
@@ -683,7 +685,8 @@
                     "components",
                     "calibration",
                     "operations",
-                    "nonexistent"
+                    "nonexistent",
+                    "executions"
                   ]
                 },
                 "description": "Example of calling a non-existent operation. Returns 404 error with 'Operation not found' message."
@@ -710,7 +713,7 @@
                   "raw": "{\n  \"goal\": {\n    \"order\": 10\n  }\n}"
                 },
                 "url": {
-                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration",
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/executions",
                   "host": [
                     "{{base_url}}"
                   ],
@@ -718,10 +721,11 @@
                     "components",
                     "long_calibration",
                     "operations",
-                    "long_calibration"
+                    "long_calibration",
+                    "executions"
                   ]
                 },
-                "description": "Start an async action operation. Sends a goal to the action server and returns immediately with goal_id. Response includes goal_id, goal_status (executing/succeeded), kind (action), and component info. Takes ~3-4 seconds due to CLI discovery. The action continues running in the background."
+                "description": "Start an async action operation. Sends a goal to the action server and returns 202 Accepted with execution id. Response includes execution id, status (running), and action details in x-medkit extension. Poll GET /executions/{id} to check status."
               },
               "response": []
             },
@@ -740,7 +744,7 @@
                   "raw": "{\n  \"goal\": {\n    \"order\": 3\n  }\n}"
                 },
                 "url": {
-                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration",
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/executions",
                   "host": [
                     "{{base_url}}"
                   ],
@@ -748,20 +752,21 @@
                     "components",
                     "long_calibration",
                     "operations",
-                    "long_calibration"
+                    "long_calibration",
+                    "executions"
                   ]
                 },
-                "description": "Send a short action goal (order=3 completes in ~1.5s). If the action completes within 3 seconds, goal_status will be 'succeeded' immediately."
+                "description": "Send a short action goal (order=3 completes in ~1.5s). Returns 202 Accepted with execution id. If the action completes within timeout, status will be 'completed' when you poll."
               },
               "response": []
             },
             {
-              "name": "GET Action Status (Latest)",
+              "name": "GET List Executions",
               "request": {
                 "method": "GET",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/status",
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/executions",
                   "host": [
                     "{{base_url}}"
                   ],
@@ -770,20 +775,20 @@
                     "long_calibration",
                     "operations",
                     "long_calibration",
-                    "status"
+                    "executions"
                   ]
                 },
-                "description": "Get the status of the most recent action goal. No goal_id needed - the gateway tracks goals internally and returns the latest one. Returns goal_id, status (accepted/executing/succeeded/canceled/aborted), action_path, and action_type."
+                "description": "List all executions for this operation. Returns an array of executions sorted by most recent first."
               },
               "response": []
             },
             {
-              "name": "GET Action Status (Specific Goal)",
+              "name": "GET Execution Status",
               "request": {
                 "method": "GET",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/status?goal_id={{goal_id}}",
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/executions/{{execution_id}}",
                   "host": [
                     "{{base_url}}"
                   ],
@@ -792,54 +797,21 @@
                     "long_calibration",
                     "operations",
                     "long_calibration",
-                    "status"
-                  ],
-                  "query": [
-                    {
-                      "key": "goal_id",
-                      "value": "{{goal_id}}"
-                    }
+                    "executions",
+                    "{{execution_id}}"
                   ]
                 },
-                "description": "Get the status of a specific action goal by goal_id. Use this when you have multiple concurrent goals and need to track a specific one."
+                "description": "Get the status of a specific execution by execution_id. Returns status (running/completed/failed/cancelled), capability, and x-medkit extension with ROS 2 details."
               },
               "response": []
             },
             {
-              "name": "GET Action Status (All Goals)",
-              "request": {
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/status?all=true",
-                  "host": [
-                    "{{base_url}}"
-                  ],
-                  "path": [
-                    "components",
-                    "long_calibration",
-                    "operations",
-                    "long_calibration",
-                    "status"
-                  ],
-                  "query": [
-                    {
-                      "key": "all",
-                      "value": "true"
-                    }
-                  ]
-                },
-                "description": "Get the status of all tracked goals for this action. Returns an array of goals sorted by most recent first, with count."
-              },
-              "response": []
-            },
-            {
-              "name": "DELETE Cancel Action Goal",
+              "name": "DELETE Cancel Execution",
               "request": {
                 "method": "DELETE",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration?goal_id={{goal_id}}",
+                  "raw": "{{base_url}}/components/long_calibration/operations/long_calibration/executions/{{execution_id}}",
                   "host": [
                     "{{base_url}}"
                   ],
@@ -847,16 +819,12 @@
                     "components",
                     "long_calibration",
                     "operations",
-                    "long_calibration"
-                  ],
-                  "query": [
-                    {
-                      "key": "goal_id",
-                      "value": "{{goal_id}}"
-                    }
+                    "long_calibration",
+                    "executions",
+                    "{{execution_id}}"
                   ]
                 },
-                "description": "Cancel a running action goal. Sends cancel request to the action server. Returns confirmation with status 'canceling'. Use GET /status to verify the goal was canceled (status becomes 'canceled')."
+                "description": "Cancel a running action execution. Sends cancel request to the action server. Returns 204 No Content on success (SOVD compliant). Only works for running action executions."
               },
               "response": []
             }
