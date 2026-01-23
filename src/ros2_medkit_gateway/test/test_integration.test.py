@@ -2822,3 +2822,333 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.assertIn('is_online', x_medkit, 'x-medkit should have is_online')
 
         print('✓ x-medkit extension in list responses test passed')
+
+    def test_84_get_operation_details_for_service(self):
+        """
+        Test GET /{entity}/operations/{op-id} returns operation details for service.
+
+        @verifies REQ_INTEROP_034
+        """
+        # First get operations for powertrain component
+        data = self._get_json('/components/powertrain/operations')
+        self.assertIn('items', data)
+        operations = data['items']
+        self.assertGreater(len(operations), 0, 'Component should have operations')
+
+        # Find a service (asynchronous_execution: false)
+        service_op = None
+        for op in operations:
+            if not op.get('asynchronous_execution', True):
+                service_op = op
+                break
+
+        if service_op is None:
+            self.skipTest('No service operations found')
+            return
+
+        operation_id = service_op['id']
+
+        # Get the operation details
+        response = requests.get(
+            f'{self.BASE_URL}/components/powertrain/operations/{operation_id}',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('item', data)
+        item = data['item']
+
+        # SOVD-compliant fields
+        self.assertIn('id', item)
+        self.assertEqual(item['id'], operation_id)
+        self.assertIn('name', item)
+        self.assertIn('proximity_proof_required', item)
+        self.assertFalse(item['proximity_proof_required'])
+        self.assertIn('asynchronous_execution', item)
+        self.assertFalse(item['asynchronous_execution'])
+
+        # x-medkit extension
+        self.assertIn('x-medkit', item)
+        x_medkit = item['x-medkit']
+        self.assertIn('ros2', x_medkit)
+        self.assertIn('kind', x_medkit['ros2'])
+        self.assertEqual(x_medkit['ros2']['kind'], 'service')
+        self.assertIn('type', x_medkit['ros2'])
+        self.assertIn('path', x_medkit['ros2'])
+
+        print(f'✓ Get operation details for service test passed: {operation_id}')
+
+    def test_85_get_operation_details_for_action(self):
+        """
+        Test GET /{entity}/operations/{op-id} returns operation details for action.
+
+        @verifies REQ_INTEROP_034
+        """
+        # Find an action operation
+        data = self._get_json('/components')
+        components = data['items']
+
+        action_op = None
+        component_id = None
+
+        for comp in components:
+            ops_data = self._get_json(f'/components/{comp["id"]}/operations')
+            for op in ops_data.get('items', []):
+                if op.get('asynchronous_execution', False):
+                    action_op = op
+                    component_id = comp['id']
+                    break
+            if action_op:
+                break
+
+        if action_op is None:
+            self.skipTest('No action operations found')
+            return
+
+        operation_id = action_op['id']
+
+        # Get the operation details
+        response = requests.get(
+            f'{self.BASE_URL}/components/{component_id}/operations/{operation_id}',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('item', data)
+        item = data['item']
+
+        # SOVD-compliant fields
+        self.assertIn('asynchronous_execution', item)
+        self.assertTrue(item['asynchronous_execution'])
+
+        # x-medkit extension
+        self.assertIn('x-medkit', item)
+        x_medkit = item['x-medkit']
+        self.assertIn('ros2', x_medkit)
+        self.assertIn('kind', x_medkit['ros2'])
+        self.assertEqual(x_medkit['ros2']['kind'], 'action')
+
+        print(f'✓ Get operation details for action test passed: {operation_id}')
+
+    def test_86_get_operation_not_found(self):
+        """
+        Test GET /{entity}/operations/{op-id} returns 404 for nonexistent operation.
+
+        @verifies REQ_INTEROP_034
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/components/powertrain/operations/nonexistent_op',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+        self.assertIn('message', data)
+        self.assertEqual(data['message'], 'Operation not found')
+
+        print('✓ Get operation not found test passed')
+
+    def test_87_list_executions_returns_items_array(self):
+        """
+        Test GET /{entity}/operations/{op-id}/executions returns items array.
+
+        @verifies REQ_INTEROP_036
+        """
+        # Find an action to test with
+        data = self._get_json('/components')
+        components = data['items']
+
+        action_op = None
+        component_id = None
+
+        for comp in components:
+            ops_data = self._get_json(f'/components/{comp["id"]}/operations')
+            for op in ops_data.get('items', []):
+                if op.get('asynchronous_execution', False):
+                    action_op = op
+                    component_id = comp['id']
+                    break
+            if action_op:
+                break
+
+        if action_op is None:
+            self.skipTest('No action operations found')
+            return
+
+        operation_id = action_op['id']
+
+        # List executions - should return items array (may be empty)
+        response = requests.get(
+            f'{self.BASE_URL}/components/{component_id}/operations/{operation_id}/executions',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+
+        print(f'✓ List executions returns items array test passed: {operation_id}')
+
+    def test_88_create_execution_for_service(self):
+        """
+        Test POST /{entity}/operations/{op-id}/executions calls service and returns.
+
+        @verifies REQ_INTEROP_035
+        """
+        # Find a service operation to call
+        data = self._get_json('/components/powertrain/operations')
+        operations = data['items']
+
+        service_op = None
+        for op in operations:
+            if not op.get('asynchronous_execution', True):
+                service_op = op
+                break
+
+        if service_op is None:
+            self.skipTest('No service operations found')
+            return
+
+        operation_id = service_op['id']
+
+        # Call the service via SOVD-compliant path
+        response = requests.post(
+            f'{self.BASE_URL}/components/powertrain/operations/{operation_id}/executions',
+            json={'parameters': {}},
+            timeout=30
+        )
+
+        # Should return 200 for sync or 400/500 if service is unavailable
+        self.assertIn(
+            response.status_code, [200, 400, 500, 503],
+            f'Expected 200/400/500/503, got {response.status_code}: {response.text}'
+        )
+
+        data = response.json()
+        if response.status_code == 200:
+            # Successful sync execution
+            self.assertIn('parameters', data)
+
+        print(f'✓ Create execution for service test passed: {operation_id}')
+
+    def test_89_cancel_nonexistent_execution(self):
+        """
+        Test DELETE /{entity}/operations/{op-id}/executions/{exec-id} returns 404.
+
+        @verifies REQ_INTEROP_039
+        """
+        url = (f'{self.BASE_URL}/components/powertrain/operations/'
+               'nonexistent_op/executions/fake-exec-id')
+        response = requests.delete(url, timeout=10)
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+        self.assertIn('message', data)
+        self.assertEqual(data['message'], 'Execution not found')
+
+        print('✓ Cancel nonexistent execution test passed')
+
+    def test_90_delete_all_faults_for_component(self):
+        """
+        Test DELETE /components/{id}/faults clears all faults for component.
+
+        @verifies REQ_INTEROP_014
+        """
+        # First get a component
+        data = self._get_json('/components')
+        self.assertGreater(len(data['items']), 0)
+        component_id = data['items'][0]['id']
+
+        # Attempt to clear all faults (should succeed even if no faults)
+        response = requests.delete(
+            f'{self.BASE_URL}/components/{component_id}/faults',
+            timeout=10
+        )
+
+        # Should return 204 No Content on success
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(len(response.content), 0)
+
+        print(f'✓ Delete all faults for component test passed: {component_id}')
+
+    def test_91_delete_all_faults_for_app(self):
+        """
+        Test DELETE /apps/{id}/faults clears all faults for app.
+
+        @verifies REQ_INTEROP_014
+        """
+        # Get an app
+        data = self._get_json('/apps')
+        self.assertGreater(len(data['items']), 0)
+        app_id = data['items'][0]['id']
+
+        # Attempt to clear all faults
+        response = requests.delete(
+            f'{self.BASE_URL}/apps/{app_id}/faults',
+            timeout=10
+        )
+
+        # Should return 204 No Content
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(len(response.content), 0)
+
+        print(f'✓ Delete all faults for app test passed: {app_id}')
+
+    def test_92_delete_all_faults_nonexistent_entity(self):
+        """
+        Test DELETE /{entity}/faults returns 404 for nonexistent entity.
+
+        @verifies REQ_INTEROP_014
+        """
+        response = requests.delete(
+            f'{self.BASE_URL}/components/nonexistent_component/faults',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+        self.assertIn('message', data)
+        self.assertEqual(data['message'], 'Entity not found')
+
+        print('✓ Delete all faults nonexistent entity test passed')
+
+    def test_93_get_operation_details_for_apps(self):
+        """
+        Test GET /apps/{id}/operations/{op-id} works for apps.
+
+        @verifies REQ_INTEROP_034
+        """
+        # Get apps with operations
+        data = self._get_json('/apps')
+        apps = data['items']
+
+        operation_found = False
+        for app in apps:
+            ops_data = self._get_json(f'/apps/{app["id"]}/operations')
+            if ops_data.get('items'):
+                operation_id = ops_data['items'][0]['id']
+
+                # Get operation details
+                response = requests.get(
+                    f'{self.BASE_URL}/apps/{app["id"]}/operations/{operation_id}',
+                    timeout=10
+                )
+                self.assertEqual(response.status_code, 200)
+
+                data = response.json()
+                self.assertIn('item', data)
+                self.assertIn('id', data['item'])
+                self.assertIn('x-medkit', data['item'])
+
+                operation_found = True
+                print(f'✓ Get operation details for apps test passed: {operation_id}')
+                break
+
+        if not operation_found:
+            self.skipTest('No app operations found')
