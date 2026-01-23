@@ -507,5 +507,83 @@ void AppHandlers::handle_related_apps(const httplib::Request & req, httplib::Res
   }
 }
 
+void AppHandlers::handle_get_depends_on(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      return;
+    }
+
+    std::string app_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(app_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid app ID",
+                                 {{"details", validation_result.error()}, {"app_id", app_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto app_opt = discovery->get_app(app_id);
+
+    if (!app_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "App not found",
+                                 {{"app_id", app_id}});
+      return;
+    }
+
+    const auto & app = *app_opt;
+
+    // Build list of dependency references
+    json items = json::array();
+    for (const auto & dep_id : app.depends_on) {
+      json item;
+      item["id"] = dep_id;
+      item["href"] = "/api/v1/apps/" + dep_id;
+
+      // Try to get the dependency app for additional info
+      auto dep_opt = discovery->get_app(dep_id);
+      if (dep_opt) {
+        item["name"] = dep_opt->name.empty() ? dep_id : dep_opt->name;
+
+        // x-medkit extension for ROS2-specific data
+        XMedkit ext;
+        ext.source(dep_opt->source).is_online(dep_opt->is_online);
+        item["x-medkit"] = ext.build();
+      } else {
+        // Dependency app could not be resolved; mark as missing in x-medkit
+        item["name"] = dep_id;
+        XMedkit ext;
+        ext.add("missing", true);
+        item["x-medkit"] = ext.build();
+        RCLCPP_WARN(HandlerContext::logger(), "App '%s' declares dependency on unknown app '%s'", app_id.c_str(),
+                    dep_id.c_str());
+      }
+
+      items.push_back(item);
+    }
+
+    json response;
+    response["items"] = items;
+
+    // x-medkit for response-level metadata
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
+
+    // HATEOAS links
+    json links;
+    links["self"] = "/api/v1/apps/" + app_id + "/depends-on";
+    links["app"] = "/api/v1/apps/" + app_id;
+    response["_links"] = links;
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+                               {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_depends_on: %s", e.what());
+  }
+}
+
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway

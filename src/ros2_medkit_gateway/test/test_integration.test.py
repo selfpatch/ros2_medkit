@@ -2440,3 +2440,385 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.assertEqual(data['message'], 'Invalid entity ID')
 
         print('✓ Get snapshots invalid component ID test passed')
+    # ==================== Discovery Compliance Tests ====================
+
+    def test_70_components_list_has_href(self):
+        """
+        Test GET /components returns items with href field.
+
+        Each entity in a list response MUST have an href field pointing to
+        its detail endpoint.
+
+        @verifies REQ_INTEROP_003
+        """
+        data = self._get_json('/components')
+        self.assertIn('items', data)
+        components = data['items']
+        self.assertGreater(len(components), 0, 'Should have at least one component')
+
+        for component in components:
+            self.assertIn('id', component, "Component should have 'id'")
+            self.assertIn('name', component, "Component should have 'name'")
+            self.assertIn('href', component, "Component should have 'href'")
+            self.assertTrue(
+                component['href'].startswith('/api/v1/components/'),
+                f"href should start with /api/v1/components/, got: {component['href']}"
+            )
+            self.assertIn(component['id'], component['href'])
+
+        print(f'✓ Components list has href test passed: {len(components)} components')
+
+    def test_71_apps_list_has_href(self):
+        """
+        Test GET /apps returns items with href field.
+
+        @verifies REQ_INTEROP_003
+        """
+        data = self._get_json('/apps')
+        self.assertIn('items', data)
+        apps = data['items']
+        self.assertGreater(len(apps), 0, 'Should have at least one app')
+
+        for app in apps:
+            self.assertIn('id', app, "App should have 'id'")
+            self.assertIn('name', app, "App should have 'name'")
+            self.assertIn('href', app, "App should have 'href'")
+            self.assertTrue(
+                app['href'].startswith('/api/v1/apps/'),
+                f"href should start with /api/v1/apps/, got: {app['href']}"
+            )
+            self.assertIn(app['id'], app['href'])
+
+        print(f'✓ Apps list has href test passed: {len(apps)} apps')
+
+    def test_72_areas_list_has_href(self):
+        """
+        Test GET /areas returns items with href field.
+
+        @verifies REQ_INTEROP_003
+        """
+        data = self._get_json('/areas')
+        self.assertIn('items', data)
+        areas = data['items']
+        self.assertGreater(len(areas), 0, 'Should have at least one area')
+
+        for area in areas:
+            self.assertIn('id', area, "Area should have 'id'")
+            self.assertIn('name', area, "Area should have 'name'")
+            self.assertIn('href', area, "Area should have 'href'")
+            self.assertTrue(
+                area['href'].startswith('/api/v1/areas/'),
+                f"href should start with /api/v1/areas/, got: {area['href']}"
+            )
+            self.assertIn(area['id'], area['href'])
+
+        print(f'✓ Areas list has href test passed: {len(areas)} areas')
+
+    def test_73_component_detail_has_capability_uris(self):
+        """
+        Test GET /components/{id} returns capability URIs at top level.
+
+        SOVD requires entity details to have flat capability URIs.
+
+        @verifies REQ_INTEROP_003
+        """
+        # First get list of components
+        components = self._get_json('/components')['items']
+        self.assertGreater(len(components), 0)
+
+        # Get detail for first component
+        component_id = components[0]['id']
+        data = self._get_json(f'/components/{component_id}')
+
+        # Verify required fields
+        self.assertIn('id', data)
+        self.assertEqual(data['id'], component_id)
+        self.assertIn('name', data)
+
+        # Verify SOVD capability URIs at top level
+        self.assertIn('data', data, 'Component should have data URI')
+        self.assertIn('operations', data, 'Component should have operations URI')
+        self.assertIn('configurations', data, 'Component should have configurations URI')
+        self.assertIn('faults', data, 'Component should have faults URI')
+
+        # Verify URIs are correct format
+        base = f'/api/v1/components/{component_id}'
+        self.assertEqual(data['data'], f'{base}/data')
+        self.assertEqual(data['operations'], f'{base}/operations')
+        self.assertEqual(data['configurations'], f'{base}/configurations')
+        self.assertEqual(data['faults'], f'{base}/faults')
+
+        print(f'✓ Component detail has capability URIs test passed: {component_id}')
+
+    def test_74_app_detail_has_capability_uris(self):
+        """
+        Test GET /apps/{id} returns capability URIs at top level.
+
+        @verifies REQ_INTEROP_003
+        """
+        # Get detail for temp_sensor app
+        data = self._get_json('/apps/temp_sensor')
+
+        # Verify required fields
+        self.assertIn('id', data)
+        self.assertEqual(data['id'], 'temp_sensor')
+        self.assertIn('name', data)
+
+        # Verify SOVD capability URIs at top level
+        self.assertIn('data', data, 'App should have data URI')
+        self.assertIn('operations', data, 'App should have operations URI')
+        self.assertIn('configurations', data, 'App should have configurations URI')
+
+        # Verify URIs are correct format
+        base = '/api/v1/apps/temp_sensor'
+        self.assertEqual(data['data'], f'{base}/data')
+        self.assertEqual(data['operations'], f'{base}/operations')
+        self.assertEqual(data['configurations'], f'{base}/configurations')
+
+        print('✓ App detail has capability URIs test passed: temp_sensor')
+
+    def test_75_subareas_list_has_href(self):
+        """
+        Test GET /areas/{id}/subareas returns items with href field.
+
+        @verifies REQ_INTEROP_004
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/areas/root/subareas',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+
+        # If there are subareas, verify they have href
+        for subarea in data.get('items', []):
+            self.assertIn('id', subarea, "Subarea should have 'id'")
+            self.assertIn('name', subarea, "Subarea should have 'name'")
+            self.assertIn('href', subarea, "Subarea should have 'href'")
+            self.assertTrue(
+                subarea['href'].startswith('/api/v1/areas/'),
+                f"href should start with /api/v1/areas/, got: {subarea['href']}"
+            )
+
+        print(f'✓ Subareas list has href test passed: {len(data.get("items", []))} subareas')
+
+    def test_76_subcomponents_list_has_href(self):
+        """
+        Test GET /components/{id}/subcomponents returns items with href field.
+
+        @verifies REQ_INTEROP_005
+        """
+        # First get a component
+        components = self._get_json('/components')['items']
+        self.assertGreater(len(components), 0)
+        component_id = components[0]['id']
+
+        response = requests.get(
+            f'{self.BASE_URL}/components/{component_id}/subcomponents',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+
+        # If there are subcomponents, verify they have href
+        for subcomp in data.get('items', []):
+            self.assertIn('id', subcomp, "Subcomponent should have 'id'")
+            self.assertIn('name', subcomp, "Subcomponent should have 'name'")
+            self.assertIn('href', subcomp, "Subcomponent should have 'href'")
+            self.assertTrue(
+                subcomp['href'].startswith('/api/v1/components/'),
+                f"href should start with /api/v1/components/, got: {subcomp['href']}"
+            )
+
+        count = len(data.get('items', []))
+        print(f'✓ Subcomponents list has href test passed: {count} subcomponents')
+
+    def test_77_related_apps_list_has_href(self):
+        """
+        Test GET /components/{id}/related-apps returns items with href field.
+
+        @verifies REQ_INTEROP_007
+        """
+        # Get related apps for powertrain component
+        response = requests.get(
+            f'{self.BASE_URL}/components/powertrain/related-apps',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+
+        # Powertrain should have related apps
+        for app in data.get('items', []):
+            self.assertIn('id', app, "Related app should have 'id'")
+            self.assertIn('name', app, "Related app should have 'name'")
+            self.assertIn('href', app, "Related app should have 'href'")
+            self.assertTrue(
+                app['href'].startswith('/api/v1/apps/'),
+                f"href should start with /api/v1/apps/, got: {app['href']}"
+            )
+
+        print(f'✓ Related apps list has href test passed: {len(data.get("items", []))} apps')
+
+    def test_78_depends_on_components_has_href(self):
+        """
+        Test GET /components/{id}/depends-on returns items with href field.
+
+        @verifies REQ_INTEROP_008
+        """
+        # Get a component to test depends-on
+        components = self._get_json('/components')['items']
+        self.assertGreater(len(components), 0)
+        component_id = components[0]['id']
+
+        response = requests.get(
+            f'{self.BASE_URL}/components/{component_id}/depends-on',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+
+        # If there are dependencies, verify they have href
+        for dep in data.get('items', []):
+            self.assertIn('id', dep, "Dependency should have 'id'")
+            self.assertIn('name', dep, "Dependency should have 'name'")
+            self.assertIn('href', dep, "Dependency should have 'href'")
+            self.assertTrue(
+                dep['href'].startswith('/api/v1/components/'),
+                f"href should start with /api/v1/components/, got: {dep['href']}"
+            )
+
+        print(f'✓ Component depends-on has href test passed: {len(data.get("items", []))} deps')
+
+    def test_79_depends_on_apps_has_href(self):
+        """
+        Test GET /apps/{id}/depends-on returns items with href field.
+
+        @verifies REQ_INTEROP_009
+        """
+        # Get temp_sensor app's depends-on
+        response = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/depends-on',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+        self.assertIn('_links', data)
+        self.assertEqual(data['_links']['self'], '/api/v1/apps/temp_sensor/depends-on')
+        self.assertEqual(data['_links']['app'], '/api/v1/apps/temp_sensor')
+
+        # If there are dependencies, verify they have href
+        for dep in data.get('items', []):
+            self.assertIn('id', dep, "Dependency should have 'id'")
+            self.assertIn('name', dep, "Dependency should have 'name'")
+            self.assertIn('href', dep, "Dependency should have 'href'")
+            self.assertTrue(
+                dep['href'].startswith('/api/v1/apps/'),
+                f"href should start with /api/v1/apps/, got: {dep['href']}"
+            )
+
+        print(f'✓ App depends-on has href test passed: {len(data.get("items", []))} deps')
+
+    def test_80_depends_on_apps_nonexistent(self):
+        """
+        Test GET /apps/{id}/depends-on returns 404 for unknown app.
+
+        @verifies REQ_INTEROP_009
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/apps/nonexistent_app/depends-on',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+        self.assertEqual(data['message'], 'App not found')
+        self.assertIn('app_id', data['x-medkit'])
+        self.assertEqual(data['x-medkit'].get('app_id'), 'nonexistent_app')
+
+        print('✓ App depends-on nonexistent app test passed')
+
+    def test_81_functions_list_has_href(self):
+        """
+        Test GET /functions returns items with href field.
+
+        @verifies REQ_INTEROP_003
+        """
+        data = self._get_json('/functions')
+        self.assertIn('items', data)
+        functions = data['items']
+
+        # Functions may be empty if no manifest is loaded
+        for func in functions:
+            self.assertIn('id', func, "Function should have 'id'")
+            self.assertIn('name', func, "Function should have 'name'")
+            self.assertIn('href', func, "Function should have 'href'")
+            self.assertTrue(
+                func['href'].startswith('/api/v1/functions/'),
+                f"href should start with /api/v1/functions/, got: {func['href']}"
+            )
+
+        print(f'✓ Functions list has href test passed: {len(functions)} functions')
+
+    def test_82_root_endpoint_has_apps_endpoints(self):
+        """
+        Test that root endpoint lists apps endpoints including depends-on.
+
+        @verifies REQ_INTEROP_010
+        """
+        data = self._get_json('/')
+        self.assertIn('endpoints', data)
+
+        # Verify apps endpoints are listed
+        endpoints = data['endpoints']
+        self.assertIn('GET /api/v1/apps', endpoints)
+        self.assertIn('GET /api/v1/apps/{app_id}', endpoints)
+        self.assertIn('GET /api/v1/apps/{app_id}/depends-on', endpoints)
+        self.assertIn('GET /api/v1/apps/{app_id}/data', endpoints)
+        self.assertIn('GET /api/v1/apps/{app_id}/operations', endpoints)
+        self.assertIn('GET /api/v1/apps/{app_id}/configurations', endpoints)
+
+        print('✓ Root endpoint has apps endpoints test passed')
+
+    def test_83_x_medkit_extension_in_list_responses(self):
+        """
+        Test that list responses have x-medkit at item and response level.
+
+        ROS2-specific data should be in x-medkit extension, not at top level.
+
+        @verifies REQ_INTEROP_003
+        """
+        # Test components list
+        data = self._get_json('/components')
+        self.assertIn('items', data)
+        self.assertIn('x-medkit', data, 'Response should have x-medkit')
+        self.assertIn('total_count', data['x-medkit'], 'Response x-medkit should have total_count')
+
+        for component in data['items']:
+            self.assertIn('x-medkit', component, 'Item should have x-medkit')
+            x_medkit = component['x-medkit']
+            # ROS2-specific fields should be in x-medkit
+            self.assertIn('source', x_medkit, 'x-medkit should have source')
+
+        # Test apps list
+        data = self._get_json('/apps')
+        self.assertIn('items', data)
+        self.assertIn('x-medkit', data)
+
+        for app in data['items']:
+            self.assertIn('x-medkit', app, 'Item should have x-medkit')
+            x_medkit = app['x-medkit']
+            self.assertIn('source', x_medkit, 'x-medkit should have source')
+            self.assertIn('is_online', x_medkit, 'x-medkit should have is_online')
+
+        print('✓ x-medkit extension in list responses test passed')

@@ -115,6 +115,15 @@ class AppHandlers {
    */
   void handle_related_apps(const httplib::Request & req, httplib::Response & res);
 
+  /**
+   * @brief Handle GET /apps/{app-id}/depends-on - list app dependencies.
+   *
+   * Returns list of other apps that this app depends on.
+   *
+   * @verifies REQ_INTEROP_009
+   */
+  void handle_get_depends_on(const httplib::Request & req, httplib::Response & res);
+
  private:
   HandlerContext & ctx_;
 };

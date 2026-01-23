@@ -311,6 +311,12 @@ void RESTServer::setup_routes() {
                 config_handlers_->handle_delete_all_configurations(req, res);
               });
 
+  // App depends-on (relationship endpoint)
+  srv->Get((api_path("/apps") + R"(/([^/]+)/depends-on$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             app_handlers_->handle_get_depends_on(req, res);
+           });
+
   // Single app (capabilities) - must be after more specific routes
   srv->Get((api_path("/apps") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
     app_handlers_->handle_get_app(req, res);
