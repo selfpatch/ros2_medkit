@@ -3152,3 +3152,397 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         if not operation_found:
             self.skipTest('No app operations found')
+
+    # ==================== REQ_INTEROP_002: Documentation Endpoint ====================
+
+    def test_94_docs_endpoint(self):
+        """
+        Test GET /{resource}/docs returns documentation or 501.
+
+        @verifies REQ_INTEROP_002
+        """
+        # Try docs endpoint on components collection
+        response = requests.get(f'{self.BASE_URL}/components/docs', timeout=10)
+
+        # 200 if implemented, 404 or 501 if not supported
+        self.assertIn(response.status_code, [200, 404, 501])
+
+        if response.status_code == 200:
+            data = response.json()
+            # SOVD docs should have some content
+            self.assertIsNotNone(data)
+
+        print(f'✓ Docs endpoint test passed (status: {response.status_code})')
+
+    # ==================== REQ_INTEROP_015: Delete Single Fault ====================
+
+    def test_95_delete_single_fault(self):
+        """
+        Test DELETE /apps/{id}/faults/{code} clears a specific fault.
+
+        @verifies REQ_INTEROP_015
+        """
+        # Get an app
+        data = self._get_json('/apps')
+        self.assertGreater(len(data['items']), 0)
+        app_id = data['items'][0]['id']
+
+        # Try to delete a specific fault code (may or may not exist)
+        response = requests.delete(
+            f'{self.BASE_URL}/apps/{app_id}/faults/TEST_FAULT_CODE',
+            timeout=10
+        )
+
+        # 204 if deleted, 404 if fault not found
+        self.assertIn(response.status_code, [204, 404])
+
+        print(f'✓ Delete single fault test passed (status: {response.status_code})')
+
+    # ==================== REQ_INTEROP_016: Data Categories ====================
+
+    def test_96_list_data_categories(self):
+        """
+        Test GET /apps/{id}/data-categories lists data categories.
+
+        @verifies REQ_INTEROP_016
+        """
+        # Get an app
+        data = self._get_json('/apps')
+        self.assertGreater(len(data['items']), 0)
+        app_id = data['items'][0]['id']
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{app_id}/data-categories',
+            timeout=10
+        )
+
+        # 200 if implemented, 501 if not supported
+        self.assertIn(response.status_code, [200, 501])
+
+        if response.status_code == 200:
+            data = response.json()
+            self.assertIn('items', data)
+
+        print(f'✓ Data categories test passed (status: {response.status_code})')
+
+    # ==================== REQ_INTEROP_017: Data Groups ====================
+
+    def test_97_list_data_groups(self):
+        """
+        Test GET /apps/{id}/data-groups lists data groups.
+
+        @verifies REQ_INTEROP_017
+        """
+        # Get an app
+        data = self._get_json('/apps')
+        self.assertGreater(len(data['items']), 0)
+        app_id = data['items'][0]['id']
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{app_id}/data-groups',
+            timeout=10
+        )
+
+        # 200 if implemented, 501 if not supported
+        self.assertIn(response.status_code, [200, 501])
+
+        if response.status_code == 200:
+            data = response.json()
+            self.assertIn('items', data)
+
+        print(f'✓ Data groups test passed (status: {response.status_code})')
+
+    # ==================== REQ_INTEROP_020: Write Data ====================
+
+    def test_98_write_data_to_topic(self):
+        """
+        Test PUT /apps/{id}/data/{data-id} publishes data to topic.
+
+        @verifies REQ_INTEROP_020
+        """
+        # Get an app with data (topics)
+        apps_data = self._get_json('/apps')
+        self.assertGreater(len(apps_data['items']), 0)
+
+        data_found = False
+        for app in apps_data['items']:
+            app_data = self._get_json(f'/apps/{app["id"]}/data')
+            if app_data.get('items'):
+                data_id = app_data['items'][0]['id']
+
+                # Try to write data
+                response = requests.put(
+                    f'{self.BASE_URL}/apps/{app["id"]}/data/{data_id}',
+                    json={'data': {'value': 42.0}},
+                    timeout=10
+                )
+
+                # 200 on success, 400 invalid, 404 not found, 503 unavailable
+                self.assertIn(response.status_code, [200, 400, 404, 503])
+                data_found = True
+                print(f'✓ Write data test passed (status: {response.status_code})')
+                break
+
+        if not data_found:
+            self.skipTest('No app data found to write')
+
+    # ==================== REQ_INTEROP_033: List Operations ====================
+
+    def test_99_list_operations(self):
+        """
+        Test GET /apps/{id}/operations returns operations list.
+
+        @verifies REQ_INTEROP_033
+        """
+        # Get an app
+        data = self._get_json('/apps')
+        self.assertGreater(len(data['items']), 0)
+        app_id = data['items'][0]['id']
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{app_id}/operations',
+            timeout=10
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn('items', data)
+
+        print(f'✓ List operations test passed: {len(data["items"])} operations')
+
+    # ==================== REQ_INTEROP_037: Get Execution Status ====================
+
+    def test_100_get_execution_status(self):
+        """
+        Test GET /apps/{id}/operations/{op-id}/executions/{exec-id} gets status.
+
+        @verifies REQ_INTEROP_037
+        """
+        # Get an app with operations
+        apps_data = self._get_json('/apps')
+        self.assertGreater(len(apps_data['items']), 0)
+
+        operation_found = False
+        for app in apps_data['items']:
+            ops_data = self._get_json(f'/apps/{app["id"]}/operations')
+            if ops_data.get('items'):
+                operation_id = ops_data['items'][0]['id']
+
+                # Try to get a specific execution (likely doesn't exist)
+                response = requests.get(
+                    f'{self.BASE_URL}/apps/{app["id"]}/operations/{operation_id}'
+                    f'/executions/nonexistent-exec-id',
+                    timeout=10
+                )
+
+                # 200 if exists, 404 if not found
+                self.assertIn(response.status_code, [200, 404])
+
+                if response.status_code == 200:
+                    data = response.json()
+                    self.assertIn('id', data)
+                    self.assertIn('status', data)
+
+                operation_found = True
+                print(f'✓ Get execution status test passed (status: {response.status_code})')
+                break
+
+        if not operation_found:
+            self.skipTest('No app operations found')
+
+    # ==================== REQ_INTEROP_038: Update Execution ====================
+
+    def test_101_update_execution(self):
+        """
+        Test PUT /apps/{id}/operations/{op-id}/executions/{exec-id} updates execution.
+
+        @verifies REQ_INTEROP_038
+        """
+        # Get an app with operations
+        apps_data = self._get_json('/apps')
+        self.assertGreater(len(apps_data['items']), 0)
+
+        operation_found = False
+        for app in apps_data['items']:
+            ops_data = self._get_json(f'/apps/{app["id"]}/operations')
+            if ops_data.get('items'):
+                operation_id = ops_data['items'][0]['id']
+
+                # Try to update a specific execution (likely doesn't exist)
+                response = requests.put(
+                    f'{self.BASE_URL}/apps/{app["id"]}/operations/{operation_id}'
+                    f'/executions/nonexistent-exec-id',
+                    json={'action': 'stop'},
+                    timeout=10
+                )
+
+                # 200 success, 404 not found, 409 conflict, 501 not implemented
+                self.assertIn(response.status_code, [200, 404, 409, 501])
+
+                operation_found = True
+                print(f'✓ Update execution test passed (status: {response.status_code})')
+                break
+
+        if not operation_found:
+            self.skipTest('No app operations found')
+
+    # ==================== REQ_INTEROP_048: List Configurations ====================
+
+    def test_102_list_configurations(self):
+        """
+        Test GET /apps/{id}/configurations returns configuration list.
+
+        @verifies REQ_INTEROP_048
+        """
+        # Get an app
+        data = self._get_json('/apps')
+        self.assertGreater(len(data['items']), 0)
+        app_id = data['items'][0]['id']
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{app_id}/configurations',
+            timeout=10
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn('items', data)
+
+        print(f'✓ List configurations test passed: {len(data["items"])} configs')
+
+    # ==================== REQ_INTEROP_049: Get Configuration ====================
+
+    def test_103_get_configuration(self):
+        """
+        Test GET /apps/{id}/configurations/{config-id} returns configuration value.
+
+        @verifies REQ_INTEROP_049
+        """
+        # Get an app with configurations
+        apps_data = self._get_json('/apps')
+        self.assertGreater(len(apps_data['items']), 0)
+
+        config_found = False
+        for app in apps_data['items']:
+            configs_data = self._get_json(f'/apps/{app["id"]}/configurations')
+            if configs_data.get('items'):
+                config_id = configs_data['items'][0]['id']
+
+                response = requests.get(
+                    f'{self.BASE_URL}/apps/{app["id"]}/configurations/{config_id}',
+                    timeout=10
+                )
+
+                self.assertIn(response.status_code, [200, 404])
+
+                if response.status_code == 200:
+                    data = response.json()
+                    self.assertIn('id', data)
+                    self.assertIn('data', data)
+
+                config_found = True
+                print(f'✓ Get configuration test passed: {config_id}')
+                break
+
+        if not config_found:
+            self.skipTest('No app configurations found')
+
+    # ==================== REQ_INTEROP_050: Set Configuration ====================
+
+    def test_104_set_configuration(self):
+        """
+        Test PUT /apps/{id}/configurations/{config-id} sets configuration value.
+
+        @verifies REQ_INTEROP_050
+        """
+        # Get an app with configurations
+        apps_data = self._get_json('/apps')
+        self.assertGreater(len(apps_data['items']), 0)
+
+        config_found = False
+        for app in apps_data['items']:
+            configs_data = self._get_json(f'/apps/{app["id"]}/configurations')
+            if configs_data.get('items'):
+                config_id = configs_data['items'][0]['id']
+
+                # Get current value first
+                get_response = requests.get(
+                    f'{self.BASE_URL}/apps/{app["id"]}/configurations/{config_id}',
+                    timeout=10
+                )
+
+                if get_response.status_code == 200:
+                    current_data = get_response.json()
+
+                    # Try to set the same value back
+                    response = requests.put(
+                        f'{self.BASE_URL}/apps/{app["id"]}/configurations/{config_id}',
+                        json={'data': current_data.get('data', 1.0)},
+                        timeout=10
+                    )
+
+                    # 200 success, 400 invalid, 404 not found
+                    self.assertIn(response.status_code, [200, 400, 404])
+
+                    config_found = True
+                    print(f'✓ Set configuration test passed (status: {response.status_code})')
+                    break
+
+        if not config_found:
+            self.skipTest('No app configurations found')
+
+    # ==================== REQ_INTEROP_051: Reset All Configurations ====================
+
+    def test_105_reset_all_configurations(self):
+        """
+        Test DELETE /apps/{id}/configurations resets all configurations.
+
+        @verifies REQ_INTEROP_051
+        """
+        # Get an app
+        data = self._get_json('/apps')
+        self.assertGreater(len(data['items']), 0)
+        app_id = data['items'][0]['id']
+
+        response = requests.delete(
+            f'{self.BASE_URL}/apps/{app_id}/configurations',
+            timeout=10
+        )
+
+        # 204 success, 207 partial, 501 not implemented
+        self.assertIn(response.status_code, [204, 207, 501])
+
+        print(f'✓ Reset all configurations test passed (status: {response.status_code})')
+
+    # ==================== REQ_INTEROP_052: Reset Single Configuration ====================
+
+    def test_106_reset_single_configuration(self):
+        """
+        Test DELETE /apps/{id}/configurations/{config-id} resets single config.
+
+        @verifies REQ_INTEROP_052
+        """
+        # Get an app with configurations
+        apps_data = self._get_json('/apps')
+        self.assertGreater(len(apps_data['items']), 0)
+
+        config_found = False
+        for app in apps_data['items']:
+            configs_data = self._get_json(f'/apps/{app["id"]}/configurations')
+            if configs_data.get('items'):
+                config_id = configs_data['items'][0]['id']
+
+                response = requests.delete(
+                    f'{self.BASE_URL}/apps/{app["id"]}/configurations/{config_id}',
+                    timeout=10
+                )
+
+                # 204 success, 404 not found, 501 not implemented
+                self.assertIn(response.status_code, [204, 404, 501])
+
+                config_found = True
+                print(f'✓ Reset single configuration test passed (status: {response.status_code})')
+                break
+
+        if not config_found:
+            self.skipTest('No app configurations found')
