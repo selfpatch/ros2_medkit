@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 
+#include <filesystem>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -185,6 +186,27 @@ void SqliteFaultStorage::initialize_schema() {
     std::string error = err_msg ? err_msg : "Unknown error";
     sqlite3_free(err_msg);
     throw std::runtime_error("Failed to create snapshots table: " + error);
+  }
+
+  // Create rosbag_files table for storing time-window bag file metadata
+  const char * create_rosbag_files_table_sql = R"(
+    CREATE TABLE IF NOT EXISTS rosbag_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      fault_code TEXT NOT NULL UNIQUE,
+      file_path TEXT NOT NULL,
+      format TEXT NOT NULL,
+      duration_sec REAL NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      created_at_ns INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_rosbag_files_fault_code ON rosbag_files(fault_code);
+    CREATE INDEX IF NOT EXISTS idx_rosbag_files_created_at ON rosbag_files(created_at_ns);
+  )";
+
+  if (sqlite3_exec(db_, create_rosbag_files_table_sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
+    std::string error = err_msg ? err_msg : "Unknown error";
+    sqlite3_free(err_msg);
+    throw std::runtime_error("Failed to create rosbag_files table: " + error);
   }
 }
 
@@ -702,6 +724,114 @@ std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(const std::string & 
     snapshot.data = stmt.column_text(3);
     snapshot.captured_at_ns = stmt.column_int64(4);
     result.push_back(snapshot);
+  }
+
+  return result;
+}
+
+void SqliteFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // Use INSERT OR REPLACE to handle updates (fault_code is UNIQUE)
+  SqliteStatement stmt(db_,
+                       "INSERT OR REPLACE INTO rosbag_files "
+                       "(fault_code, file_path, format, duration_sec, size_bytes, created_at_ns) "
+                       "VALUES (?, ?, ?, ?, ?, ?)");
+
+  stmt.bind_text(1, info.fault_code);
+  stmt.bind_text(2, info.file_path);
+  stmt.bind_text(3, info.format);
+  // Bind duration_sec as a double using sqlite3_bind_double directly
+  if (sqlite3_bind_double(stmt.get(), 4, info.duration_sec) != SQLITE_OK) {
+    throw std::runtime_error(std::string("Failed to bind duration_sec: ") + sqlite3_errmsg(db_));
+  }
+  stmt.bind_int64(5, static_cast<int64_t>(info.size_bytes));
+  stmt.bind_int64(6, info.created_at_ns);
+
+  if (stmt.step() != SQLITE_DONE) {
+    throw std::runtime_error(std::string("Failed to store rosbag file: ") + sqlite3_errmsg(db_));
+  }
+}
+
+std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(const std::string & fault_code) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  SqliteStatement stmt(db_,
+                       "SELECT fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
+                       "FROM rosbag_files WHERE fault_code = ?");
+  stmt.bind_text(1, fault_code);
+
+  if (stmt.step() != SQLITE_ROW) {
+    return std::nullopt;
+  }
+
+  RosbagFileInfo info;
+  info.fault_code = stmt.column_text(0);
+  info.file_path = stmt.column_text(1);
+  info.format = stmt.column_text(2);
+  info.duration_sec = sqlite3_column_double(stmt.get(), 3);
+  info.size_bytes = static_cast<size_t>(stmt.column_int64(4));
+  info.created_at_ns = stmt.column_int64(5);
+
+  return info;
+}
+
+bool SqliteFaultStorage::delete_rosbag_file(const std::string & fault_code) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // First get the file path so we can delete the actual file
+  SqliteStatement select_stmt(db_, "SELECT file_path FROM rosbag_files WHERE fault_code = ?");
+  select_stmt.bind_text(1, fault_code);
+
+  if (select_stmt.step() == SQLITE_ROW) {
+    std::string file_path = select_stmt.column_text(0);
+
+    // Try to delete the actual file/directory
+    std::error_code ec;
+    std::filesystem::remove_all(file_path, ec);
+    // Ignore errors - file may already be deleted
+  }
+
+  SqliteStatement delete_stmt(db_, "DELETE FROM rosbag_files WHERE fault_code = ?");
+  delete_stmt.bind_text(1, fault_code);
+
+  if (delete_stmt.step() != SQLITE_DONE) {
+    throw std::runtime_error(std::string("Failed to delete rosbag file record: ") + sqlite3_errmsg(db_));
+  }
+
+  return sqlite3_changes(db_) > 0;
+}
+
+size_t SqliteFaultStorage::get_total_rosbag_storage_bytes() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  SqliteStatement stmt(db_, "SELECT COALESCE(SUM(size_bytes), 0) FROM rosbag_files");
+
+  if (stmt.step() != SQLITE_ROW) {
+    return 0;
+  }
+
+  return static_cast<size_t>(stmt.column_int64(0));
+}
+
+std::vector<RosbagFileInfo> SqliteFaultStorage::get_all_rosbag_files() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  std::vector<RosbagFileInfo> result;
+
+  SqliteStatement stmt(db_,
+                       "SELECT fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
+                       "FROM rosbag_files ORDER BY created_at_ns ASC");
+
+  while (stmt.step() == SQLITE_ROW) {
+    RosbagFileInfo info;
+    info.fault_code = stmt.column_text(0);
+    info.file_path = stmt.column_text(1);
+    info.format = stmt.column_text(2);
+    info.duration_sec = sqlite3_column_double(stmt.get(), 3);
+    info.size_bytes = static_cast<size_t>(stmt.column_int64(4));
+    info.created_at_ns = stmt.column_int64(5);
+    result.push_back(info);
   }
 
   return result;

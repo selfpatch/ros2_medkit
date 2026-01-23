@@ -14,6 +14,10 @@
 
 #include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
 
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
@@ -457,6 +461,104 @@ void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req,
                                {{"details", e.what()}, {"entity_id", entity_id}, {"fault_code", fault_code}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_component_snapshots for entity '%s', fault '%s': %s",
                  entity_id.c_str(), fault_code.c_str(), e.what());
+  }
+}
+
+void FaultHandlers::handle_get_rosbag(const httplib::Request & req, httplib::Response & res) {
+  std::string fault_code;
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      return;
+    }
+
+    fault_code = req.matches[1];
+
+    // Validate fault code
+    if (fault_code.empty() || fault_code.length() > 256) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
+                                 {{"details", "Fault code must be between 1 and 256 characters"}});
+      return;
+    }
+
+    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto result = fault_mgr->get_rosbag(fault_code);
+
+    if (!result.success) {
+      // Check if it's a "not found" error
+      if (result.error_message.find("not found") != std::string::npos ||
+          result.error_message.find("No rosbag") != std::string::npos) {
+        HandlerContext::send_error(res, StatusCode::NotFound_404, "Rosbag not found",
+                                   {{"details", result.error_message}, {"fault_code", fault_code}});
+      } else {
+        HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, "Failed to get rosbag",
+                                   {{"details", result.error_message}, {"fault_code", fault_code}});
+      }
+      return;
+    }
+
+    // Get file path from result
+    std::string file_path = result.data["file_path"].get<std::string>();
+    std::string format = result.data["format"].get<std::string>();
+
+    // Check if path is a directory (rosbag2 creates directories)
+    std::filesystem::path bag_path(file_path);
+
+    // Determine what to send
+    if (std::filesystem::is_directory(bag_path)) {
+      // For directory-based bags, we need to create a tar/zip archive
+      // For simplicity, just send the metadata.yaml or db3 file
+      std::filesystem::path db_file;
+      for (const auto & entry : std::filesystem::directory_iterator(bag_path)) {
+        if (entry.path().extension() == ".db3" || entry.path().extension() == ".mcap") {
+          db_file = entry.path();
+          break;
+        }
+      }
+
+      if (db_file.empty()) {
+        HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Rosbag data file not found in directory",
+                                   {{"fault_code", fault_code}, {"path", file_path}});
+        return;
+      }
+
+      file_path = db_file.string();
+    }
+
+    // Read the file
+    std::ifstream file(file_path, std::ios::binary);
+    if (!file) {
+      HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to read rosbag file",
+                                 {{"fault_code", fault_code}, {"path", file_path}});
+      return;
+    }
+
+    // Read file content
+    std::ostringstream content_stream;
+    content_stream << file.rdbuf();
+    std::string content = content_stream.str();
+
+    // Determine content type based on format
+    std::string content_type = "application/octet-stream";
+    std::string extension = ".db3";
+    if (format == "mcap") {
+      content_type = "application/x-mcap";
+      extension = ".mcap";
+    }
+
+    // Set filename for download
+    std::string filename = "fault_" + fault_code + "_snapshot" + extension;
+
+    res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+    res.set_header("Content-Type", content_type);
+    res.set_content(content, content_type);
+    res.status = StatusCode::OK_200;
+
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to download rosbag",
+                               {{"details", e.what()}, {"fault_code", fault_code}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_rosbag for fault '%s': %s", fault_code.c_str(),
+                 e.what());
   }
 }
 

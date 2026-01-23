@@ -75,6 +75,11 @@ class FaultHandlers {
    */
   void handle_get_component_snapshots(const httplib::Request & req, httplib::Response & res);
 
+  /**
+   * @brief Handle GET /faults/{fault_code}/snapshots/bag - download rosbag file for a fault.
+   */
+  void handle_get_rosbag(const httplib::Request & req, httplib::Response & res);
+
  private:
   HandlerContext & ctx_;
 };

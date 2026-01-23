@@ -15,6 +15,7 @@
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 
 #include <algorithm>
+#include <filesystem>
 
 namespace ros2_medkit_fault_manager {
 
@@ -285,6 +286,64 @@ std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(const std::string 
       }
     }
   }
+  return result;
+}
+
+void InMemoryFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  rosbag_files_[info.fault_code] = info;
+}
+
+std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(const std::string & fault_code) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  auto it = rosbag_files_.find(fault_code);
+  if (it == rosbag_files_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+bool InMemoryFaultStorage::delete_rosbag_file(const std::string & fault_code) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  auto it = rosbag_files_.find(fault_code);
+  if (it == rosbag_files_.end()) {
+    return false;
+  }
+
+  // Try to delete the actual file
+  std::error_code ec;
+  std::filesystem::remove_all(it->second.file_path, ec);
+  // Ignore errors - file may already be deleted
+
+  rosbag_files_.erase(it);
+  return true;
+}
+
+size_t InMemoryFaultStorage::get_total_rosbag_storage_bytes() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  size_t total = 0;
+  for (const auto & [code, info] : rosbag_files_) {
+    total += info.size_bytes;
+  }
+  return total;
+}
+
+std::vector<RosbagFileInfo> InMemoryFaultStorage::get_all_rosbag_files() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  std::vector<RosbagFileInfo> result;
+  result.reserve(rosbag_files_.size());
+  for (const auto & [code, info] : rosbag_files_) {
+    result.push_back(info);
+  }
+
+  // Sort by creation time (oldest first)
+  std::sort(result.begin(), result.end(),
+            [](const RosbagFileInfo & a, const RosbagFileInfo & b) { return a.created_at_ns < b.created_at_ns; });
+
   return result;
 }
 

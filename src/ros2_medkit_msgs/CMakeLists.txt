@@ -32,6 +32,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetFaults.srv"
   "srv/ClearFault.srv"
   "srv/GetSnapshots.srv"
+  "srv/GetRosbag.srv"
   DEPENDENCIES builtin_interfaces
 )
 

@@ -27,6 +27,46 @@
 
 namespace ros2_medkit_fault_manager {
 
+/// Configuration for rosbag recording (optional time-window capture)
+struct RosbagConfig {
+  /// Whether rosbag recording is enabled (opt-in)
+  bool enabled{false};
+
+  /// Duration in seconds to buffer before fault confirmation
+  double duration_sec{5.0};
+
+  /// Duration in seconds to continue recording after fault confirmation
+  double duration_after_sec{1.0};
+
+  /// Topic selection mode: "config" (reuse JSON config), "all", or comma-separated list
+  std::string topics{"config"};
+
+  /// Additional topics to include (added to resolved list)
+  std::vector<std::string> include_topics;
+
+  /// Topics to exclude from recording
+  std::vector<std::string> exclude_topics;
+
+  /// If true, start ring buffer only when fault enters PREFAILED state
+  /// If false (default), ring buffer runs continuously from startup
+  bool lazy_start{false};
+
+  /// Storage format: "sqlite3" or "mcap"
+  std::string format{"sqlite3"};
+
+  /// Path to store bag files (empty = system temp directory)
+  std::string storage_path;
+
+  /// Maximum size of a single bag file in MB
+  size_t max_bag_size_mb{50};
+
+  /// Maximum total storage for all bag files in MB
+  size_t max_total_storage_mb{500};
+
+  /// If true, delete bag file when fault is cleared
+  bool auto_cleanup{true};
+};
+
 /// Configuration for snapshot capture
 struct SnapshotConfig {
   /// Whether snapshot capture is enabled
@@ -53,6 +93,9 @@ struct SnapshotConfig {
 
   /// Default topics to capture if no specific or pattern match
   std::vector<std::string> default_topics;
+
+  /// Rosbag recording configuration (optional)
+  RosbagConfig rosbag;
 };
 
 /// Cached message from background subscription

@@ -15,6 +15,8 @@
   <depend>ros2_medkit_serialization</depend>
   <depend>sqlite3</depend>
   <depend>nlohmann-json-dev</depend>
+  <depend>rosbag2_cpp</depend>
+  <depend>rosbag2_storage</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
@@ -23,6 +25,8 @@
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>launch_testing_ament_cmake</test_depend>
   <test_depend>launch_testing_ros</test_depend>
+  <test_depend>sensor_msgs</test_depend>
+  <test_depend>std_msgs</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

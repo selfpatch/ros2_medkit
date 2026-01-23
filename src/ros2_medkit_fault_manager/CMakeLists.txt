@@ -39,6 +39,9 @@ find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 # yaml-cpp is required as transitive dependency from ros2_medkit_serialization
 find_package(yaml-cpp REQUIRED)
+# rosbag2 for time-window snapshot recording
+find_package(rosbag2_cpp REQUIRED)
+find_package(rosbag2_storage REQUIRED)
 
 # Library target (shared between executable and tests)
 add_library(fault_manager_lib STATIC
@@ -46,6 +49,7 @@ add_library(fault_manager_lib STATIC
   src/fault_storage.cpp
   src/sqlite_fault_storage.cpp
   src/snapshot_capture.cpp
+  src/rosbag_capture.cpp
   src/correlation/types.cpp
   src/correlation/config_parser.cpp
   src/correlation/pattern_matcher.cpp
@@ -61,6 +65,8 @@ ament_target_dependencies(fault_manager_lib PUBLIC
   rclcpp
   ros2_medkit_msgs
   ros2_medkit_serialization
+  rosbag2_cpp
+  rosbag2_storage
 )
 
 target_link_libraries(fault_manager_lib PUBLIC
@@ -123,6 +129,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_snapshot_capture fault_manager_lib)
   ament_target_dependencies(test_snapshot_capture rclcpp ros2_medkit_msgs)
 
+  # Rosbag capture tests
+  ament_add_gtest(test_rosbag_capture test/test_rosbag_capture.cpp)
+  target_link_libraries(test_rosbag_capture fault_manager_lib)
+  ament_target_dependencies(test_rosbag_capture rclcpp ros2_medkit_msgs)
+
   # Correlation config parser tests
   ament_add_gtest(test_correlation_config_parser test/test_correlation_config_parser.cpp)
   target_link_libraries(test_correlation_config_parser fault_manager_lib)
@@ -143,6 +154,8 @@ if(BUILD_TESTING)
     target_link_options(test_sqlite_storage PRIVATE --coverage)
     target_compile_options(test_snapshot_capture PRIVATE --coverage -O0 -g)
     target_link_options(test_snapshot_capture PRIVATE --coverage)
+    target_compile_options(test_rosbag_capture PRIVATE --coverage -O0 -g)
+    target_link_options(test_rosbag_capture PRIVATE --coverage)
     target_compile_options(test_correlation_config_parser PRIVATE --coverage -O0 -g)
     target_link_options(test_correlation_config_parser PRIVATE --coverage)
     target_compile_options(test_pattern_matcher PRIVATE --coverage -O0 -g)
@@ -160,6 +173,12 @@ if(BUILD_TESTING)
     test/test_integration.test.py
     TARGET test_integration
     TIMEOUT 60
+  )
+
+  add_launch_test(
+    test/test_rosbag_integration.test.py
+    TARGET test_rosbag_integration
+    TIMEOUT 90
   )
 endif()
 

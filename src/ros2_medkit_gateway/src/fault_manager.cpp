@@ -29,6 +29,7 @@ FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
   get_faults_client_ = node_->create_client<ros2_medkit_msgs::srv::GetFaults>("/fault_manager/get_faults");
   clear_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ClearFault>("/fault_manager/clear_fault");
   get_snapshots_client_ = node_->create_client<ros2_medkit_msgs::srv::GetSnapshots>("/fault_manager/get_snapshots");
+  get_rosbag_client_ = node_->create_client<ros2_medkit_msgs::srv::GetRosbag>("/fault_manager/get_rosbag");
 
   // Get configurable timeout
   service_timeout_sec_ = node_->declare_parameter("fault_service_timeout_sec", 5.0);
@@ -323,6 +324,43 @@ FaultResult FaultManager::get_snapshots(const std::string & fault_code, const st
     } catch (const json::exception & e) {
       result.data = {{"raw_data", response->data}};
     }
+  } else {
+    result.error_message = response->error_message;
+  }
+
+  return result;
+}
+
+FaultResult FaultManager::get_rosbag(const std::string & fault_code) {
+  std::lock_guard<std::mutex> lock(service_mutex_);
+  FaultResult result;
+
+  auto timeout = std::chrono::duration<double>(service_timeout_sec_);
+  if (!get_rosbag_client_->wait_for_service(timeout)) {
+    result.success = false;
+    result.error_message = "GetRosbag service not available";
+    return result;
+  }
+
+  auto request = std::make_shared<ros2_medkit_msgs::srv::GetRosbag::Request>();
+  request->fault_code = fault_code;
+
+  auto future = get_rosbag_client_->async_send_request(request);
+
+  if (future.wait_for(timeout) != std::future_status::ready) {
+    result.success = false;
+    result.error_message = "GetRosbag service call timed out";
+    return result;
+  }
+
+  auto response = future.get();
+  result.success = response->success;
+
+  if (response->success) {
+    result.data = {{"file_path", response->file_path},
+                   {"format", response->format},
+                   {"duration_sec", response->duration_sec},
+                   {"size_bytes", response->size_bytes}};
   } else {
     result.error_message = response->error_message;
   }

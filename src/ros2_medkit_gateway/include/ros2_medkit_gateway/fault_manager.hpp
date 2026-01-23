@@ -24,6 +24,7 @@
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_faults.hpp"
+#include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
@@ -82,6 +83,11 @@ class FaultManager {
   /// @return FaultResult with snapshot data (JSON in data field)
   FaultResult get_snapshots(const std::string & fault_code, const std::string & topic = "");
 
+  /// Get rosbag file info for a fault
+  /// @param fault_code Fault identifier
+  /// @return FaultResult with rosbag file path and metadata
+  FaultResult get_rosbag(const std::string & fault_code);
+
   /// Check if fault manager service is available
   /// @return true if services are available
   bool is_available() const;
@@ -100,6 +106,7 @@ class FaultManager {
   rclcpp::Client<ros2_medkit_msgs::srv::GetFaults>::SharedPtr get_faults_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_fault_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::GetSnapshots>::SharedPtr get_snapshots_client_;
+  rclcpp::Client<ros2_medkit_msgs::srv::GetRosbag>::SharedPtr get_rosbag_client_;
 
   /// Service timeout
   double service_timeout_sec_{5.0};

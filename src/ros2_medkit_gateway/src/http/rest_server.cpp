@@ -559,6 +559,12 @@ void RESTServer::setup_routes() {
              fault_handlers_->handle_get_snapshots(req, res);
            });
 
+  // GET /faults/{fault_code}/snapshots/bag - download rosbag file for fault
+  srv->Get((api_path("/faults") + R"(/([^/]+)/snapshots/bag$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             fault_handlers_->handle_get_rosbag(req, res);
+           });
+
   // GET /components/{component_id}/faults/{fault_code}/snapshots - component-scoped snapshot access
   srv->Get((api_path("/components") + R"(/([^/]+)/faults/([^/]+)/snapshots$)"),
            [this](const httplib::Request & req, httplib::Response & res) {

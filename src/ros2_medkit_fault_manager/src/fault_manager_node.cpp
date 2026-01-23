@@ -98,10 +98,22 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
         handle_get_snapshots(request, response);
       });
 
+  get_rosbag_srv_ = create_service<ros2_medkit_msgs::srv::GetRosbag>(
+      "~/get_rosbag", [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
+                             const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response) {
+        handle_get_rosbag(request, response);
+      });
+
   // Initialize snapshot capture
   auto snapshot_config = create_snapshot_config();
   if (snapshot_config.enabled) {
     snapshot_capture_ = std::make_unique<SnapshotCapture>(this, storage_.get(), snapshot_config);
+  }
+
+  // Initialize rosbag capture if enabled
+  if (snapshot_config.rosbag.enabled) {
+    rosbag_capture_ =
+        std::make_unique<RosbagCapture>(this, storage_.get(), snapshot_config.rosbag, snapshot_config);
   }
 
   // Initialize correlation engine (nullptr if disabled or not configured)
@@ -272,6 +284,19 @@ void FaultManagerNode::handle_report_fault(
     if (just_confirmed && snapshot_capture_) {
       snapshot_capture_->capture(request->fault_code);
     }
+
+    // Trigger rosbag capture when fault is confirmed (even if muted)
+    if (just_confirmed && rosbag_capture_) {
+      rosbag_capture_->on_fault_confirmed(request->fault_code);
+    }
+
+    // Handle PREFAILED state for lazy_start rosbag capture
+    bool just_prefailed = (is_new && fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED) ||
+                          (!is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED &&
+                           fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
+    if (just_prefailed && rosbag_capture_) {
+      rosbag_capture_->on_fault_prefailed(request->fault_code);
+    }
   }
 
   if (request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
@@ -367,6 +392,10 @@ void FaultManagerNode::handle_clear_fault(
       storage_->clear_fault(symptom_code);
       RCLCPP_DEBUG(get_logger(), "Auto-cleared symptom: %s (root cause: %s)", symptom_code.c_str(),
                    request->fault_code.c_str());
+      // Also cleanup rosbag for auto-cleared faults
+      if (rosbag_capture_) {
+        rosbag_capture_->on_fault_cleared(symptom_code);
+      }
     }
 
     response->auto_cleared_codes = auto_cleared_codes;
@@ -378,6 +407,11 @@ void FaultManagerNode::handle_clear_fault(
     }
     RCLCPP_INFO(get_logger(), "Fault cleared: %s (auto-cleared %zu symptoms)", request->fault_code.c_str(),
                 auto_cleared_codes.size());
+
+    // Cleanup rosbag for the main fault (auto_cleanup handled inside RosbagCapture)
+    if (rosbag_capture_) {
+      rosbag_capture_->on_fault_cleared(request->fault_code);
+    }
 
     // Publish EVENT_CLEARED - get the cleared fault to include in event
     auto fault = storage_->get_fault(request->fault_code);
@@ -440,6 +474,57 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
   auto config_file = declare_parameter<std::string>("snapshots.config_file", "");
   if (!config_file.empty()) {
     load_snapshot_config_from_yaml(config_file, config);
+  }
+
+  // Rosbag configuration (opt-in)
+  config.rosbag.enabled = declare_parameter<bool>("snapshots.rosbag.enabled", false);
+  if (config.rosbag.enabled) {
+    config.rosbag.duration_sec = declare_parameter<double>("snapshots.rosbag.duration_sec", 5.0);
+    if (config.rosbag.duration_sec <= 0.0) {
+      RCLCPP_WARN(get_logger(), "snapshots.rosbag.duration_sec must be positive, got %.2f. Using default 5.0s",
+                  config.rosbag.duration_sec);
+      config.rosbag.duration_sec = 5.0;
+    }
+
+    config.rosbag.duration_after_sec = declare_parameter<double>("snapshots.rosbag.duration_after_sec", 1.0);
+    if (config.rosbag.duration_after_sec < 0.0) {
+      RCLCPP_WARN(get_logger(), "snapshots.rosbag.duration_after_sec must be non-negative, got %.2f. Using 0.0s",
+                  config.rosbag.duration_after_sec);
+      config.rosbag.duration_after_sec = 0.0;
+    }
+
+    config.rosbag.topics = declare_parameter<std::string>("snapshots.rosbag.topics", "config");
+    config.rosbag.include_topics =
+        declare_parameter<std::vector<std::string>>("snapshots.rosbag.include_topics", std::vector<std::string>{});
+    config.rosbag.exclude_topics =
+        declare_parameter<std::vector<std::string>>("snapshots.rosbag.exclude_topics", std::vector<std::string>{});
+
+    config.rosbag.lazy_start = declare_parameter<bool>("snapshots.rosbag.lazy_start", false);
+    config.rosbag.format = declare_parameter<std::string>("snapshots.rosbag.format", "sqlite3");
+    config.rosbag.storage_path = declare_parameter<std::string>("snapshots.rosbag.storage_path", "");
+
+    int64_t max_bag_size = declare_parameter<int64_t>("snapshots.rosbag.max_bag_size_mb", 50);
+    if (max_bag_size <= 0) {
+      RCLCPP_WARN(get_logger(), "snapshots.rosbag.max_bag_size_mb must be positive. Using 50MB");
+      max_bag_size = 50;
+    }
+    config.rosbag.max_bag_size_mb = static_cast<size_t>(max_bag_size);
+
+    int64_t max_total_storage = declare_parameter<int64_t>("snapshots.rosbag.max_total_storage_mb", 500);
+    if (max_total_storage <= 0) {
+      RCLCPP_WARN(get_logger(), "snapshots.rosbag.max_total_storage_mb must be positive. Using 500MB");
+      max_total_storage = 500;
+    }
+    config.rosbag.max_total_storage_mb = static_cast<size_t>(max_total_storage);
+
+    config.rosbag.auto_cleanup = declare_parameter<bool>("snapshots.rosbag.auto_cleanup", true);
+
+    RCLCPP_INFO(get_logger(),
+                "Rosbag capture enabled (duration=%.1fs+%.1fs, topics=%s, lazy=%s, format=%s, "
+                "max_bag=%zuMB, max_total=%zuMB)",
+                config.rosbag.duration_sec, config.rosbag.duration_after_sec, config.rosbag.topics.c_str(),
+                config.rosbag.lazy_start ? "true" : "false", config.rosbag.format.c_str(), config.rosbag.max_bag_size_mb,
+                config.rosbag.max_total_storage_mb);
   }
 
   if (config.enabled) {
@@ -605,10 +690,68 @@ void FaultManagerNode::handle_get_snapshots(
   }
   result["topics"] = topics_json;
 
+  // Include rosbag info if available
+  auto rosbag_info = storage_->get_rosbag_file(request->fault_code);
+  if (rosbag_info) {
+    nlohmann::json rosbag_json;
+    rosbag_json["available"] = true;
+    rosbag_json["duration_sec"] = rosbag_info->duration_sec;
+    rosbag_json["size_bytes"] = rosbag_info->size_bytes;
+    rosbag_json["format"] = rosbag_info->format;
+    rosbag_json["download_url"] = "/api/v1/faults/" + request->fault_code + "/snapshots/bag";
+    result["rosbag"] = rosbag_json;
+  } else {
+    result["rosbag"] = {{"available", false}};
+  }
+
   response->success = true;
   response->data = result.dump();
 
-  RCLCPP_DEBUG(get_logger(), "GetSnapshots returned %zu topics for fault '%s'", snapshots.size(),
+  RCLCPP_DEBUG(get_logger(), "GetSnapshots returned %zu topics for fault '%s' (rosbag=%s)", snapshots.size(),
+               request->fault_code.c_str(), rosbag_info ? "available" : "not available");
+}
+
+void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
+                                         const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response) {
+  // Validate fault_code
+  if (request->fault_code.empty()) {
+    response->success = false;
+    response->error_message = "fault_code cannot be empty";
+    return;
+  }
+
+  // Check if fault exists
+  auto fault = storage_->get_fault(request->fault_code);
+  if (!fault) {
+    response->success = false;
+    response->error_message = "Fault not found: " + request->fault_code;
+    return;
+  }
+
+  // Get rosbag info from storage
+  auto rosbag_info = storage_->get_rosbag_file(request->fault_code);
+  if (!rosbag_info) {
+    response->success = false;
+    response->error_message = "No rosbag file available for fault: " + request->fault_code;
+    return;
+  }
+
+  // Check if file exists
+  if (!std::filesystem::exists(rosbag_info->file_path)) {
+    response->success = false;
+    response->error_message = "Rosbag file not found on disk: " + rosbag_info->file_path;
+    // Clean up the stale record
+    storage_->delete_rosbag_file(request->fault_code);
+    return;
+  }
+
+  response->success = true;
+  response->file_path = rosbag_info->file_path;
+  response->format = rosbag_info->format;
+  response->duration_sec = rosbag_info->duration_sec;
+  response->size_bytes = rosbag_info->size_bytes;
+
+  RCLCPP_DEBUG(get_logger(), "GetRosbag returned file '%s' for fault '%s'", rosbag_info->file_path.c_str(),
                request->fault_code.c_str());
 }
 

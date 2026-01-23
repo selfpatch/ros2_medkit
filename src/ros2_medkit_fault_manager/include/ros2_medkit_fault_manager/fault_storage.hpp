@@ -82,6 +82,16 @@ struct SnapshotData {
   int64_t captured_at_ns{0};
 };
 
+/// Rosbag file metadata for time-window recording
+struct RosbagFileInfo {
+  std::string fault_code;
+  std::string file_path;
+  std::string format;        ///< "sqlite3" or "mcap"
+  double duration_sec{0.0};  ///< Total duration of recorded data
+  size_t size_bytes{0};      ///< File size in bytes
+  int64_t created_at_ns{0};  ///< Timestamp when bag was created
+};
+
 /// Abstract interface for fault storage backends
 class FaultStorage {
  public:
@@ -145,6 +155,28 @@ class FaultStorage {
   virtual std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
                                                   const std::string & topic_filter = "") const = 0;
 
+  /// Store rosbag file metadata for a fault
+  /// @param info The rosbag file info to store (replaces any existing entry for fault_code)
+  virtual void store_rosbag_file(const RosbagFileInfo & info) = 0;
+
+  /// Get rosbag file info for a fault
+  /// @param fault_code The fault code to get rosbag for
+  /// @return Rosbag file info if exists, nullopt otherwise
+  virtual std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const = 0;
+
+  /// Delete rosbag file record and the actual file for a fault
+  /// @param fault_code The fault code to delete rosbag for
+  /// @return true if record was deleted, false if not found
+  virtual bool delete_rosbag_file(const std::string & fault_code) = 0;
+
+  /// Get total size of all stored rosbag files in bytes
+  /// @return Total size in bytes
+  virtual size_t get_total_rosbag_storage_bytes() const = 0;
+
+  /// Get all rosbag files ordered by creation time (oldest first)
+  /// @return Vector of rosbag file info
+  virtual std::vector<RosbagFileInfo> get_all_rosbag_files() const = 0;
+
  protected:
   FaultStorage() = default;
   FaultStorage(const FaultStorage &) = default;
@@ -182,6 +214,12 @@ class InMemoryFaultStorage : public FaultStorage {
   std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
                                           const std::string & topic_filter = "") const override;
 
+  void store_rosbag_file(const RosbagFileInfo & info) override;
+  std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
+  bool delete_rosbag_file(const std::string & fault_code) override;
+  size_t get_total_rosbag_storage_bytes() const override;
+  std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
+
  private:
   /// Update fault status based on debounce counter
   void update_status(FaultState & state);
@@ -189,6 +227,7 @@ class InMemoryFaultStorage : public FaultStorage {
   mutable std::mutex mutex_;
   std::map<std::string, FaultState> faults_;
   std::vector<SnapshotData> snapshots_;
+  std::map<std::string, RosbagFileInfo> rosbag_files_;
   DebounceConfig config_;
 };
 

@@ -65,6 +65,12 @@ class SqliteFaultStorage : public FaultStorage {
   std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
                                           const std::string & topic_filter = "") const override;
 
+  void store_rosbag_file(const RosbagFileInfo & info) override;
+  std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
+  bool delete_rosbag_file(const std::string & fault_code) override;
+  size_t get_total_rosbag_storage_bytes() const override;
+  std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
+
   /// Get the database path
   const std::string & db_path() const {
     return db_path_;

@@ -20,10 +20,12 @@
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_faults.hpp"
+#include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
@@ -72,6 +74,10 @@ class FaultManagerNode : public rclcpp::Node {
   void handle_get_snapshots(const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Request> & request,
                             const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> & response);
 
+  /// Handle GetRosbag service request
+  void handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
+                         const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response);
+
   /// Create snapshot configuration from parameters
   SnapshotConfig create_snapshot_config();
 
@@ -106,6 +112,7 @@ class FaultManagerNode : public rclcpp::Node {
   rclcpp::Service<ros2_medkit_msgs::srv::GetFaults>::SharedPtr get_faults_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetSnapshots>::SharedPtr get_snapshots_srv_;
+  rclcpp::Service<ros2_medkit_msgs::srv::GetRosbag>::SharedPtr get_rosbag_srv_;
   rclcpp::TimerBase::SharedPtr auto_confirm_timer_;
 
   /// Timer for periodic cleanup of expired correlation data
@@ -116,6 +123,9 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Snapshot capture for capturing topic data on fault confirmation
   std::unique_ptr<SnapshotCapture> snapshot_capture_;
+
+  /// Rosbag capture for time-window recording (nullptr if disabled)
+  std::unique_ptr<RosbagCapture> rosbag_capture_;
 
   /// Correlation engine for fault correlation/muting (nullptr if disabled)
   std::unique_ptr<correlation::CorrelationEngine> correlation_engine_;
