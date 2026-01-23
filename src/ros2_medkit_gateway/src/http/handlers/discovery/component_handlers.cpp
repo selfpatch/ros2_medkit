@@ -36,14 +36,44 @@ void ComponentHandlers::handle_list_components(const httplib::Request & req, htt
   try {
     const auto cache = ctx_.node()->get_entity_cache();
 
+    // Build SOVD-compliant items array with EntityReference format
     json items = json::array();
     for (const auto & component : cache.components) {
-      items.push_back(component.to_json());
+      json item;
+      // SOVD required fields for EntityReference
+      item["id"] = component.id;
+      item["name"] = component.name.empty() ? component.id : component.name;
+      item["href"] = "/api/v1/components/" + component.id;
+
+      // Optional SOVD fields
+      if (!component.description.empty()) {
+        item["description"] = component.description;
+      }
+      if (!component.tags.empty()) {
+        item["tags"] = component.tags;
+      }
+
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.source(component.source);
+      if (!component.fqn.empty()) {
+        ext.ros2_node(component.fqn);
+      }
+      if (!component.namespace_path.empty()) {
+        ext.ros2_namespace(component.namespace_path);
+      }
+      item["x-medkit"] = ext.build();
+
+      items.push_back(item);
     }
 
     json response;
     response["items"] = items;
-    response["total_count"] = items.size();
+
+    // x-medkit for response-level metadata
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
@@ -80,27 +110,34 @@ void ComponentHandlers::handle_get_component(const httplib::Request & req, httpl
     const auto & comp = *comp_opt;
 
     json response;
+    // SOVD required fields
     response["id"] = comp.id;
-    response["name"] = comp.name;
-    response["type"] = comp.type;
+    response["name"] = comp.name.empty() ? comp.id : comp.name;
 
+    // Optional SOVD fields
     if (!comp.description.empty()) {
       response["description"] = comp.description;
     }
-
-    // Build capabilities for components
-    using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::DATA,   Cap::OPERATIONS,    Cap::CONFIGURATIONS,
-                             Cap::FAULTS, Cap::SUBCOMPONENTS, Cap::RELATED_APPS};
-    // Add depends-on capability only when component has dependencies
-    if (!comp.depends_on.empty()) {
-      caps.push_back(Cap::DEPENDS_ON);
+    if (!comp.tags.empty()) {
+      response["tags"] = comp.tags;
     }
-    response["capabilities"] = CapabilityBuilder::build_capabilities("components", comp.id, caps);
+
+    // SOVD capability URIs (flat at top level)
+    std::string base = "/api/v1/components/" + comp.id;
+    response["data"] = base + "/data";
+    response["operations"] = base + "/operations";
+    response["configurations"] = base + "/configurations";
+    response["faults"] = base + "/faults";
+    response["subcomponents"] = base + "/subcomponents";
+
+    // Add depends-on only when component has dependencies
+    if (!comp.depends_on.empty()) {
+      response["depends-on"] = base + "/depends-on";
+    }
 
     // Build HATEOAS links
     LinksBuilder links;
-    links.self("/api/v1/components/" + comp.id).collection("/api/v1/components");
+    links.self(base).collection("/api/v1/components");
     if (!comp.area.empty()) {
       links.add("area", "/api/v1/areas/" + comp.area);
     }
@@ -108,6 +145,29 @@ void ComponentHandlers::handle_get_component(const httplib::Request & req, httpl
       links.parent("/api/v1/components/" + comp.parent_component_id);
     }
     response["_links"] = links.build();
+
+    // x-medkit extension for ROS2-specific data
+    XMedkit ext;
+    ext.source(comp.source);
+    if (!comp.fqn.empty()) {
+      ext.ros2_node(comp.fqn);
+    }
+    if (!comp.namespace_path.empty()) {
+      ext.ros2_namespace(comp.namespace_path);
+    }
+    if (!comp.type.empty()) {
+      ext.add("type", comp.type);
+    }
+
+    // Add detailed capabilities object to x-medkit
+    using Cap = CapabilityBuilder::Capability;
+    std::vector<Cap> caps = {Cap::DATA,   Cap::OPERATIONS,    Cap::CONFIGURATIONS,
+                             Cap::FAULTS, Cap::SUBCOMPONENTS, Cap::RELATED_APPS};
+    if (!comp.depends_on.empty()) {
+      caps.push_back(Cap::DEPENDS_ON);
+    }
+    ext.add("capabilities", CapabilityBuilder::build_capabilities("components", comp.id, caps));
+    response["x-medkit"] = ext.build();
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
@@ -468,14 +528,27 @@ void ComponentHandlers::handle_get_subcomponents(const httplib::Request & req, h
     for (const auto & sub : subcomponents) {
       json item;
       item["id"] = sub.id;
-      item["name"] = sub.name;
+      item["name"] = sub.name.empty() ? sub.id : sub.name;
       item["href"] = "/api/v1/components/" + sub.id;
+
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.source(sub.source);
+      if (!sub.namespace_path.empty()) {
+        ext.ros2_namespace(sub.namespace_path);
+      }
+      item["x-medkit"] = ext.build();
+
       items.push_back(item);
     }
 
     json response;
     response["items"] = items;
-    response["total_count"] = items.size();
+
+    // x-medkit for response-level metadata
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
 
     // HATEOAS links
     json links;
@@ -523,17 +596,27 @@ void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, ht
     for (const auto & app : apps) {
       json item;
       item["id"] = app.id;
-      item["name"] = app.name;
+      item["name"] = app.name.empty() ? app.id : app.name;
       item["href"] = "/api/v1/apps/" + app.id;
-      if (app.is_online) {
-        item["is_online"] = true;
+
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.is_online(app.is_online).source(app.source);
+      if (app.bound_fqn) {
+        ext.ros2_node(*app.bound_fqn);
       }
+      item["x-medkit"] = ext.build();
+
       items.push_back(item);
     }
 
     json response;
     response["items"] = items;
-    response["total_count"] = items.size();
+
+    // x-medkit for response-level metadata
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
 
     // HATEOAS links
     json links;
@@ -586,14 +669,18 @@ void ComponentHandlers::handle_get_depends_on(const httplib::Request & req, http
       // Try to get the dependency component for additional info
       auto dep_opt = discovery->get_component(dep_id);
       if (dep_opt) {
-        item["type"] = dep_opt->type;
-        if (!dep_opt->name.empty()) {
-          item["name"] = dep_opt->name;
-        }
+        item["name"] = dep_opt->name.empty() ? dep_id : dep_opt->name;
+
+        // x-medkit extension for ROS2-specific data
+        XMedkit ext;
+        ext.source(dep_opt->source);
+        item["x-medkit"] = ext.build();
       } else {
-        // Dependency component could not be resolved; keep a generic type but mark as missing
-        item["type"] = "Component";
-        item["missing"] = true;
+        // Dependency component could not be resolved; mark as missing in x-medkit
+        item["name"] = dep_id;
+        XMedkit ext;
+        ext.add("missing", true);
+        item["x-medkit"] = ext.build();
         RCLCPP_WARN(HandlerContext::logger(), "Component '%s' declares dependency on unknown component '%s'",
                     component_id.c_str(), dep_id.c_str());
       }
@@ -603,7 +690,11 @@ void ComponentHandlers::handle_get_depends_on(const httplib::Request & req, http
 
     json response;
     response["items"] = items;
-    response["total_count"] = items.size();
+
+    // x-medkit for response-level metadata
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
 
     // HATEOAS links
     json links;

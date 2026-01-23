@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
+#include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
@@ -31,23 +32,38 @@ void FunctionHandlers::handle_list_functions(const httplib::Request & req, httpl
     auto discovery = ctx_.node()->get_discovery_manager();
     auto functions = discovery->discover_functions();
 
+    // Build SOVD-compliant items array with EntityReference format
     json items = json::array();
     for (const auto & func : functions) {
       json func_item;
+      // SOVD required fields for EntityReference
       func_item["id"] = func.id;
-      func_item["name"] = func.name;
+      func_item["name"] = func.name.empty() ? func.id : func.name;
+      func_item["href"] = "/api/v1/functions/" + func.id;
+
+      // Optional SOVD fields
       if (!func.description.empty()) {
         func_item["description"] = func.description;
       }
       if (!func.tags.empty()) {
         func_item["tags"] = func.tags;
       }
+
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.source(func.source);
+      func_item["x-medkit"] = ext.build();
+
       items.push_back(func_item);
     }
 
     json response;
     response["items"] = items;
-    response["total_count"] = functions.size();
+
+    // x-medkit for response-level metadata
+    XMedkit resp_ext;
+    resp_ext.add("total_count", functions.size());
+    response["x-medkit"] = resp_ext.build();
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
@@ -86,10 +102,10 @@ void FunctionHandlers::handle_get_function(const httplib::Request & req, httplib
 
     const auto & func = *func_opt;
 
-    // Build response with capabilities (SOVD entity/{id} pattern)
+    // Build response with SOVD-compliant structure
     json response;
     response["id"] = func.id;
-    response["name"] = func.name;
+    response["name"] = func.name.empty() ? func.id : func.name;
 
     if (!func.description.empty()) {
       response["description"] = func.description;
@@ -100,7 +116,12 @@ void FunctionHandlers::handle_get_function(const httplib::Request & req, httplib
     if (!func.tags.empty()) {
       response["tags"] = func.tags;
     }
-    response["source"] = func.source;
+
+    // SOVD capability URIs as flat fields at top level
+    std::string base_uri = "/api/v1/functions/" + func.id;
+    response["hosts"] = base_uri + "/hosts";
+    response["data"] = base_uri + "/data";
+    response["operations"] = base_uri + "/operations";
 
     // Build capabilities using CapabilityBuilder
     using Cap = CapabilityBuilder::Capability;
@@ -120,6 +141,11 @@ void FunctionHandlers::handle_get_function(const httplib::Request & req, httplib
       }
       response["_links"]["depends-on"] = depends_links;
     }
+
+    // x-medkit extension for ROS2-specific data
+    XMedkit ext;
+    ext.source(func.source);
+    response["x-medkit"] = ext.build();
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {

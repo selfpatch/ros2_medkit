@@ -33,29 +33,44 @@ void AppHandlers::handle_list_apps(const httplib::Request & req, httplib::Respon
     auto discovery = ctx_.node()->get_discovery_manager();
     auto apps = discovery->discover_apps();
 
+    // Build SOVD-compliant items array with EntityReference format
     json items = json::array();
     for (const auto & app : apps) {
       json app_item;
+      // SOVD required fields for EntityReference
       app_item["id"] = app.id;
-      app_item["name"] = app.name;
+      app_item["name"] = app.name.empty() ? app.id : app.name;
+      app_item["href"] = "/api/v1/apps/" + app.id;
+
+      // Optional SOVD fields
       if (!app.description.empty()) {
         app_item["description"] = app.description;
       }
       if (!app.tags.empty()) {
         app_item["tags"] = app.tags;
       }
-      if (app.is_online) {
-        app_item["is_online"] = true;
-      }
+
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.source(app.source).is_online(app.is_online);
       if (!app.component_id.empty()) {
-        app_item["component_id"] = app.component_id;
+        ext.component_id(app.component_id);
       }
+      if (app.bound_fqn) {
+        ext.ros2_node(*app.bound_fqn);
+      }
+      app_item["x-medkit"] = ext.build();
+
       items.push_back(app_item);
     }
 
     json response;
     response["items"] = items;
-    response["total_count"] = apps.size();
+
+    // x-medkit for response-level metadata
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
@@ -94,7 +109,7 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
 
     const auto & app = *app_opt;
 
-    // Build response with capabilities (SOVD entity/{id} pattern)
+    // Build response with SOVD-compliant structure
     json response;
     response["id"] = app.id;
     response["name"] = app.name;
@@ -108,15 +123,15 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
     if (!app.tags.empty()) {
       response["tags"] = app.tags;
     }
-    if (app.is_online) {
-      response["is_online"] = true;
-    }
-    if (app.bound_fqn) {
-      response["bound_fqn"] = *app.bound_fqn;
-    }
-    response["source"] = app.source;
 
-    // Build capabilities using CapabilityBuilder
+    // SOVD capability URIs as flat fields at top level
+    std::string base_uri = "/api/v1/apps/" + app.id;
+    response["data"] = base_uri + "/data";
+    response["operations"] = base_uri + "/operations";
+    response["configurations"] = base_uri + "/configurations";
+    // Apps don't have faults/subcomponents in SOVD model
+
+    // Build capabilities using CapabilityBuilder (for capability introspection)
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("apps", app.id, caps);
@@ -137,6 +152,17 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
       }
       response["_links"]["depends-on"] = depends_links;
     }
+
+    // x-medkit extension for ROS2-specific data
+    XMedkit ext;
+    ext.source(app.source).is_online(app.is_online);
+    if (app.bound_fqn) {
+      ext.ros2_node(*app.bound_fqn);
+    }
+    if (!app.component_id.empty()) {
+      ext.component_id(app.component_id);
+    }
+    response["x-medkit"] = ext.build();
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {

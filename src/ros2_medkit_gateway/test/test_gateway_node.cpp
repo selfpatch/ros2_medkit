@@ -376,7 +376,7 @@ TEST_F(TestGatewayNode, test_set_configuration_invalid_json) {
 TEST_F(TestGatewayNode, test_set_configuration_missing_value_field) {
   auto client = create_client();
 
-  // POST with valid JSON but missing 'value' field
+  // POST with valid JSON but missing 'data' field (SOVD-compliant)
   auto res = client.Put(std::string(API_BASE_PATH) + "/components/gateway_node/configurations/test_param",
                         R"({"name": "test_param"})", "application/json");
 
@@ -386,9 +386,9 @@ TEST_F(TestGatewayNode, test_set_configuration_missing_value_field) {
   auto json_response = nlohmann::json::parse(res->body);
   EXPECT_TRUE(json_response.contains("error_code"));
   EXPECT_TRUE(json_response.contains("message"));
-  // Error should mention missing 'value' field in message or parameters
-  EXPECT_TRUE(json_response["message"].get<std::string>().find("value") != std::string::npos ||
-              (json_response.contains("parameters") && json_response["parameters"].contains("details")));
+  // SOVD format expects 'data' field, error should mention it
+  EXPECT_TRUE(json_response["message"].get<std::string>().find("data") != std::string::npos ||
+              (json_response.contains("x-medkit") && json_response["x-medkit"].contains("details")));
 }
 
 TEST_F(TestGatewayNode, test_set_configuration_invalid_component_id) {

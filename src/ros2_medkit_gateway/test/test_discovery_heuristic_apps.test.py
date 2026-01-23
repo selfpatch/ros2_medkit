@@ -179,24 +179,21 @@ class TestHeuristicAppsDiscovery(unittest.TestCase):
         self.assertGreaterEqual(len(apps), self.MIN_EXPECTED_APPS)
 
         # Get detailed info for each app and verify source
-        # The list endpoint doesn't include source, need to get individual app
+        # SOVD-compliant: source is now in x-medkit extension
         for app in apps:
             app_id = app.get('id')
             if not app_id:
                 continue
-            try:
-                app_detail = self._get_json(f'/apps/{app_id}')
-                self.assertIn(
-                    'source', app_detail,
-                    f"App {app_id} missing 'source' field in detail view"
-                )
-                self.assertEqual(
-                    app_detail['source'], 'heuristic',
-                    f"App {app_id} has source={app_detail['source']}, expected 'heuristic'"
-                )
-            except requests.HTTPError:
-                # Skip apps that may have been discovered but are no longer available
-                pass
+            # Check source in list response's x-medkit
+            x_medkit = app.get('x-medkit', {})
+            self.assertIn(
+                'source', x_medkit,
+                f"App {app_id} missing 'source' field in x-medkit"
+            )
+            self.assertEqual(
+                x_medkit['source'], 'heuristic',
+                f"App {app_id} has source={x_medkit['source']}, expected 'heuristic'"
+            )
 
     def test_synthetic_components_created(self):
         """Test that synthetic components are created by namespace grouping."""
@@ -221,13 +218,16 @@ class TestHeuristicAppsDiscovery(unittest.TestCase):
         data = self._get_json('/apps')
         apps = data.get('items', [])
 
-        # Apps should have component_id field linking to parent
+        # SOVD-compliant: component_id is now in x-medkit extension
         for app in apps:
-            self.assertIn('component_id', app, f"App {app.get('id')} missing component_id")
+            x_medkit = app.get('x-medkit', {})
+            app_id = app.get('id')
+            self.assertIn('component_id', x_medkit, f'App {app_id} missing component_id')
             # Component ID should not be empty for grouped apps
-            if app.get('namespace_path', '').startswith('/'):
+            ros2 = x_medkit.get('ros2', {})
+            if ros2.get('namespace', '').startswith('/'):
                 self.assertTrue(
-                    len(app.get('component_id', '')) > 0,
+                    len(x_medkit.get('component_id', '')) > 0,
                     f"App {app.get('id')} has empty component_id"
                 )
 

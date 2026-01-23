@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
+#include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 using json = nlohmann::json;
 using httplib::StatusCode;
@@ -30,14 +31,41 @@ void AreaHandlers::handle_list_areas(const httplib::Request & req, httplib::Resp
   try {
     const auto cache = ctx_.node()->get_entity_cache();
 
+    // Build SOVD-compliant items array with EntityReference format
     json items = json::array();
     for (const auto & area : cache.areas) {
-      items.push_back(area.to_json());
+      json area_item;
+      // SOVD required fields for EntityReference
+      area_item["id"] = area.id;
+      area_item["name"] = area.name.empty() ? area.id : area.name;
+      area_item["href"] = "/api/v1/areas/" + area.id;
+
+      // Optional SOVD fields
+      if (!area.description.empty()) {
+        area_item["description"] = area.description;
+      }
+      if (!area.tags.empty()) {
+        area_item["tags"] = area.tags;
+      }
+
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.ros2_namespace(area.namespace_path);
+      if (!area.parent_area_id.empty()) {
+        ext.add("parent_area_id", area.parent_area_id);
+      }
+      area_item["x-medkit"] = ext.build();
+
+      items.push_back(area_item);
     }
 
     json response;
     response["items"] = items;
-    response["total_count"] = items.size();
+
+    // x-medkit for response-level metadata
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
@@ -73,14 +101,22 @@ void AreaHandlers::handle_get_area(const httplib::Request & req, httplib::Respon
 
     const auto & area = *area_opt;
 
+    // Build response with SOVD-compliant structure
     json response;
     response["id"] = area.id;
-    response["name"] = area.name;
-    response["type"] = area.type;
+    response["name"] = area.name.empty() ? area.id : area.name;
 
     if (!area.description.empty()) {
       response["description"] = area.description;
     }
+    if (!area.tags.empty()) {
+      response["tags"] = area.tags;
+    }
+
+    // SOVD capability URIs as flat fields at top level
+    std::string base_uri = "/api/v1/areas/" + area.id;
+    response["subareas"] = base_uri + "/subareas";
+    response["components"] = base_uri + "/components";
 
     // Build capabilities for areas
     using Cap = CapabilityBuilder::Capability;
@@ -94,6 +130,14 @@ void AreaHandlers::handle_get_area(const httplib::Request & req, httplib::Respon
       links.parent("/api/v1/areas/" + area.parent_area_id);
     }
     response["_links"] = links.build();
+
+    // x-medkit extension for ROS2-specific data
+    XMedkit ext;
+    ext.ros2_namespace(area.namespace_path);
+    if (!area.parent_area_id.empty()) {
+      ext.add("parent_area_id", area.parent_area_id);
+    }
+    response["x-medkit"] = ext.build();
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
@@ -138,17 +182,40 @@ void AreaHandlers::handle_area_components(const httplib::Request & req, httplib:
       return;
     }
 
-    // Filter components by area
+    // Filter components by area with SOVD-compliant format
     json items = json::array();
     for (const auto & component : cache.components) {
       if (component.area == area_id) {
-        items.push_back(component.to_json());
+        json comp_item;
+        // SOVD required fields for EntityReference
+        comp_item["id"] = component.id;
+        comp_item["name"] = component.name.empty() ? component.id : component.name;
+        comp_item["href"] = "/api/v1/components/" + component.id;
+
+        // Optional SOVD fields
+        if (!component.description.empty()) {
+          comp_item["description"] = component.description;
+        }
+
+        // x-medkit extension for ROS2-specific data
+        XMedkit ext;
+        ext.source(component.source);
+        if (!component.namespace_path.empty()) {
+          ext.ros2_namespace(component.namespace_path);
+        }
+        comp_item["x-medkit"] = ext.build();
+
+        items.push_back(comp_item);
       }
     }
 
     json response;
     response["items"] = items;
-    response["total_count"] = items.size();
+
+    // x-medkit for response-level metadata
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
@@ -189,14 +256,24 @@ void AreaHandlers::handle_get_subareas(const httplib::Request & req, httplib::Re
     for (const auto & subarea : subareas) {
       json item;
       item["id"] = subarea.id;
-      item["name"] = subarea.name;
+      item["name"] = subarea.name.empty() ? subarea.id : subarea.name;
       item["href"] = "/api/v1/areas/" + subarea.id;
+
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.ros2_namespace(subarea.namespace_path);
+      item["x-medkit"] = ext.build();
+
       items.push_back(item);
     }
 
     json response;
     response["items"] = items;
-    response["total_count"] = items.size();
+
+    // x-medkit for response-level metadata
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
 
     // HATEOAS links
     json links;
@@ -244,14 +321,27 @@ void AreaHandlers::handle_get_related_components(const httplib::Request & req, h
     for (const auto & comp : components) {
       json item;
       item["id"] = comp.id;
-      item["name"] = comp.name;
+      item["name"] = comp.name.empty() ? comp.id : comp.name;
       item["href"] = "/api/v1/components/" + comp.id;
+
+      // x-medkit extension for ROS2-specific data
+      XMedkit ext;
+      ext.source(comp.source);
+      if (!comp.namespace_path.empty()) {
+        ext.ros2_namespace(comp.namespace_path);
+      }
+      item["x-medkit"] = ext.build();
+
       items.push_back(item);
     }
 
     json response;
     response["items"] = items;
-    response["total_count"] = items.size();
+
+    // x-medkit for response-level metadata
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
 
     // HATEOAS links
     json links;

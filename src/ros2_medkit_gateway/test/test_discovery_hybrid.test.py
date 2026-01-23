@@ -327,7 +327,8 @@ class TestDiscoveryHybridMode(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         component = response.json()
-        self.assertEqual(component['type'], 'controller')
+        # SOVD-compliant: type is in x-medkit extension
+        self.assertEqual(component['x-medkit']['type'], 'controller')
 
     def test_component_area_relationship(self):
         """
@@ -426,10 +427,12 @@ class TestDiscoveryHybridMode(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         component = response.json()
-        self.assertIn('capabilities', component)
+        # SOVD-compliant: capabilities is in x-medkit extension
+        self.assertIn('x-medkit', component)
+        self.assertIn('capabilities', component['x-medkit'])
 
         # Should have depends-on capability
-        cap_hrefs = [c.get('href', '') for c in component['capabilities']]
+        cap_hrefs = [c.get('href', '') for c in component['x-medkit']['capabilities']]
         self.assertTrue(
             any('/depends-on' in href for href in cap_hrefs),
             f'Expected depends-on capability in: {cap_hrefs}'
@@ -479,10 +482,10 @@ class TestDiscoveryHybridMode(unittest.TestCase):
         data = response.json()
         apps_by_id = {a['id']: a for a in data['items']}
 
-        # At least some apps should be online
+        # SOVD-compliant: is_online is in x-medkit extension
         online_apps = [
             app_id for app_id, app in apps_by_id.items()
-            if app.get('is_online', False)
+            if app.get('x-medkit', {}).get('is_online', False)
         ]
 
         self.assertGreater(

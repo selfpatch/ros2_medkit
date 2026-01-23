@@ -180,7 +180,7 @@ class TestDiscoveryManifestMode(unittest.TestCase):
 
         data = response.json()
         self.assertIn('items', data)
-        self.assertIn('total_count', data)
+        self.assertIn('total_count', data.get('x-medkit', {}))
 
         # Manifest defines: powertrain, chassis, body, perception (top-level)
         # Plus subareas: engine, brakes, door, front-left-door, lights, lidar
@@ -275,7 +275,7 @@ class TestDiscoveryManifestMode(unittest.TestCase):
 
         data = response.json()
         self.assertIn('items', data)
-        self.assertIn('total_count', data)
+        self.assertIn('total_count', data.get('x-medkit', {}))
 
         component_ids = [c['id'] for c in data['items']]
 
@@ -297,7 +297,9 @@ class TestDiscoveryManifestMode(unittest.TestCase):
         component = response.json()
         self.assertEqual(component['id'], 'engine-ecu')
         self.assertEqual(component['name'], 'Engine ECU')
-        self.assertIn('capabilities', component)
+        # SOVD-compliant: capabilities is in x-medkit extension
+        self.assertIn('x-medkit', component)
+        self.assertIn('capabilities', component['x-medkit'])
         self.assertIn('_links', component)
 
     def test_get_component_not_found(self):
@@ -345,7 +347,7 @@ class TestDiscoveryManifestMode(unittest.TestCase):
 
         data = response.json()
         self.assertIn('items', data)
-        self.assertIn('total_count', data)
+        self.assertIn('total_count', data.get('x-medkit', {}))
 
         app_ids = [a['id'] for a in data['items']]
 
@@ -458,7 +460,7 @@ class TestDiscoveryManifestMode(unittest.TestCase):
 
         data = response.json()
         self.assertIn('items', data)
-        self.assertIn('total_count', data)
+        self.assertIn('total_count', data.get('x-medkit', {}))
 
         # Apps hosted on temp-sensor-hw should be returned
         app_ids = [a['id'] for a in data['items']]
@@ -494,7 +496,7 @@ class TestDiscoveryManifestMode(unittest.TestCase):
 
         data = response.json()
         self.assertIn('items', data)
-        self.assertIn('total_count', data)
+        self.assertIn('total_count', data.get('x-medkit', {}))
 
         function_ids = [f['id'] for f in data['items']]
 

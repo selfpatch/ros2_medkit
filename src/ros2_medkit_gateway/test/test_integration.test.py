@@ -514,16 +514,16 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         # Verify response structure - all components should have required fields
         for component in components:
             self.assertIn('id', component)
-            # namespace may be 'namespace' or 'namespace_path' depending on source
+            self.assertIn('name', component)
+            self.assertIn('href', component)
+            # x-medkit contains ROS2-specific fields
+            self.assertIn('x-medkit', component)
+            x_medkit = component['x-medkit']
+            # namespace may be in x-medkit.ros2.namespace
             self.assertTrue(
-                'namespace' in component or 'namespace_path' in component,
-                f"Component {component['id']} should have namespace field"
+                'ros2' in x_medkit and 'namespace' in x_medkit.get('ros2', {}),
+                f"Component {component['id']} should have namespace in x-medkit.ros2"
             )
-            self.assertIn('fqn', component)
-            self.assertIn('type', component)
-            self.assertIn('area', component)
-            # Synthetic components have type 'ComponentGroup', topic-based have 'Component'
-            self.assertIn(component['type'], ['Component', 'ComponentGroup'])
 
         # Verify expected synthetic component IDs are present
         # With heuristic discovery, components are synthetic groups created
@@ -569,11 +569,18 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIsInstance(components, list)
         self.assertGreater(len(components), 0)
 
-        # All components should belong to powertrain area
+        # All components should have SOVD-compliant EntityReference format with x-medkit
         for component in components:
-            self.assertEqual(component['area'], 'powertrain')
             self.assertIn('id', component)
-            self.assertIn('namespace', component)
+            self.assertIn('name', component)
+            self.assertIn('href', component)
+            self.assertIn('x-medkit', component)
+            # Verify namespace is in x-medkit.ros2
+            x_medkit = component['x-medkit']
+            self.assertTrue(
+                'ros2' in x_medkit and 'namespace' in x_medkit.get('ros2', {}),
+                'Component should have namespace in x-medkit.ros2'
+            )
 
         # Verify the synthetic 'powertrain' component exists
         component_ids = [comp['id'] for comp in components]
@@ -597,8 +604,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Area not found')
-        self.assertIn('area_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('area_id'), 'nonexistent')
+        self.assertIn('area_id', data['x-medkit'])
+        self.assertEqual(data['x-medkit'].get('area_id'), 'nonexistent')
 
         print('✓ Nonexistent area error test passed')
 
@@ -621,10 +628,15 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             for topic_data in items:
                 self.assertIn('id', topic_data)
                 self.assertIn('name', topic_data)
-                self.assertIn('direction', topic_data)
-                self.assertIn(topic_data['direction'], ['publish', 'subscribe'])
+                # direction is now in x-medkit.ros2
+                self.assertIn('x-medkit', topic_data)
+                x_medkit = topic_data['x-medkit']
+                self.assertIn('ros2', x_medkit)
+                self.assertIn('direction', x_medkit['ros2'])
+                direction = x_medkit['ros2']['direction']
+                self.assertIn(direction, ['publish', 'subscribe'])
                 print(
-                    f"  - Topic: {topic_data['name']} ({topic_data['direction']})"
+                    f"  - Topic: {topic_data['name']} ({direction})"
                 )
 
         print(f'✓ Engine app data test passed: {len(items)} topics')
@@ -646,7 +658,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             for topic_data in items:
                 self.assertIn('id', topic_data)
                 self.assertIn('name', topic_data)
-                self.assertIn('direction', topic_data)
+                # direction is now in x-medkit.ros2
+                self.assertIn('x-medkit', topic_data)
+                x_medkit = topic_data['x-medkit']
+                self.assertIn('ros2', x_medkit)
+                self.assertIn('direction', x_medkit['ros2'])
 
         print(f'✓ Brakes app data test passed: {len(items)} topics')
 
@@ -667,7 +683,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             for topic_data in items:
                 self.assertIn('id', topic_data)
                 self.assertIn('name', topic_data)
-                self.assertIn('direction', topic_data)
+                # direction is now in x-medkit.ros2
+                self.assertIn('x-medkit', topic_data)
+                x_medkit = topic_data['x-medkit']
+                self.assertIn('ros2', x_medkit)
+                self.assertIn('direction', x_medkit['ros2'])
 
         print(f'✓ Door app data test passed: {len(items)} topics')
 
@@ -687,12 +707,15 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             first_item = items[0]
             self.assertIn('id', first_item, "Each item should have 'id' field")
             self.assertIn('name', first_item, "Each item should have 'name' field")
-            self.assertIn('direction', first_item, "Each item should have 'direction' field")
-            self.assertIn('href', first_item, "Each item should have 'href' field")
+            # direction and href moved to x-medkit for SOVD compliance
+            self.assertIn('x-medkit', first_item, "Each item should have 'x-medkit' field")
+            x_medkit = first_item['x-medkit']
+            self.assertIn('ros2', x_medkit, 'x-medkit should have ros2 section')
+            self.assertIn('direction', x_medkit['ros2'], 'x-medkit.ros2 should have direction')
             self.assertIsInstance(
                 first_item['name'], str, "'name' should be a string"
             )
-            self.assertIn(first_item['direction'], ['publish', 'subscribe'])
+            self.assertIn(x_medkit['ros2']['direction'], ['publish', 'subscribe'])
 
         print('✓ App data structure test passed')
 
@@ -710,8 +733,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'App not found')
-        self.assertIn('app_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('app_id'), 'nonexistent_app')
+        self.assertIn('app_id', data['x-medkit'])
+        self.assertEqual(data['x-medkit'].get('app_id'), 'nonexistent_app')
 
         print('✓ Nonexistent app error test passed')
 
@@ -764,7 +787,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             data = response.json()
             self.assertIn('error_code', data)
             self.assertEqual(data['message'], 'Invalid app ID')
-            self.assertIn('details', data.get('parameters', data))
+            self.assertIn('details', data['x-medkit'])
 
         print('✓ Invalid app ID special characters test passed')
 
@@ -794,7 +817,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             data = response.json()
             self.assertIn('error_code', data)
             self.assertEqual(data['message'], 'Invalid area ID')
-            self.assertIn('details', data.get('parameters', data))
+            self.assertIn('details', data['x-medkit'])
 
         print('✓ Invalid area ID special characters test passed')
 
@@ -871,17 +894,19 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('topic', data)
-        self.assertIn('timestamp', data)
-        self.assertIn('status', data)
-        self.assertEqual(data['topic'], '/powertrain/engine/temperature')
-        self.assertIsInstance(data['timestamp'], int)
-        self.assertIn(data['status'], ['data', 'metadata_only'])
-        if data['status'] == 'data':
-            self.assertIn('data', data)
-            self.assertIsInstance(data['data'], dict)
+        # SOVD ReadValue format with x-medkit extension
+        self.assertIn('id', data)
+        self.assertIn('data', data)
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertIn('ros2', x_medkit)
+        self.assertEqual(x_medkit['ros2']['topic'], '/powertrain/engine/temperature')
+        self.assertIn('timestamp', x_medkit)
+        self.assertIn('status', x_medkit)
+        self.assertIsInstance(x_medkit['timestamp'], int)
+        self.assertIn(x_medkit['status'], ['data', 'metadata_only'])
 
-        print(f"✓ Temperature test passed: {data['topic']} ({data['status']})")
+        print(f"✓ Temperature test passed: {x_medkit['ros2']['topic']} ({x_medkit['status']})")
 
     def test_18_component_topic_rpm(self):
         """
@@ -899,17 +924,19 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('topic', data)
-        self.assertIn('timestamp', data)
-        self.assertIn('status', data)
-        self.assertEqual(data['topic'], '/powertrain/engine/rpm')
-        self.assertIn(data['status'], ['data', 'metadata_only'])
-        if data['status'] == 'data':
-            self.assertIn('data', data)
+        # SOVD ReadValue format with x-medkit extension
+        self.assertIn('id', data)
+        self.assertIn('data', data)
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertIn('ros2', x_medkit)
+        self.assertEqual(x_medkit['ros2']['topic'], '/powertrain/engine/rpm')
+        self.assertIn('timestamp', x_medkit)
+        self.assertIn('status', x_medkit)
+        self.assertIn(x_medkit['status'], ['data', 'metadata_only'])
 
-        print(
-            f"✓ Component topic RPM test passed: {data['topic']} (status: {data['status']})"
-        )
+        topic = x_medkit['ros2']['topic']
+        print(f'✓ Component topic RPM test passed: {topic} (status: {x_medkit["status"]})')
 
     def test_19_component_topic_pressure(self):
         """
@@ -927,15 +954,18 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('topic', data)
-        self.assertIn('timestamp', data)
-        self.assertIn('status', data)
-        self.assertEqual(data['topic'], '/chassis/brakes/pressure')
-        self.assertIn(data['status'], ['data', 'metadata_only'])
-        if data['status'] == 'data':
-            self.assertIn('data', data)
+        # SOVD ReadValue format with x-medkit extension
+        self.assertIn('id', data)
+        self.assertIn('data', data)
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertIn('ros2', x_medkit)
+        self.assertEqual(x_medkit['ros2']['topic'], '/chassis/brakes/pressure')
+        self.assertIn('timestamp', x_medkit)
+        self.assertIn('status', x_medkit)
+        self.assertIn(x_medkit['status'], ['data', 'metadata_only'])
 
-        print(f"✓ Pressure test passed: {data['topic']} ({data['status']})")
+        print(f"✓ Pressure test passed: {x_medkit['ros2']['topic']} ({x_medkit['status']})")
 
     def test_20_component_topic_data_structure(self):
         """
@@ -953,36 +983,43 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        # Verify all required fields
-        self.assertIn('topic', data, "Response should have 'topic' field")
-        self.assertIn('timestamp', data, "Response should have 'timestamp' field")
-        self.assertIn('status', data, "Response should have 'status' field")
+        # Verify SOVD ReadValue structure with x-medkit extension
+        self.assertIn('id', data, "Response should have 'id' field")
+        self.assertIn('data', data, "Response should have 'data' field")
+        self.assertIn('x-medkit', data, "Response should have 'x-medkit' field")
+
+        # Verify x-medkit fields
+        x_medkit = data['x-medkit']
+        self.assertIn('ros2', x_medkit, 'x-medkit should have ros2 section')
+        self.assertIn('topic', x_medkit['ros2'], 'x-medkit.ros2 should have topic')
+        self.assertIn('timestamp', x_medkit, 'x-medkit should have timestamp')
+        self.assertIn('status', x_medkit, 'x-medkit should have status')
 
         # Verify field types
-        self.assertIsInstance(data['topic'], str, "'topic' should be a string")
+        self.assertIsInstance(x_medkit['ros2']['topic'], str, "'ros2.topic' should be a string")
         self.assertIsInstance(
-            data['timestamp'], int, "'timestamp' should be an integer (nanoseconds)"
+            x_medkit['timestamp'], int, "'timestamp' should be an integer (nanoseconds)"
         )
         # Status can be 'data' or 'metadata_only'
-        self.assertIn(data['status'], ['data', 'metadata_only'])
-        if data['status'] == 'data':
-            self.assertIn(
-                'data', data, "Response with status=data should have 'data' field"
-            )
-            self.assertIsInstance(data['data'], dict, "'data' should be an object")
+        self.assertIn(x_medkit['status'], ['data', 'metadata_only'])
 
         # Verify topic path format
         self.assertTrue(
-            data['topic'].startswith('/'),
+            x_medkit['ros2']['topic'].startswith('/'),
             "Topic should be an absolute path starting with '/'",
         )
 
         print('✓ Component topic data structure test passed')
 
-    def test_21_component_nonexistent_topic_error(self):
+    def test_21_component_nonexistent_topic_metadata_only(self):
         """
-        Test GET /components/{component_id}/data/{topic_name} returns 404 for nonexistent topic.
+        Test nonexistent topic returns 200 with metadata_only status.
 
+        Test GET /components/{component_id}/data/{topic_name} returns 200 with
+        metadata_only status for nonexistent topics.
+
+        The gateway returns metadata about the topic even if no data is available.
+        This allows discovery of topic availability without errors.
         Uses synthetic 'powertrain' component.
 
         @verifies REQ_INTEROP_019
@@ -992,18 +1029,21 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         response = requests.get(
             f'{self.BASE_URL}/components/powertrain/data/{topic_path}', timeout=10
         )
-        self.assertEqual(response.status_code, 404)
+        # Returns 200 with metadata_only status for nonexistent topics
+        self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('error_code', data)
-        self.assertEqual(data['message'], 'Topic not found')
-        self.assertIn('component_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('component_id'), 'powertrain')
-        self.assertIn('topic_name', data.get('parameters', data))
-        # topic_name in response is the decoded path (from URL)
-        self.assertEqual(data.get('parameters', data).get('topic_name'), 'some/nonexistent/topic')
+        # SOVD ReadValue format with x-medkit extension
+        self.assertIn('id', data)
+        self.assertIn('data', data)
+        self.assertIn('x-medkit', data)
 
-        print('✓ Nonexistent topic error test passed')
+        x_medkit = data['x-medkit']
+        self.assertEqual(x_medkit['entity_id'], 'powertrain')
+        # Nonexistent topics return metadata_only status
+        self.assertEqual(x_medkit['status'], 'metadata_only')
+
+        print('✓ Nonexistent topic metadata_only test passed')
 
     def test_22_component_topic_nonexistent_component_error(self):
         """
@@ -1022,8 +1062,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Component not found')
-        self.assertIn('component_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('component_id'), 'nonexistent_component')
+        self.assertIn('component_id', data['x-medkit'])
+        self.assertEqual(data['x-medkit'].get('component_id'), 'nonexistent_component')
 
         print('✓ Component topic nonexistent component error test passed')
 
@@ -1045,7 +1085,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertEqual(data['topic'], '/powertrain/engine/temperature')
+        # Topic is now in x-medkit.ros2.topic for SOVD compliance
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertIn('ros2', x_medkit)
+        self.assertEqual(x_medkit['ros2']['topic'], '/powertrain/engine/temperature')
 
         print('✓ Percent-encoded slashes test passed')
 
@@ -1100,19 +1144,17 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('topic', data)
-        self.assertIn('type', data)
-        self.assertIn('status', data)
-        self.assertIn('timestamp', data)
-        self.assertIn('component_id', data.get('parameters', data))
-        self.assertIn('topic_name', data.get('parameters', data))
-        self.assertEqual(data['status'], 'published')
-        self.assertEqual(data['type'], 'std_msgs/msg/Float32')
-        self.assertEqual(data.get('parameters', data).get('component_id'), 'chassis')
-        # topic_name is the decoded path from URL
-        self.assertEqual(data.get('parameters', data).get('topic_name'), 'chassis/brakes/command')
+        # SOVD write response format with x-medkit extension
+        self.assertIn('id', data)
+        self.assertIn('data', data)
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertIn('ros2', x_medkit)
+        self.assertEqual(x_medkit['ros2']['topic'], '/chassis/brakes/command')
+        self.assertEqual(x_medkit['ros2']['type'], 'std_msgs/msg/Float32')
+        self.assertEqual(x_medkit['status'], 'published')
 
-        print(f"✓ Publish brake command test passed: {data['topic']}")
+        print(f"✓ Publish brake command test passed: {x_medkit['ros2']['topic']}")
 
     def test_26_publish_validation_missing_type(self):
         """
@@ -1205,7 +1247,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Component not found')
-        self.assertEqual(data.get('parameters', data).get('component_id'), 'nonexistent_component')
+        self.assertEqual(data['x-medkit'].get('component_id'), 'nonexistent_component')
 
         print('✓ Publish nonexistent component test passed')
 
@@ -1253,8 +1295,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('status', data)
         self.assertEqual(data['status'], 'success')
-        self.assertIn('app_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('app_id'), 'calibration')
+        # Service call response has app_id/component_id at top level
+        self.assertIn('app_id', data)
+        self.assertEqual(data['app_id'], 'calibration')
         self.assertIn('operation', data)
         self.assertEqual(data['operation'], 'calibrate')
         self.assertIn('response', data)
@@ -1309,7 +1352,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Entity not found')
-        self.assertEqual(data.get('parameters', data).get('entity_id'), 'nonexistent_app')
+        self.assertEqual(data['x-medkit'].get('entity_id'), 'nonexistent_app')
 
         print('✓ Operation call nonexistent entity test passed')
 
@@ -1425,6 +1468,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         ops = ops_data['items']
 
         # Find the calibrate operation
+        # kind is now in x-medkit.ros2.kind for SOVD compliance
         calibrate_op = None
         for op in ops:
             if op['name'] == 'calibrate':
@@ -1432,12 +1476,12 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                 break
 
         self.assertIsNotNone(calibrate_op, 'Calibrate operation should be listed')
-        self.assertIn('kind', calibrate_op)
-        self.assertEqual(calibrate_op['kind'], 'service')
-        self.assertIn('type', calibrate_op)
-        self.assertEqual(calibrate_op['type'], 'std_srvs/srv/Trigger')
-        self.assertIn('path', calibrate_op)
-        self.assertEqual(calibrate_op['path'], '/powertrain/engine/calibrate')
+        self.assertIn('x-medkit', calibrate_op)
+        x_medkit = calibrate_op['x-medkit']
+        self.assertIn('ros2', x_medkit)
+        self.assertEqual(x_medkit['ros2']['kind'], 'service')
+        self.assertEqual(x_medkit['ros2']['type'], 'std_srvs/srv/Trigger')
+        self.assertEqual(x_medkit['ros2']['service'], '/powertrain/engine/calibrate')
 
         print('✓ Operations listed in app discovery test passed')
 
@@ -1484,8 +1528,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(data['status'], 'success')
         self.assertIn('kind', data)
         self.assertEqual(data['kind'], 'action')
-        self.assertIn('app_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('app_id'), 'long_calibration')
+        # Action call response has app_id/component_id at top level
+        self.assertIn('app_id', data)
+        self.assertEqual(data['app_id'], 'long_calibration')
         self.assertIn('operation', data)
         self.assertEqual(data['operation'], 'long_calibration')
         self.assertIn('goal_id', data)
@@ -1627,16 +1672,21 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         ops = ops_data['items']
 
         # Find the long_calibration action operation
+        # kind is now in x-medkit.ros2.kind for SOVD compliance
         action_op = None
         for op in ops:
-            if op['name'] == 'long_calibration' and op['kind'] == 'action':
-                action_op = op
-                break
+            if op['name'] == 'long_calibration':
+                x_medkit = op.get('x-medkit', {})
+                ros2 = x_medkit.get('ros2', {})
+                if ros2.get('kind') == 'action':
+                    action_op = op
+                    break
 
         self.assertIsNotNone(action_op, 'long_calibration action should be listed')
-        self.assertEqual(action_op['kind'], 'action')
-        self.assertEqual(action_op['type'], 'example_interfaces/action/Fibonacci')
-        self.assertEqual(action_op['path'], '/powertrain/engine/long_calibration')
+        x_medkit = action_op['x-medkit']
+        self.assertEqual(x_medkit['ros2']['kind'], 'action')
+        self.assertEqual(x_medkit['ros2']['type'], 'example_interfaces/action/Fibonacci')
+        self.assertEqual(x_medkit['ros2']['action'], '/powertrain/engine/long_calibration')
 
         print('✓ Action listed in app operations test passed')
 
@@ -1691,27 +1741,29 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('app_id', data)
-        self.assertEqual(data['app_id'], 'temp_sensor')
-        self.assertIn('node_name', data)
-        self.assertIn('parameters', data)
-        self.assertIsInstance(data['parameters'], list)
+        # SOVD-compliant items array format with x-medkit extension
+        self.assertIn('items', data)
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertEqual(x_medkit['entity_id'], 'temp_sensor')
+        self.assertIn('parameters', x_medkit)
+        self.assertIsInstance(x_medkit['parameters'], list)
 
         # Verify we have parameters from the demo node
-        param_names = [p['name'] for p in data['parameters']]
+        param_names = [p['name'] for p in x_medkit['parameters']]
         # The engine_temp_sensor should have these parameters we just added
         self.assertIn('publish_rate', param_names)
         self.assertIn('min_temp', param_names)
         self.assertIn('max_temp', param_names)
         self.assertIn('temp_step', param_names)
 
-        # Verify parameter structure
-        for param in data['parameters']:
+        # Verify parameter structure in x-medkit
+        for param in x_medkit['parameters']:
             self.assertIn('name', param)
             self.assertIn('value', param)
             self.assertIn('type', param)
 
-        print(f'✓ List configurations test passed: {len(data["parameters"])} parameters')
+        print(f'✓ List configurations test passed: {len(x_medkit["parameters"])} parameters')
 
     def test_46_get_configuration(self):
         """
@@ -1726,11 +1778,16 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('app_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('app_id'), 'temp_sensor')
-        self.assertIn('parameter', data.get('parameters', data))
+        # SOVD ReadValue format with x-medkit extension
+        self.assertIn('id', data)
+        self.assertEqual(data['id'], 'publish_rate')
+        self.assertIn('data', data)
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertEqual(x_medkit['entity_id'], 'temp_sensor')
+        self.assertIn('parameter', x_medkit)
 
-        param = data['parameter']
+        param = x_medkit['parameter']
         self.assertIn('name', param)
         self.assertEqual(param['name'], 'publish_rate')
         self.assertIn('value', param)
@@ -1747,22 +1804,26 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_024
         """
-        # Set a new value
+        # Set a new value using SOVD "data" field
         response = requests.put(
             f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
-            json={'value': 80.0},
+            json={'data': 80.0},
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('status', data)
-        self.assertEqual(data['status'], 'success')
-        self.assertIn('app_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('app_id'), 'temp_sensor')
-        self.assertIn('parameter', data.get('parameters', data))
+        # SOVD write response format with x-medkit extension
+        self.assertIn('id', data)
+        self.assertEqual(data['id'], 'min_temp')
+        self.assertIn('data', data)
+        self.assertEqual(data['data'], 80.0)
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertEqual(x_medkit['entity_id'], 'temp_sensor')
+        self.assertIn('parameter', x_medkit)
 
-        param = data['parameter']
+        param = x_medkit['parameter']
         self.assertIn('name', param)
         self.assertEqual(param['name'], 'min_temp')
         self.assertIn('value', param)
@@ -1777,12 +1838,12 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         )
         self.assertEqual(verify_response.status_code, 200)
         verify_data = verify_response.json()
-        self.assertEqual(verify_data['parameter']['value'], 80.0)
+        self.assertEqual(verify_data['x-medkit']['parameter']['value'], 80.0)
 
-        # Reset the value back to default
+        # Reset the value back to default using SOVD "data" field
         requests.put(
             f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
-            json={'value': 85.0},
+            json={'data': 85.0},
             timeout=10
         )
 
@@ -1797,27 +1858,20 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         @verifies REQ_INTEROP_025
         """
-        # First, change the value from default
+        # First, change the value from default using SOVD "data" field
         set_response = requests.put(
             f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
-            json={'value': -50.0},
+            json={'data': -50.0},
             timeout=10
         )
         self.assertEqual(set_response.status_code, 200)
 
-        # Now reset to default via DELETE
+        # Now reset to default via DELETE - SOVD returns 204 No Content
         response = requests.delete(
             f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
             timeout=10
         )
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()
-        self.assertIn('reset_to_default', data)
-        self.assertTrue(data['reset_to_default'])
-        self.assertIn('name', data)
-        self.assertEqual(data['name'], 'min_temp')
-        self.assertIn('value', data)  # The value after reset
+        self.assertEqual(response.status_code, 204)
 
         # Verify the value was actually reset by reading it
         get_response = requests.get(
@@ -1826,10 +1880,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         )
         self.assertEqual(get_response.status_code, 200)
         get_data = get_response.json()
-        # The value should match what DELETE returned
-        self.assertEqual(get_data['parameter']['value'], data['value'])
+        # The value should be reset to default (85.0)
+        reset_value = get_data['x-medkit']['parameter']['value']
 
-        print(f'✓ Delete configuration (reset to default) test passed: value={data["value"]}')
+        print(f'✓ Delete configuration (reset to default) test passed: value={reset_value}')
 
     def test_49_configurations_nonexistent_app(self):
         """
@@ -1846,8 +1900,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Entity not found')
-        self.assertIn('entity_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('entity_id'), 'nonexistent_app')
+        self.assertIn('entity_id', data['x-medkit'])
+        self.assertEqual(data['x-medkit'].get('entity_id'), 'nonexistent_app')
 
         print('✓ Configurations nonexistent app test passed')
 
@@ -1865,8 +1919,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertIn('param_name', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('param_name'), 'nonexistent_param')
+        # SOVD error format: parameters in x-medkit extension
+        self.assertIn('x-medkit', data)
+        # Handler uses 'id' as the SOVD-compliant field name for the parameter
+        self.assertEqual(data['x-medkit'].get('id'), 'nonexistent_param')
 
         print('✓ Configuration nonexistent parameter test passed')
 
@@ -1885,7 +1941,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertIn('value', data['message'].lower())
+        # SOVD format expects "data" field
+        self.assertIn('data', data['message'].lower())
 
         print('✓ Set configuration missing value test passed')
 
@@ -1923,17 +1980,22 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         ops = ops_data['items']
 
         # Find the calibrate service operation
+        # kind is now in x-medkit.ros2.kind for SOVD compliance
         calibrate_op = None
         for op in ops:
-            if op['name'] == 'calibrate' and op['kind'] == 'service':
-                calibrate_op = op
-                break
+            if op['name'] == 'calibrate':
+                x_medkit = op.get('x-medkit', {})
+                ros2 = x_medkit.get('ros2', {})
+                if ros2.get('kind') == 'service':
+                    calibrate_op = op
+                    break
 
         self.assertIsNotNone(calibrate_op, 'Calibrate service should be listed')
 
-        # Verify type_info is present with request/response schemas
-        self.assertIn('type_info', calibrate_op, 'Service should have type_info')
-        type_info = calibrate_op['type_info']
+        # Verify type_info is present in x-medkit with request/response schemas
+        x_medkit = calibrate_op['x-medkit']
+        self.assertIn('type_info', x_medkit, 'Service should have type_info in x-medkit')
+        type_info = x_medkit['type_info']
 
         self.assertIn('request', type_info, 'Service type_info should have request')
         self.assertIn('response', type_info, 'Service type_info should have response')
@@ -1961,17 +2023,22 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         ops = ops_data['items']
 
         # Find the long_calibration action operation
+        # kind is now in x-medkit.ros2.kind for SOVD compliance
         action_op = None
         for op in ops:
-            if op['name'] == 'long_calibration' and op['kind'] == 'action':
-                action_op = op
-                break
+            if op['name'] == 'long_calibration':
+                x_medkit = op.get('x-medkit', {})
+                ros2 = x_medkit.get('ros2', {})
+                if ros2.get('kind') == 'action':
+                    action_op = op
+                    break
 
         self.assertIsNotNone(action_op, 'Long calibration action should be listed')
 
-        # Verify type_info is present with goal/result/feedback schemas
-        self.assertIn('type_info', action_op, 'Action should have type_info')
-        type_info = action_op['type_info']
+        # Verify type_info is present in x-medkit with goal/result/feedback schemas
+        x_medkit = action_op['x-medkit']
+        self.assertIn('type_info', x_medkit, 'Action should have type_info in x-medkit')
+        type_info = x_medkit['type_info']
 
         self.assertIn('goal', type_info, 'Action type_info should have goal')
         self.assertIn('result', type_info, 'Action type_info should have result')
@@ -2046,14 +2113,16 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('app_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('app_id'), 'temp_sensor')
-        self.assertIn('source_id', data)
-        self.assertIn('faults', data)
-        self.assertIsInstance(data['faults'], list)
-        self.assertIn('count', data)
+        # SOVD-compliant format with items array and x-medkit extension
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertEqual(x_medkit['entity_id'], 'temp_sensor')
+        self.assertIn('source_id', x_medkit)
+        self.assertIn('count', x_medkit)
 
-        print(f'✓ List faults response structure test passed: {data["count"]} faults')
+        print(f'✓ List faults response structure test passed: {x_medkit["count"]} faults')
 
     def test_57_faults_nonexistent_component(self):
         """
@@ -2070,8 +2139,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Entity not found')
-        self.assertIn('entity_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('entity_id'), 'nonexistent_component')
+        # SOVD error format: parameters in x-medkit extension
+        self.assertIn('x-medkit', data)
+        self.assertEqual(data['x-medkit'].get('entity_id'), 'nonexistent_component')
 
         print('✓ Faults nonexistent component test passed')
 
@@ -2089,8 +2159,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertIn('fault_code', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('fault_code'), 'NONEXISTENT_FAULT')
+        # SOVD error format: parameters in x-medkit extension
+        self.assertIn('x-medkit', data)
+        self.assertEqual(data['x-medkit'].get('fault_code'), 'NONEXISTENT_FAULT')
 
         print('✓ Get nonexistent fault test passed')
 
@@ -2108,13 +2179,16 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('faults', data)
-        self.assertIsInstance(data['faults'], list)
-        self.assertIn('count', data)
-        self.assertIsInstance(data['count'], int)
-        self.assertEqual(data['count'], len(data['faults']))
+        # SOVD-compliant format with items array and x-medkit extension
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertIn('count', x_medkit)
+        self.assertIsInstance(x_medkit['count'], int)
+        self.assertEqual(x_medkit['count'], len(data['items']))
 
-        print(f'✓ List all faults globally test passed: {data["count"]} faults')
+        print(f'✓ List all faults globally test passed: {x_medkit["count"]} faults')
 
     def test_60_list_all_faults_with_status_filter(self):
         """Test GET /faults?status={status} filters faults by status."""
@@ -2126,8 +2200,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        self.assertIn('faults', data)
-        self.assertIn('count', data)
+        # SOVD-compliant format with items array and x-medkit extension
+        self.assertIn('items', data)
+        self.assertIn('x-medkit', data)
+        self.assertIn('count', data['x-medkit'])
 
         # Test other valid status values
         for status in ['pending', 'confirmed', 'cleared']:
@@ -2137,7 +2213,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 200)
 
-        print(f'✓ List all faults with status filter test passed: {data["count"]} faults')
+        count = data['x-medkit']['count']
+        print(f'✓ List all faults with status filter test passed: {count} faults')
 
     def test_61_list_faults_invalid_status_returns_400(self):
         """Test GET /faults?status=invalid returns 400 Bad Request."""
@@ -2150,14 +2227,15 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Invalid status parameter value')
-        # Check parameters contain expected fields
-        params = data.get('parameters', {})
-        self.assertIn('allowed_values', params)
-        self.assertIn('pending', params['allowed_values'])  # Should mention valid values
-        self.assertIn('parameter', params)
-        self.assertEqual(params.get('parameter'), 'status')
-        self.assertIn('value', params)
-        self.assertEqual(params['value'], 'invalid_status')
+        # Check parameters in x-medkit extension
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertIn('allowed_values', x_medkit)
+        self.assertIn('pending', x_medkit['allowed_values'])  # Should mention valid values
+        self.assertIn('parameter', x_medkit)
+        self.assertEqual(x_medkit.get('parameter'), 'status')
+        self.assertIn('value', x_medkit)
+        self.assertEqual(x_medkit['value'], 'invalid_status')
 
         print('✓ List faults invalid status returns 400 test passed')
 
@@ -2172,7 +2250,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Invalid status parameter value')
-        self.assertIn('app_id', data.get('parameters', data))
+        # SOVD error format: parameters in x-medkit extension
+        self.assertIn('x-medkit', data)
+        # Handler uses entity_info.id_field which is 'app_id' for apps endpoint
+        self.assertEqual(data['x-medkit'].get('app_id'), 'temp_sensor')
 
         print('✓ App faults invalid status returns 400 test passed')
 
@@ -2285,8 +2366,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertIn('fault_code', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('fault_code'), 'NONEXISTENT_FAULT_CODE')
+        self.assertIn('fault_code', data['x-medkit'])
+        self.assertEqual(data['x-medkit'].get('fault_code'), 'NONEXISTENT_FAULT_CODE')
 
         print('✓ Get snapshots nonexistent fault test passed')
 
@@ -2304,10 +2385,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertIn('app_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('app_id'), 'temp_sensor')
-        self.assertIn('fault_code', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('fault_code'), 'NONEXISTENT_FAULT')
+        self.assertIn('app_id', data['x-medkit'])
+        self.assertEqual(data['x-medkit'].get('app_id'), 'temp_sensor')
+        self.assertIn('fault_code', data['x-medkit'])
+        self.assertEqual(data['x-medkit'].get('fault_code'), 'NONEXISTENT_FAULT')
 
         print('✓ Get app snapshots nonexistent fault test passed')
 
@@ -2326,8 +2407,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Entity not found')
-        self.assertIn('entity_id', data.get('parameters', data))
-        self.assertEqual(data.get('parameters', data).get('entity_id'), 'nonexistent_component')
+        self.assertIn('entity_id', data['x-medkit'])
+        self.assertEqual(data['x-medkit'].get('entity_id'), 'nonexistent_component')
 
         print('✓ Get snapshots nonexistent entity test passed')
 
