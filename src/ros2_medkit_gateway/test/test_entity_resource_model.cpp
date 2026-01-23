@@ -28,6 +28,58 @@ using namespace ros2_medkit_gateway;
 using namespace std::chrono_literals;
 
 // ============================================================================
+// Test Helper Functions - avoid C++20 designated initializers for C++17 compat
+// ============================================================================
+
+namespace {
+
+Area make_area(const std::string & id, const std::string & name) {
+  Area a;
+  a.id = id;
+  a.name = name;
+  return a;
+}
+
+Component make_component(const std::string & id, const std::string & name, const std::string & area) {
+  Component c;
+  c.id = id;
+  c.name = name;
+  c.area = area;
+  return c;
+}
+
+App make_app(const std::string & id, const std::string & name, const std::string & component_id) {
+  App a;
+  a.id = id;
+  a.name = name;
+  a.component_id = component_id;
+  return a;
+}
+
+App make_app_minimal(const std::string & id, const std::string & component_id) {
+  App a;
+  a.id = id;
+  a.component_id = component_id;
+  return a;
+}
+
+ServiceInfo make_service(const std::string & name, const std::string & full_path) {
+  ServiceInfo s;
+  s.name = name;
+  s.full_path = full_path;
+  return s;
+}
+
+ActionInfo make_action(const std::string & name, const std::string & full_path) {
+  ActionInfo a;
+  a.name = name;
+  a.full_path = full_path;
+  return a;
+}
+
+}  // namespace
+
+// ============================================================================
 // EntityTypes Tests
 // ============================================================================
 
@@ -135,28 +187,28 @@ TEST(EntityCapabilities, UnknownTypeHasNoCapabilities) {
 class EntityCacheTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Create test data
+    // Create test data using helper functions (C++17 compatible)
     areas_ = {
-        Area{.id = "perception", .name = "Perception"},
-        Area{.id = "control", .name = "Control"},
+        make_area("perception", "Perception"),
+        make_area("control", "Control"),
     };
 
     components_ = {
-        Component{.id = "lidar", .name = "LiDAR Driver", .area = "perception"},
-        Component{.id = "nav2", .name = "Nav2 Stack", .area = "control"},
+        make_component("lidar", "LiDAR Driver", "perception"),
+        make_component("nav2", "Nav2 Stack", "control"),
     };
 
     apps_ = {
-        App{.id = "lidar_app", .name = "LiDAR App", .component_id = "lidar"},
-        App{.id = "controller", .name = "Controller", .component_id = "nav2"},
-        App{.id = "planner", .name = "Planner", .component_id = "nav2"},
+        make_app("lidar_app", "LiDAR App", "lidar"),
+        make_app("controller", "Controller", "nav2"),
+        make_app("planner", "Planner", "nav2"),
     };
 
     // Add operations to apps
-    apps_[0].services = {{.name = "start_scan", .full_path = "/lidar/start_scan"}};
-    apps_[1].services = {{.name = "follow_path", .full_path = "/nav2/follow_path"}};
-    apps_[1].actions = {{.name = "navigate", .full_path = "/nav2/navigate"}};
-    apps_[2].services = {{.name = "compute_path", .full_path = "/nav2/compute_path"}};
+    apps_[0].services = {make_service("start_scan", "/lidar/start_scan")};
+    apps_[1].services = {make_service("follow_path", "/nav2/follow_path")};
+    apps_[1].actions = {make_action("navigate", "/nav2/navigate")};
+    apps_[2].services = {make_service("compute_path", "/nav2/compute_path")};
   }
 
   ThreadSafeEntityCache cache_;
@@ -310,8 +362,8 @@ TEST_F(EntityCacheTest, AreaOperationsAggregatesFromComponents) {
 
 TEST_F(EntityCacheTest, AggregationDeduplicatesByPath) {
   // Create apps with duplicate operation paths
-  apps_[1].services.push_back({.name = "shared_svc", .full_path = "/shared"});
-  apps_[2].services.push_back({.name = "shared_svc", .full_path = "/shared"});
+  apps_[1].services.push_back(make_service("shared_svc", "/shared"));
+  apps_[2].services.push_back(make_service("shared_svc", "/shared"));
 
   cache_.update_all(areas_, components_, apps_, {});
 
@@ -455,19 +507,19 @@ TEST_F(EntityCacheTest, GetStatsReturnsCorrectCounts) {
 class AggregationServiceTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Setup test entities with operations
-    areas_ = {{.id = "navigation", .name = "Navigation"}};
+    // Setup test entities with operations using helper functions (C++17 compatible)
+    areas_ = {make_area("navigation", "Navigation")};
 
-    components_.push_back(Component{.id = "nav_stack", .name = "Nav Stack", .area = "navigation"});
-    components_[0].services = {{.name = "get_state", .full_path = "/nav/get_state"}};
+    components_.push_back(make_component("nav_stack", "Nav Stack", "navigation"));
+    components_[0].services = {make_service("get_state", "/nav/get_state")};
 
     apps_ = {
-        App{.id = "controller", .component_id = "nav_stack"},
-        App{.id = "planner", .component_id = "nav_stack"},
+        make_app_minimal("controller", "nav_stack"),
+        make_app_minimal("planner", "nav_stack"),
     };
-    apps_[0].services = {{.name = "follow", .full_path = "/nav/follow"}};
-    apps_[1].services = {{.name = "plan", .full_path = "/nav/plan"}};
-    apps_[1].actions = {{.name = "compute", .full_path = "/nav/compute"}};
+    apps_[0].services = {make_service("follow", "/nav/follow")};
+    apps_[1].services = {make_service("plan", "/nav/plan")};
+    apps_[1].actions = {make_action("compute", "/nav/compute")};
 
     cache_.update_all(areas_, components_, apps_, {});
     service_ = std::make_unique<AggregationService>(&cache_);
