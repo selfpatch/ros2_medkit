@@ -23,15 +23,34 @@
 namespace ros2_medkit_gateway {
 namespace discovery {
 
+/**
+ * @brief Check if a service path matches an internal ROS2 service suffix.
+ *
+ * Uses exact suffix matching to avoid false positives. For example,
+ * "/my_node/get_parameters" is internal, but "/my_node/get_parameters_backup" is not.
+ *
+ * @param service_path The full service path (e.g., "/my_node/get_parameters")
+ * @param suffix The suffix to match (e.g., "/get_parameters")
+ * @return true if the service_path ends with the suffix
+ */
+static bool matches_internal_suffix(const std::string & service_path, const std::string & suffix) {
+  if (service_path.length() < suffix.length()) {
+    return false;
+  }
+  return service_path.compare(service_path.length() - suffix.length(), suffix.length(), suffix) == 0;
+}
+
 // Helper function to check if a service path is internal ROS2 infrastructure
 bool RuntimeDiscoveryStrategy::is_internal_service(const std::string & service_path) {
-  return service_path.find("/get_parameters") != std::string::npos ||
-         service_path.find("/set_parameters") != std::string::npos ||
-         service_path.find("/list_parameters") != std::string::npos ||
-         service_path.find("/describe_parameters") != std::string::npos ||
-         service_path.find("/get_parameter_types") != std::string::npos ||
-         service_path.find("/set_parameters_atomically") != std::string::npos ||
-         service_path.find("/get_type_description") != std::string::npos ||
+  // Use exact suffix matching to avoid false positives
+  // e.g., "/my_node/get_parameters" is internal, but "/my_node/get_parameters_backup" is NOT
+  return matches_internal_suffix(service_path, "/get_parameters") ||
+         matches_internal_suffix(service_path, "/set_parameters") ||
+         matches_internal_suffix(service_path, "/list_parameters") ||
+         matches_internal_suffix(service_path, "/describe_parameters") ||
+         matches_internal_suffix(service_path, "/get_parameter_types") ||
+         matches_internal_suffix(service_path, "/set_parameters_atomically") ||
+         matches_internal_suffix(service_path, "/get_type_description") ||
          service_path.find("/_action/") != std::string::npos;  // Action internal services
 }
 
@@ -630,6 +649,12 @@ std::string RuntimeDiscoveryStrategy::apply_component_name_pattern(const std::st
   size_t pos = result.find(placeholder);
   if (pos != std::string::npos) {
     result.replace(pos, placeholder.length(), area);
+  } else {
+    // Pattern doesn't contain {area} - all synthetic components will have same ID
+    RCLCPP_WARN_ONCE(node_->get_logger(),
+                     "synthetic_component_name_pattern '%s' doesn't contain {area} placeholder - "
+                     "all synthetic components will have the same ID, which may cause collisions",
+                     config_.synthetic_component_name_pattern.c_str());
   }
 
   return result;

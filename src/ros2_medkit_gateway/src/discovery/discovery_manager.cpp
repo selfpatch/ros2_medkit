@@ -65,9 +65,12 @@ void DiscoveryManager::create_strategy() {
 
   switch (config_.mode) {
     case DiscoveryMode::MANIFEST_ONLY:
-      // In manifest_only mode, we use a special mode where we return manifest entities
-      // without runtime linking. We still use the runtime_strategy for services/actions
-      // but main entities come from manifest.
+      // In MANIFEST_ONLY mode, entity structure comes from manifest (via manifest_manager_),
+      // NOT from the active_strategy_. The discover_*() methods check the mode and return
+      // manifest data directly. We still point active_strategy_ to runtime_strategy_ because:
+      // 1. It's used for service/action introspection when explicitly requested
+      // 2. It avoids creating a separate ManifestOnlyStrategy class
+      // 3. It provides a fallback if manifest is unavailable
       active_strategy_ = runtime_strategy_.get();
       RCLCPP_INFO(node_->get_logger(), "Discovery mode: manifest_only");
       break;

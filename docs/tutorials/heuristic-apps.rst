@@ -125,6 +125,24 @@ When ``true`` (default), the gateway creates synthetic Components to group Apps:
    curl http://localhost:8080/api/v1/components/perception/apps
    # Returns: [{"id": "lidar_driver"}, {"id": "camera_node"}]
 
+.. note::
+
+   Synthetic components are **logical groupings only**. They do not aggregate
+   operations or data from their hosted Apps. To access operations (services/actions),
+   you must query the Apps within the component:
+
+   .. code-block:: bash
+
+      # List Apps in the component
+      curl http://localhost:8080/api/v1/components/perception/apps
+
+      # Get operations for a specific App
+      curl http://localhost:8080/api/v1/apps/lidar_driver/operations
+
+   The component endpoint ``GET /components/{id}/operations`` aggregates operation
+   listings from all hosted Apps for convenience, but execution must target the
+   specific App that owns the operation.
+
 When ``false``, each node is its own Component (no grouping):
 
 .. code-block:: bash
