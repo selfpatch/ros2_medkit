@@ -104,6 +104,20 @@ TEST_F(RosbagCaptureTest, ConstructorWithDisabledRosbag) {
   EXPECT_NO_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config));
 }
 
+TEST_F(RosbagCaptureTest, ConstructorThrowsOnInvalidFormat) {
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.format = "invalid_format";
+  auto snapshot_config = create_snapshot_config();
+  EXPECT_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config), std::runtime_error);
+}
+
+TEST_F(RosbagCaptureTest, ConstructorAcceptsSqlite3Format) {
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.format = "sqlite3";
+  auto snapshot_config = create_snapshot_config();
+  EXPECT_NO_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config));
+}
+
 // State management tests
 
 TEST_F(RosbagCaptureTest, IsEnabledReturnsConfigState) {

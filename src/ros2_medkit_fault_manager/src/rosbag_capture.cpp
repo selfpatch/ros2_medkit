@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -39,6 +41,9 @@ RosbagCapture::RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const 
     RCLCPP_INFO(node_->get_logger(), "RosbagCapture disabled");
     return;
   }
+
+  // Validate storage format before proceeding
+  validate_storage_format();
 
   RCLCPP_INFO(node_->get_logger(), "RosbagCapture initialized (duration=%.1fs, after=%.1fs, lazy_start=%s, format=%s)",
               config_.duration_sec, config_.duration_after_sec, config_.lazy_start ? "true" : "false",
@@ -611,6 +616,52 @@ void RosbagCapture::post_fault_timer_callback() {
 
   current_fault_code_.clear();
   current_bag_path_.clear();
+}
+
+void RosbagCapture::validate_storage_format() const {
+  // Validate format is one of the known options
+  if (config_.format != "sqlite3" && config_.format != "mcap") {
+    throw std::runtime_error("Invalid rosbag storage format '" + config_.format +
+                             "'. "
+                             "Valid options: 'sqlite3', 'mcap'");
+  }
+
+  // sqlite3 is always available (built into rosbag2)
+  if (config_.format == "sqlite3") {
+    return;
+  }
+
+  // For MCAP, verify the plugin is available by trying to create a test bag
+  if (config_.format == "mcap") {
+    std::string test_path =
+        std::filesystem::temp_directory_path().string() + "/.rosbag_mcap_test_" + std::to_string(getpid());
+
+    try {
+      rosbag2_cpp::Writer writer;
+      rosbag2_storage::StorageOptions opts;
+      opts.uri = test_path;
+      opts.storage_id = "mcap";
+      writer.open(opts);
+      // Success - plugin is available, clean up test file
+    } catch (const std::exception & e) {
+      // Clean up any partial test files
+      std::error_code ec;
+      std::filesystem::remove_all(test_path, ec);
+
+      throw std::runtime_error(
+          "MCAP storage format requested but rosbag2_storage_mcap plugin is not available. "
+          "Install with: sudo apt install ros-${ROS_DISTRO}-rosbag2-storage-mcap "
+          "Or use format: 'sqlite3' (default). "
+          "Error: " +
+          std::string(e.what()));
+    }
+
+    // Clean up test file
+    std::error_code ec;
+    std::filesystem::remove_all(test_path, ec);
+
+    RCLCPP_INFO(node_->get_logger(), "MCAP storage format validated successfully");
+  }
 }
 
 }  // namespace ros2_medkit_fault_manager
