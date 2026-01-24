@@ -126,9 +126,18 @@ TEST_F(TestGatewayNode, test_version_info_endpoint) {
   EXPECT_EQ(res->get_header_value("Content-Type"), "application/json");
 
   auto json_response = nlohmann::json::parse(res->body);
-  EXPECT_TRUE(json_response.contains("version"));
-  EXPECT_TRUE(json_response.contains("status"));
-  EXPECT_TRUE(json_response.contains("timestamp"));
+  // Check for sovd_info array
+  EXPECT_TRUE(json_response.contains("sovd_info"));
+  EXPECT_TRUE(json_response["sovd_info"].is_array());
+  EXPECT_GE(json_response["sovd_info"].size(), 1);
+
+  // Check first sovd_info entry
+  const auto & info = json_response["sovd_info"][0];
+  EXPECT_TRUE(info.contains("version"));
+  EXPECT_TRUE(info.contains("base_uri"));
+  EXPECT_TRUE(info.contains("vendor_info"));
+  EXPECT_TRUE(info["vendor_info"].contains("version"));
+  EXPECT_TRUE(info["vendor_info"].contains("name"));
 }
 
 TEST_F(TestGatewayNode, test_list_areas_endpoint) {
@@ -376,7 +385,7 @@ TEST_F(TestGatewayNode, test_set_configuration_invalid_json) {
 TEST_F(TestGatewayNode, test_set_configuration_missing_value_field) {
   auto client = create_client();
 
-  // POST with valid JSON but missing 'data' field (SOVD-compliant)
+  // POST with valid JSON but missing 'data' field
   auto res = client.Put(std::string(API_BASE_PATH) + "/components/gateway_node/configurations/test_param",
                         R"({"name": "test_param"})", "application/json");
 
@@ -386,7 +395,7 @@ TEST_F(TestGatewayNode, test_set_configuration_missing_value_field) {
   auto json_response = nlohmann::json::parse(res->body);
   EXPECT_TRUE(json_response.contains("error_code"));
   EXPECT_TRUE(json_response.contains("message"));
-  // SOVD format expects 'data' field, error should mention it
+  // Format expects 'data' field, error should mention it
   EXPECT_TRUE(json_response["message"].get<std::string>().find("data") != std::string::npos ||
               (json_response.contains("x-medkit") && json_response["x-medkit"].contains("details")));
 }
@@ -488,6 +497,55 @@ TEST_F(TestGatewayNode, test_execution_not_found) {
   EXPECT_EQ(res->status, StatusCode::NotFound_404);
 }
 
+// @verifies REQ_INTEROP_038
+TEST_F(TestGatewayNode, test_execution_update_invalid_component_id) {
+  auto client = create_client();
+
+  // PUT with invalid component ID
+  auto res = client.Put(std::string(API_BASE_PATH) + "/components/invalid@id/operations/test/executions/some-id",
+                        R"({"capability": "stop"})", "application/json");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+}
+
+// @verifies REQ_INTEROP_038
+TEST_F(TestGatewayNode, test_execution_update_missing_capability) {
+  auto client = create_client();
+
+  // PUT without capability field
+  auto res = client.Put(std::string(API_BASE_PATH) + "/components/gateway_node/operations/test/executions/some-id",
+                        R"({"timeout": 60})", "application/json");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+}
+
+// @verifies REQ_INTEROP_038
+TEST_F(TestGatewayNode, test_execution_update_unsupported_capability) {
+  auto client = create_client();
+
+  // PUT with unsupported capability (freeze is I/O control specific)
+  auto res = client.Put(std::string(API_BASE_PATH) + "/components/gateway_node/operations/test/executions/some-id",
+                        R"({"capability": "freeze"})", "application/json");
+
+  ASSERT_TRUE(res);
+  // Either 400 for unsupported capability or 404 if execution not found
+  EXPECT_TRUE(res->status == StatusCode::BadRequest_400 || res->status == StatusCode::NotFound_404);
+}
+
+// @verifies REQ_INTEROP_038
+TEST_F(TestGatewayNode, test_execution_update_execution_not_found) {
+  auto client = create_client();
+
+  // PUT with stop capability for non-existent execution
+  auto res = client.Put(std::string(API_BASE_PATH) + "/components/gateway_node/operations/test/executions/nonexistent",
+                        R"({"capability": "stop"})", "application/json");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
 // =============================================================================
 // Data endpoint tests
 // =============================================================================
@@ -565,6 +623,26 @@ TEST_F(TestGatewayNode, test_component_related_apps_nonexistent) {
   auto client = create_client();
 
   auto res = client.Get(std::string(API_BASE_PATH) + "/components/nonexistent_comp/related-apps");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_area_contains_nonexistent) {
+  // @verifies REQ_INTEROP_006
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/areas/nonexistent_area/contains");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, StatusCode::NotFound_404);
+}
+
+TEST_F(TestGatewayNode, test_component_hosts_nonexistent) {
+  // @verifies REQ_INTEROP_007
+  auto client = create_client();
+
+  auto res = client.Get(std::string(API_BASE_PATH) + "/components/nonexistent_comp/hosts");
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, StatusCode::NotFound_404);

@@ -17,7 +17,7 @@
 namespace ros2_medkit_gateway {
 
 json App::to_json() const {
-  // SOVD-compliant base fields
+  // Base fields
   json j = {{"id", id}};
 
   if (!name.empty()) {
@@ -73,7 +73,7 @@ json App::to_json() const {
 }
 
 json App::to_entity_reference(const std::string & base_url) const {
-  // SOVD-compliant EntityReference: id, name, href, [translationId, tags]
+  // EntityReference: id, name, href, [translationId, tags]
   json j = {{"id", id}, {"href", base_url + "/apps/" + id}};
 
   if (!name.empty()) {
@@ -92,7 +92,7 @@ json App::to_entity_reference(const std::string & base_url) const {
 json App::to_capabilities(const std::string & base_url) const {
   std::string app_base = base_url + "/apps/" + id;
 
-  // SOVD-compliant capabilities response
+  // Capabilities response
   json j = {{"id", id}};
 
   if (!name.empty()) {
@@ -102,7 +102,7 @@ json App::to_capabilities(const std::string & base_url) const {
     j["translationId"] = translation_id;
   }
 
-  // Capabilities as URI references (SOVD compliant)
+  // Capabilities as URI references
   if (!topics.publishes.empty() || !topics.subscribes.empty()) {
     j["data"] = app_base + "/data";
   }

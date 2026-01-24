@@ -20,8 +20,16 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 
 - `GET /api/v1/health` - Health check endpoint (returns healthy status)
 - `GET /api/v1/` - Gateway status and version information
+- `GET /api/v1/version-info` - SOVD version info (supported SOVD versions and base URIs)
 - `GET /api/v1/areas` - List all discovered areas (powertrain, chassis, body, root)
+- `GET /api/v1/areas/{area_id}` - Get area capabilities
+- `GET /api/v1/areas/{area_id}/subareas` - List sub-areas within an area
+- `GET /api/v1/areas/{area_id}/contains` - List components contained in an area
 - `GET /api/v1/components` - List all discovered components across all areas
+- `GET /api/v1/components/{component_id}` - Get component capabilities
+- `GET /api/v1/components/{component_id}/subcomponents` - List sub-components
+- `GET /api/v1/components/{component_id}/hosts` - List apps hosted on a component
+- `GET /api/v1/components/{component_id}/depends-on` - List component dependencies
 - `GET /api/v1/areas/{area_id}/components` - List components within a specific area
 
 ### Component Data Endpoints
@@ -402,7 +410,7 @@ curl http://localhost:8080/api/v1/components/long_calibration/operations/long_ca
 }
 ```
 
-**SOVD Status Values:** `running`, `completed`, `failed`
+**Status Values:** `running`, `completed`, `failed`
 
 #### DELETE /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}
 

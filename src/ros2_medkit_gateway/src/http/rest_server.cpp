@@ -230,7 +230,7 @@ void RESTServer::setup_routes() {
              operation_handlers_->handle_get_operation(req, res);
            });
 
-  // SOVD-compliant execution endpoints for apps
+  // Execution endpoints for apps
   // POST /{entity}/operations/{op-id}/executions - start execution
   srv->Post((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/executions$)"),
             [this](const httplib::Request & req, httplib::Response & res) {
@@ -249,22 +249,16 @@ void RESTServer::setup_routes() {
              operation_handlers_->handle_get_execution(req, res);
            });
 
+  // PUT /{entity}/operations/{op-id}/executions/{exec-id} - update execution
+  srv->Put((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_update_execution(req, res);
+           });
+
   // DELETE /{entity}/operations/{op-id}/executions/{exec-id} - cancel execution
   srv->Delete((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
               [this](const httplib::Request & req, httplib::Response & res) {
                 operation_handlers_->handle_cancel_execution(req, res);
-              });
-
-  // App action result (GET)
-  srv->Get((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)/result$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             operation_handlers_->handle_action_result(req, res);
-           });
-
-  // App action cancel (DELETE)
-  srv->Delete((api_path("/apps") + R"(/([^/]+)/operations/([^/]+)$)"),
-              [this](const httplib::Request & req, httplib::Response & res) {
-                operation_handlers_->handle_action_cancel(req, res);
               });
 
   // App configurations - list all
@@ -353,10 +347,10 @@ void RESTServer::setup_routes() {
              area_handlers_->handle_get_subareas(req, res);
            });
 
-  // Area related-components (relationship endpoint)
-  srv->Get((api_path("/areas") + R"(/([^/]+)/related-components$)"),
+  // Area contains
+  srv->Get((api_path("/areas") + R"(/([^/]+)/contains$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             area_handlers_->handle_get_related_components(req, res);
+             area_handlers_->handle_get_contains(req, res);
            });
 
   // Single area (capabilities) - must be after more specific routes
@@ -383,10 +377,10 @@ void RESTServer::setup_routes() {
              component_handlers_->handle_get_subcomponents(req, res);
            });
 
-  // Component related-apps (relationship endpoint)
-  srv->Get((api_path("/components") + R"(/([^/]+)/related-apps$)"),
+  // Component hosts
+  srv->Get((api_path("/components") + R"(/([^/]+)/hosts$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             component_handlers_->handle_get_related_apps(req, res);
+             component_handlers_->handle_get_hosts(req, res);
            });
 
   // Component depends-on (relationship endpoint)
@@ -419,7 +413,7 @@ void RESTServer::setup_routes() {
              operation_handlers_->handle_get_operation(req, res);
            });
 
-  // SOVD-compliant execution endpoints for components
+  // Execution endpoints for components
   // POST /{entity}/operations/{op-id}/executions - start execution
   srv->Post((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/executions$)"),
             [this](const httplib::Request & req, httplib::Response & res) {
@@ -438,22 +432,16 @@ void RESTServer::setup_routes() {
              operation_handlers_->handle_get_execution(req, res);
            });
 
+  // PUT /{entity}/operations/{op-id}/executions/{exec-id} - update execution
+  srv->Put((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_update_execution(req, res);
+           });
+
   // DELETE /{entity}/operations/{op-id}/executions/{exec-id} - cancel execution
   srv->Delete((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
               [this](const httplib::Request & req, httplib::Response & res) {
                 operation_handlers_->handle_cancel_execution(req, res);
-              });
-
-  // Action result (GET) - get result of a completed action goal
-  srv->Get((api_path("/components") + R"(/([^/]+)/operations/([^/]+)/result$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             operation_handlers_->handle_action_result(req, res);
-           });
-
-  // Action cancel (DELETE) - cancel a running action goal
-  srv->Delete((api_path("/components") + R"(/([^/]+)/operations/([^/]+)$)"),
-              [this](const httplib::Request & req, httplib::Response & res) {
-                operation_handlers_->handle_action_cancel(req, res);
               });
 
   // Configurations endpoints - SOVD Configurations API mapped to ROS2 parameters
@@ -534,13 +522,13 @@ void RESTServer::setup_routes() {
                 fault_handlers_->handle_clear_fault(req, res);
               });
 
-  // Clear all faults for a component (SOVD-compliant)
+  // Clear all faults for a component
   srv->Delete((api_path("/components") + R"(/([^/]+)/faults$)"),
               [this](const httplib::Request & req, httplib::Response & res) {
                 fault_handlers_->handle_clear_all_faults(req, res);
               });
 
-  // Clear all faults for an app (SOVD-compliant)
+  // Clear all faults for an app
   srv->Delete((api_path("/apps") + R"(/([^/]+)/faults$)"),
               [this](const httplib::Request & req, httplib::Response & res) {
                 fault_handlers_->handle_clear_all_faults(req, res);

@@ -247,7 +247,7 @@ class TestHttpsEndpoints(unittest.TestCase):
         self.assertEqual(data['status'], 'healthy')
 
     def test_https_version_info_endpoint(self):
-        """Test HTTPS version-info endpoint."""
+        """Test HTTPS version-info endpoint returns valid format and data."""
         import requests
 
         url = f'{self.base_url}/api/v1/version-info'
@@ -255,7 +255,13 @@ class TestHttpsEndpoints(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertIn('version', data)
+        # sovd_info array with version, base_uri, vendor_info
+        self.assertIn('sovd_info', data)
+        self.assertIsInstance(data['sovd_info'], list)
+        self.assertGreater(len(data['sovd_info']), 0)
+        info = data['sovd_info'][0]
+        self.assertIn('version', info)
+        self.assertIn('base_uri', info)
 
     def test_https_areas_endpoint(self):
         """Test HTTPS areas endpoint."""

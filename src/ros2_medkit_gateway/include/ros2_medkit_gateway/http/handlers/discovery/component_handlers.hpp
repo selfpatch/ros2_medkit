@@ -74,9 +74,11 @@ class ComponentHandlers {
   void handle_get_subcomponents(const httplib::Request & req, httplib::Response & res);
 
   /**
-   * @brief Handle GET /components/{component_id}/related-apps - list apps on component.
+
+   * @brief Handle GET /components/{component_id}/hosts - list Apps hosted on this component.
+   * @verifies REQ_INTEROP_007
    */
-  void handle_get_related_apps(const httplib::Request & req, httplib::Response & res);
+  void handle_get_hosts(const httplib::Request & req, httplib::Response & res);
 
   /**
    * @brief Handle GET /components/{component_id}/depends-on - list component dependencies.

@@ -50,8 +50,9 @@ TEST(AuthConfigRolePermissionsTest, OperatorPermissionsIncludeOperations) {
 
   const auto & operator_perms = it->second;
 
-  // Operator should have operation permissions (SOVD-compliant executions endpoints)
+  // Operator should have operation permissions
   EXPECT_TRUE(operator_perms.count("POST:/api/v1/components/*/operations/*/executions") > 0);
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/components/*/operations/*/executions/*") > 0);
   EXPECT_TRUE(operator_perms.count("DELETE:/api/v1/components/*/operations/*/executions/*") > 0);
   EXPECT_TRUE(operator_perms.count("DELETE:/api/v1/components/*/faults/*") > 0);
   EXPECT_TRUE(operator_perms.count("PUT:/api/v1/components/*/data/*") > 0);
@@ -72,8 +73,9 @@ TEST(AuthConfigRolePermissionsTest, ConfiguratorPermissionsIncludeConfigurations
   EXPECT_TRUE(config_perms.count("PUT:/api/v1/components/*/configurations/*") > 0);
   EXPECT_TRUE(config_perms.count("DELETE:/api/v1/components/*/configurations/*") > 0);
 
-  // Plus all operator permissions (SOVD-compliant executions endpoints)
+  // Plus all operator permissions
   EXPECT_TRUE(config_perms.count("POST:/api/v1/components/*/operations/*/executions") > 0);
+  EXPECT_TRUE(config_perms.count("PUT:/api/v1/components/*/operations/*/executions/*") > 0);
 }
 
 TEST(AuthConfigRolePermissionsTest, AdminHasWildcardAccess) {

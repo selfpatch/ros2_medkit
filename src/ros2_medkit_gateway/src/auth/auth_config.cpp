@@ -66,6 +66,8 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "GET:/api/v1/components/*/faults/*",
            // Trigger operations (POST)
            "POST:/api/v1/components/*/operations/*/executions",
+           // Update operations - stop capability (PUT)
+           "PUT:/api/v1/components/*/operations/*/executions/*",
            // Cancel actions (DELETE on executions)
            "DELETE:/api/v1/components/*/operations/*/executions/*",
            // Clear faults (DELETE on faults)
@@ -94,6 +96,7 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "GET:/api/v1/components/*/faults",
            "GET:/api/v1/components/*/faults/*",
            "POST:/api/v1/components/*/operations/*/executions",
+           "PUT:/api/v1/components/*/operations/*/executions/*",
            "DELETE:/api/v1/components/*/operations/*/executions/*",
            "DELETE:/api/v1/components/*/faults/*",
            "PUT:/api/v1/components/*/data/*",

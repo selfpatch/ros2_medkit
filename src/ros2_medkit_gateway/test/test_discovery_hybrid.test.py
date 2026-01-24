@@ -327,7 +327,6 @@ class TestDiscoveryHybridMode(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         component = response.json()
-        # SOVD-compliant: type is in x-medkit extension
         self.assertEqual(component['x-medkit']['type'], 'controller')
 
     def test_component_area_relationship(self):
@@ -427,7 +426,7 @@ class TestDiscoveryHybridMode(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         component = response.json()
-        # SOVD-compliant: capabilities is in x-medkit extension
+        # capabilities is in x-medkit extension
         self.assertIn('x-medkit', component)
         self.assertIn('capabilities', component['x-medkit'])
 
@@ -482,7 +481,7 @@ class TestDiscoveryHybridMode(unittest.TestCase):
         data = response.json()
         apps_by_id = {a['id']: a for a in data['items']}
 
-        # SOVD-compliant: is_online is in x-medkit extension
+        # is_online is in x-medkit extension
         online_apps = [
             app_id for app_id, app in apps_by_id.items()
             if app.get('x-medkit', {}).get('is_online', False)

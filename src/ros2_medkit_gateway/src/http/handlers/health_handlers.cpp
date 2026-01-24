@@ -47,11 +47,15 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "GET /api/v1/health",
         "GET /api/v1/version-info",
         "GET /api/v1/areas",
+        "GET /api/v1/areas/{area_id}",
         "GET /api/v1/areas/{area_id}/subareas",
         "GET /api/v1/areas/{area_id}/components",
+        "GET /api/v1/areas/{area_id}/contains",
+        "GET /api/v1/areas/{area_id}/related-components",
         "GET /api/v1/components",
         "GET /api/v1/components/{component_id}",
         "GET /api/v1/components/{component_id}/subcomponents",
+        "GET /api/v1/components/{component_id}/hosts",
         "GET /api/v1/components/{component_id}/related-apps",
         "GET /api/v1/components/{component_id}/depends-on",
         "GET /api/v1/components/{component_id}/data",
@@ -139,9 +143,14 @@ void HealthHandlers::handle_version_info(const httplib::Request & req, httplib::
   (void)req;  // Unused parameter
 
   try {
-    json response = {{"status", "ROS 2 Medkit Gateway running"},
-                     {"version", "0.1.0"},
-                     {"timestamp", std::chrono::system_clock::now().time_since_epoch().count()}};
+    // SOVD 7.4.1 compliant response format
+    json sovd_info_entry = {
+        {"version", "1.0.0"},                                             // SOVD standard version
+        {"base_uri", API_BASE_PATH},                                      // Version-specific base URI
+        {"vendor_info", {{"version", "0.1.0"}, {"name", "ros2_medkit"}}}  // Vendor-specific info
+    };
+
+    json response = {{"sovd_info", json::array({sovd_info_entry})}};
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {

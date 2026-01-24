@@ -280,13 +280,21 @@ Main Components
    - Tracks active action goals with status, feedback, and timestamps
    - Subscribes to ``/_action/status`` topics for real-time goal status updates
    - Supports goal cancellation via native cancel service calls
+   - Supports SOVD capability-based control (stop maps to ROS 2 cancel)
    - Automatically cleans up completed goals older than 5 minutes
    - Uses ``ros2_medkit_serialization`` for JSON ↔ ROS 2 message conversion
 
 4. **RESTServer** - Provides the HTTP/REST API
    - Discovery endpoints: ``/health``, ``/``, ``/areas``, ``/components``, ``/areas/{area_id}/components``
    - Data endpoints: ``/components/{component_id}/data``, ``/components/{component_id}/data/{topic_name}``
-   - Operations endpoints: ``POST .../operations/{op}/executions`` (execute), ``GET .../operations/{op}/executions/{exec-id}`` (status), ``DELETE .../operations/{op}/executions/{exec-id}`` (cancel)
+   - Operations endpoints:
+     - ``GET .../operations`` - List operations
+     - ``GET .../operations/{op}`` - Get operation details
+     - ``POST .../operations/{op}/executions`` - Start execution
+     - ``GET .../operations/{op}/executions`` - List executions
+     - ``GET .../operations/{op}/executions/{exec-id}`` - Get execution status
+     - ``PUT .../operations/{op}/executions/{exec-id}`` - Update execution (stop capability)
+     - ``DELETE .../operations/{op}/executions/{exec-id}`` - Terminate execution
    - Configurations endpoints: ``GET/PUT .../configurations``, ``GET/PUT .../configurations/{param}``
    - Retrieves cached entities from the GatewayNode
    - Uses DataAccessManager for runtime topic data access

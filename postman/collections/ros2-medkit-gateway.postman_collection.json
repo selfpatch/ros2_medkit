@@ -324,7 +324,7 @@
                 "version-info"
               ]
             },
-            "description": "Get gateway status and version information (REQ_INTEROP_001). Returns status, version, and timestamp."
+            "description": "Get SOVD server version information. Returns sovd_info array with supported SOVD versions, base URIs, and vendor information. Response format: { sovd_info: [{ version, base_uri, vendor_info: { version, name } }] }"
           },
           "response": []
         },
@@ -421,6 +421,46 @@
               ]
             },
             "description": "Example of requesting dependencies for a non-existent component. Returns 404."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Area Contains (Components)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/areas/powertrain/contains",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "areas",
+                "powertrain",
+                "contains"
+              ]
+            },
+            "description": "List all components contained within an area (SOVD 7.6.2.4). Returns EntityReference array with id, name, href."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Component Hosts (Apps)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/powertrain_component/hosts",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                "powertrain_component",
+                "hosts"
+              ]
+            },
+            "description": "List all apps hosted on a component (SOVD 7.6.2.4). Returns EntityReference array with id, name, href."
           },
           "response": []
         }

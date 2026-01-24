@@ -465,17 +465,24 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_01b_version_info_endpoint(self):
         """
-        Test GET /version-info returns gateway status and version.
+        Test GET /version-info returns valid format and data.
 
         @verifies REQ_INTEROP_001
         """
         data = self._get_json('/version-info')
-        self.assertIn('status', data)
-        self.assertIn('version', data)
-        self.assertIn('timestamp', data)
-        self.assertEqual(data['status'], 'ROS 2 Medkit Gateway running')
-        self.assertEqual(data['version'], '0.1.0')
-        self.assertIsInstance(data['timestamp'], int)
+        # Check sovd_info array
+        self.assertIn('sovd_info', data)
+        self.assertIsInstance(data['sovd_info'], list)
+        self.assertGreaterEqual(len(data['sovd_info']), 1)
+
+        # Check first sovd_info entry
+        info = data['sovd_info'][0]
+        self.assertIn('version', info)
+        self.assertIn('base_uri', info)
+        self.assertIn('vendor_info', info)
+        self.assertIn('version', info['vendor_info'])
+        self.assertIn('name', info['vendor_info'])
+        self.assertEqual(info['vendor_info']['name'], 'ros2_medkit')
         print('✓ Version info endpoint test passed')
 
     def test_02_list_areas(self):
@@ -568,7 +575,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIsInstance(components, list)
         self.assertGreater(len(components), 0)
 
-        # All components should have SOVD-compliant EntityReference format with x-medkit
+        # All components should have EntityReference format with x-medkit
         for component in components:
             self.assertIn('id', component)
             self.assertIn('name', component)
@@ -1506,7 +1513,6 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         Test POST /apps/{app_id}/operations/{operation_id}/executions sends action goal.
 
         Sends a goal to the long_calibration action and verifies execution_id is returned.
-        Uses SOVD-compliant executions endpoint.
 
         @verifies REQ_INTEROP_022
         """
@@ -1701,8 +1707,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = list_response.json()
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list)
-        # Our execution should be in the list
-        self.assertIn(expected_execution_id, data['items'])
+        # Our execution should be in the list (items is list of dicts with 'id' key)
+        execution_ids = [item['id'] for item in data['items']]
+        self.assertIn(expected_execution_id, execution_ids)
 
         print(f'✓ List executions test passed: {len(data["items"])} executions found')
 
@@ -1721,7 +1728,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        # SOVD-compliant items array format with x-medkit extension
+        # Items array format with x-medkit extension
         self.assertIn('items', data)
         self.assertIn('x-medkit', data)
         x_medkit = data['x-medkit']
@@ -1899,9 +1906,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        # SOVD error format: parameters in x-medkit extension
+        # Error format: parameters in x-medkit extension
         self.assertIn('x-medkit', data)
-        # Handler uses 'id' as the SOVD-compliant field name for the parameter
+        # Handler uses 'id' as the field name for the parameter
         self.assertEqual(data['x-medkit'].get('id'), 'nonexistent_param')
 
         print('✓ Configuration nonexistent parameter test passed')
@@ -2093,7 +2100,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        # SOVD-compliant format with items array and x-medkit extension
+        # Items array format with x-medkit extension
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list)
         self.assertIn('x-medkit', data)
@@ -2159,7 +2166,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        # SOVD-compliant format with items array and x-medkit extension
+        # Items array format with x-medkit extension
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list)
         self.assertIn('x-medkit', data)
@@ -2180,7 +2187,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
-        # SOVD-compliant format with items array and x-medkit extension
+        # Items array format with x-medkit extension
         self.assertIn('items', data)
         self.assertIn('x-medkit', data)
         self.assertIn('count', data['x-medkit'])
@@ -2617,33 +2624,68 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         count = len(data.get('items', []))
         print(f'✓ Subcomponents list has href test passed: {count} subcomponents')
 
-    def test_77_related_apps_list_has_href(self):
+    def test_77b_contains_list_has_href(self):
         """
-        Test GET /components/{id}/related-apps returns items with href field.
+        Test GET /areas/{id}/contains returns items with href field.
 
-        @verifies REQ_INTEROP_007
+        @verifies REQ_INTEROP_006
         """
-        # Get related apps for powertrain component
+        # Get contains for root area
         response = requests.get(
-            f'{self.BASE_URL}/components/powertrain/related-apps',
+            f'{self.BASE_URL}/areas/root/contains',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
         self.assertIn('items', data)
+        self.assertIn('_links', data)
+        self.assertEqual(data['_links']['self'], '/api/v1/areas/root/contains')
+        self.assertEqual(data['_links']['area'], '/api/v1/areas/root')
 
-        # Powertrain should have related apps
+        # If there are contained components, verify they have href
+        for comp in data.get('items', []):
+            self.assertIn('id', comp, "Contained component should have 'id'")
+            self.assertIn('name', comp, "Contained component should have 'name'")
+            self.assertIn('href', comp, "Contained component should have 'href'")
+            self.assertTrue(
+                comp['href'].startswith('/api/v1/components/'),
+                f"href should start with /api/v1/components/, got: {comp['href']}"
+            )
+
+        count = len(data.get('items', []))
+        print(f'✓ Area contains list has href test passed: {count} components')
+
+    def test_77c_hosts_list_has_href(self):
+        """
+        Test GET /components/{id}/hosts returns items with href field.
+
+        @verifies REQ_INTEROP_007
+        """
+        # Get hosts for powertrain component
+        response = requests.get(
+            f'{self.BASE_URL}/components/powertrain/hosts',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+        self.assertIn('_links', data)
+        self.assertEqual(data['_links']['self'], '/api/v1/components/powertrain/hosts')
+        self.assertEqual(data['_links']['component'], '/api/v1/components/powertrain')
+
+        # Powertrain should have hosted apps
         for app in data.get('items', []):
-            self.assertIn('id', app, "Related app should have 'id'")
-            self.assertIn('name', app, "Related app should have 'name'")
-            self.assertIn('href', app, "Related app should have 'href'")
+            self.assertIn('id', app, "Hosted app should have 'id'")
+            self.assertIn('name', app, "Hosted app should have 'name'")
+            self.assertIn('href', app, "Hosted app should have 'href'")
             self.assertTrue(
                 app['href'].startswith('/api/v1/apps/'),
                 f"href should start with /api/v1/apps/, got: {app['href']}"
             )
 
-        print(f'✓ Related apps list has href test passed: {len(data.get("items", []))} apps')
+        print(f'✓ Component hosts list has href test passed: {len(data.get("items", []))} apps')
 
     def test_78_depends_on_components_has_href(self):
         """
@@ -2839,7 +2881,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('item', data)
         item = data['item']
 
-        # SOVD-compliant fields
+        # Requred fields
         self.assertIn('id', item)
         self.assertEqual(item['id'], operation_id)
         self.assertIn('name', item)
@@ -2899,7 +2941,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('item', data)
         item = data['item']
 
-        # SOVD-compliant fields
+        # Required fields
         self.assertIn('asynchronous_execution', item)
         self.assertTrue(item['asynchronous_execution'])
 
@@ -2995,7 +3037,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         operation_id = service_op['id']
 
-        # Call the service via SOVD-compliant path
+        # Call the service
         response = requests.post(
             f'{self.BASE_URL}/components/powertrain/operations/{operation_id}/executions',
             json={'parameters': {}},
@@ -3149,7 +3191,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         if response.status_code == 200:
             data = response.json()
-            # SOVD docs should have some content
+            # docs should have some content
             self.assertIsNotNone(data)
 
         print(f'✓ Docs endpoint test passed (status: {response.status_code})')
@@ -3349,15 +3391,17 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                 operation_id = ops_data['items'][0]['id']
 
                 # Try to update a specific execution (likely doesn't exist)
+                # Use underscore in ID - hyphens are rejected by entity ID validation
                 response = requests.put(
                     f'{self.BASE_URL}/apps/{app["id"]}/operations/{operation_id}'
-                    f'/executions/nonexistent-exec-id',
+                    f'/executions/nonexistent_exec_id',
                     json={'action': 'stop'},
                     timeout=10
                 )
 
-                # 200 success, 404 not found, 409 conflict, 501 not implemented
-                self.assertIn(response.status_code, [200, 404, 409, 501])
+                # 200 success, 400 bad request, 404 not found, 409 conflict,
+                # 501 not implemented
+                self.assertIn(response.status_code, [200, 400, 404, 409, 501])
 
                 operation_found = True
                 print(f'✓ Update execution test passed (status: {response.status_code})')

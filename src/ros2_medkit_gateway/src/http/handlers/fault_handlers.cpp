@@ -47,7 +47,7 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
                                         include_muted, include_clusters);
 
     if (result.success) {
-      // SOVD-compliant format: items array at top level
+      // Format: items array at top level
       json response = {{"items", result.data["faults"]}};
 
       // x-medkit extension for ros2_medkit-specific fields
@@ -126,7 +126,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
                                         filter.include_cleared, include_muted, include_clusters);
 
     if (result.success) {
-      // SOVD-compliant format: items array at top level
+      // Format: items array at top level
       json response = {{"items", result.data["faults"]}};
 
       // x-medkit extension for ros2_medkit-specific fields
@@ -198,7 +198,7 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
     auto result = fault_mgr->get_fault(fault_code, namespace_path);
 
     if (result.success) {
-      // SOVD-compliant format: single item wrapped
+      // Format: single item wrapped
       json response = {{"item", result.data}};
 
       // x-medkit extension for entity context
@@ -266,7 +266,7 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     auto result = fault_mgr->clear_fault(fault_code);
 
     if (result.success) {
-      // SOVD-compliant: return 204 No Content on successful delete
+      // Format: return 204 No Content on successful delete
       res.status = StatusCode::NoContent_204;
     } else {
       // Check if it's a "not found" error
@@ -339,7 +339,7 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
       }
     }
 
-    // SOVD-compliant: return 204 No Content on successful delete
+    // Format: return 204 No Content on successful delete
     res.status = StatusCode::NoContent_204;
 
   } catch (const std::exception & e) {

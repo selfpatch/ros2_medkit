@@ -94,7 +94,7 @@ TEST_F(AreaModelTest, ToEntityReference_ContainsRequiredFields) {
 
   EXPECT_EQ(j["id"], "powertrain");
   EXPECT_EQ(j["href"], "http://localhost:8080/api/v1/areas/powertrain");
-  EXPECT_FALSE(j.contains("type"));  // SOVD compliant: no type in EntityReference
+  EXPECT_FALSE(j.contains("type"));
 }
 
 TEST_F(AreaModelTest, ToCapabilities_ContainsSubResources) {
@@ -157,7 +157,7 @@ TEST_F(ComponentModelTest, ToEntityReference_ContainsRequiredFields) {
 
   EXPECT_EQ(j["id"], "motor_controller");
   EXPECT_EQ(j["href"], "http://localhost:8080/api/v1/components/motor_controller");
-  EXPECT_FALSE(j.contains("type"));  // SOVD compliant: no type in EntityReference
+  EXPECT_FALSE(j.contains("type"));
 }
 
 TEST_F(ComponentModelTest, ToCapabilities_ContainsConfigurationsForNodes) {
@@ -365,7 +365,7 @@ TEST_F(FunctionModelTest, ToEntityReference_ContainsRequiredFields) {
   EXPECT_EQ(j["id"], "path_planning");
   EXPECT_EQ(j["name"], "Path Planning");
   EXPECT_EQ(j["href"], "http://localhost:8080/api/v1/functions/path_planning");
-  EXPECT_FALSE(j.contains("type"));  // SOVD compliant: no type in EntityReference
+  EXPECT_FALSE(j.contains("type"));
 }
 
 TEST_F(FunctionModelTest, ToCapabilities_ContainsExpectedResources) {
