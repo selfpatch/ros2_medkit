@@ -47,3 +47,132 @@ patterns:
 default_topics:
   - /diagnostics
   - /rosout
+
+# =============================================================================
+# Rosbag Capture Configuration (Issue #120)
+# =============================================================================
+#
+# Rosbag capture provides "black box" style recording - a ring buffer continuously
+# records configured topics, and when a fault is confirmed, the buffer is flushed
+# to a bag file along with a short period of post-fault recording.
+#
+# This is complementary to JSON snapshots:
+#   - JSON snapshots: Point-in-time capture, easy to query via REST API
+#   - Rosbag capture: Time-window recording, full message fidelity, playback support
+#
+# Usage:
+#   ros2 run ros2_medkit_fault_manager fault_manager_node \
+#     --ros-args -p snapshots.rosbag.enabled:=true \
+#                -p snapshots.rosbag.duration_sec:=5.0
+#
+# Or via launch file parameters (see examples below)
+
+rosbag:
+  # Enable/disable rosbag capture (default: false)
+  # When disabled, only JSON snapshots are captured
+  enabled: false
+
+  # Ring buffer duration in seconds (default: 5.0)
+  # How many seconds of data to keep before fault confirmation
+  # Larger values = more context but more memory usage
+  duration_sec: 5.0
+
+  # Post-fault recording duration in seconds (default: 1.0)
+  # Continue recording after fault is confirmed to capture aftermath
+  duration_after_sec: 1.0
+
+  # Topic selection mode (default: "config")
+  # Options:
+  #   "config"   - Use same topics as JSON snapshots (from this config file)
+  #   "all"      - Record all available topics (WARNING: high memory usage!)
+  #   "explicit" - Use only topics from include_topics list below
+  topics: "config"
+
+  # Explicit topic list (only used when topics: "explicit")
+  # include_topics:
+  #   - /joint_states
+  #   - /odom
+  #   - /cmd_vel
+
+  # Topics to exclude from recording (applies to all modes)
+  # Useful to filter out high-bandwidth topics like camera images
+  # exclude_topics:
+  #   - /camera/image_raw
+  #   - /camera/depth/image_raw
+  #   - /pointcloud
+
+  # Lazy start mode (default: false)
+  # When true, ring buffer only starts when fault enters PREFAILED state
+  # Saves resources but may miss early context if fault confirms quickly
+  # When false, ring buffer runs continuously from node startup
+  lazy_start: false
+
+  # Bag file format (default: "sqlite3")
+  # Options:
+  #   "sqlite3" - Default rosbag2 format, widely compatible
+  #   "mcap"    - More efficient, better compression (requires rosbag2_storage_mcap)
+  format: "sqlite3"
+
+  # Storage path for bag files (default: "" = system temp directory)
+  # Empty string uses /tmp/rosbag_snapshots/
+  # Bag files are named: {fault_code}_{timestamp}/
+  storage_path: ""
+
+  # Maximum size per bag file in MB (default: 50)
+  # If a bag exceeds this size, it will be closed even if still recording
+  max_bag_size_mb: 50
+
+  # Maximum total storage for all bag files in MB (default: 500)
+  # Oldest bags are deleted when this limit is exceeded
+  max_total_storage_mb: 500
+
+  # Auto-cleanup bag files when fault is cleared (default: true)
+  # When true, bag files are deleted when ClearFault is called
+  # When false, bag files persist until manually deleted or storage limit hit
+  auto_cleanup: true
+
+# =============================================================================
+# Example Configurations
+# =============================================================================
+#
+# Minimal configuration (enable with defaults):
+# ---------------------------------------------
+# rosbag:
+#   enabled: true
+#
+# Production configuration (conservative resources):
+# --------------------------------------------------
+# rosbag:
+#   enabled: true
+#   duration_sec: 3.0
+#   duration_after_sec: 0.5
+#   topics: "config"
+#   lazy_start: true
+#   max_bag_size_mb: 25
+#   max_total_storage_mb: 200
+#   auto_cleanup: true
+#
+# Development/debugging configuration (more context):
+# ---------------------------------------------------
+# rosbag:
+#   enabled: true
+#   duration_sec: 10.0
+#   duration_after_sec: 2.0
+#   topics: "config"
+#   lazy_start: false
+#   format: "mcap"
+#   storage_path: "/var/log/ros2_medkit/rosbags"
+#   max_bag_size_mb: 100
+#   max_total_storage_mb: 1000
+#   auto_cleanup: false
+#
+# Explicit topics (specific topics only):
+# ---------------------------------------
+# rosbag:
+#   enabled: true
+#   topics: "explicit"
+#   include_topics:
+#     - /joint_states
+#     - /odom
+#     - /diagnostics
+#   exclude_topics: []

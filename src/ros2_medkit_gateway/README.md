@@ -648,6 +648,7 @@ Faults represent errors or warnings reported by system components. The gateway p
 - `GET /api/v1/faults` - List all faults across the system (convenience API for dashboards)
 - `GET /api/v1/faults/stream` - Real-time fault event stream via Server-Sent Events (SSE)
 - `GET /api/v1/faults/{fault_code}/snapshots` - Get topic snapshots captured when fault was confirmed
+- `GET /api/v1/faults/{fault_code}/snapshots/bag` - Download rosbag file for fault (if rosbag capture enabled)
 - `GET /api/v1/components/{component_id}/faults` - List faults for a specific component
 - `GET /api/v1/components/{component_id}/faults/{fault_code}` - Get a specific fault
 - `GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots` - Get snapshots for a component's fault
@@ -870,6 +871,86 @@ patterns:
 default_topics:
   - /diagnostics
 ```
+
+#### GET /api/v1/faults/{fault_code}/snapshots/bag
+
+Download the rosbag file associated with a fault. This endpoint is only available when rosbag capture is enabled in FaultManager.
+
+Rosbag capture provides "black box" style recording - a ring buffer continuously records configured topics, and when a fault is confirmed, the buffer is flushed to a bag file. This allows capturing system state both **before and after** fault confirmation.
+
+**Example:**
+```bash
+# Download rosbag file
+curl -O -J http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag
+
+# Or save with custom filename
+curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag -o motor_fault.db3
+```
+
+**Response (200 OK):**
+- Binary rosbag file download
+- Content-Type: `application/octet-stream`
+- Content-Disposition: `attachment; filename="MOTOR_OVERHEAT_1735830000.db3"`
+
+**Response (404 Not Found - Fault or rosbag not found):**
+```json
+{
+  "error": "Rosbag not found",
+  "fault_code": "MOTOR_OVERHEAT",
+  "details": "No rosbag file associated with this fault"
+}
+```
+
+**Response (404 Not Found - Rosbag file deleted):**
+```json
+{
+  "error": "Rosbag file not found",
+  "fault_code": "MOTOR_OVERHEAT",
+  "details": "File was deleted or moved"
+}
+```
+
+**Rosbag Configuration:**
+
+Rosbag capture is configured via FaultManager parameters. See `config/snapshots.yaml` for full configuration options.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `snapshots.rosbag.enabled` | bool | `false` | Enable/disable rosbag capture |
+| `snapshots.rosbag.duration_sec` | double | `5.0` | Ring buffer duration (seconds before fault) |
+| `snapshots.rosbag.duration_after_sec` | double | `1.0` | Recording duration after fault confirmed |
+| `snapshots.rosbag.topics` | string | `"config"` | Topic selection: `"config"`, `"all"`, or `"explicit"` |
+| `snapshots.rosbag.format` | string | `"sqlite3"` | Bag format: `"sqlite3"` or `"mcap"` |
+| `snapshots.rosbag.auto_cleanup` | bool | `true` | Delete bag when fault is cleared |
+| `snapshots.rosbag.max_bag_size_mb` | int | `50` | Max size per bag file |
+| `snapshots.rosbag.max_total_storage_mb` | int | `500` | Total storage limit |
+
+**Enable rosbag capture:**
+```bash
+ros2 run ros2_medkit_fault_manager fault_manager_node \
+  --ros-args -p snapshots.rosbag.enabled:=true \
+             -p snapshots.rosbag.duration_sec:=5.0
+```
+
+**Playback downloaded rosbag:**
+```bash
+# Play back the downloaded bag
+ros2 bag play MOTOR_OVERHEAT_1735830000
+
+# Inspect bag contents
+ros2 bag info MOTOR_OVERHEAT_1735830000
+```
+
+**Differences from JSON Snapshots:**
+
+| Feature | JSON Snapshots | Rosbag Capture |
+|---------|----------------|----------------|
+| Data format | JSON (human-readable) | Binary (native ROS 2) |
+| Time coverage | Point-in-time (at confirmation) | Time window (before + after) |
+| Message fidelity | Converted to JSON | Original serialization |
+| Playback | N/A | `ros2 bag play` |
+| Query via REST | Yes (structured JSON) | Download only |
+| Default | Enabled | Disabled |
 
 ## Quick Start
 
