@@ -33,7 +33,7 @@ void AppHandlers::handle_list_apps(const httplib::Request & req, httplib::Respon
     auto discovery = ctx_.node()->get_discovery_manager();
     auto apps = discovery->discover_apps();
 
-    // Build SOVD-compliant items array with EntityReference format
+    // Build items array with EntityReference format
     json items = json::array();
     for (const auto & app : apps) {
       json app_item;
@@ -109,7 +109,7 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
 
     const auto & app = *app_opt;
 
-    // Build response with SOVD-compliant structure
+    // Build response with structure
     json response;
     response["id"] = app.id;
     response["name"] = app.name;
@@ -129,7 +129,17 @@ void AppHandlers::handle_get_app(const httplib::Request & req, httplib::Response
     response["data"] = base_uri + "/data";
     response["operations"] = base_uri + "/operations";
     response["configurations"] = base_uri + "/configurations";
-    // Apps don't have faults/subcomponents in SOVD model
+    response["faults"] = base_uri + "/faults";  // Apps also support faults
+
+    // Add is-located-on reference to hosting Component (SOVD 7.6.3)
+    if (!app.component_id.empty()) {
+      response["is-located-on"] = "/api/v1/components/" + app.component_id;
+    }
+
+    // Add depends-on only when app has dependencies
+    if (!app.depends_on.empty()) {
+      response["depends-on"] = base_uri + "/depends-on";
+    }
 
     // Build capabilities using CapabilityBuilder (for capability introspection)
     using Cap = CapabilityBuilder::Capability;
@@ -199,13 +209,13 @@ void AppHandlers::handle_get_app_data(const httplib::Request & req, httplib::Res
 
     const auto & app = *app_opt;
 
-    // Build SOVD-compliant data items from app's topics
+    // Build data items from app's topics
     json items = json::array();
 
-    // Publishers - SOVD category "currentData"
+    // Publishers - category "currentData"
     for (const auto & topic_name : app.topics.publishes) {
       json item;
-      // SOVD required fields
+      // Required fields
       item["id"] = normalize_topic_to_id(topic_name);
       item["name"] = topic_name;  // Use topic name as display name
       item["category"] = "currentData";
@@ -218,10 +228,10 @@ void AppHandlers::handle_get_app_data(const httplib::Request & req, httplib::Res
       items.push_back(item);
     }
 
-    // Subscribers - SOVD category "currentData"
+    // Subscribers - category "currentData"
     for (const auto & topic_name : app.topics.subscribes) {
       json item;
-      // SOVD required fields
+      // Required fields
       item["id"] = normalize_topic_to_id(topic_name);
       item["name"] = topic_name;
       item["category"] = "currentData";

@@ -23,12 +23,14 @@ namespace handlers {
 /**
  * @brief Handlers for operation-related REST API endpoints (services and actions).
  *
- * Provides handlers for:
- * - GET /components/{component_id}/operations - List all operations
- * - POST /components/{component_id}/operations/{operation_name} - Execute operation
- * - GET /components/{component_id}/operations/{operation_name}/status - Get action status
- * - GET /components/{component_id}/operations/{operation_name}/result - Get action result
- * - DELETE /components/{component_id}/operations/{operation_name} - Cancel action
+ * Handlers:
+ * - GET /{entity}/operations - List all operations (7.14.3)
+ * - GET /{entity}/operations/{op-id} - Get operation details (7.14.4)
+ * - GET /{entity}/operations/{op-id}/executions - List executions (7.14.5)
+ * - POST /{entity}/operations/{op-id}/executions - Start execution (7.14.6)
+ * - GET /{entity}/operations/{op-id}/executions/{exec-id} - Get execution status (7.14.7)
+ * - PUT /{entity}/operations/{op-id}/executions/{exec-id} - Update execution (7.14.9)
+ * - DELETE /{entity}/operations/{op-id}/executions/{exec-id} - Terminate execution (7.14.8)
  */
 class OperationHandlers {
  public:
@@ -50,13 +52,7 @@ class OperationHandlers {
   void handle_get_operation(const httplib::Request & req, httplib::Response & res);
 
   /**
-   * @brief Handle POST /components/{component_id}/operations/{operation_name} - execute.
-   * @deprecated Use handle_create_execution for SOVD-compliant execution via /executions path.
-   */
-  void handle_component_operation(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle POST /{entity}/operations/{op-id}/executions - SOVD-compliant execution start.
+   * @brief Handle POST /{entity}/operations/{op-id}/executions - execution start.
    */
   void handle_create_execution(const httplib::Request & req, httplib::Response & res);
 
@@ -76,19 +72,13 @@ class OperationHandlers {
   void handle_cancel_execution(const httplib::Request & req, httplib::Response & res);
 
   /**
-   * @brief Handle GET /components/{component_id}/operations/{operation_name}/status.
+   * @brief Handle PUT /{entity}/operations/{op-id}/executions/{exec-id} - update execution.
+   *
+   * Executes the given capability on the provided operation execution.
+   * Supported capabilities for ROS 2 actions: stop (maps to cancel).
+   * Unsupported: execute (re-execute), freeze, reset (I/O control specific).
    */
-  void handle_action_status(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle GET /components/{component_id}/operations/{operation_name}/result.
-   */
-  void handle_action_result(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle DELETE /components/{component_id}/operations/{operation_name}.
-   */
-  void handle_action_cancel(const httplib::Request & req, httplib::Response & res);
+  void handle_update_execution(const httplib::Request & req, httplib::Response & res);
 
  private:
   HandlerContext & ctx_;

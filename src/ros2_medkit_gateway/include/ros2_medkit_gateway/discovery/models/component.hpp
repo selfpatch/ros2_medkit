@@ -50,14 +50,14 @@ struct Component {
   ComponentTopics topics;               ///< Topics this component publishes/subscribes
 
   /**
-   * @brief Convert to JSON representation (SOVD-compliant)
+   * @brief Convert to JSON representation
    * @return JSON object with component data
    *
    * SOVD EntityReference fields: id, name, href, translation_id, tags
    * ROS 2 extensions in x-medkit: namespace, fqn, entityType, area, source, variant, etc.
    */
   json to_json() const {
-    // SOVD-compliant base fields
+    // Base fields
     json j = {{"id", id}};
 
     if (!name.empty()) {
@@ -130,7 +130,7 @@ struct Component {
   json to_capabilities(const std::string & base_url) const {
     std::string component_url = base_url + "/components/" + id;
 
-    // SOVD-compliant capabilities response
+    // Capabilities response
     json j = {{"id", id}};
     if (!name.empty()) {
       j["name"] = name;

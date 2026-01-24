@@ -62,9 +62,10 @@ class AreaHandlers {
   void handle_get_subareas(const httplib::Request & req, httplib::Response & res);
 
   /**
-   * @brief Handle GET /areas/{area_id}/related-components - list related components.
+   * @brief Handle GET /areas/{area_id}/contains - list contained entities (Components).
+   * @verifies REQ_INTEROP_006
    */
-  void handle_get_related_components(const httplib::Request & req, httplib::Response & res);
+  void handle_get_contains(const httplib::Request & req, httplib::Response & res);
 
  private:
   HandlerContext & ctx_;

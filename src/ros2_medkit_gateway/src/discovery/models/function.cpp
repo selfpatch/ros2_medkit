@@ -17,7 +17,7 @@
 namespace ros2_medkit_gateway {
 
 json Function::to_json() const {
-  // SOVD-compliant base fields
+  // Base fields
   json j = {{"id", id}};
 
   if (!name.empty()) {
@@ -30,7 +30,7 @@ json Function::to_json() const {
     j["tags"] = tags;
   }
 
-  // ROS 2 extensions in x-medkit (SOVD vendor extension)
+  // ROS 2 extensions in x-medkit
   json x_medkit = {{"entityType", "Function"}, {"source", source}};
   if (!description.empty()) {
     x_medkit["description"] = description;
@@ -47,7 +47,7 @@ json Function::to_json() const {
 }
 
 json Function::to_entity_reference(const std::string & base_url) const {
-  // SOVD-compliant EntityReference: id, name, href, [translationId, tags]
+  // EntityReference: id, name, href, [translationId, tags]
   json j = {{"id", id}, {"href", base_url + "/functions/" + id}};
 
   if (!name.empty()) {
@@ -66,7 +66,7 @@ json Function::to_entity_reference(const std::string & base_url) const {
 json Function::to_capabilities(const std::string & base_url) const {
   std::string func_base = base_url + "/functions/" + id;
 
-  // SOVD-compliant capabilities response
+  // Capabilities response
   json j = {{"id", id}};
 
   if (!name.empty()) {

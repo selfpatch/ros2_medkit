@@ -32,7 +32,7 @@ void FunctionHandlers::handle_list_functions(const httplib::Request & req, httpl
     auto discovery = ctx_.node()->get_discovery_manager();
     auto functions = discovery->discover_functions();
 
-    // Build SOVD-compliant items array with EntityReference format
+    // Build items array with EntityReference format
     json items = json::array();
     for (const auto & func : functions) {
       json func_item;
@@ -102,7 +102,7 @@ void FunctionHandlers::handle_get_function(const httplib::Request & req, httplib
 
     const auto & func = *func_opt;
 
-    // Build response with SOVD-compliant structure
+    // Build response
     json response;
     response["id"] = func.id;
     response["name"] = func.name.empty() ? func.id : func.name;
@@ -117,7 +117,7 @@ void FunctionHandlers::handle_get_function(const httplib::Request & req, httplib
       response["tags"] = func.tags;
     }
 
-    // SOVD capability URIs as flat fields at top level
+    // Capability URIs as flat fields at top level
     std::string base_uri = "/api/v1/functions/" + func.id;
     response["hosts"] = base_uri + "/hosts";
     response["data"] = base_uri + "/data";

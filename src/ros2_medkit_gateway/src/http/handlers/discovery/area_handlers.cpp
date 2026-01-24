@@ -31,16 +31,16 @@ void AreaHandlers::handle_list_areas(const httplib::Request & req, httplib::Resp
   try {
     const auto cache = ctx_.node()->get_entity_cache();
 
-    // Build SOVD-compliant items array with EntityReference format
+    // Build items array with EntityReference format
     json items = json::array();
     for (const auto & area : cache.areas) {
       json area_item;
-      // SOVD required fields for EntityReference
+      // Required fields for EntityReference
       area_item["id"] = area.id;
       area_item["name"] = area.name.empty() ? area.id : area.name;
       area_item["href"] = "/api/v1/areas/" + area.id;
 
-      // Optional SOVD fields
+      // Optional fields
       if (!area.description.empty()) {
         area_item["description"] = area.description;
       }
@@ -101,7 +101,7 @@ void AreaHandlers::handle_get_area(const httplib::Request & req, httplib::Respon
 
     const auto & area = *area_opt;
 
-    // Build response with SOVD-compliant structure
+    // Build response
     json response;
     response["id"] = area.id;
     response["name"] = area.name.empty() ? area.id : area.name;
@@ -113,14 +113,15 @@ void AreaHandlers::handle_get_area(const httplib::Request & req, httplib::Respon
       response["tags"] = area.tags;
     }
 
-    // SOVD capability URIs as flat fields at top level
+    // Capability URIs as flat fields at top level
     std::string base_uri = "/api/v1/areas/" + area.id;
     response["subareas"] = base_uri + "/subareas";
     response["components"] = base_uri + "/components";
+    response["contains"] = base_uri + "/contains";  // SOVD 7.6.2.4
 
     // Build capabilities for areas
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::SUBAREAS, Cap::RELATED_COMPONENTS};
+    std::vector<Cap> caps = {Cap::SUBAREAS, Cap::CONTAINS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("areas", area.id, caps);
 
     // Build HATEOAS links
@@ -182,7 +183,7 @@ void AreaHandlers::handle_area_components(const httplib::Request & req, httplib:
       return;
     }
 
-    // Filter components by area with SOVD-compliant format
+    // Filter components by area
     json items = json::array();
     for (const auto & component : cache.components) {
       if (component.area == area_id) {
@@ -289,7 +290,8 @@ void AreaHandlers::handle_get_subareas(const httplib::Request & req, httplib::Re
   }
 }
 
-void AreaHandlers::handle_get_related_components(const httplib::Request & req, httplib::Response & res) {
+void AreaHandlers::handle_get_contains(const httplib::Request & req, httplib::Response & res) {
+  // @verifies REQ_INTEROP_006
   try {
     if (req.matches.size() < 2) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
@@ -314,7 +316,7 @@ void AreaHandlers::handle_get_related_components(const httplib::Request & req, h
       return;
     }
 
-    // Get components for this area
+    // Get components for this area (SOVD 7.6.2.4 - non-deprecated relationship)
     auto components = discovery->get_components_for_area(area_id);
 
     json items = json::array();
@@ -345,7 +347,7 @@ void AreaHandlers::handle_get_related_components(const httplib::Request & req, h
 
     // HATEOAS links
     json links;
-    links["self"] = "/api/v1/areas/" + area_id + "/related-components";
+    links["self"] = "/api/v1/areas/" + area_id + "/contains";
     links["area"] = "/api/v1/areas/" + area_id;
     response["_links"] = links;
 
@@ -353,7 +355,7 @@ void AreaHandlers::handle_get_related_components(const httplib::Request & req, h
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_related_components: %s", e.what());
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_contains: %s", e.what());
   }
 }
 

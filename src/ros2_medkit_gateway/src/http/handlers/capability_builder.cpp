@@ -33,6 +33,8 @@ std::string CapabilityBuilder::capability_to_name(Capability cap) {
       return "subcomponents";
     case Capability::RELATED_COMPONENTS:
       return "related-components";
+    case Capability::CONTAINS:
+      return "contains";
     case Capability::RELATED_APPS:
       return "related-apps";
     case Capability::HOSTS:

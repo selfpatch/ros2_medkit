@@ -109,7 +109,7 @@ add_library(gateway_lib STATIC
   src/operation_manager.cpp
   src/configuration_manager.cpp
   src/fault_manager.cpp
-  # Entity resource model (SOVD architecture)
+  # Entity resource model
   src/models/entity_types.cpp
   src/models/entity_capabilities.cpp
   src/models/thread_safe_entity_cache.cpp
@@ -315,7 +315,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_data_access_manager gateway_lib)
   ament_target_dependencies(test_data_access_manager rclcpp std_msgs)
 
-  # Add entity resource model tests (SOVD architecture)
+  # Add entity resource model tests
   ament_add_gtest(test_entity_resource_model test/test_entity_resource_model.cpp)
   target_link_libraries(test_entity_resource_model gateway_lib)
 

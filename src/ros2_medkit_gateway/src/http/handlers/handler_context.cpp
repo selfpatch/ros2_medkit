@@ -189,7 +189,7 @@ void HandlerContext::send_error(httplib::Response & res, httplib::StatusCode sta
 
   error_json["message"] = message;
 
-  // SOVD-compliant: use x-medkit extension for additional parameters
+  // Use x-medkit extension for additional parameters
   if (!parameters.empty()) {
     error_json["x-medkit"] = parameters;
   }

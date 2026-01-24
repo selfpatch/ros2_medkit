@@ -24,7 +24,7 @@ namespace ros2_medkit_gateway {
 namespace handlers {
 
 /**
- * @brief Utility class for building SOVD-compliant capability arrays.
+ * @brief Utility class for building capability arrays.
  *
  * Generates capabilities JSON for entity responses, ensuring consistent
  * format across all entity types (areas, components, apps, functions).
@@ -49,8 +49,9 @@ class CapabilityBuilder {
     SUBAREAS,            ///< Entity has child areas (areas only)
     SUBCOMPONENTS,       ///< Entity has child components (components only)
     RELATED_COMPONENTS,  ///< Entity has related components (areas only)
+    CONTAINS,            ///< Entity contains other entities (areas->components)
     RELATED_APPS,        ///< Entity has related apps (components only)
-    HOSTS,               ///< Entity has host apps (functions only)
+    HOSTS,               ///< Entity has host apps (functions/components)
     DEPENDS_ON           ///< Entity has dependencies (components only)
   };
 
@@ -85,7 +86,7 @@ class CapabilityBuilder {
 /**
  * @brief Fluent builder for HATEOAS _links objects.
  *
- * Provides a fluent API for constructing SOVD-compliant _links JSON objects.
+ * Provides a fluent API for constructing _links JSON objects.
  *
  * @example
  * LinksBuilder links;

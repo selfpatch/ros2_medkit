@@ -179,7 +179,6 @@ class TestHeuristicAppsDiscovery(unittest.TestCase):
         self.assertGreaterEqual(len(apps), self.MIN_EXPECTED_APPS)
 
         # Get detailed info for each app and verify source
-        # SOVD-compliant: source is now in x-medkit extension
         for app in apps:
             app_id = app.get('id')
             if not app_id:
@@ -218,7 +217,6 @@ class TestHeuristicAppsDiscovery(unittest.TestCase):
         data = self._get_json('/apps')
         apps = data.get('items', [])
 
-        # SOVD-compliant: component_id is now in x-medkit extension
         for app in apps:
             x_medkit = app.get('x-medkit', {})
             app_id = app.get('id')

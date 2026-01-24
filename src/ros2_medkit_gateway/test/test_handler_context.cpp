@@ -53,7 +53,7 @@ TEST(HandlerContextStaticTest, SendErrorWithExtraFields) {
   auto body = json::parse(res.body);
   EXPECT_EQ(body["error_code"], ERR_ENTITY_NOT_FOUND);
   EXPECT_EQ(body["message"], "Not found");
-  // SOVD-compliant: extra parameters are in x-medkit extension
+  // Extra parameters are in x-medkit extension
   EXPECT_EQ(body["x-medkit"]["details"], "More info");
   EXPECT_EQ(body["x-medkit"]["code"], 42);
 }

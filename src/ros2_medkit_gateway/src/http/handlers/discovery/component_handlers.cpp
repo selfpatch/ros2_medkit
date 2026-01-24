@@ -36,16 +36,16 @@ void ComponentHandlers::handle_list_components(const httplib::Request & req, htt
   try {
     const auto cache = ctx_.node()->get_entity_cache();
 
-    // Build SOVD-compliant items array with EntityReference format
+    // Build items array with EntityReference format
     json items = json::array();
     for (const auto & component : cache.components) {
       json item;
-      // SOVD required fields for EntityReference
+      // Required fields for EntityReference
       item["id"] = component.id;
       item["name"] = component.name.empty() ? component.id : component.name;
       item["href"] = "/api/v1/components/" + component.id;
 
-      // Optional SOVD fields
+      // Optional fields
       if (!component.description.empty()) {
         item["description"] = component.description;
       }
@@ -110,11 +110,11 @@ void ComponentHandlers::handle_get_component(const httplib::Request & req, httpl
     const auto & comp = *comp_opt;
 
     json response;
-    // SOVD required fields
+    // Required fields
     response["id"] = comp.id;
     response["name"] = comp.name.empty() ? comp.id : comp.name;
 
-    // Optional SOVD fields
+    // Optional fields
     if (!comp.description.empty()) {
       response["description"] = comp.description;
     }
@@ -122,17 +122,23 @@ void ComponentHandlers::handle_get_component(const httplib::Request & req, httpl
       response["tags"] = comp.tags;
     }
 
-    // SOVD capability URIs (flat at top level)
+    // Capability URIs (flat at top level)
     std::string base = "/api/v1/components/" + comp.id;
     response["data"] = base + "/data";
     response["operations"] = base + "/operations";
     response["configurations"] = base + "/configurations";
     response["faults"] = base + "/faults";
     response["subcomponents"] = base + "/subcomponents";
+    response["hosts"] = base + "/hosts";  // SOVD 7.6.2.4
 
     // Add depends-on only when component has dependencies
     if (!comp.depends_on.empty()) {
       response["depends-on"] = base + "/depends-on";
+    }
+
+    // Add belongs-to field referencing the parent Area (SOVD 7.6.3)
+    if (!comp.area.empty()) {
+      response["belongs-to"] = "/api/v1/areas/" + comp.area;
     }
 
     // Build HATEOAS links
@@ -162,7 +168,7 @@ void ComponentHandlers::handle_get_component(const httplib::Request & req, httpl
     // Add detailed capabilities object to x-medkit
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::DATA,   Cap::OPERATIONS,    Cap::CONFIGURATIONS,
-                             Cap::FAULTS, Cap::SUBCOMPONENTS, Cap::RELATED_APPS};
+                             Cap::FAULTS, Cap::SUBCOMPONENTS, Cap::HOSTS};
     if (!comp.depends_on.empty()) {
       caps.push_back(Cap::DEPENDS_ON);
     }
@@ -233,7 +239,7 @@ void ComponentHandlers::handle_component_data(const httplib::Request & req, http
       }
     }
 
-    // Build SOVD-compliant items array with ValueMetadata format
+    // Build items array with ValueMetadata format
     json items = json::array();
 
     // Add publisher topics
@@ -469,9 +475,9 @@ void ComponentHandlers::handle_component_topic_publish(const httplib::Request & 
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
     json result = data_access_mgr->publish_to_topic(full_topic_path, msg_type, data);
 
-    // Build SOVD-compliant response with x-medkit extension
+    // Build response with x-medkit extension
     json response;
-    // SOVD required fields
+    // Required fields
     response["id"] = normalize_topic_to_id(full_topic_path);
     response["data"] = data;  // Echo back the written data
 
@@ -564,7 +570,8 @@ void ComponentHandlers::handle_get_subcomponents(const httplib::Request & req, h
   }
 }
 
-void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, httplib::Response & res) {
+void ComponentHandlers::handle_get_hosts(const httplib::Request & req, httplib::Response & res) {
+  // @verifies REQ_INTEROP_007
   try {
     if (req.matches.size() < 2) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
@@ -589,7 +596,7 @@ void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, ht
       return;
     }
 
-    // Get apps for this component (via is-located-on relationship)
+    // Get apps hosted on this component (SOVD 7.6.2.4 - non-deprecated relationship)
     auto apps = discovery->get_apps_for_component(component_id);
 
     json items = json::array();
@@ -620,7 +627,7 @@ void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, ht
 
     // HATEOAS links
     json links;
-    links["self"] = "/api/v1/components/" + component_id + "/related-apps";
+    links["self"] = "/api/v1/components/" + component_id + "/hosts";
     links["component"] = "/api/v1/components/" + component_id;
     response["_links"] = links;
 
@@ -628,7 +635,7 @@ void ComponentHandlers::handle_get_related_apps(const httplib::Request & req, ht
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_related_apps: %s", e.what());
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_hosts: %s", e.what());
   }
 }
 

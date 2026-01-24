@@ -243,23 +243,6 @@ class TestDiscoveryManifestMode(unittest.TestCase):
         data = response.json()
         self.assertIn('items', data)
 
-    def test_area_related_components(self):
-        """
-        Test GET /areas/{id}/related-components includes subarea components.
-
-        @verifies REQ_INTEROP_006
-        """
-        response = requests.get(
-            f'{self.BASE_URL}/areas/powertrain/related-components', timeout=5
-        )
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()
-        self.assertIn('items', data)
-        # Should include engine components (from subarea)
-        component_ids = [c['id'] for c in data['items']]
-        self.assertIn('engine-ecu', component_ids)
-
     # =========================================================================
     # Components Endpoints
     # =========================================================================
@@ -297,7 +280,7 @@ class TestDiscoveryManifestMode(unittest.TestCase):
         component = response.json()
         self.assertEqual(component['id'], 'engine-ecu')
         self.assertEqual(component['name'], 'Engine ECU')
-        # SOVD-compliant: capabilities is in x-medkit extension
+        # Capabilities is in x-medkit extension
         self.assertIn('x-medkit', component)
         self.assertIn('capabilities', component['x-medkit'])
         self.assertIn('_links', component)
@@ -446,40 +429,6 @@ class TestDiscoveryManifestMode(unittest.TestCase):
             item = response.json()
             self.assertIn('id', item)
             self.assertIn('direction', item)
-
-    def test_component_related_apps(self):
-        """
-        Test GET /components/{id}/related-apps returns apps hosted on component.
-
-        @verifies REQ_INTEROP_003
-        """
-        # temp-sensor-hw hosts engine-temp-sensor according to manifest
-        url = f'{self.BASE_URL}/components/temp-sensor-hw/related-apps'
-        response = requests.get(url, timeout=5)
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()
-        self.assertIn('items', data)
-        self.assertIn('total_count', data.get('x-medkit', {}))
-
-        # Apps hosted on temp-sensor-hw should be returned
-        app_ids = [a['id'] for a in data['items']]
-        self.assertIn('engine-temp-sensor', app_ids)
-
-    def test_component_related_apps_empty(self):
-        """Test GET /components/{id}/related-apps returns empty for component with no apps."""
-        # engine-ecu doesn't have apps directly hosted on it
-        response = requests.get(f'{self.BASE_URL}/components/engine-ecu/related-apps', timeout=5)
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()
-        self.assertIn('items', data)
-        self.assertIsInstance(data['items'], list)
-
-    def test_component_related_apps_not_found(self):
-        """Test GET /components/{id}/related-apps returns 404 for unknown component."""
-        response = requests.get(f'{self.BASE_URL}/components/nonexistent/related-apps', timeout=5)
-        self.assertEqual(response.status_code, 404)
 
     # =========================================================================
     # Functions Endpoints

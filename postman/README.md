@@ -19,7 +19,12 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - ✅ GET `/api/v1/` - Server capabilities and entry points
 - ✅ GET `/api/v1/version-info` - Gateway status and version
 - ✅ GET `/api/v1/areas` - List all areas
+- ✅ GET `/api/v1/areas/{area_id}` - Get area capabilities
+- ✅ GET `/api/v1/areas/{area_id}/contains` - List components contained in area
 - ✅ GET `/api/v1/components` - List all components with operations and type schemas
+- ✅ GET `/api/v1/components/{component_id}` - Get component capabilities
+- ✅ GET `/api/v1/components/{component_id}/hosts` - List apps hosted on component (SOVD 7.6.2.4)
+- ✅ GET `/api/v1/components/{component_id}/depends-on` - List component dependencies
 - ✅ GET `/api/v1/areas/{area_id}/components` - List components in specific area
 
 ### Component Data Endpoints
