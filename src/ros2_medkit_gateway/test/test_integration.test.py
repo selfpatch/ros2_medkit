@@ -29,7 +29,7 @@ import unittest
 from urllib.parse import quote
 
 from launch import LaunchDescription
-from launch.actions import TimerAction
+from launch.actions import ExecuteProcess, TimerAction
 import launch_ros.actions
 import launch_testing.actions
 import requests
@@ -211,13 +211,31 @@ def generate_test_description():
 
     # Launch the fault_manager node for fault REST API tests
     # Use in-memory storage to avoid filesystem permission issues in CI
+    # Enable rosbag capture for integration testing
     fault_manager_node = launch_ros.actions.Node(
         package='ros2_medkit_fault_manager',
         executable='fault_manager_node',
         name='fault_manager',
         output='screen',
         additional_env=coverage_env,
-        parameters=[{'storage_type': 'memory'}],
+        parameters=[{
+            'storage_type': 'memory',
+            'snapshots.rosbag.enabled': True,
+            'snapshots.rosbag.duration_sec': 2.0,
+            'snapshots.rosbag.duration_after_sec': 0.5,
+            'snapshots.rosbag.topics': 'explicit',
+            'snapshots.rosbag.include_topics': ['/rosbag_test_topic'],
+        }],
+    )
+
+    # Simple publisher for rosbag test (publishes at 10Hz)
+    rosbag_test_publisher = ExecuteProcess(
+        cmd=[
+            'ros2', 'topic', 'pub', '--rate', '10',
+            '/rosbag_test_topic', 'std_msgs/msg/String',
+            '{data: "rosbag_test_message"}'
+        ],
+        output='screen',
     )
 
     # Start demo nodes with a delay to ensure gateway starts first
@@ -234,6 +252,7 @@ def generate_test_description():
             long_calibration_action,
             lidar_sensor,
             fault_manager_node,
+            rosbag_test_publisher,
         ],
     )
 
@@ -3810,7 +3829,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
     # ==================== Rosbag Snapshot Tests ====================
 
     def test_107_get_rosbag_nonexistent_fault(self):
-        """Test /faults/{code}/snapshots/bag returns 404 for unknown fault (@verifies REQ_INTEROP_088)."""
+        """
+        Test /faults/{code}/snapshots/bag returns 404 for unknown fault.
+
+        @verifies REQ_INTEROP_088
+        """
         response = requests.get(
             f'{self.BASE_URL}/faults/NONEXISTENT_ROSBAG_FAULT/snapshots/bag',
             timeout=10
@@ -3827,7 +3850,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print('✓ Get rosbag nonexistent fault test passed')
 
     def test_108_get_rosbag_invalid_fault_code(self):
-        """Test /faults/{code}/snapshots/bag rejects invalid fault codes (@verifies REQ_INTEROP_088)."""
+        """
+        Test /faults/{code}/snapshots/bag rejects invalid fault codes.
+
+        @verifies REQ_INTEROP_088
+        """
         # These should be rejected by fault_code validation
         invalid_codes = [
             '../../../etc/passwd',  # Path traversal attempt
@@ -3848,3 +3875,85 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             )
 
         print('✓ Get rosbag invalid fault code test passed')
+
+    def test_72_get_rosbag_happy_path(self):
+        """Test rosbag download happy path (@verifies REQ_INTEROP_088)."""
+        import tarfile
+        import tempfile
+        import time
+
+        fault_code = 'ROSBAG_TEST_FAULT'
+
+        # Wait for ring buffer to fill (duration_sec = 2.0)
+        time.sleep(3)
+
+        # Report a CRITICAL fault (severity=3) to trigger immediate confirmation
+        response = requests.post(
+            f'{self.GATEWAY_URL}/fault_manager/report_fault',
+            json={
+                'fault_code': fault_code,
+                'source_id': '/rosbag_test_node',
+                'severity': 3,  # CRITICAL - confirms immediately
+                'message': 'Test fault for rosbag happy path',
+            },
+            timeout=10
+        )
+        # Note: ReportFault goes through ROS2 service, not REST
+        # We need to use the ROS2 service instead
+
+        # Use subprocess to call ROS2 service
+        import subprocess
+        subprocess.run(
+            [
+                'ros2', 'service', 'call',
+                '/fault_manager/report_fault',
+                'ros2_medkit_msgs/srv/ReportFault',
+                f"{{fault_code: '{fault_code}', source_id: '/rosbag_test', "
+                f"severity: 3, message: 'Test fault for rosbag'}}"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,  # Don't raise on non-zero exit
+        )
+
+        # Wait for post-fault recording to complete (duration_after_sec = 0.5)
+        time.sleep(2)
+
+        # Download the rosbag
+        response = requests.get(
+            f'{self.BASE_URL}/faults/{fault_code}/snapshots/bag',
+            timeout=30
+        )
+
+        self.assertEqual(
+            response.status_code, 200,
+            f'Expected 200 OK but got {response.status_code}: {response.text}'
+        )
+
+        # Verify headers
+        content_type = response.headers.get('Content-Type', '')
+        self.assertIn('gzip', content_type, 'Expected gzip content type for tar.gz archive')
+
+        content_disp = response.headers.get('Content-Disposition', '')
+        self.assertIn('attachment', content_disp, 'Expected attachment disposition')
+        self.assertIn('.tar.gz', content_disp, 'Expected .tar.gz extension')
+
+        # Verify content is a valid tar.gz archive
+        with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as f:
+            f.write(response.content)
+            temp_path = f.name
+
+        try:
+            with tarfile.open(temp_path, 'r:gz') as tar:
+                names = tar.getnames()
+                # Should contain at least one file
+                self.assertGreater(len(names), 0, 'Archive should not be empty')
+                # Should contain metadata.yaml (rosbag2 standard)
+                has_metadata = any('metadata.yaml' in n for n in names)
+                self.assertTrue(has_metadata, f'Expected metadata.yaml in archive: {names}')
+        finally:
+            import os
+            os.unlink(temp_path)
+
+        print('✓ Get rosbag happy path test passed')
