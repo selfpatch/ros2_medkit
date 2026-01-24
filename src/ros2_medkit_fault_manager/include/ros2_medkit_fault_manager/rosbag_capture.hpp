@@ -105,7 +105,7 @@ class RosbagCapture {
 
   /// Message callback for all subscribed topics
   void message_callback(const std::string & topic, const std::string & msg_type,
-                        std::shared_ptr<const rclcpp::SerializedMessage> msg);
+                        const std::shared_ptr<const rclcpp::SerializedMessage> & msg);
 
   /// Prune old messages from buffer based on duration_sec
   void prune_buffer();

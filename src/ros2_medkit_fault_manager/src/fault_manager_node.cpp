@@ -112,8 +112,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
 
   // Initialize rosbag capture if enabled
   if (snapshot_config.rosbag.enabled) {
-    rosbag_capture_ =
-        std::make_unique<RosbagCapture>(this, storage_.get(), snapshot_config.rosbag, snapshot_config);
+    rosbag_capture_ = std::make_unique<RosbagCapture>(this, storage_.get(), snapshot_config.rosbag, snapshot_config);
   }
 
   // Initialize correlation engine (nullptr if disabled or not configured)
@@ -523,8 +522,8 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
                 "Rosbag capture enabled (duration=%.1fs+%.1fs, topics=%s, lazy=%s, format=%s, "
                 "max_bag=%zuMB, max_total=%zuMB)",
                 config.rosbag.duration_sec, config.rosbag.duration_after_sec, config.rosbag.topics.c_str(),
-                config.rosbag.lazy_start ? "true" : "false", config.rosbag.format.c_str(), config.rosbag.max_bag_size_mb,
-                config.rosbag.max_total_storage_mb);
+                config.rosbag.lazy_start ? "true" : "false", config.rosbag.format.c_str(),
+                config.rosbag.max_bag_size_mb, config.rosbag.max_total_storage_mb);
   }
 
   if (config.enabled) {
