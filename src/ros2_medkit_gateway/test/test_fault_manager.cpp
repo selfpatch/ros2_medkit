@@ -23,10 +23,12 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "ros2_medkit_gateway/fault_manager.hpp"
+#include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
 
 using namespace std::chrono_literals;
 using ros2_medkit_gateway::FaultManager;
+using ros2_medkit_msgs::srv::GetRosbag;
 using ros2_medkit_msgs::srv::GetSnapshots;
 
 class FaultManagerTest : public ::testing::Test {
@@ -185,6 +187,62 @@ TEST_F(FaultManagerTest, GetSnapshotsEmptyResponse) {
   EXPECT_TRUE(result.success);
   EXPECT_TRUE(result.data.is_object());
   EXPECT_TRUE(result.data.empty());
+}
+
+// GetRosbag service client tests
+
+// @verifies REQ_INTEROP_088
+TEST_F(FaultManagerTest, GetRosbagServiceNotAvailable) {
+  FaultManager fault_manager(node_.get());
+
+  // Don't create a service, so it will timeout
+  auto result = fault_manager.get_rosbag("TEST_FAULT");
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.error_message, "GetRosbag service not available");
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(FaultManagerTest, GetRosbagSuccess) {
+  auto service = node_->create_service<GetRosbag>(
+      "/fault_manager/get_rosbag",
+      [](const std::shared_ptr<GetRosbag::Request> request, std::shared_ptr<GetRosbag::Response> response) {
+        response->success = true;
+        response->file_path = "/tmp/test_bag_" + request->fault_code;
+        response->format = "sqlite3";
+        response->duration_sec = 5.5;
+        response->size_bytes = 12345;
+      });
+
+  start_spinning();
+  FaultManager fault_manager(node_.get());
+
+  auto result = fault_manager.get_rosbag("TEST_ROSBAG_FAULT");
+
+  EXPECT_TRUE(result.success);
+  EXPECT_TRUE(result.data.contains("file_path"));
+  EXPECT_EQ(result.data["file_path"], "/tmp/test_bag_TEST_ROSBAG_FAULT");
+  EXPECT_EQ(result.data["format"], "sqlite3");
+  EXPECT_EQ(result.data["duration_sec"], 5.5);
+  EXPECT_EQ(result.data["size_bytes"], 12345);
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(FaultManagerTest, GetRosbagNotFound) {
+  auto service = node_->create_service<GetRosbag>(
+      "/fault_manager/get_rosbag",
+      [](const std::shared_ptr<GetRosbag::Request> /*request*/, std::shared_ptr<GetRosbag::Response> response) {
+        response->success = false;
+        response->error_message = "No rosbag file available for fault";
+      });
+
+  start_spinning();
+  FaultManager fault_manager(node_.get());
+
+  auto result = fault_manager.get_rosbag("NONEXISTENT_FAULT");
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.error_message, "No rosbag file available for fault");
 }
 
 int main(int argc, char ** argv) {

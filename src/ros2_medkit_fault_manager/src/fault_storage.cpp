@@ -291,6 +291,15 @@ std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(const std::string 
 
 void InMemoryFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
   std::lock_guard<std::mutex> lock(mutex_);
+
+  // Delete existing bag file if present (prevent orphaned files on re-confirm)
+  auto it = rosbag_files_.find(info.fault_code);
+  if (it != rosbag_files_.end() && it->second.file_path != info.file_path) {
+    std::error_code ec;
+    std::filesystem::remove_all(it->second.file_path, ec);
+    // Ignore errors - file may already be deleted
+  }
+
   rosbag_files_[info.fault_code] = info;
 }
 

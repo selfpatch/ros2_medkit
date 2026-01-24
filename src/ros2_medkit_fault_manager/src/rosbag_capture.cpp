@@ -296,6 +296,11 @@ void RosbagCapture::message_callback(const std::string & topic, const std::strin
 }
 
 void RosbagCapture::prune_buffer() {
+  // Don't prune during post-fault recording - we need all messages for the final flush
+  if (recording_post_fault_.load()) {
+    return;
+  }
+
   std::lock_guard<std::mutex> lock(buffer_mutex_);
 
   if (message_buffer_.empty()) {
@@ -340,8 +345,11 @@ std::vector<std::string> RosbagCapture::resolve_topics() const {
       }
       topics_set.insert(topic);
     }
+  } else if (config_.topics == "explicit") {
+    // Explicit mode: use only include_topics, no topic derivation
+    // Topics will be populated from include_topics below
   } else {
-    // Explicit comma-separated list
+    // Comma-separated list of topics
     std::istringstream iss(config_.topics);
     std::string topic;
     while (std::getline(iss, topic, ',')) {

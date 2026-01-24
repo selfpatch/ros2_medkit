@@ -14,8 +14,11 @@
 
 #include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
 
+#include <chrono>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -28,6 +31,37 @@ using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
+
+namespace {
+
+/// Sanitize a string for use in HTTP Content-Disposition filename
+/// Removes/replaces characters that could cause header injection or filesystem issues
+std::string sanitize_filename(const std::string & input) {
+  std::string result;
+  result.reserve(input.size());
+  for (char c : input) {
+    // Allow only alphanumeric, underscore, hyphen, dot
+    if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.') {
+      result += c;
+    } else {
+      result += '_';  // Replace unsafe characters
+    }
+  }
+  return result;
+}
+
+/// Generate a timestamp string in YYYYMMDD_HHMMSS format for filenames
+std::string generate_timestamp() {
+  auto now = std::chrono::system_clock::now();
+  std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+  std::tm now_tm;
+  gmtime_r(&now_time, &now_tm);  // Use UTC for consistency
+  std::ostringstream oss;
+  oss << std::put_time(&now_tm, "%Y%m%d_%H%M%S");
+  return oss.str();
+}
+
+}  // namespace
 
 void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib::Response & res) {
   try {
@@ -525,18 +559,14 @@ void FaultHandlers::handle_get_rosbag(const httplib::Request & req, httplib::Res
       file_path = db_file.string();
     }
 
-    // Read the file
-    std::ifstream file(file_path, std::ios::binary);
-    if (!file) {
+    // Check file exists and get size
+    std::error_code ec;
+    auto file_size = std::filesystem::file_size(file_path, ec);
+    if (ec) {
       HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to read rosbag file",
                                  {{"fault_code", fault_code}, {"path", file_path}});
       return;
     }
-
-    // Read file content
-    std::ostringstream content_stream;
-    content_stream << file.rdbuf();
-    std::string content = content_stream.str();
 
     // Determine content type based on format
     std::string content_type = "application/octet-stream";
@@ -546,13 +576,38 @@ void FaultHandlers::handle_get_rosbag(const httplib::Request & req, httplib::Res
       extension = ".mcap";
     }
 
-    // Set filename for download
-    std::string filename = "fault_" + fault_code + "_snapshot" + extension;
+    // Set filename for download with timestamp (sanitize fault_code to prevent header injection)
+    std::string timestamp = generate_timestamp();
+    std::string filename = "fault_" + sanitize_filename(fault_code) + "_" + timestamp + extension;
 
     res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
     res.set_header("Content-Type", content_type);
-    res.set_content(content, content_type);
     res.status = StatusCode::OK_200;
+
+    // Use streaming response for large files to avoid loading entire bag into memory
+    std::string path_copy = file_path;  // Capture for lambda
+    res.set_content_provider(file_size, content_type,
+                             [path_copy](size_t offset, size_t length, httplib::DataSink & sink) {
+                               std::ifstream file(path_copy, std::ios::binary);
+                               if (!file) {
+                                 return false;
+                               }
+                               file.seekg(static_cast<std::streamoff>(offset));
+                               constexpr size_t kChunkSize = 65536;  // 64KB chunks
+                               std::vector<char> buffer(std::min(length, kChunkSize));
+                               size_t remaining = length;
+                               while (remaining > 0 && file) {
+                                 size_t to_read = std::min(remaining, kChunkSize);
+                                 file.read(buffer.data(), static_cast<std::streamsize>(to_read));
+                                 auto bytes_read = static_cast<size_t>(file.gcount());
+                                 if (bytes_read == 0) {
+                                   break;
+                                 }
+                                 sink.write(buffer.data(), bytes_read);
+                                 remaining -= bytes_read;
+                               }
+                               return true;
+                             });
 
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to download rosbag",

@@ -888,9 +888,13 @@ curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag -o motor_f
 ```
 
 **Response (200 OK):**
-- Binary rosbag file download
-- Content-Type: `application/octet-stream`
-- Content-Disposition: `attachment; filename="MOTOR_OVERHEAT_1735830000.db3"`
+- Binary rosbag storage file download (`.db3` for sqlite3 or `.mcap` for mcap format)
+- Content-Type: `application/octet-stream` (or `application/x-mcap` for mcap)
+- Content-Disposition: `attachment; filename="fault_MOTOR_OVERHEAT_snapshot.db3"`
+
+**Note:** For directory-based bags (default rosbag2 format), only the storage file
+(`.db3` or `.mcap`) is returned, not the full bag directory. This file can be used
+for analysis but may not be directly playable with `ros2 bag play`.
 
 **Response (404 Not Found - Fault or rosbag not found):**
 ```json

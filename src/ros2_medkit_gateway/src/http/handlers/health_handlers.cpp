@@ -84,6 +84,7 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "GET /api/v1/components/{component_id}/faults/{fault_code}",
         "DELETE /api/v1/components/{component_id}/faults/{fault_code}",
         "GET /api/v1/faults/{fault_code}/snapshots",
+        "GET /api/v1/faults/{fault_code}/snapshots/bag",
         "GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots",
     });
 
