@@ -595,5 +595,107 @@ void AppHandlers::handle_get_depends_on(const httplib::Request & req, httplib::R
   }
 }
 
+void AppHandlers::handle_put_app_data_item(const httplib::Request & req, httplib::Response & res) {
+  std::string app_id;
+  std::string topic_name;
+  try {
+    if (req.matches.size() < 3) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      return;
+    }
+
+    app_id = req.matches[1];
+    topic_name = req.matches[2];
+
+    auto app_validation = ctx_.validate_entity_id(app_id);
+    if (!app_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid app ID",
+                                 {{"details", app_validation.error()}, {"app_id", app_id}});
+      return;
+    }
+
+    json body;
+    try {
+      body = json::parse(req.body);
+    } catch (const json::parse_error & e) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
+                                 {{"details", e.what()}});
+      return;
+    }
+
+    if (!body.contains("type") || !body["type"].is_string()) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Missing or invalid 'type' field",
+                                 {{"details", "Request body must contain 'type' string field"}});
+      return;
+    }
+
+    if (!body.contains("data")) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Missing 'data' field",
+                                 {{"details", "Request body must contain 'data' field"}});
+      return;
+    }
+
+    std::string msg_type = body["type"].get<std::string>();
+    json data = body["data"];
+
+    size_t slash_count = std::count(msg_type.begin(), msg_type.end(), '/');
+    size_t msg_pos = msg_type.find("/msg/");
+    bool valid_format =
+        (slash_count == 2) && (msg_pos != std::string::npos) && (msg_pos > 0) && (msg_pos + 5 < msg_type.length());
+
+    if (!valid_format) {
+      HandlerContext::send_error(
+          res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid message type format",
+          {{"details", "Message type should be in format: package/msg/Type"}, {"type", msg_type}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto app_opt = discovery->get_app(app_id);
+
+    if (!app_opt) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "App not found",
+                                 {{"app_id", app_id}});
+      return;
+    }
+
+    std::string full_topic_path = "/" + topic_name;
+
+    auto data_access_mgr = ctx_.node()->get_data_access_manager();
+    json result = data_access_mgr->publish_to_topic(full_topic_path, msg_type, data);
+
+    json response;
+    response["id"] = normalize_topic_to_id(full_topic_path);
+    response["data"] = data;
+
+    XMedkit ext;
+    ext.ros2_topic(full_topic_path).ros2_type(msg_type).entity_id(app_id);
+    if (result.contains("status")) {
+      ext.add("status", result["status"]);
+    }
+    response["x-medkit"] = ext.build();
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                               "Failed to publish to topic",
+                               {{"details", e.what()}, {"app_id", app_id}, {"topic_name", topic_name}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_put_app_data_item: %s", e.what());
+  }
+}
+
+void AppHandlers::handle_data_categories(const httplib::Request & req, httplib::Response & res) {
+  (void)req;
+  HandlerContext::send_error(res, StatusCode::NotImplemented_501, ERR_NOT_IMPLEMENTED,
+                             "Data categories are not implemented for ROS 2", {{"feature", "data-categories"}});
+}
+
+void AppHandlers::handle_data_groups(const httplib::Request & req, httplib::Response & res) {
+  (void)req;
+  HandlerContext::send_error(res, StatusCode::NotImplemented_501, ERR_NOT_IMPLEMENTED,
+                             "Data groups are not implemented for ROS 2", {{"feature", "data-groups"}});
+}
+
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway

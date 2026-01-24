@@ -379,29 +379,30 @@ class TestDiscoveryManifestMode(unittest.TestCase):
     def test_app_data_endpoint(self):
         """Test GET /apps/{id}/data returns topic list."""
         response = requests.get(f'{self.BASE_URL}/apps/engine-temp-sensor/data', timeout=5)
-        # May return 200 with topics or empty list
-        self.assertIn(response.status_code, [200, 404])
+        # App is defined in manifest, should always be found
+        self.assertEqual(response.status_code, 200)
 
     def test_app_operations_endpoint(self):
         """Test GET /apps/{id}/operations returns services/actions."""
         response = requests.get(
             f'{self.BASE_URL}/apps/engine-calibration-service/operations', timeout=5
         )
-        self.assertIn(response.status_code, [200, 404])
+        # App is defined in manifest, should always be found
+        self.assertEqual(response.status_code, 200)
 
     def test_app_configurations_endpoint(self):
         """
-        Test GET /apps/{id}/configurations returns parameters.
+        Test GET /apps/{id}/configurations in manifest-only mode.
 
-        May return:
-        - 200 if node is running and has parameters
-        - 404 if app not found
-        - 503 if node is not running (manifest-only mode)
+        App is defined in manifest. Configurations require communication with
+        ROS 2 parameter service on the node. In manifest-only mode without
+        running nodes, returns 503 Service Unavailable.
         """
         response = requests.get(
             f'{self.BASE_URL}/apps/lidar-sensor/configurations', timeout=5
         )
-        self.assertIn(response.status_code, [200, 404, 503])
+        # Configurations require node to be running - 503 in manifest-only mode
+        self.assertEqual(response.status_code, 503)
 
     def test_app_data_item_endpoint(self):
         """
@@ -423,7 +424,8 @@ class TestDiscoveryManifestMode(unittest.TestCase):
         response = requests.get(
             f'{self.BASE_URL}/apps/engine-temp-sensor/data/{data_id}', timeout=5
         )
-        self.assertIn(response.status_code, [200, 404])
+        # Data item exists since we just got it from the list
+        self.assertEqual(response.status_code, 200)
 
         if response.status_code == 200:
             item = response.json()
@@ -496,14 +498,16 @@ class TestDiscoveryManifestMode(unittest.TestCase):
     def test_function_data(self):
         """Test GET /functions/{id}/data aggregates data from hosts."""
         response = requests.get(f'{self.BASE_URL}/functions/engine-monitoring/data', timeout=5)
-        self.assertIn(response.status_code, [200, 404])
+        # Function is defined in manifest, should always be found
+        self.assertEqual(response.status_code, 200)
 
     def test_function_operations(self):
         """Test GET /functions/{id}/operations aggregates operations from hosts."""
         response = requests.get(
             f'{self.BASE_URL}/functions/engine-calibration/operations', timeout=5
         )
-        self.assertIn(response.status_code, [200, 404])
+        # Function is defined in manifest, should always be found
+        self.assertEqual(response.status_code, 200)
 
     # =========================================================================
     # Discovery Statistics
@@ -523,14 +527,21 @@ class TestDiscoveryManifestMode(unittest.TestCase):
     # =========================================================================
 
     def test_invalid_area_id(self):
-        """Test GET /areas/{id} with invalid ID returns 400."""
+        """
+        Test GET /areas/{id} with invalid ID format returns 400.
+
+        Entity IDs only allow alphanumeric, underscore, and hyphen characters.
+        Dots are not allowed, so 'invalid..id' is rejected with 400 Bad Request.
+        """
         response = requests.get(f'{self.BASE_URL}/areas/invalid..id', timeout=5)
-        self.assertIn(response.status_code, [400, 404])
+        # Invalid ID format (contains '.' which is not allowed) returns 400
+        self.assertEqual(response.status_code, 400)
 
     def test_invalid_component_id(self):
-        """Test GET /components/{id} with invalid ID returns 400."""
+        """Test GET /components/{id} with path traversal returns 404."""
         response = requests.get(f'{self.BASE_URL}/components/../etc/passwd', timeout=5)
-        self.assertIn(response.status_code, [400, 404])
+        # Path traversal attempt - component doesn't exist
+        self.assertEqual(response.status_code, 404)
 
 
 @launch_testing.post_shutdown_test()

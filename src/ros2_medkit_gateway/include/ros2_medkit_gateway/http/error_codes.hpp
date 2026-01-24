@@ -50,6 +50,9 @@ constexpr const char * ERR_INTERNAL_ERROR = "internal-error";
 /// Collection not supported on entity type
 constexpr const char * ERR_COLLECTION_NOT_SUPPORTED = "collection-not-supported";
 
+/// Feature not implemented (SOVD 501 Not Implemented)
+constexpr const char * ERR_NOT_IMPLEMENTED = "not-implemented";
+
 /// Authentication required
 constexpr const char * ERR_UNAUTHORIZED = "unauthorized";
 

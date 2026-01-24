@@ -379,19 +379,21 @@ class TestAuthorizationIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_05_operator_can_trigger_operations(self):
-        """Operator role should be able to trigger operations."""
+        """Operator role should be able to trigger operations (auth passes)."""
         headers = self._auth_header('operator')
 
-        # POST operation execution - may return 404 if component doesn't exist,
-        # but should not return 401 or 403
+        # POST operation execution - auth should pass for operator role
         response = requests.post(
             f'{self.BASE_URL}/components/test_component/operations/test_op/executions',
             json={},
             headers=headers,
             timeout=5,
         )
-        # 404 (not found) is acceptable - means auth passed but resource doesn't exist
-        self.assertIn(response.status_code, [200, 202, 400, 404, 500])
+        # Auth should pass - verify no 401/403 errors
+        self.assertNotIn(
+            response.status_code, [401, 403],
+            f'Operator should be authorized, got {response.status_code}'
+        )
 
     def test_06_operator_cannot_modify_configurations(self):
         """Operator role should not be able to modify configurations."""
@@ -406,17 +408,21 @@ class TestAuthorizationIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_07_configurator_can_modify_configurations(self):
-        """Configurator role should be able to modify configurations."""
+        """Configurator role should be able to modify configurations (auth passes)."""
         headers = self._auth_header('configurator')
 
-        # May return 404 if component doesn't exist, but not 401 or 403
+        # PUT configuration - auth should pass for configurator role
         response = requests.put(
             f'{self.BASE_URL}/components/test_component/configurations/param',
             json={'value': 123},
             headers=headers,
             timeout=5,
         )
-        self.assertIn(response.status_code, [200, 400, 404, 500, 503])
+        # Auth should pass - verify no 401/403 errors
+        self.assertNotIn(
+            response.status_code, [401, 403],
+            f'Configurator should be authorized, got {response.status_code}'
+        )
 
     def test_08_admin_has_full_access(self):
         """Admin role should have access to all operations."""

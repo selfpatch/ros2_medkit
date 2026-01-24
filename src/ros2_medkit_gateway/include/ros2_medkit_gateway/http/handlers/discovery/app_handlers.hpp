@@ -84,6 +84,27 @@ class AppHandlers {
    */
   void handle_get_app_data_item(const httplib::Request & req, httplib::Response & res);
 
+  /**
+   * @brief Handle PUT /apps/{app-id}/data/{data-id} - write data to topic.
+   *
+   * Publishes data to the specified topic.
+   */
+  void handle_put_app_data_item(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /apps/{app-id}/data-categories - returns 501 Not Implemented.
+   *
+   * Data categories are not implemented for ROS 2.
+   */
+  void handle_data_categories(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle GET /apps/{app-id}/data-groups - returns 501 Not Implemented.
+   *
+   * Data groups are not implemented for ROS 2.
+   */
+  void handle_data_groups(const httplib::Request & req, httplib::Response & res);
+
   // =========================================================================
   // App operations
   // =========================================================================

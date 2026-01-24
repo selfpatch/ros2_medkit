@@ -28,14 +28,14 @@ namespace ros2_medkit_gateway {
  * This class encapsulates which resource collections and resources
  * are supported by each entity type according to SOVD specification.
  *
- * Resource Collections (Table 8):
+ * Resource Collections:
  * - configurations: SERVER, COMPONENT, APP
  * - data: SERVER, COMPONENT, APP, FUNCTION*
  * - faults: SERVER, COMPONENT, APP
  * - operations: SERVER, COMPONENT, APP, FUNCTION*
  * - (others): SERVER, COMPONENT, APP
  *
- * Resources (Table 10):
+ * Resources:
  * - docs: all
  * - version-info: SERVER only
  * - logs: SERVER, COMPONENT, APP

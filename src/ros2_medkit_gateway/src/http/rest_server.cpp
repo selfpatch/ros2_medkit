@@ -213,6 +213,24 @@ void RESTServer::setup_routes() {
              app_handlers_->handle_get_app_data_item(req, res);
            });
 
+  // App data write (PUT) - publish data to topic
+  srv->Put((api_path("/apps") + R"(/([^/]+)/data/(.+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             app_handlers_->handle_put_app_data_item(req, res);
+           });
+
+  // App data-categories (not implemented for ROS 2)
+  srv->Get((api_path("/apps") + R"(/([^/]+)/data-categories$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             app_handlers_->handle_data_categories(req, res);
+           });
+
+  // App data-groups (not implemented for ROS 2)
+  srv->Get((api_path("/apps") + R"(/([^/]+)/data-groups$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             app_handlers_->handle_data_groups(req, res);
+           });
+
   // App data (all topics)
   srv->Get((api_path("/apps") + R"(/([^/]+)/data$)"), [this](const httplib::Request & req, httplib::Response & res) {
     app_handlers_->handle_get_app_data(req, res);

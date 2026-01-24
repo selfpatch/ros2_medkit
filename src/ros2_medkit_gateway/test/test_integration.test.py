@@ -278,8 +278,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
     MIN_EXPECTED_COMPONENTS = 4
     # Minimum expected apps (ROS 2 nodes from demo launch)
     MIN_EXPECTED_APPS = 8
-    # Minimum expected areas (powertrain, chassis, body, perception + root)
-    MIN_EXPECTED_AREAS = 4
+    # Required areas that must be discovered (not just count, but specific IDs)
+    REQUIRED_AREAS = {'powertrain', 'chassis', 'body'}
+    # Required apps that must be discovered for deterministic tests
+    REQUIRED_APPS = {'temp_sensor', 'long_calibration', 'lidar_sensor', 'actuator'}
 
     # Maximum time to wait for discovery (seconds)
     MAX_DISCOVERY_WAIT = 60.0
@@ -301,7 +303,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                     raise unittest.SkipTest('Gateway not responding after 30 retries')
                 time.sleep(1)
 
-        # Wait for apps AND areas to be discovered (CI can be slow)
+        # Wait for required apps AND areas to be discovered (CI can be slow)
         start_time = time.time()
         while time.time() - start_time < cls.MAX_DISCOVERY_WAIT:
             try:
@@ -310,14 +312,22 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                 if apps_response.status_code == 200 and areas_response.status_code == 200:
                     apps = apps_response.json().get('items', [])
                     areas = areas_response.json().get('items', [])
-                    apps_ok = len(apps) >= cls.MIN_EXPECTED_APPS
-                    areas_ok = len(areas) >= cls.MIN_EXPECTED_AREAS
+                    app_ids = {a.get('id', '') for a in apps}
+                    area_ids = {a.get('id', '') for a in areas}
+
+                    # Check if all required areas and apps are discovered
+                    missing_areas = cls.REQUIRED_AREAS - area_ids
+                    missing_apps = cls.REQUIRED_APPS - app_ids
+                    apps_ok = len(apps) >= cls.MIN_EXPECTED_APPS and not missing_apps
+                    areas_ok = not missing_areas
+
                     if apps_ok and areas_ok:
                         print(f'✓ Discovery complete: {len(apps)} apps, {len(areas)} areas')
                         return
-                    area_ids = [a.get('id', '?') for a in areas]
+
                     print(f'  Waiting: {len(apps)}/{cls.MIN_EXPECTED_APPS} apps, '
-                          f'{len(areas)}/{cls.MIN_EXPECTED_AREAS} areas {area_ids}')
+                          f'{len(areas)} areas. Missing areas: {missing_areas}, '
+                          f'Missing apps: {missing_apps}')
             except requests.exceptions.RequestException:
                 # Ignore connection errors during discovery wait; will retry until timeout
                 pass
@@ -3179,100 +3189,178 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_94_docs_endpoint(self):
         """
-        Test GET /{resource}/docs returns documentation or 501.
+        Test GET /{resource}/docs endpoint.
 
-        @verifies REQ_INTEROP_002
+        TODO: The /docs endpoint is not implemented. Currently returns 404
+        because 'docs' is interpreted as a component ID that doesn't exist.
+        When docs endpoint is implemented, this test should verify proper
+        documentation response with 200 status. Add verifies after implementation
         """
         # Try docs endpoint on components collection
+        # Currently not implemented - 'docs' is treated as component ID
         response = requests.get(f'{self.BASE_URL}/components/docs', timeout=10)
 
-        # 200 if implemented, 404 or 501 if not supported
-        self.assertIn(response.status_code, [200, 404, 501])
+        # TODO: Change to 200 when docs endpoint is implemented
+        self.assertEqual(
+            response.status_code, 404,
+            'Docs endpoint not implemented - returns 404 (component "docs" not found)'
+        )
 
-        if response.status_code == 200:
-            data = response.json()
-            # docs should have some content
-            self.assertIsNotNone(data)
-
-        print(f'✓ Docs endpoint test passed (status: {response.status_code})')
+        print('✓ Docs endpoint test passed: 404 (not implemented)')
 
     # ==================== REQ_INTEROP_015: Delete Single Fault ====================
+
+    def _wait_for_fault(self, app_id: str, fault_code: str,
+                        max_wait: float = 10.0) -> dict:
+        """
+        Wait for a specific fault to appear on an app.
+
+        Parameters
+        ----------
+        app_id : str
+            The app ID to check for faults.
+        fault_code : str
+            The fault code to wait for.
+        max_wait : float
+            Maximum time to wait in seconds.
+
+        Returns
+        -------
+        dict
+            The fault data when found.
+
+        Raises
+        ------
+        AssertionError
+            If fault is not found within max_wait.
+
+        """
+        start_time = time.time()
+        while time.time() - start_time < max_wait:
+            try:
+                response = requests.get(
+                    f'{self.BASE_URL}/apps/{app_id}/faults',
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    for fault in data.get('items', []):
+                        if fault.get('fault_code') == fault_code:
+                            return fault
+            except requests.exceptions.RequestException:
+                pass
+            time.sleep(0.5)
+
+        raise AssertionError(
+            f'Fault {fault_code} not found on {app_id} within {max_wait}s'
+        )
 
     def test_95_delete_single_fault(self):
         """
         Test DELETE /apps/{id}/faults/{code} clears a specific fault.
 
+        Uses lidar_sensor which has deterministic faults due to invalid parameters.
+        The LIDAR_RANGE_INVALID fault is triggered because min_range > max_range.
+
+        Note: The fault may be immediately re-reported by the sensor after deletion,
+        so we only verify the DELETE returns 204 (success) or 404 (not found).
+
         @verifies REQ_INTEROP_015
         """
-        # Get an app
-        data = self._get_json('/apps')
-        self.assertGreater(len(data['items']), 0)
-        app_id = data['items'][0]['id']
+        # lidar_sensor has known faults triggered by invalid parameters
+        app_id = 'lidar_sensor'
+        fault_code = 'LIDAR_RANGE_INVALID'
 
-        # Try to delete a specific fault code (may or may not exist)
+        # Wait for the fault to be reported (lidar_sensor publishes faults)
+        try:
+            self._wait_for_fault(app_id, fault_code, max_wait=15.0)
+        except AssertionError:
+            # Fault may not be present if fault_manager didn't receive it yet
+            # In this case, test that 404 is returned for nonexistent fault
+            response = requests.delete(
+                f'{self.BASE_URL}/apps/{app_id}/faults/{fault_code}',
+                timeout=10
+            )
+            self.assertEqual(
+                response.status_code, 404,
+                f'Expected 404 for nonexistent fault, got {response.status_code}'
+            )
+            print('✓ Delete single fault test passed: fault not present, 404 returned')
+            return
+
+        # Delete the fault - should return 204 (success) or 404 (already gone)
         response = requests.delete(
-            f'{self.BASE_URL}/apps/{app_id}/faults/TEST_FAULT_CODE',
+            f'{self.BASE_URL}/apps/{app_id}/faults/{fault_code}',
             timeout=10
         )
+        self.assertIn(
+            response.status_code, [204, 404],
+            f'Expected 204 or 404 for fault deletion, got {response.status_code}'
+        )
 
-        # 204 if deleted, 404 if fault not found
-        self.assertIn(response.status_code, [204, 404])
+        # Note: We do NOT verify the fault is gone because lidar_sensor continuously
+        # re-reports it due to its invalid configuration. The important assertion is
+        # that the DELETE endpoint works correctly (returns 204 when fault exists).
 
-        print(f'✓ Delete single fault test passed (status: {response.status_code})')
+        print(f'✓ Delete single fault test passed: DELETE returned {response.status_code}')
 
     # ==================== REQ_INTEROP_016: Data Categories ====================
 
     def test_96_list_data_categories(self):
         """
-        Test GET /apps/{id}/data-categories lists data categories.
+        Test GET /apps/{id}/data-categories returns 501 Not Implemented.
 
-        @verifies REQ_INTEROP_016
+        TODO: Data categories are not yet implemented in the gateway. This test
+        verifies the endpoint exists and returns the correct error status.
+        Add verifies after implementation
         """
-        # Get an app
-        data = self._get_json('/apps')
-        self.assertGreater(len(data['items']), 0)
-        app_id = data['items'][0]['id']
+        # Use known app
+        app_id = 'temp_sensor'
 
         response = requests.get(
             f'{self.BASE_URL}/apps/{app_id}/data-categories',
             timeout=10
         )
 
-        # 200 if implemented, 404 if not found, 501 if not supported
-        self.assertIn(response.status_code, [200, 404, 501])
+        # Feature not implemented - expect 501
+        self.assertEqual(
+            response.status_code, 501,
+            f'Expected 501 Not Implemented, got {response.status_code}'
+        )
 
-        if response.status_code == 200:
-            data = response.json()
-            self.assertIn('items', data)
+        data = response.json()
+        self.assertIn('error_code', data)
 
-        print(f'✓ Data categories test passed (status: {response.status_code})')
+        print('✓ Data categories test passed: 501 Not Implemented')
 
     # ==================== REQ_INTEROP_017: Data Groups ====================
 
     def test_97_list_data_groups(self):
         """
-        Test GET /apps/{id}/data-groups lists data groups.
+        Test GET /apps/{id}/data-groups returns 501 Not Implemented.
 
-        @verifies REQ_INTEROP_017
+        TODO: Data groups are not yet implemented in the gateway. This test
+        verifies the endpoint exists and returns the correct error status.
+        Add verifies after implementation.
         """
-        # Get an app
-        data = self._get_json('/apps')
-        self.assertGreater(len(data['items']), 0)
-        app_id = data['items'][0]['id']
+        # Use known app
+        app_id = 'temp_sensor'
 
         response = requests.get(
             f'{self.BASE_URL}/apps/{app_id}/data-groups',
             timeout=10
         )
 
-        # 200 if implemented, 404 if not found, 501 if not supported
-        self.assertIn(response.status_code, [200, 404, 501])
+        # Feature not implemented - expect 501
+        self.assertEqual(
+            response.status_code, 501,
+            f'Expected 501 Not Implemented, got {response.status_code}'
+        )
 
-        if response.status_code == 200:
-            data = response.json()
-            self.assertIn('items', data)
+        data = response.json()
+        self.assertIn('error_code', data)
 
-        print(f'✓ Data groups test passed (status: {response.status_code})')
+        print('✓ Data groups test passed: 501 Not Implemented')
 
     # ==================== REQ_INTEROP_020: Write Data ====================
 
@@ -3280,33 +3368,91 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test PUT /apps/{id}/data/{data-id} publishes data to topic.
 
+        Uses the brake actuator which subscribes to /chassis/brakes/command.
+        This is a deterministic writable topic for testing data writes.
+
         @verifies REQ_INTEROP_020
         """
-        # Get an app with data (topics)
-        apps_data = self._get_json('/apps')
-        self.assertGreater(len(apps_data['items']), 0)
+        # Brake actuator has a known command topic that accepts writes
+        app_id = 'actuator'
 
-        data_found = False
-        for app in apps_data['items']:
-            app_data = self._get_json(f'/apps/{app["id"]}/data')
-            if app_data.get('items'):
-                data_id = app_data['items'][0]['id']
+        # Get the actuator's data to find the command topic
+        app_data = self._get_json(f'/apps/{app_id}/data')
+        self.assertIn('items', app_data)
 
-                # Try to write data
-                response = requests.put(
-                    f'{self.BASE_URL}/apps/{app["id"]}/data/{data_id}',
-                    json={'data': {'value': 42.0}},
-                    timeout=10
-                )
-
-                # 200 on success, 400 invalid, 404 not found, 503 unavailable
-                self.assertIn(response.status_code, [200, 400, 404, 503])
-                data_found = True
-                print(f'✓ Write data test passed (status: {response.status_code})')
+        # Find a topic with subscribe direction (actuator listens to commands)
+        subscribe_topic = None
+        for item in app_data['items']:
+            x_medkit = item.get('x-medkit', {})
+            ros2 = x_medkit.get('ros2', {})
+            if ros2.get('direction') == 'subscribe':
+                subscribe_topic = item
                 break
 
-        if not data_found:
-            self.skipTest('No app data found to write')
+        if subscribe_topic is None:
+            self.skipTest('Actuator has no subscribe topics')
+            return
+
+        topic_id = subscribe_topic['id']
+
+        # Write brake pressure command (50.0 bar)
+        response = requests.put(
+            f'{self.BASE_URL}/apps/{app_id}/data/{topic_id}',
+            json={
+                'type': 'std_msgs/msg/Float32',
+                'data': {'data': 50.0}
+            },
+            timeout=10
+        )
+
+        self.assertEqual(
+            response.status_code, 200,
+            f'Expected 200 for data write, got {response.status_code}: {response.text}'
+        )
+
+        data = response.json()
+        self.assertIn('x-medkit', data)
+        self.assertEqual(data['x-medkit']['status'], 'published')
+
+        print(f'✓ Write data test passed: published to {topic_id}')
+
+    # ==================== Helper: Wait for Operation Discovery ====================
+
+    def _wait_for_operation(self, app_id: str, operation_id: str,
+                            max_wait: float = 15.0) -> bool:
+        """
+        Wait for an operation to be discovered for an app.
+
+        Parameters
+        ----------
+        app_id : str
+            The app ID to check operations for.
+        operation_id : str
+            The operation ID to wait for.
+        max_wait : float
+            Maximum time to wait in seconds.
+
+        Returns
+        -------
+        bool
+            True if operation found, False otherwise.
+
+        """
+        start_time = time.time()
+        while time.time() - start_time < max_wait:
+            try:
+                response = requests.get(
+                    f'{self.BASE_URL}/apps/{app_id}/operations',
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    ops = response.json().get('items', [])
+                    if any(op.get('id') == operation_id for op in ops):
+                        return True
+            except requests.exceptions.RequestException:
+                pass
+            time.sleep(0.5)
+        return False
 
     # ==================== REQ_INTEROP_033: List Operations ====================
 
@@ -3338,77 +3484,113 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET /apps/{id}/operations/{op-id}/executions/{exec-id} gets status.
 
+        Creates a real execution using long_calibration action, then verifies
+        the execution status endpoint returns correct data.
+
         @verifies REQ_INTEROP_037
         """
-        # Get an app with operations
-        apps_data = self._get_json('/apps')
-        self.assertGreater(len(apps_data['items']), 0)
+        # Use long_calibration app which provides long_calibration action
+        app_id = 'long_calibration'
+        # Operation ID is the action name (last segment of action path)
+        # Action path: /powertrain/engine/long_calibration -> name: long_calibration
+        operation_id = 'long_calibration'
 
-        operation_found = False
-        for app in apps_data['items']:
-            ops_data = self._get_json(f'/apps/{app["id"]}/operations')
-            if ops_data.get('items'):
-                operation_id = ops_data['items'][0]['id']
+        # Wait for operation to be discovered (action discovery can be slower)
+        found = self._wait_for_operation(app_id, operation_id, max_wait=15.0)
+        self.assertTrue(
+            found,
+            f'Operation {operation_id} not discovered for {app_id} within timeout'
+        )
 
-                # Try to get a specific execution (likely doesn't exist)
-                response = requests.get(
-                    f'{self.BASE_URL}/apps/{app["id"]}/operations/{operation_id}'
-                    f'/executions/nonexistent-exec-id',
-                    timeout=10
-                )
+        # Create a real execution
+        create_response = requests.post(
+            f'{self.BASE_URL}/apps/{app_id}/operations/{operation_id}/executions',
+            json={'parameters': {'order': 5}},
+            timeout=15
+        )
+        self.assertEqual(
+            create_response.status_code, 202,
+            f'Expected 202 for action creation, got {create_response.status_code}'
+        )
 
-                # 200 if exists, 404 if not found
-                self.assertIn(response.status_code, [200, 404])
+        execution_id = create_response.json()['id']
 
-                if response.status_code == 200:
-                    data = response.json()
-                    self.assertIn('id', data)
-                    self.assertIn('status', data)
+        # Now get the execution status
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{app_id}/operations/{operation_id}'
+            f'/executions/{execution_id}',
+            timeout=10
+        )
 
-                operation_found = True
-                print(f'✓ Get execution status test passed (status: {response.status_code})')
-                break
+        self.assertEqual(
+            response.status_code, 200,
+            f'Expected 200 for execution status, got {response.status_code}'
+        )
 
-        if not operation_found:
-            self.skipTest('No app operations found')
+        data = response.json()
+        # Execution status response uses x-medkit.goal_id as identifier
+        self.assertIn('status', data)
+        self.assertIn(data['status'], ['running', 'completed', 'failed'])
+        self.assertIn('x-medkit', data)
+        self.assertEqual(data['x-medkit']['goal_id'], execution_id)
+
+        print(f'✓ Get execution status test passed: {data["status"]}')
 
     # ==================== REQ_INTEROP_038: Update Execution ====================
 
     def test_101_update_execution(self):
         """
-        Test PUT /apps/{id}/operations/{op-id}/executions/{exec-id} updates execution.
+        Test PUT /apps/{id}/operations/{op-id}/executions/{exec-id} returns 501.
+
+        Execution updates (pause/resume) are not supported for ROS 2 actions.
+        This test verifies the endpoint exists and returns appropriate error.
 
         @verifies REQ_INTEROP_038
         """
-        # Get an app with operations
-        apps_data = self._get_json('/apps')
-        self.assertGreater(len(apps_data['items']), 0)
+        # Use long_calibration app which provides long_calibration action
+        app_id = 'long_calibration'
+        # Operation ID is the action name (last segment of action path)
+        # Action path: /powertrain/engine/long_calibration -> name: long_calibration
+        operation_id = 'long_calibration'
 
-        operation_found = False
-        for app in apps_data['items']:
-            ops_data = self._get_json(f'/apps/{app["id"]}/operations')
-            if ops_data.get('items'):
-                operation_id = ops_data['items'][0]['id']
+        # Wait for operation to be discovered (action discovery can be slower)
+        found = self._wait_for_operation(app_id, operation_id, max_wait=15.0)
+        self.assertTrue(
+            found,
+            f'Operation {operation_id} not discovered for {app_id} within timeout'
+        )
 
-                # Try to update a specific execution (likely doesn't exist)
-                # Use underscore in ID - hyphens are rejected by entity ID validation
-                response = requests.put(
-                    f'{self.BASE_URL}/apps/{app["id"]}/operations/{operation_id}'
-                    f'/executions/nonexistent_exec_id',
-                    json={'action': 'stop'},
-                    timeout=10
-                )
+        # Create a real execution
+        create_response = requests.post(
+            f'{self.BASE_URL}/apps/{app_id}/operations/{operation_id}/executions',
+            json={'parameters': {'order': 10}},
+            timeout=15
+        )
+        self.assertEqual(
+            create_response.status_code, 202,
+            f'Expected 202 for action creation, got {create_response.status_code}'
+        )
 
-                # 200 success, 400 bad request, 404 not found, 409 conflict,
-                # 501 not implemented
-                self.assertIn(response.status_code, [200, 400, 404, 409, 501])
+        execution_id = create_response.json()['id']
 
-                operation_found = True
-                print(f'✓ Update execution test passed (status: {response.status_code})')
-                break
+        # Try to update (pause) the execution - not supported
+        response = requests.put(
+            f'{self.BASE_URL}/apps/{app_id}/operations/{operation_id}'
+            f'/executions/{execution_id}',
+            json={'action': 'pause'},
+            timeout=10
+        )
 
-        if not operation_found:
-            self.skipTest('No app operations found')
+        # PUT for pause/resume returns 400 (invalid request) or 501 (not implemented)
+        self.assertIn(
+            response.status_code, [400, 501],
+            f'Expected 400 or 501 for unsupported pause, got {response.status_code}'
+        )
+
+        data = response.json()
+        self.assertIn('error_code', data)
+
+        print(f'✓ Update execution test passed: {response.status_code}')
 
     # ==================== REQ_INTEROP_048: List Configurations ====================
 
@@ -3440,36 +3622,57 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET /apps/{id}/configurations/{config-id} returns configuration value.
 
+        Dynamically finds an app with configurations and tests single config endpoint.
+
         @verifies REQ_INTEROP_049
         """
-        # Get an app with configurations
+        # Find an app that has configurations
         apps_data = self._get_json('/apps')
-        self.assertGreater(len(apps_data['items']), 0)
+        self.assertGreater(len(apps_data['items']), 0, 'No apps found')
 
-        config_found = False
+        app_id = None
+        config_id = None
+
         for app in apps_data['items']:
-            configs_data = self._get_json(f'/apps/{app["id"]}/configurations')
-            if configs_data.get('items'):
-                config_id = configs_data['items'][0]['id']
+            configs_response = requests.get(
+                f'{self.BASE_URL}/apps/{app["id"]}/configurations',
+                timeout=10
+            )
+            if configs_response.status_code == 200:
+                configs = configs_response.json().get('items', [])
+                if configs:
+                    app_id = app['id']
+                    config_id = configs[0]['id']
+                    break
 
-                response = requests.get(
-                    f'{self.BASE_URL}/apps/{app["id"]}/configurations/{config_id}',
-                    timeout=10
-                )
+        if not app_id or not config_id:
+            self.skipTest('No app with configurations found')
 
-                self.assertIn(response.status_code, [200, 404])
+        # Now test get single config
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{app_id}/configurations/{config_id}',
+            timeout=10
+        )
 
-                if response.status_code == 200:
-                    data = response.json()
-                    self.assertIn('id', data)
-                    self.assertIn('data', data)
+        self.assertEqual(
+            response.status_code, 200,
+            f'Expected 200 for config {config_id}, got {response.status_code}'
+        )
 
-                config_found = True
-                print(f'✓ Get configuration test passed: {config_id}')
-                break
+        data = response.json()
+        self.assertIn('id', data)
+        self.assertEqual(data['id'], config_id)
+        self.assertIn('data', data)
+        self.assertIn('x-medkit', data)
 
-        if not config_found:
-            self.skipTest('No app configurations found')
+        # Verify parameter details
+        x_medkit = data['x-medkit']
+        self.assertIn('parameter', x_medkit)
+        param = x_medkit['parameter']
+        self.assertIn('name', param)
+        self.assertIn('type', param)
+
+        print(f'✓ Get configuration test passed: {app_id}/{config_id}={param.get("value")}')
 
     # ==================== REQ_INTEROP_050: Set Configuration ====================
 
@@ -3497,19 +3700,30 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
                 if get_response.status_code == 200:
                     current_data = get_response.json()
+                    current_value = current_data.get('data', 1.0)
 
-                    # Try to set the same value back
+                    # Try to set the same value back - should succeed
                     response = requests.put(
                         f'{self.BASE_URL}/apps/{app["id"]}/configurations/{config_id}',
-                        json={'data': current_data.get('data', 1.0)},
+                        json={'data': current_value},
                         timeout=10
                     )
 
-                    # 200 success, 400 invalid, 404 not found
-                    self.assertIn(response.status_code, [200, 400, 404])
+                    # Setting an existing config to the same value should succeed
+                    self.assertEqual(
+                        response.status_code, 200,
+                        f'Expected 200 for setting config {config_id}, '
+                        f'got {response.status_code}: {response.text}'
+                    )
+
+                    # Verify response structure
+                    data = response.json()
+                    self.assertIn('id', data)
+                    self.assertEqual(data['id'], config_id)
+                    self.assertIn('data', data)
 
                     config_found = True
-                    print(f'✓ Set configuration test passed (status: {response.status_code})')
+                    print(f'✓ Set configuration test passed: {config_id}')
                     break
 
         if not config_found:
@@ -3521,20 +3735,23 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test DELETE /apps/{id}/configurations resets all configurations.
 
+        Returns 204 on complete success, 207 if some parameters couldn't be reset.
+
         @verifies REQ_INTEROP_051
         """
-        # Get an app
-        data = self._get_json('/apps')
-        self.assertGreater(len(data['items']), 0)
-        app_id = data['items'][0]['id']
+        # Use temp_sensor which has known parameters
+        app_id = 'temp_sensor'
 
         response = requests.delete(
             f'{self.BASE_URL}/apps/{app_id}/configurations',
             timeout=10
         )
 
-        # 204 success, 207 partial, 501 not implemented
-        self.assertIn(response.status_code, [204, 207, 501])
+        # 204 = complete success, 207 = partial success (some params reset)
+        self.assertIn(
+            response.status_code, [204, 207],
+            f'Expected 204/207 for reset all configs, got {response.status_code}'
+        )
 
         print(f'✓ Reset all configurations test passed (status: {response.status_code})')
 
@@ -3544,29 +3761,35 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test DELETE /apps/{id}/configurations/{config-id} resets single config.
 
+        Uses temp_sensor with known 'min_temp' parameter that can be reset.
+
         @verifies REQ_INTEROP_052
         """
-        # Get an app with configurations
-        apps_data = self._get_json('/apps')
-        self.assertGreater(len(apps_data['items']), 0)
+        # Use temp_sensor with known parameter
+        app_id = 'temp_sensor'
+        config_id = 'min_temp'
 
-        config_found = False
-        for app in apps_data['items']:
-            configs_data = self._get_json(f'/apps/{app["id"]}/configurations')
-            if configs_data.get('items'):
-                config_id = configs_data['items'][0]['id']
+        # First verify the parameter exists
+        get_response = requests.get(
+            f'{self.BASE_URL}/apps/{app_id}/configurations/{config_id}',
+            timeout=10
+        )
+        self.assertEqual(
+            get_response.status_code, 200,
+            f'Parameter {config_id} should exist on {app_id}'
+        )
 
-                response = requests.delete(
-                    f'{self.BASE_URL}/apps/{app["id"]}/configurations/{config_id}',
-                    timeout=10
-                )
+        # Now reset it
+        response = requests.delete(
+            f'{self.BASE_URL}/apps/{app_id}/configurations/{config_id}',
+            timeout=10
+        )
 
-                # 204 success, 404 not found, 501 not implemented
-                self.assertIn(response.status_code, [204, 404, 501])
+        # 204 = parameter reset to default successfully
+        self.assertEqual(
+            response.status_code, 204,
+            f'Expected 204 for reset config {config_id}, got {response.status_code}'
+        )
+        self.assertEqual(len(response.content), 0, '204 should have no body')
 
-                config_found = True
-                print(f'✓ Reset single configuration test passed (status: {response.status_code})')
-                break
-
-        if not config_found:
-            self.skipTest('No app configurations found')
+        print(f'✓ Reset single configuration test passed: {config_id}')
