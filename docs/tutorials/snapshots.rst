@@ -329,14 +329,18 @@ Downloading Rosbag Files
 
 .. code-block:: bash
 
-   # Download bag file
+   # Download bag storage file (.db3 or .mcap)
    curl -O -J http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag
 
-   # Inspect the downloaded bag
-   ros2 bag info MOTOR_OVERHEAT_1735830000
+.. note::
 
-   # Play back the bag
-   ros2 bag play MOTOR_OVERHEAT_1735830000
+   The REST API returns the rosbag **storage file** (``.db3`` or ``.mcap``), not
+   the complete bag directory. This file contains the recorded messages but cannot
+   be directly used with ``ros2 bag info`` or ``ros2 bag play`` which expect a
+   full bag directory structure.
+
+   For direct playback, use the ROS 2 service to get the on-disk path, or use
+   specialized tools to analyze the storage file directly.
 
 **Via ROS 2 service:**
 

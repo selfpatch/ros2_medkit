@@ -45,12 +45,16 @@ def get_coverage_env():
                 'GCOV_PREFIX_STRIP': str(build_dir.count(os.sep)),
             }
     except Exception:
+        # Coverage environment is optional; on any error, fall back to no extra coverage config
         pass
     return {}
 
 
 # Create a temp directory for rosbag storage that persists for test duration
 ROSBAG_STORAGE_PATH = tempfile.mkdtemp(prefix='rosbag_test_')
+
+# Path to temp publisher script (set in generate_test_description, cleaned up in shutdown test)
+PUBLISHER_SCRIPT_PATH = None
 
 
 def generate_test_description():
@@ -118,9 +122,12 @@ if __name__ == '__main__':
 """
 
     # Write publisher script to temp file and run it
+    # Store path in global for cleanup in post-shutdown test
+    global PUBLISHER_SCRIPT_PATH
     script_file = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False)
     script_file.write(publisher_script)
     script_file.close()
+    PUBLISHER_SCRIPT_PATH = script_file.name
 
     # Use explicit ROS settings to ensure processes can discover each other
     env = os.environ.copy()
@@ -186,7 +193,7 @@ if __name__ == '__main__':
 
 
 class TestRosbagCaptureIntegration(unittest.TestCase):
-    """Integration tests for rosbag capture feature."""
+    """Integration tests for rosbag capture feature (@verifies REQ_INTEROP_088)."""
 
     @classmethod
     def setUpClass(cls):
@@ -413,8 +420,13 @@ class TestRosbagCaptureShutdown(unittest.TestCase):
         )
 
     def test_cleanup_temp_directory(self):
-        """Clean up temporary rosbag storage directory."""
+        """Clean up temporary rosbag storage directory and publisher script."""
         import shutil
         if os.path.exists(ROSBAG_STORAGE_PATH):
             shutil.rmtree(ROSBAG_STORAGE_PATH, ignore_errors=True)
             print(f'Cleaned up temp directory: {ROSBAG_STORAGE_PATH}')
+
+        # Clean up the temporary publisher script
+        if PUBLISHER_SCRIPT_PATH and os.path.exists(PUBLISHER_SCRIPT_PATH):
+            os.unlink(PUBLISHER_SCRIPT_PATH)
+            print(f'Cleaned up temp script: {PUBLISHER_SCRIPT_PATH}')

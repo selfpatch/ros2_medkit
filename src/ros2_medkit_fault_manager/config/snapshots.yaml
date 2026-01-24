@@ -66,6 +66,11 @@ default_topics:
 #                -p snapshots.rosbag.duration_sec:=5.0
 #
 # Or via launch file parameters (see examples below)
+#
+# NOTE: The rosbag configuration below is for DOCUMENTATION PURPOSES ONLY.
+# FaultManagerNode currently reads only `fault_specific`, `patterns`, and
+# `default_topics` from this YAML file. Rosbag settings must be configured
+# via ROS 2 parameters (--ros-args -p snapshots.rosbag.*) or launch files.
 
 rosbag:
   # Enable/disable rosbag capture (default: false)

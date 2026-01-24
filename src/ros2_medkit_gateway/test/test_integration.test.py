@@ -3806,3 +3806,45 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(len(response.content), 0, '204 should have no body')
 
         print(f'✓ Reset single configuration test passed: {config_id}')
+
+    # ==================== Rosbag Snapshot Tests ====================
+
+    def test_107_get_rosbag_nonexistent_fault(self):
+        """Test /faults/{code}/snapshots/bag returns 404 for unknown fault (@verifies REQ_INTEROP_088)."""
+        response = requests.get(
+            f'{self.BASE_URL}/faults/NONEXISTENT_ROSBAG_FAULT/snapshots/bag',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+        self.assertIn('message', data)
+        self.assertIn('parameters', data)
+        self.assertIn('fault_code', data['parameters'])
+        self.assertEqual(data['parameters'].get('fault_code'), 'NONEXISTENT_ROSBAG_FAULT')
+
+        print('✓ Get rosbag nonexistent fault test passed')
+
+    def test_108_get_rosbag_invalid_fault_code(self):
+        """Test /faults/{code}/snapshots/bag rejects invalid fault codes (@verifies REQ_INTEROP_088)."""
+        # These should be rejected by fault_code validation
+        invalid_codes = [
+            '../../../etc/passwd',  # Path traversal attempt
+            'fault"injection',      # Quote injection attempt
+        ]
+
+        for invalid_code in invalid_codes:
+            response = requests.get(
+                f'{self.BASE_URL}/faults/{invalid_code}/snapshots/bag',
+                timeout=10
+            )
+            # Should return 400 (bad request) or 404 (not found)
+            # depending on whether validation happens before or after lookup
+            self.assertIn(
+                response.status_code,
+                [400, 404],
+                f'Expected 400 or 404 for fault_code: {invalid_code}'
+            )
+
+        print('✓ Get rosbag invalid fault code test passed')

@@ -80,30 +80,35 @@ class RosbagCaptureTest : public ::testing::Test {
 
 // Constructor tests
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, ConstructorRequiresValidNode) {
   auto rosbag_config = create_rosbag_config();
   auto snapshot_config = create_snapshot_config();
   EXPECT_THROW(RosbagCapture(nullptr, storage_.get(), rosbag_config, snapshot_config), std::invalid_argument);
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, ConstructorRequiresValidStorage) {
   auto rosbag_config = create_rosbag_config();
   auto snapshot_config = create_snapshot_config();
   EXPECT_THROW(RosbagCapture(node_.get(), nullptr, rosbag_config, snapshot_config), std::invalid_argument);
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, ConstructorSucceedsWithValidParams) {
   auto rosbag_config = create_rosbag_config();
   auto snapshot_config = create_snapshot_config();
   EXPECT_NO_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config));
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, ConstructorWithDisabledRosbag) {
   auto rosbag_config = create_rosbag_config(false);
   auto snapshot_config = create_snapshot_config();
   EXPECT_NO_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config));
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, ConstructorThrowsOnInvalidFormat) {
   auto rosbag_config = create_rosbag_config();
   rosbag_config.format = "invalid_format";
@@ -111,6 +116,7 @@ TEST_F(RosbagCaptureTest, ConstructorThrowsOnInvalidFormat) {
   EXPECT_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config), std::runtime_error);
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, ConstructorAcceptsSqlite3Format) {
   auto rosbag_config = create_rosbag_config();
   rosbag_config.format = "sqlite3";
@@ -120,6 +126,7 @@ TEST_F(RosbagCaptureTest, ConstructorAcceptsSqlite3Format) {
 
 // State management tests
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, IsEnabledReturnsConfigState) {
   auto rosbag_config = create_rosbag_config(true);
   auto snapshot_config = create_snapshot_config();

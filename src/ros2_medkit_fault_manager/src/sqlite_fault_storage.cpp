@@ -732,6 +732,20 @@ std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(const std::string & 
 void SqliteFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  // Query existing record to delete old file (prevent orphaned files on re-confirm)
+  {
+    SqliteStatement query_stmt(db_, "SELECT file_path FROM rosbag_files WHERE fault_code = ?");
+    query_stmt.bind_text(1, info.fault_code);
+    if (query_stmt.step() == SQLITE_ROW) {
+      std::string old_path = query_stmt.column_text(0);
+      if (old_path != info.file_path) {
+        std::error_code ec;
+        std::filesystem::remove_all(old_path, ec);
+        // Ignore errors - file may already be deleted
+      }
+    }
+  }
+
   // Use INSERT OR REPLACE to handle updates (fault_code is UNIQUE)
   SqliteStatement stmt(db_,
                        "INSERT OR REPLACE INTO rosbag_files "

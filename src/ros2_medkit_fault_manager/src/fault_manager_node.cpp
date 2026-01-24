@@ -28,6 +28,42 @@
 
 namespace ros2_medkit_fault_manager {
 
+namespace {
+
+/// Maximum allowed length for fault_code
+constexpr size_t kMaxFaultCodeLength = 128;
+
+/// Validate fault_code format
+/// @param fault_code The fault code to validate
+/// @return Empty string if valid, error message if invalid
+std::string validate_fault_code(const std::string & fault_code) {
+  if (fault_code.empty()) {
+    return "fault_code cannot be empty";
+  }
+
+  if (fault_code.length() > kMaxFaultCodeLength) {
+    return "fault_code exceeds maximum length of " + std::to_string(kMaxFaultCodeLength);
+  }
+
+  // Allow only alphanumeric, underscore, hyphen, and dot
+  // This prevents path traversal (../) and header injection (\r\n, ")
+  for (char c : fault_code) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-' && c != '.') {
+      return "fault_code contains invalid character '" + std::string(1, c) +
+             "'. Only alphanumeric, underscore, hyphen, and dot are allowed";
+    }
+  }
+
+  // Prevent path traversal patterns
+  if (fault_code.find("..") != std::string::npos) {
+    return "fault_code cannot contain '..'";
+  }
+
+  return "";  // Valid
+}
+
+}  // namespace
+
 FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("fault_manager", options) {
   // Declare and get parameters
   storage_type_ = declare_parameter<std::string>("storage_type", "sqlite");
@@ -187,9 +223,10 @@ void FaultManagerNode::handle_report_fault(
     const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
     const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response) {
   // Validate fault_code
-  if (request->fault_code.empty()) {
+  std::string validation_error = validate_fault_code(request->fault_code);
+  if (!validation_error.empty()) {
     response->accepted = false;
-    RCLCPP_WARN(get_logger(), "ReportFault rejected: fault_code cannot be empty");
+    RCLCPP_WARN(get_logger(), "ReportFault rejected: %s", validation_error.c_str());
     return;
   }
 
@@ -369,9 +406,10 @@ void FaultManagerNode::handle_clear_fault(
     const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
     const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response) {
   // Validate fault_code
-  if (request->fault_code.empty()) {
+  std::string validation_error = validate_fault_code(request->fault_code);
+  if (!validation_error.empty()) {
     response->success = false;
-    response->message = "fault_code cannot be empty";
+    response->message = validation_error;
     return;
   }
 
@@ -639,9 +677,10 @@ void FaultManagerNode::handle_get_snapshots(
     const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Request> & request,
     const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> & response) {
   // Validate fault_code
-  if (request->fault_code.empty()) {
+  std::string validation_error = validate_fault_code(request->fault_code);
+  if (!validation_error.empty()) {
     response->success = false;
-    response->error_message = "fault_code cannot be empty";
+    response->error_message = validation_error;
     return;
   }
 
@@ -713,9 +752,10 @@ void FaultManagerNode::handle_get_snapshots(
 void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
                                          const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response) {
   // Validate fault_code
-  if (request->fault_code.empty()) {
+  std::string validation_error = validate_fault_code(request->fault_code);
+  if (!validation_error.empty()) {
     response->success = false;
-    response->error_message = "fault_code cannot be empty";
+    response->error_message = validation_error;
     return;
   }
 
