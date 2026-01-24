@@ -230,8 +230,167 @@ Troubleshooting
 - Check topic resolution priority (fault_specific > patterns > default)
 - Verify regex patterns in config file are correct
 
+Rosbag Capture (Time-Window Recording)
+--------------------------------------
+
+In addition to JSON snapshots, you can enable **rosbag capture** for "black box"
+style recording. This continuously buffers messages in memory and flushes them
+to a bag file when a fault is confirmed.
+
+**Key differences from JSON snapshots:**
+
+.. list-table::
+   :widths: 25 35 40
+   :header-rows: 1
+
+   * - Feature
+     - JSON Snapshots
+     - Rosbag Capture
+   * - Data format
+     - JSON (human-readable)
+     - Binary (native ROS 2)
+   * - Time coverage
+     - Point-in-time (at confirmation)
+     - Time window (before + after fault)
+   * - Message fidelity
+     - Converted to JSON
+     - Original serialization preserved
+   * - Playback
+     - N/A
+     - ``ros2 bag play``
+   * - Default
+     - Enabled
+     - Disabled
+
+Enabling Rosbag Capture
+^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+   ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
+     -p snapshots.rosbag.enabled:=true \
+     -p snapshots.rosbag.duration_sec:=5.0 \
+     -p snapshots.rosbag.duration_after_sec:=1.0
+
+This captures 5 seconds of data **before** the fault and 1 second **after**.
+
+Rosbag Configuration Options
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :widths: 35 15 50
+   :header-rows: 1
+
+   * - Parameter
+     - Default
+     - Description
+   * - ``snapshots.rosbag.enabled``
+     - ``false``
+     - Enable rosbag capture
+   * - ``snapshots.rosbag.duration_sec``
+     - ``5.0``
+     - Ring buffer duration (seconds before fault)
+   * - ``snapshots.rosbag.duration_after_sec``
+     - ``1.0``
+     - Recording after fault confirmed
+   * - ``snapshots.rosbag.topics``
+     - ``"config"``
+     - Topic selection: ``"config"``, ``"all"``, or ``"explicit"``
+   * - ``snapshots.rosbag.format``
+     - ``"sqlite3"``
+     - Bag format: ``"sqlite3"`` or ``"mcap"``
+   * - ``snapshots.rosbag.auto_cleanup``
+     - ``true``
+     - Delete bag when fault is cleared
+   * - ``snapshots.rosbag.lazy_start``
+     - ``false``
+     - Start buffer only on PREFAILED state
+   * - ``snapshots.rosbag.max_bag_size_mb``
+     - ``50``
+     - Maximum size per bag file
+   * - ``snapshots.rosbag.max_total_storage_mb``
+     - ``500``
+     - Total storage limit for all bags
+
+.. note::
+
+   The ``"mcap"`` format requires ``rosbag2_storage_mcap`` to be installed.
+   If not available, use ``"sqlite3"`` (default).
+
+   .. code-block:: bash
+
+      # Install MCAP support (optional)
+      sudo apt install ros-${ROS_DISTRO}-rosbag2-storage-mcap
+
+Downloading Rosbag Files
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Via REST API:**
+
+.. code-block:: bash
+
+   # Download bag file
+   curl -O -J http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag
+
+   # Inspect the downloaded bag
+   ros2 bag info MOTOR_OVERHEAT_1735830000
+
+   # Play back the bag
+   ros2 bag play MOTOR_OVERHEAT_1735830000
+
+**Via ROS 2 service:**
+
+.. code-block:: bash
+
+   ros2 service call /fault_manager/get_rosbag ros2_medkit_msgs/srv/GetRosbag \
+     "{fault_code: 'MOTOR_OVERHEAT'}"
+
+Example: Production Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For production use with conservative resource usage:
+
+.. code-block:: yaml
+
+   # config/snapshots.yaml
+   rosbag:
+     enabled: true
+     duration_sec: 3.0
+     duration_after_sec: 0.5
+     topics: "config"           # Use same topics as JSON snapshots
+     lazy_start: true           # Save resources until fault detected
+     format: "sqlite3"
+     max_bag_size_mb: 25
+     max_total_storage_mb: 200
+     auto_cleanup: true
+
+   # Exclude high-bandwidth topics
+   # exclude_topics:
+   #   - /camera/image_raw
+   #   - /pointcloud
+
+Example: Debugging Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For development with maximum context:
+
+.. code-block:: yaml
+
+   rosbag:
+     enabled: true
+     duration_sec: 10.0         # 10 seconds before fault
+     duration_after_sec: 2.0    # 2 seconds after
+     topics: "config"
+     lazy_start: false          # Always recording
+     format: "sqlite3"
+     storage_path: "/var/log/ros2_medkit/rosbags"
+     max_bag_size_mb: 100
+     max_total_storage_mb: 1000
+     auto_cleanup: false        # Keep bags for analysis
+
 See Also
 --------
 
 - :doc:`../requirements/specs/faults` - Fault API requirements
 - `Gateway README <https://github.com/selfpatch/ros2_medkit/blob/main/src/ros2_medkit_gateway/README.md>`_ - REST API reference
+- `config/snapshots.yaml <https://github.com/selfpatch/ros2_medkit/blob/main/src/ros2_medkit_fault_manager/config/snapshots.yaml>`_ - Full configuration reference
