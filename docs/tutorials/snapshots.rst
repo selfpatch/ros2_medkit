@@ -286,31 +286,136 @@ Rosbag Configuration Options
      - Description
    * - ``snapshots.rosbag.enabled``
      - ``false``
-     - Enable rosbag capture
+     - Enable rosbag capture. When enabled, the system continuously buffers
+       messages in memory and writes them to a bag file when faults are confirmed.
    * - ``snapshots.rosbag.duration_sec``
      - ``5.0``
-     - Ring buffer duration (seconds before fault)
+     - Ring buffer duration in seconds. This determines how much history is
+       preserved before the fault confirmation. Larger values provide more
+       context but consume more memory.
    * - ``snapshots.rosbag.duration_after_sec``
      - ``1.0``
-     - Recording after fault confirmed
+     - Post-fault recording duration. After a fault is confirmed, recording
+       continues for this many seconds to capture immediate system response.
    * - ``snapshots.rosbag.topics``
      - ``"config"``
-     - Topic selection: ``"config"``, ``"all"``, or ``"explicit"``
+     - Topic selection mode:
+
+       - ``"config"`` - Use same topics as JSON snapshots (from config file)
+       - ``"all"`` or ``"auto"`` - Auto-discover and record all available topics
+       - ``"explicit"`` - Use only topics from ``include_topics`` list
+   * - ``snapshots.rosbag.include_topics``
+     - ``[]``
+     - Explicit list of topics to record (only used when ``topics: "explicit"``).
+       Example: ``["/odom", "/joint_states", "/cmd_vel"]``
+   * - ``snapshots.rosbag.exclude_topics``
+     - ``[]``
+     - Topics to exclude from recording (applies to all modes). Useful for
+       filtering high-bandwidth topics like camera images.
    * - ``snapshots.rosbag.format``
      - ``"sqlite3"``
-     - Bag format: ``"sqlite3"`` or ``"mcap"``
+     - Bag storage format: ``"sqlite3"`` (default, widely compatible) or
+       ``"mcap"`` (more efficient compression, requires plugin).
+   * - ``snapshots.rosbag.storage_path``
+     - ``""``
+     - Directory for bag files. Empty string uses system temp directory
+       (``/tmp``). Bags are named ``fault_{code}_{timestamp}/``.
    * - ``snapshots.rosbag.auto_cleanup``
      - ``true``
-     - Delete bag when fault is cleared
+     - Automatically delete bag files when faults are cleared. Set to ``false``
+       to retain bags for manual analysis.
    * - ``snapshots.rosbag.lazy_start``
      - ``false``
-     - Start buffer only on PREFAILED state
+     - Controls when the ring buffer starts recording. See diagram below.
    * - ``snapshots.rosbag.max_bag_size_mb``
      - ``50``
-     - Maximum size per bag file
+     - Maximum size per bag file in MB. When exceeded, rosbag2 creates
+       additional segment files.
    * - ``snapshots.rosbag.max_total_storage_mb``
      - ``500``
-     - Total storage limit for all bags
+     - Total storage limit for all bag files. Oldest bags are automatically
+       deleted when this limit is exceeded.
+
+Understanding lazy_start Mode
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``lazy_start`` parameter controls when the ring buffer starts recording:
+
+**lazy_start: false (default)** - Recording starts immediately at node startup.
+Best for development and when you need maximum context for any fault.
+
+.. uml::
+
+   @startuml
+   skinparam backgroundColor transparent
+   participant "Ring Buffer" as RB
+   participant "Fault Manager" as FM
+
+   == Node Startup ==
+   RB -> RB : Start recording
+   note right of RB #LightGreen : Buffer active\n(continuous)
+
+   ... time passes (messages buffered) ...
+
+   == Fault Detected ==
+   FM -> FM : PREFAILED
+   note right of RB #LightGreen : duration_sec\nof data buffered
+
+   FM -> FM : CONFIRMED
+   FM -> RB : Flush buffer
+   RB -> RB : Write pre-fault data
+   note right of RB #LightBlue : Post-fault\nrecording
+
+   ... duration_after_sec ...
+
+   RB -> RB : Save bag file
+   note right of RB #LightGreen : Resume\nbuffering
+   @enduml
+
+**lazy_start: true** - Recording only starts when a fault enters PREFAILED state.
+Saves resources but may miss context if fault confirms before buffer fills.
+
+.. uml::
+
+   @startuml
+   skinparam backgroundColor transparent
+   participant "Ring Buffer" as RB
+   participant "Fault Manager" as FM
+
+   == Node Startup ==
+   note right of RB #LightGray : Buffer inactive\n(saving resources)
+
+   ... time passes (no recording) ...
+
+   == Fault Detected ==
+   FM -> FM : PREFAILED
+   FM -> RB : Start buffer
+   note right of RB #LightGreen : Recording\nstarts now
+
+   ... buffer filling (may be < duration_sec) ...
+
+   FM -> FM : CONFIRMED
+   FM -> RB : Flush buffer
+   RB -> RB : Write pre-fault data
+   note right of RB #LightBlue : Post-fault\nrecording
+
+   ... duration_after_sec ...
+
+   RB -> RB : Save bag file
+   note right of RB #LightGray : Buffer\ninactive
+   @enduml
+
+**When to use lazy_start: true:**
+
+- Production systems with limited resources
+- When faults have reliable PREFAILED → CONFIRMED progression
+- Systems where most faults are debounced (enter PREFAILED first)
+
+**When to use lazy_start: false:**
+
+- Development and debugging
+- When faults may skip PREFAILED state (severity 3 = CRITICAL)
+- When maximum fault context is more important than resource usage
 
 .. note::
 
@@ -329,18 +434,18 @@ Downloading Rosbag Files
 
 .. code-block:: bash
 
-   # Download bag storage file (.db3 or .mcap)
+   # Download bag archive (.tar.gz containing full bag directory)
    curl -O -J http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag
 
-.. note::
+   # Extract the archive
+   tar -xzf fault_MOTOR_OVERHEAT_20260124_153045.tar.gz
 
-   The REST API returns the rosbag **storage file** (``.db3`` or ``.mcap``), not
-   the complete bag directory. This file contains the recorded messages but cannot
-   be directly used with ``ros2 bag info`` or ``ros2 bag play`` which expect a
-   full bag directory structure.
+   # Play back the bag
+   ros2 bag play fault_MOTOR_OVERHEAT_1735830000/
 
-   For direct playback, use the ROS 2 service to get the on-disk path, or use
-   specialized tools to analyze the storage file directly.
+The REST API returns a compressed tar.gz archive containing the complete bag
+directory structure (``metadata.yaml`` and all storage segments). This allows
+direct playback with ``ros2 bag play`` after extraction.
 
 **Via ROS 2 service:**
 

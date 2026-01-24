@@ -75,8 +75,7 @@ std::string validate_fault_code(const std::string & fault_code) {
     return "fault_code cannot be empty";
   }
   if (fault_code.length() > kMaxFaultCodeLength) {
-    return "fault_code exceeds maximum length of " + std::to_string(kMaxFaultCodeLength) +
-           " characters";
+    return "fault_code exceeds maximum length of " + std::to_string(kMaxFaultCodeLength) + " characters";
   }
   for (char c : fault_code) {
     if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-' && c != '.') {
@@ -531,7 +530,7 @@ void FaultHandlers::handle_get_rosbag(const httplib::Request & req, httplib::Res
   std::string fault_code;
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid request");
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request", {});
       return;
     }
 
@@ -540,8 +539,7 @@ void FaultHandlers::handle_get_rosbag(const httplib::Request & req, httplib::Res
     // Validate fault code format (prevents path traversal and injection attacks)
     std::string validation_error = validate_fault_code(fault_code);
     if (!validation_error.empty()) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                 "Invalid fault code",
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid fault code",
                                  {{"details", validation_error}, {"fault_code", fault_code}});
       return;
     }
@@ -553,13 +551,11 @@ void FaultHandlers::handle_get_rosbag(const httplib::Request & req, httplib::Res
       // Check if it's a "not found" error
       if (result.error_message.find("not found") != std::string::npos ||
           result.error_message.find("No rosbag") != std::string::npos) {
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_NOT_FOUND,
-                                   "Rosbag not found",
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Rosbag not found",
                                    {{"details", result.error_message}, {"fault_code", fault_code}});
       } else if (result.error_message.find("invalid") != std::string::npos) {
         // Validation error from service
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                   "Invalid fault code",
+        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid fault code",
                                    {{"details", result.error_message}, {"fault_code", fault_code}});
       } else {
         HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
@@ -621,8 +617,7 @@ void FaultHandlers::handle_get_rosbag(const httplib::Request & req, httplib::Res
         std::filesystem::remove(archive_path, ec);
       }
       HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
-                                 "Failed to read rosbag file",
-                                 {{"fault_code", fault_code}, {"path", file_path}});
+                                 "Failed to read rosbag file", {{"fault_code", fault_code}, {"path", file_path}});
       return;
     }
 
@@ -667,8 +662,7 @@ void FaultHandlers::handle_get_rosbag(const httplib::Request & req, httplib::Res
 
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
-                               "Failed to download rosbag",
-                               {{"details", e.what()}, {"fault_code", fault_code}});
+                               "Failed to download rosbag", {{"details", e.what()}, {"fault_code", fault_code}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_rosbag for fault '%s': %s", fault_code.c_str(),
                  e.what());
   }
