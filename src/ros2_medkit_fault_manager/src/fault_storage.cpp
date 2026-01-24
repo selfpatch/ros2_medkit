@@ -341,8 +341,9 @@ std::vector<RosbagFileInfo> InMemoryFaultStorage::get_all_rosbag_files() const {
   }
 
   // Sort by creation time (oldest first)
-  std::sort(result.begin(), result.end(),
-            [](const RosbagFileInfo & a, const RosbagFileInfo & b) { return a.created_at_ns < b.created_at_ns; });
+  std::sort(result.begin(), result.end(), [](const RosbagFileInfo & a, const RosbagFileInfo & b) {
+    return a.created_at_ns < b.created_at_ns;
+  });
 
   return result;
 }

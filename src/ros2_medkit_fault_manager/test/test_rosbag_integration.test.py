@@ -20,12 +20,12 @@ import tempfile
 import time
 import unittest
 
+from launch import LaunchDescription
 import launch.actions
 import launch_ros.actions
 import launch_testing.actions
 import launch_testing.markers
 import rclpy
-from launch import LaunchDescription
 from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ClearFault, GetRosbag, ReportFault
@@ -54,16 +54,10 @@ ROSBAG_STORAGE_PATH = tempfile.mkdtemp(prefix='rosbag_test_')
 
 
 def generate_test_description():
-    """Generate launch description with fault_manager node with rosbag enabled.
-
-    Launch order:
-    1. Start background publisher node (Python script)
-    2. After delay, start fault_manager_node (publishers are now registered)
-    3. Signal ready for tests
-    """
+    """Generate launch description with fault_manager node with rosbag enabled."""
     # Use Python script for publishers to ensure proper topic type registration
     # ros2 topic pub has issues with topic type discovery in some configurations
-    publisher_script = '''
+    publisher_script = """
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -88,7 +82,7 @@ class TestPublisher(Node):
         self.string_pub = self.create_publisher(String, '/test/status', qos)
         self.timer = self.create_timer(0.1, self.publish)
         self.counter = 0
-        self.get_logger().info('TestPublisher started - publishing to /test/temperature and /test/status')
+        self.get_logger().info('TestPublisher started')
 
     def publish(self):
         temp_msg = Temperature()
@@ -121,10 +115,9 @@ def main():
 
 if __name__ == '__main__':
     main()
-'''
+"""
 
     # Write publisher script to temp file and run it
-    import tempfile
     script_file = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False)
     script_file.write(publisher_script)
     script_file.close()
@@ -132,7 +125,7 @@ if __name__ == '__main__':
     # Use explicit ROS settings to ensure processes can discover each other
     env = os.environ.copy()
     env['ROS_DOMAIN_ID'] = '42'
-    env['ROS_LOCALHOST_ONLY'] = '1'  # Force localhost-only discovery for faster performance
+    env['ROS_LOCALHOST_ONLY'] = '1'  # Force localhost-only discovery
 
     test_publisher = launch.actions.ExecuteProcess(
         cmd=['python3', script_file.name],
@@ -158,7 +151,7 @@ if __name__ == '__main__':
             'snapshots.rosbag.enabled': True,
             'snapshots.rosbag.duration_sec': 2.0,  # 2 second buffer
             'snapshots.rosbag.duration_after_sec': 0.5,  # 0.5 second after confirm
-            # Use explicit topics - faster than discovery and more reliable for testing
+            # Use explicit topics - faster than discovery, more reliable for tests
             'snapshots.rosbag.topics': '/test/temperature,/test/status',
             'snapshots.rosbag.format': 'sqlite3',
             'snapshots.rosbag.storage_path': ROSBAG_STORAGE_PATH,
@@ -193,13 +186,7 @@ if __name__ == '__main__':
 
 
 class TestRosbagCaptureIntegration(unittest.TestCase):
-    """Integration tests for rosbag capture feature.
-
-    Background publishers (/test/temperature, /test/status) are provided by the
-    launch description and run continuously throughout the tests. These publishers
-    are started BEFORE the fault_manager_node, ensuring topics exist when rosbag
-    capture initializes.
-    """
+    """Integration tests for rosbag capture feature."""
 
     @classmethod
     def setUpClass(cls):
@@ -257,17 +244,7 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         return self._call_service(self.report_fault_client, request)
 
     def test_01_rosbag_created_on_fault_confirmation(self):
-        """
-        Test that rosbag file is created when fault is confirmed.
-
-        Background publishers are continuously publishing, and the ring buffer
-        should already have messages from setUpClass wait time.
-
-        Verifies:
-        - Messages are being recorded in ring buffer
-        - Fault confirmation triggers bag file creation
-        - GetRosbag service returns valid file info
-        """
+        """Test that rosbag file is created when fault is confirmed."""
         fault_code = 'ROSBAG_TEST_001'
 
         # Report fault - buffer should already have messages from background publishers
@@ -301,14 +278,7 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         print(f'  Format: {rosbag_response.format}')
 
     def test_02_rosbag_auto_cleanup_on_clear(self):
-        """
-        Test that rosbag file is deleted when fault is cleared (auto_cleanup=true).
-
-        Verifies:
-        - Rosbag exists after fault confirmation
-        - Clearing fault deletes the rosbag file
-        - GetRosbag returns error after clear
-        """
+        """Test that rosbag file is deleted when fault is cleared (auto_cleanup=true)."""
         fault_code = 'ROSBAG_CLEANUP_TEST'
 
         # Report fault - buffer has messages from background publishers
@@ -372,13 +342,7 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         print(f'Empty fault code error: {response.error_message}')
 
     def test_05_multiple_faults_separate_bags(self):
-        """
-        Test that multiple faults create separate rosbag files.
-
-        Verifies:
-        - Each confirmed fault has its own rosbag
-        - Rosbags are independent
-        """
+        """Test that multiple faults create separate rosbag files."""
         fault_codes = ['MULTI_BAG_A', 'MULTI_BAG_B']
         bag_paths = []
 
@@ -406,11 +370,7 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         print('Multiple faults have separate rosbag files')
 
     def test_06_rosbag_contains_recorded_duration(self):
-        """
-        Test that rosbag duration approximately matches configuration.
-
-        duration_sec=2.0 (ring buffer) + duration_after_sec=0.5 = ~2.5s expected
-        """
+        """Test that rosbag duration approximately matches configuration."""
         fault_code = 'DURATION_TEST'
 
         # Report fault - buffer should have ~duration_sec worth of messages
@@ -446,11 +406,7 @@ class TestRosbagCaptureShutdown(unittest.TestCase):
     """Post-shutdown tests."""
 
     def test_exit_code(self, proc_info):
-        """Verify fault_manager exits cleanly.
-
-        Only check fault_manager_node exit code - the test_publisher Python script
-        exits with SIGINT which has a non-zero exit code.
-        """
+        """Verify fault_manager exits cleanly."""
         launch_testing.asserts.assertExitCodes(
             proc_info,
             process='fault_manager_node'

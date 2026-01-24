@@ -217,7 +217,7 @@ bool RosbagCapture::try_subscribe_topic(const std::string & topic) {
   try {
     rclcpp::QoS qos = rclcpp::SensorDataQoS();
 
-    auto callback = [this, topic, msg_type](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+    auto callback = [this, topic, msg_type](const std::shared_ptr<const rclcpp::SerializedMessage> & msg) {
       message_callback(topic, msg_type, msg);
     };
 
@@ -269,7 +269,7 @@ void RosbagCapture::discovery_retry_callback() {
 }
 
 void RosbagCapture::message_callback(const std::string & topic, const std::string & msg_type,
-                                     std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+                                     const std::shared_ptr<const rclcpp::SerializedMessage> & msg) {
   if (!running_.load()) {
     return;
   }
