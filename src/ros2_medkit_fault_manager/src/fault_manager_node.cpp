@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_fault_manager/fault_manager_node.hpp"
 
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>

@@ -880,21 +880,19 @@ Rosbag capture provides "black box" style recording - a ring buffer continuously
 
 **Example:**
 ```bash
-# Download rosbag file
+# Download rosbag archive
 curl -O -J http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag
 
 # Or save with custom filename
-curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag -o motor_fault.db3
+curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag -o motor_fault.tar.gz
 ```
 
 **Response (200 OK):**
-- Binary rosbag storage file download (`.db3` for sqlite3 or `.mcap` for mcap format)
-- Content-Type: `application/octet-stream` (or `application/x-mcap` for mcap)
-- Content-Disposition: `attachment; filename="fault_MOTOR_OVERHEAT_snapshot.db3"`
+- For directory-based bags (default rosbag2 format): compressed tar.gz archive containing the full bag directory with metadata.yaml and all storage segments
+- Content-Type: `application/gzip`
+- Content-Disposition: `attachment; filename="fault_MOTOR_OVERHEAT_20260124_153045.tar.gz"`
 
-**Note:** For directory-based bags (default rosbag2 format), only the storage file
-(`.db3` or `.mcap`) is returned, not the full bag directory. This file can be used
-for analysis but may not be directly playable with `ros2 bag play`.
+The archive can be extracted and played directly with `ros2 bag play`.
 
 **Response (404 Not Found - Fault or rosbag not found):**
 ```json
@@ -938,11 +936,14 @@ ros2 run ros2_medkit_fault_manager fault_manager_node \
 
 **Playback downloaded rosbag:**
 ```bash
-# Play back the downloaded bag
-ros2 bag play MOTOR_OVERHEAT_1735830000
+# Extract the downloaded archive
+tar -xzf fault_MOTOR_OVERHEAT_20260124_153045.tar.gz
+
+# Play back the bag
+ros2 bag play fault_MOTOR_OVERHEAT_1735830000/
 
 # Inspect bag contents
-ros2 bag info MOTOR_OVERHEAT_1735830000
+ros2 bag info fault_MOTOR_OVERHEAT_1735830000/
 ```
 
 **Differences from JSON Snapshots:**

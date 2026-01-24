@@ -19,11 +19,13 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/serialized_message.hpp>
+#include <rosbag2_cpp/writer.hpp>
 
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
@@ -165,6 +167,11 @@ class RosbagCapture {
   std::string current_bag_path_;
   rclcpp::TimerBase::SharedPtr post_fault_timer_;
   std::atomic<bool> recording_post_fault_{false};
+
+  /// Active writer for current bag (kept open during post-fault recording)
+  std::unique_ptr<rosbag2_cpp::Writer> active_writer_;
+  std::mutex writer_mutex_;
+  std::set<std::string> created_topics_;
 
   /// Topic types cache
   mutable std::mutex topic_types_mutex_;

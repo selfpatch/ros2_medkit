@@ -90,6 +90,7 @@ rosbag:
   # Options:
   #   "config"   - Use same topics as JSON snapshots (from this config file)
   #   "all"      - Record all available topics (WARNING: high memory usage!)
+  #   "auto"     - Alias for "all" (auto-discover all topics)
   #   "explicit" - Use only topics from include_topics list below
   topics: "config"
 

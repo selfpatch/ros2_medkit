@@ -14,12 +14,15 @@
 
 #include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
@@ -59,6 +62,32 @@ std::string generate_timestamp() {
   std::ostringstream oss;
   oss << std::put_time(&now_tm, "%Y%m%d_%H%M%S");
   return oss.str();
+}
+
+/// Maximum allowed length for fault_code
+constexpr size_t kMaxFaultCodeLength = 128;
+
+/// Validate fault_code format (same rules as FaultManagerNode)
+/// @param fault_code The fault code to validate
+/// @return Empty string if valid, error message if invalid
+std::string validate_fault_code(const std::string & fault_code) {
+  if (fault_code.empty()) {
+    return "fault_code cannot be empty";
+  }
+  if (fault_code.length() > kMaxFaultCodeLength) {
+    return "fault_code exceeds maximum length of " + std::to_string(kMaxFaultCodeLength) +
+           " characters";
+  }
+  for (char c : fault_code) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-' && c != '.') {
+      return "fault_code contains invalid character '" + std::string(1, c) +
+             "'. Only alphanumeric, underscore, hyphen, and dot are allowed";
+    }
+  }
+  if (fault_code.find("..") != std::string::npos) {
+    return "fault_code cannot contain '..' (path traversal not allowed)";
+  }
+  return "";
 }
 
 }  // namespace
@@ -508,10 +537,12 @@ void FaultHandlers::handle_get_rosbag(const httplib::Request & req, httplib::Res
 
     fault_code = req.matches[1];
 
-    // Validate fault code
-    if (fault_code.empty() || fault_code.length() > 256) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, "Invalid fault code",
-                                 {{"details", "Fault code must be between 1 and 256 characters"}});
+    // Validate fault code format (prevents path traversal and injection attacks)
+    std::string validation_error = validate_fault_code(fault_code);
+    if (!validation_error.empty()) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid fault code",
+                                 {{"details", validation_error}, {"fault_code", fault_code}});
       return;
     }
 
@@ -522,10 +553,17 @@ void FaultHandlers::handle_get_rosbag(const httplib::Request & req, httplib::Res
       // Check if it's a "not found" error
       if (result.error_message.find("not found") != std::string::npos ||
           result.error_message.find("No rosbag") != std::string::npos) {
-        HandlerContext::send_error(res, StatusCode::NotFound_404, "Rosbag not found",
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_NOT_FOUND,
+                                   "Rosbag not found",
+                                   {{"details", result.error_message}, {"fault_code", fault_code}});
+      } else if (result.error_message.find("invalid") != std::string::npos) {
+        // Validation error from service
+        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                   "Invalid fault code",
                                    {{"details", result.error_message}, {"fault_code", fault_code}});
       } else {
-        HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, "Failed to get rosbag",
+        HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
+                                   "Failed to get rosbag",
                                    {{"details", result.error_message}, {"fault_code", fault_code}});
       }
       return;
@@ -537,80 +575,99 @@ void FaultHandlers::handle_get_rosbag(const httplib::Request & req, httplib::Res
 
     // Check if path is a directory (rosbag2 creates directories)
     std::filesystem::path bag_path(file_path);
+    bool is_directory = std::filesystem::is_directory(bag_path);
+    std::string archive_path;  // Will be set if we create a temp archive
 
-    // Determine what to send
-    if (std::filesystem::is_directory(bag_path)) {
-      // For directory-based bags, we need to create a tar/zip archive
-      // For simplicity, just send the metadata.yaml or db3 file
-      std::filesystem::path db_file;
-      for (const auto & entry : std::filesystem::directory_iterator(bag_path)) {
-        if (entry.path().extension() == ".db3" || entry.path().extension() == ".mcap") {
-          db_file = entry.path();
-          break;
-        }
-      }
+    // Determine content type and filename based on what we're sending
+    std::string content_type;
+    std::string timestamp = generate_timestamp();
+    std::string filename;
 
-      if (db_file.empty()) {
-        HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Rosbag data file not found in directory",
+    if (is_directory) {
+      // Create tar.gz archive of the entire bag directory (includes all segments + metadata)
+      archive_path = std::filesystem::temp_directory_path().string() + "/rosbag_download_" +
+                     std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".tar.gz";
+
+      std::string tar_cmd = "tar -czf " + archive_path + " -C " + bag_path.parent_path().string() + " " +
+                            bag_path.filename().string() + " 2>/dev/null";
+
+      int tar_result = std::system(tar_cmd.c_str());
+      if (tar_result != 0) {
+        HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                                   "Failed to create rosbag archive",
                                    {{"fault_code", fault_code}, {"path", file_path}});
         return;
       }
 
-      file_path = db_file.string();
+      file_path = archive_path;
+      content_type = "application/gzip";
+      filename = "fault_" + sanitize_filename(fault_code) + "_" + timestamp + ".tar.gz";
+    } else {
+      // Single file - determine type from format
+      if (format == "mcap") {
+        content_type = "application/x-mcap";
+        filename = "fault_" + sanitize_filename(fault_code) + "_" + timestamp + ".mcap";
+      } else {
+        content_type = "application/octet-stream";
+        filename = "fault_" + sanitize_filename(fault_code) + "_" + timestamp + ".db3";
+      }
     }
 
     // Check file exists and get size
     std::error_code ec;
     auto file_size = std::filesystem::file_size(file_path, ec);
     if (ec) {
-      HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to read rosbag file",
+      if (!archive_path.empty()) {
+        std::filesystem::remove(archive_path, ec);
+      }
+      HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                                 "Failed to read rosbag file",
                                  {{"fault_code", fault_code}, {"path", file_path}});
       return;
     }
-
-    // Determine content type based on format
-    std::string content_type = "application/octet-stream";
-    std::string extension = ".db3";
-    if (format == "mcap") {
-      content_type = "application/x-mcap";
-      extension = ".mcap";
-    }
-
-    // Set filename for download with timestamp (sanitize fault_code to prevent header injection)
-    std::string timestamp = generate_timestamp();
-    std::string filename = "fault_" + sanitize_filename(fault_code) + "_" + timestamp + extension;
 
     res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
     res.set_header("Content-Type", content_type);
     res.status = StatusCode::OK_200;
 
     // Use streaming response for large files to avoid loading entire bag into memory
-    std::string path_copy = file_path;  // Capture for lambda
-    res.set_content_provider(file_size, content_type,
-                             [path_copy](size_t offset, size_t length, httplib::DataSink & sink) {
-                               std::ifstream file(path_copy, std::ios::binary);
-                               if (!file) {
-                                 return false;
-                               }
-                               file.seekg(static_cast<std::streamoff>(offset));
-                               constexpr size_t kChunkSize = 65536;  // 64KB chunks
-                               std::vector<char> buffer(std::min(length, kChunkSize));
-                               size_t remaining = length;
-                               while (remaining > 0 && file) {
-                                 size_t to_read = std::min(remaining, kChunkSize);
-                                 file.read(buffer.data(), static_cast<std::streamsize>(to_read));
-                                 auto bytes_read = static_cast<size_t>(file.gcount());
-                                 if (bytes_read == 0) {
-                                   break;
-                                 }
-                                 sink.write(buffer.data(), bytes_read);
-                                 remaining -= bytes_read;
-                               }
-                               return true;
-                             });
+    std::string path_copy = file_path;        // Capture for content provider lambda
+    std::string archive_copy = archive_path;  // Capture for cleanup lambda
+    res.set_content_provider(
+        file_size, content_type,
+        [path_copy](size_t offset, size_t length, httplib::DataSink & sink) {
+          std::ifstream file(path_copy, std::ios::binary);
+          if (!file) {
+            return false;
+          }
+          file.seekg(static_cast<std::streamoff>(offset));
+          constexpr size_t kChunkSize = 65536;  // 64KB chunks
+          std::vector<char> buffer(std::min(length, kChunkSize));
+          size_t remaining = length;
+          while (remaining > 0 && file) {
+            size_t to_read = std::min(remaining, kChunkSize);
+            file.read(buffer.data(), static_cast<std::streamsize>(to_read));
+            auto bytes_read = static_cast<size_t>(file.gcount());
+            if (bytes_read == 0) {
+              break;
+            }
+            sink.write(buffer.data(), bytes_read);
+            remaining -= bytes_read;
+          }
+          return true;
+        },
+        [archive_copy](bool /*success*/) {
+          // Resource releaser callback - clean up temp archive if we created one
+          if (!archive_copy.empty()) {
+            std::error_code cleanup_ec;
+            std::filesystem::remove(archive_copy, cleanup_ec);
+            // Ignore errors - temp file cleanup is best-effort
+          }
+        });
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, "Failed to download rosbag",
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                               "Failed to download rosbag",
                                {{"details", e.what()}, {"fault_code", fault_code}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_rosbag for fault '%s': %s", fault_code.c_str(),
                  e.what());
