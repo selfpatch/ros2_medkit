@@ -285,17 +285,10 @@ Main Components
    - Uses ``ros2_medkit_serialization`` for JSON ↔ ROS 2 message conversion
 
 4. **RESTServer** - Provides the HTTP/REST API
-   - Discovery endpoints: ``/health``, ``/``, ``/areas``, ``/components``, ``/areas/{area_id}/components``
-   - Data endpoints: ``/components/{component_id}/data``, ``/components/{component_id}/data/{topic_name}``
-   - Operations endpoints:
-     - ``GET .../operations`` - List operations
-     - ``GET .../operations/{op}`` - Get operation details
-     - ``POST .../operations/{op}/executions`` - Start execution
-     - ``GET .../operations/{op}/executions`` - List executions
-     - ``GET .../operations/{op}/executions/{exec-id}`` - Get execution status
-     - ``PUT .../operations/{op}/executions/{exec-id}`` - Update execution (stop capability)
-     - ``DELETE .../operations/{op}/executions/{exec-id}`` - Terminate execution
-   - Configurations endpoints: ``GET/PUT .../configurations``, ``GET/PUT .../configurations/{param}``
+   - Discovery endpoints: ``/health``, ``/areas``, ``/components``
+   - Data endpoints: ``/components/{id}/data``, ``/components/{id}/data/{topic}``
+   - Operations endpoints: ``/apps/{id}/operations``, ``/apps/{id}/operations/{op}/executions``
+   - Configurations endpoints: ``/apps/{id}/configurations``, ``/apps/{id}/configurations/{param}``
    - Retrieves cached entities from the GatewayNode
    - Uses DataAccessManager for runtime topic data access
    - Uses OperationManager for service/action execution
