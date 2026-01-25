@@ -29,7 +29,7 @@ import unittest
 from urllib.parse import quote
 
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, TimerAction
+from launch.actions import TimerAction
 import launch_ros.actions
 import launch_testing.actions
 import requests
@@ -211,7 +211,8 @@ def generate_test_description():
 
     # Launch the fault_manager node for fault REST API tests
     # Use in-memory storage to avoid filesystem permission issues in CI
-    # Enable rosbag capture for integration testing
+    # Enable rosbag capture for integration testing - capture lidar scan topic
+    # which is published by the lidar_sensor demo node
     fault_manager_node = launch_ros.actions.Node(
         package='ros2_medkit_fault_manager',
         executable='fault_manager_node',
@@ -224,18 +225,8 @@ def generate_test_description():
             'snapshots.rosbag.duration_sec': 2.0,
             'snapshots.rosbag.duration_after_sec': 0.5,
             'snapshots.rosbag.topics': 'explicit',
-            'snapshots.rosbag.include_topics': ['/rosbag_test_topic'],
+            'snapshots.rosbag.include_topics': ['/perception/lidar/scan'],
         }],
-    )
-
-    # Simple publisher for rosbag test (publishes at 10Hz)
-    rosbag_test_publisher = ExecuteProcess(
-        cmd=[
-            'ros2', 'topic', 'pub', '--rate', '10',
-            '/rosbag_test_topic', 'std_msgs/msg/String',
-            '{data: "rosbag_test_message"}'
-        ],
-        output='screen',
     )
 
     # Start demo nodes with a delay to ensure gateway starts first
@@ -252,7 +243,6 @@ def generate_test_description():
             long_calibration_action,
             lidar_sensor,
             fault_manager_node,
-            rosbag_test_publisher,
         ],
     )
 
@@ -3877,38 +3867,30 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print('✓ Get rosbag invalid fault code test passed')
 
     def test_72_get_rosbag_happy_path(self):
-        """Test rosbag download happy path (@verifies REQ_INTEROP_088)."""
+        """
+        Test rosbag download happy path.
+
+        Uses LIDAR_RANGE_INVALID fault which is auto-reported by lidar_sensor
+        demo node due to invalid parameters (min_range=10 > max_range=5).
+        The rosbag captures /perception/lidar/scan topic.
+
+        @verifies REQ_INTEROP_088
+        """
         import tarfile
         import tempfile
         import time
 
-        fault_code = 'ROSBAG_TEST_FAULT'
+        # Use the fault that lidar_sensor automatically reports
+        # (configured with min_range=10 > max_range=5 which triggers this fault)
+        fault_code = 'LIDAR_RANGE_INVALID'
 
-        # Wait for ring buffer to fill (duration_sec = 2.0)
-        time.sleep(3)
+        # Wait for:
+        # 1. Ring buffer to fill (duration_sec = 2.0)
+        # 2. lidar_sensor to report fault (initial check after 3s delay)
+        # 3. Post-fault recording to complete (duration_after_sec = 0.5)
+        time.sleep(6)
 
-        # Report a CRITICAL fault (severity=3) to trigger immediate confirmation
-        # Note: ReportFault goes through ROS2 service, not REST
-        # Use subprocess to call ROS2 service
-        import subprocess
-        subprocess.run(
-            [
-                'ros2', 'service', 'call',
-                '/fault_manager/report_fault',
-                'ros2_medkit_msgs/srv/ReportFault',
-                f"{{fault_code: '{fault_code}', source_id: '/rosbag_test', "
-                f"severity: 3, message: 'Test fault for rosbag'}}"
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,  # Don't raise on non-zero exit
-        )
-
-        # Wait for post-fault recording to complete (duration_after_sec = 0.5)
-        time.sleep(2)
-
-        # Download the rosbag
+        # Download the rosbag for the automatically-reported fault
         response = requests.get(
             f'{self.BASE_URL}/faults/{fault_code}/snapshots/bag',
             timeout=30
@@ -3921,7 +3903,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Verify headers
         content_type = response.headers.get('Content-Type', '')
-        self.assertIn('gzip', content_type, 'Expected gzip content type for tar.gz archive')
+        self.assertIn('gzip', content_type, 'Expected gzip content type')
 
         content_disp = response.headers.get('Content-Disposition', '')
         self.assertIn('attachment', content_disp, 'Expected attachment disposition')
@@ -3939,7 +3921,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                 self.assertGreater(len(names), 0, 'Archive should not be empty')
                 # Should contain metadata.yaml (rosbag2 standard)
                 has_metadata = any('metadata.yaml' in n for n in names)
-                self.assertTrue(has_metadata, f'Expected metadata.yaml in archive: {names}')
+                self.assertTrue(has_metadata, f'Expected metadata.yaml: {names}')
         finally:
             import os
             os.unlink(temp_path)
