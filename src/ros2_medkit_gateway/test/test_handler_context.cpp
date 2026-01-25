@@ -54,8 +54,8 @@ TEST(HandlerContextStaticTest, SendErrorWithExtraFields) {
   EXPECT_EQ(body["error_code"], ERR_ENTITY_NOT_FOUND);
   EXPECT_EQ(body["message"], "Not found");
   // Extra parameters are in x-medkit extension
-  EXPECT_EQ(body["x-medkit"]["details"], "More info");
-  EXPECT_EQ(body["x-medkit"]["code"], 42);
+  EXPECT_EQ(body["parameters"]["details"], "More info");
+  EXPECT_EQ(body["parameters"]["code"], 42);
 }
 
 TEST(HandlerContextStaticTest, SendErrorInternalServerError) {

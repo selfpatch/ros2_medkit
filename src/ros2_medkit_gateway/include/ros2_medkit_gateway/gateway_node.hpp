@@ -30,7 +30,7 @@
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/http/rest_server.hpp"
-#include "ros2_medkit_gateway/models.hpp"
+#include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
 
 namespace ros2_medkit_gateway {
@@ -40,8 +40,11 @@ class GatewayNode : public rclcpp::Node {
   GatewayNode();
   ~GatewayNode() override;
 
-  // Thread-safe accessors for REST server
-  EntityCache get_entity_cache() const;
+  /**
+   * @brief Get the thread-safe entity cache with O(1) lookups
+   * @return Reference to ThreadSafeEntityCache
+   */
+  const ThreadSafeEntityCache & get_thread_safe_cache() const;
 
   /**
    * @brief Get the DataAccessManager instance
@@ -97,8 +100,7 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<RESTServer> rest_server_;
 
   // Cache with thread safety
-  mutable std::mutex cache_mutex_;
-  EntityCache entity_cache_;
+  ThreadSafeEntityCache thread_safe_cache_;
 
   // Timer for periodic refresh
   rclcpp::TimerBase::SharedPtr refresh_timer_;

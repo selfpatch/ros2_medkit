@@ -44,69 +44,45 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
       return;
     }
 
-    const auto cache = ctx_.node()->get_entity_cache();
+    // Use ThreadSafeEntityCache for O(1) entity lookup and aggregated operations
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
 
-    // Find entity in cache - check components first, then apps
-    bool entity_found = false;
-    std::vector<ServiceInfo> services;
-    std::vector<ActionInfo> actions;
-    std::string entity_type = "component";
+    // Determine entity type and get aggregated operations
+    AggregatedOperations ops;
+    std::string entity_type;
 
-    // Try to find in components
-    for (const auto & component : cache.components) {
-      if (component.id == entity_id) {
-        services = component.services;
-        actions = component.actions;
-
-        // For synthetic components with no direct operations, aggregate from apps
-        if (services.empty() && actions.empty()) {
-          auto discovery = ctx_.node()->get_discovery_manager();
-          auto apps = discovery->get_apps_for_component(entity_id);
-
-          // Use sets to deduplicate operations by full_path
-          std::unordered_set<std::string> seen_service_paths;
-          std::unordered_set<std::string> seen_action_paths;
-
-          for (const auto & app : apps) {
-            for (const auto & svc : app.services) {
-              if (seen_service_paths.insert(svc.full_path).second) {
-                services.push_back(svc);
-              }
-            }
-            for (const auto & act : app.actions) {
-              if (seen_action_paths.insert(act.full_path).second) {
-                actions.push_back(act);
-              }
-            }
-          }
-        }
-
-        entity_found = true;
-        break;
-      }
-    }
-
-    // If not found in components, try apps
-    if (!entity_found) {
-      for (const auto & app : cache.apps) {
-        if (app.id == entity_id) {
-          services = app.services;
-          actions = app.actions;
-          entity_found = true;
-          entity_type = "app";
-          break;
-        }
-      }
-    }
-
-    if (!entity_found) {
+    auto entity_ref = cache.find_entity(entity_id);
+    if (!entity_ref) {
       HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
                                  {{"entity_id", entity_id}});
       return;
     }
 
+    switch (entity_ref->type) {
+      case SovdEntityType::COMPONENT:
+        ops = cache.get_component_operations(entity_id);
+        entity_type = "component";
+        break;
+      case SovdEntityType::APP:
+        ops = cache.get_app_operations(entity_id);
+        entity_type = "app";
+        break;
+      case SovdEntityType::AREA:
+        ops = cache.get_area_operations(entity_id);
+        entity_type = "area";
+        break;
+      case SovdEntityType::FUNCTION:
+        ops = cache.get_function_operations(entity_id);
+        entity_type = "function";
+        break;
+      default:
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                   {{"entity_id", entity_id}});
+        return;
+    }
+
     RCLCPP_DEBUG(HandlerContext::logger(), "Listing operations for %s '%s': %zu services, %zu actions",
-                 entity_type.c_str(), entity_id.c_str(), services.size(), actions.size());
+                 entity_type.c_str(), entity_id.c_str(), ops.services.size(), ops.actions.size());
 
     // Build response with services and actions
     json operations = json::array();
@@ -115,7 +91,7 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
     auto type_introspection = data_access_mgr->get_type_introspection();
 
-    for (const auto & svc : services) {
+    for (const auto & svc : ops.services) {
       // Response format
       json svc_json = {
           {"id", svc.name}, {"name", svc.name}, {"proximity_proof_required", false}, {"asynchronous_execution", false}};
@@ -146,7 +122,7 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
       operations.push_back(svc_json);
     }
 
-    for (const auto & act : actions) {
+    for (const auto & act : ops.actions) {
       // Response format
       json act_json = {
           {"id", act.name}, {"name", act.name}, {"proximity_proof_required", false}, {"asynchronous_execution", true}};
@@ -210,96 +186,61 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
       return;
     }
 
-    const auto cache = ctx_.node()->get_entity_cache();
-    auto discovery = ctx_.node()->get_discovery_manager();
+    // Use ThreadSafeEntityCache for O(1) entity lookup
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
 
-    // Find entity and operation
-    bool entity_found = false;
+    // Find entity
+    auto entity_ref = cache.find_entity(entity_id);
+    if (!entity_ref) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                 {{"entity_id", entity_id}});
+      return;
+    }
+
+    // Get aggregated operations based on entity type
+    AggregatedOperations ops;
+    std::string entity_type;
+    switch (entity_ref->type) {
+      case SovdEntityType::COMPONENT:
+        ops = cache.get_component_operations(entity_id);
+        entity_type = "component";
+        break;
+      case SovdEntityType::APP:
+        ops = cache.get_app_operations(entity_id);
+        entity_type = "app";
+        break;
+      case SovdEntityType::AREA:
+        ops = cache.get_area_operations(entity_id);
+        entity_type = "area";
+        break;
+      case SovdEntityType::FUNCTION:
+        ops = cache.get_function_operations(entity_id);
+        entity_type = "function";
+        break;
+      default:
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND,
+                                   "Entity type does not support operations", {{"entity_id", entity_id}});
+        return;
+    }
+
+    // Find operation by name - O(m) where m = operations in entity
     std::optional<ServiceInfo> service_info;
     std::optional<ActionInfo> action_info;
-    std::string entity_type = "component";
 
-    // Try to find in components
-    for (const auto & component : cache.components) {
-      if (component.id == entity_id) {
-        entity_found = true;
-
-        for (const auto & svc : component.services) {
-          if (svc.name == operation_id) {
-            service_info = svc;
-            break;
-          }
-        }
-
-        if (!service_info.has_value()) {
-          for (const auto & act : component.actions) {
-            if (act.name == operation_id) {
-              action_info = act;
-              break;
-            }
-          }
-        }
-
-        // For synthetic components, try to find operation in apps
-        if (!service_info.has_value() && !action_info.has_value()) {
-          auto apps = discovery->get_apps_for_component(entity_id);
-          for (const auto & app : apps) {
-            for (const auto & svc : app.services) {
-              if (svc.name == operation_id) {
-                service_info = svc;
-                break;
-              }
-            }
-            if (service_info.has_value()) {
-              break;
-            }
-
-            for (const auto & act : app.actions) {
-              if (act.name == operation_id) {
-                action_info = act;
-                break;
-              }
-            }
-            if (action_info.has_value()) {
-              break;
-            }
-          }
-        }
+    for (const auto & svc : ops.services) {
+      if (svc.name == operation_id) {
+        service_info = svc;
         break;
       }
     }
 
-    // If not found in components, try apps
-    if (!entity_found) {
-      for (const auto & app : cache.apps) {
-        if (app.id == entity_id) {
-          entity_found = true;
-          entity_type = "app";
-
-          for (const auto & svc : app.services) {
-            if (svc.name == operation_id) {
-              service_info = svc;
-              break;
-            }
-          }
-
-          if (!service_info.has_value()) {
-            for (const auto & act : app.actions) {
-              if (act.name == operation_id) {
-                action_info = act;
-                break;
-              }
-            }
-          }
+    if (!service_info.has_value()) {
+      for (const auto & act : ops.actions) {
+        if (act.name == operation_id) {
+          action_info = act;
           break;
         }
       }
-    }
-
-    if (!entity_found) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
-      return;
     }
 
     if (!service_info.has_value() && !action_info.has_value()) {
@@ -432,96 +373,61 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
       }
     }
 
-    const auto cache = ctx_.node()->get_entity_cache();
-    auto discovery = ctx_.node()->get_discovery_manager();
+    // Use ThreadSafeEntityCache for O(1) entity lookup
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
 
-    // Find entity and operation
-    bool entity_found = false;
+    // Find entity and get its operations
+    auto entity_ref = cache.find_entity(entity_id);
+    if (!entity_ref) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                 {{"entity_id", entity_id}});
+      return;
+    }
+
+    // Get aggregated operations based on entity type
+    AggregatedOperations ops;
+    std::string entity_type;
+    switch (entity_ref->type) {
+      case SovdEntityType::COMPONENT:
+        ops = cache.get_component_operations(entity_id);
+        entity_type = "component";
+        break;
+      case SovdEntityType::APP:
+        ops = cache.get_app_operations(entity_id);
+        entity_type = "app";
+        break;
+      case SovdEntityType::AREA:
+        ops = cache.get_area_operations(entity_id);
+        entity_type = "area";
+        break;
+      case SovdEntityType::FUNCTION:
+        ops = cache.get_function_operations(entity_id);
+        entity_type = "function";
+        break;
+      default:
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND,
+                                   "Entity type does not support operations", {{"entity_id", entity_id}});
+        return;
+    }
+
+    // Find operation by name - O(m) where m = operations in entity
     std::optional<ServiceInfo> service_info;
     std::optional<ActionInfo> action_info;
-    std::string entity_type = "component";
 
-    // Try to find in components
-    for (const auto & component : cache.components) {
-      if (component.id == entity_id) {
-        entity_found = true;
-
-        for (const auto & svc : component.services) {
-          if (svc.name == operation_id) {
-            service_info = svc;
-            break;
-          }
-        }
-
-        if (!service_info.has_value()) {
-          for (const auto & act : component.actions) {
-            if (act.name == operation_id) {
-              action_info = act;
-              break;
-            }
-          }
-        }
-
-        // For synthetic components, try to find operation in apps
-        if (!service_info.has_value() && !action_info.has_value()) {
-          auto apps = discovery->get_apps_for_component(entity_id);
-          for (const auto & app : apps) {
-            for (const auto & svc : app.services) {
-              if (svc.name == operation_id) {
-                service_info = svc;
-                break;
-              }
-            }
-            if (service_info.has_value()) {
-              break;
-            }
-
-            for (const auto & act : app.actions) {
-              if (act.name == operation_id) {
-                action_info = act;
-                break;
-              }
-            }
-            if (action_info.has_value()) {
-              break;
-            }
-          }
-        }
+    for (const auto & svc : ops.services) {
+      if (svc.name == operation_id) {
+        service_info = svc;
         break;
       }
     }
 
-    // If not found in components, try apps
-    if (!entity_found) {
-      for (const auto & app : cache.apps) {
-        if (app.id == entity_id) {
-          entity_found = true;
-          entity_type = "app";
-
-          for (const auto & svc : app.services) {
-            if (svc.name == operation_id) {
-              service_info = svc;
-              break;
-            }
-          }
-
-          if (!service_info.has_value()) {
-            for (const auto & act : app.actions) {
-              if (act.name == operation_id) {
-                action_info = act;
-                break;
-              }
-            }
-          }
+    if (!service_info.has_value()) {
+      for (const auto & act : ops.actions) {
+        if (act.name == operation_id) {
+          action_info = act;
           break;
         }
       }
-    }
-
-    if (!entity_found) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
-      return;
     }
 
     if (!service_info.has_value() && !action_info.has_value()) {
@@ -634,30 +540,22 @@ void OperationHandlers::handle_list_executions(const httplib::Request & req, htt
       return;
     }
 
-    // Find entity to get namespace
-    const auto cache = ctx_.node()->get_entity_cache();
+    // Find entity to get namespace (O(1) lookups)
+    const auto& cache = ctx_.node()->get_thread_safe_cache();
     std::string namespace_path;
     bool entity_found = false;
 
-    for (const auto & c : cache.components) {
-      if (c.id == entity_id) {
-        namespace_path = c.namespace_path;
-        entity_found = true;
-        break;
-      }
+    if (auto component = cache.get_component(entity_id)) {
+      namespace_path = component->namespace_path;
+      entity_found = true;
     }
 
     if (!entity_found) {
-      for (const auto & app : cache.apps) {
-        if (app.id == entity_id) {
-          for (const auto & act : app.actions) {
-            if (act.name == operation_id) {
-              namespace_path = act.full_path.substr(0, act.full_path.rfind('/'));
-              entity_found = true;
-              break;
-            }
-          }
-          if (entity_found) {
+      if (auto app = cache.get_app(entity_id)) {
+        for (const auto & act : app->actions) {
+          if (act.name == operation_id) {
+            namespace_path = act.full_path.substr(0, act.full_path.rfind('/'));
+            entity_found = true;
             break;
           }
         }

@@ -34,11 +34,12 @@ void ComponentHandlers::handle_list_components(const httplib::Request & req, htt
   (void)req;  // Unused parameter
 
   try {
-    const auto cache = ctx_.node()->get_entity_cache();
+    const auto& cache = ctx_.node()->get_thread_safe_cache();
+    const auto components = cache.get_components();
 
     // Build items array with EntityReference format
     json items = json::array();
-    for (const auto & component : cache.components) {
+    for (const auto & component : components) {
       json item;
       // Required fields for EntityReference
       item["id"] = component.id;

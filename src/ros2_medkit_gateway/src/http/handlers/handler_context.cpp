@@ -64,67 +64,58 @@ tl::expected<void, std::string> HandlerContext::validate_entity_id(const std::st
 
 tl::expected<std::string, std::string>
 HandlerContext::get_component_namespace_path(const std::string & component_id) const {
-  const auto cache = node_->get_entity_cache();
-  for (const auto & component : cache.components) {
-    if (component.id == component_id) {
-      return component.namespace_path;
-    }
+  const auto& cache = node_->get_thread_safe_cache();
+  auto component = cache.get_component(component_id);
+  if (component) {
+    return component->namespace_path;
   }
   return tl::unexpected("Component not found");
 }
 
 EntityInfo HandlerContext::get_entity_info(const std::string & entity_id) const {
-  const auto cache = node_->get_entity_cache();
+  const auto& cache = node_->get_thread_safe_cache();
   EntityInfo info;
   info.id = entity_id;
 
-  // Search components first
-  for (const auto & component : cache.components) {
-    if (component.id == entity_id) {
-      info.type = EntityType::COMPONENT;
-      info.namespace_path = component.namespace_path;
-      info.fqn = component.fqn;
-      info.id_field = "component_id";
-      info.error_name = "Component";
-      return info;
-    }
+  // Search components first (O(1) lookup)
+  if (auto component = cache.get_component(entity_id)) {
+    info.type = EntityType::COMPONENT;
+    info.namespace_path = component->namespace_path;
+    info.fqn = component->fqn;
+    info.id_field = "component_id";
+    info.error_name = "Component";
+    return info;
   }
 
-  // Search apps
-  for (const auto & app : cache.apps) {
-    if (app.id == entity_id) {
-      info.type = EntityType::APP;
-      // Apps use bound_fqn as namespace_path for fault filtering
-      info.namespace_path = app.bound_fqn.value_or("");
-      info.fqn = app.bound_fqn.value_or("");
-      info.id_field = "app_id";
-      info.error_name = "App";
-      return info;
-    }
+  // Search apps (O(1) lookup)
+  if (auto app = cache.get_app(entity_id)) {
+    info.type = EntityType::APP;
+    // Apps use bound_fqn as namespace_path for fault filtering
+    info.namespace_path = app->bound_fqn.value_or("");
+    info.fqn = app->bound_fqn.value_or("");
+    info.id_field = "app_id";
+    info.error_name = "App";
+    return info;
   }
 
-  // Search areas
-  for (const auto & area : cache.areas) {
-    if (area.id == entity_id) {
-      info.type = EntityType::AREA;
-      info.namespace_path = "";  // Areas don't have namespace_path
-      info.fqn = "";
-      info.id_field = "area_id";
-      info.error_name = "Area";
-      return info;
-    }
+  // Search areas (O(1) lookup)
+  if (auto area = cache.get_area(entity_id)) {
+    info.type = EntityType::AREA;
+    info.namespace_path = "";  // Areas don't have namespace_path
+    info.fqn = "";
+    info.id_field = "area_id";
+    info.error_name = "Area";
+    return info;
   }
 
-  // Search functions
-  for (const auto & func : cache.functions) {
-    if (func.id == entity_id) {
-      info.type = EntityType::FUNCTION;
-      info.namespace_path = "";
-      info.fqn = "";
-      info.id_field = "function_id";
-      info.error_name = "Function";
-      return info;
-    }
+  // Search functions (O(1) lookup)
+  if (auto func = cache.get_function(entity_id)) {
+    info.type = EntityType::FUNCTION;
+    info.namespace_path = "";
+    info.fqn = "";
+    info.id_field = "function_id";
+    info.error_name = "Function";
+    return info;
   }
 
   // Not found - return UNKNOWN type
@@ -189,9 +180,9 @@ void HandlerContext::send_error(httplib::Response & res, httplib::StatusCode sta
 
   error_json["message"] = message;
 
-  // Use x-medkit extension for additional parameters
+  // SOVD GenericError schema (7.4.2) requires additional info in 'parameters' field
   if (!parameters.empty()) {
-    error_json["x-medkit"] = parameters;
+    error_json["parameters"] = parameters;
   }
 
   res.set_content(error_json.dump(2), "application/json");

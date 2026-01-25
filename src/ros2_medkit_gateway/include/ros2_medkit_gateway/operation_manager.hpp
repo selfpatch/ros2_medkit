@@ -30,7 +30,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
-#include "ros2_medkit_gateway/models.hpp"
+#include "ros2_medkit_gateway/discovery/models/common.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/service_action_types.hpp"
 

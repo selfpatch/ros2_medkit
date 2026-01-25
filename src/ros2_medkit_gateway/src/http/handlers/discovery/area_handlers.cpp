@@ -29,11 +29,12 @@ void AreaHandlers::handle_list_areas(const httplib::Request & req, httplib::Resp
   (void)req;  // Unused parameter
 
   try {
-    const auto cache = ctx_.node()->get_entity_cache();
+    const auto& cache = ctx_.node()->get_thread_safe_cache();
+    const auto areas = cache.get_areas();
 
     // Build items array with EntityReference format
     json items = json::array();
-    for (const auto & area : cache.areas) {
+    for (const auto & area : areas) {
       json area_item;
       // Required fields for EntityReference
       area_item["id"] = area.id;
@@ -166,26 +167,19 @@ void AreaHandlers::handle_area_components(const httplib::Request & req, httplib:
       return;
     }
 
-    const auto cache = ctx_.node()->get_entity_cache();
+    const auto& cache = ctx_.node()->get_thread_safe_cache();
 
-    // Check if area exists
-    bool area_exists = false;
-    for (const auto & area : cache.areas) {
-      if (area.id == area_id) {
-        area_exists = true;
-        break;
-      }
-    }
-
-    if (!area_exists) {
+    // Check if area exists (O(1) lookup)
+    if (!cache.has_area(area_id)) {
       HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Area not found",
                                  {{"area_id", area_id}});
       return;
     }
 
     // Filter components by area
+    const auto components = cache.get_components();
     json items = json::array();
-    for (const auto & component : cache.components) {
+    for (const auto & component : components) {
       if (component.area == area_id) {
         json comp_item;
         // SOVD required fields for EntityReference

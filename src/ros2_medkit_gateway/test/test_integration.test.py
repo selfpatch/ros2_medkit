@@ -620,8 +620,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Area not found')
-        self.assertIn('area_id', data['x-medkit'])
-        self.assertEqual(data['x-medkit'].get('area_id'), 'nonexistent')
+        self.assertIn('parameters', data)
+        self.assertIn('area_id', data['parameters'])
+        self.assertEqual(data['parameters'].get('area_id'), 'nonexistent')
 
         print('✓ Nonexistent area error test passed')
 
@@ -749,8 +750,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'App not found')
-        self.assertIn('app_id', data['x-medkit'])
-        self.assertEqual(data['x-medkit'].get('app_id'), 'nonexistent_app')
+        self.assertIn('parameters', data)
+        self.assertIn('app_id', data['parameters'])
+        self.assertEqual(data['parameters'].get('app_id'), 'nonexistent_app')
 
         print('✓ Nonexistent app error test passed')
 
@@ -803,7 +805,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             data = response.json()
             self.assertIn('error_code', data)
             self.assertEqual(data['message'], 'Invalid app ID')
-            self.assertIn('details', data['x-medkit'])
+            self.assertIn('parameters', data)
+            self.assertIn('details', data['parameters'])
 
         print('✓ Invalid app ID special characters test passed')
 
@@ -833,7 +836,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             data = response.json()
             self.assertIn('error_code', data)
             self.assertEqual(data['message'], 'Invalid area ID')
-            self.assertIn('details', data['x-medkit'])
+            self.assertIn('parameters', data)
+            self.assertIn('details', data['parameters'])
 
         print('✓ Invalid area ID special characters test passed')
 
@@ -1078,8 +1082,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Component not found')
-        self.assertIn('component_id', data['x-medkit'])
-        self.assertEqual(data['x-medkit'].get('component_id'), 'nonexistent_component')
+        self.assertIn('parameters', data)
+        self.assertIn('component_id', data['parameters'])
+        self.assertEqual(data['parameters'].get('component_id'), 'nonexistent_component')
 
         print('✓ Component topic nonexistent component error test passed')
 
@@ -1263,7 +1268,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Component not found')
-        self.assertEqual(data['x-medkit'].get('component_id'), 'nonexistent_component')
+        self.assertIn('parameters', data)
+        self.assertEqual(data['parameters'].get('component_id'), 'nonexistent_component')
 
         print('✓ Publish nonexistent component test passed')
 
@@ -1897,8 +1903,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Entity not found')
-        self.assertIn('entity_id', data['x-medkit'])
-        self.assertEqual(data['x-medkit'].get('entity_id'), 'nonexistent_app')
+        self.assertIn('parameters', data)
+        self.assertIn('entity_id', data['parameters'])
+        self.assertEqual(data['parameters'].get('entity_id'), 'nonexistent_app')
 
         print('✓ Configurations nonexistent app test passed')
 
@@ -1916,10 +1923,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        # Error format: parameters in x-medkit extension
-        self.assertIn('x-medkit', data)
+        # Error format: parameters in parameters field
+        self.assertIn('parameters', data)
         # Handler uses 'id' as the field name for the parameter
-        self.assertEqual(data['x-medkit'].get('id'), 'nonexistent_param')
+        self.assertEqual(data['parameters'].get('id'), 'nonexistent_param')
 
         print('✓ Configuration nonexistent parameter test passed')
 
@@ -2136,9 +2143,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Entity not found')
-        # SOVD error format: parameters in x-medkit extension
-        self.assertIn('x-medkit', data)
-        self.assertEqual(data['x-medkit'].get('entity_id'), 'nonexistent_component')
+        # SOVD error format: parameters in parameters field
+        self.assertIn('parameters', data)
+        self.assertEqual(data['parameters'].get('entity_id'), 'nonexistent_component')
 
         print('✓ Faults nonexistent component test passed')
 
@@ -2156,9 +2163,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        # SOVD error format: parameters in x-medkit extension
-        self.assertIn('x-medkit', data)
-        self.assertEqual(data['x-medkit'].get('fault_code'), 'NONEXISTENT_FAULT')
+        # SOVD error format: parameters in parameters field
+        self.assertIn('parameters', data)
+        self.assertEqual(data['parameters'].get('fault_code'), 'NONEXISTENT_FAULT')
 
         print('✓ Get nonexistent fault test passed')
 
@@ -2224,15 +2231,15 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Invalid status parameter value')
-        # Check parameters in x-medkit extension
-        self.assertIn('x-medkit', data)
-        x_medkit = data['x-medkit']
-        self.assertIn('allowed_values', x_medkit)
-        self.assertIn('pending', x_medkit['allowed_values'])  # Should mention valid values
-        self.assertIn('parameter', x_medkit)
-        self.assertEqual(x_medkit.get('parameter'), 'status')
-        self.assertIn('value', x_medkit)
-        self.assertEqual(x_medkit['value'], 'invalid_status')
+        # Check parameters in parameters field
+        self.assertIn('parameters', data)
+        params = data['parameters']
+        self.assertIn('allowed_values', params)
+        self.assertIn('pending', params['allowed_values'])  # Should mention valid values
+        self.assertIn('parameter', params)
+        self.assertEqual(params.get('parameter'), 'status')
+        self.assertIn('value', params)
+        self.assertEqual(params['value'], 'invalid_status')
 
         print('✓ List faults invalid status returns 400 test passed')
 
@@ -2247,10 +2254,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Invalid status parameter value')
-        # SOVD error format: parameters in x-medkit extension
-        self.assertIn('x-medkit', data)
+        # SOVD error format: parameters in parameters field
+        self.assertIn('parameters', data)
         # Handler uses entity_info.id_field which is 'app_id' for apps endpoint
-        self.assertEqual(data['x-medkit'].get('app_id'), 'temp_sensor')
+        self.assertEqual(data['parameters'].get('app_id'), 'temp_sensor')
 
         print('✓ App faults invalid status returns 400 test passed')
 
@@ -2363,8 +2370,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertIn('fault_code', data['x-medkit'])
-        self.assertEqual(data['x-medkit'].get('fault_code'), 'NONEXISTENT_FAULT_CODE')
+        self.assertIn('parameters', data)
+        self.assertIn('fault_code', data['parameters'])
+        self.assertEqual(data['parameters'].get('fault_code'), 'NONEXISTENT_FAULT_CODE')
 
         print('✓ Get snapshots nonexistent fault test passed')
 
@@ -2382,10 +2390,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertIn('app_id', data['x-medkit'])
-        self.assertEqual(data['x-medkit'].get('app_id'), 'temp_sensor')
-        self.assertIn('fault_code', data['x-medkit'])
-        self.assertEqual(data['x-medkit'].get('fault_code'), 'NONEXISTENT_FAULT')
+        self.assertIn('parameters', data)
+        self.assertIn('app_id', data['parameters'])
+        self.assertEqual(data['parameters'].get('app_id'), 'temp_sensor')
+        self.assertIn('fault_code', data['parameters'])
+        self.assertEqual(data['parameters'].get('fault_code'), 'NONEXISTENT_FAULT')
 
         print('✓ Get app snapshots nonexistent fault test passed')
 
@@ -2404,8 +2413,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'Entity not found')
-        self.assertIn('entity_id', data['x-medkit'])
-        self.assertEqual(data['x-medkit'].get('entity_id'), 'nonexistent_component')
+        self.assertIn('parameters', data)
+        self.assertIn('entity_id', data['parameters'])
+        self.assertEqual(data['parameters'].get('entity_id'), 'nonexistent_component')
 
         print('✓ Get snapshots nonexistent entity test passed')
 
@@ -2775,8 +2785,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         data = response.json()
         self.assertIn('error_code', data)
         self.assertEqual(data['message'], 'App not found')
-        self.assertIn('app_id', data['x-medkit'])
-        self.assertEqual(data['x-medkit'].get('app_id'), 'nonexistent_app')
+        self.assertIn('parameters', data)
+        self.assertIn('app_id', data['parameters'])
+        self.assertEqual(data['parameters'].get('app_id'), 'nonexistent_app')
 
         print('✓ App depends-on nonexistent app test passed')
 
@@ -3248,6 +3259,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                         if fault.get('fault_code') == fault_code:
                             return fault
             except requests.exceptions.RequestException:
+                # Network errors expected during transient states; silently retry
                 pass
             time.sleep(0.5)
 
@@ -3450,6 +3462,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                     if any(op.get('id') == operation_id for op in ops):
                         return True
             except requests.exceptions.RequestException:
+                # Network errors expected during transient states; silently retry
                 pass
             time.sleep(0.5)
         return False

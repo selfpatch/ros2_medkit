@@ -278,9 +278,8 @@ GatewayNode::~GatewayNode() {
   stop_rest_server();
 }
 
-EntityCache GatewayNode::get_entity_cache() const {
-  std::lock_guard<std::mutex> lock(cache_mutex_);
-  return entity_cache_;
+const ThreadSafeEntityCache & GatewayNode::get_thread_safe_cache() const {
+  return thread_safe_cache_;
 }
 
 DataAccessManager * GatewayNode::get_data_access_manager() const {
@@ -337,14 +336,13 @@ void GatewayNode::refresh_cache() {
     const size_t topic_component_count = topic_components.size();
     const size_t app_count = apps.size();
 
-    // Lock only for the actual cache update
-    {
-      std::lock_guard<std::mutex> lock(cache_mutex_);
-      entity_cache_.areas = std::move(areas);
-      entity_cache_.components = std::move(all_components);
-      entity_cache_.apps = std::move(apps);
-      entity_cache_.last_update = timestamp;
-    }
+    // Update ThreadSafeEntityCache (primary) with copies
+    // This provides O(1) lookups and proper thread safety
+    thread_safe_cache_.update_all(areas,           // copy
+                                  all_components,  // copy
+                                  apps,            // copy
+                                  {}               // functions - not discovered yet
+    );
 
     RCLCPP_DEBUG(get_logger(), "Cache refreshed: %zu areas, %zu components (%zu node-based, %zu topic-based), %zu apps",
                  area_count, node_component_count + topic_component_count, node_component_count, topic_component_count,
