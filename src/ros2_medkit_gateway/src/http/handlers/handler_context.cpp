@@ -64,7 +64,7 @@ tl::expected<void, std::string> HandlerContext::validate_entity_id(const std::st
 
 tl::expected<std::string, std::string>
 HandlerContext::get_component_namespace_path(const std::string & component_id) const {
-  const auto& cache = node_->get_thread_safe_cache();
+  const auto & cache = node_->get_thread_safe_cache();
   auto component = cache.get_component(component_id);
   if (component) {
     return component->namespace_path;
@@ -73,7 +73,7 @@ HandlerContext::get_component_namespace_path(const std::string & component_id) c
 }
 
 EntityInfo HandlerContext::get_entity_info(const std::string & entity_id) const {
-  const auto& cache = node_->get_thread_safe_cache();
+  const auto & cache = node_->get_thread_safe_cache();
   EntityInfo info;
   info.id = entity_id;
 

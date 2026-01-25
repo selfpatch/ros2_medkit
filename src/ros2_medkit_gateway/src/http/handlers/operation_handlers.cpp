@@ -541,7 +541,7 @@ void OperationHandlers::handle_list_executions(const httplib::Request & req, htt
     }
 
     // Find entity to get namespace (O(1) lookups)
-    const auto& cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
     std::string namespace_path;
     bool entity_found = false;
 
