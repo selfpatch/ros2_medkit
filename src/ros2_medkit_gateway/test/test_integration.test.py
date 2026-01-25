@@ -3888,19 +3888,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         time.sleep(3)
 
         # Report a CRITICAL fault (severity=3) to trigger immediate confirmation
-        response = requests.post(
-            f'{self.GATEWAY_URL}/fault_manager/report_fault',
-            json={
-                'fault_code': fault_code,
-                'source_id': '/rosbag_test_node',
-                'severity': 3,  # CRITICAL - confirms immediately
-                'message': 'Test fault for rosbag happy path',
-            },
-            timeout=10
-        )
         # Note: ReportFault goes through ROS2 service, not REST
-        # We need to use the ROS2 service instead
-
         # Use subprocess to call ROS2 service
         import subprocess
         subprocess.run(
