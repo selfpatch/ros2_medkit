@@ -53,10 +53,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
       std::make_unique<handlers::HandlerContext>(node_, cors_config_, auth_config_, tls_config_, auth_manager_.get());
 
   health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_);
-  area_handlers_ = std::make_unique<handlers::AreaHandlers>(*handler_ctx_);
-  component_handlers_ = std::make_unique<handlers::ComponentHandlers>(*handler_ctx_);
-  app_handlers_ = std::make_unique<handlers::AppHandlers>(*handler_ctx_);
-  function_handlers_ = std::make_unique<handlers::FunctionHandlers>(*handler_ctx_);
+  discovery_handlers_ = std::make_unique<handlers::DiscoveryHandlers>(*handler_ctx_);
+  data_handlers_ = std::make_unique<handlers::DataHandlers>(*handler_ctx_);
   operation_handlers_ = std::make_unique<handlers::OperationHandlers>(*handler_ctx_);
   config_handlers_ = std::make_unique<handlers::ConfigHandlers>(*handler_ctx_);
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
@@ -199,41 +197,41 @@ void RESTServer::setup_routes() {
 
   // Areas
   srv->Get(api_path("/areas"), [this](const httplib::Request & req, httplib::Response & res) {
-    area_handlers_->handle_list_areas(req, res);
+    discovery_handlers_->handle_list_areas(req, res);
   });
 
   // Apps - must register before /apps/{id} to avoid regex conflict
   srv->Get(api_path("/apps"), [this](const httplib::Request & req, httplib::Response & res) {
-    app_handlers_->handle_list_apps(req, res);
+    discovery_handlers_->handle_list_apps(req, res);
   });
 
   // App data item (specific topic) - register before /apps/{id}/data
   srv->Get((api_path("/apps") + R"(/([^/]+)/data/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             app_handlers_->handle_get_app_data_item(req, res);
+             data_handlers_->handle_get_data_item(req, res);
            });
 
   // App data write (PUT) - publish data to topic
   srv->Put((api_path("/apps") + R"(/([^/]+)/data/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             app_handlers_->handle_put_app_data_item(req, res);
+             data_handlers_->handle_put_data_item(req, res);
            });
 
   // App data-categories (not implemented for ROS 2)
   srv->Get((api_path("/apps") + R"(/([^/]+)/data-categories$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             app_handlers_->handle_data_categories(req, res);
+             data_handlers_->handle_data_categories(req, res);
            });
 
   // App data-groups (not implemented for ROS 2)
   srv->Get((api_path("/apps") + R"(/([^/]+)/data-groups$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             app_handlers_->handle_data_groups(req, res);
+             data_handlers_->handle_data_groups(req, res);
            });
 
   // App data (all topics)
   srv->Get((api_path("/apps") + R"(/([^/]+)/data$)"), [this](const httplib::Request & req, httplib::Response & res) {
-    app_handlers_->handle_get_app_data(req, res);
+    data_handlers_->handle_list_data(req, res);
   });
 
   // App operations
@@ -312,111 +310,315 @@ void RESTServer::setup_routes() {
   // App depends-on (relationship endpoint)
   srv->Get((api_path("/apps") + R"(/([^/]+)/depends-on$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             app_handlers_->handle_get_depends_on(req, res);
+             discovery_handlers_->handle_app_depends_on(req, res);
            });
 
   // Single app (capabilities) - must be after more specific routes
   srv->Get((api_path("/apps") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
-    app_handlers_->handle_get_app(req, res);
+    discovery_handlers_->handle_get_app(req, res);
   });
 
   // Functions - list all functions
   srv->Get(api_path("/functions"), [this](const httplib::Request & req, httplib::Response & res) {
-    function_handlers_->handle_list_functions(req, res);
+    discovery_handlers_->handle_list_functions(req, res);
   });
 
   // Function hosts
   srv->Get((api_path("/functions") + R"(/([^/]+)/hosts$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             function_handlers_->handle_function_hosts(req, res);
+             discovery_handlers_->handle_function_hosts(req, res);
+           });
+
+  // Function data item (specific topic) - register before /functions/{id}/data
+  srv->Get((api_path("/functions") + R"(/([^/]+)/data/(.+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             data_handlers_->handle_get_data_item(req, res);
+           });
+
+  // Function data write (PUT) - publish data to topic
+  srv->Put((api_path("/functions") + R"(/([^/]+)/data/(.+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             data_handlers_->handle_put_data_item(req, res);
            });
 
   // Function data (aggregated from host apps)
   srv->Get((api_path("/functions") + R"(/([^/]+)/data$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             function_handlers_->handle_get_function_data(req, res);
+             data_handlers_->handle_list_data(req, res);
            });
 
   // Function operations (aggregated from host apps)
   srv->Get((api_path("/functions") + R"(/([^/]+)/operations$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             function_handlers_->handle_list_function_operations(req, res);
+             operation_handlers_->handle_list_operations(req, res);
+           });
+
+  // Function operation details (GET) - get single operation info
+  srv->Get((api_path("/functions") + R"(/([^/]+)/operations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_get_operation(req, res);
+           });
+
+  // Execution endpoints for functions
+  srv->Post((api_path("/functions") + R"(/([^/]+)/operations/([^/]+)/executions$)"),
+            [this](const httplib::Request & req, httplib::Response & res) {
+              operation_handlers_->handle_create_execution(req, res);
+            });
+
+  srv->Get((api_path("/functions") + R"(/([^/]+)/operations/([^/]+)/executions$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_list_executions(req, res);
+           });
+
+  srv->Get((api_path("/functions") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_get_execution(req, res);
+           });
+
+  srv->Put((api_path("/functions") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_update_execution(req, res);
+           });
+
+  srv->Delete((api_path("/functions") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                operation_handlers_->handle_cancel_execution(req, res);
+              });
+
+  // Function configurations
+  srv->Get((api_path("/functions") + R"(/([^/]+)/configurations$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             config_handlers_->handle_list_configurations(req, res);
+           });
+
+  srv->Get((api_path("/functions") + R"(/([^/]+)/configurations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             config_handlers_->handle_get_configuration(req, res);
+           });
+
+  srv->Put((api_path("/functions") + R"(/([^/]+)/configurations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             config_handlers_->handle_set_configuration(req, res);
+           });
+
+  srv->Delete((api_path("/functions") + R"(/([^/]+)/configurations/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                config_handlers_->handle_delete_configuration(req, res);
+              });
+
+  srv->Delete((api_path("/functions") + R"(/([^/]+)/configurations$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                config_handlers_->handle_delete_all_configurations(req, res);
+              });
+
+  // Function faults
+  srv->Get((api_path("/functions") + R"(/([^/]+)/faults$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             fault_handlers_->handle_list_faults(req, res);
+           });
+
+  srv->Get((api_path("/functions") + R"(/([^/]+)/faults/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             fault_handlers_->handle_get_fault(req, res);
+           });
+
+  srv->Delete((api_path("/functions") + R"(/([^/]+)/faults/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                fault_handlers_->handle_clear_fault(req, res);
+              });
+
+  srv->Delete((api_path("/functions") + R"(/([^/]+)/faults$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                fault_handlers_->handle_clear_all_faults(req, res);
+              });
+
+  srv->Get((api_path("/functions") + R"(/([^/]+)/faults/([^/]+)/snapshots$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             fault_handlers_->handle_get_component_snapshots(req, res);
            });
 
   // Single function (capabilities) - must be after more specific routes
   srv->Get((api_path("/functions") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
-    function_handlers_->handle_get_function(req, res);
+    discovery_handlers_->handle_get_function(req, res);
   });
 
   // Components
   srv->Get(api_path("/components"), [this](const httplib::Request & req, httplib::Response & res) {
-    component_handlers_->handle_list_components(req, res);
+    discovery_handlers_->handle_list_components(req, res);
   });
 
   // Area components
   srv->Get((api_path("/areas") + R"(/([^/]+)/components)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             area_handlers_->handle_area_components(req, res);
+             discovery_handlers_->handle_area_components(req, res);
            });
 
   // Area subareas (relationship endpoint)
   srv->Get((api_path("/areas") + R"(/([^/]+)/subareas$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             area_handlers_->handle_get_subareas(req, res);
+             discovery_handlers_->handle_get_subareas(req, res);
            });
 
   // Area contains
   srv->Get((api_path("/areas") + R"(/([^/]+)/contains$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             area_handlers_->handle_get_contains(req, res);
+             discovery_handlers_->handle_get_contains(req, res);
+           });
+
+  // Area data item (specific topic) - register before /areas/{id}/data
+  srv->Get((api_path("/areas") + R"(/([^/]+)/data/(.+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             data_handlers_->handle_get_data_item(req, res);
+           });
+
+  // Area data write (PUT) - publish data to topic
+  srv->Put((api_path("/areas") + R"(/([^/]+)/data/(.+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             data_handlers_->handle_put_data_item(req, res);
+           });
+
+  // Area data (aggregated from contained components)
+  srv->Get((api_path("/areas") + R"(/([^/]+)/data$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             data_handlers_->handle_list_data(req, res);
+           });
+
+  // Area operations
+  srv->Get((api_path("/areas") + R"(/([^/]+)/operations$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_list_operations(req, res);
+           });
+
+  // Area operation details (GET) - get single operation info
+  srv->Get((api_path("/areas") + R"(/([^/]+)/operations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_get_operation(req, res);
+           });
+
+  // Execution endpoints for areas
+  srv->Post((api_path("/areas") + R"(/([^/]+)/operations/([^/]+)/executions$)"),
+            [this](const httplib::Request & req, httplib::Response & res) {
+              operation_handlers_->handle_create_execution(req, res);
+            });
+
+  srv->Get((api_path("/areas") + R"(/([^/]+)/operations/([^/]+)/executions$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_list_executions(req, res);
+           });
+
+  srv->Get((api_path("/areas") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_get_execution(req, res);
+           });
+
+  srv->Put((api_path("/areas") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             operation_handlers_->handle_update_execution(req, res);
+           });
+
+  srv->Delete((api_path("/areas") + R"(/([^/]+)/operations/([^/]+)/executions/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                operation_handlers_->handle_cancel_execution(req, res);
+              });
+
+  // Area configurations
+  srv->Get((api_path("/areas") + R"(/([^/]+)/configurations$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             config_handlers_->handle_list_configurations(req, res);
+           });
+
+  srv->Get((api_path("/areas") + R"(/([^/]+)/configurations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             config_handlers_->handle_get_configuration(req, res);
+           });
+
+  srv->Put((api_path("/areas") + R"(/([^/]+)/configurations/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             config_handlers_->handle_set_configuration(req, res);
+           });
+
+  srv->Delete((api_path("/areas") + R"(/([^/]+)/configurations/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                config_handlers_->handle_delete_configuration(req, res);
+              });
+
+  srv->Delete((api_path("/areas") + R"(/([^/]+)/configurations$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                config_handlers_->handle_delete_all_configurations(req, res);
+              });
+
+  // Area faults
+  srv->Get((api_path("/areas") + R"(/([^/]+)/faults$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             fault_handlers_->handle_list_faults(req, res);
+           });
+
+  srv->Get((api_path("/areas") + R"(/([^/]+)/faults/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             fault_handlers_->handle_get_fault(req, res);
+           });
+
+  srv->Delete((api_path("/areas") + R"(/([^/]+)/faults/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                fault_handlers_->handle_clear_fault(req, res);
+              });
+
+  srv->Delete((api_path("/areas") + R"(/([^/]+)/faults$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                fault_handlers_->handle_clear_all_faults(req, res);
+              });
+
+  srv->Get((api_path("/areas") + R"(/([^/]+)/faults/([^/]+)/snapshots$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             fault_handlers_->handle_get_component_snapshots(req, res);
            });
 
   // Single area (capabilities) - must be after more specific routes
   srv->Get((api_path("/areas") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
-    area_handlers_->handle_get_area(req, res);
+    discovery_handlers_->handle_get_area(req, res);
   });
 
   // Component topic data (specific topic) - register before general route
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
   srv->Get((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             component_handlers_->handle_component_topic_data(req, res);
+             data_handlers_->handle_get_data_item(req, res);
            });
 
   // Component data (all topics)
   srv->Get((api_path("/components") + R"(/([^/]+)/data$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             component_handlers_->handle_component_data(req, res);
+             data_handlers_->handle_list_data(req, res);
            });
 
   // Component subcomponents (relationship endpoint)
   srv->Get((api_path("/components") + R"(/([^/]+)/subcomponents$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             component_handlers_->handle_get_subcomponents(req, res);
+             discovery_handlers_->handle_get_subcomponents(req, res);
            });
 
   // Component hosts
   srv->Get((api_path("/components") + R"(/([^/]+)/hosts$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             component_handlers_->handle_get_hosts(req, res);
+             discovery_handlers_->handle_get_hosts(req, res);
            });
 
   // Component depends-on (relationship endpoint)
   srv->Get((api_path("/components") + R"(/([^/]+)/depends-on$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             component_handlers_->handle_get_depends_on(req, res);
+             discovery_handlers_->handle_component_depends_on(req, res);
            });
 
   // Single component (capabilities) - must be after more specific routes
   srv->Get((api_path("/components") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
-    component_handlers_->handle_get_component(req, res);
+    discovery_handlers_->handle_get_component(req, res);
   });
 
   // Component topic publish (PUT)
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
   srv->Put((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
-             component_handlers_->handle_component_topic_publish(req, res);
+             data_handlers_->handle_put_data_item(req, res);
            });
 
   // List component operations (GET) - list all services and actions for a component

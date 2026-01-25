@@ -130,13 +130,12 @@ add_library(gateway_lib STATIC
   # HTTP module (subfolder)
   src/http/http_server.cpp
   src/http/rest_server.cpp
-  # HTTP handlers - discovery
-  src/http/handlers/discovery/area_handlers.cpp
-  src/http/handlers/discovery/component_handlers.cpp
-  src/http/handlers/discovery/app_handlers.cpp
-  src/http/handlers/discovery/function_handlers.cpp
+  # HTTP handlers - discovery (unified)
+  src/http/handlers/discovery_handlers.cpp
   # HTTP handlers - utilities
   src/http/handlers/capability_builder.cpp
+  # HTTP handlers - resource handlers (unified across entity types)
+  src/http/handlers/data_handlers.cpp
   # HTTP handlers - other
   src/http/handlers/handler_context.cpp
   src/http/handlers/health_handlers.cpp

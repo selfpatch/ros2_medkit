@@ -39,6 +39,32 @@ struct EntityRef {
 };
 
 /**
+ * @brief Topic information with direction
+ */
+struct TopicData {
+  std::string name;       ///< Full topic path (e.g., "/sensor/temperature")
+  std::string type;       ///< Message type (e.g., "std_msgs/msg/Float32")
+  std::string direction;  ///< "publish" | "subscribe" | "both"
+};
+
+/**
+ * @brief Aggregated data (topics) result from entity hierarchy
+ */
+struct AggregatedData {
+  std::vector<TopicData> topics;
+  std::vector<std::string> source_ids;  ///< Entity IDs that contributed
+  std::string aggregation_level;        ///< "app" | "component" | "area" | "function"
+  bool is_aggregated{false};            ///< true if collected from sub-entities
+
+  bool empty() const {
+    return topics.empty();
+  }
+  size_t total_count() const {
+    return topics.size();
+  }
+};
+
+/**
  * @brief Aggregated operations result from entity hierarchy
  */
 struct AggregatedOperations {
@@ -213,6 +239,47 @@ class ThreadSafeEntityCache {
   AggregatedOperations get_function_operations(const std::string & function_id) const;
 
   // =========================================================================
+  // Data aggregation methods (uses relationship indexes)
+  // =========================================================================
+
+  /**
+   * @brief Aggregate data (topics) for any entity by ID
+   *
+   * Unified method that works for all entity types.
+   * Aggregates topics from the entity and its children.
+   *
+   * @param entity_id Entity ID to get data for
+   * @return AggregatedData with topics, or empty if entity not found
+   */
+  AggregatedData get_entity_data(const std::string & entity_id) const;
+
+  /**
+   * @brief Aggregate data (topics) for an App
+   */
+  AggregatedData get_app_data(const std::string & app_id) const;
+
+  /**
+   * @brief Aggregate data (topics) for a Component
+   *
+   * Returns: Component's own topics + all topics from hosted Apps.
+   */
+  AggregatedData get_component_data(const std::string & component_id) const;
+
+  /**
+   * @brief Aggregate data (topics) for an Area
+   *
+   * Returns: All topics from all Components in the Area.
+   */
+  AggregatedData get_area_data(const std::string & area_id) const;
+
+  /**
+   * @brief Aggregate data (topics) for a Function
+   *
+   * Returns: All topics from all Apps implementing this Function.
+   */
+  AggregatedData get_function_data(const std::string & function_id) const;
+
+  // =========================================================================
   // Operation lookup (O(1) via operation index)
   // =========================================================================
 
@@ -290,6 +357,14 @@ class ThreadSafeEntityCache {
                                     std::unordered_set<std::string> & seen_paths, AggregatedOperations & result) const;
   void collect_operations_from_component(size_t comp_index, std::unordered_set<std::string> & seen_paths,
                                          AggregatedOperations & result) const;
+
+  // Data aggregation helpers (called under shared lock)
+  void collect_topics_from_app(size_t app_index, std::unordered_set<std::string> & seen_topics,
+                               AggregatedData & result) const;
+  void collect_topics_from_apps(const std::vector<size_t> & app_indexes, std::unordered_set<std::string> & seen_topics,
+                                AggregatedData & result) const;
+  void collect_topics_from_component(size_t comp_index, std::unordered_set<std::string> & seen_topics,
+                                     AggregatedData & result) const;
 };
 
 }  // namespace ros2_medkit_gateway

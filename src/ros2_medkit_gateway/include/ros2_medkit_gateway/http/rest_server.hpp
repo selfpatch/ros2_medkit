@@ -85,10 +85,8 @@ class RESTServer {
   // Handler context and domain-specific handlers
   std::unique_ptr<handlers::HandlerContext> handler_ctx_;
   std::unique_ptr<handlers::HealthHandlers> health_handlers_;
-  std::unique_ptr<handlers::AreaHandlers> area_handlers_;
-  std::unique_ptr<handlers::ComponentHandlers> component_handlers_;
-  std::unique_ptr<handlers::AppHandlers> app_handlers_;
-  std::unique_ptr<handlers::FunctionHandlers> function_handlers_;
+  std::unique_ptr<handlers::DiscoveryHandlers> discovery_handlers_;
+  std::unique_ptr<handlers::DataHandlers> data_handlers_;
   std::unique_ptr<handlers::OperationHandlers> operation_handlers_;
   std::unique_ptr<handlers::ConfigHandlers> config_handlers_;
   std::unique_ptr<handlers::FaultHandlers> fault_handlers_;

@@ -628,4 +628,209 @@ void ThreadSafeEntityCache::collect_operations_from_component(size_t comp_index,
   }
 }
 
+// ============================================================================
+// Data aggregation methods
+// ============================================================================
+
+AggregatedData ThreadSafeEntityCache::get_entity_data(const std::string & entity_id) const {
+  // find_entity takes its own lock, so we don't need one here
+  auto entity_ref = find_entity(entity_id);
+  if (!entity_ref) {
+    return {};
+  }
+
+  // Each get_*_data method takes its own lock
+  switch (entity_ref->type) {
+    case SovdEntityType::APP:
+      return get_app_data(entity_id);
+    case SovdEntityType::COMPONENT:
+      return get_component_data(entity_id);
+    case SovdEntityType::AREA:
+      return get_area_data(entity_id);
+    case SovdEntityType::FUNCTION:
+      return get_function_data(entity_id);
+    default:
+      return {};
+  }
+}
+
+AggregatedData ThreadSafeEntityCache::get_app_data(const std::string & app_id) const {
+  std::shared_lock lock(mutex_);
+
+  auto it = app_index_.find(app_id);
+  if (it == app_index_.end()) {
+    return {};
+  }
+
+  AggregatedData result;
+  result.aggregation_level = "app";
+  result.is_aggregated = false;
+
+  std::unordered_set<std::string> seen_topics;
+  collect_topics_from_app(it->second, seen_topics, result);
+
+  return result;
+}
+
+AggregatedData ThreadSafeEntityCache::get_component_data(const std::string & component_id) const {
+  std::shared_lock lock(mutex_);
+
+  auto comp_it = component_index_.find(component_id);
+  if (comp_it == component_index_.end()) {
+    return {};
+  }
+
+  AggregatedData result;
+  result.aggregation_level = "component";
+
+  std::unordered_set<std::string> seen_topics;
+
+  // Collect from component itself
+  collect_topics_from_component(comp_it->second, seen_topics, result);
+
+  // Collect from hosted apps
+  auto apps_it = component_to_apps_.find(component_id);
+  if (apps_it != component_to_apps_.end()) {
+    collect_topics_from_apps(apps_it->second, seen_topics, result);
+    result.is_aggregated = !apps_it->second.empty();
+  }
+
+  return result;
+}
+
+AggregatedData ThreadSafeEntityCache::get_area_data(const std::string & area_id) const {
+  std::shared_lock lock(mutex_);
+
+  auto area_it = area_index_.find(area_id);
+  if (area_it == area_index_.end()) {
+    return {};
+  }
+
+  AggregatedData result;
+  result.aggregation_level = "area";
+  result.is_aggregated = true;
+
+  std::unordered_set<std::string> seen_topics;
+
+  // Collect from all components in this area
+  auto comps_it = area_to_components_.find(area_id);
+  if (comps_it != area_to_components_.end()) {
+    for (size_t comp_idx : comps_it->second) {
+      collect_topics_from_component(comp_idx, seen_topics, result);
+
+      // Also collect from apps hosted on each component
+      if (comp_idx < components_.size()) {
+        auto apps_it = component_to_apps_.find(components_[comp_idx].id);
+        if (apps_it != component_to_apps_.end()) {
+          collect_topics_from_apps(apps_it->second, seen_topics, result);
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+AggregatedData ThreadSafeEntityCache::get_function_data(const std::string & function_id) const {
+  std::shared_lock lock(mutex_);
+
+  auto func_it = function_index_.find(function_id);
+  if (func_it == function_index_.end()) {
+    return {};
+  }
+
+  AggregatedData result;
+  result.aggregation_level = "function";
+  result.is_aggregated = true;
+
+  std::unordered_set<std::string> seen_topics;
+
+  // Collect from all apps implementing this function
+  auto apps_it = function_to_apps_.find(function_id);
+  if (apps_it != function_to_apps_.end()) {
+    collect_topics_from_apps(apps_it->second, seen_topics, result);
+  }
+
+  return result;
+}
+
+// ============================================================================
+// Data aggregation helpers
+// ============================================================================
+
+void ThreadSafeEntityCache::collect_topics_from_app(size_t app_index, std::unordered_set<std::string> & seen_topics,
+                                                    AggregatedData & result) const {
+  if (app_index >= apps_.size()) {
+    return;
+  }
+
+  const auto & app = apps_[app_index];
+  result.source_ids.push_back(app.id);
+
+  // Publishers
+  for (const auto & topic : app.topics.publishes) {
+    if (seen_topics.insert(topic).second) {
+      result.topics.push_back({topic, "", "publish"});
+    }
+  }
+
+  // Subscribers
+  for (const auto & topic : app.topics.subscribes) {
+    auto [_, inserted] = seen_topics.insert(topic);
+    if (inserted) {
+      result.topics.push_back({topic, "", "subscribe"});
+    } else {
+      // Topic already seen - might be both pub and sub, update direction
+      for (auto & t : result.topics) {
+        if (t.name == topic && t.direction == "publish") {
+          t.direction = "both";
+          break;
+        }
+      }
+    }
+  }
+}
+
+void ThreadSafeEntityCache::collect_topics_from_apps(const std::vector<size_t> & app_indexes,
+                                                     std::unordered_set<std::string> & seen_topics,
+                                                     AggregatedData & result) const {
+  for (size_t idx : app_indexes) {
+    collect_topics_from_app(idx, seen_topics, result);
+  }
+}
+
+void ThreadSafeEntityCache::collect_topics_from_component(size_t comp_index,
+                                                          std::unordered_set<std::string> & seen_topics,
+                                                          AggregatedData & result) const {
+  if (comp_index >= components_.size()) {
+    return;
+  }
+
+  const auto & comp = components_[comp_index];
+  result.source_ids.push_back(comp.id);
+
+  // Publishers
+  for (const auto & topic : comp.topics.publishes) {
+    if (seen_topics.insert(topic).second) {
+      result.topics.push_back({topic, "", "publish"});
+    }
+  }
+
+  // Subscribers
+  for (const auto & topic : comp.topics.subscribes) {
+    auto [_, inserted] = seen_topics.insert(topic);
+    if (inserted) {
+      result.topics.push_back({topic, "", "subscribe"});
+    } else {
+      // Topic already seen - might be both pub and sub, update direction
+      for (auto & t : result.topics) {
+        if (t.name == topic && t.direction == "publish") {
+          t.direction = "both";
+          break;
+        }
+      }
+    }
+  }
+}
+
 }  // namespace ros2_medkit_gateway

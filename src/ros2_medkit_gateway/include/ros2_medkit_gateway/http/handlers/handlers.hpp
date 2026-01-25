@@ -22,11 +22,11 @@
  * Include this file to get access to all REST API handlers.
  */
 
-// Discovery handlers (areas, components, apps, functions)
-#include "ros2_medkit_gateway/http/handlers/discovery/app_handlers.hpp"
-#include "ros2_medkit_gateway/http/handlers/discovery/area_handlers.hpp"
-#include "ros2_medkit_gateway/http/handlers/discovery/component_handlers.hpp"
-#include "ros2_medkit_gateway/http/handlers/discovery/function_handlers.hpp"
+// Discovery handlers (unified for all entity types)
+#include "ros2_medkit_gateway/http/handlers/discovery_handlers.hpp"
+
+// Resource handlers (unified across entity types)
+#include "ros2_medkit_gateway/http/handlers/data_handlers.hpp"
 
 // Other handlers
 #include "ros2_medkit_gateway/http/handlers/auth_handlers.hpp"
