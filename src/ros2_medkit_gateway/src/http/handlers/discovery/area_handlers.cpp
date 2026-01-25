@@ -29,7 +29,7 @@ void AreaHandlers::handle_list_areas(const httplib::Request & req, httplib::Resp
   (void)req;  // Unused parameter
 
   try {
-    const auto& cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
     const auto areas = cache.get_areas();
 
     // Build items array with EntityReference format
@@ -167,7 +167,7 @@ void AreaHandlers::handle_area_components(const httplib::Request & req, httplib:
       return;
     }
 
-    const auto& cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
 
     // Check if area exists (O(1) lookup)
     if (!cache.has_area(area_id)) {
