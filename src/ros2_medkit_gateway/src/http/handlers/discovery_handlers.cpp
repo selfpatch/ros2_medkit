@@ -793,7 +793,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     }
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS};
+    std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("apps", app.id, caps);
 
     LinksBuilder links;

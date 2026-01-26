@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/http/handlers/data_handlers.hpp"
 
+#include <algorithm>
 #include <map>
 
 #include "ros2_medkit_gateway/exceptions.hpp"
@@ -45,16 +46,17 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
       return;
     }
 
-    // Use unified cache method to get aggregated data
+    // First, verify that the entity actually exists in the cache
     const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto aggregated = cache.get_entity_data(entity_id);
-
-    if (aggregated.source_ids.empty()) {
-      // Entity not found
+    auto entity_ref = cache.find_entity(entity_id);
+    if (!entity_ref) {
       HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
                                  {{"entity_id", entity_id}});
       return;
     }
+
+    // Use unified cache method to get aggregated data
+    auto aggregated = cache.get_entity_data(entity_id);
 
     // Get data access manager for type introspection
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
@@ -279,8 +281,11 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
       return;
     }
 
-    // Build full topic path
-    std::string full_topic_path = "/" + topic_name;
+    // Build full topic path (mirror GET logic: only prefix '/' when needed)
+    std::string full_topic_path = topic_name;
+    if (!full_topic_path.empty() && full_topic_path.front() != '/') {
+      full_topic_path = "/" + full_topic_path;
+    }
 
     // Publish data using DataAccessManager
     auto data_access_mgr = ctx_.node()->get_data_access_manager();

@@ -709,6 +709,7 @@ AggregatedData ThreadSafeEntityCache::get_area_data(const std::string & area_id)
   AggregatedData result;
   result.aggregation_level = "area";
   result.is_aggregated = true;
+  result.source_ids.push_back(area_id);
 
   std::unordered_set<std::string> seen_topics;
 
@@ -742,6 +743,7 @@ AggregatedData ThreadSafeEntityCache::get_function_data(const std::string & func
   AggregatedData result;
   result.aggregation_level = "function";
   result.is_aggregated = true;
+  result.source_ids.push_back(function_id);
 
   std::unordered_set<std::string> seen_topics;
 
@@ -769,8 +771,17 @@ void ThreadSafeEntityCache::collect_topics_from_app(size_t app_index, std::unord
 
   // Publishers
   for (const auto & topic : app.topics.publishes) {
-    if (seen_topics.insert(topic).second) {
+    auto [_, inserted] = seen_topics.insert(topic);
+    if (inserted) {
       result.topics.push_back({topic, "", "publish"});
+    } else {
+      // Topic already seen as subscriber - update direction to "both"
+      for (auto & t : result.topics) {
+        if (t.name == topic && t.direction == "subscribe") {
+          t.direction = "both";
+          break;
+        }
+      }
     }
   }
 
@@ -811,8 +822,17 @@ void ThreadSafeEntityCache::collect_topics_from_component(size_t comp_index,
 
   // Publishers
   for (const auto & topic : comp.topics.publishes) {
-    if (seen_topics.insert(topic).second) {
+    auto [_, inserted] = seen_topics.insert(topic);
+    if (inserted) {
       result.topics.push_back({topic, "", "publish"});
+    } else {
+      // Topic already seen as subscriber - update direction to "both"
+      for (auto & t : result.topics) {
+        if (t.name == topic && t.direction == "subscribe") {
+          t.direction = "both";
+          break;
+        }
+      }
     }
   }
 
