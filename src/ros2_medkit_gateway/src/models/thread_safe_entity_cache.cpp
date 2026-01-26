@@ -713,18 +713,46 @@ AggregatedData ThreadSafeEntityCache::get_area_data(const std::string & area_id)
 
   std::unordered_set<std::string> seen_topics;
 
-  // Collect from all components in this area
-  auto comps_it = area_to_components_.find(area_id);
-  if (comps_it != area_to_components_.end()) {
-    for (size_t comp_idx : comps_it->second) {
-      collect_topics_from_component(comp_idx, seen_topics, result);
+  // Collect from all components in this area **and its subareas** (recursive)
+  std::vector<size_t> component_indices;
+  std::unordered_set<std::string> visited_areas;
+  std::vector<std::string> pending_areas;
+  pending_areas.push_back(area_id);
 
-      // Also collect from apps hosted on each component
-      if (comp_idx < components_.size()) {
-        auto apps_it = component_to_apps_.find(components_[comp_idx].id);
-        if (apps_it != component_to_apps_.end()) {
-          collect_topics_from_apps(apps_it->second, seen_topics, result);
+  while (!pending_areas.empty()) {
+    const std::string current_area = pending_areas.back();
+    pending_areas.pop_back();
+
+    // Skip already-visited areas to prevent infinite loops in case of cycles
+    if (!visited_areas.insert(current_area).second) {
+      continue;
+    }
+
+    // Collect components directly associated with this area
+    auto comps_it = area_to_components_.find(current_area);
+    if (comps_it != area_to_components_.end()) {
+      component_indices.insert(component_indices.end(), comps_it->second.begin(), comps_it->second.end());
+    }
+
+    // Traverse into subareas
+    auto subareas_it = area_to_subareas_.find(current_area);
+    if (subareas_it != area_to_subareas_.end()) {
+      for (size_t subarea_idx : subareas_it->second) {
+        if (subarea_idx < areas_.size()) {
+          pending_areas.push_back(areas_[subarea_idx].id);
         }
+      }
+    }
+  }
+
+  for (size_t comp_idx : component_indices) {
+    collect_topics_from_component(comp_idx, seen_topics, result);
+
+    // Also collect from apps hosted on each component
+    if (comp_idx < components_.size()) {
+      auto apps_it = component_to_apps_.find(components_[comp_idx].id);
+      if (apps_it != component_to_apps_.end()) {
+        collect_topics_from_apps(apps_it->second, seen_topics, result);
       }
     }
   }

@@ -478,10 +478,9 @@ void RESTServer::setup_routes() {
            });
 
   // Area data (aggregated from contained components)
-  srv->Get((api_path("/areas") + R"(/([^/]+)/data$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             data_handlers_->handle_list_data(req, res);
-           });
+  srv->Get((api_path("/areas") + R"(/([^/]+)/data$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    data_handlers_->handle_list_data(req, res);
+  });
 
   // Area operations
   srv->Get((api_path("/areas") + R"(/([^/]+)/operations$)"),
@@ -548,10 +547,9 @@ void RESTServer::setup_routes() {
               });
 
   // Area faults
-  srv->Get((api_path("/areas") + R"(/([^/]+)/faults$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             fault_handlers_->handle_list_faults(req, res);
-           });
+  srv->Get((api_path("/areas") + R"(/([^/]+)/faults$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    fault_handlers_->handle_list_faults(req, res);
+  });
 
   srv->Get((api_path("/areas") + R"(/([^/]+)/faults/([^/]+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
