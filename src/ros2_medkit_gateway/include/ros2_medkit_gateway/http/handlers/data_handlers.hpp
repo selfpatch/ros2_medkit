@@ -34,8 +34,7 @@ namespace handlers {
  */
 class DataHandlers {
  public:
-  explicit DataHandlers(HandlerContext & ctx)
-    : ctx_(ctx) {
+  explicit DataHandlers(HandlerContext & ctx) : ctx_(ctx) {
   }
 
   /**

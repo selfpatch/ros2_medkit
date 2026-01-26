@@ -75,8 +75,8 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
 
     for (const auto & topic : aggregated.topics) {
       json item;
-      // SOVD required fields
-      item["id"] = normalize_topic_to_id(topic.name);
+      // SOVD required fields - use topic.name directly as ID (clients URL-encode for GET/PUT)
+      item["id"] = topic.name;
       item["name"] = topic.name;
       item["category"] = "currentData";
 

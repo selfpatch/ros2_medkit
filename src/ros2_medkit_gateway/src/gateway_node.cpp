@@ -322,6 +322,9 @@ void GatewayNode::refresh_cache() {
     // Discover apps (nodes as Apps when heuristic discovery is enabled)
     auto apps = discovery_mgr_->discover_apps();
 
+    // Discover functions (from manifest in manifest_only/hybrid mode)
+    auto functions = discovery_mgr_->discover_functions();
+
     // Merge both component lists
     std::vector<Component> all_components;
     all_components.reserve(node_components.size() + topic_components.size());
@@ -335,18 +338,21 @@ void GatewayNode::refresh_cache() {
     const size_t node_component_count = node_components.size();
     const size_t topic_component_count = topic_components.size();
     const size_t app_count = apps.size();
+    const size_t function_count = functions.size();
 
     // Update ThreadSafeEntityCache (primary) with copies
     // This provides O(1) lookups and proper thread safety
     thread_safe_cache_.update_all(areas,           // copy
                                   all_components,  // copy
                                   apps,            // copy
-                                  {}               // functions - not discovered yet
+                                  functions        // copy
     );
 
-    RCLCPP_DEBUG(get_logger(), "Cache refreshed: %zu areas, %zu components (%zu node-based, %zu topic-based), %zu apps",
-                 area_count, node_component_count + topic_component_count, node_component_count, topic_component_count,
-                 app_count);
+    RCLCPP_DEBUG(
+        get_logger(),
+        "Cache refreshed: %zu areas, %zu components (%zu node-based, %zu topic-based), %zu apps, %zu functions",
+        area_count, node_component_count + topic_component_count, node_component_count, topic_component_count,
+        app_count, function_count);
   } catch (const std::exception & e) {
     RCLCPP_ERROR(get_logger(), "Failed to refresh cache: %s", e.what());
   } catch (...) {

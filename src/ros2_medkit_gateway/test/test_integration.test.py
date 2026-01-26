@@ -635,17 +635,18 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         print('✓ Nonexistent area error test passed')
 
-    def _ensure_app_ready(self, app_id: str, timeout: float = 10.0, interval: float = 0.2):
+    def _ensure_app_data_ready(self, app_id: str, timeout: float = 10.0, interval: float = 0.2):
         """
-        Wait for an app REST resource to become available.
+        Wait for an app's /data endpoint to become available.
 
         Workaround for discovery readiness race condition in CI.
+        Polls /apps/{app_id}/data directly since that's what tests depend on.
         """
         start_time = time.time()
         last_error = None
         while time.time() - start_time < timeout:
             try:
-                response = requests.get(f'{self.BASE_URL}/apps/{app_id}', timeout=2)
+                response = requests.get(f'{self.BASE_URL}/apps/{app_id}/data', timeout=2)
                 if response.status_code == 200:
                     return
                 last_error = f'Status {response.status_code}'
@@ -653,7 +654,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                 last_error = str(e)
             time.sleep(interval)
         raise unittest.SkipTest(
-            f'App {app_id} not available after {timeout}s (discovery race). Last error: {last_error}'
+            f'App {app_id} data not available after {timeout}s. '
+            f'Last error: {last_error}'
         )
 
     def test_07_app_data_powertrain_engine(self):
@@ -665,7 +667,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         @verifies REQ_INTEROP_018
         """
         # Ensure app is ready (handles discovery race condition)
-        self._ensure_app_ready('temp_sensor')
+        self._ensure_app_data_ready('temp_sensor')
         # Get data from temp_sensor app (powertrain/engine)
         data = self._get_json('/apps/temp_sensor/data')
         self.assertIn('items', data)
@@ -697,7 +699,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         @verifies REQ_INTEROP_018
         """
         # Ensure app is ready (handles discovery race condition)
-        self._ensure_app_ready('pressure_sensor')
+        self._ensure_app_data_ready('pressure_sensor')
         # Get data from pressure_sensor app (chassis/brakes)
         data = self._get_json('/apps/pressure_sensor/data')
         self.assertIn('items', data)
@@ -724,7 +726,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         @verifies REQ_INTEROP_018
         """
         # Ensure app is ready (handles discovery race condition)
-        self._ensure_app_ready('status_sensor')
+        self._ensure_app_data_ready('status_sensor')
         # Get data from status_sensor app (body/door/front_left)
         data = self._get_json('/apps/status_sensor/data')
         self.assertIn('items', data)
@@ -751,7 +753,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         @verifies REQ_INTEROP_018
         """
         # Ensure app is ready (handles discovery race condition)
-        self._ensure_app_ready('temp_sensor')
+        self._ensure_app_data_ready('temp_sensor')
         data = self._get_json('/apps/temp_sensor/data')
         self.assertIn('items', data)
         items = data['items']
@@ -4045,7 +4047,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         # Root aggregates ALL topics from the system
         self.assertGreater(len(items), 0, 'Root area should have aggregated topics')
 
-        print(f'✓ Area root data test passed: {len(items)} system-wide topics')
+        print(f'✓ Area root data test passed: {len(items)} system-wide topics: {topic_names}')
 
     def test_112_list_area_data_empty(self):
         """
