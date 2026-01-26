@@ -164,9 +164,9 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
     auto native_sampler = data_access_mgr->get_native_sampler();
     auto sample = native_sampler->sample_topic(full_topic_path, data_access_mgr->get_topic_sample_timeout());
 
-    // Build SOVD ReadValue response
+    // Build SOVD ReadValue response (id must match what list returns for round-trip)
     json response;
-    response["id"] = normalize_topic_to_id(full_topic_path);
+    response["id"] = full_topic_path;
 
     // SOVD "data" field contains the actual value
     if (sample.has_data && sample.data) {
@@ -290,9 +290,9 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
     json result = data_access_mgr->publish_to_topic(full_topic_path, msg_type, data);
 
-    // Build response with x-medkit extension
+    // Build response with x-medkit extension (id must match what list returns for round-trip)
     json response;
-    response["id"] = normalize_topic_to_id(full_topic_path);
+    response["id"] = full_topic_path;
     response["data"] = data;  // Echo back the written data
 
     XMedkit ext;

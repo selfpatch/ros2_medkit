@@ -653,7 +653,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             except requests.exceptions.RequestException as e:
                 last_error = str(e)
             time.sleep(interval)
-        raise unittest.SkipTest(
+        self.fail(
             f'App {app_id} data not available after {timeout}s. '
             f'Last error: {last_error}'
         )
