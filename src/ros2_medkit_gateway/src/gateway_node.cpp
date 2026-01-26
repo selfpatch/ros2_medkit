@@ -331,8 +331,6 @@ void GatewayNode::refresh_cache() {
     all_components.insert(all_components.end(), node_components.begin(), node_components.end());
     all_components.insert(all_components.end(), topic_components.begin(), topic_components.end());
 
-    auto timestamp = std::chrono::system_clock::now();
-
     // Capture sizes before move for logging
     const size_t area_count = areas.size();
     const size_t node_component_count = node_components.size();

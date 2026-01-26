@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <httplib.h>
+
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 namespace ros2_medkit_gateway {

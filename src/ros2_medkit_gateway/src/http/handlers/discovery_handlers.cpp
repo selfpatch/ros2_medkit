@@ -694,8 +694,9 @@ void DiscoveryHandlers::handle_list_apps(const httplib::Request & req, httplib::
   (void)req;
 
   try {
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto apps = discovery->discover_apps();
+    // Use ThreadSafeEntityCache for consistent discovery (avoids race with data endpoints)
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto apps = cache.get_apps();
 
     json items = json::array();
     for (const auto & app : apps) {
@@ -911,8 +912,9 @@ void DiscoveryHandlers::handle_list_functions(const httplib::Request & req, http
   (void)req;
 
   try {
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto functions = discovery->discover_functions();
+    // Use ThreadSafeEntityCache for consistent discovery (avoids race with data endpoints)
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto functions = cache.get_functions();
 
     json items = json::array();
     for (const auto & func : functions) {
@@ -1059,18 +1061,31 @@ void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, http
       if (app_opt) {
         json item;
         item["id"] = app_opt->id;
-        item["name"] = app_opt->name;
+        item["name"] = app_opt->name.empty() ? app_opt->id : app_opt->name;
         item["href"] = "/api/v1/apps/" + app_opt->id;
-        if (app_opt->is_online) {
-          item["is_online"] = true;
+
+        XMedkit ext;
+        ext.is_online(app_opt->is_online).source(app_opt->source);
+        if (app_opt->bound_fqn) {
+          ext.ros2_node(*app_opt->bound_fqn);
         }
+        item["x-medkit"] = ext.build();
+
         items.push_back(item);
       }
     }
 
     json response;
     response["items"] = items;
-    response["total_count"] = items.size();
+
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
+
+    json links;
+    links["self"] = "/api/v1/functions/" + function_id + "/hosts";
+    links["function"] = "/api/v1/functions/" + function_id;
+    response["_links"] = links;
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
