@@ -914,6 +914,48 @@ class TestFaultManagerIntegration(unittest.TestCase):
 
         print('Default query excludes muted/cluster details as expected')
 
+    def test_26_cleared_fault_can_be_reactivated(self):
+        """Test that a CLEARED fault can be reactivated by new FAILED events."""
+        fault_code = 'TEST_REACTIVATION'
+
+        # Report and confirm fault
+        request = ReportFault.Request()
+        request.fault_code = fault_code
+        request.event_type = ReportFault.Request.EVENT_FAILED
+        request.severity = Fault.SEVERITY_CRITICAL
+        request.description = 'Initial fault'
+        request.source_id = '/node1'
+        response = self._call_service(self.report_fault_client, request)
+        self.assertTrue(response.accepted)
+
+        # Clear the fault
+        clear_request = ClearFault.Request()
+        clear_request.fault_code = fault_code
+        clear_response = self._call_service(self.clear_fault_client, clear_request)
+        self.assertTrue(clear_response.success)
+
+        # Report again - should reactivate
+        request = ReportFault.Request()
+        request.fault_code = fault_code
+        request.event_type = ReportFault.Request.EVENT_FAILED
+        request.severity = Fault.SEVERITY_CRITICAL
+        request.description = 'Reactivated'
+        request.source_id = '/node2'
+        response = self._call_service(self.report_fault_client, request)
+        self.assertTrue(response.accepted)
+
+        # Verify fault is CONFIRMED again
+        get_request = GetFaults.Request()
+        get_request.statuses = [Fault.STATUS_CONFIRMED]
+        get_response = self._call_service(self.get_faults_client, get_request)
+
+        fault = next((f for f in get_response.faults if f.fault_code == fault_code), None)
+        self.assertIsNotNone(fault)
+        self.assertEqual(fault.status, Fault.STATUS_CONFIRMED)
+        self.assertEqual(fault.occurrence_count, 2)
+        self.assertEqual(len(fault.reporting_sources), 2)
+        print(f'Cleared fault reactivated: occurrence_count={fault.occurrence_count}')
+
 
 @launch_testing.post_shutdown_test()
 class TestFaultManagerShutdown(unittest.TestCase):

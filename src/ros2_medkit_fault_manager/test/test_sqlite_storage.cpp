@@ -390,8 +390,65 @@ TEST_F(SqliteFaultStorageTest, CriticalSeverityBypassesDebounce) {
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
-TEST_F(SqliteFaultStorageTest, ClearedFaultNotReconfirmed) {
+TEST_F(SqliteFaultStorageTest, ClearedFaultCanBeReactivated) {
   rclcpp::Clock clock;
+
+  // Report to confirm (with default threshold=-1, single report confirms)
+  bool is_new = storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                                             "Initial", "/node1", clock.now());
+  EXPECT_TRUE(is_new);
+
+  auto fault = storage_->get_fault("FAULT_1");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(fault->occurrence_count, 1u);
+
+  // Clear the fault
+  storage_->clear_fault("FAULT_1");
+  fault = storage_->get_fault("FAULT_1");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->status, Fault::STATUS_CLEARED);
+
+  // Report again - should reactivate
+  is_new = storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                                        "Reactivated", "/node2", clock.now());
+  EXPECT_TRUE(is_new);  // Should return true like a new fault
+
+  fault = storage_->get_fault("FAULT_1");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);  // Should be reconfirmed
+  EXPECT_EQ(fault->occurrence_count, 2u);             // Should increment
+  EXPECT_EQ(fault->reporting_sources.size(), 2u);     // Both sources
+  EXPECT_EQ(fault->description, "Reactivated");       // Updated description
+}
+
+TEST_F(SqliteFaultStorageTest, PassedEventForClearedFaultIgnored) {
+  rclcpp::Clock clock;
+
+  // Report and confirm
+  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                               clock.now());
+
+  // Clear the fault
+  storage_->clear_fault("FAULT_1");
+
+  // PASSED event should be ignored for CLEARED fault
+  bool result =
+      storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now());
+  EXPECT_FALSE(result);
+
+  auto fault = storage_->get_fault("FAULT_1");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->status, Fault::STATUS_CLEARED);  // Should stay cleared
+}
+
+TEST_F(SqliteFaultStorageTest, ClearedFaultReactivationRestartsDebounce) {
+  rclcpp::Clock clock;
+
+  // Set threshold to -3 to test debounce behavior
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  storage_->set_debounce_config(config);
 
   // Report 3 times to confirm
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
@@ -401,16 +458,30 @@ TEST_F(SqliteFaultStorageTest, ClearedFaultNotReconfirmed) {
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node3",
                                clock.now());
 
+  auto fault = storage_->get_fault("FAULT_1");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
+
   // Clear the fault
   storage_->clear_fault("FAULT_1");
 
-  // Report again
+  // Reactivate - should start in PREFAILED with counter=-1
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node4",
                                clock.now());
 
-  auto fault = storage_->get_fault("FAULT_1");
+  fault = storage_->get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->status, Fault::STATUS_CLEARED);  // Should stay cleared
+  EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);  // Not yet confirmed, needs 2 more FAILED
+
+  // Report 2 more times to re-confirm
+  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node5",
+                               clock.now());
+  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node6",
+                               clock.now());
+
+  fault = storage_->get_fault("FAULT_1");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);  // Now confirmed
 }
 
 TEST_F(SqliteFaultStorageTest, ConfirmationPersistsAfterReopen) {

@@ -49,10 +49,7 @@ DebounceConfig InMemoryFaultStorage::get_debounce_config() const {
 }
 
 void InMemoryFaultStorage::update_status(FaultState & state) {
-  // Don't update CLEARED faults
-  if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
-    return;
-  }
+  // Note: CLEARED faults are handled in report_fault_event() before this is called
 
   if (state.debounce_counter <= config_.confirmation_threshold) {
     state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
@@ -107,9 +104,33 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
   // Existing fault - update
   auto & state = it->second;
 
-  // Don't update CLEARED faults
+  // CLEARED faults can be reactivated by FAILED events
   if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
-    return false;
+    if (!is_failed) {
+      // PASSED events for CLEARED faults are ignored
+      return false;
+    }
+    // FAILED event reactivates the fault - reset debounce counter
+    state.debounce_counter = -1;
+    state.last_failed_time = timestamp;
+    state.last_occurred = timestamp;
+    state.reporting_sources.insert(source_id);
+    if (state.occurrence_count < std::numeric_limits<uint32_t>::max()) {
+      ++state.occurrence_count;
+    }
+    if (severity > state.severity) {
+      state.severity = severity;
+    }
+    if (!description.empty()) {
+      state.description = description;
+    }
+    // Check for immediate CRITICAL confirmation
+    if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+      state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+    } else {
+      update_status(state);
+    }
+    return true;  // Reactivation treated as new occurrence for event publishing
   }
 
   state.last_occurred = timestamp;

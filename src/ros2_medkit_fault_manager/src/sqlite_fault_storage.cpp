@@ -365,9 +365,17 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
     std::string current_status = check_stmt.column_text(3);
     int32_t debounce_counter = static_cast<int32_t>(check_stmt.column_int(4));
 
-    // Don't update CLEARED faults
+    // CLEARED faults can be reactivated by FAILED events
+    bool is_reactivation = false;
     if (current_status == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
-      return false;
+      if (!is_failed) {
+        // PASSED events for CLEARED faults are ignored
+        return false;
+      }
+      // FAILED event reactivates - reset debounce counter to 0 so FAILED branch
+      // decrements it to -1, then reuse the existing FAILED logic below
+      debounce_counter = 0;
+      is_reactivation = true;
     }
 
     if (is_failed) {
@@ -468,7 +476,7 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
       }
     }
 
-    return false;  // Existing fault updated
+    return is_reactivation;  // Reactivation treated as new occurrence for event publishing
   }
 
   // New fault - only create for FAILED events

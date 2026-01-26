@@ -110,7 +110,8 @@ class FaultStorage {
   /// @param description Human-readable description (only used for FAILED events)
   /// @param source_id Reporting source identifier
   /// @param timestamp Current time for tracking
-  /// @return true if this created a new fault entry, false if existing fault was updated
+  /// @return true if this is a new occurrence (new fault or reactivated CLEARED fault),
+  ///         false if existing active fault was updated
   virtual bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                   const std::string & description, const std::string & source_id,
                                   const rclcpp::Time & timestamp) = 0;
