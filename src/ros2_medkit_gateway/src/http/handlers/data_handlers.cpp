@@ -116,8 +116,7 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
-                               "Failed to retrieve entity data",
-                               {{"details", e.what()}, {"entity_id", entity_id}});
+                               "Failed to retrieve entity data", {{"details", e.what()}, {"entity_id", entity_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_data for entity '%s': %s", entity_id.c_str(),
                  e.what());
   }

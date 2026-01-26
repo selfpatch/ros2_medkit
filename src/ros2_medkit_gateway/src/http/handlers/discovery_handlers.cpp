@@ -126,7 +126,8 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
     response["faults"] = base_uri + "/faults";
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::SUBAREAS, Cap::CONTAINS, Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS};
+    std::vector<Cap> caps = {Cap::SUBAREAS,   Cap::CONTAINS,       Cap::DATA,
+                             Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("areas", area.id, caps);
 
     LinksBuilder links;
@@ -468,7 +469,8 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     }
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS, Cap::SUBCOMPONENTS, Cap::HOSTS};
+    std::vector<Cap> caps = {Cap::DATA,   Cap::OPERATIONS,    Cap::CONFIGURATIONS,
+                             Cap::FAULTS, Cap::SUBCOMPONENTS, Cap::HOSTS};
     if (!comp.depends_on.empty()) {
       caps.push_back(Cap::DEPENDS_ON);
     }
