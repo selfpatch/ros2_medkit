@@ -346,6 +346,20 @@ void GatewayNode::refresh_cache() {
                                   functions        // copy
     );
 
+    // Update topic type cache (avoids expensive ROS graph queries on /data requests)
+    if (data_access_mgr_) {
+      auto native_sampler = data_access_mgr_->get_native_sampler();
+      auto all_topics = native_sampler->discover_all_topics();
+      std::unordered_map<std::string, std::string> topic_types;
+      topic_types.reserve(all_topics.size());
+      for (const auto & topic : all_topics) {
+        if (!topic.type.empty()) {
+          topic_types[topic.name] = topic.type;
+        }
+      }
+      thread_safe_cache_.update_topic_types(std::move(topic_types));
+    }
+
     RCLCPP_DEBUG(
         get_logger(),
         "Cache refreshed: %zu areas, %zu components (%zu node-based, %zu topic-based), %zu apps, %zu functions",

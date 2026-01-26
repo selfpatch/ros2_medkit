@@ -71,6 +71,11 @@ void ThreadSafeEntityCache::update_functions(std::vector<Function> functions) {
   rebuild_relationship_indexes();
 }
 
+void ThreadSafeEntityCache::update_topic_types(std::unordered_map<std::string, std::string> topic_types) {
+  std::unique_lock lock(mutex_);
+  topic_type_cache_ = std::move(topic_types);
+}
+
 // ============================================================================
 // Reader methods - List all
 // ============================================================================
@@ -93,6 +98,15 @@ std::vector<App> ThreadSafeEntityCache::get_apps() const {
 std::vector<Function> ThreadSafeEntityCache::get_functions() const {
   std::shared_lock lock(mutex_);
   return functions_;
+}
+
+std::string ThreadSafeEntityCache::get_topic_type(const std::string & topic_name) const {
+  std::shared_lock lock(mutex_);
+  auto it = topic_type_cache_.find(topic_name);
+  if (it != topic_type_cache_.end()) {
+    return it->second;
+  }
+  return "";
 }
 
 // ============================================================================

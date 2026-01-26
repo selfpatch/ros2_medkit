@@ -149,6 +149,16 @@ class ThreadSafeEntityCache {
   void update_apps(std::vector<App> apps);
   void update_functions(std::vector<Function> functions);
 
+  /**
+   * @brief Update cached topic type mapping
+   *
+   * Called during cache refresh to cache topic name -> message type mapping.
+   * This avoids expensive ROS graph queries on every /data request.
+   *
+   * @param topic_types Map of topic name to message type
+   */
+  void update_topic_types(std::unordered_map<std::string, std::string> topic_types);
+
   // =========================================================================
   // Reader methods (shared lock) - called by HTTP handlers
   // =========================================================================
@@ -170,6 +180,14 @@ class ThreadSafeEntityCache {
   bool has_component(const std::string & id) const;
   bool has_app(const std::string & id) const;
   bool has_function(const std::string & id) const;
+
+  // --- Topic type lookup (O(1)) ---
+  /**
+   * @brief Get cached message type for a topic
+   * @param topic_name Full topic path (e.g., "/sensor/temperature")
+   * @return Message type string, or empty if not cached
+   */
+  std::string get_topic_type(const std::string & topic_name) const;
 
   // --- Resolve any entity by ID ---
   std::optional<EntityRef> find_entity(const std::string & id) const;
@@ -342,6 +360,9 @@ class ThreadSafeEntityCache {
 
   // Operation index (operation full_path → owning entity)
   std::unordered_map<std::string, EntityRef> operation_index_;
+
+  // Topic type cache (topic name → message type) - refreshed periodically
+  std::unordered_map<std::string, std::string> topic_type_cache_;
 
   // Internal helpers (called under lock)
   void rebuild_all_indexes();

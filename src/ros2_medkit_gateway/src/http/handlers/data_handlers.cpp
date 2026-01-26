@@ -15,7 +15,6 @@
 #include "ros2_medkit_gateway/http/handlers/data_handlers.hpp"
 
 #include <algorithm>
-#include <map>
 
 #include "ros2_medkit_gateway/exceptions.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -60,15 +59,7 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
 
     // Get data access manager for type introspection
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
-    auto native_sampler = data_access_mgr->get_native_sampler();
     auto type_introspection = data_access_mgr->get_type_introspection();
-
-    // Build topic name -> type map from all discovered topics
-    std::map<std::string, std::string> topic_type_map;
-    auto all_topics = native_sampler->discover_all_topics();
-    for (const auto & topic_info : all_topics) {
-      topic_type_map[topic_info.name] = topic_info.type;
-    }
 
     // Build items array with ValueMetadata format
     json items = json::array();
@@ -84,12 +75,12 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
       XMedkit ext;
       ext.ros2_topic(topic.name).add_ros2("direction", topic.direction);
 
-      // Add type info if available
-      auto type_it = topic_type_map.find(topic.name);
-      if (type_it != topic_type_map.end() && !type_it->second.empty()) {
-        ext.ros2_type(type_it->second);
+      // Add type info if available (use cached topic types for O(1) lookup)
+      std::string topic_type = cache.get_topic_type(topic.name);
+      if (!topic_type.empty()) {
+        ext.ros2_type(topic_type);
         try {
-          auto type_info = type_introspection->get_type_info(type_it->second);
+          auto type_info = type_introspection->get_type_info(topic_type);
           ext.type_info(type_info.schema);
         } catch (const std::exception & e) {
           RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", topic.name.c_str(),
