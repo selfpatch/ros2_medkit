@@ -24,6 +24,109 @@ using httplib::StatusCode;
 namespace ros2_medkit_gateway {
 namespace handlers {
 
+// ============================================================================
+// Helper structures and functions for configuration handlers
+// ============================================================================
+
+/**
+ * @brief Parsed parameter ID with optional app prefix
+ */
+struct ParsedParamId {
+  std::string app_id;      ///< Target app ID (empty if not prefixed)
+  std::string param_name;  ///< Parameter name
+  bool has_prefix{false};  ///< Whether the ID had an app prefix
+};
+
+/**
+ * @brief Parse param_id which may contain "app_id:param_name" format
+ *
+ * For aggregated configurations, parameter IDs are prefixed with the source
+ * app ID to disambiguate parameters with the same name across nodes.
+ *
+ * @param param_id The parameter ID to parse
+ * @param is_aggregated Whether the entity is aggregated
+ * @return ParsedParamId with separated app_id and param_name
+ */
+static ParsedParamId parse_aggregated_param_id(const std::string & param_id, bool is_aggregated) {
+  ParsedParamId result;
+  result.param_name = param_id;
+
+  auto colon_pos = param_id.find(':');
+  if (colon_pos != std::string::npos && is_aggregated) {
+    result.app_id = param_id.substr(0, colon_pos);
+    result.param_name = param_id.substr(colon_pos + 1);
+    result.has_prefix = true;
+  }
+
+  return result;
+}
+
+/**
+ * @brief Find node info for a specific app ID in aggregated configurations
+ *
+ * @param nodes Vector of NodeConfigInfo to search
+ * @param app_id Target app ID
+ * @return Pointer to NodeConfigInfo if found, nullptr otherwise
+ */
+static const NodeConfigInfo * find_node_for_app(const std::vector<NodeConfigInfo> & nodes, const std::string & app_id) {
+  for (const auto & node : nodes) {
+    if (node.app_id == app_id) {
+      return &node;
+    }
+  }
+  return nullptr;
+}
+
+/**
+ * @brief Error classification result for parameter operations
+ */
+struct ErrorClassification {
+  httplib::StatusCode status_code;
+  std::string error_code;
+};
+
+/**
+ * @brief Classify error message to appropriate HTTP status and error code
+ *
+ * Analyzes the error message to determine if it's:
+ * - 404 Not Found (parameter doesn't exist)
+ * - 403 Forbidden (read-only parameter)
+ * - 503 Service Unavailable (node/service not reachable)
+ * - 400 Bad Request (other errors)
+ *
+ * @param error_message The error message to classify
+ * @return ErrorClassification with status code and error code
+ */
+static ErrorClassification classify_parameter_error(const std::string & error_message) {
+  ErrorClassification result;
+
+  if (error_message.find("not found") != std::string::npos ||
+      error_message.find("Parameter not found") != std::string::npos) {
+    result.status_code = StatusCode::NotFound_404;
+    result.error_code = ERR_RESOURCE_NOT_FOUND;
+  } else if (error_message.find("read-only") != std::string::npos ||
+             error_message.find("read only") != std::string::npos ||
+             error_message.find("is read_only") != std::string::npos) {
+    result.status_code = StatusCode::Forbidden_403;
+    result.error_code = ERR_X_MEDKIT_ROS2_PARAMETER_READ_ONLY;
+  } else if (error_message.find("not available") != std::string::npos ||
+             error_message.find("service not available") != std::string::npos ||
+             error_message.find("timed out") != std::string::npos ||
+             error_message.find("timeout") != std::string::npos) {
+    result.status_code = StatusCode::ServiceUnavailable_503;
+    result.error_code = ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE;
+  } else {
+    result.status_code = StatusCode::BadRequest_400;
+    result.error_code = ERR_INVALID_REQUEST;
+  }
+
+  return result;
+}
+
+// ============================================================================
+// Handler implementations
+// ============================================================================
+
 void ConfigHandlers::handle_list_configurations(const httplib::Request & req, httplib::Response & res) {
   std::string entity_id;
   try {
@@ -193,75 +296,55 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
 
     auto config_mgr = ctx_.node()->get_configuration_manager();
 
-    // Check if param_id contains app_id prefix (for aggregated configs: "app_id:param_name")
-    std::string target_app_id;
-    std::string param_name = param_id;
-    auto colon_pos = param_id.find(':');
-    if (colon_pos != std::string::npos && agg_configs.is_aggregated) {
-      target_app_id = param_id.substr(0, colon_pos);
-      param_name = param_id.substr(colon_pos + 1);
-    }
+    // Parse param_id for app_id prefix
+    auto parsed = parse_aggregated_param_id(param_id, agg_configs.is_aggregated);
 
     // If targeting specific app in aggregated entity
-    if (!target_app_id.empty()) {
-      for (const auto & node_info : agg_configs.nodes) {
-        if (node_info.app_id == target_app_id) {
-          auto result = config_mgr->get_parameter(node_info.node_fqn, param_name);
-
-          if (result.success) {
-            json response;
-            response["id"] = param_id;
-
-            if (result.data.contains("value")) {
-              response["data"] = result.data["value"];
-            } else {
-              response["data"] = result.data;
-            }
-
-            XMedkit ext;
-            ext.ros2_node(node_info.node_fqn).entity_id(entity_id).source("runtime");
-            ext.add("parameter", result.data);
-            ext.add("source_app", target_app_id);
-            response["x-medkit"] = ext.build();
-
-            HandlerContext::send_json(res, response);
-            return;
-          } else {
-            if (result.error_message.find("not found") != std::string::npos ||
-                result.error_message.find("Parameter not found") != std::string::npos) {
-              HandlerContext::send_error(
-                  res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Parameter not found",
-                  json{{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_id}});
-            } else {
-              HandlerContext::send_error(
-                  res, StatusCode::ServiceUnavailable_503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE,
-                  "Failed to get parameter",
-                  json{{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_id}});
-            }
-            return;
-          }
-        }
+    if (parsed.has_prefix) {
+      const auto * node_info = find_node_for_app(agg_configs.nodes, parsed.app_id);
+      if (!node_info) {
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+                                   "Source app not found in entity",
+                                   json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", parsed.app_id}});
+        return;
       }
-      // App not found in this entity's children
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
-                                 "Source app not found in entity",
-                                 json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", target_app_id}});
+
+      auto result = config_mgr->get_parameter(node_info->node_fqn, parsed.param_name);
+
+      if (result.success) {
+        json response;
+        response["id"] = param_id;
+        response["data"] = result.data.contains("value") ? result.data["value"] : result.data;
+
+        XMedkit ext;
+        ext.ros2_node(node_info->node_fqn).entity_id(entity_id).source("runtime");
+        ext.add("parameter", result.data);
+        ext.add("source_app", parsed.app_id);
+        response["x-medkit"] = ext.build();
+
+        HandlerContext::send_json(res, response);
+      } else {
+        auto err = classify_parameter_error(result.error_message);
+        HandlerContext::send_error(res, err.status_code, err.error_code,
+                                   err.status_code == StatusCode::NotFound_404 ? "Parameter not found"
+                                                                               : "Failed to get parameter",
+                                   json{{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_id}});
+      }
       return;
     }
 
     // For non-aggregated or no prefix: search all nodes for the parameter
+    // Track errors to provide meaningful response if parameter not found anywhere
+    std::string last_error;
+    bool all_not_found = true;  // Track if all failures are "not found" vs other errors
+
     for (const auto & node_info : agg_configs.nodes) {
-      auto result = config_mgr->get_parameter(node_info.node_fqn, param_name);
+      auto result = config_mgr->get_parameter(node_info.node_fqn, parsed.param_name);
 
       if (result.success) {
         json response;
-        response["id"] = param_name;
-
-        if (result.data.contains("value")) {
-          response["data"] = result.data["value"];
-        } else {
-          response["data"] = result.data;
-        }
+        response["id"] = parsed.param_name;
+        response["data"] = result.data.contains("value") ? result.data["value"] : result.data;
 
         XMedkit ext;
         ext.ros2_node(node_info.node_fqn).entity_id(entity_id).source("runtime");
@@ -274,11 +357,25 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
         HandlerContext::send_json(res, response);
         return;
       }
+
+      // Track the error for later reporting
+      last_error = result.error_message;
+      auto err = classify_parameter_error(result.error_message);
+      if (err.status_code != StatusCode::NotFound_404) {
+        all_not_found = false;
+      }
     }
 
-    // Parameter not found in any node
-    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Parameter not found",
-                               {{"entity_id", entity_id}, {"id", param_id}});
+    // Parameter not found in any node - report appropriate error
+    if (all_not_found) {
+      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Parameter not found",
+                                 json{{"entity_id", entity_id}, {"id", param_id}});
+    } else {
+      // Some nodes had non-"not found" errors (e.g., unavailable) - report 503
+      auto err = classify_parameter_error(last_error);
+      HandlerContext::send_error(res, err.status_code, err.error_code, "Failed to get parameter from any node",
+                                 json{{"details", last_error}, {"entity_id", entity_id}, {"id", param_id}});
+    }
 
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
@@ -356,26 +453,15 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
 
     auto config_mgr = ctx_.node()->get_configuration_manager();
 
-    // Parse param_id for app_id prefix (for aggregated configs: "app_id:param_name")
-    std::string target_app_id;
-    std::string param_name = param_id;
-    auto colon_pos = param_id.find(':');
-    if (colon_pos != std::string::npos && agg_configs.is_aggregated) {
-      target_app_id = param_id.substr(0, colon_pos);
-      param_name = param_id.substr(colon_pos + 1);
-    }
+    // Parse param_id for app_id prefix
+    auto parsed = parse_aggregated_param_id(param_id, agg_configs.is_aggregated);
 
-    // Helper to handle set result
+    // Helper to handle set result and send response
     auto handle_set_result = [&](const auto & result, const std::string & node_fqn, const std::string & app_id) {
       if (result.success) {
         json response;
         response["id"] = param_id;
-
-        if (result.data.contains("value")) {
-          response["data"] = result.data["value"];
-        } else {
-          response["data"] = result.data;
-        }
+        response["data"] = result.data.contains("value") ? result.data["value"] : result.data;
 
         XMedkit ext;
         ext.ros2_node(node_fqn).entity_id(entity_id).source("runtime");
@@ -389,51 +475,31 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
         return true;
       }
 
-      // Determine error type
-      std::string error_code;
-      httplib::StatusCode status_code;
-      if (result.error_message.find("read-only") != std::string::npos ||
-          result.error_message.find("read only") != std::string::npos ||
-          result.error_message.find("is read_only") != std::string::npos) {
-        status_code = StatusCode::Forbidden_403;
-        error_code = ERR_X_MEDKIT_ROS2_PARAMETER_READ_ONLY;
-      } else if (result.error_message.find("not found") != std::string::npos ||
-                 result.error_message.find("Parameter not found") != std::string::npos) {
-        status_code = StatusCode::NotFound_404;
-        error_code = ERR_RESOURCE_NOT_FOUND;
-      } else if (result.error_message.find("not available") != std::string::npos ||
-                 result.error_message.find("service not available") != std::string::npos) {
-        status_code = StatusCode::ServiceUnavailable_503;
-        error_code = ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE;
-      } else {
-        status_code = StatusCode::BadRequest_400;
-        error_code = ERR_INVALID_REQUEST;
-      }
-      HandlerContext::send_error(res, status_code, error_code, "Failed to set parameter",
+      auto err = classify_parameter_error(result.error_message);
+      HandlerContext::send_error(res, err.status_code, err.error_code, "Failed to set parameter",
                                  json{{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_id}});
       return false;
     };
 
     // If targeting specific app in aggregated entity
-    if (!target_app_id.empty()) {
-      for (const auto & node_info : agg_configs.nodes) {
-        if (node_info.app_id == target_app_id) {
-          auto result = config_mgr->set_parameter(node_info.node_fqn, param_name, value);
-          handle_set_result(result, node_info.node_fqn, target_app_id);
-          return;
-        }
+    if (parsed.has_prefix) {
+      const auto * node_info = find_node_for_app(agg_configs.nodes, parsed.app_id);
+      if (!node_info) {
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+                                   "Source app not found in entity",
+                                   json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", parsed.app_id}});
+        return;
       }
-      // App not found in this entity's children
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
-                                 "Source app not found in entity",
-                                 json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", target_app_id}});
+
+      auto result = config_mgr->set_parameter(node_info->node_fqn, parsed.param_name, value);
+      handle_set_result(result, node_info->node_fqn, parsed.app_id);
       return;
     }
 
-    // For non-aggregated or no prefix: use first node (or find matching param)
+    // For non-aggregated: use the single node
     if (!agg_configs.is_aggregated && !agg_configs.nodes.empty()) {
       const auto & node_info = agg_configs.nodes[0];
-      auto result = config_mgr->set_parameter(node_info.node_fqn, param_name, value);
+      auto result = config_mgr->set_parameter(node_info.node_fqn, parsed.param_name, value);
       handle_set_result(result, node_info.node_fqn, node_info.app_id);
       return;
     }
@@ -494,49 +560,41 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
 
     auto config_mgr = ctx_.node()->get_configuration_manager();
 
-    // Parse param_id for app_id prefix (for aggregated configs: "app_id:param_name")
-    std::string target_app_id;
-    std::string param_name = param_id;
-    auto colon_pos = param_id.find(':');
-    if (colon_pos != std::string::npos && agg_configs.is_aggregated) {
-      target_app_id = param_id.substr(0, colon_pos);
-      param_name = param_id.substr(colon_pos + 1);
-    }
+    // Parse param_id for app_id prefix
+    auto parsed = parse_aggregated_param_id(param_id, agg_configs.is_aggregated);
+
+    // Helper to handle reset result
+    auto handle_reset_result = [&](const auto & result) {
+      if (result.success) {
+        res.status = StatusCode::NoContent_204;
+        return true;
+      }
+      auto err = classify_parameter_error(result.error_message);
+      HandlerContext::send_error(res, err.status_code, err.error_code, "Failed to reset parameter",
+                                 json{{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_id}});
+      return false;
+    };
 
     // If targeting specific app in aggregated entity
-    if (!target_app_id.empty()) {
-      for (const auto & node_info : agg_configs.nodes) {
-        if (node_info.app_id == target_app_id) {
-          auto result = config_mgr->reset_parameter(node_info.node_fqn, param_name);
-          if (result.success) {
-            res.status = StatusCode::NoContent_204;
-          } else {
-            HandlerContext::send_error(
-                res, StatusCode::ServiceUnavailable_503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE,
-                "Failed to reset parameter",
-                json{{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_id}});
-          }
-          return;
-        }
+    if (parsed.has_prefix) {
+      const auto * node_info = find_node_for_app(agg_configs.nodes, parsed.app_id);
+      if (!node_info) {
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+                                   "Source app not found in entity",
+                                   json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", parsed.app_id}});
+        return;
       }
-      // App not found in this entity's children
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
-                                 "Source app not found in entity",
-                                 json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", target_app_id}});
+
+      auto result = config_mgr->reset_parameter(node_info->node_fqn, parsed.param_name);
+      handle_reset_result(result);
       return;
     }
 
-    // For non-aggregated: use first node
+    // For non-aggregated: use the single node
     if (!agg_configs.is_aggregated && !agg_configs.nodes.empty()) {
       const auto & node_info = agg_configs.nodes[0];
-      auto result = config_mgr->reset_parameter(node_info.node_fqn, param_name);
-      if (result.success) {
-        res.status = StatusCode::NoContent_204;
-      } else {
-        HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE,
-                                   "Failed to reset parameter",
-                                   json{{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_id}});
-      }
+      auto result = config_mgr->reset_parameter(node_info.node_fqn, parsed.param_name);
+      handle_reset_result(result);
       return;
     }
 
