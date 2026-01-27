@@ -598,6 +598,128 @@ TEST_F(AggregationServiceTest, GetOperationsByIdAutoDetectsType) {
   EXPECT_EQ(result.aggregation_level, "app");
 }
 
+// ============================================================================
+// Data Aggregation Tests
+// ============================================================================
+
+class DataAggregationTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    // Create a hierarchy:
+    // - Area: perception
+    //   - Component: sensor_stack
+    //     - App: camera_driver (publishes /camera/image, subscribes /camera/enable)
+    //     - App: lidar_proc (publishes /lidar/points, subscribes /camera/image)
+    areas_ = {make_area("perception", "Perception Area")};
+
+    components_.push_back(make_component("sensor_stack", "Sensor Stack", "perception"));
+    components_[0].topics.publishes = {"/common/diagnostics"};
+    components_[0].topics.subscribes = {"/common/clock"};
+
+    apps_.push_back(make_app_minimal("camera_driver", "sensor_stack"));
+    apps_[0].topics.publishes = {"/camera/image", "/camera/info"};
+    apps_[0].topics.subscribes = {"/camera/enable"};
+
+    apps_.push_back(make_app_minimal("lidar_proc", "sensor_stack"));
+    apps_[1].topics.publishes = {"/lidar/points"};
+    apps_[1].topics.subscribes = {"/camera/image"};  // Same topic that camera_driver publishes
+
+    cache_.update_all(areas_, components_, apps_, {});
+  }
+
+  ThreadSafeEntityCache cache_;
+  std::vector<Area> areas_;
+  std::vector<Component> components_;
+  std::vector<App> apps_;
+};
+
+TEST_F(DataAggregationTest, AppDataReturnsOwnTopicsOnly) {
+  auto result = cache_.get_app_data("camera_driver");
+
+  EXPECT_FALSE(result.is_aggregated);
+  EXPECT_EQ(result.aggregation_level, "app");
+  EXPECT_EQ(result.source_ids.size(), 1);
+  EXPECT_EQ(result.source_ids[0], "camera_driver");
+
+  // camera_driver: 2 publishes + 1 subscribes = 3 topics
+  EXPECT_EQ(result.topics.size(), 3);
+
+  // Check at least one publish and one subscribe
+  bool has_publish = false;
+  bool has_subscribe = false;
+  for (const auto & topic : result.topics) {
+    if (topic.direction == "publish") {
+      has_publish = true;
+    }
+    if (topic.direction == "subscribe") {
+      has_subscribe = true;
+    }
+  }
+  EXPECT_TRUE(has_publish);
+  EXPECT_TRUE(has_subscribe);
+}
+
+TEST_F(DataAggregationTest, ComponentDataAggregatesFromHostedApps) {
+  auto result = cache_.get_component_data("sensor_stack");
+
+  EXPECT_TRUE(result.is_aggregated);
+  EXPECT_EQ(result.aggregation_level, "component");
+  // Sources: component + 2 apps = 3
+  EXPECT_EQ(result.source_ids.size(), 3);
+
+  // Component topics: /common/diagnostics (pub), /common/clock (sub)
+  // camera_driver: /camera/image (pub), /camera/info (pub), /camera/enable (sub)
+  // lidar_proc: /lidar/points (pub), /camera/image (sub - already seen as pub)
+  // Total unique: 6 topics (/camera/image appears twice, merged as "both")
+  EXPECT_GE(result.topics.size(), 5);
+}
+
+TEST_F(DataAggregationTest, DirectionMergesToBothWhenPubAndSub) {
+  auto result = cache_.get_component_data("sensor_stack");
+
+  // /camera/image is published by camera_driver and subscribed by lidar_proc
+  // Should be merged to direction="both"
+  bool found_camera_image = false;
+  for (const auto & topic : result.topics) {
+    if (topic.name == "/camera/image") {
+      found_camera_image = true;
+      EXPECT_EQ(topic.direction, "both");
+      break;
+    }
+  }
+  EXPECT_TRUE(found_camera_image);
+}
+
+TEST_F(DataAggregationTest, AreaDataAggregatesFromAllComponents) {
+  auto result = cache_.get_area_data("perception");
+
+  EXPECT_TRUE(result.is_aggregated);
+  EXPECT_EQ(result.aggregation_level, "area");
+  EXPECT_GE(result.source_ids.size(), 1);  // At least area itself
+
+  // Should contain topics from sensor_stack and its apps
+  EXPECT_GE(result.topics.size(), 5);
+}
+
+TEST_F(DataAggregationTest, GetEntityDataAutoDetectsType) {
+  auto app_result = cache_.get_entity_data("camera_driver");
+  EXPECT_EQ(app_result.aggregation_level, "app");
+
+  auto comp_result = cache_.get_entity_data("sensor_stack");
+  EXPECT_EQ(comp_result.aggregation_level, "component");
+
+  auto area_result = cache_.get_entity_data("perception");
+  EXPECT_EQ(area_result.aggregation_level, "area");
+}
+
+TEST_F(DataAggregationTest, UnknownEntityReturnsEmptyData) {
+  auto result = cache_.get_entity_data("nonexistent");
+
+  EXPECT_TRUE(result.topics.empty());
+  EXPECT_TRUE(result.source_ids.empty());
+  EXPECT_TRUE(result.aggregation_level.empty());
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
