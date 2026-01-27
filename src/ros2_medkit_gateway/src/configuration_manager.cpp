@@ -74,6 +74,7 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
     if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
+      result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
       RCLCPP_WARN(node_->get_logger(), "Parameter service not available for node: '%s'", node_name.c_str());
       return result;
     }
@@ -129,6 +130,7 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
   } catch (const std::exception & e) {
     result.success = false;
     result.error_message = std::string("Failed to list parameters: ") + e.what();
+    result.error_code = ParameterErrorCode::INTERNAL_ERROR;
     RCLCPP_ERROR(node_->get_logger(), "Exception in list_parameters for node '%s': %s", node_name.c_str(), e.what());
   }
 
@@ -144,6 +146,7 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
     if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
+      result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
       return result;
     }
 
@@ -152,6 +155,7 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
     if (param_names.names.empty()) {
       result.success = false;
       result.error_message = "Parameter not found: " + param_name;
+      result.error_code = ParameterErrorCode::NOT_FOUND;
       return result;
     }
 
@@ -160,6 +164,7 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
     if (parameters.empty()) {
       result.success = false;
       result.error_message = "Failed to get parameter: " + param_name;
+      result.error_code = ParameterErrorCode::INTERNAL_ERROR;
       return result;
     }
 
@@ -183,6 +188,7 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
   } catch (const std::exception & e) {
     result.success = false;
     result.error_message = std::string("Failed to get parameter: ") + e.what();
+    result.error_code = ParameterErrorCode::INTERNAL_ERROR;
   }
 
   return result;
@@ -198,6 +204,7 @@ ParameterResult ConfigurationManager::set_parameter(const std::string & node_nam
     if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
+      result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
       return result;
     }
 
@@ -217,6 +224,20 @@ ParameterResult ConfigurationManager::set_parameter(const std::string & node_nam
     if (results.empty() || !results[0].successful) {
       result.success = false;
       result.error_message = results.empty() ? "Failed to set parameter" : results[0].reason;
+      // Classify error based on reason
+      if (!results.empty()) {
+        const auto & reason = results[0].reason;
+        if (reason.find("read-only") != std::string::npos || reason.find("read only") != std::string::npos ||
+            reason.find("is read_only") != std::string::npos) {
+          result.error_code = ParameterErrorCode::READ_ONLY;
+        } else if (reason.find("type") != std::string::npos) {
+          result.error_code = ParameterErrorCode::TYPE_MISMATCH;
+        } else {
+          result.error_code = ParameterErrorCode::INVALID_VALUE;
+        }
+      } else {
+        result.error_code = ParameterErrorCode::INTERNAL_ERROR;
+      }
       return result;
     }
 
@@ -231,6 +252,7 @@ ParameterResult ConfigurationManager::set_parameter(const std::string & node_nam
   } catch (const std::exception & e) {
     result.success = false;
     result.error_message = std::string("Failed to set parameter: ") + e.what();
+    result.error_code = ParameterErrorCode::INTERNAL_ERROR;
   }
 
   return result;
@@ -468,6 +490,7 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
     if (node_it == default_values_.end()) {
       result.success = false;
       result.error_message = "No default values cached for node: " + node_name;
+      result.error_code = ParameterErrorCode::NO_DEFAULTS_CACHED;
       return result;
     }
 
@@ -475,6 +498,7 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
     if (param_it == node_it->second.end()) {
       result.success = false;
       result.error_message = "No default value for parameter: " + param_name;
+      result.error_code = ParameterErrorCode::NOT_FOUND;
       return result;
     }
 
@@ -485,6 +509,7 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
     if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
+      result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
       return result;
     }
 
@@ -492,6 +517,7 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
     if (results.empty() || !results[0].successful) {
       result.success = false;
       result.error_message = results.empty() ? "Failed to reset parameter" : results[0].reason;
+      result.error_code = ParameterErrorCode::INTERNAL_ERROR;
       return result;
     }
 
@@ -510,6 +536,7 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
   } catch (const std::exception & e) {
     result.success = false;
     result.error_message = std::string("Failed to reset parameter: ") + e.what();
+    result.error_code = ParameterErrorCode::INTERNAL_ERROR;
   }
 
   return result;
@@ -530,6 +557,7 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
     if (node_it == default_values_.end()) {
       result.success = false;
       result.error_message = "No default values cached for node: " + node_name;
+      result.error_code = ParameterErrorCode::NO_DEFAULTS_CACHED;
       return result;
     }
 
@@ -537,6 +565,7 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
     if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
+      result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
       return result;
     }
 
@@ -580,6 +609,7 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
 
     if (failed_count > 0) {
       result.error_message = "Some parameters could not be reset";
+      result.error_code = ParameterErrorCode::INTERNAL_ERROR;  // Partial failure
     }
 
     RCLCPP_INFO(node_->get_logger(), "Reset %zu parameters on node '%s' (%zu failed)", reset_count, node_name.c_str(),
@@ -587,6 +617,7 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
   } catch (const std::exception & e) {
     result.success = false;
     result.error_message = std::string("Failed to reset parameters: ") + e.what();
+    result.error_code = ParameterErrorCode::INTERNAL_ERROR;
   }
 
   return result;

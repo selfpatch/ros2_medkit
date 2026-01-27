@@ -460,9 +460,9 @@ AggregatedConfigurations ThreadSafeEntityCache::get_component_configurations(con
         result.source_ids.push_back(app.id);
       }
     }
-    if (!apps_it->second.empty()) {
-      result.is_aggregated = true;
-    }
+    // Only mark as aggregated if there are multiple nodes (sources)
+    // A component with a single app should behave like a non-aggregated entity
+    result.is_aggregated = result.nodes.size() > 1;
   }
 
   return result;
@@ -472,7 +472,6 @@ AggregatedConfigurations ThreadSafeEntityCache::get_area_configurations(const st
   std::shared_lock lock(mutex_);
   AggregatedConfigurations result;
   result.aggregation_level = "area";
-  result.is_aggregated = true;  // Area configurations are always aggregated
 
   auto area_it = area_index_.find(area_id);
   if (area_it == area_index_.end()) {
@@ -513,6 +512,9 @@ AggregatedConfigurations ThreadSafeEntityCache::get_area_configurations(const st
     }
   }
 
+  // Only mark as aggregated if there are multiple nodes
+  result.is_aggregated = result.nodes.size() > 1;
+
   return result;
 }
 
@@ -520,7 +522,6 @@ AggregatedConfigurations ThreadSafeEntityCache::get_function_configurations(cons
   std::shared_lock lock(mutex_);
   AggregatedConfigurations result;
   result.aggregation_level = "function";
-  result.is_aggregated = true;  // Function configurations are always aggregated
 
   auto func_it = function_index_.find(function_id);
   if (func_it == function_index_.end()) {
@@ -547,6 +548,9 @@ AggregatedConfigurations ThreadSafeEntityCache::get_function_configurations(cons
       }
     }
   }
+
+  // Only mark as aggregated if there are multiple nodes
+  result.is_aggregated = result.nodes.size() > 1;
 
   return result;
 }

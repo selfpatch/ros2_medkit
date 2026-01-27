@@ -26,11 +26,25 @@ namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
 
+/// Error codes for parameter operations
+enum class ParameterErrorCode {
+  NONE = 0,             ///< No error (success)
+  NOT_FOUND,            ///< Parameter does not exist
+  READ_ONLY,            ///< Parameter is read-only and cannot be modified
+  SERVICE_UNAVAILABLE,  ///< Parameter service not available (node unreachable)
+  TIMEOUT,              ///< Operation timed out
+  TYPE_MISMATCH,        ///< Value type doesn't match parameter type
+  INVALID_VALUE,        ///< Invalid value for parameter
+  NO_DEFAULTS_CACHED,   ///< No default values cached for reset operation
+  INTERNAL_ERROR        ///< Internal/unexpected error
+};
+
 /// Result of a parameter operation
 struct ParameterResult {
   bool success;
   json data;
   std::string error_message;
+  ParameterErrorCode error_code{ParameterErrorCode::NONE};  ///< Structured error code for programmatic handling
 };
 
 /// Manager for ROS2 node parameters
