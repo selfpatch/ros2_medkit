@@ -506,6 +506,7 @@ AggregatedConfigurations ThreadSafeEntityCache::get_area_configurations(const st
             info.app_id = app.id;
             info.entity_id = area_id;
             result.nodes.push_back(info);
+            result.source_ids.push_back(app.id);
           }
         }
       }
