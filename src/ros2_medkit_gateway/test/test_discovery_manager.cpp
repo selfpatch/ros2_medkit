@@ -237,3 +237,22 @@ TEST_F(DiscoveryManagerWithPublishersTest, DiscoverTopicComponents_DoesNotDuplic
     EXPECT_FALSE(comp.id.empty());
   }
 }
+
+TEST_F(DiscoveryManagerWithPublishersTest, DiscoverTopicComponents_DoesNotDuplicateRootNamespaceNodeTopics) {
+  // Root namespace nodes publishing topics with matching prefix
+  // should not create duplicate topic-based components.
+  //
+  // Create a publisher with topic prefix matching the test node's name.
+  // The test node is named "test_discovery_node" and in root namespace.
+  auto pub = node_->create_publisher<std_msgs::msg::String>("/test_discovery_node/status", 10);
+
+  rclcpp::spin_some(node_);
+
+  auto topic_components = discovery_manager_->discover_topic_components();
+
+  // Should NOT create a topic-based component for "test_discovery_node"
+  // because there's already a node with that name in root namespace
+  for (const auto & comp : topic_components) {
+    EXPECT_NE(comp.id, "test_discovery_node") << "Should not create duplicate component for root namespace node";
+  }
+}

@@ -105,6 +105,17 @@ def generate_test_description():
             output='screen',
             additional_env=coverage_env,
         ),
+        # Node in root namespace to test duplicate component prevention
+        # This node publishes /root_ns_demo/temperature which could incorrectly
+        # create a duplicate topic-based component
+        launch_ros.actions.Node(
+            package='ros2_medkit_gateway',
+            executable='demo_engine_temp_sensor',
+            name='root_ns_demo',
+            namespace='/',
+            output='screen',
+            additional_env=coverage_env,
+        ),
     ]
 
     return LaunchDescription(
@@ -239,6 +250,59 @@ class TestHeuristicAppsDiscovery(unittest.TestCase):
         area_ids = [a.get('id') for a in areas]
         self.assertIn('powertrain', area_ids, f"Missing 'powertrain' area, found: {area_ids}")
         self.assertIn('chassis', area_ids, f"Missing 'chassis' area, found: {area_ids}")
+
+    def test_no_duplicate_component_ids(self):
+        """
+        Test that component IDs are unique.
+
+        Root namespace nodes publishing topics with matching prefix should
+        not create duplicate topic-based components. The 'root_ns_demo' node
+        in root namespace publishes /root_ns_demo/temperature - this should
+        NOT create a separate topic-based component.
+        """
+        data = self._get_json('/components')
+        self.assertIn('items', data)
+
+        component_ids = [c['id'] for c in data['items']]
+
+        # Count occurrences of each component ID
+        id_counts = {}
+        for comp_id in component_ids:
+            id_counts[comp_id] = id_counts.get(comp_id, 0) + 1
+
+        # Assert all counts are exactly 1 (no duplicates)
+        duplicates = {cid: count for cid, count in id_counts.items() if count > 1}
+        self.assertEqual(
+            len(duplicates), 0,
+            f'Found duplicate component IDs: {duplicates}'
+        )
+
+    def test_root_namespace_node_exists_as_app_not_component(self):
+        """
+        Test that root namespace node is an app, not a duplicate component.
+
+        The 'root_ns_demo' node is in root namespace (/) and publishes topics
+        with prefix /root_ns_demo/. Without the fix, this would create both:
+        - A node-based app for the root area (correct)
+        - A topic-based component named 'root_ns_demo' (WRONG - duplicate)
+
+        Expected: root_ns_demo exists as an app, NOT as a standalone component.
+        """
+        # Verify root_ns_demo is NOT a standalone component
+        components = self._get_json('/components').get('items', [])
+        component_ids = [c.get('id') for c in components]
+        self.assertNotIn(
+            'root_ns_demo', component_ids,
+            "'root_ns_demo' should not exist as a component - it should be an app"
+        )
+
+        # Verify root_ns_demo IS an app
+        apps = self._get_json('/apps').get('items', [])
+        app_ids = [a.get('id') for a in apps]
+        self.assertIn(
+            'root_ns_demo', app_ids,
+            "'root_ns_demo' should exist as an app"
+        )
 
 
 class TestTopicOnlyPolicy(unittest.TestCase):

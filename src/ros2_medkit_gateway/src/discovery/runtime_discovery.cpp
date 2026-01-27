@@ -473,10 +473,16 @@ std::set<std::string> RuntimeDiscoveryStrategy::get_node_namespaces() {
   auto names_and_namespaces = node_graph->get_node_names_and_namespaces();
 
   for (const auto & name_and_ns : names_and_namespaces) {
+    std::string node_name = name_and_ns.first;
     std::string ns = name_and_ns.second;
     std::string area = extract_area_from_namespace(ns);
     if (area != "root") {
       namespaces.insert(area);
+    } else {
+      // For root namespace nodes, add the node name to prevent
+      // topic-based discovery from creating duplicate components
+      // e.g., node /fault_manager publishes /fault_manager/events
+      namespaces.insert(node_name);
     }
   }
 
