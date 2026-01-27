@@ -468,7 +468,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('GET /api/v1/areas', data['endpoints'])
         self.assertIn('GET /api/v1/components', data['endpoints'])
         self.assertIn(
-            'PUT /api/v1/components/{component_id}/data/{topic_name}', data['endpoints']
+            'PUT /api/v1/components/{component_id}/data/{data_id}', data['endpoints']
         )
 
         # Verify api_base field
@@ -503,6 +503,97 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('name', info['vendor_info'])
         self.assertEqual(info['vendor_info']['name'], 'ros2_medkit')
         print('✓ Version info endpoint test passed')
+
+    def test_01c_endpoint_smoke_test(self):
+        """
+        Smoke test: verify all advertised GET endpoints are implemented and don't return 5xx.
+
+        This test ensures that:
+        1. All endpoints listed in GET / are actually implemented
+        2. No endpoint returns a server error (5xx)
+        3. Documentation in handle_root matches actual implementation
+
+        Only GET endpoints are tested (safe, read-only operations).
+        POST/PUT/DELETE endpoints are skipped as they modify state.
+
+        @verifies REQ_INTEROP_010
+        """
+        # Get all advertised endpoints
+        data = self._get_json('/')
+        endpoints = data.get('endpoints', [])
+        self.assertIsInstance(endpoints, list)
+        self.assertGreater(len(endpoints), 0, 'No endpoints returned from /')
+
+        # Test substitution values for path parameters
+        # These use known entities from demo_nodes.launch.py
+        substitutions = {
+            '{area_id}': 'powertrain',
+            '{component_id}': 'powertrain',
+            '{app_id}': 'temp_sensor',
+            '{function_id}': 'nonexistent_function',  # Functions not used in demo
+            '{data_id}': 'temperature',
+            '{topic_name}': 'temperature',
+            '{operation_id}': 'nonexistent_op',  # Will return 404, but not 5xx
+            '{execution_id}': 'nonexistent_exec',
+            '{param_name}': 'use_sim_time',
+            '{fault_code}': 'nonexistent_fault',
+        }
+
+        # Filter for GET endpoints only (safe to call)
+        get_endpoints = [ep for ep in endpoints if ep.startswith('GET ')]
+
+        tested_count = 0
+        errors = []
+
+        for endpoint in get_endpoints:
+            # Parse method and path
+            parts = endpoint.split(' ', 1)
+            if len(parts) != 2:
+                continue
+            method, path = parts
+
+            # Skip auth endpoints (require authentication)
+            if '/auth/' in path:
+                continue
+
+            # Skip SSE stream endpoint (keeps connection open)
+            if path.endswith('/stream'):
+                continue
+
+            # Substitute path parameters
+            test_path = path
+            for placeholder, value in substitutions.items():
+                test_path = test_path.replace(placeholder, value)
+
+            # Remove the /api/v1 prefix if present (BASE_URL already has it)
+            if test_path.startswith('/api/v1'):
+                test_path = test_path[7:]  # len('/api/v1') = 7
+
+            try:
+                url = f'{self.BASE_URL}{test_path}'
+                response = requests.get(url, timeout=10)
+
+                # Check for server errors (5xx)
+                # 501 Not Implemented is acceptable (intentional for unimplemented features)
+                if response.status_code >= 500:
+                    # Skip known limitations
+                    if response.status_code == 501:
+                        pass  # Intentional - feature not implemented for ROS 2
+                    else:
+                        errors.append(
+                            f'{endpoint} -> {test_path}: returned {response.status_code}'
+                        )
+                tested_count += 1
+
+            except requests.exceptions.RequestException as e:
+                errors.append(f'{endpoint} -> {test_path}: request failed - {e}')
+
+        # Report results
+        print(f'✓ Smoke test: {tested_count} GET endpoints tested')
+
+        if errors:
+            error_msg = '\n'.join(errors)
+            self.fail(f'Server errors detected:\n{error_msg}')
 
     def test_02_list_areas(self):
         """

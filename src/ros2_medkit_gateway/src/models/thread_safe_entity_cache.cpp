@@ -381,6 +381,176 @@ AggregatedOperations ThreadSafeEntityCache::get_function_operations(const std::s
 }
 
 // ============================================================================
+// Configuration aggregation methods
+// ============================================================================
+
+AggregatedConfigurations ThreadSafeEntityCache::get_entity_configurations(const std::string & entity_id) const {
+  // Find entity by ID - O(1) lookups in each index
+  auto entity = find_entity(entity_id);
+  if (!entity) {
+    return {};
+  }
+
+  switch (entity->type) {
+    case SovdEntityType::APP:
+      return get_app_configurations(entity_id);
+    case SovdEntityType::COMPONENT:
+      return get_component_configurations(entity_id);
+    case SovdEntityType::AREA:
+      return get_area_configurations(entity_id);
+    case SovdEntityType::FUNCTION:
+      return get_function_configurations(entity_id);
+    default:
+      return {};
+  }
+}
+
+AggregatedConfigurations ThreadSafeEntityCache::get_app_configurations(const std::string & app_id) const {
+  std::shared_lock lock(mutex_);
+  AggregatedConfigurations result;
+  result.aggregation_level = "app";
+  result.is_aggregated = false;
+
+  auto it = app_index_.find(app_id);
+  if (it == app_index_.end() || it->second >= apps_.size()) {
+    return result;
+  }
+
+  const auto & app = apps_[it->second];
+
+  // App must have a bound FQN to have parameters
+  if (app.bound_fqn.has_value() && !app.bound_fqn->empty()) {
+    NodeConfigInfo info;
+    info.node_fqn = *app.bound_fqn;
+    info.app_id = app_id;
+    info.entity_id = app_id;
+    result.nodes.push_back(info);
+  }
+
+  result.source_ids.push_back(app_id);
+  return result;
+}
+
+AggregatedConfigurations ThreadSafeEntityCache::get_component_configurations(const std::string & component_id) const {
+  std::shared_lock lock(mutex_);
+  AggregatedConfigurations result;
+  result.aggregation_level = "component";
+
+  auto comp_it = component_index_.find(component_id);
+  if (comp_it == component_index_.end() || comp_it->second >= components_.size()) {
+    return result;
+  }
+
+  result.source_ids.push_back(component_id);
+
+  // Collect node FQNs from hosted apps
+  auto apps_it = component_to_apps_.find(component_id);
+  if (apps_it != component_to_apps_.end()) {
+    for (size_t app_idx : apps_it->second) {
+      if (app_idx >= apps_.size()) {
+        continue;
+      }
+      const auto & app = apps_[app_idx];
+      if (app.bound_fqn.has_value() && !app.bound_fqn->empty()) {
+        NodeConfigInfo info;
+        info.node_fqn = *app.bound_fqn;
+        info.app_id = app.id;
+        info.entity_id = component_id;
+        result.nodes.push_back(info);
+        result.source_ids.push_back(app.id);
+      }
+    }
+    if (!apps_it->second.empty()) {
+      result.is_aggregated = true;
+    }
+  }
+
+  return result;
+}
+
+AggregatedConfigurations ThreadSafeEntityCache::get_area_configurations(const std::string & area_id) const {
+  std::shared_lock lock(mutex_);
+  AggregatedConfigurations result;
+  result.aggregation_level = "area";
+  result.is_aggregated = true;  // Area configurations are always aggregated
+
+  auto area_it = area_index_.find(area_id);
+  if (area_it == area_index_.end()) {
+    return result;
+  }
+
+  result.source_ids.push_back(area_id);
+
+  // Get all components in this area
+  auto comps_it = area_to_components_.find(area_id);
+  if (comps_it != area_to_components_.end()) {
+    for (size_t comp_idx : comps_it->second) {
+      if (comp_idx >= components_.size()) {
+        continue;
+      }
+
+      const auto & comp = components_[comp_idx];
+      result.source_ids.push_back(comp.id);
+
+      // Add node FQNs from component's apps
+      auto apps_it = component_to_apps_.find(comp.id);
+      if (apps_it != component_to_apps_.end()) {
+        for (size_t app_idx : apps_it->second) {
+          if (app_idx >= apps_.size()) {
+            continue;
+          }
+          const auto & app = apps_[app_idx];
+          if (app.bound_fqn.has_value() && !app.bound_fqn->empty()) {
+            NodeConfigInfo info;
+            info.node_fqn = *app.bound_fqn;
+            info.app_id = app.id;
+            info.entity_id = area_id;
+            result.nodes.push_back(info);
+          }
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+AggregatedConfigurations ThreadSafeEntityCache::get_function_configurations(const std::string & function_id) const {
+  std::shared_lock lock(mutex_);
+  AggregatedConfigurations result;
+  result.aggregation_level = "function";
+  result.is_aggregated = true;  // Function configurations are always aggregated
+
+  auto func_it = function_index_.find(function_id);
+  if (func_it == function_index_.end()) {
+    return result;
+  }
+
+  result.source_ids.push_back(function_id);
+
+  // Get all apps implementing this function
+  auto apps_it = function_to_apps_.find(function_id);
+  if (apps_it != function_to_apps_.end()) {
+    for (size_t app_idx : apps_it->second) {
+      if (app_idx >= apps_.size()) {
+        continue;
+      }
+      const auto & app = apps_[app_idx];
+      if (app.bound_fqn.has_value() && !app.bound_fqn->empty()) {
+        NodeConfigInfo info;
+        info.node_fqn = *app.bound_fqn;
+        info.app_id = app.id;
+        info.entity_id = function_id;
+        result.nodes.push_back(info);
+        result.source_ids.push_back(app.id);
+      }
+    }
+  }
+
+  return result;
+}
+
+// ============================================================================
 // Operation lookup
 // ============================================================================
 

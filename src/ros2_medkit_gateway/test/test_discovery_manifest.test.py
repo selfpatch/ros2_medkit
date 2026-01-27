@@ -394,15 +394,21 @@ class TestDiscoveryManifestMode(unittest.TestCase):
         """
         Test GET /apps/{id}/configurations in manifest-only mode.
 
-        App is defined in manifest. Configurations require communication with
-        ROS 2 parameter service on the node. In manifest-only mode without
-        running nodes, returns 503 Service Unavailable.
+        App is defined in manifest with bound_fqn. Configurations are retrieved
+        from the ROS 2 parameter service on the node. When the node is running,
+        returns 200 with the list of parameters.
+
+        @verifies REQ_INTEROP_003
         """
         response = requests.get(
             f'{self.BASE_URL}/apps/lidar-sensor/configurations', timeout=5
         )
-        # Configurations require node to be running - 503 in manifest-only mode
-        self.assertEqual(response.status_code, 503)
+        # App has bound_fqn and node is running - returns configurations
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn('items', data)
+        # x-medkit extension should include aggregation info
+        self.assertIn('x-medkit', data)
 
     def test_app_data_item_endpoint(self):
         """

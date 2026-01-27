@@ -83,6 +83,37 @@ struct AggregatedOperations {
 };
 
 /**
+ * @brief Node info for configuration aggregation
+ */
+struct NodeConfigInfo {
+  std::string node_fqn;   ///< Fully qualified node name
+  std::string app_id;     ///< Source app ID
+  std::string entity_id;  ///< Owning entity ID (app/component/area)
+};
+
+/**
+ * @brief Aggregated configurations (node FQNs) result from entity hierarchy
+ *
+ * Unlike data/operations which store actual values, configurations stores
+ * the list of ROS 2 nodes whose parameters should be queried. This is because
+ * parameters are owned by nodes, and aggregated entities need to iterate
+ * over all child nodes.
+ */
+struct AggregatedConfigurations {
+  std::vector<NodeConfigInfo> nodes;    ///< Nodes to query for parameters
+  std::vector<std::string> source_ids;  ///< Entity IDs that contributed
+  std::string aggregation_level;        ///< "app" | "component" | "area" | "function"
+  bool is_aggregated{false};            ///< true if collected from sub-entities
+
+  bool empty() const {
+    return nodes.empty();
+  }
+  size_t node_count() const {
+    return nodes.size();
+  }
+};
+
+/**
  * @brief Cache statistics
  */
 struct EntityCacheStats {
@@ -296,6 +327,48 @@ class ThreadSafeEntityCache {
    * Returns: All topics from all Apps implementing this Function.
    */
   AggregatedData get_function_data(const std::string & function_id) const;
+
+  // =========================================================================
+  // Configuration aggregation methods (collects node FQNs for parameter access)
+  // =========================================================================
+
+  /**
+   * @brief Aggregate configurations (node FQNs) for any entity by ID
+   *
+   * Unified method that works for all entity types.
+   * For Apps, returns the single bound node.
+   * For Components/Areas/Functions, aggregates all child app nodes.
+   *
+   * @param entity_id Entity ID to get configurations for
+   * @return AggregatedConfigurations with node FQNs, or empty if entity not found
+   */
+  AggregatedConfigurations get_entity_configurations(const std::string & entity_id) const;
+
+  /**
+   * @brief Get configurations for an App (returns its single bound node)
+   */
+  AggregatedConfigurations get_app_configurations(const std::string & app_id) const;
+
+  /**
+   * @brief Aggregate configurations for a Component
+   *
+   * Returns: All node FQNs from hosted Apps.
+   */
+  AggregatedConfigurations get_component_configurations(const std::string & component_id) const;
+
+  /**
+   * @brief Aggregate configurations for an Area
+   *
+   * Returns: All node FQNs from all Components in the Area.
+   */
+  AggregatedConfigurations get_area_configurations(const std::string & area_id) const;
+
+  /**
+   * @brief Aggregate configurations for a Function
+   *
+   * Returns: All node FQNs from all Apps implementing this Function.
+   */
+  AggregatedConfigurations get_function_configurations(const std::string & function_id) const;
 
   // =========================================================================
   // Operation lookup (O(1) via operation index)
