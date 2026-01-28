@@ -81,7 +81,10 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
         ext.ros2_type(topic_type);
         try {
           auto type_info = type_introspection->get_type_info(topic_type);
-          ext.type_info(type_info.schema);
+          json type_info_obj;
+          type_info_obj["schema"] = type_info.schema;
+          type_info_obj["default_value"] = type_info.default_value;
+          ext.type_info(type_info_obj);
         } catch (const std::exception & e) {
           RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", topic.name.c_str(),
                        e.what());
@@ -176,7 +179,10 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
       auto type_introspection = data_access_mgr->get_type_introspection();
       try {
         auto type_info = type_introspection->get_type_info(sample.message_type);
-        ext.type_info(type_info.schema);
+        json type_info_obj;
+        type_info_obj["schema"] = type_info.schema;
+        type_info_obj["default_value"] = type_info.default_value;
+        ext.type_info(type_info_obj);
       } catch (const std::exception & e) {
         RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", full_topic_path.c_str(),
                      e.what());

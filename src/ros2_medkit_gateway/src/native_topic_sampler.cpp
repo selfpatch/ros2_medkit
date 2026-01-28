@@ -280,24 +280,17 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
 
     RCLCPP_DEBUG(node_->get_logger(), "sample_topic: Created GenericSubscription for '%s'", topic_name.c_str());
 
-    // Spin with timeout
+    // Wait for message using future with timeout
+    // The main executor will deliver callbacks - we just wait for the result
+    // Note: This works because HTTP requests are handled in a separate thread,
+    // while the main executor processes ROS callbacks
     const auto timeout = std::chrono::duration<double>(timeout_sec);
-    const auto start_time = std::chrono::steady_clock::now();
+    auto future_status = message_future.wait_for(timeout);
 
-    while (!received.load()) {
-      auto elapsed = std::chrono::steady_clock::now() - start_time;
-      if (elapsed >= timeout) {
-        RCLCPP_DEBUG(node_->get_logger(), "sample_topic: Timeout waiting for message on '%s'", topic_name.c_str());
-        result.has_data = false;
-        return result;
-      }
-
-      // Spin with small timeout to allow checking received flag
-      rclcpp::spin_some(node_->get_node_base_interface());
-
-      if (!received.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      }
+    if (future_status == std::future_status::timeout) {
+      RCLCPP_DEBUG(node_->get_logger(), "sample_topic: Timeout waiting for message on '%s'", topic_name.c_str());
+      result.has_data = false;
+      return result;
     }
 
     // Deserialize message using JsonSerializer

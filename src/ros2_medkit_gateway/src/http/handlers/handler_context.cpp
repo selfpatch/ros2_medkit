@@ -101,8 +101,8 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id) const 
   // Search areas (O(1) lookup)
   if (auto area = cache.get_area(entity_id)) {
     info.type = EntityType::AREA;
-    info.namespace_path = "";  // Areas don't have namespace_path
-    info.fqn = "";
+    info.namespace_path = area->namespace_path;  // Use area's namespace for fault filtering
+    info.fqn = area->namespace_path;
     info.id_field = "area_id";
     info.error_name = "Area";
     return info;

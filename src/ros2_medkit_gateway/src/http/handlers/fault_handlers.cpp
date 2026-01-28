@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -87,6 +88,35 @@ std::string validate_fault_code(const std::string & fault_code) {
     return "fault_code cannot contain '..' (path traversal not allowed)";
   }
   return "";
+}
+
+/// Helper to filter faults JSON array by a set of namespace prefixes
+/// Keeps faults where any reporting_source starts with any of the given prefixes
+json filter_faults_by_sources(const json & faults_array, const std::set<std::string> & source_prefixes) {
+  json filtered = json::array();
+  for (const auto & fault : faults_array) {
+    if (!fault.contains("reporting_sources")) {
+      continue;
+    }
+    const auto & sources = fault["reporting_sources"];
+    bool matches = false;
+    for (const auto & src : sources) {
+      const std::string src_str = src.get<std::string>();
+      for (const auto & prefix : source_prefixes) {
+        if (src_str.rfind(prefix, 0) == 0) {
+          matches = true;
+          break;
+        }
+      }
+      if (matches) {
+        break;
+      }
+    }
+    if (matches) {
+      filtered.push_back(fault);
+    }
+  }
+  return filtered;
 }
 
 }  // namespace
@@ -170,7 +200,6 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
                                  {{"entity_id", entity_id}});
       return;
     }
-    std::string namespace_path = entity_info.namespace_path;
 
     auto filter = parse_fault_status_param(req);
     if (!filter.is_valid) {
@@ -188,6 +217,92 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
     bool include_clusters = req.get_param_value("include_clusters") == "true";
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
+
+    // For Functions, aggregate faults from all host apps
+    // Functions don't have a single namespace_path - they host apps from potentially different namespaces
+    if (entity_info.type == EntityType::FUNCTION) {
+      // Get all faults (no namespace filter)
+      auto result = fault_mgr->get_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
+                                          include_muted, include_clusters);
+
+      if (!result.success) {
+        HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
+                                   "Failed to get faults",
+                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
+        return;
+      }
+
+      // Collect host app FQNs for filtering
+      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      auto agg_configs = cache.get_entity_configurations(entity_id);
+      std::set<std::string> host_fqns;
+      for (const auto & node : agg_configs.nodes) {
+        if (!node.node_fqn.empty()) {
+          host_fqns.insert(node.node_fqn);
+        }
+      }
+
+      // Filter faults to only those from function's host apps
+      json filtered_faults = filter_faults_by_sources(result.data["faults"], host_fqns);
+
+      // Build response
+      json response = {{"items", filtered_faults}};
+
+      XMedkit ext;
+      ext.entity_id(entity_id);
+      ext.add("aggregation_level", "function");
+      ext.add("count", filtered_faults.size());
+      ext.add("host_count", host_fqns.size());
+
+      response["x-medkit"] = ext.build();
+      HandlerContext::send_json(res, response);
+      return;
+    }
+
+    // For Components, aggregate faults from all hosted apps
+    // Components group Apps, so we filter by the apps' FQNs rather than namespace (which is too broad)
+    if (entity_info.type == EntityType::COMPONENT) {
+      // Get all faults (no namespace filter)
+      auto result = fault_mgr->get_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
+                                          include_muted, include_clusters);
+
+      if (!result.success) {
+        HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
+                                   "Failed to get faults",
+                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
+        return;
+      }
+
+      // Collect hosted app FQNs for filtering
+      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      auto app_ids = cache.get_apps_for_component(entity_id);
+      std::set<std::string> app_fqns;
+      for (const auto & app_id : app_ids) {
+        auto app = cache.get_app(app_id);
+        if (app && app->bound_fqn.has_value() && !app->bound_fqn->empty()) {
+          app_fqns.insert(app->bound_fqn.value());
+        }
+      }
+
+      // Filter faults to only those from component's hosted apps
+      json filtered_faults = filter_faults_by_sources(result.data["faults"], app_fqns);
+
+      // Build response
+      json response = {{"items", filtered_faults}};
+
+      XMedkit ext;
+      ext.entity_id(entity_id);
+      ext.add("aggregation_level", "component");
+      ext.add("count", filtered_faults.size());
+      ext.add("app_count", app_fqns.size());
+
+      response["x-medkit"] = ext.build();
+      HandlerContext::send_json(res, response);
+      return;
+    }
+
+    // For other entity types (App, Area), use namespace_path filtering
+    std::string namespace_path = entity_info.namespace_path;
     auto result = fault_mgr->get_faults(namespace_path, filter.include_pending, filter.include_confirmed,
                                         filter.include_cleared, include_muted, include_clusters);
 
