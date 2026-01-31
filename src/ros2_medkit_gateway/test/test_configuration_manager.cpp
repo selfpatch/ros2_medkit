@@ -378,7 +378,7 @@ TEST_F(TestConfigurationManager, test_concurrent_parameter_operations_no_executo
       for (int op = 0; op < kOpsPerThread; ++op) {
         try {
           // Mix different operations to stress test serialization
-          switch ((i + op) % 4) {
+          switch ((i + op) % 6) {
             case 0: {
               auto result = config_manager_->list_parameters("/test_config_manager_node");
               if (result.success) {
@@ -404,6 +404,22 @@ TEST_F(TestConfigurationManager, test_concurrent_parameter_operations_no_executo
             case 3: {
               auto result = config_manager_->get_parameter("/test_config_manager_node", "concurrent_test_str");
               if (result.success) {
+                success_count++;
+              }
+              break;
+            }
+            case 4: {
+              auto result = config_manager_->reset_parameter("/test_config_manager_node", "concurrent_test_int");
+              if (result.success) {
+                success_count++;
+              }
+              break;
+            }
+            case 5: {
+              auto result = config_manager_->reset_all_parameters("/test_config_manager_node");
+              // reset_all_parameters returns success=false if some params are read-only,
+              // but data is still populated - count as success if no exception
+              if (result.success || result.data.contains("reset_count")) {
                 success_count++;
               }
               break;

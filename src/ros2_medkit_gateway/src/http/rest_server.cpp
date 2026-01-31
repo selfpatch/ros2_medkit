@@ -284,19 +284,21 @@ void RESTServer::setup_routes() {
            });
 
   // App configurations - get specific
-  srv->Get((api_path("/apps") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  // Use (.+) for config_id to accept slashes from percent-encoded URLs (%2F -> /)
+  // ROS2 parameters like qos_overrides./parameter_events.publisher.depth contain slashes
+  srv->Get((api_path("/apps") + R"(/([^/]+)/configurations/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              config_handlers_->handle_get_configuration(req, res);
            });
 
   // App configurations - set
-  srv->Put((api_path("/apps") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  srv->Put((api_path("/apps") + R"(/([^/]+)/configurations/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              config_handlers_->handle_set_configuration(req, res);
            });
 
   // App configurations - delete single
-  srv->Delete((api_path("/apps") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  srv->Delete((api_path("/apps") + R"(/([^/]+)/configurations/(.+)$)"),
               [this](const httplib::Request & req, httplib::Response & res) {
                 config_handlers_->handle_delete_configuration(req, res);
               });
@@ -391,17 +393,17 @@ void RESTServer::setup_routes() {
              config_handlers_->handle_list_configurations(req, res);
            });
 
-  srv->Get((api_path("/functions") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  srv->Get((api_path("/functions") + R"(/([^/]+)/configurations/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              config_handlers_->handle_get_configuration(req, res);
            });
 
-  srv->Put((api_path("/functions") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  srv->Put((api_path("/functions") + R"(/([^/]+)/configurations/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              config_handlers_->handle_set_configuration(req, res);
            });
 
-  srv->Delete((api_path("/functions") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  srv->Delete((api_path("/functions") + R"(/([^/]+)/configurations/(.+)$)"),
               [this](const httplib::Request & req, httplib::Response & res) {
                 config_handlers_->handle_delete_configuration(req, res);
               });
@@ -526,17 +528,17 @@ void RESTServer::setup_routes() {
              config_handlers_->handle_list_configurations(req, res);
            });
 
-  srv->Get((api_path("/areas") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  srv->Get((api_path("/areas") + R"(/([^/]+)/configurations/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              config_handlers_->handle_get_configuration(req, res);
            });
 
-  srv->Put((api_path("/areas") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  srv->Put((api_path("/areas") + R"(/([^/]+)/configurations/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              config_handlers_->handle_set_configuration(req, res);
            });
 
-  srv->Delete((api_path("/areas") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  srv->Delete((api_path("/areas") + R"(/([^/]+)/configurations/(.+)$)"),
               [this](const httplib::Request & req, httplib::Response & res) {
                 config_handlers_->handle_delete_configuration(req, res);
               });
@@ -670,19 +672,19 @@ void RESTServer::setup_routes() {
            });
 
   // Get specific configuration (parameter) - register before general route
-  srv->Get((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  srv->Get((api_path("/components") + R"(/([^/]+)/configurations/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              config_handlers_->handle_get_configuration(req, res);
            });
 
   // Set configuration (parameter)
-  srv->Put((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  srv->Put((api_path("/components") + R"(/([^/]+)/configurations/(.+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              config_handlers_->handle_set_configuration(req, res);
            });
 
   // Delete (reset) single configuration to default value
-  srv->Delete((api_path("/components") + R"(/([^/]+)/configurations/([^/]+)$)"),
+  srv->Delete((api_path("/components") + R"(/([^/]+)/configurations/(.+)$)"),
               [this](const httplib::Request & req, httplib::Response & res) {
                 config_handlers_->handle_delete_configuration(req, res);
               });
