@@ -345,6 +345,95 @@ TEST_F(TestConfigurationManager, test_concurrent_parameter_access) {
   EXPECT_GE(success_count.load(), 1);
 }
 
+TEST_F(TestConfigurationManager, test_concurrent_parameter_operations_no_executor_error) {
+  // Regression test: concurrent parameter operations must not cause
+  // "Node has already been added to an executor" error.
+  // SyncParametersClient internally spins param_node_ - without proper
+  // serialization, concurrent calls would cause executor conflicts.
+
+  node_->declare_parameter("concurrent_test_int", 0);
+  node_->declare_parameter("concurrent_test_str", std::string("init"));
+
+  // Warm-up: ensure parameter service is discoverable before starting concurrent operations.
+  // This prevents flaky failures on slow CI due to service discovery timing.
+  auto warmup_result = config_manager_->list_parameters("/test_config_manager_node");
+  ASSERT_TRUE(warmup_result.success) << "Warm-up failed: " << warmup_result.error_message;
+
+  constexpr int kNumThreads = 10;
+  constexpr int kOpsPerThread = 5;
+
+  std::vector<std::thread> threads;
+  std::atomic<int> success_count{0};
+  std::atomic<int> exception_count{0};
+  std::atomic<bool> start_flag{false};
+
+  // Spawn threads that will all start simultaneously
+  for (int i = 0; i < kNumThreads; ++i) {
+    threads.emplace_back([this, i, &success_count, &exception_count, &start_flag]() {
+      // Wait for all threads to be ready
+      while (!start_flag.load()) {
+        std::this_thread::yield();
+      }
+
+      for (int op = 0; op < kOpsPerThread; ++op) {
+        try {
+          // Mix different operations to stress test serialization
+          switch ((i + op) % 4) {
+            case 0: {
+              auto result = config_manager_->list_parameters("/test_config_manager_node");
+              if (result.success) {
+                success_count++;
+              }
+              break;
+            }
+            case 1: {
+              auto result = config_manager_->get_parameter("/test_config_manager_node", "concurrent_test_int");
+              if (result.success) {
+                success_count++;
+              }
+              break;
+            }
+            case 2: {
+              auto result =
+                  config_manager_->set_parameter("/test_config_manager_node", "concurrent_test_int", nlohmann::json(i));
+              if (result.success) {
+                success_count++;
+              }
+              break;
+            }
+            case 3: {
+              auto result = config_manager_->get_parameter("/test_config_manager_node", "concurrent_test_str");
+              if (result.success) {
+                success_count++;
+              }
+              break;
+            }
+          }
+        } catch (const std::exception & e) {
+          // This should NOT happen - executor conflicts would throw here
+          exception_count++;
+          RCLCPP_ERROR(rclcpp::get_logger("test"), "Exception in concurrent test: %s", e.what());
+        }
+      }
+    });
+  }
+
+  // Start all threads simultaneously
+  start_flag.store(true);
+
+  for (auto & t : threads) {
+    t.join();
+  }
+
+  // No exceptions should have occurred (especially executor errors)
+  // This is the main assertion - if the mutex serialization is broken,
+  // we'd get "Node has already been added to an executor" exceptions here.
+  EXPECT_EQ(exception_count.load(), 0) << "Concurrent access caused exceptions (likely executor conflict)";
+
+  // All operations should succeed - we're operating on our own node which is always available.
+  EXPECT_EQ(success_count.load(), kNumThreads * kOpsPerThread);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

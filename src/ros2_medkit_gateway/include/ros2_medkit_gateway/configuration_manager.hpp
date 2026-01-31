@@ -120,6 +120,12 @@ class ConfigurationManager {
   /// Key: node_name, Value: map of param_name -> Parameter
   mutable std::mutex defaults_mutex_;
   std::map<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
+
+  /// Mutex to serialize all parameter operations.
+  /// SyncParametersClient internally spins param_node_ via spin_node_until_future_complete(),
+  /// which is not thread-safe. Concurrent HTTP requests would cause:
+  /// "Node '/_param_client_node' has already been added to an executor"
+  mutable std::mutex param_operations_mutex_;
 };
 
 }  // namespace ros2_medkit_gateway

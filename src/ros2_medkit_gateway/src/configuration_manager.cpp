@@ -59,6 +59,7 @@ std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_cl
 }
 
 ParameterResult ConfigurationManager::list_parameters(const std::string & node_name) {
+  std::lock_guard<std::mutex> op_lock(param_operations_mutex_);
   ParameterResult result;
 
   RCLCPP_DEBUG(node_->get_logger(), "list_parameters called for node: '%s'", node_name.c_str());
@@ -138,6 +139,7 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
 }
 
 ParameterResult ConfigurationManager::get_parameter(const std::string & node_name, const std::string & param_name) {
+  std::lock_guard<std::mutex> op_lock(param_operations_mutex_);
   ParameterResult result;
 
   try {
@@ -196,6 +198,7 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
 
 ParameterResult ConfigurationManager::set_parameter(const std::string & node_name, const std::string & param_name,
                                                     const json & value) {
+  std::lock_guard<std::mutex> op_lock(param_operations_mutex_);
   ParameterResult result;
 
   try {
@@ -476,6 +479,7 @@ void ConfigurationManager::cache_default_values(const std::string & node_name) {
 }
 
 ParameterResult ConfigurationManager::reset_parameter(const std::string & node_name, const std::string & param_name) {
+  std::lock_guard<std::mutex> op_lock(param_operations_mutex_);
   ParameterResult result;
 
   try {
@@ -543,6 +547,7 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
 }
 
 ParameterResult ConfigurationManager::reset_all_parameters(const std::string & node_name) {
+  std::lock_guard<std::mutex> op_lock(param_operations_mutex_);
   ParameterResult result;
 
   try {
