@@ -1698,10 +1698,15 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         execution_id = response.json()['id']
 
-        # Check status immediately (allow extra time for action server response)
+        # Poll for execution to be registered (may take a moment)
         exec_url = (f'{self.BASE_URL}/apps/long_calibration/operations/'
                     f'long_calibration/executions/{execution_id}')
-        status_response = requests.get(exec_url, timeout=10)
+        status_response = None
+        for _ in range(10):
+            status_response = requests.get(exec_url, timeout=10)
+            if status_response.status_code == 200:
+                break
+            time.sleep(0.2)
         self.assertEqual(status_response.status_code, 200)
 
         data = status_response.json()
@@ -3651,12 +3656,17 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         execution_id = create_response.json()['id']
 
-        # Now get the execution status
-        response = requests.get(
-            f'{self.BASE_URL}/apps/{app_id}/operations/{operation_id}'
-            f'/executions/{execution_id}',
-            timeout=10
-        )
+        # Poll for execution to be registered (may take a moment)
+        response = None
+        for _ in range(10):
+            response = requests.get(
+                f'{self.BASE_URL}/apps/{app_id}/operations/{operation_id}'
+                f'/executions/{execution_id}',
+                timeout=10
+            )
+            if response.status_code == 200:
+                break
+            time.sleep(0.2)
 
         self.assertEqual(
             response.status_code, 200,
@@ -4248,3 +4258,163 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.assertIn('invalid', data['message'].lower())
 
         print('✓ Function data invalid ID test passed')
+
+    # ========== Entity Type Validation Tests (test_116-120) ==========
+
+    def test_116_component_route_rejects_app_id(self):
+        """
+        Test that /components/{id}/data rejects app IDs.
+
+        In runtime-only discovery mode, /components/{id} should only accept
+        synthetic component IDs, not individual ROS 2 node (app) IDs.
+
+        @verifies REQ_INTEROP_003
+        """
+        # First, get list of apps to find a valid app ID
+        apps_response = requests.get(f'{self.BASE_URL}/apps', timeout=10)
+        self.assertEqual(apps_response.status_code, 200)
+
+        apps = apps_response.json().get('items', [])
+        if len(apps) == 0:
+            self.skipTest('No apps available for testing')
+
+        # Use the first available app
+        app_id = apps[0]['id']
+
+        # Verify this ID is recognized as an app via /apps/{id}
+        app_response = requests.get(f'{self.BASE_URL}/apps/{app_id}', timeout=10)
+        self.assertEqual(app_response.status_code, 200)
+
+        # Now try to use this app ID with /components/{id}/data - should fail
+        response = requests.get(
+            f'{self.BASE_URL}/components/{app_id}/data',
+            timeout=10
+        )
+        self.assertEqual(
+            response.status_code,
+            400,
+            f'Expected 400 when using app ID "{app_id}" with /components route'
+        )
+
+        data = response.json()
+        self.assertIn('error_code', data)
+        self.assertEqual(data['error_code'], 'invalid-parameter')
+        self.assertIn('Invalid entity type for route', data['message'])
+        self.assertIn('expected_type', data.get('parameters', {}))
+        self.assertIn('actual_type', data.get('parameters', {}))
+        self.assertEqual(data['parameters']['expected_type'], 'Component')
+        self.assertEqual(data['parameters']['actual_type'], 'App')
+
+        print(f'✓ Component route correctly rejects app ID: {app_id}')
+
+    def test_117_component_route_rejects_app_id_operations(self):
+        """
+        Test that /components/{id}/operations rejects app IDs.
+
+        @verifies REQ_INTEROP_003
+        """
+        # First, get list of apps to find a valid app ID
+        apps_response = requests.get(f'{self.BASE_URL}/apps', timeout=10)
+        self.assertEqual(apps_response.status_code, 200)
+
+        apps = apps_response.json().get('items', [])
+        if len(apps) == 0:
+            self.skipTest('No apps available for testing')
+
+        app_id = apps[0]['id']
+
+        # Try to use app ID with /components/{id}/operations - should fail
+        response = requests.get(
+            f'{self.BASE_URL}/components/{app_id}/operations',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 400)
+
+        data = response.json()
+        self.assertEqual(data['error_code'], 'invalid-parameter')
+        self.assertIn('Invalid entity type for route', data['message'])
+
+        print(f'✓ Component operations route correctly rejects app ID: {app_id}')
+
+    def test_118_component_route_rejects_app_id_configurations(self):
+        """
+        Test that /components/{id}/configurations rejects app IDs.
+
+        @verifies REQ_INTEROP_003
+        """
+        apps_response = requests.get(f'{self.BASE_URL}/apps', timeout=10)
+        self.assertEqual(apps_response.status_code, 200)
+
+        apps = apps_response.json().get('items', [])
+        if len(apps) == 0:
+            self.skipTest('No apps available for testing')
+
+        app_id = apps[0]['id']
+
+        response = requests.get(
+            f'{self.BASE_URL}/components/{app_id}/configurations',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 400)
+
+        data = response.json()
+        self.assertEqual(data['error_code'], 'invalid-parameter')
+        self.assertIn('Invalid entity type for route', data['message'])
+
+        print(f'✓ Component configurations route correctly rejects app ID: {app_id}')
+
+    def test_119_component_route_rejects_app_id_faults(self):
+        """
+        Test that /components/{id}/faults rejects app IDs.
+
+        @verifies REQ_INTEROP_003
+        """
+        apps_response = requests.get(f'{self.BASE_URL}/apps', timeout=10)
+        self.assertEqual(apps_response.status_code, 200)
+
+        apps = apps_response.json().get('items', [])
+        if len(apps) == 0:
+            self.skipTest('No apps available for testing')
+
+        app_id = apps[0]['id']
+
+        response = requests.get(
+            f'{self.BASE_URL}/components/{app_id}/faults',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 400)
+
+        data = response.json()
+        self.assertEqual(data['error_code'], 'invalid-parameter')
+        self.assertIn('Invalid entity type for route', data['message'])
+
+        print(f'✓ Component faults route correctly rejects app ID: {app_id}')
+
+    def test_120_app_routes_work_with_app_id(self):
+        """
+        Test that /apps/{id}/data works correctly with app IDs.
+
+        Verify that while /components rejects app IDs, /apps accepts them.
+
+        @verifies REQ_INTEROP_003
+        """
+        apps_response = requests.get(f'{self.BASE_URL}/apps', timeout=10)
+        self.assertEqual(apps_response.status_code, 200)
+
+        apps = apps_response.json().get('items', [])
+        if len(apps) == 0:
+            self.skipTest('No apps available for testing')
+
+        app_id = apps[0]['id']
+
+        # /apps/{id}/data should work
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{app_id}/data',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+
+        print(f'✓ App routes correctly accept app ID: {app_id}')

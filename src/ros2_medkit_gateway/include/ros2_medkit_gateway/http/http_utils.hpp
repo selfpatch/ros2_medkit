@@ -18,6 +18,8 @@
 
 #include <string>
 
+#include "ros2_medkit_gateway/models/entity_types.hpp"
+
 namespace ros2_medkit_gateway {
 
 /// API version prefix for all endpoints
@@ -30,6 +32,37 @@ constexpr const char * API_BASE_PATH = "/api/v1";
  */
 inline std::string api_path(const std::string & endpoint) {
   return std::string(API_BASE_PATH) + endpoint;
+}
+
+/**
+ * @brief Extract expected entity type from request path
+ *
+ * Parses the URL path to determine which entity type the route expects.
+ * Used for semantic validation - ensuring /components/{id} only accepts
+ * component IDs, not app IDs.
+ *
+ * @param path Request path (e.g., "/api/v1/components/my_component/data")
+ * @return Expected entity type, or UNKNOWN if path doesn't match entity routes
+ */
+inline SovdEntityType extract_entity_type_from_path(const std::string & path) {
+  // Path format: /api/v1/{entity_type}/{id}/...
+  // Check for each entity type prefix after API base path
+  const std::string base = std::string(API_BASE_PATH) + "/";
+
+  if (path.find(base + "components/") == 0 || path.find(base + "components") == 0) {
+    return SovdEntityType::COMPONENT;
+  }
+  if (path.find(base + "apps/") == 0 || path.find(base + "apps") == 0) {
+    return SovdEntityType::APP;
+  }
+  if (path.find(base + "areas/") == 0 || path.find(base + "areas") == 0) {
+    return SovdEntityType::AREA;
+  }
+  if (path.find(base + "functions/") == 0 || path.find(base + "functions") == 0) {
+    return SovdEntityType::FUNCTION;
+  }
+
+  return SovdEntityType::UNKNOWN;
 }
 
 /**

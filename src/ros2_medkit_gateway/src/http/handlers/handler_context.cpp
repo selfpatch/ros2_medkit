@@ -72,11 +72,70 @@ HandlerContext::get_component_namespace_path(const std::string & component_id) c
   return tl::unexpected("Component not found");
 }
 
-EntityInfo HandlerContext::get_entity_info(const std::string & entity_id) const {
+EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEntityType expected_type) const {
   const auto & cache = node_->get_thread_safe_cache();
   EntityInfo info;
   info.id = entity_id;
 
+  // If expected_type is specified, search ONLY in that collection
+  // This prevents ID collisions (e.g., Area "powertrain" vs Component "powertrain")
+  if (expected_type != SovdEntityType::UNKNOWN) {
+    switch (expected_type) {
+      case SovdEntityType::COMPONENT:
+        if (auto component = cache.get_component(entity_id)) {
+          info.type = EntityType::COMPONENT;
+          info.namespace_path = component->namespace_path;
+          info.fqn = component->fqn;
+          info.id_field = "component_id";
+          info.error_name = "Component";
+          return info;
+        }
+        break;
+
+      case SovdEntityType::APP:
+        if (auto app = cache.get_app(entity_id)) {
+          info.type = EntityType::APP;
+          info.namespace_path = app->bound_fqn.value_or("");
+          info.fqn = app->bound_fqn.value_or("");
+          info.id_field = "app_id";
+          info.error_name = "App";
+          return info;
+        }
+        break;
+
+      case SovdEntityType::AREA:
+        if (auto area = cache.get_area(entity_id)) {
+          info.type = EntityType::AREA;
+          info.namespace_path = area->namespace_path;
+          info.fqn = area->namespace_path;
+          info.id_field = "area_id";
+          info.error_name = "Area";
+          return info;
+        }
+        break;
+
+      case SovdEntityType::FUNCTION:
+        if (auto func = cache.get_function(entity_id)) {
+          info.type = EntityType::FUNCTION;
+          info.namespace_path = "";
+          info.fqn = "";
+          info.id_field = "function_id";
+          info.error_name = "Function";
+          return info;
+        }
+        break;
+
+      case SovdEntityType::SERVER:
+      default:
+        break;
+    }
+    // Not found in expected collection
+    info.type = EntityType::UNKNOWN;
+    info.error_name = "Entity";
+    return info;
+  }
+
+  // No expected_type specified - search all collections in order (legacy behavior)
   // Search components first (O(1) lookup)
   if (auto component = cache.get_component(entity_id)) {
     info.type = EntityType::COMPONENT;
@@ -130,6 +189,22 @@ std::optional<std::string> HandlerContext::validate_collection_access(const Enti
 
   if (!caps.supports_collection(collection)) {
     return entity.error_name + " entities do not support " + to_string(collection) + " collection";
+  }
+
+  return std::nullopt;
+}
+
+std::optional<std::string> HandlerContext::validate_entity_type(const EntityInfo & entity,
+                                                                SovdEntityType expected_type) {
+  // If expected_type is UNKNOWN, skip validation (path doesn't specify an entity type)
+  if (expected_type == SovdEntityType::UNKNOWN) {
+    return std::nullopt;
+  }
+
+  // Check if entity type matches expected type from route
+  if (entity.sovd_type() != expected_type) {
+    return "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+           to_string(entity.sovd_type());
   }
 
   return std::nullopt;

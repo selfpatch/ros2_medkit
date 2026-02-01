@@ -18,6 +18,7 @@
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
 
@@ -55,6 +56,18 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
     if (!entity_ref) {
       HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
                                  {{"entity_id", entity_id}});
+      return;
+    }
+
+    // Validate entity type matches the route path
+    auto expected_type = extract_entity_type_from_path(req.path);
+    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                     to_string(entity_ref->type),
+                                 {{"entity_id", entity_id},
+                                  {"expected_type", to_string(expected_type)},
+                                  {"actual_type", to_string(entity_ref->type)}});
       return;
     }
 
@@ -194,6 +207,18 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
     if (!entity_ref) {
       HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
                                  {{"entity_id", entity_id}});
+      return;
+    }
+
+    // Validate entity type matches the route path
+    auto expected_type = extract_entity_type_from_path(req.path);
+    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                     to_string(entity_ref->type),
+                                 {{"entity_id", entity_id},
+                                  {"expected_type", to_string(expected_type)},
+                                  {"actual_type", to_string(entity_ref->type)}});
       return;
     }
 
@@ -381,6 +406,18 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
     if (!entity_ref) {
       HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
                                  {{"entity_id", entity_id}});
+      return;
+    }
+
+    // Validate entity type matches the route path
+    auto expected_type = extract_entity_type_from_path(req.path);
+    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                     to_string(entity_ref->type),
+                                 {{"entity_id", entity_id},
+                                  {"expected_type", to_string(expected_type)},
+                                  {"actual_type", to_string(entity_ref->type)}});
       return;
     }
 

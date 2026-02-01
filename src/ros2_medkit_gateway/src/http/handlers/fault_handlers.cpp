@@ -194,10 +194,21 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       return;
     }
 
-    auto entity_info = ctx_.get_entity_info(entity_id);
+    auto expected_type = extract_entity_type_from_path(req.path);
+    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
     if (entity_info.type == EntityType::UNKNOWN) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
+      auto any_entity = ctx_.get_entity_info(entity_id);
+      if (any_entity.type != EntityType::UNKNOWN) {
+        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                       to_string(any_entity.sovd_type()),
+                                   {{"entity_id", entity_id},
+                                    {"expected_type", to_string(expected_type)},
+                                    {"actual_type", to_string(any_entity.sovd_type())}});
+      } else {
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                   {{"entity_id", entity_id}});
+      }
       return;
     }
 
@@ -367,12 +378,24 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
       return;
     }
 
-    auto entity_info = ctx_.get_entity_info(entity_id);
+    auto expected_type = extract_entity_type_from_path(req.path);
+    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
     if (entity_info.type == EntityType::UNKNOWN) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
+      auto any_entity = ctx_.get_entity_info(entity_id);
+      if (any_entity.type != EntityType::UNKNOWN) {
+        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                       to_string(any_entity.sovd_type()),
+                                   {{"entity_id", entity_id},
+                                    {"expected_type", to_string(expected_type)},
+                                    {"actual_type", to_string(any_entity.sovd_type())}});
+      } else {
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                   {{"entity_id", entity_id}});
+      }
       return;
     }
+
     std::string namespace_path = entity_info.namespace_path;
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
@@ -436,10 +459,21 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     }
 
     // Verify entity exists
-    auto entity_info = ctx_.get_entity_info(entity_id);
+    auto expected_type = extract_entity_type_from_path(req.path);
+    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
     if (entity_info.type == EntityType::UNKNOWN) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
+      auto any_entity = ctx_.get_entity_info(entity_id);
+      if (any_entity.type != EntityType::UNKNOWN) {
+        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                       to_string(any_entity.sovd_type()),
+                                   {{"entity_id", entity_id},
+                                    {"expected_type", to_string(expected_type)},
+                                    {"actual_type", to_string(any_entity.sovd_type())}});
+      } else {
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                   {{"entity_id", entity_id}});
+      }
       return;
     }
 
@@ -488,10 +522,21 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
     }
 
     // Verify entity exists
-    auto entity_info = ctx_.get_entity_info(entity_id);
+    auto expected_type = extract_entity_type_from_path(req.path);
+    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
     if (entity_info.type == EntityType::UNKNOWN) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
+      auto any_entity = ctx_.get_entity_info(entity_id);
+      if (any_entity.type != EntityType::UNKNOWN) {
+        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                       to_string(any_entity.sovd_type()),
+                                   {{"entity_id", entity_id},
+                                    {"expected_type", to_string(expected_type)},
+                                    {"actual_type", to_string(any_entity.sovd_type())}});
+      } else {
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                   {{"entity_id", entity_id}});
+      }
       return;
     }
 
@@ -602,10 +647,21 @@ void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req,
       return;
     }
 
-    auto entity_info = ctx_.get_entity_info(entity_id);
+    auto expected_type = extract_entity_type_from_path(req.path);
+    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
     if (entity_info.type == EntityType::UNKNOWN) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
+      auto any_entity = ctx_.get_entity_info(entity_id);
+      if (any_entity.type != EntityType::UNKNOWN) {
+        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                       to_string(any_entity.sovd_type()),
+                                   {{"entity_id", entity_id},
+                                    {"expected_type", to_string(expected_type)},
+                                    {"actual_type", to_string(any_entity.sovd_type())}});
+      } else {
+        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+                                   {{"entity_id", entity_id}});
+      }
       return;
     }
 

@@ -22,6 +22,7 @@
 #include <thread>
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
 
 using namespace std::chrono_literals;
 using httplib::StatusCode;
@@ -695,6 +696,55 @@ TEST_F(TestGatewayNode, test_invalid_function_id_bad_request) {
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, StatusCode::BadRequest_400);
+}
+
+// =============================================================================
+// Entity type path extraction tests
+// =============================================================================
+
+TEST(ExtractEntityTypePath, components_route) {
+  using ros2_medkit_gateway::extract_entity_type_from_path;
+  using ros2_medkit_gateway::SovdEntityType;
+
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/components"), SovdEntityType::COMPONENT);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/components/my_comp"), SovdEntityType::COMPONENT);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/components/my_comp/data"), SovdEntityType::COMPONENT);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/components/test/operations"), SovdEntityType::COMPONENT);
+}
+
+TEST(ExtractEntityTypePath, apps_route) {
+  using ros2_medkit_gateway::extract_entity_type_from_path;
+  using ros2_medkit_gateway::SovdEntityType;
+
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/apps"), SovdEntityType::APP);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/apps/my_app"), SovdEntityType::APP);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/apps/my_app/data"), SovdEntityType::APP);
+}
+
+TEST(ExtractEntityTypePath, areas_route) {
+  using ros2_medkit_gateway::extract_entity_type_from_path;
+  using ros2_medkit_gateway::SovdEntityType;
+
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/areas"), SovdEntityType::AREA);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/areas/root"), SovdEntityType::AREA);
+}
+
+TEST(ExtractEntityTypePath, functions_route) {
+  using ros2_medkit_gateway::extract_entity_type_from_path;
+  using ros2_medkit_gateway::SovdEntityType;
+
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/functions"), SovdEntityType::FUNCTION);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/functions/my_func"), SovdEntityType::FUNCTION);
+}
+
+TEST(ExtractEntityTypePath, unknown_routes) {
+  using ros2_medkit_gateway::extract_entity_type_from_path;
+  using ros2_medkit_gateway::SovdEntityType;
+
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/health"), SovdEntityType::UNKNOWN);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/faults"), SovdEntityType::UNKNOWN);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/version-info"), SovdEntityType::UNKNOWN);
+  EXPECT_EQ(extract_entity_type_from_path("/other/path"), SovdEntityType::UNKNOWN);
 }
 
 int main(int argc, char ** argv) {
