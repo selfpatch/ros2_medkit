@@ -82,6 +82,76 @@ Coverage by Category
          :columns: id, title, status, verifies_back
          :style: table
 
+   .. tab-item:: Subscriptions
+
+      .. needtable::
+         :filter: type == 'req' and "Subscriptions" in tags
+         :columns: id, title, status, verifies_back
+         :style: table
+
+   .. tab-item:: DataSets
+
+      .. needtable::
+         :filter: type == 'req' and "DataSets" in tags
+         :columns: id, title, status, verifies_back
+         :style: table
+
+   .. tab-item:: Scripts
+
+      .. needtable::
+         :filter: type == 'req' and "Scripts" in tags
+         :columns: id, title, status, verifies_back
+         :style: table
+
+   .. tab-item:: Modes
+
+      .. needtable::
+         :filter: type == 'req' and "Modes" in tags
+         :columns: id, title, status, verifies_back
+         :style: table
+
+   .. tab-item:: ClearData
+
+      .. needtable::
+         :filter: type == 'req' and "ClearData" in tags
+         :columns: id, title, status, verifies_back
+         :style: table
+
+   .. tab-item:: Logs
+
+      .. needtable::
+         :filter: type == 'req' and "Logs" in tags
+         :columns: id, title, status, verifies_back
+         :style: table
+
+   .. tab-item:: CommLogs
+
+      .. needtable::
+         :filter: type == 'req' and "CommLogs" in tags
+         :columns: id, title, status, verifies_back
+         :style: table
+
+   .. tab-item:: BulkData
+
+      .. needtable::
+         :filter: type == 'req' and "BulkData" in tags
+         :columns: id, title, status, verifies_back
+         :style: table
+
+   .. tab-item:: Lifecycle
+
+      .. needtable::
+         :filter: type == 'req' and "Lifecycle" in tags
+         :columns: id, title, status, verifies_back
+         :style: table
+
+   .. tab-item:: Updates
+
+      .. needtable::
+         :filter: type == 'req' and "Updates" in tags
+         :columns: id, title, status, verifies_back
+         :style: table
+
 Missing Verification
 --------------------
 
