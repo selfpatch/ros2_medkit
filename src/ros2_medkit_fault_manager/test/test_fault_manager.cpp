@@ -859,6 +859,34 @@ TEST_F(FaultEventPublishingTest, EventContainsFullFaultData) {
   EXPECT_EQ(fault.reporting_sources[0], "/sensor/temperature");
 }
 
+TEST_F(FaultEventPublishingTest, TimestampUsesWallClockNotSimTime) {
+  // Get current wall clock time
+  auto wall_before = std::chrono::system_clock::now();
+  auto wall_before_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wall_before.time_since_epoch()).count();
+
+  ASSERT_TRUE(call_report_fault("WALL_CLOCK_TEST", Fault::SEVERITY_WARN, "/test_node"));
+  spin_for(std::chrono::milliseconds(100));
+
+  auto wall_after = std::chrono::system_clock::now();
+  auto wall_after_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wall_after.time_since_epoch()).count();
+
+  ASSERT_EQ(received_events_.size(), 1u);
+
+  // Convert event timestamp to nanoseconds
+  rclcpp::Time event_time(received_events_[0].timestamp);
+  int64_t event_ns = event_time.nanoseconds();
+
+  // Verify timestamp is close to wall clock time (within 5 seconds to be safe)
+  // This catches the bug where sim time (e.g., 148 seconds) would be far from wall clock
+  EXPECT_GE(event_ns, wall_before_ns - 5'000'000'000LL);
+  EXPECT_LE(event_ns, wall_after_ns + 5'000'000'000LL);
+
+  // Also verify it's a reasonable Unix timestamp (after year 2020)
+  // This catches the "1970" bug from the issue
+  constexpr int64_t YEAR_2020_NS = 1577836800LL * 1'000'000'000LL;  // 2020-01-01 00:00:00 UTC
+  EXPECT_GT(event_ns, YEAR_2020_NS);
+}
+
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
   ::testing::InitGoogleTest(&argc, argv);

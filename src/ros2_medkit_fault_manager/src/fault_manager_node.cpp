@@ -24,6 +24,7 @@
 
 #include "ros2_medkit_fault_manager/correlation/config_parser.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
+#include "ros2_medkit_fault_manager/time_utils.hpp"
 #include "ros2_medkit_msgs/msg/cluster_info.hpp"
 #include "ros2_medkit_msgs/msg/muted_fault_info.hpp"
 
@@ -172,7 +173,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // Create auto-confirmation timer if enabled
   if (auto_confirm_after_sec_ > 0.0) {
     auto_confirm_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() {
-      size_t confirmed = storage_->check_time_based_confirmation(now());
+      size_t confirmed = storage_->check_time_based_confirmation(get_wall_clock_time());
       if (confirmed > 0) {
         RCLCPP_INFO(get_logger(), "Auto-confirmed %zu PREFAILED fault(s) due to time threshold", confirmed);
       }
@@ -258,9 +259,9 @@ void FaultManagerNode::handle_report_fault(
   auto fault_before = storage_->get_fault(request->fault_code);
   std::string status_before = fault_before ? fault_before->status : "";
 
-  // Report the fault event
+  // Report the fault event (use wall clock time, not sim time, for proper timestamps)
   bool is_new = storage_->report_fault_event(request->fault_code, request->event_type, request->severity,
-                                             request->description, request->source_id, now());
+                                             request->description, request->source_id, get_wall_clock_time());
 
   response->accepted = true;
 
@@ -471,7 +472,7 @@ void FaultManagerNode::publish_fault_event(const std::string & event_type, const
   ros2_medkit_msgs::msg::FaultEvent event;
   event.event_type = event_type;
   event.fault = fault;
-  event.timestamp = now();
+  event.timestamp = get_wall_clock_time();
   event.auto_cleared_codes = auto_cleared_codes;
 
   event_publisher_->publish(event);

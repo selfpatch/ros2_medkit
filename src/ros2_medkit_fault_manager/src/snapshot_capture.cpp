@@ -14,7 +14,6 @@
 
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 
-#include <chrono>
 #include <set>
 #include <thread>
 
@@ -22,6 +21,7 @@
 #include <rclcpp/serialization.hpp>
 #include <rclcpp/serialized_message.hpp>
 
+#include "ros2_medkit_fault_manager/time_utils.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"
 
@@ -213,13 +213,13 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
     ros2_medkit_serialization::JsonSerializer serializer;
     auto json_data = serializer.deserialize(msg_type, captured_msg);
 
-    // Store snapshot
+    // Store snapshot (use wall clock time, not sim time, for proper timestamps)
     SnapshotData snapshot;
     snapshot.fault_code = fault_code;
     snapshot.topic = topic;
     snapshot.message_type = msg_type;
     snapshot.data = json_data.dump();
-    snapshot.captured_at_ns = node_->now().nanoseconds();
+    snapshot.captured_at_ns = get_wall_clock_ns();
 
     storage_->store_snapshot(snapshot);
 
@@ -299,7 +299,8 @@ void SnapshotCapture::init_background_subscriptions() {
           cached.topic = topic;
           cached.message_type = msg_type;
           cached.data = json_data.dump();
-          cached.timestamp_ns = node_->now().nanoseconds();
+          // Use wall clock time, not sim time, for proper timestamps
+          cached.timestamp_ns = get_wall_clock_ns();
 
         } catch (const std::exception & e) {
           RCLCPP_DEBUG(node_->get_logger(), "Failed to cache message from '%s': %s", topic.c_str(), e.what());

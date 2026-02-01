@@ -18,12 +18,13 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <chrono>
 #include <filesystem>
 #include <rosbag2_cpp/writer.hpp>
 #include <rosbag2_storage/storage_options.hpp>
 #include <set>
 #include <sstream>
+
+#include "ros2_medkit_fault_manager/time_utils.hpp"
 
 namespace ros2_medkit_fault_manager {
 
@@ -213,7 +214,7 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
     info.format = config_.format;
     info.duration_sec = config_.duration_sec;
     info.size_bytes = bag_size;
-    info.created_at_ns = node_->now().nanoseconds();
+    info.created_at_ns = get_wall_clock_ns();
 
     storage_->store_rosbag_file(info);
     enforce_storage_limits();
@@ -336,7 +337,8 @@ void RosbagCapture::message_callback(const std::string & topic, const std::strin
     return;
   }
 
-  int64_t timestamp_ns = node_->now().nanoseconds();
+  // Use wall clock time, not sim time, for proper timestamps
+  int64_t timestamp_ns = get_wall_clock_ns();
 
   // During post-fault recording, write directly to bag (no buffering)
   if (recording_post_fault_.load()) {
@@ -394,7 +396,8 @@ void RosbagCapture::prune_buffer() {
     return;
   }
 
-  int64_t now_ns = node_->now().nanoseconds();
+  // Use wall clock time, not sim time, for consistent buffer pruning
+  int64_t now_ns = get_wall_clock_ns();
   int64_t duration_ns = static_cast<int64_t>(config_.duration_sec * 1e9);
   int64_t cutoff_ns = now_ns - duration_ns;
 
@@ -651,7 +654,7 @@ void RosbagCapture::post_fault_timer_callback() {
   info.format = config_.format;
   info.duration_sec = config_.duration_sec + config_.duration_after_sec;
   info.size_bytes = bag_size;
-  info.created_at_ns = node_->now().nanoseconds();
+  info.created_at_ns = get_wall_clock_ns();
 
   storage_->store_rosbag_file(info);
   enforce_storage_limits();
