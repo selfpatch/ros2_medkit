@@ -260,7 +260,7 @@ For now, you can fork the gateway and add custom routes in ``rest_server.cpp``.
 
 - **Bug reports**: https://github.com/selfpatch/ros2_medkit/issues
 - **Feature requests**: https://github.com/selfpatch/ros2_medkit/discussions
-- **Discord**: https://discord.gg/fEbWKTah
+- **Discord**: https://discord.gg/6CXPMApAyq
 
 Getting Help
 ------------
@@ -268,7 +268,7 @@ Getting Help
 If your issue isn't covered here:
 
 1. **Search existing issues**: https://github.com/selfpatch/ros2_medkit/issues
-2. **Ask on Discord**: https://discord.gg/fEbWKTah
+2. **Ask on Discord**: https://discord.gg/6CXPMApAyq
 3. **Open a new issue** with:
    - ros2_medkit version
    - ROS 2 distribution

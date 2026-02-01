@@ -5,7 +5,7 @@
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://selfpatch.github.io/ros2_medkit/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![ROS 2](https://img.shields.io/badge/ROS%202-Jazzy-blue)](https://docs.ros.org/en/jazzy/)
-[![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289DA?logo=discord&logoColor=white)](https://discord.gg/fEbWKTah)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289DA?logo=discord&logoColor=white)](https://discord.gg/6CXPMApAyq)
 
 **Modern, SOVD-compatible diagnostics for ROS 2 robots** — built around an entity tree
 (Area / Component / Function / App) for runtime discovery, health modeling, and troubleshooting.
@@ -93,7 +93,7 @@ For more examples, see our [Postman collection](postman/).
 
 We'd love to have you join our community!
 
-- **💬 Discord** — [Join our server](https://discord.gg/fEbWKTah) for discussions, help, and announcements
+- **💬 Discord** — [Join our server](https://discord.gg/6CXPMApAyq) for discussions, help, and announcements
 - **🐛 Issues** — [Report bugs or request features](https://github.com/selfpatch/ros2_medkit/issues)
 - **💡 Discussions** — [GitHub Discussions](https://github.com/selfpatch/ros2_medkit/discussions) for Q&A and ideas
 
@@ -224,5 +224,5 @@ This project is licensed under the **Apache License 2.0** — see the [LICENSE](
 <p align="center">
   Made with ❤️ by the <a href="https://github.com/selfpatch">selfpatch</a> community
   <br>
-  <a href="https://discord.gg/fEbWKTah">💬 Join us on Discord</a>
+  <a href="https://discord.gg/6CXPMApAyq">💬 Join us on Discord</a>
 </p>

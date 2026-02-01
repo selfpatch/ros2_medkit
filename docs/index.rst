@@ -83,7 +83,7 @@ Common commands for quick access:
 Community
 ---------
 
-- 💬 **Discord**: `Join our server <https://discord.gg/fEbWKTah>`_ for discussions and help
+- 💬 **Discord**: `Join our server <https://discord.gg/6CXPMApAyq>`_ for discussions and help
 - 🐛 **Issues**: `Report bugs <https://github.com/selfpatch/ros2_medkit/issues>`_
 - 💡 **Discussions**: `GitHub Discussions <https://github.com/selfpatch/ros2_medkit/discussions>`_
 

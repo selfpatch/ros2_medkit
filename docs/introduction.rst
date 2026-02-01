@@ -73,7 +73,7 @@ Next Steps
 Community
 ---------
 
-- 💬 **Discord**: `Join our server <https://discord.gg/fEbWKTah>`_
+- 💬 **Discord**: `Join our server <https://discord.gg/6CXPMApAyq>`_
 - 🐛 **Issues**: `Report bugs <https://github.com/selfpatch/ros2_medkit/issues>`_
 - 💡 **Discussions**: `GitHub Discussions <https://github.com/selfpatch/ros2_medkit/discussions>`_
 

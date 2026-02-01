@@ -156,4 +156,4 @@ After achieving full standard API coverage, the project will focus on:
    Add support for alternative transport mechanisms beyond HTTP/REST.
 
 We welcome community input on prioritization. Feel free to open an issue or
-join the discussion on `Discord <https://discord.gg/fEbWKTah>`_!
+join the discussion on `Discord <https://discord.gg/6CXPMApAyq>`_!
