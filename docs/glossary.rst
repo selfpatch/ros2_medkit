@@ -57,7 +57,7 @@ This glossary defines key terms used throughout ros2_medkit documentation.
       An error condition reported by a ROS 2 node to the fault manager.
       Faults have a code, severity, message, and timestamp.
 
-      See: :doc:`design/fault-reporting`
+      See: :doc:`design/ros2_medkit_fault_reporter/index`
 
    Function
       A high-level capability that spans multiple Apps. Functions aggregate
