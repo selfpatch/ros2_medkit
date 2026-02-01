@@ -19,6 +19,7 @@
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 using json = nlohmann::json;
@@ -236,6 +237,18 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
       return;
     }
 
+    // Validate entity type matches the route path
+    auto expected_type = extract_entity_type_from_path(req.path);
+    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                     to_string(entity_ref->type),
+                                 {{"entity_id", entity_id},
+                                  {"expected_type", to_string(expected_type)},
+                                  {"actual_type", to_string(entity_ref->type)}});
+      return;
+    }
+
     // Get aggregated configurations info for this entity
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
@@ -391,6 +404,18 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
     if (!entity_ref) {
       HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
                                  {{"entity_id", entity_id}});
+      return;
+    }
+
+    // Validate entity type matches the route path
+    auto expected_type = extract_entity_type_from_path(req.path);
+    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                     to_string(entity_ref->type),
+                                 {{"entity_id", entity_id},
+                                  {"expected_type", to_string(expected_type)},
+                                  {"actual_type", to_string(entity_ref->type)}});
       return;
     }
 
@@ -552,6 +577,18 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
       return;
     }
 
+    // Validate entity type matches the route path
+    auto expected_type = extract_entity_type_from_path(req.path);
+    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                     to_string(entity_ref->type),
+                                 {{"entity_id", entity_id},
+                                  {"expected_type", to_string(expected_type)},
+                                  {"actual_type", to_string(entity_ref->type)}});
+      return;
+    }
+
     // Get aggregated configurations info
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
@@ -657,6 +694,18 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
       return;
     }
 
+    // Validate entity type matches the route path
+    auto expected_type = extract_entity_type_from_path(req.path);
+    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                     to_string(entity_ref->type),
+                                 {{"entity_id", entity_id},
+                                  {"expected_type", to_string(expected_type)},
+                                  {"actual_type", to_string(entity_ref->type)}});
+      return;
+    }
+
     // Get aggregated configurations info
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
@@ -743,6 +792,18 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
     if (!entity_ref) {
       HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
                                  {{"entity_id", entity_id}});
+      return;
+    }
+
+    // Validate entity type matches the route path
+    auto expected_type = extract_entity_type_from_path(req.path);
+    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                                     to_string(entity_ref->type),
+                                 {{"entity_id", entity_id},
+                                  {"expected_type", to_string(expected_type)},
+                                  {"actual_type", to_string(entity_ref->type)}});
       return;
     }
 

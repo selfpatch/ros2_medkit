@@ -29,6 +29,7 @@
 #include "ros2_medkit_gateway/auth/auth_manager.hpp"
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/models/entity_capabilities.hpp"
 #include "ros2_medkit_gateway/models/entity_types.hpp"
 
@@ -151,13 +152,16 @@ class HandlerContext {
   /**
    * @brief Get information about any entity (Component, App, Area, Function)
    *
-   * Searches through all entity types in order: Component, App, Area, Function.
-   * Returns the first match found.
+   * If expected_type is specified, searches ONLY in that collection.
+   * If expected_type is UNKNOWN (default), searches all types in order:
+   * Component, App, Area, Function - returns the first match found.
    *
    * @param entity_id Entity ID to look up
+   * @param expected_type Optional: restrict search to specific entity type
    * @return EntityInfo with resolved details, or EntityInfo with UNKNOWN type if not found
    */
-  EntityInfo get_entity_info(const std::string & entity_id) const;
+  EntityInfo get_entity_info(const std::string & entity_id,
+                             SovdEntityType expected_type = SovdEntityType::UNKNOWN) const;
 
   /**
    * @brief Validate that entity supports a resource collection
@@ -171,6 +175,19 @@ class HandlerContext {
    */
   static std::optional<std::string> validate_collection_access(const EntityInfo & entity,
                                                                ResourceCollection collection);
+
+  /**
+   * @brief Validate entity type matches the route path
+   *
+   * Ensures semantic correctness - /components/{id} should only accept
+   * component IDs, not app IDs. This prevents the dual-path routing bug
+   * where /components/{app_id} would incorrectly succeed.
+   *
+   * @param entity Entity information (from get_entity_info)
+   * @param expected_type Expected type based on route (from extract_entity_type_from_path)
+   * @return std::nullopt if valid, error message if type mismatch
+   */
+  static std::optional<std::string> validate_entity_type(const EntityInfo & entity, SovdEntityType expected_type);
 
   /**
    * @brief Set CORS headers on response if origin is allowed

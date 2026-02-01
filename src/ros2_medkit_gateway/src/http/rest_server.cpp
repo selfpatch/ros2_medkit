@@ -578,11 +578,6 @@ void RESTServer::setup_routes() {
     discovery_handlers_->handle_get_area(req, res);
   });
 
-  // TODO(#158): Dual-path design issue - in runtime-only mode, these routes accept both
-  // component IDs and app IDs. Semantically, /components should only accept
-  // synthetic component IDs, not individual ROS 2 node IDs. Consider enforcing
-  // proper entity type validation in a future refactor.
-  //
   // Component topic data (specific topic) - register before general route
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
   srv->Get((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
