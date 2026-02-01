@@ -6,6 +6,7 @@ Step-by-step guides for common use cases with ros2_medkit.
 .. toctree::
    :maxdepth: 1
 
+   demos/index
    heuristic-apps
    manifest-discovery
    migration-to-manifest
@@ -19,6 +20,13 @@ Step-by-step guides for common use cases with ros2_medkit.
    custom_areas
    web-ui
    mcp-server
+
+Demos
+-----
+
+:doc:`demos/index`
+   Walkthroughs for running ros2_medkit with demo systems including
+   the built-in sensor demo and TurtleBot3 simulation.
 
 Discovery Tutorials
 -------------------

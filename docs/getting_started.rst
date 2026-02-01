@@ -77,11 +77,12 @@ The gateway exposes all endpoints under ``/api/v1``. Let's explore!
 
    curl http://localhost:8080/api/v1/health
 
-Response:
+.. figure:: /_static/images/12_curl_health.png
+   :alt: Health check response
+   :align: center
+   :width: 600px
 
-.. code-block:: json
-
-   {"status": "healthy"}
+   Health check confirming gateway is operational.
 
 **Get gateway capabilities:**
 
@@ -120,15 +121,12 @@ ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
 
    curl http://localhost:8080/api/v1/areas
 
-Response:
+.. figure:: /_static/images/13_curl_areas_turtlebot3.png
+   :alt: Areas list response
+   :align: center
+   :width: 600px
 
-.. code-block:: json
-
-   [
-     {"id": "powertrain", "namespace": "/powertrain", "type": "Area"},
-     {"id": "chassis", "namespace": "/chassis", "type": "Area"},
-     {"id": "body", "namespace": "/body", "type": "Area"}
-   ]
+   Example areas from a TurtleBot3 system.
 
 **List all components:**
 
@@ -170,6 +168,13 @@ Response:
 .. code-block:: bash
 
    curl http://localhost:8080/api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperature
+
+.. figure:: /_static/images/14_curl_topic_odom.png
+   :alt: Topic data response
+   :align: center
+   :width: 600px
+
+   Example topic data from odometry sensor.
 
 .. note::
 
@@ -335,6 +340,13 @@ For interactive API testing, import our Postman collection:
 1. Import ``postman/collections/ros2-medkit-gateway.postman_collection.json``
 2. Import ``postman/environments/local.postman_environment.json``
 3. Select "ROS 2 Medkit Gateway - Local" environment
+
+.. figure:: /_static/images/15_postman_colleciton.png
+   :alt: Postman collection
+   :align: center
+   :width: 100%
+
+   Postman collection with organized endpoint folders.
 
 See ``postman/README.md`` for detailed instructions.
 

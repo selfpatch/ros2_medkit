@@ -10,14 +10,14 @@ This glossary defines key terms used throughout ros2_medkit documentation.
       A logical or physical grouping of components, representing a vehicle
       subsystem or domain. Examples: ``powertrain``, ``chassis``, ``body``.
       In runtime-only mode, areas are derived from ROS 2 namespace prefixes.
-      
+
       See: :doc:`tutorials/manifest-discovery`
 
    App
       A software application, typically mapping to a single ROS 2 node.
       Apps are hosted on Components and can participate in Functions.
       Available in manifest mode and hybrid mode.
-      
+
       See: :doc:`tutorials/heuristic-apps`
 
    Component
@@ -28,7 +28,7 @@ This glossary defines key terms used throughout ros2_medkit documentation.
    Configuration
       A ROS 2 node parameter exposed via the ``/configurations`` endpoint.
       Configurations can be read, modified, and reset to defaults.
-      
+
       See: :doc:`api/rest`
 
    Data
@@ -37,11 +37,11 @@ This glossary defines key terms used throughout ros2_medkit documentation.
 
    Discovery Mode
       The method used to map ROS 2 graph entities to SOVD entities:
-      
+
       - **runtime_only**: ROS 2 graph introspection (default)
       - **hybrid**: Manifest + runtime linking (recommended)
       - **manifest_only**: Only manifest-declared entities
-      
+
       See: :doc:`config/discovery-options`
 
    Entity
@@ -56,7 +56,7 @@ This glossary defines key terms used throughout ros2_medkit documentation.
    Fault
       An error condition reported by a ROS 2 node to the fault manager.
       Faults have a code, severity, message, and timestamp.
-      
+
       See: :doc:`design/fault-reporting`
 
    Function
@@ -70,13 +70,13 @@ This glossary defines key terms used throughout ros2_medkit documentation.
    Manifest
       A YAML file that declares the system structure (areas, components,
       apps, functions) with stable IDs and semantic metadata.
-      
+
       See: :doc:`config/manifest-schema`
 
    MCP (Model Context Protocol)
       A protocol for connecting LLMs to external tools. ros2_medkit_mcp
       provides MCP tools that wrap the gateway REST API.
-      
+
       See: :doc:`tutorials/mcp-server`
 
    Operation
