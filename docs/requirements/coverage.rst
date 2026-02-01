@@ -61,10 +61,10 @@ Coverage by Category
          :columns: id, title, status, verifies_back
          :style: table
 
-   .. tab-item:: Configurations
+   .. tab-item:: Configuration
 
       .. needtable::
-         :filter: type == 'req' and "Configurations" in tags
+         :filter: type == 'req' and "Configuration" in tags
          :columns: id, title, status, verifies_back
          :style: table
 
@@ -75,10 +75,10 @@ Coverage by Category
          :columns: id, title, status, verifies_back
          :style: table
 
-   .. tab-item:: Authentication
+   .. tab-item:: Auth
 
       .. needtable::
-         :filter: type == 'req' and "Authentication" in tags
+         :filter: type == 'req' and "Auth" in tags
          :columns: id, title, status, verifies_back
          :style: table
 
