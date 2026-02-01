@@ -578,6 +578,10 @@ void RESTServer::setup_routes() {
     discovery_handlers_->handle_get_area(req, res);
   });
 
+  // TODO: fix this asap - Components should NOT accept app IDs in runtime-only mode
+  // In runtime-only mode, synthetic components group apps by namespace, but individual
+  // ROS 2 nodes are Apps, not Components. The dual-path pattern below allows using
+  // /components/{app_id}/... which is semantically incorrect.
   // Component topic data (specific topic) - register before general route
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
   srv->Get((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
@@ -614,6 +618,7 @@ void RESTServer::setup_routes() {
     discovery_handlers_->handle_get_component(req, res);
   });
 
+  // TODO: fix this asap - see comment above about dual-path issue
   // Component topic publish (PUT)
   // Use (.+) for topic_name to accept slashes from percent-encoded URLs (%2F -> /)
   srv->Put((api_path("/components") + R"(/([^/]+)/data/(.+)$)"),
@@ -621,6 +626,7 @@ void RESTServer::setup_routes() {
              data_handlers_->handle_put_data_item(req, res);
            });
 
+  // TODO: fix this asap - see comment above about dual-path issue
   // List component operations (GET) - list all services and actions for a component
   srv->Get((api_path("/components") + R"(/([^/]+)/operations$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
@@ -664,6 +670,7 @@ void RESTServer::setup_routes() {
                 operation_handlers_->handle_cancel_execution(req, res);
               });
 
+  // TODO: fix this asap - see comment above about dual-path issue
   // Configurations endpoints - SOVD Configurations API mapped to ROS2 parameters
   // List all configurations (parameters) for a component
   srv->Get((api_path("/components") + R"(/([^/]+)/configurations$)"),
@@ -707,6 +714,7 @@ void RESTServer::setup_routes() {
     fault_handlers_->handle_list_all_faults(req, res);
   });
 
+  // TODO: fix this asap - see comment above about dual-path issue
   // List all faults for a component (REQ_INTEROP_012)
   srv->Get((api_path("/components") + R"(/([^/]+)/faults$)"),
            [this](const httplib::Request & req, httplib::Response & res) {

@@ -249,17 +249,17 @@ def update_requirement_status(verified_reqs):
         modified = False
         lines = content.split("\n")
         new_lines = []
-        
+
         i = 0
         while i < len(lines):
             line = lines[i]
             new_lines.append(line)
-            
+
             # Check if this is a requirement ID line
             id_match = re.match(r'\s*:id:\s+(REQ_\w+)', line)
             if id_match:
                 req_id = id_match.group(1)
-                
+
                 # If this requirement is verified and the next line has status: open, change it
                 if req_id in verified_reqs and i + 1 < len(lines):
                     next_line = lines[i + 1]
@@ -271,7 +271,7 @@ def update_requirement_status(verified_reqs):
                         total_updated_reqs += 1
                         i += 2  # Skip the old status line
                         continue
-            
+
             i += 1
 
         if modified:

@@ -42,6 +42,7 @@ extensions = [
     "sphinxcontrib.plantuml",
     "sphinx_design",
     "breathe",
+    "sphinx_copybutton",
 ]
 
 # -- Options for Breathe (Doxygen integration) -------------------------------

@@ -277,7 +277,7 @@ Execute Operations
 ``DELETE /api/v1/components/{id}/operations/{operation_id}/executions/{execution_id}``
    Cancel a running execution.
 
-   - **200:** Execution cancelled
+   - **204:** Execution cancelled
    - **404:** Execution not found
 
 Configurations Endpoints

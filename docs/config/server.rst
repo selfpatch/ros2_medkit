@@ -148,11 +148,11 @@ Data Access Settings
      - Description
    * - ``max_parallel_topic_samples``
      - int
-     - ``20``
+     - ``10``
      - Max concurrent topic samples. Higher values use more resources. Range: 1-50.
    * - ``topic_sample_timeout_sec``
      - float
-     - ``2.0``
+     - ``1.0``
      - Timeout for sampling topics with active publishers. Range: 0.1-30.0.
 
 Performance Tuning

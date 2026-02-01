@@ -46,6 +46,40 @@ Quick Links
 
       Solutions for common issues and FAQ.
 
+Quick Reference
+---------------
+
+Common commands for quick access:
+
+.. code-block:: bash
+
+   # Check gateway health
+   curl http://localhost:8080/api/v1/health
+
+   # List all areas
+   curl http://localhost:8080/api/v1/areas
+
+   # List all components
+   curl http://localhost:8080/api/v1/components
+
+   # List all apps
+   curl http://localhost:8080/api/v1/apps
+
+   # List all functions
+   curl http://localhost:8080/api/v1/functions
+
+   # Get data from an entity (area, component, app, or function)
+   curl http://localhost:8080/api/v1/{entity-type}/{entity-id}/data
+
+   # List operations for  an entity (area, component, app, or function)
+   curl http://localhost:8080/api/v1/{entity-type}/{entity-id}/operations
+
+   # Get configurations (parameters)
+   curl http://localhost:8080/api/v1/{entity-type}/{entity-id}/configurations
+
+   # List faults
+   curl http://localhost:8080/api/v1/faults
+
 Community
 ---------
 

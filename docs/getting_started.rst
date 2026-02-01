@@ -62,9 +62,18 @@ that we'll use to explore the API.
 
 .. code-block:: bash
 
-   ros2 run ros2_medkit_fault_manager fault_manager_node
+   ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args -p database_path:=$HOME/.ros2_medkit/faults.db
 
 Required if you want to test the Faults API.
+
+.. admonition:: ✅ Checkpoint
+   :class: tip
+
+   At this point you should have:
+
+   - Gateway running on http://localhost:8080
+   - Demo nodes publishing data
+   - Terminal 1 showing: ``ROS 2 Medkit Gateway ready on HTTP://127.0.0.1:8080``
 
 Step 2: Explore the API
 -----------------------
@@ -77,13 +86,6 @@ The gateway exposes all endpoints under ``/api/v1``. Let's explore!
 
    curl http://localhost:8080/api/v1/health
 
-.. figure:: /_static/images/12_curl_health.png
-   :alt: Health check response
-   :align: center
-   :width: 600px
-
-   Health check confirming gateway is operational.
-
 **Get gateway capabilities:**
 
 .. code-block:: bash
@@ -92,6 +94,13 @@ The gateway exposes all endpoints under ``/api/v1``. Let's explore!
 
 Response shows available endpoints and version info.
 
+.. admonition:: ✅ Checkpoint
+   :class: tip
+
+   Health check should return: ``{"status": "healthy", "timestamp": ...}``
+
+   If you see connection refused, verify gateway is running.
+
 Step 3: Discover Areas and Components
 -------------------------------------
 
@@ -99,21 +108,23 @@ ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
 
 - **Areas** — Logical/physical domains (e.g., ``/powertrain``, ``/chassis``)
 - **Components** — Hardware or virtual units that group Apps
-- **Apps** — Individual ROS 2 nodes (requires manifest mode)
+- **Apps** — Individual ROS 2 nodes
 - **Functions** — Cross-cutting capabilities (requires manifest mode)
 
 .. note::
 
    **Discovery Modes**
 
-   - **Runtime-only** (default): Components are synthetic groups created by
-     namespace aggregation. Each ROS 2 namespace becomes an Area, and nodes
-     within it become a Component.
+   - **Runtime-only** (default): Each ROS 2 namespace becomes an Area, and
+     ROS 2 nodes within it are exposed as Apps. Synthetic Components are
+     created to group these Apps by namespace.
    - **Hybrid**: Manifest defines Areas/Components/Apps/Functions, runtime
      links them to live ROS 2 nodes.
    - **Manifest-only**: Only manifest-declared entities are exposed.
 
    See :doc:`tutorials/manifest-discovery` for details on manifest mode.
+
+   In this tutorial, we use runtime-only mode with ``demo_nodes.launch.py``.
 
 **List all areas:**
 
@@ -121,12 +132,7 @@ ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
 
    curl http://localhost:8080/api/v1/areas
 
-.. figure:: /_static/images/13_curl_areas_turtlebot3.png
-   :alt: Areas list response
-   :align: center
-   :width: 600px
-
-   Example areas from a TurtleBot3 system.
+With ``demo_nodes.launch.py``, you'll see areas like ``powertrain``, ``chassis``, and ``body``.
 
 **List all components:**
 
@@ -143,42 +149,113 @@ ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
 Step 4: Read Sensor Data
 ------------------------
 
-The data endpoints let you read topic data from components.
+The data endpoints let you read topic data from apps.
 
-**Read all data from a component:**
+**Read all data from an app:**
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/components/temp_sensor/data
+   curl http://localhost:8080/api/v1/apps/temp_sensor/data
 
-Response:
+Response structure (showing one topic):
 
 .. code-block:: json
 
-   [
-     {
-       "topic": "/powertrain/engine/temperature",
-       "timestamp": 1704067200000000000,
-       "data": {"temperature": 85.5, "variance": 0.0}
+   {
+     "items": [
+       {
+         "category": "currentData",
+         "id": "/powertrain/engine/temperature",
+         "name": "/powertrain/engine/temperature",
+         "x-medkit": {
+           "ros2": {
+             "direction": "publish",
+             "topic": "/powertrain/engine/temperature",
+             "type": "sensor_msgs/msg/Temperature"
+           },
+           "type_info": {
+             "default_value": {
+               "header": {...},
+               "temperature": 0,
+               "variance": 0
+             },
+             "schema": {
+               "properties": {
+                 "header": {...},
+                 "temperature": {"type": "number"},
+                 "variance": {"type": "number"}
+               },
+               "type": "object"
+             }
+           }
+         }
+       }
+     ],
+     "x-medkit": {
+       "entity_id": "temp_sensor",
+       "total_count": 3
      }
-   ]
+   }
+
+Each data item includes:
+
+- ``category``: Type of data (``currentData``)
+- ``id`` and ``name``: ROS 2 topic path
+- ``x-medkit.ros2``: Topic metadata (direction, type)
+- ``x-medkit.type_info.schema``: JSON Schema for the message type
+- ``x-medkit.type_info.default_value``: Default message structure
 
 **Read a specific topic:**
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperature
+   curl http://localhost:8080/api/v1/apps/temp_sensor/data/powertrain%2Fengine%2Ftemperature
 
-.. figure:: /_static/images/14_curl_topic_odom.png
-   :alt: Topic data response
-   :align: center
-   :width: 600px
+Response with live data:
 
-   Example topic data from odometry sensor.
+.. code-block:: json
+
+   {
+     "data": {
+       "header": {
+         "frame_id": "engine",
+         "stamp": {"sec": 1769955040, "nanosec": 286555163}
+       },
+       "temperature": 93.5,
+       "variance": 0.5
+     },
+     "id": "/powertrain/engine/temperature",
+     "x-medkit": {
+       "entity_id": "temp_sensor",
+       "timestamp": 1769955039964403368,
+       "ros2": {
+         "topic": "/powertrain/engine/temperature",
+         "type": "sensor_msgs/msg/Temperature"
+       },
+       "publisher_count": 1,
+       "subscriber_count": 0,
+       "status": "data"
+     }
+   }
+
+Notice:
+
+- ``data``: The actual message content from ROS 2 topic
+- ``x-medkit.timestamp``: Gateway capture time (nanoseconds since epoch)
+- ``publisher_count`` / ``subscriber_count``: Number of publishers/subscribers on this topic
 
 .. note::
 
    Topic paths use URL encoding: ``/`` becomes ``%2F``
+
+.. admonition:: ✅ Checkpoint
+   :class: tip
+
+   You should see:
+
+   - Areas like ``powertrain``, ``chassis``, ``body``
+   - Components with ``temp_sensor``, ``brake_actuator``, etc.
+   - Live topic data with actual sensor readings
 
 Step 5: Call Services and Actions
 ----------------------------------
@@ -189,7 +266,7 @@ The operations endpoints let you call ROS 2 services and actions.
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/components/calibration/operations
+   curl http://localhost:8080/api/v1/apps/calibration/operations
 
 **Call a service (synchronous execution):**
 
@@ -197,23 +274,22 @@ Services return immediately with status ``200 OK``:
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/components/calibration/operations/calibrate/executions \
+   curl -X POST http://localhost:8080/api/v1/apps/calibration/operations/calibrate/executions \
      -H "Content-Type: application/json" \
      -d '{}'
 
-Response:
+Response (200 OK):
 
 .. code-block:: json
 
    {
-     "id": "exec-12345",
-     "status": "completed",
-     "capability": "execute",
-     "x-medkit": {
-       "kind": "service",
-       "response": {"success": true, "message": "Calibration triggered"}
+     "parameters": {
+       "success": true,
+       "message": "Engine calibrated successfully (count: 1)"
      }
    }
+
+The ``parameters`` field contains the service response data directly.
 
 **Send an action goal (asynchronous execution):**
 
@@ -257,19 +333,19 @@ The configurations endpoints expose ROS 2 parameters.
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/components/temp_sensor/configurations
+   curl http://localhost:8080/api/v1/apps/temp_sensor/configurations
 
 **Get a specific parameter:**
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate
+   curl http://localhost:8080/api/v1/apps/temp_sensor/configurations/publish_rate
 
 **Set a parameter value:**
 
 .. code-block:: bash
 
-   curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate \
+   curl -X PUT http://localhost:8080/api/v1/apps/temp_sensor/configurations/publish_rate \
      -H "Content-Type: application/json" \
      -d '{"value": 5.0}'
 
@@ -277,7 +353,7 @@ The configurations endpoints expose ROS 2 parameters.
 
 .. code-block:: bash
 
-   curl -X DELETE http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate
+   curl -X DELETE http://localhost:8080/api/v1/apps/temp_sensor/configurations/publish_rate
 
 Step 7: Monitor Faults
 ----------------------
@@ -296,13 +372,26 @@ Step 7: Monitor Faults
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/components/lidar_sensor/faults
+   curl http://localhost:8080/api/v1/apps/lidar_sensor/faults
 
 **Clear a fault:**
 
 .. code-block:: bash
 
-   curl -X DELETE http://localhost:8080/api/v1/components/lidar_sensor/faults/LIDAR_CALIBRATION_REQUIRED
+   curl -X DELETE http://localhost:8080/api/v1/apps/lidar_sensor/faults/LIDAR_CALIBRATION_REQUIRED
+
+.. admonition:: ✅ Checkpoint
+   :class: tip
+
+   At this point you've successfully:
+
+   - Discovered the ROS 2 system structure
+   - Read sensor data via REST API
+   - Called services and managed actions
+   - Managed node parameters
+   - Queried and cleared faults
+
+   🎉 You're ready to explore the web UI and advanced features!
 
 Using with Web UI
 -----------------
@@ -312,9 +401,9 @@ A companion web UI is available for visual entity browsing:
 .. code-block:: bash
 
    docker pull ghcr.io/selfpatch/sovd_web_ui:latest
-   docker run -p 8081:80 ghcr.io/selfpatch/sovd_web_ui:latest
+   docker run -p 3000:80 ghcr.io/selfpatch/sovd_web_ui:latest
 
-Open http://localhost:8081 and connect to the gateway at http://localhost:8080.
+Open http://localhost:3000 and connect to the gateway at http://localhost:8080.
 
 See :doc:`tutorials/web-ui` for more details.
 
@@ -322,6 +411,22 @@ Using with LLMs (MCP)
 ---------------------
 
 Connect your LLM to the gateway using ros2_medkit_mcp:
+
+**Option 1: Docker (recommended)**
+
+.. code-block:: bash
+
+   # Pull and run HTTP server on port 8765
+   docker run -p 8765:8765 \
+     -e ROS2_MEDKIT_BASE_URL=http://host.docker.internal:8080/api/v1 \
+     ghcr.io/selfpatch/ros2_medkit_mcp:latest
+
+   # Or run with stdio transport
+   docker run -i \
+     -e ROS2_MEDKIT_BASE_URL=http://host.docker.internal:8080/api/v1 \
+     ghcr.io/selfpatch/ros2_medkit_mcp:latest stdio
+
+**Option 2: Poetry (for development)**
 
 .. code-block:: bash
 
@@ -341,10 +446,10 @@ For interactive API testing, import our Postman collection:
 2. Import ``postman/environments/local.postman_environment.json``
 3. Select "ROS 2 Medkit Gateway - Local" environment
 
-.. figure:: /_static/images/15_postman_colleciton.png
+.. figure:: /_static/images/15_postman_collection.png
    :alt: Postman collection
    :align: center
-   :width: 100%
+   :width: 600px
 
    Postman collection with organized endpoint folders.
 

@@ -7,7 +7,7 @@ It connects to the ros2_medkit gateway and visualizes the entity hierarchy.
 .. figure:: /_static/images/00_ui_view.png
    :alt: sovd_web_ui main interface
    :align: center
-   :width: 100%
+   :width: 600px
 
    The sovd_web_ui interface showing entity tree, detail panel, and data view.
 
@@ -33,9 +33,9 @@ Using Docker
 
    # Pull from GitHub Container Registry
    docker pull ghcr.io/selfpatch/sovd_web_ui:latest
-   docker run -p 8080:80 ghcr.io/selfpatch/sovd_web_ui:latest
+   docker run -p 3000:80 ghcr.io/selfpatch/sovd_web_ui:latest
 
-Then open http://localhost:8080 in your browser.
+Then open http://localhost:3000 in your browser.
 
 From Source
 ~~~~~~~~~~~
@@ -49,11 +49,11 @@ From Source
    # Install dependencies
    npm install
 
-   # Start development server (port 5173)
-   npm run dev
-
    # Build for production
    npm run build
+
+   # Start development server (port 5173)
+   npm run dev
 
 Connecting to ros2_medkit
 -------------------------
@@ -63,16 +63,16 @@ Connecting to ros2_medkit
    .. figure:: /_static/images/01a_connection_dialog.png
       :alt: Connection dialog
       :align: center
-      :width: 400px
+      :width: 600px
 
       Connection dialog prompting for gateway URL.
 
-2. Enter the gateway URL (e.g., ``http://localhost:8080``):
+2. Enter the gateway URL (e.g., ``http://localhost:8080``) and base endpoint (e.g., ``api/v1``):
 
    .. figure:: /_static/images/01b_connection_dialog_filled.png
       :alt: Connection dialog with URL
       :align: center
-      :width: 400px
+      :width: 600px
 
       Enter your gateway URL and click Connect.
 
@@ -81,7 +81,7 @@ Connecting to ros2_medkit
    .. figure:: /_static/images/02_entity_tree_collapsed.png
       :alt: Entity tree collapsed
       :align: center
-      :width: 300px
+      :width: 600px
 
       Entity tree showing areas and components.
 
@@ -90,7 +90,7 @@ Connecting to ros2_medkit
    .. figure:: /_static/images/03_entity_tree_expanded.png
       :alt: Entity tree expanded
       :align: center
-      :width: 300px
+      :width: 600px
 
       Expanded tree showing apps and virtual folders.
 
@@ -99,7 +99,7 @@ Connecting to ros2_medkit
    .. figure:: /_static/images/04_app_entity_detail.png
       :alt: Entity detail panel
       :align: center
-      :width: 100%
+      :width: 600px
 
       Detail panel showing entity metadata and capabilities.
 
@@ -119,7 +119,7 @@ Click on the **data** folder under any entity to see available topics:
 .. figure:: /_static/images/05_data_view.png
    :alt: Data view
    :align: center
-   :width: 100%
+   :width: 600px
 
    List of topics published by an entity.
 
@@ -128,7 +128,7 @@ Click on a specific topic to see its current value:
 .. figure:: /_static/images/06_topic_data_view.png
    :alt: Topic data view
    :align: center
-   :width: 100%
+   :width: 600px
 
    Real-time topic data with JSON visualization.
 
@@ -140,7 +140,7 @@ The **operations** folder shows available services and actions:
 .. figure:: /_static/images/07_operations_panel.png
    :alt: Operations panel
    :align: center
-   :width: 100%
+   :width: 600px
 
    List of operations (services and actions) for an entity.
 
@@ -149,7 +149,7 @@ Execute an operation and see the result:
 .. figure:: /_static/images/08_operations_execution.png
    :alt: Operation execution
    :align: center
-   :width: 100%
+   :width: 600px
 
    Operation execution with request/response display.
 
@@ -161,7 +161,7 @@ The **configurations** folder exposes ROS 2 node parameters:
 .. figure:: /_static/images/09_configurations_list.png
    :alt: Configurations list
    :align: center
-   :width: 100%
+   :width: 600px
 
    List of parameters with current values.
 
@@ -170,7 +170,7 @@ Edit parameters directly in the UI:
 .. figure:: /_static/images/10_configuration_edit.png
    :alt: Configuration edit
    :align: center
-   :width: 100%
+   :width: 600px
 
    Inline parameter editing with type validation.
 

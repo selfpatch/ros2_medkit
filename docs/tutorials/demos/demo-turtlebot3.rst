@@ -1,8 +1,8 @@
 TurtleBot3 Demo
 ===============
 
-This tutorial shows how to connect ros2_medkit to a TurtleBot3 simulation,
-demonstrating integration with a realistic robotics system.
+This tutorial shows ros2_medkit integration with a TurtleBot3 simulation
+running Gazebo and Nav2 navigation stack.
 
 .. contents:: Table of Contents
    :local:
@@ -11,35 +11,66 @@ demonstrating integration with a realistic robotics system.
 Overview
 --------
 
-TurtleBot3 is a popular ROS 2 robot platform used for education and research.
-This demo connects ros2_medkit to TurtleBot3 running in Gazebo simulation with
-Nav2 navigation stack, exposing:
+This Docker-based demo showcases ros2_medkit with TurtleBot3 Waffle:
 
-- **Sensor data**: LiDAR scans, odometry, camera images
-- **Operations**: Navigation goals, robot control
-- **Configurations**: Node parameters
-- **Transforms**: TF2 coordinate frames
+- **TurtleBot3 Simulation** — Gazebo world with TurtleBot3 Waffle robot
+- **Nav2 Navigation** — Full navigation stack with SLAM
+- **ros2_medkit Gateway** — REST API exposing robot capabilities
+- **Web UI** — Visual entity browser
+
+**Key Features:**
+
+- Complete navigation system with goal sending
+- Sensor data access (LiDAR, odometry, camera)
+- Fault injection scenarios (localization, navigation failures)
+- Docker-based — no local ROS 2 installation needed
 
 Prerequisites
 -------------
 
-- TurtleBot3 packages installed
-- Gazebo simulation environment
-- Nav2 navigation stack (optional)
+- Docker and Docker Compose installed
+- Git (to clone the demo repository)
+
+Starting the Demo
+-----------------
+
+Clone the demo repository and run the startup script:
 
 .. code-block:: bash
 
-   sudo apt install ros-jazzy-turtlebot3* ros-jazzy-nav2-bringup
+   git clone https://github.com/selfpatch/selfpatch_demos.git
+   cd selfpatch_demos/demos/turtlebot3_integration
 
-Starting the Simulation
------------------------
+   # Start the demo (daemon mode)
+   ./run-demo.sh
 
-**Terminal 1 — Gazebo Simulation:**
+.. figure:: /_static/images/17_turtlebot_run_demo_terminal.png
+   :alt: Demo startup terminal output
+   :align: center
+   :width: 600px
+
+   Terminal showing demo services starting up.
+
+The script will build and start Docker containers with:
+
+- Gazebo simulation with TurtleBot3 Waffle
+- Nav2 navigation stack
+- ros2_medkit gateway (REST API on port 8080)
+- sovd_web_ui (Web interface on port 3000)
+
+**Startup Options:**
 
 .. code-block:: bash
 
-   export TURTLEBOT3_MODEL=waffle
-   ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
+   ./run-demo.sh --attached    # Run in foreground with logs
+   ./run-demo.sh --update      # Pull latest images
+   ./run-demo.sh --no-cache    # Build without cache
+
+Exploring the System
+--------------------
+
+Open the web UI at http://localhost:3000 and connect to the gateway at
+http://localhost:8080 and api/v1
 
 .. figure:: /_static/images/16_turtlebot_gazebo.png
    :alt: TurtleBot3 in Gazebo
@@ -48,42 +79,12 @@ Starting the Simulation
 
    TurtleBot3 Waffle in Gazebo simulation.
 
-**Terminal 2 — ros2_medkit Gateway:**
+The demo uses a **manifest-based configuration** to organize entities into logical areas:
 
-.. code-block:: bash
-
-   ros2 launch ros2_medkit_gateway gateway.launch.py
-
-.. figure:: /_static/images/17_turtlebot_run_demo_terminal.png
-   :alt: Gateway terminal
-   :align: center
-   :width: 600px
-
-   Gateway discovering TurtleBot3 nodes.
-
-**Terminal 3 — Navigation (optional):**
-
-.. code-block:: bash
-
-   ros2 launch nav2_bringup navigation_launch.py use_sim_time:=true
-
-Exploring the System
---------------------
-
-Connect the web UI to see all discovered entities:
-
-.. code-block:: bash
-
-   docker run -p 8081:80 ghcr.io/selfpatch/sovd_web_ui:latest
-
-Open http://localhost:8081 and connect to ``http://localhost:8080``.
-
-You'll see areas organized by namespace:
-
-- ``/`` (root) — Core robot nodes
-- ``/gazebo`` — Simulation interface
-- ``/diff_drive_controller`` — Motor control
-- ``/joint_state_broadcaster`` — Joint states
+- **robot** — TurtleBot3 hardware and drivers
+- **navigation** — Nav2 navigation stack
+- **diagnostics** — ros2_medkit gateway and fault management
+- **bridge** — Legacy diagnostics bridge
 
 Querying via API:
 
@@ -98,23 +99,30 @@ Querying via API:
 
    Areas discovered from TurtleBot3 system.
 
-Reading Sensor Data
--------------------
-
-Get odometry data:
+Interactive API exploration:
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/components/diff_drive_controller/data/odom | jq
+   # Run the interactive check script
+   ./check-entities.sh
 
-.. figure:: /_static/images/14_curl_topic_odom.png
-   :alt: Odometry data
-   :align: center
-   :width: 600px
+Reading Sensor Data
+-------------------
 
-   Real-time odometry from the robot.
+Navigate to an app in the web UI and explore the **data** folder to see published topics.
 
-Via the web UI, navigate to a component and click the **data** folder to see topics:
+Query data via REST API:
+
+.. code-block:: bash
+
+   # List all apps
+   curl http://localhost:8080/api/v1/apps | jq
+
+   # Get specific topic from AMCL localization
+   curl http://localhost:8080/api/v1/apps/amcl/data | jq
+
+   # Get specific topic from controller server
+   curl http://localhost:8080/api/v1/apps/controller-server/data | jq
 
 .. figure:: /_static/images/06_topic_data_view.png
    :alt: Topic data view
@@ -123,83 +131,75 @@ Via the web UI, navigate to a component and click the **data** folder to see top
 
    Viewing topic data in the web UI.
 
-Get LiDAR scan:
+Sending Navigation Goals
+-------------------------
+
+Use the provided script to send navigation goals:
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/components/turtlebot3_node/data/scan | jq '.data.ranges[:10]'
+   # Send a navigation goal
+   ./send-nav-goal.sh x y yaw
 
-Controlling the Robot
----------------------
+This sends a goal to Nav2 and monitors its progress through the gateway API.
 
-Navigate to the **operations** folder to see available services:
-
-.. figure:: /_static/images/07_operations_panel.png
-   :alt: Operations panel
-   :align: center
-   :width: 600px
-
-   Available operations for a component.
-
-Publish velocity commands:
+You can also interact with the navigation stack via API:
 
 .. code-block:: bash
 
-   # Move forward
-   curl -X PUT http://localhost:8080/api/v1/components/diff_drive_controller/data/cmd_vel \
-     -H "Content-Type: application/json" \
-     -d '{"linear": {"x": 0.2, "y": 0.0, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": 0.0}}'
+   # List operations on BT Navigator
+   curl http://localhost:8080/api/v1/apps/bt-navigator/operations | jq
 
-   # Rotate
-   curl -X PUT http://localhost:8080/api/v1/components/diff_drive_controller/data/cmd_vel \
-     -H "Content-Type: application/json" \
-     -d '{"linear": {"x": 0.0, "y": 0.0, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": 0.5}}'
-
-   # Stop
-   curl -X PUT http://localhost:8080/api/v1/components/diff_drive_controller/data/cmd_vel \
-     -H "Content-Type: application/json" \
-     -d '{"linear": {"x": 0.0, "y": 0.0, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": 0.0}}'
-
-.. figure:: /_static/images/08_operations_execution.png
-   :alt: Operation execution
-   :align: center
-   :width: 600px
-
-   Result of executing an operation.
+   # List operations on Controller Server
+   curl http://localhost:8080/api/v1/apps/controller-server/operations | jq
 
 Managing Parameters
 -------------------
 
-Click on the **configurations** folder to see ROS 2 parameters:
+Click on the **configurations** folder in the web UI to see ROS 2 parameters.
 
-.. figure:: /_static/images/09_configurations_list.png
-   :alt: Configurations list
-   :align: center
-   :width: 600px
-
-   Parameters for TurtleBot3 components.
-
-Change a parameter value using the API:
+View and modify parameters:
 
 .. code-block:: bash
 
-   # Example: Change a parameter
-   curl -X PUT http://localhost:8080/api/v1/components/turtlebot3_node/configurations/use_sim_time \
+   # List all configurations for AMCL
+   curl http://localhost:8080/api/v1/apps/amcl/configurations | jq
+
+   # Get specific parameter
+   curl http://localhost:8080/api/v1/apps/amcl/configurations/use_sim_time | jq
+
+   # Change parameter value
+   curl -X PUT http://localhost:8080/api/v1/apps/amcl/configurations/use_sim_time \
      -H "Content-Type: application/json" \
-     -d '{"value": true}'
+     -d '{"value": false}'
 
-.. figure:: /_static/images/10_configuration_edit.png
-   :alt: Configuration edit
-   :align: center
-   :width: 600px
+Fault Injection
+---------------
 
-   Editing a parameter value in the web UI.
+The demo includes fault injection scripts to test diagnostic capabilities:
 
-Working with Faults
--------------------
+**Available fault injection scripts:**
 
-The gateway automatically discovers diagnostic information from nodes.
-View faults in the web UI dashboard:
+.. code-block:: bash
+
+   # Inject localization failure
+   ./inject-localization-failure.sh
+
+   # Inject navigation failure
+   ./inject-nav-failure.sh
+
+   # Restore normal operation
+   ./restore-normal.sh
+
+**View active faults:**
+
+.. code-block:: bash
+
+   # Check faults script
+   ./check-faults.sh
+
+   # Or query via API
+   curl http://localhost:8080/api/v1/faults
 
 .. figure:: /_static/images/18_faults_injected_dashboard.png
    :alt: Faults dashboard
@@ -208,8 +208,6 @@ View faults in the web UI dashboard:
 
    Dashboard showing active faults.
 
-You can also view faults for specific components:
-
 .. figure:: /_static/images/19_faults_injected_app_view.png
    :alt: Faults in app view
    :align: center
@@ -217,36 +215,18 @@ You can also view faults for specific components:
 
    Fault details in the entity view.
 
-Query faults via API:
-
-.. code-block:: bash
-
-   curl http://localhost:8080/api/v1/components/turtlebot3_node/faults
-
-Docker Deployment
+Stopping the Demo
 -----------------
 
-For containerized deployment, see the `selfpatch_demos <https://github.com/selfpatch/selfpatch_demos>`_
-repository which provides ready-to-use Docker Compose configurations:
+To stop all services:
 
 .. code-block:: bash
 
-   git clone https://github.com/selfpatch/selfpatch_demos.git
-   cd selfpatch_demos/demos/turtlebot3_nav2
-
-   # Start all services
-   docker compose up
-
-This launches:
-
-- TurtleBot3 Gazebo simulation
-- Nav2 navigation stack
-- ros2_medkit gateway
-- sovd_web_ui
+   ./stop-demo.sh
 
 See Also
 --------
 
-- :doc:`demo-sensor` — Built-in sensor demo
+- :doc:`demo-sensor` — Built-in sensor diagnostics demo
 - :doc:`/tutorials/docker` — Docker deployment guide
 - `selfpatch_demos <https://github.com/selfpatch/selfpatch_demos>`_ — Integration demos repository

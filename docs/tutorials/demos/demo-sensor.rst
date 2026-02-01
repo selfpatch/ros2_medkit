@@ -73,7 +73,8 @@ The script will build and start Docker containers with:
 Exploring the Demo
 ------------------
 
-Open the web UI at http://localhost:3000 (automatically connects to gateway).
+Open the web UI at http://localhost:3000 and connect to the gateway at
+http://localhost:8080 and api/v1
 
 .. figure:: /_static/images/21_sensor_demo_ui_view.png
    :alt: Sensor demo in web UI
@@ -145,55 +146,58 @@ View and modify sensor parameters:
 - ``failure_probability`` — Probability of sensor timeout
 - ``inject_nan`` / ``inject_black_frames`` — Fault injection flags
 
-Working with Faults
--------------------
+Fault Injection
+---------------
 
-The LiDAR sensor demo starts with intentionally invalid parameters that
-generate faults:
+The demo starts with **normal sensor operation** (no faults). You can inject
+faults at runtime using provided scripts:
 
-- ``LIDAR_RANGE_INVALID`` (ERROR): min_range > max_range
-- ``LIDAR_FREQ_UNSUPPORTED`` (WARN): scan_frequency > 20.0 Hz
-- ``LIDAR_CALIBRATION_REQUIRED`` (INFO): sensor not calibrated
-
-View faults:
+**Available fault injection scripts:**
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/components/lidar_sensor/faults
+   # Inject high noise (triggers legacy diagnostics path)
+   ./inject-noise.sh
 
-**Fix the faults:**
+   # Inject sensor timeouts
+   ./inject-failure.sh
 
-1. Correct the parameters:
+   # Inject NaN values in sensor data
+   ./inject-nan.sh
 
-   .. code-block:: bash
+   # Inject sensor drift
+   ./inject-drift.sh
 
-      # Fix min_range
-      curl -X PUT http://localhost:8080/api/v1/components/lidar_sensor/configurations/min_range \
-        -H "Content-Type: application/json" -d '{"value": 0.1}'
+   # Restore normal operation
+   ./restore-normal.sh
 
-      # Fix max_range
-      curl -X PUT http://localhost:8080/api/v1/components/lidar_sensor/configurations/max_range \
-        -H "Content-Type: application/json" -d '{"value": 10.0}'
+**View active faults:**
 
-      # Fix scan_frequency
-      curl -X PUT http://localhost:8080/api/v1/components/lidar_sensor/configurations/scan_frequency \
-        -H "Content-Type: application/json" -d '{"value": 10.0}'
+.. code-block:: bash
 
-2. Clear the faults:
+   # List all system faults
+   curl http://localhost:8080/api/v1/faults
 
-   .. code-block:: bash
+   # Get faults for specific sensor
+   curl http://localhost:8080/api/v1/apps/lidar-sim/faults
 
-      curl -X DELETE http://localhost:8080/api/v1/components/lidar_sensor/faults/LIDAR_RANGE_INVALID
-      curl -X DELETE http://localhost:8080/api/v1/components/lidar_sensor/faults/LIDAR_FREQ_UNSUPPORTED
+**Manual fault injection via API:**
 
-3. Run calibration and clear the calibration fault:
+You can also inject faults by setting parameters directly:
 
-   .. code-block:: bash
+.. code-block:: bash
 
-      curl -X POST http://localhost:8080/api/v1/components/lidar_sensor/operations/calibrate/executions \
-        -H "Content-Type: application/json" -d '{}'
+   # Increase noise level
+   curl -X PUT http://localhost:8080/api/v1/apps/lidar-sim/configurations/noise_stddev \
+     -H "Content-Type: application/json" -d '{"value": 0.5}'
 
-      curl -X DELETE http://localhost:8080/api/v1/components/lidar_sensor/faults/LIDAR_CALIBRATION_REQUIRED
+   # Enable NaN injection
+   curl -X PUT http://localhost:8080/api/v1/apps/imu-sim/configurations/inject_nan \
+     -H "Content-Type: application/json" -d '{"value": true}'
+
+   # Increase failure probability
+   curl -X PUT http://localhost:8080/api/v1/apps/gps-sim/configurations/failure_probability \
+     -H "Content-Type: application/json" -d '{"value": 0.3}'
 
 Stopping the Demo
 -----------------
@@ -229,31 +233,6 @@ The demo implements the following architecture:
    │   └── diagnostic_bridge      # /diagnostics → FaultManager
    └── /diagnostics                # Monitoring
        └── ros2_medkit_gateway    # REST API gateway
-
-**Comparison with TurtleBot3 Demo:**
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 35 35
-
-   * - Feature
-     - Sensor Demo
-     - TurtleBot3 Demo
-   * - Docker image size
-     - ~500 MB
-     - ~4 GB
-   * - Startup time
-     - ~5 seconds
-     - ~60 seconds
-   * - GPU required
-     - No
-     - Recommended
-   * - CI compatible
-     - Yes
-     - Difficult
-   * - Focus
-     - Diagnostics & faults
-     - Navigation & robotics
 
 See Also
 --------

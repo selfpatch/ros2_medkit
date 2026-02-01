@@ -18,6 +18,7 @@ dependencies = [
     "matplotlib",
     "sphinx-design",
     "breathe",
+    "sphinx-copybutton",
 ]
 
 [project.optional-dependencies]

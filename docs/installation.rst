@@ -15,7 +15,7 @@ System Requirements
    * - Operating System
      - Ubuntu 24.04 LTS (Noble Numbat)
    * - ROS 2 Distribution
-     - Jazzy Jalisco
+     - Jazzy
    * - C++ Compiler
      - GCC 13+ (C++17 support required)
    * - CMake
@@ -26,38 +26,8 @@ System Requirements
 Prerequisites
 -------------
 
-1. **Install ROS 2 Jazzy**
-
-   Follow the official ROS 2 installation guide:
-   https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html
-
-   .. code-block:: bash
-
-      # Add ROS 2 apt repository
-      sudo apt update && sudo apt install -y software-properties-common
-      sudo add-apt-repository universe
-      sudo apt update && sudo apt install curl -y
-      sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-        -o /usr/share/keyrings/ros-archive-keyring.gpg
-      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
-        http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | \
-        sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
-
-      # Install ROS 2 Jazzy Desktop
-      sudo apt update
-      sudo apt install ros-jazzy-desktop ros-dev-tools
-
-2. **Source ROS 2 environment**
-
-   .. code-block:: bash
-
-      source /opt/ros/jazzy/setup.bash
-
-   Add this to your ``~/.bashrc`` for persistence:
-
-   .. code-block:: bash
-
-      echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
+**ROS 2 Jazzy** must be installed and sourced. Follow the official installation guide:
+https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html
 
 Installation from Source
 ------------------------
@@ -134,7 +104,7 @@ You should see output like:
 
 .. code-block:: json
 
-   {"status": "healthy"}
+   {"status": "healthy", "timestamp": "..."}
 
 Docker Installation
 -------------------

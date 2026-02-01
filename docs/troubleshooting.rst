@@ -23,19 +23,6 @@ Solution: Initialize and update rosdep:
    sudo rosdep init  # Only needed once
    rosdep update
 
-**Build fails with C++17 errors**
-
-.. code-block:: text
-
-   error: 'expected' is not a member of 'std'
-
-Solution: Ensure you have GCC 13 or newer:
-
-.. code-block:: bash
-
-   gcc --version  # Should show 13.x or higher
-   sudo apt install gcc-13 g++-13
-
 **Cannot find ros2_medkit packages**
 
 .. code-block:: bash
@@ -205,8 +192,8 @@ Optimize with:
 
 .. code-block:: yaml
 
-   max_parallel_topic_samples: 20  # Default is 10
-   topic_sample_timeout_sec: 1.0   # Default is 3.0
+   max_parallel_topic_samples: 20  # Increase from default 10
+   topic_sample_timeout_sec: 0.5   # Decrease from default 1.0
 
 **High CPU usage**
 
@@ -214,7 +201,7 @@ Reduce cache refresh rate:
 
 .. code-block:: yaml
 
-   refresh_interval_ms: 10000  # 10 seconds instead of default 2
+   refresh_interval_ms: 30000  # 30 seconds instead of default 10s
 
 FAQ
 ---
