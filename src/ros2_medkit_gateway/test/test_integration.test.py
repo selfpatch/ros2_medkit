@@ -4278,8 +4278,24 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         if len(apps) == 0:
             self.skipTest('No apps available for testing')
 
-        # Use the first available app
-        app_id = apps[0]['id']
+        # Get list of components to avoid selecting an app ID that is also a component ID
+        components_response = requests.get(f'{self.BASE_URL}/components', timeout=10)
+        self.assertEqual(components_response.status_code, 200)
+
+        components = components_response.json().get('items', [])
+        component_ids = {c.get('id') for c in components if isinstance(c, dict) and 'id' in c}
+
+        # Find an app ID that does not collide with any component ID
+        app_id = None
+        for app in apps:
+            if not isinstance(app, dict) or 'id' not in app:
+                continue
+            if app['id'] not in component_ids:
+                app_id = app['id']
+                break
+
+        if app_id is None:
+            self.skipTest('No app ID available that is distinct from component IDs')
 
         # Verify this ID is recognized as an app via /apps/{id}
         app_response = requests.get(f'{self.BASE_URL}/apps/{app_id}', timeout=10)
@@ -4321,7 +4337,24 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         if len(apps) == 0:
             self.skipTest('No apps available for testing')
 
-        app_id = apps[0]['id']
+        # Get list of components to avoid selecting an app ID that is also a component ID
+        components_response = requests.get(f'{self.BASE_URL}/components', timeout=10)
+        self.assertEqual(components_response.status_code, 200)
+
+        components = components_response.json().get('items', [])
+        component_ids = {c.get('id') for c in components if isinstance(c, dict) and 'id' in c}
+
+        # Find an app ID that does not collide with any component ID
+        app_id = None
+        for app in apps:
+            if not isinstance(app, dict) or 'id' not in app:
+                continue
+            if app['id'] not in component_ids:
+                app_id = app['id']
+                break
+
+        if app_id is None:
+            self.skipTest('No app ID available that is distinct from component IDs')
 
         # Try to use app ID with /components/{id}/operations - should fail
         response = requests.get(
@@ -4349,7 +4382,24 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         if len(apps) == 0:
             self.skipTest('No apps available for testing')
 
-        app_id = apps[0]['id']
+        # Get list of components to avoid selecting an app ID that is also a component ID
+        components_response = requests.get(f'{self.BASE_URL}/components', timeout=10)
+        self.assertEqual(components_response.status_code, 200)
+
+        components = components_response.json().get('items', [])
+        component_ids = {c.get('id') for c in components if isinstance(c, dict) and 'id' in c}
+
+        # Find an app ID that does not collide with any component ID
+        app_id = None
+        for app in apps:
+            if not isinstance(app, dict) or 'id' not in app:
+                continue
+            if app['id'] not in component_ids:
+                app_id = app['id']
+                break
+
+        if app_id is None:
+            self.skipTest('No app ID available that is distinct from component IDs')
 
         response = requests.get(
             f'{self.BASE_URL}/components/{app_id}/configurations',
@@ -4376,7 +4426,24 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         if len(apps) == 0:
             self.skipTest('No apps available for testing')
 
-        app_id = apps[0]['id']
+        # Get list of components to avoid selecting an app ID that is also a component ID
+        components_response = requests.get(f'{self.BASE_URL}/components', timeout=10)
+        self.assertEqual(components_response.status_code, 200)
+
+        components = components_response.json().get('items', [])
+        component_ids = {c.get('id') for c in components if isinstance(c, dict) and 'id' in c}
+
+        # Find an app ID that does not collide with any component ID
+        app_id = None
+        for app in apps:
+            if not isinstance(app, dict) or 'id' not in app:
+                continue
+            if app['id'] not in component_ids:
+                app_id = app['id']
+                break
+
+        if app_id is None:
+            self.skipTest('No app ID available that is distinct from component IDs')
 
         response = requests.get(
             f'{self.BASE_URL}/components/{app_id}/faults',

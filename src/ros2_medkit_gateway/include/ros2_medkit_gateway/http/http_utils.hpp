@@ -49,16 +49,31 @@ inline SovdEntityType extract_entity_type_from_path(const std::string & path) {
   // Check for each entity type prefix after API base path
   const std::string base = std::string(API_BASE_PATH) + "/";
 
-  if (path.find(base + "components/") == 0 || path.find(base + "components") == 0) {
+  // Require a segment boundary after the collection name:
+  // matches "/api/v1/components" or "/api/v1/components/...", but not "/api/v1/componentship".
+  auto matches_collection = [&path, &base](const std::string & collection) -> bool {
+    const std::string prefix = base + collection;
+    if (path.compare(0, prefix.size(), prefix) != 0) {
+      return false;
+    }
+    if (path.size() == prefix.size()) {
+      // Exact match: "/api/v1/{collection}"
+      return true;
+    }
+    // Require a '/' segment separator after the collection name
+    return path[prefix.size()] == '/';
+  };
+
+  if (matches_collection("components")) {
     return SovdEntityType::COMPONENT;
   }
-  if (path.find(base + "apps/") == 0 || path.find(base + "apps") == 0) {
+  if (matches_collection("apps")) {
     return SovdEntityType::APP;
   }
-  if (path.find(base + "areas/") == 0 || path.find(base + "areas") == 0) {
+  if (matches_collection("areas")) {
     return SovdEntityType::AREA;
   }
-  if (path.find(base + "functions/") == 0 || path.find(base + "functions") == 0) {
+  if (matches_collection("functions")) {
     return SovdEntityType::FUNCTION;
   }
 

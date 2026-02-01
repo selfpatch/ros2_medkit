@@ -745,6 +745,13 @@ TEST(ExtractEntityTypePath, unknown_routes) {
   EXPECT_EQ(extract_entity_type_from_path("/api/v1/faults"), SovdEntityType::UNKNOWN);
   EXPECT_EQ(extract_entity_type_from_path("/api/v1/version-info"), SovdEntityType::UNKNOWN);
   EXPECT_EQ(extract_entity_type_from_path("/other/path"), SovdEntityType::UNKNOWN);
+
+  // Verify paths that look similar to entity collections but aren't
+  // (segment boundary validation)
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/componentship"), SovdEntityType::UNKNOWN);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/applications"), SovdEntityType::UNKNOWN);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/areascan"), SovdEntityType::UNKNOWN);
+  EXPECT_EQ(extract_entity_type_from_path("/api/v1/functional"), SovdEntityType::UNKNOWN);
 }
 
 int main(int argc, char ** argv) {

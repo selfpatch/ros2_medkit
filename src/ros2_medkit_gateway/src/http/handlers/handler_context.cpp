@@ -194,22 +194,6 @@ std::optional<std::string> HandlerContext::validate_collection_access(const Enti
   return std::nullopt;
 }
 
-std::optional<std::string> HandlerContext::validate_entity_type(const EntityInfo & entity,
-                                                                SovdEntityType expected_type) {
-  // If expected_type is UNKNOWN, skip validation (path doesn't specify an entity type)
-  if (expected_type == SovdEntityType::UNKNOWN) {
-    return std::nullopt;
-  }
-
-  // Check if entity type matches expected type from route
-  if (entity.sovd_type() != expected_type) {
-    return "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-           to_string(entity.sovd_type());
-  }
-
-  return std::nullopt;
-}
-
 void HandlerContext::set_cors_headers(httplib::Response & res, const std::string & origin) const {
   res.set_header("Access-Control-Allow-Origin", origin);
 

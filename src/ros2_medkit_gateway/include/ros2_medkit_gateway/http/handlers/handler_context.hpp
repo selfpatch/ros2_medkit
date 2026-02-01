@@ -176,18 +176,7 @@ class HandlerContext {
   static std::optional<std::string> validate_collection_access(const EntityInfo & entity,
                                                                ResourceCollection collection);
 
-  /**
-   * @brief Validate entity type matches the route path
-   *
-   * Ensures semantic correctness - /components/{id} should only accept
-   * component IDs, not app IDs. This prevents the dual-path routing bug
-   * where /components/{app_id} would incorrectly succeed.
-   *
-   * @param entity Entity information (from get_entity_info)
-   * @param expected_type Expected type based on route (from extract_entity_type_from_path)
-   * @return std::nullopt if valid, error message if type mismatch
-   */
-  static std::optional<std::string> validate_entity_type(const EntityInfo & entity, SovdEntityType expected_type);
+
 
   /**
    * @brief Set CORS headers on response if origin is allowed
