@@ -385,34 +385,34 @@ Manifest mode adds the following endpoints:
      - Since
    * - ``GET /apps``
      - List all apps
-     - 0.2.0
+     - 0.1.0
    * - ``GET /apps/{id}``
      - Get app capabilities
-     - 0.2.0
+     - 0.1.0
    * - ``GET /apps/{id}/data``
      - Get app topic data
-     - 0.2.0
+     - 0.1.0
    * - ``GET /apps/{id}/operations``
      - List app operations
-     - 0.2.0
+     - 0.1.0
    * - ``GET /apps/{id}/configurations``
      - List app configurations
-     - 0.2.0
+     - 0.1.0
    * - ``GET /functions``
      - List all functions
-     - 0.2.0
+     - 0.1.0
    * - ``GET /functions/{id}``
      - Get function capabilities
-     - 0.2.0
+     - 0.1.0
    * - ``GET /functions/{id}/hosts``
      - List function host apps
-     - 0.2.0
+     - 0.1.0
    * - ``GET /functions/{id}/data``
      - Aggregated data from hosts
-     - 0.2.0
+     - 0.1.0
    * - ``GET /functions/{id}/operations``
      - Aggregated operations
-     - 0.2.0
+     - 0.1.0
 
 Next Steps
 ----------
