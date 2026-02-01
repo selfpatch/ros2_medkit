@@ -491,10 +491,12 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     entity_id = req.matches[1];
     param_id = req.matches[2];
 
-    // Validate entity ID and type for this route
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;  // Error response already sent
+    // Validate entity_id format first
+    auto entity_validation = ctx_.validate_entity_id(entity_id);
+    if (!entity_validation) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
+      return;
     }
 
     if (param_id.empty() || param_id.length() > MAX_AGGREGATED_PARAM_ID_LENGTH) {
@@ -503,7 +505,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
       return;
     }
 
-    // Parse request body
+    // Parse request body before checking entity existence
     json body;
     try {
       body = json::parse(req.body);
@@ -523,6 +525,12 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
       HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing 'data' field",
                                  {{"details", "Request body must contain 'data' field"}});
       return;
+    }
+
+    // Now validate entity exists and matches route type
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
 
     // Get aggregated configurations info
