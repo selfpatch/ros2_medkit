@@ -93,5 +93,6 @@ Community
    :caption: Reference
 
    glossary
+   changelog
 
 
