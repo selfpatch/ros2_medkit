@@ -88,4 +88,10 @@ Community
 
    requirements/index
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Reference
+
+   glossary
+
 
