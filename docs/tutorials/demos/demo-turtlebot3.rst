@@ -114,6 +114,15 @@ Get odometry data:
 
    Real-time odometry from the robot.
 
+Via the web UI, navigate to a component and click the **data** folder to see topics:
+
+.. figure:: /_static/images/06_topic_data_view.png
+   :alt: Topic data view
+   :align: center
+   :width: 100%
+
+   Viewing topic data in the web UI.
+
 Get LiDAR scan:
 
 .. code-block:: bash
@@ -122,6 +131,15 @@ Get LiDAR scan:
 
 Controlling the Robot
 ---------------------
+
+Navigate to the **operations** folder to see available services:
+
+.. figure:: /_static/images/07_operations_panel.png
+   :alt: Operations panel
+   :align: center
+   :width: 100%
+
+   Available operations for a component.
 
 Publish velocity commands:
 
@@ -141,6 +159,69 @@ Publish velocity commands:
    curl -X PUT http://localhost:8080/api/v1/components/diff_drive_controller/data/cmd_vel \
      -H "Content-Type: application/json" \
      -d '{"linear": {"x": 0.0, "y": 0.0, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": 0.0}}'
+
+.. figure:: /_static/images/08_operations_execution.png
+   :alt: Operation execution
+   :align: center
+   :width: 100%
+
+   Result of executing an operation.
+
+Managing Parameters
+-------------------
+
+Click on the **configurations** folder to see ROS 2 parameters:
+
+.. figure:: /_static/images/09_configurations_list.png
+   :alt: Configurations list
+   :align: center
+   :width: 100%
+
+   Parameters for TurtleBot3 components.
+
+Change a parameter value using the API:
+
+.. code-block:: bash
+
+   # Example: Change a parameter
+   curl -X PUT http://localhost:8080/api/v1/components/turtlebot3_node/configurations/use_sim_time \
+     -H "Content-Type: application/json" \
+     -d '{"value": true}'
+
+.. figure:: /_static/images/10_configuration_edit.png
+   :alt: Configuration edit
+   :align: center
+   :width: 100%
+
+   Editing a parameter value in the web UI.
+
+Working with Faults
+-------------------
+
+The gateway automatically discovers diagnostic information from nodes.
+View faults in the web UI dashboard:
+
+.. figure:: /_static/images/18_faults_injected_dashboard.png
+   :alt: Faults dashboard
+   :align: center
+   :width: 100%
+
+   Dashboard showing active faults.
+
+You can also view faults for specific components:
+
+.. figure:: /_static/images/19_faults_injected_app_view.png
+   :alt: Faults in app view
+   :align: center
+   :width: 100%
+
+   Fault details in the entity view.
+
+Query faults via API:
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/components/turtlebot3_node/faults
 
 Docker Deployment
 -----------------

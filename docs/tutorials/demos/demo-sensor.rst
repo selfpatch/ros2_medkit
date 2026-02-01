@@ -78,14 +78,7 @@ Working with Data
 -----------------
 
 Navigate to a sensor component and click the **data** folder to see topics.
-Click on a topic to view its current value:
-
-.. figure:: /_static/images/06_topic_data_view.png
-   :alt: Topic data view
-   :align: center
-   :width: 100%
-
-   Temperature reading from the sensor.
+Click on a topic to view its current value.
 
 Using curl:
 
@@ -100,14 +93,7 @@ Using curl:
 Calling Operations
 ------------------
 
-Navigate to the **operations** folder to see available services:
-
-.. figure:: /_static/images/07_operations_panel.png
-   :alt: Operations panel
-   :align: center
-   :width: 100%
-
-   Available operations for a component.
+Navigate to the **operations** folder to see available services.
 
 Call the calibration service:
 
@@ -117,24 +103,10 @@ Call the calibration service:
      -H "Content-Type: application/json" \
      -d '{}'
 
-.. figure:: /_static/images/08_operations_execution.png
-   :alt: Operation execution
-   :align: center
-   :width: 100%
-
-   Service call result showing success response.
-
 Managing Parameters
 -------------------
 
-Click on the **configurations** folder to see ROS 2 parameters:
-
-.. figure:: /_static/images/09_configurations_list.png
-   :alt: Configurations list
-   :align: center
-   :width: 100%
-
-   Parameters for the temperature sensor.
+Click on the **configurations** folder to see ROS 2 parameters.
 
 Change the publish rate:
 
@@ -148,13 +120,6 @@ Change the publish rate:
      -H "Content-Type: application/json" \
      -d '{"value": 5.0}'
 
-.. figure:: /_static/images/10_configuration_edit.png
-   :alt: Configuration edit
-   :align: center
-   :width: 100%
-
-   Editing a parameter value in the web UI.
-
 Working with Faults
 -------------------
 
@@ -165,25 +130,11 @@ generate faults:
 - ``LIDAR_FREQ_UNSUPPORTED`` (WARN): scan_frequency > 20.0 Hz
 - ``LIDAR_CALIBRATION_REQUIRED`` (INFO): sensor not calibrated
 
-.. figure:: /_static/images/18_faults_injected_dashboard.png
-   :alt: Faults dashboard
-   :align: center
-   :width: 100%
-
-   Dashboard showing active faults.
-
 View faults:
 
 .. code-block:: bash
 
    curl http://localhost:8080/api/v1/components/lidar_sensor/faults
-
-.. figure:: /_static/images/19_faults_injected_app_view.png
-   :alt: Faults in app view
-   :align: center
-   :width: 100%
-
-   Fault details in the entity view.
 
 **Fix the faults:**
 
