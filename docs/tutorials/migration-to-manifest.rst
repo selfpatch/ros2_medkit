@@ -185,7 +185,7 @@ Example app mapping:
      - id: lidar-driver
        name: "LiDAR Driver"
        category: "driver"
-       component: lidar-sensor
+       is_located_on: lidar-sensor
        ros_binding:
          node_name: ld08_driver
 
@@ -193,7 +193,7 @@ Example app mapping:
      - id: amcl-node
        name: "AMCL Localization"
        category: "localization"
-       component: main-computer
+       is_located_on: main-computer
        depends_on:
          - lidar-driver
        ros_binding:
@@ -203,7 +203,7 @@ Example app mapping:
      - id: planner-server
        name: "Planner Server"
        category: "navigation"
-       component: main-computer
+       is_located_on: main-computer
        depends_on:
          - amcl-node
        ros_binding:

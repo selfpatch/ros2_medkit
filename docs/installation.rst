@@ -43,15 +43,19 @@ ros2_medkit is currently distributed as source code. Binary packages will be ava
 
 2. **Clone the repository**
 
+   Clone directly into the ``src`` directory:
+
    .. code-block:: bash
 
-      git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
-      cd ros2_medkit
+      git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git .
+
+   This places packages (``ros2_medkit_gateway``, ``ros2_medkit_fault_manager``, etc.) directly under ``~/ros2_medkit_ws/src/``.
 
    If you already cloned without submodules, initialize them:
 
    .. code-block:: bash
 
+      cd ~/ros2_medkit_ws/src
       git submodule update --init --recursive
 
 3. **Install dependencies**

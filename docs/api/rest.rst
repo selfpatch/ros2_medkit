@@ -106,10 +106,15 @@ Apps
 ~~~~
 
 ``GET /api/v1/apps``
-   List all apps (requires manifest mode or hybrid mode).
+   List all apps discovered by the gateway.
+
+   The set of apps is populated either from the static manifest (manifest or hybrid mode)
+   or via heuristic runtime discovery of ROS 2 nodes (see :doc:`/tutorials/heuristic-apps`).
+   This endpoint may return an empty list if no apps are discovered or if app discovery is
+   disabled in the gateway configuration.
 
 ``GET /api/v1/apps/{app_id}``
-   Get app capabilities.
+   Get capabilities for a single discovered app.
 
 Functions
 ~~~~~~~~~
@@ -144,7 +149,11 @@ Read and publish data from ROS 2 topics.
             "value": {"data": 85.5},
             "timestamp": "2025-01-15T10:30:00Z"
           }
-        ]
+        ],
+        "x-medkit": {
+          "entity_id": "temp_sensor",
+          "total_count": 1
+        }
       }
 
 ``GET /api/v1/components/{id}/data/{topic_path}``
@@ -210,7 +219,11 @@ List Operations
               "feedback": {"partial_sequence": "int32[]"}
             }
           }
-        ]
+        ],
+        "x-medkit": {
+          "entity_id": "calibration",
+          "total_count": 2
+        }
       }
 
 ``GET /api/v1/components/{id}/operations/{operation_id}``
@@ -224,7 +237,7 @@ Execute Operations
 
    - **Content-Type:** application/json
    - **200:** Service call completed (sync)
-   - **201:** Action goal accepted (async)
+   - **202:** Action goal accepted (async)
    - **400:** Invalid input
    - **404:** Operation not found
 
@@ -244,14 +257,13 @@ Execute Operations
         -H "Content-Type: application/json" \
         -d '{"order": 10}'
 
-   **Action Response:**
+   **Action Response (202 Accepted):**
 
    .. code-block:: json
 
       {
-        "execution_id": "abc123-def456",
-        "status": "executing",
-        "self": "/api/v1/components/calibration/operations/long_calibration/executions/abc123-def456"
+        "id": "abc123-def456",
+        "status": "running"
       }
 
 ``GET /api/v1/components/{id}/operations/{operation_id}/executions``
@@ -305,7 +317,11 @@ Manage ROS 2 node parameters.
             "value": "sensor_001",
             "type": "string"
           }
-        ]
+        ],
+        "x-medkit": {
+          "entity_id": "temp_sensor",
+          "total_count": 2
+        }
       }
 
 ``GET /api/v1/components/{id}/configurations/{param_name}``
@@ -359,7 +375,11 @@ Query and manage faults.
             "timestamp": "2025-01-15T10:30:00Z",
             "source": "lidar_driver"
           }
-        ]
+        ],
+        "x-medkit": {
+          "entity_id": "lidar_sensor",
+          "total_count": 1
+        }
       }
 
 ``GET /api/v1/components/{id}/faults/{fault_code}``

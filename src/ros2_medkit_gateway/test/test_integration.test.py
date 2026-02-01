@@ -1866,7 +1866,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET /apps/{app_id}/configurations lists all parameters.
 
-        @verifies REQ_INTEROP_023
+        @verifies REQ_INTEROP_048
         """
         response = requests.get(
             f'{self.BASE_URL}/apps/temp_sensor/configurations',
@@ -1903,7 +1903,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET /apps/{app_id}/configurations/{param_name} gets parameter.
 
-        @verifies REQ_INTEROP_023
+        @verifies REQ_INTEROP_049
         """
         response = requests.get(
             f'{self.BASE_URL}/apps/temp_sensor/configurations/publish_rate',
@@ -1936,7 +1936,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test PUT /apps/{app_id}/configurations/{param_name} sets parameter.
 
-        @verifies REQ_INTEROP_024
+        @verifies REQ_INTEROP_050
         """
         # Set a new value using SOVD "data" field
         response = requests.put(
@@ -1990,7 +1990,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         The DELETE method resets the parameter to its default value.
         It first changes the value, then resets it, then verifies the reset.
 
-        @verifies REQ_INTEROP_025
+        @verifies REQ_INTEROP_052
         """
         # First, change the value from default using SOVD "data" field
         set_response = requests.put(
@@ -2023,7 +2023,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET /apps/{app_id}/configurations returns 404 for unknown app.
 
-        @verifies REQ_INTEROP_023
+        @verifies REQ_INTEROP_048
         """
         response = requests.get(
             f'{self.BASE_URL}/apps/nonexistent_app/configurations',
@@ -2044,7 +2044,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test GET configurations/{param_name} returns 404 for unknown param.
 
-        @verifies REQ_INTEROP_023
+        @verifies REQ_INTEROP_049
         """
         response = requests.get(
             f'{self.BASE_URL}/apps/temp_sensor/configurations/nonexistent_param',
@@ -2065,7 +2065,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test PUT configurations/{param_name} returns 400 when value missing.
 
-        @verifies REQ_INTEROP_024
+        @verifies REQ_INTEROP_050
         """
         response = requests.put(
             f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
@@ -2085,7 +2085,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         """
         Test that root endpoint lists configurations endpoints and capability.
 
-        @verifies REQ_INTEROP_023
+        @verifies REQ_INTEROP_048
         """
         data = self._get_json('/')
 
@@ -2106,8 +2106,6 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
     def test_53_service_operation_has_type_info_schema(self):
         """
         Test that service operations include type_info with request/response schemas.
-
-        @verifies REQ_INTEROP_025
         """
         # Get operations directly from the operations endpoint
         ops_data = self._get_json('/apps/calibration/operations')
@@ -2149,8 +2147,6 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
     def test_54_action_operation_has_type_info_schema(self):
         """
         Test that action operations include type_info with goal/result/feedback schemas.
-
-        @verifies REQ_INTEROP_025
         """
         # Get operations directly from the operations endpoint
         ops_data = self._get_json('/apps/long_calibration/operations')

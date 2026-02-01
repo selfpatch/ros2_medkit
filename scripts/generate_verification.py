@@ -253,26 +253,52 @@ def update_requirement_status(verified_reqs):
         i = 0
         while i < len(lines):
             line = lines[i]
-            new_lines.append(line)
 
-            # Check if this is a requirement ID line
-            id_match = re.match(r'\s*:id:\s+(REQ_\w+)', line)
-            if id_match:
-                req_id = id_match.group(1)
+            # Check if this starts a new .. req:: block
+            if re.match(r'\.\.\s+req::', line):
+                # Collect all lines belonging to this req block (indented lines)
+                req_block_lines = [line]
+                i += 1
 
-                # If this requirement is verified and the next line has status: open, change it
-                if req_id in verified_reqs and i + 1 < len(lines):
-                    next_line = lines[i + 1]
-                    if re.match(r'\s*:status:\s+open\s*$', next_line):
-                        # Replace with verified status
-                        indent = re.match(r'(\s*)', next_line).group(1)
-                        new_lines.append(f"{indent}:status: verified")
-                        modified = True
-                        total_updated_reqs += 1
-                        i += 2  # Skip the old status line
-                        continue
+                # Collect indented lines that belong to this block
+                while i < len(lines):
+                    next_line = lines[i]
+                    # Check if line is indented (part of directive) or empty
+                    if re.match(r'^\s+:', next_line) or (next_line.strip() == '' and i + 1 < len(lines) and re.match(r'^\s+:', lines[i + 1])):
+                        req_block_lines.append(next_line)
+                        i += 1
+                    elif next_line.strip() == '':
+                        req_block_lines.append(next_line)
+                        i += 1
+                    else:
+                        break
 
-            i += 1
+                # Now analyze the req block to find :id: and :status:
+                req_id = None
+                status_line_idx = None
+                current_status = None
+
+                for j, block_line in enumerate(req_block_lines):
+                    id_match = re.match(r'\s*:id:\s+(REQ_\w+)', block_line)
+                    if id_match:
+                        req_id = id_match.group(1)
+
+                    status_match = re.match(r'(\s*):status:\s+(\w+)\s*$', block_line)
+                    if status_match:
+                        status_line_idx = j
+                        current_status = status_match.group(2)
+
+                # If we found a verified requirement with open status, update it
+                if req_id and req_id in verified_reqs and status_line_idx is not None and current_status == 'open':
+                    indent = re.match(r'(\s*)', req_block_lines[status_line_idx]).group(1)
+                    req_block_lines[status_line_idx] = f"{indent}:status: verified"
+                    modified = True
+                    total_updated_reqs += 1
+
+                new_lines.extend(req_block_lines)
+            else:
+                new_lines.append(line)
+                i += 1
 
         if modified:
             with open(spec_file, "w", encoding="utf-8") as f:
