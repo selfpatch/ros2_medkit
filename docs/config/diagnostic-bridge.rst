@@ -129,7 +129,7 @@ Example launch file:
        return LaunchDescription([
            Node(
                package='ros2_medkit_diagnostic_bridge',
-               executable='diagnostic_bridge',
+               executable='diagnostic_bridge_node',
                name='diagnostic_bridge',
                parameters=[{
                    'diagnostics_topic': '/diagnostics',
@@ -151,10 +151,10 @@ FaultManager is started before the bridge:
 .. code-block:: bash
 
    # Terminal 1: Start FaultManager
-   ros2 run ros2_medkit_fault_manager fault_manager
+   ros2 run ros2_medkit_fault_manager fault_manager_node
 
    # Terminal 2: Start Diagnostic Bridge
-   ros2 run ros2_medkit_diagnostic_bridge diagnostic_bridge
+   ros2 run ros2_medkit_diagnostic_bridge diagnostic_bridge_node
 
 Or use a combined launch file:
 
@@ -167,12 +167,12 @@ Or use a combined launch file:
        return LaunchDescription([
            Node(
                package='ros2_medkit_fault_manager',
-               executable='fault_manager',
+               executable='fault_manager_node',
                name='fault_manager',
            ),
            Node(
                package='ros2_medkit_diagnostic_bridge',
-               executable='diagnostic_bridge',
+               executable='diagnostic_bridge_node',
                name='diagnostic_bridge',
            ),
        ])

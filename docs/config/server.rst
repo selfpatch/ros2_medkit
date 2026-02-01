@@ -11,7 +11,7 @@ The gateway can be configured via:
 
 1. **Command line**: ``--ros-args -p server.port:=9000``
 2. **Launch files**: ``parameters=[{'server.port': 9000}]``
-3. **YAML file**: See ``config/gateway_params.yaml``
+3. **YAML file**: See ``src/ros2_medkit_gateway/config/gateway_params.yaml``
 
 Network Settings
 ----------------

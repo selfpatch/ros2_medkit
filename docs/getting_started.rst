@@ -55,16 +55,71 @@ You should see:
 
    ros2 launch ros2_medkit_gateway demo_nodes.launch.py
 
-This launches automotive demo nodes (temperature sensors, brake actuators, etc.)
-that we'll use to explore the API.
+This launches automotive demo nodes that we'll use to explore the API.
+
+.. list-table:: Demo Nodes Created by demo_nodes.launch.py
+   :header-rows: 1
+   :widths: 25 25 30 20
+
+   * - Node Name
+     - Entity ID
+     - Namespace
+     - Description
+   * - temp_sensor
+     - powertrain_engine_component.temp_sensor
+     - /powertrain/engine
+     - Engine temperature sensor
+   * - rpm_sensor
+     - powertrain_engine_component.rpm_sensor
+     - /powertrain/engine
+     - Engine RPM sensor
+   * - calibration
+     - powertrain_engine_component.calibration
+     - /powertrain/engine
+     - Calibration service (sync)
+   * - long_calibration
+     - powertrain_engine_component.long_calibration
+     - /powertrain/engine
+     - Long calibration action (async)
+   * - pressure_sensor
+     - chassis_brakes_component.pressure_sensor
+     - /chassis/brakes
+     - Brake pressure sensor
+   * - actuator
+     - chassis_brakes_component.actuator
+     - /chassis/brakes
+     - Brake actuator
+   * - status_sensor
+     - body_door_front_left_component.status_sensor
+     - /body/door/front_left
+     - Door status sensor
+   * - controller
+     - body_lights_component.controller
+     - /body/lights
+     - Light controller
+   * - lidar_sensor
+     - perception_lidar_component.lidar_sensor
+     - /perception/lidar
+     - LiDAR sensor with faults
+
+.. note::
+
+   In runtime-only discovery mode, entity IDs are derived from the namespace path.
+   Use the ``/components`` endpoint to discover actual component IDs.
 
 **Terminal 3 - (Optional) Start fault manager:**
 
 .. code-block:: bash
 
+   mkdir -p $HOME/.ros2_medkit
    ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args -p database_path:=$HOME/.ros2_medkit/faults.db
 
 Required if you want to test the Faults API.
+
+.. note::
+
+   The ``~/.ros2_medkit/`` directory must exist before starting the fault manager.
+   SQLite will create the database file automatically.
 
 .. admonition:: ✅ Checkpoint
    :class: tip
@@ -73,7 +128,7 @@ Required if you want to test the Faults API.
 
    - Gateway running on http://localhost:8080
    - Demo nodes publishing data
-   - Terminal 1 showing: ``ROS 2 Medkit Gateway ready on HTTP://127.0.0.1:8080``
+   - Terminal 1 showing: ``[gateway_node]: REST server started successfully``
 
 Step 2: Explore the API
 -----------------------

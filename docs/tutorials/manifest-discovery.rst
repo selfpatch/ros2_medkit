@@ -41,11 +41,11 @@ Discovery Modes Comparison
      - ✅ Yes
      - ❌ No
    * - Custom areas
-     - ❌ No
+     - ❌ No (derived from namespaces)
      - ✅ Yes
      - ✅ Yes
    * - Apps entity type
-     - ❌ No
+     - ✅ Yes (ROS nodes → Apps)
      - ✅ Yes
      - ✅ Yes
    * - Functions entity type

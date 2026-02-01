@@ -35,7 +35,14 @@ This starts:
 - ros2_medkit_gateway
 - `sovd_web_ui <https://github.com/selfpatch/sovd_web_ui>`_ (Web UI)
 
-Access the UI at http://localhost:5173
+Access the UI at http://localhost:3000 (Docker container maps port 80 to 3000).
+
+.. note::
+
+   **Port confusion:**
+
+   - **Development** (``npm run dev``): http://localhost:5173 (Vite dev server)
+   - **Docker/Production**: http://localhost:3000 when using ``-p 3000:80``
 
 Building the Gateway Image
 --------------------------
