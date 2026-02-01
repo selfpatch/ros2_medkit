@@ -230,13 +230,13 @@ Response structure (showing one topic):
            },
            "type_info": {
              "default_value": {
-               "header": {...},
+               "header": {},
                "temperature": 0,
                "variance": 0
              },
              "schema": {
                "properties": {
-                 "header": {...},
+                 "header": {},
                  "temperature": {"type": "number"},
                  "variance": {"type": "number"}
                },

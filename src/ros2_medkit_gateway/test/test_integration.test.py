@@ -2104,9 +2104,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
     # ========== Operation Schema Tests (test_53-54) ==========
 
     def test_53_service_operation_has_type_info_schema(self):
-        """
-        Test that service operations include type_info with request/response schemas.
-        """
+        """Test that service operations include type_info with request/response schemas."""
         # Get operations directly from the operations endpoint
         ops_data = self._get_json('/apps/calibration/operations')
         self.assertIn('items', ops_data, 'Operations endpoint should return items')
@@ -2145,9 +2143,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print(f'✓ Service operation type_info test passed: {type_info}')
 
     def test_54_action_operation_has_type_info_schema(self):
-        """
-        Test that action operations include type_info with goal/result/feedback schemas.
-        """
+        """Test that action operations include type_info with goal/result/feedback schemas."""
         # Get operations directly from the operations endpoint
         ops_data = self._get_json('/apps/long_calibration/operations')
         self.assertIn('items', ops_data, 'Operations endpoint should return items')
