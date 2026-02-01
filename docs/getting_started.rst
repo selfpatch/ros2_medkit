@@ -94,10 +94,25 @@ Response shows available endpoints and version info.
 Step 3: Discover Areas and Components
 -------------------------------------
 
-ros2_medkit organizes ROS 2 nodes into a hierarchy:
+ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
 
-- **Areas** - Physical or logical domains (e.g., powertrain, chassis)
-- **Components** - Individual nodes within areas
+- **Areas** — Logical/physical domains (e.g., ``/powertrain``, ``/chassis``)
+- **Components** — Hardware or virtual units that group Apps
+- **Apps** — Individual ROS 2 nodes (requires manifest mode)
+- **Functions** — Cross-cutting capabilities (requires manifest mode)
+
+.. note::
+
+   **Discovery Modes**
+
+   - **Runtime-only** (default): Components are synthetic groups created by
+     namespace aggregation. Each ROS 2 namespace becomes an Area, and nodes
+     within it become a Component.
+   - **Hybrid**: Manifest defines Areas/Components/Apps/Functions, runtime
+     links them to live ROS 2 nodes.
+   - **Manifest-only**: Only manifest-declared entities are exposed.
+
+   See :doc:`tutorials/manifest-discovery` for details on manifest mode.
 
 **List all areas:**
 
@@ -287,16 +302,30 @@ Step 7: Monitor Faults
 Using with Web UI
 -----------------
 
-A companion web UI is available in the `sovd_web_ui <https://github.com/selfpatch/sovd_web_ui>`_ repository:
+A companion web UI is available for visual entity browsing:
 
 .. code-block:: bash
 
-   git clone https://github.com/selfpatch/sovd_web_ui.git
-   cd sovd_web_ui
-   npm install
-   npm run dev
+   docker pull ghcr.io/selfpatch/sovd_web_ui:latest
+   docker run -p 8081:80 ghcr.io/selfpatch/sovd_web_ui:latest
 
-Open http://localhost:5173 and connect to the gateway at http://localhost:8080.
+Open http://localhost:8081 and connect to the gateway at http://localhost:8080.
+
+See :doc:`tutorials/web-ui` for more details.
+
+Using with LLMs (MCP)
+---------------------
+
+Connect your LLM to the gateway using ros2_medkit_mcp:
+
+.. code-block:: bash
+
+   git clone https://github.com/selfpatch/ros2_medkit_mcp.git
+   cd ros2_medkit_mcp
+   poetry install
+   poetry run ros2-medkit-mcp-stdio
+
+See :doc:`tutorials/mcp-server` for Claude Desktop and VS Code integration.
 
 Using with Postman
 ------------------
@@ -312,7 +341,24 @@ See ``postman/README.md`` for detailed instructions.
 Next Steps
 ----------
 
+**Configuration:**
+
+- :doc:`config/server` - Server, CORS, and TLS settings
+- :doc:`config/discovery-options` - Discovery mode configuration
+
+**Tutorials:**
+
 - :doc:`tutorials/authentication` - Enable JWT authentication
 - :doc:`tutorials/https` - Configure TLS/HTTPS
+- :doc:`tutorials/manifest-discovery` - Use manifests for stable entity IDs
 - :doc:`tutorials/docker` - Deploy with Docker
+
+**Companion Projects:**
+
+- :doc:`tutorials/web-ui` - Visual entity browser
+- :doc:`tutorials/mcp-server` - LLM integration via MCP
+
+**Reference:**
+
+- :doc:`api/rest` - Complete REST API reference
 - :doc:`design/ros2_medkit_gateway/index` - Architecture deep-dive
