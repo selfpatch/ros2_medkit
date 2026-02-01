@@ -17,6 +17,8 @@ Step-by-step guides for common use cases with ros2_medkit.
    devcontainer
    integration
    custom_areas
+   web-ui
+   mcp-server
 
 Discovery Tutorials
 -------------------
@@ -56,6 +58,15 @@ Basic Tutorials
 
 :doc:`devcontainer`
    Set up a VS Code development container for ros2_medkit.
+
+Companion Projects
+------------------
+
+:doc:`web-ui`
+   sovd_web_ui — A web interface for browsing SOVD entity trees.
+
+:doc:`mcp-server`
+   ros2_medkit_mcp — Connect LLMs to your ROS 2 system via MCP protocol.
 
 Advanced Tutorials
 ------------------
