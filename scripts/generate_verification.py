@@ -10,6 +10,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 WORKSPACE_DIR = SCRIPT_DIR.parent
 SRC_DIR = WORKSPACE_DIR / "src"
 OUTPUT_FILE = WORKSPACE_DIR / "docs/requirements/verification.rst"
+REQUIREMENTS_SPECS_DIR = WORKSPACE_DIR / "docs/requirements/specs"
 
 
 def parse_cpp_file(file_path):
@@ -229,6 +230,63 @@ def generate_rst(tests):
     return "\n".join(lines)
 
 
+def update_requirement_status(verified_reqs):
+    """Update status in requirement spec files from 'open' to 'verified' for verified requirements."""
+    if not REQUIREMENTS_SPECS_DIR.exists():
+        print(f"Requirements specs directory {REQUIREMENTS_SPECS_DIR} does not exist.")
+        return
+
+    updated_files = []
+    total_updated_reqs = 0
+
+    for spec_file in REQUIREMENTS_SPECS_DIR.glob("*.rst"):
+        if spec_file.name == "index.rst":
+            continue
+
+        with open(spec_file, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        modified = False
+        lines = content.split("\n")
+        new_lines = []
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            new_lines.append(line)
+            
+            # Check if this is a requirement ID line
+            id_match = re.match(r'\s*:id:\s+(REQ_\w+)', line)
+            if id_match:
+                req_id = id_match.group(1)
+                
+                # If this requirement is verified and the next line has status: open, change it
+                if req_id in verified_reqs and i + 1 < len(lines):
+                    next_line = lines[i + 1]
+                    if re.match(r'\s*:status:\s+open\s*$', next_line):
+                        # Replace with verified status
+                        indent = re.match(r'(\s*)', next_line).group(1)
+                        new_lines.append(f"{indent}:status: verified")
+                        modified = True
+                        total_updated_reqs += 1
+                        i += 2  # Skip the old status line
+                        continue
+            
+            i += 1
+
+        if modified:
+            with open(spec_file, "w", encoding="utf-8") as f:
+                f.write("\n".join(new_lines))
+            updated_files.append(spec_file.name)
+
+    if updated_files:
+        print(f"Updated {total_updated_reqs} requirement(s) to 'verified' status in {len(updated_files)} file(s):")
+        for filename in updated_files:
+            print(f"  - {filename}")
+    else:
+        print("No requirement status updates needed.")
+
+
 def main():
     """Scan tests and generate verification.rst."""
     all_tests = []
@@ -247,12 +305,22 @@ def main():
     # Sort by ID for consistency
     all_tests.sort(key=lambda x: x["id"])
 
+    # Collect all verified requirement IDs
+    verified_reqs = set()
+    for test in all_tests:
+        verified_reqs.update(test["verifies"])
+
+    # Generate verification.rst
     rst_content = generate_rst(all_tests)
 
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(rst_content)
 
     print("Generated " + str(OUTPUT_FILE) + " with " + str(len(all_tests)) + " tests.")
+    print(f"Found {len(verified_reqs)} verified requirement(s): {sorted(verified_reqs)}")
+
+    # Update requirement statuses
+    update_requirement_status(verified_reqs)
 
 
 if __name__ == "__main__":

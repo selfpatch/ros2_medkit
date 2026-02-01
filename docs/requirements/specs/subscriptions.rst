@@ -3,7 +3,7 @@ Subscriptions
 
 .. req:: GET /{entity}/cyclic-subscriptions
    :id: REQ_INTEROP_025
-   :status: open
+   :status: verified
    :tags: Subscriptions
 
    The endpoint shall list all configured cyclic data subscriptions on the addressed entity.
