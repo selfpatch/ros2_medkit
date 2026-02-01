@@ -44,7 +44,7 @@ Starting the Simulation
 .. figure:: /_static/images/16_turtlebot_gazebo.png
    :alt: TurtleBot3 in Gazebo
    :align: center
-   :width: 100%
+   :width: 600px
 
    TurtleBot3 Waffle in Gazebo simulation.
 
@@ -57,7 +57,7 @@ Starting the Simulation
 .. figure:: /_static/images/17_turtlebot_run_demo_terminal.png
    :alt: Gateway terminal
    :align: center
-   :width: 100%
+   :width: 600px
 
    Gateway discovering TurtleBot3 nodes.
 
@@ -119,7 +119,7 @@ Via the web UI, navigate to a component and click the **data** folder to see top
 .. figure:: /_static/images/06_topic_data_view.png
    :alt: Topic data view
    :align: center
-   :width: 100%
+   :width: 600px
 
    Viewing topic data in the web UI.
 
@@ -137,7 +137,7 @@ Navigate to the **operations** folder to see available services:
 .. figure:: /_static/images/07_operations_panel.png
    :alt: Operations panel
    :align: center
-   :width: 100%
+   :width: 600px
 
    Available operations for a component.
 
@@ -163,7 +163,7 @@ Publish velocity commands:
 .. figure:: /_static/images/08_operations_execution.png
    :alt: Operation execution
    :align: center
-   :width: 100%
+   :width: 600px
 
    Result of executing an operation.
 
@@ -175,7 +175,7 @@ Click on the **configurations** folder to see ROS 2 parameters:
 .. figure:: /_static/images/09_configurations_list.png
    :alt: Configurations list
    :align: center
-   :width: 100%
+   :width: 600px
 
    Parameters for TurtleBot3 components.
 
@@ -191,7 +191,7 @@ Change a parameter value using the API:
 .. figure:: /_static/images/10_configuration_edit.png
    :alt: Configuration edit
    :align: center
-   :width: 100%
+   :width: 600px
 
    Editing a parameter value in the web UI.
 
@@ -204,7 +204,7 @@ View faults in the web UI dashboard:
 .. figure:: /_static/images/18_faults_injected_dashboard.png
    :alt: Faults dashboard
    :align: center
-   :width: 100%
+   :width: 600px
 
    Dashboard showing active faults.
 
@@ -213,7 +213,7 @@ You can also view faults for specific components:
 .. figure:: /_static/images/19_faults_injected_app_view.png
    :alt: Faults in app view
    :align: center
-   :width: 100%
+   :width: 600px
 
    Fault details in the entity view.
 
