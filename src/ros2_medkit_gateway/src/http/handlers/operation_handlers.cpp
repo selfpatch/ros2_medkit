@@ -38,12 +38,12 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
 
     entity_id = req.matches[1];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
+    auto entity_info = *entity_opt;
 
     // Use ThreadSafeEntityCache for O(1) entity lookup and aggregated operations
     const auto & cache = ctx_.node()->get_thread_safe_cache();
@@ -52,26 +52,7 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
     AggregatedOperations ops;
     std::string entity_type;
 
-    auto entity_ref = cache.find_entity(entity_id);
-    if (!entity_ref) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
-      return;
-    }
-
-    // Validate entity type matches the route path
-    auto expected_type = extract_entity_type_from_path(req.path);
-    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                     to_string(entity_ref->type),
-                                 {{"entity_id", entity_id},
-                                  {"expected_type", to_string(expected_type)},
-                                  {"actual_type", to_string(entity_ref->type)}});
-      return;
-    }
-
-    switch (entity_ref->type) {
+    switch (entity_info.sovd_type()) {
       case SovdEntityType::COMPONENT:
         ops = cache.get_component_operations(entity_id);
         entity_type = "component";
@@ -192,40 +173,20 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
     entity_id = req.matches[1];
     operation_id = req.matches[2];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
+    auto entity_info = *entity_opt;
 
     // Use ThreadSafeEntityCache for O(1) entity lookup
     const auto & cache = ctx_.node()->get_thread_safe_cache();
 
-    // Find entity
-    auto entity_ref = cache.find_entity(entity_id);
-    if (!entity_ref) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
-      return;
-    }
-
-    // Validate entity type matches the route path
-    auto expected_type = extract_entity_type_from_path(req.path);
-    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                     to_string(entity_ref->type),
-                                 {{"entity_id", entity_id},
-                                  {"expected_type", to_string(expected_type)},
-                                  {"actual_type", to_string(entity_ref->type)}});
-      return;
-    }
-
     // Get aggregated operations based on entity type
     AggregatedOperations ops;
     std::string entity_type;
-    switch (entity_ref->type) {
+    switch (entity_info.sovd_type()) {
       case SovdEntityType::COMPONENT:
         ops = cache.get_component_operations(entity_id);
         entity_type = "component";
@@ -379,12 +340,12 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
     entity_id = req.matches[1];
     operation_id = req.matches[2];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
+    auto entity_info = *entity_opt;
 
     // Parse request body
     json body = json::object();
@@ -401,30 +362,10 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
     // Use ThreadSafeEntityCache for O(1) entity lookup
     const auto & cache = ctx_.node()->get_thread_safe_cache();
 
-    // Find entity and get its operations
-    auto entity_ref = cache.find_entity(entity_id);
-    if (!entity_ref) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
-      return;
-    }
-
-    // Validate entity type matches the route path
-    auto expected_type = extract_entity_type_from_path(req.path);
-    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                     to_string(entity_ref->type),
-                                 {{"entity_id", entity_id},
-                                  {"expected_type", to_string(expected_type)},
-                                  {"actual_type", to_string(entity_ref->type)}});
-      return;
-    }
-
     // Get aggregated operations based on entity type
     AggregatedOperations ops;
     std::string entity_type;
-    switch (entity_ref->type) {
+    switch (entity_info.sovd_type()) {
       case SovdEntityType::COMPONENT:
         ops = cache.get_component_operations(entity_id);
         entity_type = "component";

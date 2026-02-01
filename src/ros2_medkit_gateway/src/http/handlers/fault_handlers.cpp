@@ -187,30 +187,12 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
 
     entity_id = req.matches[1];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
-
-    auto expected_type = extract_entity_type_from_path(req.path);
-    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
-    if (entity_info.type == EntityType::UNKNOWN) {
-      auto any_entity = ctx_.get_entity_info(entity_id);
-      if (any_entity.type != EntityType::UNKNOWN) {
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                       to_string(any_entity.sovd_type()),
-                                   {{"entity_id", entity_id},
-                                    {"expected_type", to_string(expected_type)},
-                                    {"actual_type", to_string(any_entity.sovd_type())}});
-      } else {
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                   {{"entity_id", entity_id}});
-      }
-      return;
-    }
+    auto entity_info = *entity_opt;
 
     auto filter = parse_fault_status_param(req);
     if (!filter.is_valid) {
@@ -364,35 +346,17 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
     entity_id = req.matches[1];
     fault_code = req.matches[2];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
+    auto entity_info = *entity_opt;
 
     // Fault codes may contain dots and underscores, validate basic constraints
     if (fault_code.empty() || fault_code.length() > 256) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid fault code",
                                  {{"details", "Fault code must be between 1 and 256 characters"}});
-      return;
-    }
-
-    auto expected_type = extract_entity_type_from_path(req.path);
-    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
-    if (entity_info.type == EntityType::UNKNOWN) {
-      auto any_entity = ctx_.get_entity_info(entity_id);
-      if (any_entity.type != EntityType::UNKNOWN) {
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                       to_string(any_entity.sovd_type()),
-                                   {{"entity_id", entity_id},
-                                    {"expected_type", to_string(expected_type)},
-                                    {"actual_type", to_string(any_entity.sovd_type())}});
-      } else {
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                   {{"entity_id", entity_id}});
-      }
       return;
     }
 
@@ -444,36 +408,17 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     entity_id = req.matches[1];
     fault_code = req.matches[2];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
+    auto entity_info = *entity_opt;
 
     // Validate fault code
     if (fault_code.empty() || fault_code.length() > 256) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid fault code",
                                  {{"details", "Fault code must be between 1 and 256 characters"}});
-      return;
-    }
-
-    // Verify entity exists
-    auto expected_type = extract_entity_type_from_path(req.path);
-    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
-    if (entity_info.type == EntityType::UNKNOWN) {
-      auto any_entity = ctx_.get_entity_info(entity_id);
-      if (any_entity.type != EntityType::UNKNOWN) {
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                       to_string(any_entity.sovd_type()),
-                                   {{"entity_id", entity_id},
-                                    {"expected_type", to_string(expected_type)},
-                                    {"actual_type", to_string(any_entity.sovd_type())}});
-      } else {
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                   {{"entity_id", entity_id}});
-      }
       return;
     }
 
@@ -514,31 +459,12 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
 
     entity_id = req.matches[1];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
-
-    // Verify entity exists
-    auto expected_type = extract_entity_type_from_path(req.path);
-    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
-    if (entity_info.type == EntityType::UNKNOWN) {
-      auto any_entity = ctx_.get_entity_info(entity_id);
-      if (any_entity.type != EntityType::UNKNOWN) {
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                       to_string(any_entity.sovd_type()),
-                                   {{"entity_id", entity_id},
-                                    {"expected_type", to_string(expected_type)},
-                                    {"actual_type", to_string(any_entity.sovd_type())}});
-      } else {
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                   {{"entity_id", entity_id}});
-      }
-      return;
-    }
+    auto entity_info = *entity_opt;
 
     // Get all faults for this entity
     auto fault_mgr = ctx_.node()->get_fault_manager();
@@ -633,35 +559,17 @@ void FaultHandlers::handle_get_component_snapshots(const httplib::Request & req,
     entity_id = req.matches[1];
     fault_code = req.matches[2];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
+    auto entity_info = *entity_opt;
 
     // Validate fault code
     if (fault_code.empty() || fault_code.length() > 256) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid fault code",
                                  {{"details", "Fault code must be between 1 and 256 characters"}});
-      return;
-    }
-
-    auto expected_type = extract_entity_type_from_path(req.path);
-    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
-    if (entity_info.type == EntityType::UNKNOWN) {
-      auto any_entity = ctx_.get_entity_info(entity_id);
-      if (any_entity.type != EntityType::UNKNOWN) {
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                       to_string(any_entity.sovd_type()),
-                                   {{"entity_id", entity_id},
-                                    {"expected_type", to_string(expected_type)},
-                                    {"actual_type", to_string(any_entity.sovd_type())}});
-      } else {
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                   {{"entity_id", entity_id}});
-      }
       return;
     }
 

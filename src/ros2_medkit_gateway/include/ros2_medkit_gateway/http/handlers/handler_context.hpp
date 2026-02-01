@@ -176,7 +176,24 @@ class HandlerContext {
   static std::optional<std::string> validate_collection_access(const EntityInfo & entity,
                                                                ResourceCollection collection);
 
-
+  /**
+   * @brief Validate entity exists and matches expected route type
+   *
+   * Unified validation helper that:
+   * 1. Validates entity ID format
+   * 2. Looks up entity in the expected collection (based on route path)
+   * 3. Sends appropriate error responses:
+   *    - 400 with "invalid-parameter" if ID format is invalid
+   *    - 400 with "invalid-parameter" if entity exists but wrong type for route
+   *    - 404 with "entity-not-found" if entity doesn't exist
+   *
+   * @param req HTTP request (used to extract expected type from path)
+   * @param res HTTP response (error responses sent here)
+   * @param entity_id Entity ID to validate
+   * @return EntityInfo if valid, std::nullopt if error response was sent
+   */
+  std::optional<EntityInfo> validate_entity_for_route(const httplib::Request & req, httplib::Response & res,
+                                                      const std::string & entity_id) const;
 
   /**
    * @brief Set CORS headers on response if origin is allowed

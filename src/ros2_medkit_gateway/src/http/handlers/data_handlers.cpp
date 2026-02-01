@@ -38,39 +38,15 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
 
     entity_id = req.matches[1];
 
-    auto validation_result = ctx_.validate_entity_id(entity_id);
-    if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", validation_result.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
-
-    // First, verify that the entity actually exists in the cache
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
-
-    // Get expected type from route and look up entity in that specific collection
-    auto expected_type = extract_entity_type_from_path(req.path);
-    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
-    if (entity_info.type == EntityType::UNKNOWN) {
-      // Check if entity exists in ANY collection (for better error message)
-      auto any_entity = ctx_.get_entity_info(entity_id);
-      if (any_entity.type != EntityType::UNKNOWN) {
-        // Entity exists but wrong type -> 400
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                       to_string(any_entity.sovd_type()),
-                                   {{"entity_id", entity_id},
-                                    {"expected_type", to_string(expected_type)},
-                                    {"actual_type", to_string(any_entity.sovd_type())}});
-      } else {
-        // Entity doesn't exist at all -> 404
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                   {{"entity_id", entity_id}});
-      }
-      return;
-    }
+    auto entity_info = *entity_opt;
 
     // Use unified cache method to get aggregated data
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto aggregated = cache.get_entity_data(entity_id);
 
     // Get data access manager for type introspection
@@ -145,33 +121,10 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
     // cpp-httplib automatically decodes percent-encoded characters in URL path
     topic_name = req.matches[2];
 
-    auto validation_result = ctx_.validate_entity_id(entity_id);
-    if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", validation_result.error()}, {"entity_id", entity_id}});
-      return;
-    }
-
-    // Verify entity exists in the correct collection for this route
-    auto expected_type = extract_entity_type_from_path(req.path);
-    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
-    if (entity_info.type == EntityType::UNKNOWN) {
-      // Check if entity exists in ANY collection (for better error message)
-      auto any_entity = ctx_.get_entity_info(entity_id);
-      if (any_entity.type != EntityType::UNKNOWN) {
-        // Entity exists but wrong type -> 400
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                       to_string(any_entity.sovd_type()),
-                                   {{"entity_id", entity_id},
-                                    {"expected_type", to_string(expected_type)},
-                                    {"actual_type", to_string(any_entity.sovd_type())}});
-      } else {
-        // Entity doesn't exist at all -> 404
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                   {{"entity_id", entity_id}});
-      }
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
 
     // Determine the full ROS topic path
@@ -250,11 +203,10 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
     entity_id = req.matches[1];
     topic_name = req.matches[2];
 
-    auto validation_result = ctx_.validate_entity_id(entity_id);
-    if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", validation_result.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
 
     // Parse request body
@@ -294,28 +246,6 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
       HandlerContext::send_error(
           res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid message type format",
           {{"details", "Message type should be in format: package/msg/Type"}, {"type", msg_type}});
-      return;
-    }
-
-    // Verify entity exists in the correct collection for this route
-    auto expected_type = extract_entity_type_from_path(req.path);
-    auto entity_info = ctx_.get_entity_info(entity_id, expected_type);
-    if (entity_info.type == EntityType::UNKNOWN) {
-      // Check if entity exists in ANY collection (for better error message)
-      auto any_entity = ctx_.get_entity_info(entity_id);
-      if (any_entity.type != EntityType::UNKNOWN) {
-        // Entity exists but wrong type -> 400
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                   "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                       to_string(any_entity.sovd_type()),
-                                   {{"entity_id", entity_id},
-                                    {"expected_type", to_string(expected_type)},
-                                    {"actual_type", to_string(any_entity.sovd_type())}});
-      } else {
-        // Entity doesn't exist at all -> 404
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                   {{"entity_id", entity_id}});
-      }
       return;
     }
 

@@ -194,6 +194,42 @@ std::optional<std::string> HandlerContext::validate_collection_access(const Enti
   return std::nullopt;
 }
 
+std::optional<EntityInfo> HandlerContext::validate_entity_for_route(const httplib::Request & req,
+                                                                    httplib::Response & res,
+                                                                    const std::string & entity_id) const {
+  // Step 1: Validate entity ID format
+  auto validation_result = validate_entity_id(entity_id);
+  if (!validation_result) {
+    send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+               {{"details", validation_result.error()}, {"entity_id", entity_id}});
+    return std::nullopt;
+  }
+
+  // Step 2: Get expected type from route path and look up entity
+  auto expected_type = extract_entity_type_from_path(req.path);
+  auto entity_info = get_entity_info(entity_id, expected_type);
+
+  if (entity_info.type == EntityType::UNKNOWN) {
+    // Step 3: Check if entity exists in ANY collection (for better error message)
+    auto any_entity = get_entity_info(entity_id);
+    if (any_entity.type != EntityType::UNKNOWN) {
+      // Entity exists but wrong type for this route -> 400
+      send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                     to_string(any_entity.sovd_type()),
+                 {{"entity_id", entity_id},
+                  {"expected_type", to_string(expected_type)},
+                  {"actual_type", to_string(any_entity.sovd_type())}});
+    } else {
+      // Entity doesn't exist at all -> 404
+      send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
+    }
+    return std::nullopt;
+  }
+
+  return entity_info;
+}
+
 void HandlerContext::set_cors_headers(httplib::Response & res, const std::string & origin) const {
   res.set_header("Access-Control-Allow-Origin", origin);
 

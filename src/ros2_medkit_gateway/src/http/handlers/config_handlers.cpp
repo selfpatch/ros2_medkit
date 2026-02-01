@@ -221,35 +221,14 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
 
     entity_id = req.matches[1];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
-    }
-
-    // First, verify that the entity actually exists in the cache
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto entity_ref = cache.find_entity(entity_id);
-    if (!entity_ref) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
-      return;
-    }
-
-    // Validate entity type matches the route path
-    auto expected_type = extract_entity_type_from_path(req.path);
-    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                     to_string(entity_ref->type),
-                                 {{"entity_id", entity_id},
-                                  {"expected_type", to_string(expected_type)},
-                                  {"actual_type", to_string(entity_ref->type)}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
 
     // Get aggregated configurations info for this entity
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
     // If no nodes to query, return empty result
@@ -384,11 +363,10 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
     entity_id = req.matches[1];
     param_id = req.matches[2];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
 
     // Parameter ID may be prefixed with app_id: for aggregated configs
@@ -398,28 +376,8 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
       return;
     }
 
-    // Verify entity exists
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto entity_ref = cache.find_entity(entity_id);
-    if (!entity_ref) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
-      return;
-    }
-
-    // Validate entity type matches the route path
-    auto expected_type = extract_entity_type_from_path(req.path);
-    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                     to_string(entity_ref->type),
-                                 {{"entity_id", entity_id},
-                                  {"expected_type", to_string(expected_type)},
-                                  {"actual_type", to_string(entity_ref->type)}});
-      return;
-    }
-
     // Get aggregated configurations info
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
     if (agg_configs.nodes.empty()) {
@@ -533,11 +491,10 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     entity_id = req.matches[1];
     param_id = req.matches[2];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
 
     if (param_id.empty() || param_id.length() > MAX_AGGREGATED_PARAM_ID_LENGTH) {
@@ -568,28 +525,8 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
       return;
     }
 
-    // Verify entity exists
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto entity_ref = cache.find_entity(entity_id);
-    if (!entity_ref) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
-      return;
-    }
-
-    // Validate entity type matches the route path
-    auto expected_type = extract_entity_type_from_path(req.path);
-    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                     to_string(entity_ref->type),
-                                 {{"entity_id", entity_id},
-                                  {"expected_type", to_string(expected_type)},
-                                  {"actual_type", to_string(entity_ref->type)}});
-      return;
-    }
-
     // Get aggregated configurations info
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
     if (agg_configs.nodes.empty()) {
@@ -678,35 +615,14 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
     entity_id = req.matches[1];
     param_id = req.matches[2];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
-    }
-
-    // Verify entity exists
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto entity_ref = cache.find_entity(entity_id);
-    if (!entity_ref) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
-      return;
-    }
-
-    // Validate entity type matches the route path
-    auto expected_type = extract_entity_type_from_path(req.path);
-    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                     to_string(entity_ref->type),
-                                 {{"entity_id", entity_id},
-                                  {"expected_type", to_string(expected_type)},
-                                  {"actual_type", to_string(entity_ref->type)}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
 
     // Get aggregated configurations info
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
     if (agg_configs.nodes.empty()) {
@@ -779,35 +695,14 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
 
     entity_id = req.matches[1];
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
-    }
-
-    // Verify entity exists
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto entity_ref = cache.find_entity(entity_id);
-    if (!entity_ref) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
-      return;
-    }
-
-    // Validate entity type matches the route path
-    auto expected_type = extract_entity_type_from_path(req.path);
-    if (expected_type != SovdEntityType::UNKNOWN && entity_ref->type != expected_type) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-                                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                                     to_string(entity_ref->type),
-                                 {{"entity_id", entity_id},
-                                  {"expected_type", to_string(expected_type)},
-                                  {"actual_type", to_string(entity_ref->type)}});
-      return;
+    // Validate entity ID and type for this route
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
+    if (!entity_opt) {
+      return;  // Error response already sent
     }
 
     // Get aggregated configurations info
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
     if (agg_configs.nodes.empty()) {
