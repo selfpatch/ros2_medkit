@@ -6,8 +6,16 @@ This section contains configuration references for ros2_medkit.
 .. toctree::
    :maxdepth: 2
 
+   server
    discovery-options
    manifest-schema
+
+Server Configuration
+--------------------
+
+:doc:`server`
+   REST server settings including network binding, TLS/HTTPS, CORS,
+   data access tuning, and performance options.
 
 Discovery Options
 -----------------
