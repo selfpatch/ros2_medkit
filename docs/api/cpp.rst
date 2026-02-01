@@ -6,7 +6,8 @@ This section contains the automatically generated API documentation for the ros2
 .. note::
 
    This documentation is generated from source code comments using Doxygen and Breathe.
-   The Doxygen XML is generated during the documentation build process.
+   Run the "Docs: Build Doxygen" VS Code task or ``doxygen Doxyfile`` in the docs/ directory
+   before building Sphinx locally. In CI, Doxygen XML is generated automatically.
 
 ros2_medkit_gateway
 -------------------

@@ -16,8 +16,7 @@ All endpoints are prefixed with ``/api/v1``.
 Server Capabilities
 -------------------
 
-.. http:get:: /api/v1/
-
+``GET /api/v1/``
    Get server capabilities and entry points.
 
    **Example Response:**
@@ -34,12 +33,10 @@ Server Capabilities
         ]
       }
 
-.. http:get:: /api/v1/version-info
-
+``GET /api/v1/version-info``
    Get gateway version and status information.
 
-.. http:get:: /api/v1/health
-
+``GET /api/v1/health``
    Health check endpoint. Returns HTTP 200 if gateway is operational.
 
 Discovery Endpoints
@@ -48,8 +45,7 @@ Discovery Endpoints
 Areas
 ~~~~~
 
-.. http:get:: /api/v1/areas
-
+``GET /api/v1/areas``
    List all areas (logical/physical groupings).
 
    **Example Response:**
@@ -66,23 +62,19 @@ Areas
         ]
       }
 
-.. http:get:: /api/v1/areas/{area_id}
-
+``GET /api/v1/areas/{area_id}``
    Get area capabilities and metadata.
 
-.. http:get:: /api/v1/areas/{area_id}/contains
-
+``GET /api/v1/areas/{area_id}/contains``
    List components contained in this area.
 
-.. http:get:: /api/v1/areas/{area_id}/components
-
+``GET /api/v1/areas/{area_id}/components``
    List components in a specific area.
 
 Components
 ~~~~~~~~~~
 
-.. http:get:: /api/v1/components
-
+``GET /api/v1/components``
    List all components with their operations and capabilities.
 
    **Example Response:**
@@ -101,42 +93,34 @@ Components
         ]
       }
 
-.. http:get:: /api/v1/components/{component_id}
-
+``GET /api/v1/components/{component_id}``
    Get component capabilities including available resource collections.
 
-.. http:get:: /api/v1/components/{component_id}/hosts
-
+``GET /api/v1/components/{component_id}/hosts``
    List apps hosted on this component (SOVD 7.6.2.4).
 
-.. http:get:: /api/v1/components/{component_id}/depends-on
-
+``GET /api/v1/components/{component_id}/depends-on``
    List component dependencies.
 
 Apps
 ~~~~
 
-.. http:get:: /api/v1/apps
-
+``GET /api/v1/apps``
    List all apps (requires manifest mode or hybrid mode).
 
-.. http:get:: /api/v1/apps/{app_id}
-
+``GET /api/v1/apps/{app_id}``
    Get app capabilities.
 
 Functions
 ~~~~~~~~~
 
-.. http:get:: /api/v1/functions
-
+``GET /api/v1/functions``
    List all functions (requires manifest mode or hybrid mode).
 
-.. http:get:: /api/v1/functions/{function_id}
-
+``GET /api/v1/functions/{function_id}``
    Get function capabilities.
 
-.. http:get:: /api/v1/functions/{function_id}/hosts
-
+``GET /api/v1/functions/{function_id}/hosts``
    List apps that host this function.
 
 Data Endpoints
@@ -144,8 +128,7 @@ Data Endpoints
 
 Read and publish data from ROS 2 topics.
 
-.. http:get:: /api/v1/components/{id}/data
-
+``GET /api/v1/components/{id}/data``
    Read all topic data from an entity.
 
    **Example Response:**
@@ -164,8 +147,7 @@ Read and publish data from ROS 2 topics.
         ]
       }
 
-.. http:get:: /api/v1/components/{id}/data/{topic_path}
-
+``GET /api/v1/components/{id}/data/{topic_path}``
    Read specific topic data. Topic path is URL-encoded (``/`` → ``%2F``).
 
    **Example:**
@@ -174,14 +156,13 @@ Read and publish data from ROS 2 topics.
 
       curl http://localhost:8080/api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperature
 
-.. http:put:: /api/v1/components/{id}/data/{topic_path}
-
+``PUT /api/v1/components/{id}/data/{topic_path}``
    Publish to a topic.
 
-   :reqheader Content-Type: application/json
-   :statuscode 200: Message published successfully
-   :statuscode 400: Invalid message format
-   :statuscode 401: Unauthorized (when auth enabled)
+   - **Content-Type:** application/json
+   - **200:** Message published successfully
+   - **400:** Invalid message format
+   - **401:** Unauthorized (when auth enabled)
 
    **Example:**
 
@@ -199,8 +180,7 @@ Execute ROS 2 services and actions.
 List Operations
 ~~~~~~~~~~~~~~~
 
-.. http:get:: /api/v1/components/{id}/operations
-
+``GET /api/v1/components/{id}/operations``
    List all operations (services and actions) for an entity.
 
    **Example Response:**
@@ -233,22 +213,20 @@ List Operations
         ]
       }
 
-.. http:get:: /api/v1/components/{id}/operations/{operation_id}
-
+``GET /api/v1/components/{id}/operations/{operation_id}``
    Get operation details and schema.
 
 Execute Operations
 ~~~~~~~~~~~~~~~~~~
 
-.. http:post:: /api/v1/components/{id}/operations/{operation_id}/executions
-
+``POST /api/v1/components/{id}/operations/{operation_id}/executions``
    Execute an operation (service call or action goal).
 
-   :reqheader Content-Type: application/json
-   :statuscode 200: Service call completed (sync)
-   :statuscode 201: Action goal accepted (async)
-   :statuscode 400: Invalid input
-   :statuscode 404: Operation not found
+   - **Content-Type:** application/json
+   - **200:** Service call completed (sync)
+   - **201:** Action goal accepted (async)
+   - **400:** Invalid input
+   - **404:** Operation not found
 
    **Service Example (synchronous):**
 
@@ -276,12 +254,10 @@ Execute Operations
         "self": "/api/v1/components/calibration/operations/long_calibration/executions/abc123-def456"
       }
 
-.. http:get:: /api/v1/components/{id}/operations/{operation_id}/executions
-
+``GET /api/v1/components/{id}/operations/{operation_id}/executions``
    List all executions for an operation.
 
-.. http:get:: /api/v1/components/{id}/operations/{operation_id}/executions/{execution_id}
-
+``GET /api/v1/components/{id}/operations/{operation_id}/executions/{execution_id}``
    Get execution status and result.
 
    **Example Response (completed action):**
@@ -298,20 +274,18 @@ Execute Operations
         ]
       }
 
-.. http:delete:: /api/v1/components/{id}/operations/{operation_id}/executions/{execution_id}
-
+``DELETE /api/v1/components/{id}/operations/{operation_id}/executions/{execution_id}``
    Cancel a running execution.
 
-   :statuscode 200: Execution cancelled
-   :statuscode 404: Execution not found
+   - **200:** Execution cancelled
+   - **404:** Execution not found
 
 Configurations Endpoints
 ------------------------
 
 Manage ROS 2 node parameters.
 
-.. http:get:: /api/v1/components/{id}/configurations
-
+``GET /api/v1/components/{id}/configurations``
    List all parameters for an entity.
 
    **Example Response:**
@@ -334,18 +308,16 @@ Manage ROS 2 node parameters.
         ]
       }
 
-.. http:get:: /api/v1/components/{id}/configurations/{param_name}
-
+``GET /api/v1/components/{id}/configurations/{param_name}``
    Get a specific parameter value.
 
-.. http:put:: /api/v1/components/{id}/configurations/{param_name}
-
+``PUT /api/v1/components/{id}/configurations/{param_name}``
    Set a parameter value.
 
-   :reqheader Content-Type: application/json
-   :statuscode 200: Parameter updated
-   :statuscode 400: Invalid value
-   :statuscode 404: Parameter not found
+   - **Content-Type:** application/json
+   - **200:** Parameter updated
+   - **400:** Invalid value
+   - **404:** Parameter not found
 
    **Example:**
 
@@ -355,12 +327,10 @@ Manage ROS 2 node parameters.
         -H "Content-Type: application/json" \
         -d '{"value": 20.0}'
 
-.. http:delete:: /api/v1/components/{id}/configurations/{param_name}
-
+``DELETE /api/v1/components/{id}/configurations/{param_name}``
    Reset parameter to default value.
 
-.. http:delete:: /api/v1/components/{id}/configurations
-
+``DELETE /api/v1/components/{id}/configurations``
    Reset all parameters to default values.
 
 Faults Endpoints
@@ -373,8 +343,7 @@ Query and manage faults.
    Faults are reported by ROS 2 nodes via the FaultReporter library, not via REST API.
    The gateway queries faults from the ros2_medkit_fault_manager node.
 
-.. http:get:: /api/v1/components/{id}/faults
-
+``GET /api/v1/components/{id}/faults``
    List all faults for an entity.
 
    **Example Response:**
@@ -393,16 +362,14 @@ Query and manage faults.
         ]
       }
 
-.. http:get:: /api/v1/components/{id}/faults/{fault_code}
-
+``GET /api/v1/components/{id}/faults/{fault_code}``
    Get specific fault details.
 
-.. http:delete:: /api/v1/components/{id}/faults/{fault_code}
-
+``DELETE /api/v1/components/{id}/faults/{fault_code}``
    Clear a fault.
 
-   :statuscode 200: Fault cleared
-   :statuscode 404: Fault not found
+   - **200:** Fault cleared
+   - **404:** Fault not found
 
 Authentication Endpoints
 ------------------------
@@ -413,8 +380,7 @@ JWT-based authentication with Role-Based Access Control (RBAC).
 
    :doc:`/tutorials/authentication` for configuration details.
 
-.. http:post:: /api/v1/auth/authorize
-
+``POST /api/v1/auth/authorize``
    Authenticate with client credentials.
 
    **Request:**
@@ -439,8 +405,7 @@ JWT-based authentication with Role-Based Access Control (RBAC).
         "scope": "admin"
       }
 
-.. http:post:: /api/v1/auth/token
-
+``POST /api/v1/auth/token``
    Refresh access token.
 
    **Request:**
@@ -452,8 +417,7 @@ JWT-based authentication with Role-Based Access Control (RBAC).
         "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2g..."
       }
 
-.. http:post:: /api/v1/auth/revoke
-
+``POST /api/v1/auth/revoke``
    Revoke a token.
 
    **Request:**
