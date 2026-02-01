@@ -143,11 +143,14 @@ When ``true`` (default), the gateway creates synthetic Components to group Apps:
    listings from all hosted Apps for convenience, but execution must target the
    specific App that owns the operation.
 
-When ``false``, each node is its own Component (no grouping):
+When ``false``, no synthetic Components are created (Apps-only mode):
 
 .. code-block:: bash
 
    curl http://localhost:8080/api/v1/components
+   # Returns: [] (empty - no synthetic components)
+
+   curl http://localhost:8080/api/v1/apps
    # Returns: [{"id": "lidar_driver"}, {"id": "camera_node"}]
 
 grouping_strategy
@@ -234,9 +237,9 @@ grouped entities:
 
 The ``source`` field indicates how the component was discovered:
 
-- ``synthetic``: Grouped from multiple nodes
-- ``node``: Direct node-to-component mapping (legacy mode)
-- ``topic``: From topic-only namespace
+- ``synthetic``: Auto-created from namespace grouping in runtime mode
+- ``topic``: Created from topic-only namespace (no running nodes)
+- ``manifest``: Explicitly defined in manifest file (see :doc:`manifest-discovery`)
 
 Migrating to Manifest Discovery
 -------------------------------

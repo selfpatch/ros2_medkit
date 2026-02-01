@@ -18,10 +18,11 @@ ros2_medkit uses a hierarchical entity model inspired by SOVD
 
    System
    └── Areas (logical/physical domains)
-       └── Components (nodes, devices)
-           ├── Data (topics)
-           ├── Operations (services, actions)
-           └── Configurations (parameters)
+       └── Components (logical/physical units)
+           └── Apps (individual ROS 2 nodes)
+               ├── Data (topics)
+               ├── Operations (services, actions)
+               └── Configurations (parameters)
 
 **Areas** represent logical or physical domains of your robot:
 
@@ -30,35 +31,48 @@ ros2_medkit uses a hierarchical entity model inspired by SOVD
 - ``/manipulation`` - Arm and gripper control
 - ``/safety`` - Emergency stops and safety systems
 
-**Components** are individual software or hardware units:
+**Components** are logical groupings of Apps:
 
-- ROS 2 nodes
-- Virtual components from topic namespaces
+- Defined in manifest files (explicit grouping with semantic IDs)
+- Or auto-created as **synthetic components** per namespace in runtime mode
 
-Default Namespace Mapping
--------------------------
+**Apps** are individual ROS 2 nodes (the actual running processes)
 
-By default, ros2_medkit extracts Areas from the first namespace level:
+Default Entity Mapping (Runtime Mode)
+-------------------------------------
+
+In runtime-only mode with synthetic components enabled (default),
+ros2_medkit creates this hierarchy:
 
 .. list-table::
-   :widths: 50 25 25
+   :widths: 40 20 20 20
    :header-rows: 1
 
    * - Node FQN
      - Area
-     - Component
-   * - ``/perception/camera/driver``
+     - Component (Synthetic)
+     - App
+   * - ``/perception/camera``
      - perception
-     - driver
+     - perception_component
+     - camera
+   * - ``/perception/lidar``
+     - perception
+     - perception_component
+     - lidar
    * - ``/nav2/controller``
      - nav2
+     - nav2_component
      - controller
-   * - ``/arm/joint_trajectory_controller``
-     - arm
-     - joint_trajectory_controller
    * - ``/my_node`` (no namespace)
      - root
+     - root_component
      - my_node
+
+.. note::
+
+   In **manifest mode**, you define Components explicitly with semantic IDs.
+   See :doc:`manifest-discovery` for details.
 
 Designing Your Namespace Structure
 ----------------------------------
@@ -178,8 +192,8 @@ Implementing in Launch Files
 Topic-Based Discovery
 ---------------------
 
-ros2_medkit also discovers components from topics without nodes.
-This is useful for:
+ros2_medkit can also create Components for topic namespaces that don't
+have any ROS 2 nodes. This is useful for:
 
 - Hardware bridges that publish topics directly
 - Simulation tools (Isaac Sim, Gazebo with custom plugins)
@@ -189,7 +203,8 @@ This is useful for:
 
 1. Gateway scans all topics
 2. Extracts unique namespace prefixes
-3. Creates virtual components for namespaces without nodes
+3. Creates synthetic Components for namespaces without running nodes
+4. Creates virtual Apps representing the topic source
 
 **Example:** Isaac Sim publishes ``/carter1/odom``, ``/carter1/cmd_vel``
 

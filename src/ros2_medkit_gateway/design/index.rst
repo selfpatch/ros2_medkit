@@ -253,11 +253,11 @@ Main Components
    - Manages periodic cleanup of old action goals (60s interval)
 
 2. **DiscoveryManager** - Discovers ROS 2 entities and maps them to the SOVD hierarchy
-   - Discovers Areas from node namespaces
-   - Discovers Components (synthetic groups or node-based, configurable)
-   - Discovers Apps from ROS 2 nodes (when heuristic discovery enabled)
+   - Discovers Areas from node namespaces or manifest definitions
+   - Discovers Components (synthetic groups from runtime, or explicit from manifest)
+   - Discovers Apps from ROS 2 nodes (individual running processes)
    - Discovers Services and Actions using native rclcpp APIs
-   - Attaches operations (services/actions) to their parent components
+   - Attaches operations (services/actions) to their parent Apps and Components
    - Uses pluggable strategy pattern: Runtime, Manifest, or Hybrid
    - Uses O(n+m) algorithm with hash maps for efficient service/action attachment
 
@@ -326,9 +326,9 @@ Main Components
    - Thread-safe and stateless design
 
 9. **Data Models** - Entity representations
-    - ``Area`` - Physical or logical domain (namespace)
-    - ``Component`` - Hardware/software component with attached operations; can be ``node``, ``synthetic``, or ``topic`` based
-    - ``App`` - Software application (ROS 2 node); linked to parent Component
+    - ``Area`` - Physical or logical domain (namespace grouping)
+    - ``Component`` - Logical grouping of Apps; can be ``synthetic`` (auto-created from namespace), ``topic`` (from topic-only namespace), or ``manifest`` (explicitly defined)
+    - ``App`` - Software application (ROS 2 node); individual running process linked to parent Component
     - ``ServiceInfo`` - Service metadata (path, name, type)
     - ``ActionInfo`` - Action metadata (path, name, type)
     - ``EntityCache`` - Thread-safe cache of discovered entities (areas, components, apps)

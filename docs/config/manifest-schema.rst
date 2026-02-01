@@ -205,7 +205,8 @@ Components
 ----------
 
 Components represent hardware or virtual entities (ECUs, sensors, controllers).
-In runtime-only mode, components are derived from ROS 2 nodes.
+In runtime-only mode, synthetic components are created per namespace to group Apps (nodes).
+In manifest mode, components are explicitly defined and Apps are linked to them.
 
 Schema
 ~~~~~~

@@ -34,8 +34,9 @@ Just run the gateway alongside your nodes:
 
 The gateway will automatically discover:
 
-- All running nodes → Components
-- Node namespaces → Areas
+- All running nodes → Apps
+- Top-level namespaces → Areas
+- Namespace groupings → Synthetic Components
 - Topics, services, actions → Data, Operations
 - Parameters → Configurations
 
@@ -165,7 +166,8 @@ Any topic under your node's namespace is automatically exposed via the Data API:
 .. code-block:: cpp
 
    // These topics will be accessible via:
-   // GET /api/v1/components/my_node/data
+   // GET /api/v1/apps/{app_id}/data
+   // (or /api/v1/components/{component_id}/data in synthetic mode)
 
    pub_status_ = create_publisher<MyStatus>("status", 10);
    pub_diagnostics_ = create_publisher<DiagnosticArray>("diagnostics", 10);
@@ -184,12 +186,12 @@ Services and actions under your namespace become Operations:
 
 .. code-block:: cpp
 
-   // Service: POST /api/v1/components/my_node/operations/reset/executions
+   // Service: POST /api/v1/apps/{app_id}/operations/reset/executions
    srv_reset_ = create_service<std_srvs::srv::Trigger>(
      "reset",
      std::bind(&MyNode::handle_reset, this, _1, _2));
 
-   // Action: POST /api/v1/components/my_node/operations/calibrate/executions
+   // Action: POST /api/v1/apps/{app_id}/operations/calibrate/executions
    action_calibrate_ = rclcpp_action::create_server<Calibrate>(
      this, "calibrate",
      std::bind(&MyNode::handle_goal, this, _1, _2),
@@ -204,7 +206,7 @@ ROS 2 parameters become Configurations automatically:
 .. code-block:: cpp
 
    // These parameters will be accessible via:
-   // GET/PUT /api/v1/components/my_node/configurations/update_rate
+   // GET/PUT /api/v1/apps/{app_id}/configurations/{param_name}
 
    declare_parameter("update_rate", 10.0);
    declare_parameter("enabled", true);

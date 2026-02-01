@@ -13,8 +13,9 @@ Overview
 
 **Runtime-only mode** (default) automatically discovers:
 
-- ROS 2 nodes → Components
-- ROS 2 namespaces → Areas
+- ROS 2 nodes → Apps
+- Namespace groupings → Synthetic Components
+- Top-level namespaces → Areas
 - Topics, services, actions → Data, operations
 
 **Hybrid mode** adds:
