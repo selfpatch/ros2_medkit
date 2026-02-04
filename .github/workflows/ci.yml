@@ -24,8 +24,6 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up ROS 2 Jazzy
         uses: ros-tooling/setup-ros@v0.7
@@ -45,8 +43,7 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           colcon build --symlink-install \
             --cmake-args -DCMAKE_BUILD_TYPE=Release \
-            --event-handlers console_direct+ \
-            --packages-ignore test_dynmsg dynmsg_demo
+            --event-handlers console_direct+
 
       - name: Run linters (clang-format, clang-tidy, etc.)
         run: |
@@ -54,8 +51,7 @@ jobs:
           source install/setup.bash
           colcon test --return-code-on-test-failure \
             --ctest-args -L linter \
-            --event-handlers console_direct+ \
-            --packages-ignore test_dynmsg dynmsg_demo
+            --event-handlers console_direct+
 
       - name: Run unit and integration tests
         timeout-minutes: 15
@@ -64,8 +60,7 @@ jobs:
           source install/setup.bash
           colcon test --return-code-on-test-failure \
             --ctest-args -LE linter \
-            --event-handlers console_direct+ \
-            --packages-ignore test_dynmsg dynmsg_demo
+            --event-handlers console_direct+
 
       - name: Show test results
         if: always()
@@ -97,8 +92,6 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up ROS 2 Jazzy
         uses: ros-tooling/setup-ros@v0.7
@@ -118,8 +111,7 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           colcon build --symlink-install \
             --cmake-args -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON \
-            --event-handlers console_direct+ \
-            --packages-ignore test_dynmsg dynmsg_demo
+            --event-handlers console_direct+
 
       - name: Run unit and integration tests for coverage
         run: |
@@ -127,8 +119,7 @@ jobs:
           source install/setup.bash
           colcon test \
             --ctest-args -LE linter \
-            --event-handlers console_direct+ \
-            --packages-ignore test_dynmsg dynmsg_demo
+            --event-handlers console_direct+
 
       - name: Generate coverage report
         run: |

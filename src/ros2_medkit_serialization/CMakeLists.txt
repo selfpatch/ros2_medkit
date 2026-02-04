@@ -20,7 +20,9 @@ endif()
 # Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(dynmsg REQUIRED)
+find_package(rcutils REQUIRED)
+find_package(rosidl_runtime_c REQUIRED)
+find_package(rosidl_typesupport_introspection_c REQUIRED)
 find_package(rosidl_typesupport_introspection_cpp REQUIRED)
 find_package(rosidl_runtime_cpp REQUIRED)
 find_package(rcpputils REQUIRED)
@@ -33,6 +35,14 @@ add_library(${PROJECT_NAME}
   src/json_serializer.cpp
   src/type_cache.cpp
   src/service_action_types.cpp
+  src/message_cleanup.cpp
+  # Vendored dynmsg sources (C++ API only)
+  src/vendored/dynmsg/typesupport.cpp
+  src/vendored/dynmsg/message_reading_cpp.cpp
+  src/vendored/dynmsg/msg_parser_cpp.cpp
+  src/vendored/dynmsg/string_utils.cpp
+  src/vendored/dynmsg/vector_utils.cpp
+  src/vendored/dynmsg/yaml_utils.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -42,7 +52,9 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 
 ament_target_dependencies(${PROJECT_NAME}
   rclcpp
-  dynmsg
+  rcutils
+  rosidl_runtime_c
+  rosidl_typesupport_introspection_c
   rosidl_typesupport_introspection_cpp
   rosidl_runtime_cpp
   rcpputils
@@ -64,7 +76,9 @@ endif()
 ament_export_targets(${PROJECT_NAME}Targets HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   rclcpp
-  dynmsg
+  rcutils
+  rosidl_runtime_c
+  rosidl_typesupport_introspection_c
   rosidl_typesupport_introspection_cpp
   rosidl_runtime_cpp
   rcpputils
@@ -94,26 +108,40 @@ if(BUILD_TESTING)
   find_package(sensor_msgs REQUIRED)
   find_package(test_msgs REQUIRED)
 
-  # Use custom clang-format and clang-tidy configs from repo root
-  set(ament_cmake_clang_format_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-format")
-  set(ament_cmake_clang_tidy_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-tidy")
-
-  # Limit clang-tidy to only report issues from our source files
-  set(ament_cmake_clang_tidy_HEADER_FILTER "^${CMAKE_CURRENT_SOURCE_DIR}/(include|src|test)/")
-
-  # Exclude linters that conflict with clang-format
+  # Exclude conflicting linters and those we configure manually
   list(APPEND AMENT_LINT_AUTO_EXCLUDE
     ament_cmake_uncrustify
     ament_cmake_cpplint
     ament_cmake_clang_tidy
+    ament_cmake_clang_format
   )
   ament_lint_auto_find_test_dependencies()
 
-  # Configure clang-tidy manually with increased timeout
+  # Configure clang-format manually for non-vendored files only
+  find_package(ament_cmake_clang_format REQUIRED)
+  set(_clang_format_config "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-format")
+  ament_clang_format(
+    CONFIG_FILE "${_clang_format_config}"
+    "include/ros2_medkit_serialization/json_serializer.hpp"
+    "include/ros2_medkit_serialization/message_cleanup.hpp"
+    "include/ros2_medkit_serialization/serialization_error.hpp"
+    "include/ros2_medkit_serialization/service_action_types.hpp"
+    "include/ros2_medkit_serialization/type_cache.hpp"
+    "src/json_serializer.cpp"
+    "src/message_cleanup.cpp"
+    "src/service_action_types.cpp"
+    "src/type_cache.cpp"
+    "test/test_json_serializer.cpp"
+    "test/test_service_action_types.cpp"
+    "test/test_type_cache.cpp"
+  )
+
+  # Configure clang-tidy manually for non-vendored files only
+  set(_clang_tidy_config "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-tidy")
   ament_clang_tidy(
     "${CMAKE_CURRENT_BINARY_DIR}"
-    CONFIG_FILE "${ament_cmake_clang_tidy_CONFIG_FILE}"
-    HEADER_FILTER "${ament_cmake_clang_tidy_HEADER_FILTER}"
+    CONFIG_FILE "${_clang_tidy_config}"
+    HEADER_FILTER "^${CMAKE_CURRENT_SOURCE_DIR}/include/ros2_medkit_serialization/[^v].*"
     TIMEOUT 300
   )
 

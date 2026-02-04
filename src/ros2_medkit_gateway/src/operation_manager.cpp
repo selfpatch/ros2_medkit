@@ -21,6 +21,7 @@
 #include <sstream>
 
 #include "ros2_medkit_serialization/json_serializer.hpp"
+#include "ros2_medkit_serialization/message_cleanup.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"
 #include "ros2_medkit_serialization/service_action_types.hpp"
 #include "ros2_medkit_serialization/type_cache.hpp"
@@ -142,7 +143,6 @@ ServiceCallResult OperationManager::call_service(const std::string & service_pat
 
     // Convert JSON to ROS message (deserialized form, not CDR)
     // Note: GenericClient expects void* pointing to deserialized message structure
-    rcutils_allocator_t allocator = rcutils_get_default_allocator();
     RosMessage_Cpp ros_request = serializer_->from_json(request_type, request_data);
 
     RCLCPP_INFO(node_->get_logger(), "Calling service: %s (type: %s)", service_path.c_str(), service_type.c_str());
@@ -157,7 +157,7 @@ ServiceCallResult OperationManager::call_service(const std::string & service_pat
     if (future_status != std::future_status::ready) {
       // Clean up pending request on timeout
       client->remove_pending_request(future_and_id.request_id);
-      dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
+      ros2_medkit_serialization::destroy_ros_message(&ros_request);
       result.success = false;
       result.error_message =
           "Service call timed out (" + std::to_string(service_call_timeout_sec_) + "s): " + service_path;
@@ -165,7 +165,7 @@ ServiceCallResult OperationManager::call_service(const std::string & service_pat
     }
 
     // Clean up request message after sending
-    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
+    ros2_medkit_serialization::destroy_ros_message(&ros_request);
 
     // Step 7: Get response and deserialize
     auto response_ptr = future_and_id.get();
@@ -412,7 +412,6 @@ ActionSendGoalResult OperationManager::send_action_goal(const std::string & acti
 
     // Convert JSON to ROS message (deserialized form, not CDR)
     // Note: GenericClient expects void* pointing to deserialized message structure
-    rcutils_allocator_t allocator = rcutils_get_default_allocator();
     RosMessage_Cpp ros_request = serializer_->from_json(request_type, send_goal_request);
 
     RCLCPP_INFO(node_->get_logger(), "Sending action goal: %s (type: %s)", action_path.c_str(), action_type.c_str());
@@ -426,13 +425,13 @@ ActionSendGoalResult OperationManager::send_action_goal(const std::string & acti
 
     if (future_status != std::future_status::ready) {
       clients.send_goal_client->remove_pending_request(future_and_id.request_id);
-      dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
+      ros2_medkit_serialization::destroy_ros_message(&ros_request);
       result.error_message = "Send goal timed out";
       return result;
     }
 
     // Clean up request message after sending
-    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
+    ros2_medkit_serialization::destroy_ros_message(&ros_request);
 
     // Step 6: Deserialize response
     auto response_ptr = future_and_id.get();
@@ -551,7 +550,6 @@ ActionCancelResult OperationManager::cancel_action_goal(const std::string & acti
 
     // Convert JSON to ROS message (deserialized form, not CDR)
     // Note: GenericClient expects void* pointing to deserialized message structure
-    rcutils_allocator_t allocator = rcutils_get_default_allocator();
     RosMessage_Cpp ros_request = serializer_->from_json("action_msgs/srv/CancelGoal_Request", cancel_request);
 
     RCLCPP_INFO(node_->get_logger(), "Canceling action goal: %s (goal_id: %s)", action_path.c_str(), goal_id.c_str());
@@ -562,11 +560,11 @@ ActionCancelResult OperationManager::cancel_action_goal(const std::string & acti
     auto future_status = future_and_id.wait_for(std::chrono::seconds(5));
     if (future_status != std::future_status::ready) {
       clients.cancel_goal_client->remove_pending_request(future_and_id.request_id);
-      dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
+      ros2_medkit_serialization::destroy_ros_message(&ros_request);
       result.error_message = "Cancel request timed out";
       return result;
     }
-    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
+    ros2_medkit_serialization::destroy_ros_message(&ros_request);
 
     auto response_ptr = future_and_id.get();
     if (response_ptr == nullptr) {
@@ -646,7 +644,6 @@ ActionGetResultResult OperationManager::get_action_result(const std::string & ac
 
     // Convert JSON to ROS message (deserialized form, not CDR)
     // Note: GenericClient expects void* pointing to deserialized message structure
-    rcutils_allocator_t allocator = rcutils_get_default_allocator();
     RosMessage_Cpp ros_request = serializer_->from_json(request_type, get_result_request);
 
     RCLCPP_INFO(node_->get_logger(), "Getting action result: %s (goal_id: %s)", action_path.c_str(), goal_id.c_str());
@@ -657,11 +654,11 @@ ActionGetResultResult OperationManager::get_action_result(const std::string & ac
     auto future_status = future_and_id.wait_for(std::chrono::seconds(service_call_timeout_sec_));
     if (future_status != std::future_status::ready) {
       clients.get_result_client->remove_pending_request(future_and_id.request_id);
-      dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
+      ros2_medkit_serialization::destroy_ros_message(&ros_request);
       result.error_message = "Get result timed out";
       return result;
     }
-    dynmsg::cpp::ros_message_destroy_with_allocator(&ros_request, &allocator);
+    ros2_medkit_serialization::destroy_ros_message(&ros_request);
 
     auto response_ptr = future_and_id.get();
     if (response_ptr == nullptr) {

@@ -24,7 +24,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "dynmsg/typesupport.hpp"
+#include "ros2_medkit_serialization/vendored/dynmsg/typesupport.hpp"
 
 namespace ros2_medkit_serialization {
 

@@ -16,10 +16,10 @@
 
 #include <sstream>
 
-#include "dynmsg/message_reading.hpp"
-#include "dynmsg/msg_parser.hpp"
 #include "rcpputils/shared_library.hpp"
 #include "rmw/rmw.h"
+#include "ros2_medkit_serialization/vendored/dynmsg/message_reading.hpp"
+#include "ros2_medkit_serialization/vendored/dynmsg/msg_parser.hpp"
 #include "rosidl_typesupport_cpp/message_type_support.hpp"
 #include "rosidl_typesupport_introspection_cpp/field_types.hpp"
 

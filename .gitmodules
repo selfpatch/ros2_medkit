@@ -1,3 +1,0 @@
-[submodule "src/dynamic_message_introspection"]
-	path = src/dynamic_message_introspection
-	url = https://github.com/selfpatch/dynamic_message_introspection.git
