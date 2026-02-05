@@ -35,12 +35,12 @@ TEST_F(BulkDataHandlersTest, GetRosbagMimetypeMcap) {
 
 // @verifies REQ_INTEROP_071
 TEST_F(BulkDataHandlersTest, GetRosbagMimetypeSqlite3) {
-  EXPECT_EQ(BulkDataHandlers::get_rosbag_mimetype("sqlite3"), "application/gzip");
+  EXPECT_EQ(BulkDataHandlers::get_rosbag_mimetype("sqlite3"), "application/x-sqlite3");
 }
 
 // @verifies REQ_INTEROP_071
 TEST_F(BulkDataHandlersTest, GetRosbagMimetypeDb3) {
-  EXPECT_EQ(BulkDataHandlers::get_rosbag_mimetype("db3"), "application/gzip");
+  EXPECT_EQ(BulkDataHandlers::get_rosbag_mimetype("db3"), "application/x-sqlite3");
 }
 
 // @verifies REQ_INTEROP_071

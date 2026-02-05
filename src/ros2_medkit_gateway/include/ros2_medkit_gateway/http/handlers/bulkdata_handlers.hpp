@@ -91,12 +91,23 @@ class BulkDataHandlers {
   /**
    * @brief Stream file contents to HTTP response.
    * @param res HTTP response to write to
-   * @param file_path Path to file to stream
+   * @param file_path Path to file to stream (can be file or rosbag directory)
    * @param content_type MIME type for Content-Type header
    * @return true if successful, false if file could not be read
    */
   bool stream_file_to_response(httplib::Response & res, const std::string & file_path,
                                const std::string & content_type);
+
+  /**
+   * @brief Resolve rosbag file path from storage path.
+   *
+   * Rosbag2 creates a directory containing the actual db3/mcap file.
+   * This function resolves the directory to the actual file path.
+   *
+   * @param path Path to rosbag (can be file or directory)
+   * @return Resolved file path, or empty string if not found
+   */
+  static std::string resolve_rosbag_file_path(const std::string & path);
 
   /**
    * @brief Format nanosecond timestamp to ISO 8601 string.

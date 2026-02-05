@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -213,7 +214,13 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
 
 bool BulkDataHandlers::stream_file_to_response(httplib::Response & res, const std::string & file_path,
                                                const std::string & content_type) {
-  std::ifstream file(file_path, std::ios::binary | std::ios::ate);
+  // Resolve the actual file path - rosbag2 creates a directory with the db3/mcap file inside
+  std::string actual_path = resolve_rosbag_file_path(file_path);
+  if (actual_path.empty()) {
+    return false;
+  }
+
+  std::ifstream file(actual_path, std::ios::binary | std::ios::ate);
   if (!file.is_open()) {
     return false;
   }
@@ -230,11 +237,33 @@ bool BulkDataHandlers::stream_file_to_response(httplib::Response & res, const st
   return true;
 }
 
+std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path) {
+  // If it's a regular file, return as-is
+  if (std::filesystem::is_regular_file(path)) {
+    return path;
+  }
+
+  // If it's a directory (rosbag2 directory structure), find the db3/mcap file inside
+  if (std::filesystem::is_directory(path)) {
+    for (const auto & entry : std::filesystem::directory_iterator(path)) {
+      if (entry.is_regular_file()) {
+        auto ext = entry.path().extension().string();
+        // Look for db3 (sqlite3 format) or mcap files
+        if (ext == ".db3" || ext == ".mcap") {
+          return entry.path().string();
+        }
+      }
+    }
+  }
+
+  return "";  // File not found
+}
+
 std::string BulkDataHandlers::get_rosbag_mimetype(const std::string & format) {
   if (format == "mcap") {
     return "application/x-mcap";
   } else if (format == "sqlite3" || format == "db3") {
-    return "application/gzip";
+    return "application/x-sqlite3";
   }
   return "application/octet-stream";
 }

@@ -2486,74 +2486,58 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_66_get_snapshots_nonexistent_fault(self):
         """
-        Test GET /faults/{fault_code}/snapshots returns 404 for unknown fault.
+        Test GET /faults/{fault_code}/snapshots returns 404 (endpoint removed).
 
-        @verifies REQ_INTEROP_088
+        Legacy snapshot endpoints have been removed in favor of:
+        - Inline snapshots in fault response (environment_data.snapshots)
+        - Bulk-data endpoint for rosbag downloads
         """
         response = requests.get(
             f'{self.BASE_URL}/faults/NONEXISTENT_FAULT_CODE/snapshots',
             timeout=10
         )
+        # Endpoint was removed, should return 404
         self.assertEqual(response.status_code, 404)
 
-        data = response.json()
-        self.assertIn('error_code', data)
-        self.assertIn('parameters', data)
-        self.assertIn('fault_code', data['parameters'])
-        self.assertEqual(data['parameters'].get('fault_code'), 'NONEXISTENT_FAULT_CODE')
-
-        print('✓ Get snapshots nonexistent fault test passed')
+        print('✓ Legacy snapshots endpoint returns 404 (removed)')
 
     def test_67_get_component_snapshots_nonexistent_fault(self):
         """
-        Test GET /apps/{id}/faults/{code}/snapshots returns 404 for unknown fault.
+        Test GET /apps/{id}/faults/{code}/snapshots returns 404 (endpoint removed).
 
-        @verifies REQ_INTEROP_088
+        Legacy snapshot endpoints have been removed.
         """
         response = requests.get(
             f'{self.BASE_URL}/apps/temp_sensor/faults/NONEXISTENT_FAULT/snapshots',
             timeout=10
         )
+        # Endpoint was removed, should return 404
         self.assertEqual(response.status_code, 404)
 
-        data = response.json()
-        self.assertIn('error_code', data)
-        self.assertIn('parameters', data)
-        self.assertIn('app_id', data['parameters'])
-        self.assertEqual(data['parameters'].get('app_id'), 'temp_sensor')
-        self.assertIn('fault_code', data['parameters'])
-        self.assertEqual(data['parameters'].get('fault_code'), 'NONEXISTENT_FAULT')
-
-        print('✓ Get app snapshots nonexistent fault test passed')
+        print('✓ Legacy app snapshots endpoint returns 404 (removed)')
 
     def test_68_get_snapshots_nonexistent_component(self):
         """
-        Test GET /components/{id}/faults/{code}/snapshots returns 404 for unknown entity.
+        Test GET /components/{id}/faults/{code}/snapshots returns 404 (endpoint removed).
 
-        @verifies REQ_INTEROP_088
+        Legacy snapshot endpoints have been removed.
         """
         response = requests.get(
             f'{self.BASE_URL}/components/nonexistent_component/faults/ANY_FAULT/snapshots',
             timeout=10
         )
+        # Endpoint was removed, should return 404
         self.assertEqual(response.status_code, 404)
 
-        data = response.json()
-        self.assertIn('error_code', data)
-        self.assertEqual(data['message'], 'Entity not found')
-        self.assertIn('parameters', data)
-        self.assertIn('entity_id', data['parameters'])
-        self.assertEqual(data['parameters'].get('entity_id'), 'nonexistent_component')
-
-        print('✓ Get snapshots nonexistent entity test passed')
+        print('✓ Legacy component snapshots endpoint returns 404 (removed)')
 
     def test_69_get_snapshots_invalid_component_id(self):
         """
-        Test GET /components/{id}/faults/{code}/snapshots returns 400 for invalid entity ID.
+        Test GET /components/{id}/faults/{code}/snapshots returns 404 (endpoint removed).
 
-        @verifies REQ_INTEROP_088
+        Legacy snapshot endpoints have been removed.
         """
-        # Note: hyphens are now allowed in IDs (for manifest entity IDs like 'engine-ecu')
+        # Note: endpoint removed, so any ID should return 404
         invalid_ids = [
             'component;drop',
             'component<script>',
@@ -2564,17 +2548,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                 f'{self.BASE_URL}/components/{invalid_id}/faults/ANY_FAULT/snapshots',
                 timeout=10
             )
+            # Endpoint was removed, should return 404
             self.assertEqual(
                 response.status_code,
-                400,
-                f'Expected 400 for entity_id: {invalid_id}'
+                404,
+                f'Expected 404 for entity_id: {invalid_id} (endpoint removed)'
             )
 
-            data = response.json()
-            self.assertIn('error_code', data)
-            self.assertEqual(data['message'], 'Invalid entity ID')
-
-        print('✓ Get snapshots invalid component ID test passed')
+        print('✓ Legacy snapshots invalid ID endpoint returns 404 (removed)')
     # ==================== Discovery Compliance Tests ====================
 
     def test_70_components_list_has_href(self):
@@ -3944,32 +3925,25 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_107_get_rosbag_nonexistent_fault(self):
         """
-        Test /faults/{code}/snapshots/bag returns 404 for unknown fault.
+        Test /faults/{code}/snapshots/bag returns 404 (endpoint removed).
 
-        @verifies REQ_INTEROP_088
+        Legacy rosbag download endpoint removed. Use bulk-data endpoint instead.
         """
         response = requests.get(
             f'{self.BASE_URL}/faults/NONEXISTENT_ROSBAG_FAULT/snapshots/bag',
             timeout=10
         )
+        # Endpoint was removed, should return 404
         self.assertEqual(response.status_code, 404)
 
-        data = response.json()
-        self.assertIn('error_code', data)
-        self.assertIn('message', data)
-        self.assertIn('parameters', data)
-        self.assertIn('fault_code', data['parameters'])
-        self.assertEqual(data['parameters'].get('fault_code'), 'NONEXISTENT_ROSBAG_FAULT')
-
-        print('✓ Get rosbag nonexistent fault test passed')
+        print('✓ Legacy rosbag endpoint returns 404 (removed)')
 
     def test_108_get_rosbag_invalid_fault_code(self):
         """
-        Test /faults/{code}/snapshots/bag rejects invalid fault codes.
+        Test /faults/{code}/snapshots/bag returns 404 (endpoint removed).
 
-        @verifies REQ_INTEROP_088
+        Legacy rosbag download endpoint removed. Use bulk-data endpoint instead.
         """
-        # These should be rejected by fault_code validation
         invalid_codes = [
             '../../../etc/passwd',  # Path traversal attempt
             'fault"injection',      # Quote injection attempt
@@ -3980,77 +3954,42 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                 f'{self.BASE_URL}/faults/{invalid_code}/snapshots/bag',
                 timeout=10
             )
-            # Should return 400 (bad request) or 404 (not found)
-            # depending on whether validation happens before or after lookup
-            self.assertIn(
+            # Endpoint was removed, should return 404
+            self.assertEqual(
                 response.status_code,
-                [400, 404],
-                f'Expected 400 or 404 for fault_code: {invalid_code}'
+                404,
+                f'Expected 404 for fault_code: {invalid_code} (endpoint removed)'
             )
 
-        print('✓ Get rosbag invalid fault code test passed')
+        print('✓ Legacy rosbag invalid fault code endpoint returns 404 (removed)')
 
     def test_72_get_rosbag_happy_path(self):
         """
-        Test rosbag download happy path.
+        Test legacy /faults/{code}/snapshots/bag endpoint returns 404 (removed).
 
-        Uses LIDAR_RANGE_INVALID fault which is auto-reported by lidar_sensor
-        demo node due to invalid parameters (min_range=10 > max_range=5).
-        The rosbag captures /perception/lidar/scan topic.
+        The legacy endpoint has been replaced by SOVD bulk-data pattern:
+        GET /apps/{app}/bulk-data/rosbags/{id}
 
-        @verifies REQ_INTEROP_088
+        See test_127_bulk_data_download_success for the new download test.
         """
-        import tarfile
-        import tempfile
         import time
 
-        # Use the fault that lidar_sensor automatically reports
-        # (configured with min_range=10 > max_range=5 which triggers this fault)
         fault_code = 'LIDAR_RANGE_INVALID'
+        time.sleep(3)
 
-        # Wait for:
-        # 1. Ring buffer to fill (duration_sec = 2.0)
-        # 2. lidar_sensor to report fault (initial check after 3s delay)
-        # 3. Post-fault recording to complete (duration_after_sec = 0.5)
-        time.sleep(6)
-
-        # Download the rosbag for the automatically-reported fault
+        # Download the rosbag via OLD endpoint - should return 404
         response = requests.get(
             f'{self.BASE_URL}/faults/{fault_code}/snapshots/bag',
             timeout=30
         )
 
+        # Endpoint was removed, should return 404
         self.assertEqual(
-            response.status_code, 200,
-            f'Expected 200 OK but got {response.status_code}: {response.text}'
+            response.status_code, 404,
+            f'Expected 404 (endpoint removed) but got {response.status_code}'
         )
 
-        # Verify headers
-        content_type = response.headers.get('Content-Type', '')
-        self.assertIn('gzip', content_type, 'Expected gzip content type')
-
-        content_disp = response.headers.get('Content-Disposition', '')
-        self.assertIn('attachment', content_disp, 'Expected attachment disposition')
-        self.assertIn('.tar.gz', content_disp, 'Expected .tar.gz extension')
-
-        # Verify content is a valid tar.gz archive
-        with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as f:
-            f.write(response.content)
-            temp_path = f.name
-
-        try:
-            with tarfile.open(temp_path, 'r:gz') as tar:
-                names = tar.getnames()
-                # Should contain at least one file
-                self.assertGreater(len(names), 0, 'Archive should not be empty')
-                # Should contain metadata.yaml (rosbag2 standard)
-                has_metadata = any('metadata.yaml' in n for n in names)
-                self.assertTrue(has_metadata, f'Expected metadata.yaml: {names}')
-        finally:
-            import os
-            os.unlink(temp_path)
-
-        print('✓ Get rosbag happy path test passed')
+        print('✓ Legacy rosbag happy path endpoint returns 404 (removed)')
 
     # ========== Area Data Endpoints Tests (test_109-112) ==========
 
@@ -4575,8 +4514,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.assertIn('id', descriptor)
             self.assertIn('name', descriptor)
             self.assertIn('size', descriptor)
-            self.assertIn('mime_type', descriptor)
-            self.assertIn('href', descriptor)
+            self.assertIn('mimetype', descriptor)  # SOVD uses 'mimetype'
+            self.assertIn('creation_date', descriptor)
             # Verify x-medkit extension
             self.assertIn('x-medkit', descriptor)
             x_medkit = descriptor['x-medkit']
@@ -4674,7 +4613,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Verify Content-Type header
         content_type = response.headers.get('Content-Type', '')
-        valid_types = ['application/gzip', 'application/x-mcap', 'application/octet-stream']
+        valid_types = ['application/x-sqlite3', 'application/x-mcap', 'application/octet-stream']
         self.assertTrue(
             any(t in content_type for t in valid_types),
             f'Expected valid rosbag Content-Type, got: {content_type}'
@@ -4974,16 +4913,14 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_137_bulk_data_download_verifies_complete_rosbag(self):
         """
-        Test downloading rosbag and verifying it's a valid archive.
+        Test downloading rosbag and verifying it's a valid file.
 
         This test goes beyond basic download verification to ensure
-        the downloaded content is actually a valid gzip/tar archive.
+        the downloaded content is actually a valid rosbag file.
 
         @verifies REQ_INTEROP_073
         """
-        import gzip
-        import io
-
+        # Wait for fault_manager to capture rosbag
         rosbag_id = self._wait_for_fault_with_rosbag('lidar_sensor', max_wait=30.0)
         if rosbag_id is None:
             self.skipTest('No rosbag available for complete download test')
@@ -4999,23 +4936,18 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         content = response.content
         content_type = response.headers.get('Content-Type', '')
 
-        # If it's gzip, verify it's a valid gzip file
-        if 'gzip' in content_type:
-            try:
-                # Try to read gzip header
-                with gzip.GzipFile(fileobj=io.BytesIO(content)) as f:
-                    # Just read a bit to verify it's valid
-                    f.read(100)
-                print(f'✓ Downloaded rosbag is valid gzip archive ({len(content)} bytes)')
-            except gzip.BadGzipFile:
-                self.fail('Downloaded rosbag is not a valid gzip file')
-        elif 'mcap' in content_type:
-            # MCAP files start with magic bytes
-            self.assertTrue(
-                content[:4] == b'\x89MCX' or len(content) > 0,
-                'MCAP file should have content'
-            )
+        if 'mcap' in content_type:
+            # MCAP files start with magic bytes 0x89 M C A P 0x30 0x0d 0x0a
+            # But for simplicity, check for content
+            self.assertGreater(len(content), 0, 'MCAP file should have content')
             print(f'✓ Downloaded rosbag is MCAP format ({len(content)} bytes)')
+        elif 'sqlite3' in content_type:
+            # SQLite3 database files start with "SQLite format 3\x00"
+            self.assertTrue(
+                content[:16] == b'SQLite format 3\x00',
+                f'Expected SQLite header, got: {content[:16]!r}'
+            )
+            print(f'✓ Downloaded rosbag is valid SQLite3 database ({len(content)} bytes)')
         else:
             # For other formats, just verify we have content
             self.assertGreater(len(content), 0)
