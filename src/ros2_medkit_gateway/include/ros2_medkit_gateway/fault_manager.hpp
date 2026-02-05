@@ -21,8 +21,10 @@
 #include <string>
 #include <vector>
 
+#include "ros2_medkit_msgs/msg/environment_data.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
+#include "ros2_medkit_msgs/srv/get_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_faults.hpp"
 #include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
@@ -37,6 +39,14 @@ struct FaultResult {
   bool success;
   json data;
   std::string error_message;
+};
+
+/// Result of get_fault operation with full message types
+struct FaultWithEnvResult {
+  bool success;
+  std::string error_message;
+  ros2_medkit_msgs::msg::Fault fault;
+  ros2_medkit_msgs::msg::EnvironmentData environment_data;
 };
 
 /// Manager for fault management operations
@@ -66,7 +76,13 @@ class FaultManager {
                          bool include_confirmed = true, bool include_cleared = false, bool include_muted = false,
                          bool include_clusters = false);
 
-  /// Get a specific fault by code
+  /// Get a specific fault by code with environment data
+  /// @param fault_code Fault identifier
+  /// @param source_id Optional component identifier to verify fault belongs to component
+  /// @return FaultWithEnvResult with fault and environment_data, or error if not found
+  FaultWithEnvResult get_fault_with_env(const std::string & fault_code, const std::string & source_id = "");
+
+  /// Get a specific fault by code (JSON result - legacy)
   /// @param fault_code Fault identifier
   /// @param source_id Optional component identifier to verify fault belongs to component
   /// @return FaultResult with fault data or error if not found
@@ -103,6 +119,7 @@ class FaultManager {
 
   /// Service clients
   rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_client_;
+  rclcpp::Client<ros2_medkit_msgs::srv::GetFault>::SharedPtr get_fault_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::GetFaults>::SharedPtr get_faults_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_fault_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::GetSnapshots>::SharedPtr get_snapshots_client_;

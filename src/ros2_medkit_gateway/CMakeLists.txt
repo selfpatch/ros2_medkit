@@ -323,6 +323,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_entity_path_utils test/test_entity_path_utils.cpp)
   target_link_libraries(test_entity_path_utils gateway_lib)
 
+  # Add fault handlers tests (SOVD response building)
+  ament_add_gtest(test_fault_handlers test/test_fault_handlers.cpp)
+  target_link_libraries(test_fault_handlers gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
