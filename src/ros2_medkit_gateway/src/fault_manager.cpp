@@ -26,6 +26,7 @@ namespace ros2_medkit_gateway {
 FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
   // Create service clients for fault_manager services
   report_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
+  get_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::GetFault>("/fault_manager/get_fault");
   get_faults_client_ = node_->create_client<ros2_medkit_msgs::srv::GetFaults>("/fault_manager/get_faults");
   clear_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ClearFault>("/fault_manager/clear_fault");
   get_snapshots_client_ = node_->create_client<ros2_medkit_msgs::srv::GetSnapshots>("/fault_manager/get_snapshots");
@@ -38,13 +39,13 @@ FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
 }
 
 bool FaultManager::wait_for_services(std::chrono::duration<double> timeout) {
-  return report_fault_client_->wait_for_service(timeout) && get_faults_client_->wait_for_service(timeout) &&
-         clear_fault_client_->wait_for_service(timeout);
+  return report_fault_client_->wait_for_service(timeout) && get_fault_client_->wait_for_service(timeout) &&
+         get_faults_client_->wait_for_service(timeout) && clear_fault_client_->wait_for_service(timeout);
 }
 
 bool FaultManager::is_available() const {
-  return report_fault_client_->service_is_ready() && get_faults_client_->service_is_ready() &&
-         clear_fault_client_->service_is_ready();
+  return report_fault_client_->service_is_ready() && get_fault_client_->service_is_ready() &&
+         get_faults_client_->service_is_ready() && clear_fault_client_->service_is_ready();
 }
 
 /// Convert a ROS 2 Fault message to JSON for REST API responses.
@@ -230,27 +231,70 @@ FaultResult FaultManager::get_faults(const std::string & source_id, bool include
   return result;
 }
 
-FaultResult FaultManager::get_fault(const std::string & fault_code, const std::string & source_id) {
-  // Get all faults and filter by fault_code
-  auto all_faults = get_faults(source_id, true, true, true);
+FaultWithEnvResult FaultManager::get_fault_with_env(const std::string & fault_code, const std::string & source_id) {
+  std::lock_guard<std::mutex> lock(service_mutex_);
+  FaultWithEnvResult result;
 
-  if (!all_faults.success) {
-    return all_faults;
+  auto timeout = std::chrono::duration<double>(service_timeout_sec_);
+  if (!get_fault_client_->wait_for_service(timeout)) {
+    result.success = false;
+    result.error_message = "GetFault service not available";
+    return result;
   }
+
+  auto request = std::make_shared<ros2_medkit_msgs::srv::GetFault::Request>();
+  request->fault_code = fault_code;
+
+  auto future = get_fault_client_->async_send_request(request);
+
+  if (future.wait_for(timeout) != std::future_status::ready) {
+    result.success = false;
+    result.error_message = "GetFault service call timed out";
+    return result;
+  }
+
+  auto response = future.get();
+  result.success = response->success;
+
+  if (response->success) {
+    result.fault = response->fault;
+    result.environment_data = response->environment_data;
+
+    // Verify source_id if provided
+    if (!source_id.empty()) {
+      bool matches = false;
+      for (const auto & src : result.fault.reporting_sources) {
+        if (src.rfind(source_id, 0) == 0) {
+          matches = true;
+          break;
+        }
+      }
+      if (!matches) {
+        result.success = false;
+        result.error_message = "Fault not found for source: " + source_id;
+        result.fault = ros2_medkit_msgs::msg::Fault();
+        result.environment_data = ros2_medkit_msgs::msg::EnvironmentData();
+      }
+    }
+  } else {
+    result.error_message = response->error_message;
+  }
+
+  return result;
+}
+
+FaultResult FaultManager::get_fault(const std::string & fault_code, const std::string & source_id) {
+  // Use get_fault_with_env and convert to JSON
+  auto env_result = get_fault_with_env(fault_code, source_id);
 
   FaultResult result;
+  result.success = env_result.success;
+  result.error_message = env_result.error_message;
 
-  // Find the specific fault
-  for (const auto & fault : all_faults.data["faults"]) {
-    if (fault["fault_code"] == fault_code) {
-      result.success = true;
-      result.data = fault;
-      return result;
-    }
+  if (env_result.success) {
+    result.data = fault_to_json(env_result.fault);
   }
 
-  result.success = false;
-  result.error_message = "Fault not found: " + fault_code;
   return result;
 }
 

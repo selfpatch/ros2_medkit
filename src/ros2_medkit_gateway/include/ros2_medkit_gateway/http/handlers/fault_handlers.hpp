@@ -15,7 +15,11 @@
 #ifndef ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__FAULT_HANDLERS_HPP_
 #define ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__FAULT_HANDLERS_HPP_
 
+#include <nlohmann/json.hpp>
+
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_msgs/msg/environment_data.hpp"
+#include "ros2_medkit_msgs/msg/fault.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -79,6 +83,23 @@ class FaultHandlers {
    * @brief Handle GET /faults/{fault_code}/snapshots/bag - download rosbag file for a fault.
    */
   void handle_get_rosbag(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Build SOVD-compliant fault response with environment data.
+   *
+   * Creates a response containing:
+   * - "item" with fault details and SOVD status object
+   * - "environment_data" with extended_data_records and snapshots
+   * - "x-medkit" extensions with occurrence_count, severity_label, etc.
+   *
+   * @param fault The fault message from fault_manager
+   * @param env_data Environment data with snapshots
+   * @param entity_path Entity path for bulk_data_uri generation (e.g., "/apps/motor")
+   * @return SOVD-compliant JSON response
+   */
+  static nlohmann::json build_sovd_fault_response(const ros2_medkit_msgs::msg::Fault & fault,
+                                                  const ros2_medkit_msgs::msg::EnvironmentData & env_data,
+                                                  const std::string & entity_path);
 
  private:
   HandlerContext & ctx_;
