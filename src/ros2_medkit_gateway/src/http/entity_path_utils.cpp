@@ -94,7 +94,16 @@ std::optional<EntityPathInfo> parse_entity_path(const std::string & request_path
         // Build entity path: /{parent_type}/{parent_id}/{sub_type}/{entity_id}
         std::string parent_segment = (def.type == SovdEntityType::AREA) ? "areas" : "components";
         std::string sub_segment = get_type_segment(def.type, true);
-        info.entity_path = "/" + parent_segment + "/" + info.parent_id + "/" + sub_segment + "/" + info.entity_id;
+        info.entity_path.reserve(parent_segment.size() + info.parent_id.size() + sub_segment.size() +
+                                 info.entity_id.size() + 4);
+        info.entity_path = "/";
+        info.entity_path.append(parent_segment)
+            .append("/")
+            .append(info.parent_id)
+            .append("/")
+            .append(sub_segment)
+            .append("/")
+            .append(info.entity_id);
       } else {
         // For top-level: match[1] = entity_id, match[2] = resource_path
         info.entity_id = match[1].str();
@@ -102,7 +111,9 @@ std::optional<EntityPathInfo> parse_entity_path(const std::string & request_path
 
         // Build entity path: /{type}/{entity_id}
         std::string type_segment = get_type_segment(def.type, false);
-        info.entity_path = "/" + type_segment + "/" + info.entity_id;
+        info.entity_path.reserve(type_segment.size() + info.entity_id.size() + 2);
+        info.entity_path = "/";
+        info.entity_path.append(type_segment).append("/").append(info.entity_id);
       }
 
       return info;

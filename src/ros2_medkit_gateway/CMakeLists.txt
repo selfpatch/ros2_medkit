@@ -385,7 +385,7 @@ if(BUILD_TESTING)
   add_launch_test(
     test/test_integration.test.py
     TARGET test_integration
-    TIMEOUT 120
+    TIMEOUT 600
   )
 
   # Add CORS integration tests

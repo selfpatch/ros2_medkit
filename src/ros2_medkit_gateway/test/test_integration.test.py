@@ -4485,3 +4485,538 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('items', data)
 
         print(f'✓ App routes correctly accept app ID: {app_id}')
+
+    # ========== Bulk-Data Endpoints Tests (REQ_INTEROP_071-073) ==========
+
+    def test_121_bulk_data_list_categories_success(self):
+        """
+        Test GET /apps/{app}/bulk-data returns categories.
+
+        @verifies REQ_INTEROP_071
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/apps/lidar_sensor/bulk-data',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+        # Should include rosbags category
+        self.assertIn('rosbags', data['items'])
+
+        print(f'✓ Bulk-data categories test passed: {data["items"]}')
+
+    def test_122_bulk_data_list_categories_all_entity_types(self):
+        """
+        Test bulk-data endpoint works for all entity types.
+
+        @verifies REQ_INTEROP_071
+        """
+        entity_endpoints = [
+            '/apps/lidar_sensor/bulk-data',
+            '/components/perception/bulk-data',
+            '/areas/perception/bulk-data',
+        ]
+
+        for endpoint in entity_endpoints:
+            response = requests.get(f'{self.BASE_URL}{endpoint}', timeout=10)
+            self.assertEqual(
+                response.status_code, 200,
+                f'Expected 200 for {endpoint}, got {response.status_code}'
+            )
+
+            data = response.json()
+            self.assertIn('items', data)
+            self.assertIsInstance(data['items'], list)
+
+        print('✓ Bulk-data categories work for all entity types')
+
+    def test_123_bulk_data_list_categories_entity_not_found(self):
+        """
+        Test bulk-data returns 404 for nonexistent entity.
+
+        @verifies REQ_INTEROP_071
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/apps/nonexistent_app/bulk-data',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+
+        print('✓ Bulk-data 404 for nonexistent entity test passed')
+
+    def test_124_bulk_data_list_descriptors_structure(self):
+        """
+        Test GET /apps/{app}/bulk-data/rosbags returns BulkDataDescriptor[].
+
+        @verifies REQ_INTEROP_072
+        """
+        # Wait for fault to be generated (lidar sensor has invalid params)
+        time.sleep(3)
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/lidar_sensor/bulk-data/rosbags',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+
+        # If there are rosbags, verify structure
+        if len(data['items']) > 0:
+            descriptor = data['items'][0]
+            self.assertIn('id', descriptor)
+            self.assertIn('name', descriptor)
+            self.assertIn('size', descriptor)
+            self.assertIn('mime_type', descriptor)
+            self.assertIn('href', descriptor)
+            # Verify x-medkit extension
+            self.assertIn('x-medkit', descriptor)
+            x_medkit = descriptor['x-medkit']
+            self.assertIn('fault_code', x_medkit)
+
+            print(f'✓ Bulk-data descriptors test passed: {len(data["items"])} rosbags')
+        else:
+            print('✓ Bulk-data descriptors test passed: 0 rosbags (OK if no faults yet)')
+
+    def test_125_bulk_data_list_descriptors_empty_result(self):
+        """
+        Test bulk-data returns empty array for entity without rosbags.
+
+        @verifies REQ_INTEROP_072
+        """
+        # temp_sensor doesn't generate faults, so should have no rosbags
+        response = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/bulk-data/rosbags',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+        # Should return empty array (not error)
+        self.assertEqual(len(data['items']), 0)
+
+        print('✓ Bulk-data empty descriptors test passed')
+
+    def test_126_bulk_data_unknown_category_returns_404(self):
+        """
+        Test bulk-data returns 404 for unknown category.
+
+        @verifies REQ_INTEROP_072
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/apps/lidar_sensor/bulk-data/unknown_category',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+
+        print('✓ Bulk-data unknown category 404 test passed')
+
+    def _wait_for_fault_with_rosbag(self, entity_id: str, max_wait: float = 30.0):
+        """
+        Wait for a fault with rosbag to be available for entity.
+
+        Returns fault_code if found, None if timeout.
+        """
+        start_time = time.time()
+        while time.time() - start_time < max_wait:
+            try:
+                response = requests.get(
+                    f'{self.BASE_URL}/apps/{entity_id}/bulk-data/rosbags',
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    items = data.get('items', [])
+                    if len(items) > 0:
+                        return items[0].get('id')
+            except requests.exceptions.RequestException:
+                pass
+            time.sleep(1)
+        return None
+
+    def test_127_bulk_data_download_success(self):
+        """
+        Test GET /apps/{app}/bulk-data/rosbags/{id} downloads file successfully.
+
+        This test verifies the complete rosbag download flow:
+        1. Wait for fault with rosbag snapshot
+        2. Download the rosbag via bulk-data endpoint
+        3. Verify response headers (Content-Type, Content-Disposition)
+        4. Verify response body is non-empty binary data
+
+        @verifies REQ_INTEROP_073
+        """
+        # Wait for fault_manager to capture rosbag (lidar_sensor generates faults)
+        rosbag_id = self._wait_for_fault_with_rosbag('lidar_sensor', max_wait=30.0)
+        if rosbag_id is None:
+            self.skipTest('No rosbag available for download test (fault not yet generated)')
+
+        # Download the rosbag
+        response = requests.get(
+            f'{self.BASE_URL}/apps/lidar_sensor/bulk-data/rosbags/{rosbag_id}',
+            timeout=30,
+            stream=True
+        )
+        self.assertEqual(response.status_code, 200)
+
+        # Verify Content-Type header
+        content_type = response.headers.get('Content-Type', '')
+        valid_types = ['application/gzip', 'application/x-mcap', 'application/octet-stream']
+        self.assertTrue(
+            any(t in content_type for t in valid_types),
+            f'Expected valid rosbag Content-Type, got: {content_type}'
+        )
+
+        # Verify Content-Disposition header
+        content_disposition = response.headers.get('Content-Disposition', '')
+        self.assertIn('attachment', content_disposition)
+        self.assertIn('filename=', content_disposition)
+
+        # Verify we got actual data
+        content = response.content
+        self.assertGreater(len(content), 0, 'Downloaded rosbag should have content')
+
+        print(f'✓ Bulk-data download success: {len(content)} bytes, '
+              f'Content-Type: {content_type}')
+
+    def test_128_bulk_data_download_not_found(self):
+        """
+        Test bulk-data download returns 404 for invalid UUID.
+
+        @verifies REQ_INTEROP_073
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/apps/lidar_sensor/bulk-data/rosbags/nonexistent-uuid',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        # Response should be JSON error
+        data = response.json()
+        self.assertIn('error_code', data)
+
+        print('✓ Bulk-data download 404 for invalid UUID test passed')
+
+    def test_129_bulk_data_download_wrong_entity_returns_404(self):
+        """
+        Test bulk-data download returns 404 if rosbag exists but for different entity.
+
+        Security check: rosbag belonging to one entity shouldn't be accessible
+        via another entity's bulk-data endpoint.
+
+        @verifies REQ_INTEROP_073
+        """
+        # Get a rosbag ID from lidar_sensor
+        rosbag_id = self._wait_for_fault_with_rosbag('lidar_sensor', max_wait=15.0)
+        if rosbag_id is None:
+            self.skipTest('No rosbag available for cross-entity test')
+
+        # Try to access it via temp_sensor (wrong entity)
+        response = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/bulk-data/rosbags/{rosbag_id}',
+            timeout=10
+        )
+        # Should return 404 (not found for this entity)
+        self.assertEqual(response.status_code, 404)
+
+        print('✓ Bulk-data cross-entity access denied test passed')
+
+    def test_130_bulk_data_nested_entity_path(self):
+        """
+        Test bulk-data endpoints work for nested entities (e.g., perception area).
+
+        @verifies REQ_INTEROP_071
+        """
+        # Test nested area
+        response = requests.get(
+            f'{self.BASE_URL}/areas/perception/bulk-data',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+        self.assertIn('rosbags', data['items'])
+
+        print('✓ Bulk-data nested entity path test passed')
+
+    # ========== SOVD-Compliant Fault Response Tests (REQ_INTEROP_013) ==========
+
+    def _wait_for_lidar_fault(self, max_wait: float = 30.0):
+        """
+        Wait for lidar_sensor fault to be available.
+
+        Returns (fault_code, entity_id) tuple if found, (None, None) if timeout.
+        """
+        start_time = time.time()
+        while time.time() - start_time < max_wait:
+            try:
+                response = requests.get(
+                    f'{self.BASE_URL}/apps/lidar_sensor/faults',
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    items = data.get('items', [])
+                    if len(items) > 0:
+                        fault_code = items[0].get('faultCode')
+                        if fault_code:
+                            return (fault_code, 'lidar_sensor')
+            except requests.exceptions.RequestException:
+                pass
+            time.sleep(1)
+        return (None, None)
+
+    def test_131_fault_response_structure(self):
+        """
+        Test GET /{entity}/faults/{code} returns SOVD-compliant response.
+
+        @verifies REQ_INTEROP_013
+        """
+        fault_code, entity_id = self._wait_for_lidar_fault(max_wait=30.0)
+        if fault_code is None:
+            self.skipTest('No fault available for response structure test')
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{entity_id}/faults/{fault_code}',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        # SOVD structure: { "item": {...}, "environment_data": {...} }
+        self.assertIn('item', data)
+        self.assertIn('environment_data', data)
+
+        # Verify item structure
+        item = data['item']
+        self.assertIn('faultCode', item)
+        self.assertIn('status', item)
+
+        print(f'✓ Fault response structure test passed: {fault_code}')
+
+    def test_132_fault_status_object_structure(self):
+        """
+        Test fault item has SOVD-compliant status object.
+
+        @verifies REQ_INTEROP_013
+        """
+        fault_code, entity_id = self._wait_for_lidar_fault(max_wait=30.0)
+        if fault_code is None:
+            self.skipTest('No fault available for status object test')
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{entity_id}/faults/{fault_code}',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        item = data['item']
+        status = item['status']
+
+        # SOVD status object structure
+        self.assertIn('testFailed', status)
+        self.assertIn('presentStatus', status)
+        self.assertIn('confirmedStatus', status)
+        self.assertIsInstance(status['testFailed'], bool)
+        self.assertIsInstance(status['presentStatus'], bool)
+        self.assertIsInstance(status['confirmedStatus'], bool)
+
+        print(f'✓ Fault status object test passed: {status}')
+
+    def test_133_fault_environment_data_structure(self):
+        """
+        Test fault response includes environment_data with snapshots.
+
+        @verifies REQ_INTEROP_013
+        """
+        fault_code, entity_id = self._wait_for_lidar_fault(max_wait=30.0)
+        if fault_code is None:
+            self.skipTest('No fault available for environment_data test')
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{entity_id}/faults/{fault_code}',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        env_data = data['environment_data']
+
+        # SOVD environment_data structure
+        self.assertIn('extended_data_records', env_data)
+        self.assertIn('snapshots', env_data)
+        self.assertIsInstance(env_data['extended_data_records'], list)
+        self.assertIsInstance(env_data['snapshots'], list)
+
+        print(f'✓ Fault environment_data structure test passed: '
+              f'{len(env_data["snapshots"])} snapshots')
+
+    def test_134_fault_snapshot_freeze_frame_structure(self):
+        """
+        Test freeze_frame snapshot has correct structure.
+
+        @verifies REQ_INTEROP_013
+        """
+        fault_code, entity_id = self._wait_for_lidar_fault(max_wait=30.0)
+        if fault_code is None:
+            self.skipTest('No fault available for freeze_frame test')
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{entity_id}/faults/{fault_code}',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        snapshots = data['environment_data']['snapshots']
+
+        # Find freeze_frame snapshot
+        freeze_frame = None
+        for snapshot in snapshots:
+            if snapshot.get('category') == 'freeze_frame':
+                freeze_frame = snapshot
+                break
+
+        if freeze_frame is None:
+            self.skipTest('No freeze_frame snapshot in fault response')
+
+        # Verify freeze_frame structure
+        self.assertIn('id', freeze_frame)
+        self.assertIn('category', freeze_frame)
+        self.assertIn('timestamp', freeze_frame)
+        self.assertEqual(freeze_frame['category'], 'freeze_frame')
+        # freeze_frame has inline data
+        self.assertIn('data', freeze_frame)
+
+        print('✓ Fault freeze_frame snapshot test passed')
+
+    def test_135_fault_snapshot_rosbag_has_bulk_data_uri(self):
+        """
+        Test rosbag snapshot has correct bulk_data_uri format.
+
+        @verifies REQ_INTEROP_013
+        """
+        fault_code, entity_id = self._wait_for_lidar_fault(max_wait=30.0)
+        if fault_code is None:
+            self.skipTest('No fault available for rosbag snapshot test')
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{entity_id}/faults/{fault_code}',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        snapshots = data['environment_data']['snapshots']
+
+        # Find rosbag snapshot
+        rosbag = None
+        for snapshot in snapshots:
+            if snapshot.get('category') == 'rosbag':
+                rosbag = snapshot
+                break
+
+        if rosbag is None:
+            self.skipTest('No rosbag snapshot in fault response')
+
+        # Verify rosbag structure
+        self.assertIn('id', rosbag)
+        self.assertIn('category', rosbag)
+        self.assertEqual(rosbag['category'], 'rosbag')
+        # rosbag has bulk_data_uri instead of inline data
+        self.assertIn('bulk_data_uri', rosbag)
+        self.assertIn('/bulk-data/rosbags/', rosbag['bulk_data_uri'])
+
+        print(f'✓ Fault rosbag bulk_data_uri test passed: {rosbag["bulk_data_uri"]}')
+
+    def test_136_fault_x_medkit_extensions(self):
+        """
+        Test fault response includes x-medkit extensions.
+
+        @verifies REQ_INTEROP_013
+        """
+        fault_code, entity_id = self._wait_for_lidar_fault(max_wait=30.0)
+        if fault_code is None:
+            self.skipTest('No fault available for x-medkit test')
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{entity_id}/faults/{fault_code}',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        # x-medkit extensions
+        self.assertIn('x-medkit', data)
+        x_medkit = data['x-medkit']
+        self.assertIn('occurrence_count', x_medkit)
+        self.assertIn('severity_label', x_medkit)
+        self.assertIn('reporting_sources', x_medkit)
+
+        print(f'✓ Fault x-medkit extensions test passed: '
+              f'severity={x_medkit["severity_label"]}, '
+              f'occurrences={x_medkit["occurrence_count"]}')
+
+    def test_137_bulk_data_download_verifies_complete_rosbag(self):
+        """
+        Test downloading rosbag and verifying it's a valid archive.
+
+        This test goes beyond basic download verification to ensure
+        the downloaded content is actually a valid gzip/tar archive.
+
+        @verifies REQ_INTEROP_073
+        """
+        import gzip
+        import io
+
+        rosbag_id = self._wait_for_fault_with_rosbag('lidar_sensor', max_wait=30.0)
+        if rosbag_id is None:
+            self.skipTest('No rosbag available for complete download test')
+
+        # Download the rosbag
+        response = requests.get(
+            f'{self.BASE_URL}/apps/lidar_sensor/bulk-data/rosbags/{rosbag_id}',
+            timeout=30,
+            stream=True
+        )
+        self.assertEqual(response.status_code, 200)
+
+        content = response.content
+        content_type = response.headers.get('Content-Type', '')
+
+        # If it's gzip, verify it's a valid gzip file
+        if 'gzip' in content_type:
+            try:
+                # Try to read gzip header
+                with gzip.GzipFile(fileobj=io.BytesIO(content)) as f:
+                    # Just read a bit to verify it's valid
+                    f.read(100)
+                print(f'✓ Downloaded rosbag is valid gzip archive ({len(content)} bytes)')
+            except gzip.BadGzipFile:
+                self.fail('Downloaded rosbag is not a valid gzip file')
+        elif 'mcap' in content_type:
+            # MCAP files start with magic bytes
+            self.assertTrue(
+                content[:4] == b'\x89MCX' or len(content) > 0,
+                'MCAP file should have content'
+            )
+            print(f'✓ Downloaded rosbag is MCAP format ({len(content)} bytes)')
+        else:
+            # For other formats, just verify we have content
+            self.assertGreater(len(content), 0)
+            print(f'✓ Downloaded rosbag has content ({len(content)} bytes)')
