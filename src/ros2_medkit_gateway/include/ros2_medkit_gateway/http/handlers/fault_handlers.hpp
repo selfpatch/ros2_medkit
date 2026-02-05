@@ -29,11 +29,12 @@ namespace handlers {
  *
  * Provides handlers for:
  * - GET /faults - List all faults
- * - GET /faults/{fault_code}/snapshots - Get snapshots for a fault
  * - GET /components/{component_id}/faults - List faults for a component
  * - GET /components/{component_id}/faults/{fault_code} - Get specific fault
- * - GET /components/{component_id}/faults/{fault_code}/snapshots - Get snapshots for a fault
  * - DELETE /components/{component_id}/faults/{fault_code} - Clear fault
+ *
+ * Note: Snapshot data is inline in fault responses (environment_data).
+ * Rosbag downloads use the bulk-data endpoint pattern.
  */
 class FaultHandlers {
  public:
@@ -68,21 +69,6 @@ class FaultHandlers {
    * @brief Handle DELETE /components/{component_id}/faults - clear all faults for entity.
    */
   void handle_clear_all_faults(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle GET /faults/{fault_code}/snapshots - get snapshots for a fault (system-wide).
-   */
-  void handle_get_snapshots(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle GET /components/{component_id}/faults/{fault_code}/snapshots - get snapshots for a fault.
-   */
-  void handle_get_component_snapshots(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle GET /faults/{fault_code}/snapshots/bag - download rosbag file for a fault.
-   */
-  void handle_get_rosbag(const httplib::Request & req, httplib::Response & res);
 
   /**
    * @brief Build SOVD-compliant fault response with environment data.
