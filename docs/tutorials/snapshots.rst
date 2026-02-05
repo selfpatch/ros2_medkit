@@ -124,48 +124,73 @@ For fault-specific topic capture, create a YAML configuration file:
 Querying Snapshots
 ------------------
 
-**Get all snapshots for a fault:**
+Snapshots are included inline in the fault response as ``environment_data``:
+
+**Get fault details with snapshots:**
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
+   curl http://localhost:8080/api/v1/apps/motor_controller/faults/MOTOR_OVERHEAT
 
 **Response:**
 
 .. code-block:: json
 
    {
-     "fault_code": "MOTOR_OVERHEAT",
-     "captured_at": 1735830000.123,
-     "topics": {
-       "/joint_states": {
-         "message_type": "sensor_msgs/msg/JointState",
-         "data": {
-           "name": ["joint1", "joint2"],
-           "position": [1.57, 0.0]
-         }
-       },
-       "/motor/temperature": {
-         "message_type": "sensor_msgs/msg/Temperature",
-         "data": {
-           "temperature": 85.5,
-           "variance": 0.1
-         }
+     "item": {
+       "code": "MOTOR_OVERHEAT",
+       "fault_name": "Motor temperature exceeded threshold",
+       "severity": 2,
+       "status": {
+         "aggregatedStatus": "active",
+         "testFailed": "1",
+         "confirmedDTC": "1"
        }
+     },
+     "environment_data": {
+       "extended_data_records": {
+         "first_occurence": "2026-02-04T10:30:00.000Z",
+         "last_occurence": "2026-02-04T10:35:00.000Z"
+       },
+       "snapshots": [
+         {
+           "type": "freeze_frame",
+           "name": "motor_temperature",
+           "data": 85.5,
+           "x-medkit": {
+             "topic": "/motor/temperature",
+             "message_type": "sensor_msgs/msg/Temperature",
+             "full_data": {"temperature": 85.5, "variance": 0.1},
+             "captured_at": "2026-02-04T10:30:00.123Z"
+           }
+         },
+         {
+           "type": "rosbag",
+           "name": "fault_recording",
+           "bulk_data_uri": "/apps/motor_controller/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000",
+           "size_bytes": 1234567,
+           "duration_sec": 6.0,
+           "format": "mcap"
+         }
+       ]
+     },
+     "x-medkit": {
+       "occurrence_count": 3,
+       "reporting_sources": ["/powertrain/motor_controller"]
      }
    }
 
-**Filter by specific topic:**
+**Snapshot Types:**
+
+- ``freeze_frame``: Topic data captured at fault confirmation (JSON format)
+- ``rosbag``: Recording file available via bulk-data endpoint (binary format)
+
+**Get snapshots from fault response using jq:**
 
 .. code-block:: bash
 
-   curl "http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots?topic=/joint_states"
-
-**Component-scoped snapshots:**
-
-.. code-block:: bash
-
-   curl http://localhost:8080/api/v1/components/motor_controller/faults/MOTOR_OVERHEAT/snapshots
+   curl http://localhost:8080/api/v1/apps/motor_controller/faults/MOTOR_OVERHEAT | \
+     jq '.environment_data.snapshots'
 
 Example Workflow
 ----------------
@@ -199,7 +224,8 @@ This example demonstrates the complete snapshot capture workflow.
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/faults/NAV_ERROR/snapshots
+   curl http://localhost:8080/api/v1/apps/nav_node/faults/NAV_ERROR | \
+     jq '.environment_data.snapshots'
 
 The response will contain the odometry data that was captured at the
 moment the fault was confirmed.
@@ -430,24 +456,53 @@ Saves resources but may miss context if fault confirms before buffer fills.
 Downloading Rosbag Files
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-**Via REST API:**
+Rosbag files are downloaded via SOVD bulk-data endpoints.
+
+**1. List available rosbags for an entity:**
 
 .. code-block:: bash
 
-   # Download bag archive (.tar.gz containing full bag directory)
-   curl -O -J http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag
+   curl http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags
 
-   # Extract the archive
-   tar -xzf fault_MOTOR_OVERHEAT_20260124_153045.tar.gz
+**Response:**
 
-   # Play back the bag
-   ros2 bag play fault_MOTOR_OVERHEAT_1735830000/
+.. code-block:: json
 
-The REST API returns a compressed tar.gz archive containing the complete bag
-directory structure (``metadata.yaml`` and all storage segments). This allows
-direct playback with ``ros2 bag play`` after extraction.
+   {
+     "items": [
+       {
+         "id": "550e8400-e29b-41d4-a716-446655440000",
+         "name": "MOTOR_OVERHEAT recording",
+         "mimetype": "application/x-mcap",
+         "size": 1234567,
+         "creation_date": "2026-02-04T10:30:00.000Z",
+         "x-medkit": {
+           "fault_code": "MOTOR_OVERHEAT",
+           "duration_sec": 6.0,
+           "format": "mcap"
+         }
+       }
+     ]
+   }
 
-**Via ROS 2 service:**
+**2. Download a specific rosbag:**
+
+Use the ``bulk_data_uri`` from the fault response, or construct from listing:
+
+.. code-block:: bash
+
+   # Using bulk_data_uri from fault response
+   curl -O -J http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000
+
+The ``-J`` flag uses the server-provided filename from ``Content-Disposition`` header.
+
+**3. Play back the rosbag:**
+
+.. code-block:: bash
+
+   ros2 bag play MOTOR_OVERHEAT.mcap
+
+**Via ROS 2 service (alternative):**
 
 .. code-block:: bash
 
@@ -500,6 +555,45 @@ For development with maximum context:
 See Also
 --------
 
+- :doc:`../api/rest` - REST API reference (Bulk Data section)
 - :doc:`../requirements/specs/faults` - Fault API requirements
 - `Gateway README <https://github.com/selfpatch/ros2_medkit/blob/main/src/ros2_medkit_gateway/README.md>`_ - REST API reference
 - `config/snapshots.yaml <https://github.com/selfpatch/ros2_medkit/blob/main/src/ros2_medkit_fault_manager/config/snapshots.yaml>`_ - Full configuration reference
+
+Migration from Legacy Endpoints
+-------------------------------
+
+If you were using the legacy snapshot endpoints, migrate to the new SOVD-compliant API:
+
+**Snapshots:**
+
+.. list-table::
+   :widths: 45 55
+   :header-rows: 1
+
+   * - Previous (removed)
+     - Current
+   * - ``GET /faults/{code}/snapshots``
+     - ``GET /apps/{app}/faults/{code}`` → ``environment_data.snapshots[]``
+   * - ``GET /components/{id}/faults/{code}/snapshots``
+     - ``GET /components/{id}/faults/{code}`` → ``environment_data.snapshots[]``
+
+**Rosbag Downloads:**
+
+.. list-table::
+   :widths: 45 55
+   :header-rows: 1
+
+   * - Previous (removed)
+     - Current
+   * - ``GET /faults/{code}/snapshots/bag``
+     - ``GET /apps/{app}/bulk-data/rosbags/{id}``
+   * - ``GET /components/{id}/faults/{code}/snapshots/bag``
+     - ``GET /components/{id}/bulk-data/rosbags/{id}``
+
+**Key Changes:**
+
+1. **Snapshots inline**: No separate snapshot endpoint; data is in fault response
+2. **Bulk-data pattern**: Rosbags use SOVD bulk-data with UUID identifiers
+3. **Entity-scoped**: Bulk-data endpoints require entity path (e.g., ``/apps/motor``)
+4. **SOVD status**: Fault response includes SOVD-compliant ``status`` object

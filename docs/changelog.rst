@@ -6,6 +6,50 @@ All notable changes to ros2_medkit are documented in this file.
 The format is based on `Keep a Changelog <https://keepachangelog.com/en/1.1.0/>`_,
 and this project adheres to `Semantic Versioning <https://semver.org/spec/v2.0.0.html>`_.
 
+[Unreleased]
+------------
+
+Added
+~~~~~
+
+* SOVD bulk-data endpoints for all entity types:
+
+  - ``GET /{entity}/bulk-data`` - list available bulk-data categories
+  - ``GET /{entity}/bulk-data/{category}`` - list bulk-data descriptors
+  - ``GET /{entity}/bulk-data/{category}/{id}`` - download bulk-data file
+
+* Inline ``environment_data`` in fault response with:
+
+  - ``extended_data_records``: First/last occurrence timestamps
+  - ``snapshots[]``: Array of freeze_frame and rosbag entries
+
+* SOVD-compliant ``status`` object in fault response with aggregatedStatus,
+  testFailed, confirmedDTC, pendingDTC fields
+* UUID identifiers for rosbag bulk-data items
+* ``x-medkit`` extensions with occurrence_count, severity_label
+
+Changed
+~~~~~~~
+
+* Fault response structure now SOVD-compliant with ``item`` wrapper
+* Rosbag downloads use SOVD bulk-data pattern instead of legacy endpoints
+* Rosbag IDs changed from timestamps to UUIDs
+
+Removed
+~~~~~~~
+
+* ``GET /faults/{code}/snapshots`` - use ``environment_data`` in fault response
+* ``GET /faults/{code}/snapshots/bag`` - use bulk-data endpoint
+* ``GET /{entity}/faults/{code}/snapshots`` - use ``environment_data``
+* ``GET /{entity}/faults/{code}/snapshots/bag`` - use bulk-data endpoint
+
+**Breaking Changes:**
+
+* Fault response structure changed - clients must update to handle ``item`` wrapper
+  and ``environment_data`` structure
+* Legacy snapshot endpoints removed - migrate to inline snapshots and bulk-data
+* Rosbag identifiers changed from timestamps to UUIDs
+
 [0.1.0] - 2026-02-01
 --------------------
 
@@ -102,11 +146,11 @@ specification adapted for ROS 2:
 - Data access (read, write)
 - Operations (services, actions with executions)
 - Configurations (parameters)
-- Faults (query, clear)
+- Faults (query, clear) with environment_data
+- Bulk data transfer (rosbags via bulk-data endpoints)
 
 Not yet implemented:
 
-- Bulk data transfer
 - Software updates
 - Locks
 - Triggers

@@ -383,13 +383,171 @@ Query and manage faults.
       }
 
 ``GET /api/v1/components/{id}/faults/{fault_code}``
-   Get specific fault details.
+   Get details of a specific fault including environment data.
+
+   **Example Response (200 OK):**
+
+   .. code-block:: json
+
+      {
+        "item": {
+          "code": "MOTOR_OVERHEAT",
+          "fault_name": "Motor temperature exceeded threshold",
+          "severity": 2,
+          "status": {
+            "aggregatedStatus": "active",
+            "testFailed": "1",
+            "confirmedDTC": "1",
+            "pendingDTC": "0"
+          }
+        },
+        "environment_data": {
+          "extended_data_records": {
+            "first_occurence": "2026-02-04T10:30:00.000Z",
+            "last_occurence": "2026-02-04T10:35:00.000Z"
+          },
+          "snapshots": [
+            {
+              "type": "freeze_frame",
+              "name": "motor_temperature",
+              "data": 105.5,
+              "x-medkit": {
+                "topic": "/motor/temperature",
+                "message_type": "sensor_msgs/msg/Temperature",
+                "full_data": {"temperature": 105.5, "variance": 0.1},
+                "captured_at": "2026-02-04T10:30:00.123Z"
+              }
+            },
+            {
+              "type": "rosbag",
+              "name": "fault_recording",
+              "bulk_data_uri": "/apps/motor_controller/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000",
+              "size_bytes": 1234567,
+              "duration_sec": 6.0,
+              "format": "mcap"
+            }
+          ]
+        },
+        "x-medkit": {
+          "occurrence_count": 3,
+          "reporting_sources": ["/powertrain/motor_controller"],
+          "severity_label": "ERROR"
+        }
+      }
+
+   **Status Object:**
+
+   The ``status`` object follows SOVD fault status specification:
+
+   - ``aggregatedStatus``: Overall status (``active``, ``passive``, ``cleared``)
+   - ``testFailed``: Test failed indicator (``0`` or ``1``)
+   - ``confirmedDTC``: Confirmed DTC indicator (``0`` or ``1``)
+   - ``pendingDTC``: Pending DTC indicator (``0`` or ``1``)
+
+   **Snapshot Types:**
+
+   - ``freeze_frame``: Topic data captured at fault confirmation
+   - ``rosbag``: Recording file available via bulk-data endpoint
 
 ``DELETE /api/v1/components/{id}/faults/{fault_code}``
    Clear a fault.
 
    - **200:** Fault cleared
    - **404:** Fault not found
+
+Bulk Data Endpoints
+-------------------
+
+Download large binary data (rosbags, logs) associated with entities.
+All entity types are supported: apps, components, areas, functions, and nested entities.
+
+List Categories
+~~~~~~~~~~~~~~~
+
+``GET /api/v1/{entity-path}/bulk-data``
+
+List available bulk-data categories for an entity.
+
+**Supported entity paths:**
+
+- ``/apps/{app-id}``
+- ``/components/{component-id}``
+- ``/areas/{area-id}``
+- ``/functions/{function-id}``
+- ``/areas/{area-id}/subareas/{subarea-id}``
+- ``/components/{component-id}/subcomponents/{subcomponent-id}``
+
+**Example:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/apps/motor_controller/bulk-data
+
+**Response (200 OK):**
+
+.. code-block:: json
+
+   {
+     "items": ["rosbags"]
+   }
+
+List Bulk Data Items
+~~~~~~~~~~~~~~~~~~~~
+
+``GET /api/v1/{entity-path}/bulk-data/{category}``
+
+List all bulk-data items in a category for the entity.
+
+**Example:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags
+
+**Response (200 OK):**
+
+.. code-block:: json
+
+   {
+     "items": [
+       {
+         "id": "550e8400-e29b-41d4-a716-446655440000",
+         "name": "MOTOR_OVERHEAT recording 2026-02-04T10:30:00Z",
+         "mimetype": "application/x-mcap",
+         "size": 1234567,
+         "creation_date": "2026-02-04T10:30:00.000Z",
+         "x-medkit": {
+           "fault_code": "MOTOR_OVERHEAT",
+           "duration_sec": 6.0,
+           "format": "mcap"
+         }
+       }
+     ]
+   }
+
+Download Bulk Data
+~~~~~~~~~~~~~~~~~~
+
+``GET /api/v1/{entity-path}/bulk-data/{category}/{id}``
+
+Download a specific bulk-data file.
+
+**Response Headers:**
+
+- ``Content-Type``: ``application/x-mcap`` (MCAP format) or ``application/x-sqlite3`` (db3)
+- ``Content-Disposition``: ``attachment; filename="FAULT_CODE.mcap"``
+- ``Access-Control-Expose-Headers``: ``Content-Disposition``
+
+**Example:**
+
+.. code-block:: bash
+
+   curl -O -J http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000
+
+**Response Codes:**
+
+- **200 OK**: File content
+- **404 Not Found**: Entity, category, or bulk-data ID not found
 
 Authentication Endpoints
 ------------------------
@@ -525,7 +683,8 @@ The gateway implements a subset of the SOVD (Service-Oriented Vehicle Diagnostic
 - Data access (``/data``)
 - Operations (``/operations``, ``/executions``)
 - Configurations (``/configurations``)
-- Faults (``/faults``)
+- Faults (``/faults``) with ``environment_data`` and SOVD status object
+- Bulk Data (``/bulk-data``) for binary data downloads (rosbags, logs)
 
 **ros2_medkit Extensions:**
 
@@ -533,6 +692,7 @@ The gateway implements a subset of the SOVD (Service-Oriented Vehicle Diagnostic
 - ``/version-info`` - Gateway version information
 - ``/manifest/status`` - Manifest discovery status
 - SSE fault streaming - Real-time fault notifications
+- ``x-medkit`` extension fields in responses
 
 See Also
 --------
