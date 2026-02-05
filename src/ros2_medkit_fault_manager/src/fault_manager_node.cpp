@@ -26,7 +26,10 @@
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_fault_manager/time_utils.hpp"
 #include "ros2_medkit_msgs/msg/cluster_info.hpp"
+#include "ros2_medkit_msgs/msg/environment_data.hpp"
+#include "ros2_medkit_msgs/msg/extended_data_records.hpp"
 #include "ros2_medkit_msgs/msg/muted_fault_info.hpp"
+#include "ros2_medkit_msgs/msg/snapshot.hpp"
 
 namespace ros2_medkit_fault_manager {
 
@@ -122,6 +125,12 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
       "~/get_faults", [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Request> & request,
                              const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Response> & response) {
         handle_get_faults(request, response);
+      });
+
+  get_fault_srv_ = create_service<ros2_medkit_msgs::srv::GetFault>(
+      "~/get_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
+                            const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> & response) {
+        handle_get_fault(request, response);
       });
 
   clear_fault_srv_ = create_service<ros2_medkit_msgs::srv::ClearFault>(
@@ -465,6 +474,76 @@ void FaultManagerNode::handle_clear_fault(
 
 bool FaultManagerNode::is_valid_severity(uint8_t severity) {
   return severity <= ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL;
+}
+
+std::string FaultManagerNode::extract_topic_name(const std::string & topic_path) {
+  auto pos = topic_path.rfind('/');
+  if (pos != std::string::npos && pos < topic_path.length() - 1) {
+    return topic_path.substr(pos + 1);
+  }
+  return topic_path;
+}
+
+void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
+                                        const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> & response) {
+  RCLCPP_DEBUG(get_logger(), "GetFault request for: %s", request->fault_code.c_str());
+
+  // Validate fault_code
+  std::string validation_error = validate_fault_code(request->fault_code);
+  if (!validation_error.empty()) {
+    response->success = false;
+    response->error_message = validation_error;
+    return;
+  }
+
+  // Get fault from storage
+  auto fault = storage_->get_fault(request->fault_code);
+  if (!fault) {
+    response->success = false;
+    response->error_message = "Fault not found: " + request->fault_code;
+    return;
+  }
+
+  response->success = true;
+  response->fault = *fault;
+
+  // Populate extended_data_records with timestamps
+  ros2_medkit_msgs::msg::ExtendedDataRecords extended_records;
+  extended_records.first_occurence_ns = rclcpp::Time(fault->first_occurred).nanoseconds();
+  extended_records.last_occurence_ns = rclcpp::Time(fault->last_occurred).nanoseconds();
+  response->environment_data.extended_data_records = extended_records;
+
+  // Get freeze frame snapshots from storage
+  auto stored_snapshots = storage_->get_snapshots(request->fault_code);
+  for (const auto & stored_snapshot : stored_snapshots) {
+    ros2_medkit_msgs::msg::Snapshot snapshot;
+    snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_FREEZE_FRAME;
+    snapshot.name = extract_topic_name(stored_snapshot.topic);
+    snapshot.data = stored_snapshot.data;
+    snapshot.topic = stored_snapshot.topic;
+    snapshot.message_type = stored_snapshot.message_type;
+    snapshot.captured_at_ns = stored_snapshot.captured_at_ns;
+    // Rosbag fields left empty for freeze_frame type
+    response->environment_data.snapshots.push_back(snapshot);
+  }
+
+  // Get rosbag info if available
+  auto rosbag_info = storage_->get_rosbag_file(request->fault_code);
+  if (rosbag_info) {
+    ros2_medkit_msgs::msg::Snapshot rosbag_snapshot;
+    rosbag_snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_ROSBAG;
+    rosbag_snapshot.name = "rosbag_" + request->fault_code;
+    rosbag_snapshot.bulk_data_id = rosbag_info->bulk_data_id;
+    rosbag_snapshot.size_bytes = rosbag_info->size_bytes;
+    rosbag_snapshot.duration_sec = rosbag_info->duration_sec;
+    rosbag_snapshot.format = rosbag_info->format;
+    rosbag_snapshot.captured_at_ns = rosbag_info->created_at_ns;
+    // Freeze frame fields left empty for rosbag type
+    response->environment_data.snapshots.push_back(rosbag_snapshot);
+  }
+
+  RCLCPP_DEBUG(get_logger(), "GetFault returned fault '%s' with %zu snapshots", request->fault_code.c_str(),
+               response->environment_data.snapshots.size());
 }
 
 void FaultManagerNode::publish_fault_event(const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault,

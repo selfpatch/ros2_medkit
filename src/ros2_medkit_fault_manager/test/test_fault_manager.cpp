@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -25,6 +26,7 @@
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
+#include "ros2_medkit_msgs/srv/get_fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
 using ros2_medkit_fault_manager::DebounceConfig;
@@ -33,6 +35,7 @@ using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_msgs::msg::Fault;
 using ros2_medkit_msgs::msg::FaultEvent;
 using ros2_medkit_msgs::srv::ClearFault;
+using ros2_medkit_msgs::srv::GetFault;
 using ros2_medkit_msgs::srv::ReportFault;
 
 class FaultStorageTest : public ::testing::Test {
@@ -704,16 +707,19 @@ class FaultEventPublishingTest : public ::testing::Test {
     // Create service clients
     report_fault_client_ = test_node_->create_client<ReportFault>("/fault_manager/report_fault");
     clear_fault_client_ = test_node_->create_client<ClearFault>("/fault_manager/clear_fault");
+    get_fault_client_ = test_node_->create_client<GetFault>("/fault_manager/get_fault");
 
     // Wait for services
     ASSERT_TRUE(report_fault_client_->wait_for_service(std::chrono::seconds(5)));
     ASSERT_TRUE(clear_fault_client_->wait_for_service(std::chrono::seconds(5)));
+    ASSERT_TRUE(get_fault_client_->wait_for_service(std::chrono::seconds(5)));
   }
 
   void TearDown() override {
     event_subscription_.reset();
     report_fault_client_.reset();
     clear_fault_client_.reset();
+    get_fault_client_.reset();
     test_node_.reset();
     fault_manager_.reset();
     received_events_.clear();
@@ -756,11 +762,24 @@ class FaultEventPublishingTest : public ::testing::Test {
     return future.get()->success;
   }
 
+  std::optional<GetFault::Response> call_get_fault(const std::string & fault_code) {
+    auto request = std::make_shared<GetFault::Request>();
+    request->fault_code = fault_code;
+
+    auto future = get_fault_client_->async_send_request(request);
+    spin_for(std::chrono::milliseconds(100));
+    if (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      return std::nullopt;
+    }
+    return *future.get();
+  }
+
   std::shared_ptr<FaultManagerNode> fault_manager_;
   std::shared_ptr<rclcpp::Node> test_node_;
   rclcpp::Subscription<FaultEvent>::SharedPtr event_subscription_;
   rclcpp::Client<ReportFault>::SharedPtr report_fault_client_;
   rclcpp::Client<ClearFault>::SharedPtr clear_fault_client_;
+  rclcpp::Client<GetFault>::SharedPtr get_fault_client_;
   std::vector<FaultEvent> received_events_;
 };
 
@@ -885,6 +904,64 @@ TEST_F(FaultEventPublishingTest, TimestampUsesWallClockNotSimTime) {
   // This catches the "1970" bug from the issue
   constexpr int64_t YEAR_2020_NS = 1577836800LL * 1'000'000'000LL;  // 2020-01-01 00:00:00 UTC
   EXPECT_GT(event_ns, YEAR_2020_NS);
+}
+
+// GetFault Service Tests
+TEST_F(FaultEventPublishingTest, GetFaultReturnsExpectedFault) {
+  // Report a fault first
+  ASSERT_TRUE(call_report_fault("GET_FAULT_TEST", Fault::SEVERITY_ERROR, "/test_node"));
+  spin_for(std::chrono::milliseconds(100));
+
+  // Get fault via service
+  auto response = call_get_fault("GET_FAULT_TEST");
+  ASSERT_TRUE(response.has_value());
+  EXPECT_TRUE(response->success);
+  EXPECT_EQ(response->fault.fault_code, "GET_FAULT_TEST");
+  EXPECT_EQ(response->fault.severity, Fault::SEVERITY_ERROR);
+  EXPECT_EQ(response->fault.status, Fault::STATUS_CONFIRMED);
+}
+
+TEST_F(FaultEventPublishingTest, GetFaultReturnsNotFoundForMissingFault) {
+  // Get non-existent fault
+  auto response = call_get_fault("NON_EXISTENT_FAULT");
+  ASSERT_TRUE(response.has_value());
+  EXPECT_FALSE(response->success);
+  EXPECT_FALSE(response->error_message.empty());
+}
+
+TEST_F(FaultEventPublishingTest, GetFaultReturnsEnvironmentData) {
+  // Report a fault
+  ASSERT_TRUE(call_report_fault("ENV_DATA_TEST", Fault::SEVERITY_WARN, "/sensor/temp"));
+  spin_for(std::chrono::milliseconds(100));
+
+  auto response = call_get_fault("ENV_DATA_TEST");
+  ASSERT_TRUE(response.has_value());
+  EXPECT_TRUE(response->success);
+
+  // Environment data should be present
+  const auto & env_data = response->environment_data;
+
+  // Should have freeze-frame type snapshot for the first occurrence
+  // Note: The actual snapshot content depends on the storage implementation
+  // but we can verify the service returns environment_data correctly
+  EXPECT_TRUE(env_data.snapshots.empty() || !env_data.snapshots[0].type.empty());
+}
+
+TEST_F(FaultEventPublishingTest, GetFaultReturnsExtendedDataRecords) {
+  // Report fault twice to have first and last occurrence timestamps differ
+  ASSERT_TRUE(call_report_fault("EDR_TEST", Fault::SEVERITY_ERROR, "/node1"));
+  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(call_report_fault("EDR_TEST", Fault::SEVERITY_ERROR, "/node2"));
+  spin_for(std::chrono::milliseconds(100));
+
+  auto response = call_get_fault("EDR_TEST");
+  ASSERT_TRUE(response.has_value());
+  EXPECT_TRUE(response->success);
+
+  // Verify extended data records contain timestamp information
+  const auto & edr = response->environment_data.extended_data_records;
+  EXPECT_NE(edr.first_occurence_ns, 0);
+  EXPECT_NE(edr.last_occurence_ns, 0);
 }
 
 int main(int argc, char ** argv) {

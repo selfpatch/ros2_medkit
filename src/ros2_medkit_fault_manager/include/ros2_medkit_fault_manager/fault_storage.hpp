@@ -251,8 +251,8 @@ class InMemoryFaultStorage : public FaultStorage {
   mutable std::mutex mutex_;
   std::map<std::string, FaultState> faults_;
   std::vector<SnapshotData> snapshots_;
-  std::map<std::string, RosbagFileInfo> rosbag_files_;        ///< fault_code -> rosbag info
-  std::map<std::string, std::string> rosbag_by_id_;          ///< bulk_data_id -> fault_code (index)
+  std::map<std::string, RosbagFileInfo> rosbag_files_;  ///< fault_code -> rosbag info
+  std::map<std::string, std::string> rosbag_by_id_;     ///< bulk_data_id -> fault_code (index)
   DebounceConfig config_;
 };
 

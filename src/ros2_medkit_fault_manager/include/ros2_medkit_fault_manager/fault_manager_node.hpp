@@ -24,6 +24,7 @@
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
+#include "ros2_medkit_msgs/srv/get_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_faults.hpp"
 #include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
@@ -66,6 +67,10 @@ class FaultManagerNode : public rclcpp::Node {
   void handle_get_faults(const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Request> & request,
                          const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Response> & response);
 
+  /// Handle GetFault service request (single fault with environment_data)
+  void handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
+                        const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> & response);
+
   /// Handle ClearFault service request
   void handle_clear_fault(const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
                           const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response);
@@ -100,6 +105,9 @@ class FaultManagerNode : public rclcpp::Node {
   /// Validate severity value
   static bool is_valid_severity(uint8_t severity);
 
+  /// Extract topic name from full topic path (last segment)
+  static std::string extract_topic_name(const std::string & topic_path);
+
   std::string storage_type_;
   std::string database_path_;
   int32_t confirmation_threshold_{-1};
@@ -110,6 +118,7 @@ class FaultManagerNode : public rclcpp::Node {
 
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetFaults>::SharedPtr get_faults_srv_;
+  rclcpp::Service<ros2_medkit_msgs::srv::GetFault>::SharedPtr get_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetSnapshots>::SharedPtr get_snapshots_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetRosbag>::SharedPtr get_rosbag_srv_;
