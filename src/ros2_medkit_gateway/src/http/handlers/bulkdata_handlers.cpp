@@ -15,14 +15,14 @@
 #include "ros2_medkit_gateway/http/handlers/bulkdata_handlers.hpp"
 
 #include <algorithm>
-#include <chrono>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/entity_path_utils.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -89,40 +89,48 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
   std::string source_filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
   auto faults_result = fault_mgr->get_faults(source_filter);
 
-  nlohmann::json items = nlohmann::json::array();
-
+  // Build a map of fault_code -> fault_json for quick lookup
+  std::unordered_map<std::string, nlohmann::json> fault_map;
   if (faults_result.success && faults_result.data.contains("faults")) {
     for (const auto & fault_json : faults_result.data["faults"]) {
-      if (!fault_json.contains("fault_code")) {
-        continue;
+      if (fault_json.contains("fault_code")) {
+        std::string fc = fault_json["fault_code"].get<std::string>();
+        fault_map[fc] = fault_json;
+      }
+    }
+  }
+
+  // Use batch rosbag retrieval (single service call) instead of N+1 individual calls
+  auto rosbags_result = fault_mgr->get_rosbags(source_filter);
+
+  nlohmann::json items = nlohmann::json::array();
+
+  if (rosbags_result.success && rosbags_result.data.contains("rosbags")) {
+    for (const auto & rosbag : rosbags_result.data["rosbags"]) {
+      std::string fault_code = rosbag.value("fault_code", "");
+      std::string format = rosbag.value("format", "mcap");
+      uint64_t size_bytes = rosbag.value("size_bytes", 0);
+      double duration_sec = rosbag.value("duration_sec", 0.0);
+
+      // Use fault_code as bulk_data_id
+      std::string bulk_data_id = fault_code;
+
+      // Get timestamp from fault if available
+      int64_t created_at_ns = 0;
+      auto it = fault_map.find(fault_code);
+      if (it != fault_map.end()) {
+        double first_occurred = it->second.value("first_occurred", 0.0);
+        created_at_ns = static_cast<int64_t>(first_occurred * 1'000'000'000);
       }
 
-      std::string fault_code = fault_json["fault_code"].get<std::string>();
-
-      // Get rosbag info for this fault
-      auto rosbag_result = fault_mgr->get_rosbag(fault_code);
-      if (rosbag_result.success && rosbag_result.data.contains("file_path")) {
-        // Build BulkDataDescriptor
-        std::string format = rosbag_result.data.value("format", "mcap");
-        uint64_t size_bytes = rosbag_result.data.value("size_bytes", 0);
-        double duration_sec = rosbag_result.data.value("duration_sec", 0.0);
-
-        // Use fault_code as bulk_data_id (could be UUID if available)
-        std::string bulk_data_id = fault_code;
-
-        // Get timestamp from fault if available
-        double first_occurred = fault_json.value("first_occurred", 0.0);
-        int64_t created_at_ns = static_cast<int64_t>(first_occurred * 1'000'000'000);
-
-        nlohmann::json descriptor = {
-            {"id", bulk_data_id},
-            {"name", fault_code + " recording " + format_timestamp_ns(created_at_ns)},
-            {"mimetype", get_rosbag_mimetype(format)},
-            {"size", size_bytes},
-            {"creation_date", format_timestamp_ns(created_at_ns)},
-            {"x-medkit", {{"fault_code", fault_code}, {"duration_sec", duration_sec}, {"format", format}}}};
-        items.push_back(descriptor);
-      }
+      nlohmann::json descriptor = {
+          {"id", bulk_data_id},
+          {"name", fault_code + " recording " + format_timestamp_ns(created_at_ns)},
+          {"mimetype", get_rosbag_mimetype(format)},
+          {"size", size_bytes},
+          {"creation_date", format_timestamp_ns(created_at_ns)},
+          {"x-medkit", {{"fault_code", fault_code}, {"duration_sec", duration_sec}, {"format", format}}}};
+      items.push_back(descriptor);
     }
   }
 
@@ -204,7 +212,6 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
 
   // Set response headers for file download
   res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
-  res.set_header("Access-Control-Expose-Headers", "Content-Disposition");
 
   if (!stream_file_to_response(res, file_path, mimetype)) {
     HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
@@ -220,20 +227,47 @@ bool BulkDataHandlers::stream_file_to_response(httplib::Response & res, const st
     return false;
   }
 
-  std::ifstream file(actual_path, std::ios::binary | std::ios::ate);
-  if (!file.is_open()) {
+  // Get file size without reading entire file into memory
+  std::error_code ec;
+  auto file_size = std::filesystem::file_size(actual_path, ec);
+  if (ec) {
     return false;
   }
 
-  auto size = file.tellg();
-  file.seekg(0, std::ios::beg);
+  // Use chunked streaming via content provider to avoid loading large rosbag files into memory.
+  // Rosbag files can be hundreds of MB to multiple GB.
+  static constexpr size_t kChunkSize = 64 * 1024;  // 64 KB chunks
 
-  std::vector<char> buffer(static_cast<size_t>(size));
-  if (!file.read(buffer.data(), size)) {
-    return false;
-  }
+  res.set_content_provider(
+      static_cast<size_t>(file_size), content_type,
+      [actual_path](size_t offset, size_t length, httplib::DataSink & sink) -> bool {
+        std::ifstream file(actual_path, std::ios::binary);
+        if (!file.is_open()) {
+          return false;
+        }
 
-  res.set_content(std::string(buffer.begin(), buffer.end()), content_type);
+        file.seekg(static_cast<std::streamoff>(offset));
+        if (!file.good()) {
+          return false;
+        }
+
+        size_t remaining = length;
+        std::vector<char> buf(std::min(remaining, kChunkSize));
+
+        while (remaining > 0 && file.good()) {
+          size_t to_read = std::min(remaining, kChunkSize);
+          file.read(buf.data(), static_cast<std::streamsize>(to_read));
+          auto bytes_read = static_cast<size_t>(file.gcount());
+          if (bytes_read == 0) {
+            break;
+          }
+          sink.write(buf.data(), bytes_read);
+          remaining -= bytes_read;
+        }
+
+        return remaining == 0;
+      });
+
   return true;
 }
 
@@ -266,24 +300,6 @@ std::string BulkDataHandlers::get_rosbag_mimetype(const std::string & format) {
     return "application/x-sqlite3";
   }
   return "application/octet-stream";
-}
-
-std::string BulkDataHandlers::format_timestamp_ns(int64_t ns) {
-  auto seconds = ns / 1'000'000'000;
-  auto nanos = ns % 1'000'000'000;
-
-  std::time_t time = static_cast<std::time_t>(seconds);
-  std::tm tm_buf;
-  std::tm * tm = gmtime_r(&time, &tm_buf);
-
-  char buf[64];
-  std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", tm);
-
-  // Add milliseconds
-  char result[80];
-  std::snprintf(result, sizeof(result), "%s.%03dZ", buf, static_cast<int>(nanos / 1'000'000));
-
-  return result;
 }
 
 }  // namespace handlers

@@ -241,6 +241,9 @@ void HandlerContext::set_cors_headers(httplib::Response & res, const std::string
     res.set_header("Access-Control-Allow-Headers", cors_config_.headers_header);
   }
 
+  // Expose headers that JavaScript needs access to (e.g., for file downloads)
+  res.set_header("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
+
   // Set credentials header if enabled
   if (cors_config_.allow_credentials) {
     res.set_header("Access-Control-Allow-Credentials", "true");

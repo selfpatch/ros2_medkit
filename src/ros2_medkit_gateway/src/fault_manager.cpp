@@ -31,6 +31,7 @@ FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
   clear_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ClearFault>("/fault_manager/clear_fault");
   get_snapshots_client_ = node_->create_client<ros2_medkit_msgs::srv::GetSnapshots>("/fault_manager/get_snapshots");
   get_rosbag_client_ = node_->create_client<ros2_medkit_msgs::srv::GetRosbag>("/fault_manager/get_rosbag");
+  get_rosbags_client_ = node_->create_client<ros2_medkit_msgs::srv::GetRosbags>("/fault_manager/get_rosbags");
 
   // Get configurable timeout
   service_timeout_sec_ = node_->declare_parameter("fault_service_timeout_sec", 5.0);
@@ -405,6 +406,48 @@ FaultResult FaultManager::get_rosbag(const std::string & fault_code) {
                    {"format", response->format},
                    {"duration_sec", response->duration_sec},
                    {"size_bytes", response->size_bytes}};
+  } else {
+    result.error_message = response->error_message;
+  }
+
+  return result;
+}
+
+FaultResult FaultManager::get_rosbags(const std::string & entity_fqn) {
+  std::lock_guard<std::mutex> lock(service_mutex_);
+  FaultResult result;
+
+  auto timeout = std::chrono::duration<double>(service_timeout_sec_);
+  if (!get_rosbags_client_->wait_for_service(timeout)) {
+    result.success = false;
+    result.error_message = "GetRosbags service not available";
+    return result;
+  }
+
+  auto request = std::make_shared<ros2_medkit_msgs::srv::GetRosbags::Request>();
+  request->entity_fqn = entity_fqn;
+
+  auto future = get_rosbags_client_->async_send_request(request);
+
+  if (future.wait_for(timeout) != std::future_status::ready) {
+    result.success = false;
+    result.error_message = "GetRosbags service call timed out";
+    return result;
+  }
+
+  auto response = future.get();
+  result.success = response->success;
+
+  if (response->success) {
+    json rosbags = json::array();
+    for (size_t i = 0; i < response->fault_codes.size(); ++i) {
+      rosbags.push_back({{"fault_code", response->fault_codes[i]},
+                         {"file_path", response->file_paths[i]},
+                         {"format", response->formats[i]},
+                         {"duration_sec", response->durations_sec[i]},
+                         {"size_bytes", response->sizes_bytes[i]}});
+    }
+    result.data = {{"rosbags", rosbags}};
   } else {
     result.error_message = response->error_message;
   }

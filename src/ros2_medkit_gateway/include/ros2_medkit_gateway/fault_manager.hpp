@@ -27,6 +27,7 @@
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_faults.hpp"
 #include "ros2_medkit_msgs/srv/get_rosbag.hpp"
+#include "ros2_medkit_msgs/srv/get_rosbags.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
@@ -86,6 +87,8 @@ class FaultManager {
   /// @param fault_code Fault identifier
   /// @param source_id Optional component identifier to verify fault belongs to component
   /// @return FaultResult with fault data or error if not found
+  /// @note Thread-safe: delegates to get_fault_with_env() which acquires service_mutex_.
+  ///       Do NOT call this method while holding service_mutex_.
   FaultResult get_fault(const std::string & fault_code, const std::string & source_id = "");
 
   /// Clear a fault
@@ -103,6 +106,11 @@ class FaultManager {
   /// @param fault_code Fault identifier
   /// @return FaultResult with rosbag file path and metadata
   FaultResult get_rosbag(const std::string & fault_code);
+
+  /// Get all rosbag files for an entity (batch operation)
+  /// @param entity_fqn Entity fully qualified name for prefix matching
+  /// @return FaultResult with arrays of rosbag metadata
+  FaultResult get_rosbags(const std::string & entity_fqn);
 
   /// Check if fault manager service is available
   /// @return true if services are available
@@ -124,11 +132,15 @@ class FaultManager {
   rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_fault_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::GetSnapshots>::SharedPtr get_snapshots_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::GetRosbag>::SharedPtr get_rosbag_client_;
+  rclcpp::Client<ros2_medkit_msgs::srv::GetRosbags>::SharedPtr get_rosbags_client_;
 
   /// Service timeout
   double service_timeout_sec_{5.0};
 
-  /// Mutex for thread-safe service calls
+  /// Mutex for thread-safe service calls.
+  /// Each public method that makes a ROS 2 service call acquires this mutex.
+  /// Methods must NOT call other public locking methods while holding this mutex
+  /// (e.g., get_fault() delegates to get_fault_with_env() without locking first).
   mutable std::mutex service_mutex_;
 };
 

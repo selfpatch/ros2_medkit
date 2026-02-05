@@ -108,13 +108,6 @@ class BulkDataHandlers {
    * @return Resolved file path, or empty string if not found
    */
   static std::string resolve_rosbag_file_path(const std::string & path);
-
-  /**
-   * @brief Format nanosecond timestamp to ISO 8601 string.
-   * @param ns Nanoseconds since epoch
-   * @return ISO 8601 formatted string (e.g., "2025-01-15T10:30:00.123Z")
-   */
-  static std::string format_timestamp_ns(int64_t ns);
 };
 
 }  // namespace handlers

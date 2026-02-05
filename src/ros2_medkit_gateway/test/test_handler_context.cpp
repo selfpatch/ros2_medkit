@@ -171,6 +171,7 @@ TEST_F(HandlerContextCorsTest, SetCorsHeadersSetsAllHeaders) {
   EXPECT_EQ(res.get_header_value("Access-Control-Allow-Methods"), "GET, POST, PUT, DELETE");
   EXPECT_EQ(res.get_header_value("Access-Control-Allow-Headers"), "Content-Type, Authorization");
   EXPECT_EQ(res.get_header_value("Access-Control-Allow-Credentials"), "true");
+  EXPECT_EQ(res.get_header_value("Access-Control-Expose-Headers"), "Content-Disposition, Content-Length");
 }
 
 TEST_F(HandlerContextCorsTest, SetCorsHeadersWithoutCredentials) {
