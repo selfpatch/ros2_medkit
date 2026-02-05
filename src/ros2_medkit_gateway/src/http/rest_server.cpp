@@ -435,11 +435,6 @@ void RESTServer::setup_routes() {
                 fault_handlers_->handle_clear_all_faults(req, res);
               });
 
-  srv->Get((api_path("/functions") + R"(/([^/]+)/faults/([^/]+)/snapshots$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             fault_handlers_->handle_get_component_snapshots(req, res);
-           });
-
   // Single function (capabilities) - must be after more specific routes
   srv->Get((api_path("/functions") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
     discovery_handlers_->handle_get_function(req, res);
@@ -568,11 +563,6 @@ void RESTServer::setup_routes() {
               [this](const httplib::Request & req, httplib::Response & res) {
                 fault_handlers_->handle_clear_all_faults(req, res);
               });
-
-  srv->Get((api_path("/areas") + R"(/([^/]+)/faults/([^/]+)/snapshots$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             fault_handlers_->handle_get_component_snapshots(req, res);
-           });
 
   // Single area (capabilities) - must be after more specific routes
   srv->Get((api_path("/areas") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
@@ -754,31 +744,6 @@ void RESTServer::setup_routes() {
               [this](const httplib::Request & req, httplib::Response & res) {
                 fault_handlers_->handle_clear_all_faults(req, res);
               });
-
-  // Snapshot endpoints for fault debugging
-  // GET /faults/{fault_code}/snapshots - system-wide snapshot access
-  srv->Get((api_path("/faults") + R"(/([^/]+)/snapshots$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             fault_handlers_->handle_get_snapshots(req, res);
-           });
-
-  // GET /faults/{fault_code}/snapshots/bag - download rosbag file for fault
-  srv->Get((api_path("/faults") + R"(/([^/]+)/snapshots/bag$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             fault_handlers_->handle_get_rosbag(req, res);
-           });
-
-  // GET /components/{component_id}/faults/{fault_code}/snapshots - component-scoped snapshot access
-  srv->Get((api_path("/components") + R"(/([^/]+)/faults/([^/]+)/snapshots$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             fault_handlers_->handle_get_component_snapshots(req, res);
-           });
-
-  // GET /apps/{app_id}/faults/{fault_code}/snapshots - app-scoped snapshot access
-  srv->Get((api_path("/apps") + R"(/([^/]+)/faults/([^/]+)/snapshots$)"),
-           [this](const httplib::Request & req, httplib::Response & res) {
-             fault_handlers_->handle_get_component_snapshots(req, res);
-           });
 
   // === Bulk Data Routes (REQ_INTEROP_071-073) ===
   // List bulk-data categories
