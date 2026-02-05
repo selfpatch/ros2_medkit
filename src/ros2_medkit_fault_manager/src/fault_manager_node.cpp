@@ -151,6 +151,13 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
         handle_get_rosbag(request, response);
       });
 
+  list_faults_for_entity_srv_ = create_service<ros2_medkit_msgs::srv::ListFaultsForEntity>(
+      "~/list_faults_for_entity",
+      [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
+             const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response) {
+        handle_list_faults_for_entity(request, response);
+      });
+
   // Initialize snapshot capture
   auto snapshot_config = create_snapshot_config();
   if (snapshot_config.enabled) {
@@ -873,6 +880,51 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
 
   RCLCPP_DEBUG(get_logger(), "GetRosbag returned file '%s' for fault '%s'", rosbag_info->file_path.c_str(),
                request->fault_code.c_str());
+}
+
+void FaultManagerNode::handle_list_faults_for_entity(
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response) {
+  RCLCPP_DEBUG(get_logger(), "ListFaultsForEntity request for entity: %s", request->entity_id.c_str());
+
+  // Validate entity_id is not empty
+  if (request->entity_id.empty()) {
+    response->success = false;
+    response->error_message = "entity_id cannot be empty";
+    return;
+  }
+
+  // Get all faults from storage
+  auto all_faults = storage_->get_all_faults();
+
+  // Filter faults that have this entity in their reporting_sources
+  for (const auto & fault : all_faults) {
+    if (matches_entity(fault.reporting_sources, request->entity_id)) {
+      response->faults.push_back(fault);
+    }
+  }
+
+  response->success = true;
+  RCLCPP_DEBUG(get_logger(), "ListFaultsForEntity returned %zu faults for entity '%s'", response->faults.size(),
+               request->entity_id.c_str());
+}
+
+bool FaultManagerNode::matches_entity(const std::vector<std::string> & reporting_sources,
+                                      const std::string & entity_id) {
+  for (const auto & source : reporting_sources) {
+    // Exact match
+    if (source == entity_id) {
+      return true;
+    }
+
+    // FQN suffix match: source ends with "/" + entity_id
+    // e.g., source="/powertrain/motor_controller" matches entity_id="motor_controller"
+    std::string suffix = "/" + entity_id;
+    if (source.size() > suffix.size() && source.substr(source.size() - suffix.size()) == suffix) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace ros2_medkit_fault_manager

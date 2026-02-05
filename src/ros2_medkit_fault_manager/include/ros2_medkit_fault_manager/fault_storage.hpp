@@ -194,6 +194,10 @@ class FaultStorage {
   /// @return Vector of rosbag file info for faults reported by this entity
   virtual std::vector<RosbagFileInfo> get_rosbags_for_entity(const std::string & entity_fqn) const = 0;
 
+  /// Get all stored faults regardless of status (for filtering)
+  /// @return Vector of all faults in storage
+  virtual std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const = 0;
+
   /// Generate a UUID v4 string
   /// @return A new UUID in format "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
   static std::string generate_uuid();
@@ -243,6 +247,7 @@ class InMemoryFaultStorage : public FaultStorage {
   std::optional<RosbagFileInfo> get_rosbag_by_id(const std::string & bulk_data_id) const override;
   std::string get_rosbag_path(const std::string & bulk_data_id) const override;
   std::vector<RosbagFileInfo> get_rosbags_for_entity(const std::string & entity_fqn) const override;
+  std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
 
  private:
   /// Update fault status based on debounce counter

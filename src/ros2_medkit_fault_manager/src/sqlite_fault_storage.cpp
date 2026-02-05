@@ -971,4 +971,33 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbags_for_entity(const std
   return result;
 }
 
+std::vector<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_all_faults() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  SqliteStatement stmt(db_,
+                       "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
+                       "occurrence_count, status, reporting_sources FROM faults");
+
+  std::vector<ros2_medkit_msgs::msg::Fault> result;
+  while (stmt.step() == SQLITE_ROW) {
+    ros2_medkit_msgs::msg::Fault fault;
+    fault.fault_code = stmt.column_text(0);
+    fault.severity = static_cast<uint8_t>(stmt.column_int(1));
+    fault.description = stmt.column_text(2);
+
+    int64_t first_ns = stmt.column_int64(3);
+    int64_t last_ns = stmt.column_int64(4);
+    fault.first_occurred = rclcpp::Time(first_ns, RCL_SYSTEM_TIME);
+    fault.last_occurred = rclcpp::Time(last_ns, RCL_SYSTEM_TIME);
+
+    fault.occurrence_count = static_cast<uint32_t>(stmt.column_int64(5));
+    fault.status = stmt.column_text(6);
+    fault.reporting_sources = parse_json_array(stmt.column_text(7));
+
+    result.push_back(fault);
+  }
+
+  return result;
+}
+
 }  // namespace ros2_medkit_fault_manager
