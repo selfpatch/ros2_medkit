@@ -16,6 +16,9 @@
 
 #include <httplib.h>
 
+#include <cstdint>
+#include <cstdio>
+#include <ctime>
 #include <string>
 
 #include "ros2_medkit_gateway/models/entity_types.hpp"
@@ -121,6 +124,37 @@ inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req) 
   }
 
   return filter;
+}
+
+/**
+ * @brief Convert nanoseconds since epoch to ISO 8601 string with milliseconds.
+ *
+ * Shared utility for formatting timestamps in SOVD-compliant responses.
+ * Used by fault_handlers and bulkdata_handlers.
+ *
+ * @param ns Nanoseconds since epoch
+ * @return ISO 8601 formatted string (e.g., "2025-01-15T10:30:00.123Z"),
+ *         or "1970-01-01T00:00:00.000Z" on conversion failure
+ */
+inline std::string format_timestamp_ns(int64_t ns) {
+  auto seconds = ns / 1'000'000'000;
+  auto nanos = ns % 1'000'000'000;
+
+  std::time_t time = static_cast<std::time_t>(seconds);
+  std::tm tm_buf{};
+  std::tm * tm = gmtime_r(&time, &tm_buf);
+  if (!tm) {
+    return "1970-01-01T00:00:00.000Z";  // fallback for invalid timestamps
+  }
+
+  char buf[64];
+  std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", tm);
+
+  // Add milliseconds
+  char result[80];
+  std::snprintf(result, sizeof(result), "%s.%03dZ", buf, static_cast<int>(nanos / 1'000'000));
+
+  return result;
 }
 
 }  // namespace ros2_medkit_gateway
