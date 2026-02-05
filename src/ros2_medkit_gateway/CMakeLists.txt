@@ -146,6 +146,7 @@ add_library(gateway_lib STATIC
   src/http/handlers/auth_handlers.cpp
   # HTTP utilities
   src/http/x_medkit.cpp
+  src/http/entity_path_utils.cpp
   # Auth module (subfolder)
   src/auth/auth_config.cpp
   src/auth/auth_models.cpp
@@ -318,6 +319,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_entity_resource_model test/test_entity_resource_model.cpp)
   target_link_libraries(test_entity_resource_model gateway_lib)
 
+  # Add entity path utils tests
+  ament_add_gtest(test_entity_path_utils test/test_entity_path_utils.cpp)
+  target_link_libraries(test_entity_path_utils gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
@@ -350,6 +355,8 @@ if(BUILD_TESTING)
     target_link_options(test_auth_config PRIVATE --coverage)
     target_compile_options(test_data_access_manager PRIVATE --coverage -O0 -g)
     target_link_options(test_data_access_manager PRIVATE --coverage)
+    target_compile_options(test_entity_path_utils PRIVATE --coverage -O0 -g)
+    target_link_options(test_entity_path_utils PRIVATE --coverage)
   endif()
 
   # Integration testing
