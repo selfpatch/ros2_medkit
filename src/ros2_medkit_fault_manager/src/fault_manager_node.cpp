@@ -151,6 +151,12 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
         handle_get_rosbag(request, response);
       });
 
+  get_rosbags_srv_ = create_service<ros2_medkit_msgs::srv::GetRosbags>(
+      "~/get_rosbags", [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbags::Request> & request,
+                              const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbags::Response> & response) {
+        handle_get_rosbags(request, response);
+      });
+
   list_faults_for_entity_srv_ = create_service<ros2_medkit_msgs::srv::ListFaultsForEntity>(
       "~/list_faults_for_entity",
       [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
@@ -516,8 +522,8 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
 
   // Populate extended_data_records with timestamps
   ros2_medkit_msgs::msg::ExtendedDataRecords extended_records;
-  extended_records.first_occurence_ns = rclcpp::Time(fault->first_occurred).nanoseconds();
-  extended_records.last_occurence_ns = rclcpp::Time(fault->last_occurred).nanoseconds();
+  extended_records.first_occurrence_ns = rclcpp::Time(fault->first_occurred).nanoseconds();
+  extended_records.last_occurrence_ns = rclcpp::Time(fault->last_occurred).nanoseconds();
   response->environment_data.extended_data_records = extended_records;
 
   // Get freeze frame snapshots from storage
@@ -880,6 +886,39 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
 
   RCLCPP_DEBUG(get_logger(), "GetRosbag returned file '%s' for fault '%s'", rosbag_info->file_path.c_str(),
                request->fault_code.c_str());
+}
+
+void FaultManagerNode::handle_get_rosbags(
+    const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbags::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbags::Response> & response) {
+  RCLCPP_DEBUG(get_logger(), "GetRosbags request for entity: %s", request->entity_fqn.c_str());
+
+  if (request->entity_fqn.empty()) {
+    response->success = false;
+    response->error_message = "entity_fqn cannot be empty";
+    return;
+  }
+
+  // Use batch storage API to get all rosbags for this entity
+  auto rosbags = storage_->get_rosbags_for_entity(request->entity_fqn);
+
+  for (const auto & info : rosbags) {
+    // Skip rosbags whose files no longer exist on disk
+    if (!std::filesystem::exists(info.file_path)) {
+      storage_->delete_rosbag_file(info.fault_code);
+      continue;
+    }
+
+    response->fault_codes.push_back(info.fault_code);
+    response->file_paths.push_back(info.file_path);
+    response->formats.push_back(info.format);
+    response->durations_sec.push_back(info.duration_sec);
+    response->sizes_bytes.push_back(info.size_bytes);
+  }
+
+  response->success = true;
+  RCLCPP_DEBUG(get_logger(), "GetRosbags returned %zu rosbags for entity '%s'", response->fault_codes.size(),
+               request->entity_fqn.c_str());
 }
 
 void FaultManagerNode::handle_list_faults_for_entity(

@@ -44,8 +44,8 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseBasicFields) {
   fault.reporting_sources = {"/powertrain/motor_controller"};
 
   ros2_medkit_msgs::msg::EnvironmentData env_data;
-  env_data.extended_data_records.first_occurence_ns = 1707044400000000000;
-  env_data.extended_data_records.last_occurence_ns = 1707044460000000000;
+  env_data.extended_data_records.first_occurrence_ns = 1707044400000000000;
+  env_data.extended_data_records.last_occurrence_ns = 1707044460000000000;
 
   auto response = FaultHandlers::build_sovd_fault_response(fault, env_data, "/apps/motor_controller");
 
@@ -64,6 +64,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseBasicFields) {
   // Verify x-medkit
   EXPECT_EQ(response["x-medkit"]["occurrence_count"], 5);
   EXPECT_EQ(response["x-medkit"]["severity_label"], "ERROR");
+  EXPECT_EQ(response["x-medkit"]["status_raw"], "CONFIRMED");  // Raw status in x-medkit, not in status object
 }
 
 // @verifies REQ_INTEROP_013
@@ -242,14 +243,14 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseExtendedDataRecords) {
   fault.fault_code = "TEST_FAULT";
 
   ros2_medkit_msgs::msg::EnvironmentData env_data;
-  env_data.extended_data_records.first_occurence_ns = 1770458400000000000;  // 2026-02-08
-  env_data.extended_data_records.last_occurence_ns = 1770458460000000000;
+  env_data.extended_data_records.first_occurrence_ns = 1770458400000000000;  // 2026-02-08
+  env_data.extended_data_records.last_occurrence_ns = 1770458460000000000;
 
   auto response = FaultHandlers::build_sovd_fault_response(fault, env_data, "/apps/test");
 
   auto & edr = response["environment_data"]["extended_data_records"];
-  std::string first = edr["first_occurence"].get<std::string>();
-  std::string last = edr["last_occurence"].get<std::string>();
+  std::string first = edr["first_occurrence"].get<std::string>();
+  std::string last = edr["last_occurrence"].get<std::string>();
 
   // Verify ISO 8601 format with milliseconds and Z suffix
   EXPECT_TRUE(first.find("2026") != std::string::npos);

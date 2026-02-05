@@ -1000,8 +1000,8 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsExtendedDataRecords) {
 
   // Verify extended data records contain timestamp information
   const auto & edr = response->environment_data.extended_data_records;
-  EXPECT_NE(edr.first_occurence_ns, 0);
-  EXPECT_NE(edr.last_occurence_ns, 0);
+  EXPECT_NE(edr.first_occurrence_ns, 0);
+  EXPECT_NE(edr.last_occurrence_ns, 0);
 }
 
 // @verifies REQ_INTEROP_071

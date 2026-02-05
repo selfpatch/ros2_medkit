@@ -18,7 +18,7 @@
 # fault environment data responses.
 
 # Timestamp of first occurrence (nanoseconds since epoch)
-int64 first_occurence_ns
+int64 first_occurrence_ns
 
 # Timestamp of last occurrence (nanoseconds since epoch)
-int64 last_occurence_ns
+int64 last_occurrence_ns

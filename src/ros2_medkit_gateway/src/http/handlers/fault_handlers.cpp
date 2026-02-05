@@ -102,28 +102,14 @@ json build_status_object(const std::string & status) {
   status_obj["testFailed"] = test_failed ? "1" : "0";
   status_obj["confirmedDTC"] = confirmed_dtc ? "1" : "0";
   status_obj["pendingDTC"] = pending_dtc ? "1" : "0";
-  status_obj["status_raw"] = status;  // Include raw status for debugging
 
   return status_obj;
 }
 
 /// Convert nanoseconds since epoch to ISO 8601 string with milliseconds
+/// Delegates to shared utility in http_utils.hpp
 std::string to_iso8601_ns(int64_t ns) {
-  auto seconds = ns / 1'000'000'000;
-  auto nanos = ns % 1'000'000'000;
-
-  std::time_t time = static_cast<std::time_t>(seconds);
-  std::tm tm_buf;
-  std::tm * tm = gmtime_r(&time, &tm_buf);
-
-  char buf[64];
-  std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", tm);
-
-  // Add milliseconds
-  char result[80];
-  std::snprintf(result, sizeof(result), "%s.%03dZ", buf, static_cast<int>(nanos / 1'000'000));
-
-  return result;
+  return ros2_medkit_gateway::format_timestamp_ns(ns);
 }
 
 /// Map fault severity level to human-readable label
@@ -221,8 +207,8 @@ json FaultHandlers::build_sovd_fault_response(const ros2_medkit_msgs::msg::Fault
 
   response["environment_data"] = {
       {"extended_data_records",
-       {{"first_occurence", to_iso8601_ns(env_data.extended_data_records.first_occurence_ns)},
-        {"last_occurence", to_iso8601_ns(env_data.extended_data_records.last_occurence_ns)}}},
+       {{"first_occurrence", to_iso8601_ns(env_data.extended_data_records.first_occurrence_ns)},
+        {"last_occurrence", to_iso8601_ns(env_data.extended_data_records.last_occurrence_ns)}}},
       {"snapshots", snapshots}};
 
   // === x-medkit extensions ===
@@ -233,7 +219,8 @@ json FaultHandlers::build_sovd_fault_response(const ros2_medkit_msgs::msg::Fault
 
   response["x-medkit"] = {{"occurrence_count", fault.occurrence_count},
                           {"reporting_sources", reporting_sources},
-                          {"severity_label", severity_to_label(fault.severity)}};
+                          {"severity_label", severity_to_label(fault.severity)},
+                          {"status_raw", fault.status}};
 
   return response;
 }
