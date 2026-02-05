@@ -95,7 +95,7 @@ Report a fault event (FAILED or PASSED) to the FaultManager.
 - `EVENT_FAILED` (0): Fault condition detected - decrements debounce counter
 - `EVENT_PASSED` (1): Fault condition cleared - increments debounce counter
 
-### GetFaults.srv
+### ListFaults.srv
 
 Query faults with optional filtering.
 

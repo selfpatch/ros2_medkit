@@ -30,7 +30,7 @@ package "ros2_medkit_msgs" {
         +Response: success, message
     }
 
-    class "srv::GetFaults" {
+    class "srv::ListFaults" {
         +Request: filter_by_severity, severity, statuses
         +Response: faults[]
     }
@@ -49,7 +49,7 @@ package "ros2_medkit_fault_manager" {
 
     abstract class FaultStorage <<interface>> {
         + {abstract} report_fault(): bool
-        + {abstract} get_faults(): vector<Fault>
+        + {abstract} list_faults(): vector<Fault>
         + {abstract} get_fault(): optional<Fault>
         + {abstract} clear_fault(): bool
         + {abstract} size(): size_t
@@ -58,7 +58,7 @@ package "ros2_medkit_fault_manager" {
 
     class InMemoryFaultStorage {
         + report_fault(): bool
-        + get_faults(): vector<Fault>
+        + list_faults(): vector<Fault>
         + get_fault(): optional<Fault>
         + clear_fault(): bool
         + size(): size_t
@@ -87,7 +87,7 @@ FaultState ..> "msg::Fault" : converts to
 
 ' Node uses service types
 FaultManagerNode ..> "srv::ReportFault" : handles
-FaultManagerNode ..> "srv::GetFaults" : handles
+FaultManagerNode ..> "srv::ListFaults" : handles
 FaultManagerNode ..> "srv::ClearFault" : handles
 
 @enduml

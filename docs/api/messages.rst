@@ -218,7 +218,7 @@ Clear/acknowledge a fault.
    string message          # Status message or error description
    string[] auto_cleared_codes  # Symptoms auto-cleared with root cause
 
-GetFaults.srv
+ListFaults.srv
 ~~~~~~~~~~~~~
 
 Query faults from the FaultManager with optional filtering.
@@ -247,7 +247,7 @@ Query faults from the FaultManager with optional filtering.
 
 .. code-block:: cpp
 
-   auto request = std::make_shared<ros2_medkit_msgs::srv::GetFaults::Request>();
+   auto request = std::make_shared<ros2_medkit_msgs::srv::ListFaults::Request>();
    request->filter_by_severity = false;
    request->statuses = {"CONFIRMED", "PREFAILED"};
 

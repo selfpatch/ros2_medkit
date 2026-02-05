@@ -14,7 +14,7 @@
 #
 # GetFault.srv - Get single fault by code with environment data.
 #
-# Unlike GetFaults.srv (plural) which returns a list of faults for filtering,
+# Unlike ListFaults.srv (plural) which returns a list of faults for filtering,
 # this service returns a single fault with full environment data including
 # snapshots and extended data records for SOVD-compliant fault responses.
 

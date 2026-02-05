@@ -25,10 +25,10 @@
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
-#include "ros2_medkit_msgs/srv/get_faults.hpp"
 #include "ros2_medkit_msgs/srv/get_rosbag.hpp"
-#include "ros2_medkit_msgs/srv/get_rosbags.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
+#include "ros2_medkit_msgs/srv/list_faults.hpp"
+#include "ros2_medkit_msgs/srv/list_rosbags.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
 namespace ros2_medkit_gateway {
@@ -73,9 +73,9 @@ class FaultManager {
   /// @param include_muted Include muted faults (correlation symptoms) in response
   /// @param include_clusters Include cluster info in response
   /// @return FaultResult with array of faults (and optionally muted_faults and clusters)
-  FaultResult get_faults(const std::string & source_id = "", bool include_prefailed = true,
-                         bool include_confirmed = true, bool include_cleared = false, bool include_muted = false,
-                         bool include_clusters = false);
+  FaultResult list_faults(const std::string & source_id = "", bool include_prefailed = true,
+                          bool include_confirmed = true, bool include_cleared = false, bool include_muted = false,
+                          bool include_clusters = false);
 
   /// Get a specific fault by code with environment data
   /// @param fault_code Fault identifier
@@ -110,7 +110,7 @@ class FaultManager {
   /// Get all rosbag files for an entity (batch operation)
   /// @param entity_fqn Entity fully qualified name for prefix matching
   /// @return FaultResult with arrays of rosbag metadata
-  FaultResult get_rosbags(const std::string & entity_fqn);
+  FaultResult list_rosbags(const std::string & entity_fqn);
 
   /// Check if fault manager service is available
   /// @return true if services are available
@@ -128,11 +128,11 @@ class FaultManager {
   /// Service clients
   rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::GetFault>::SharedPtr get_fault_client_;
-  rclcpp::Client<ros2_medkit_msgs::srv::GetFaults>::SharedPtr get_faults_client_;
+  rclcpp::Client<ros2_medkit_msgs::srv::ListFaults>::SharedPtr list_faults_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_fault_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::GetSnapshots>::SharedPtr get_snapshots_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::GetRosbag>::SharedPtr get_rosbag_client_;
-  rclcpp::Client<ros2_medkit_msgs::srv::GetRosbags>::SharedPtr get_rosbags_client_;
+  rclcpp::Client<ros2_medkit_msgs::srv::ListRosbags>::SharedPtr list_rosbags_client_;
 
   /// Service timeout
   double service_timeout_sec_{5.0};

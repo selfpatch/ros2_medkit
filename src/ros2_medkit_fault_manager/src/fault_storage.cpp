@@ -205,8 +205,8 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
 }
 
 std::vector<ros2_medkit_msgs::msg::Fault>
-InMemoryFaultStorage::get_faults(bool filter_by_severity, uint8_t severity,
-                                 const std::vector<std::string> & statuses) const {
+InMemoryFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
+                                  const std::vector<std::string> & statuses) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
@@ -435,7 +435,7 @@ std::string InMemoryFaultStorage::get_rosbag_path(const std::string & bulk_data_
   return "";
 }
 
-std::vector<RosbagFileInfo> InMemoryFaultStorage::get_rosbags_for_entity(const std::string & entity_fqn) const {
+std::vector<RosbagFileInfo> InMemoryFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<RosbagFileInfo> result;

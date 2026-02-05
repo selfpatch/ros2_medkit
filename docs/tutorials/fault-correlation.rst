@@ -68,7 +68,7 @@ How It Works
    fm -> db: Store fault (muted)
 
    == Query Faults ==
-   src -> fm: GetFaults()
+   src -> fm: ListFaults()
    fm --> src: [ESTOP_001], muted_count=2
 
    == Clear Root Cause ==
@@ -116,7 +116,7 @@ How It Works
    ce --> fm: should_mute=true (not representative)
 
    == Query Result ==
-   src -> fm: GetFaults(include_clusters=true)
+   src -> fm: ListFaults(include_clusters=true)
    fm --> src: [SENSOR_003]\nclusters: [{id: "sensor_storm_1",\n  fault_codes: [001,002,003,004],\n  representative: "SENSOR_003"}]
    @enduml
 

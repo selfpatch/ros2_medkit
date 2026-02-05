@@ -74,7 +74,7 @@ uint8 SEVERITY_CRITICAL = 3
 # - PREPASSED: Debounce counter > 0 but below healing threshold.
 #   More PASSED than FAILED events - fault condition trending towards resolution.
 # - CONFIRMED: Debounce counter <= confirmation_threshold (e.g., -3).
-#   Fault is active and verified. Appears in default GetFaults queries.
+#   Fault is active and verified. Appears in default ListFaults queries.
 # - HEALED: Debounce counter >= healing_threshold (e.g., +3).
 #   Fault resolved by sufficient PASSED events. Retained in storage, queryable with statuses=["HEALED"].
 # - CLEARED: Fault manually acknowledged/resolved via ClearFault service.

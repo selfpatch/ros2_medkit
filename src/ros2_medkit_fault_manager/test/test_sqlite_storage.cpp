@@ -99,7 +99,7 @@ TEST_F(SqliteFaultStorageTest, ReportExistingFaultEventUpdates) {
   EXPECT_EQ(fault->reporting_sources.size(), 2u);
 }
 
-TEST_F(SqliteFaultStorageTest, GetFaultsDefaultReturnsConfirmedOnly) {
+TEST_F(SqliteFaultStorageTest, ListFaultsDefaultReturnsConfirmedOnly) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
@@ -108,12 +108,12 @@ TEST_F(SqliteFaultStorageTest, GetFaultsDefaultReturnsConfirmedOnly) {
                                timestamp);
 
   // Default query should return the CONFIRMED fault
-  auto faults = storage_->get_faults(false, 0, {});
+  auto faults = storage_->list_faults(false, 0, {});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].status, Fault::STATUS_CONFIRMED);
 }
 
-TEST_F(SqliteFaultStorageTest, GetFaultsWithPrefailedStatus) {
+TEST_F(SqliteFaultStorageTest, ListFaultsWithPrefailedStatus) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
@@ -126,13 +126,13 @@ TEST_F(SqliteFaultStorageTest, GetFaultsWithPrefailedStatus) {
                                timestamp);
 
   // Query with PREFAILED status
-  auto faults = storage_->get_faults(false, 0, {Fault::STATUS_PREFAILED});
+  auto faults = storage_->list_faults(false, 0, {Fault::STATUS_PREFAILED});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].fault_code, "FAULT_1");
   EXPECT_EQ(faults[0].status, Fault::STATUS_PREFAILED);
 }
 
-TEST_F(SqliteFaultStorageTest, GetFaultsFilterBySeverity) {
+TEST_F(SqliteFaultStorageTest, ListFaultsFilterBySeverity) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
@@ -143,7 +143,7 @@ TEST_F(SqliteFaultStorageTest, GetFaultsFilterBySeverity) {
                                "/node1", timestamp);
 
   // Filter by ERROR severity (query CONFIRMED since that's the default status now)
-  auto faults = storage_->get_faults(true, Fault::SEVERITY_ERROR, {Fault::STATUS_CONFIRMED});
+  auto faults = storage_->list_faults(true, Fault::SEVERITY_ERROR, {Fault::STATUS_CONFIRMED});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].fault_code, "FAULT_ERROR");
 }
@@ -177,7 +177,7 @@ TEST_F(SqliteFaultStorageTest, GetClearedFaults) {
   storage_->clear_fault("FAULT_1");
 
   // Query cleared faults
-  auto faults = storage_->get_faults(false, 0, {Fault::STATUS_CLEARED});
+  auto faults = storage_->list_faults(false, 0, {Fault::STATUS_CLEARED});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].status, Fault::STATUS_CLEARED);
 }
@@ -191,7 +191,7 @@ TEST_F(SqliteFaultStorageTest, InvalidStatusDefaultsToConfirmed) {
                                timestamp);
 
   // Query with invalid status - defaults to CONFIRMED, which now matches our fault
-  auto faults = storage_->get_faults(false, 0, {"INVALID_STATUS"});
+  auto faults = storage_->list_faults(false, 0, {"INVALID_STATUS"});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].status, Fault::STATUS_CONFIRMED);
 }
@@ -810,7 +810,7 @@ TEST_F(SqliteFaultStorageTest, GetRosbagPathNotFound) {
 }
 
 // @verifies REQ_INTEROP_071
-TEST_F(SqliteFaultStorageTest, GetRosbagsForEntityFiltersCorrectly) {
+TEST_F(SqliteFaultStorageTest, ListRosbagsForEntityFiltersCorrectly) {
   using ros2_medkit_fault_manager::RosbagFileInfo;
   rclcpp::Clock clock;
 
@@ -844,17 +844,17 @@ TEST_F(SqliteFaultStorageTest, GetRosbagsForEntityFiltersCorrectly) {
   storage_->store_rosbag_file(info2);
 
   // Get rosbags for motor entity
-  auto rosbags = storage_->get_rosbags_for_entity("/powertrain/motor");
+  auto rosbags = storage_->list_rosbags_for_entity("/powertrain/motor");
   ASSERT_EQ(rosbags.size(), 1u);
   EXPECT_EQ(rosbags[0].bulk_data_id, "entity-uuid-1");
 
   // Get rosbags for brake entity
-  auto brake_rosbags = storage_->get_rosbags_for_entity("/chassis/brake");
+  auto brake_rosbags = storage_->list_rosbags_for_entity("/chassis/brake");
   ASSERT_EQ(brake_rosbags.size(), 1u);
   EXPECT_EQ(brake_rosbags[0].bulk_data_id, "entity-uuid-2");
 
   // Get rosbags for unknown entity
-  auto unknown_rosbags = storage_->get_rosbags_for_entity("/unknown/entity");
+  auto unknown_rosbags = storage_->list_rosbags_for_entity("/unknown/entity");
   EXPECT_TRUE(unknown_rosbags.empty());
 }
 

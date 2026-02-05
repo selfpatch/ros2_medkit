@@ -568,8 +568,8 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
 }
 
 std::vector<ros2_medkit_msgs::msg::Fault>
-SqliteFaultStorage::get_faults(bool filter_by_severity, uint8_t severity,
-                               const std::vector<std::string> & statuses) const {
+SqliteFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
+                                const std::vector<std::string> & statuses) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
@@ -938,7 +938,7 @@ std::string SqliteFaultStorage::get_rosbag_path(const std::string & bulk_data_id
   return "";
 }
 
-std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbags_for_entity(const std::string & entity_fqn) const {
+std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<RosbagFileInfo> result;

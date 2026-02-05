@@ -78,7 +78,7 @@ Added
 **Fault Manager (ros2_medkit_fault_manager)**
 
 - Centralized fault storage and management node
-- ROS 2 services: ``report_fault``, ``get_faults``, ``clear_fault``
+- ROS 2 services: ``report_fault``, ``list_faults``, ``clear_fault``
 - AUTOSAR DEM-style debounce lifecycle (PREFAILED → CONFIRMED → HEALED → CLEARED)
 - Fault aggregation from multiple sources
 - Severity escalation
@@ -109,7 +109,7 @@ Added
 - ``Fault.msg``: Fault status message with severity, timestamps, sources
 - ``FaultEvent.msg``: Fault event for subscriptions
 - ``ReportFault.srv``: Service for reporting faults
-- ``GetFaults.srv``: Service for querying faults with filters
+- ``ListFaults.srv``: Service for querying faults with filters
 - ``ClearFault.srv``: Service for clearing faults
 
 **Documentation**

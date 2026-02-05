@@ -87,7 +87,7 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
   // Get all faults for this entity (filter by FQN/namespace path)
   // Use the entity's FQN or namespace_path as the source_id filter
   std::string source_filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
-  auto faults_result = fault_mgr->get_faults(source_filter);
+  auto faults_result = fault_mgr->list_faults(source_filter);
 
   // Build a map of fault_code -> fault_json for quick lookup
   std::unordered_map<std::string, nlohmann::json> fault_map;
@@ -101,7 +101,7 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
   }
 
   // Use batch rosbag retrieval (single service call) instead of N+1 individual calls
-  auto rosbags_result = fault_mgr->get_rosbags(source_filter);
+  auto rosbags_result = fault_mgr->list_rosbags(source_filter);
 
   nlohmann::json items = nlohmann::json::array();
 
@@ -186,7 +186,7 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
   // Security check: verify rosbag belongs to this entity
   // Get faults for entity and check if fault_code is in the list
   std::string source_filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
-  auto faults_result = fault_mgr->get_faults(source_filter);
+  auto faults_result = fault_mgr->list_faults(source_filter);
 
   bool belongs_to_entity = false;
   if (faults_result.success && faults_result.data.contains("faults")) {
@@ -238,35 +238,34 @@ bool BulkDataHandlers::stream_file_to_response(httplib::Response & res, const st
   // Rosbag files can be hundreds of MB to multiple GB.
   static constexpr size_t kChunkSize = 64 * 1024;  // 64 KB chunks
 
-  res.set_content_provider(
-      static_cast<size_t>(file_size), content_type,
-      [actual_path](size_t offset, size_t length, httplib::DataSink & sink) -> bool {
-        std::ifstream file(actual_path, std::ios::binary);
-        if (!file.is_open()) {
-          return false;
-        }
+  res.set_content_provider(static_cast<size_t>(file_size), content_type,
+                           [actual_path](size_t offset, size_t length, httplib::DataSink & sink) -> bool {
+                             std::ifstream file(actual_path, std::ios::binary);
+                             if (!file.is_open()) {
+                               return false;
+                             }
 
-        file.seekg(static_cast<std::streamoff>(offset));
-        if (!file.good()) {
-          return false;
-        }
+                             file.seekg(static_cast<std::streamoff>(offset));
+                             if (!file.good()) {
+                               return false;
+                             }
 
-        size_t remaining = length;
-        std::vector<char> buf(std::min(remaining, kChunkSize));
+                             size_t remaining = length;
+                             std::vector<char> buf(std::min(remaining, kChunkSize));
 
-        while (remaining > 0 && file.good()) {
-          size_t to_read = std::min(remaining, kChunkSize);
-          file.read(buf.data(), static_cast<std::streamsize>(to_read));
-          auto bytes_read = static_cast<size_t>(file.gcount());
-          if (bytes_read == 0) {
-            break;
-          }
-          sink.write(buf.data(), bytes_read);
-          remaining -= bytes_read;
-        }
+                             while (remaining > 0 && file.good()) {
+                               size_t to_read = std::min(remaining, kChunkSize);
+                               file.read(buf.data(), static_cast<std::streamsize>(to_read));
+                               auto bytes_read = static_cast<size_t>(file.gcount());
+                               if (bytes_read == 0) {
+                                 break;
+                               }
+                               sink.write(buf.data(), bytes_read);
+                               remaining -= bytes_read;
+                             }
 
-        return remaining == 0;
-      });
+                             return remaining == 0;
+                           });
 
   return true;
 }

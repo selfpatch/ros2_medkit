@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# GetFaults.srv - Query faults from the FaultManager with optional filtering.
+# ListFaults.srv - Query faults from the FaultManager with optional filtering.
 #
 # Returns faults matching the specified filter criteria. By default (empty statuses array),
 # returns only CONFIRMED faults. To include other statuses, specify them explicitly

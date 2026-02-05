@@ -243,8 +243,8 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
     // Empty source_id = no filtering, return all faults
-    auto result = fault_mgr->get_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                                        include_muted, include_clusters);
+    auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
+                                         include_muted, include_clusters);
 
     if (result.success) {
       // Format: items array at top level
@@ -319,8 +319,8 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
     // Functions don't have a single namespace_path - they host apps from potentially different namespaces
     if (entity_info.type == EntityType::FUNCTION) {
       // Get all faults (no namespace filter)
-      auto result = fault_mgr->get_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                                          include_muted, include_clusters);
+      auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
+                                           include_muted, include_clusters);
 
       if (!result.success) {
         HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
@@ -360,8 +360,8 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
     // Components group Apps, so we filter by the apps' FQNs rather than namespace (which is too broad)
     if (entity_info.type == EntityType::COMPONENT) {
       // Get all faults (no namespace filter)
-      auto result = fault_mgr->get_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                                          include_muted, include_clusters);
+      auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
+                                           include_muted, include_clusters);
 
       if (!result.success) {
         HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
@@ -400,8 +400,8 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
 
     // For other entity types (App, Area), use namespace_path filtering
     std::string namespace_path = entity_info.namespace_path;
-    auto result = fault_mgr->get_faults(namespace_path, filter.include_pending, filter.include_confirmed,
-                                        filter.include_cleared, include_muted, include_clusters);
+    auto result = fault_mgr->list_faults(namespace_path, filter.include_pending, filter.include_confirmed,
+                                         filter.include_cleared, include_muted, include_clusters);
 
     if (result.success) {
       // Format: items array at top level
@@ -576,7 +576,7 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
 
     // Get all faults for this entity
     auto fault_mgr = ctx_.node()->get_fault_manager();
-    auto faults_result = fault_mgr->get_faults(entity_info.namespace_path, "", "");
+    auto faults_result = fault_mgr->list_faults(entity_info.namespace_path, "", "");
 
     if (!faults_result.success) {
       HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,

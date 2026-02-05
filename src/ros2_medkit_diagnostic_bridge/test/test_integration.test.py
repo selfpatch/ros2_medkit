@@ -26,7 +26,7 @@ import launch_testing.markers
 import rclpy
 from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
-from ros2_medkit_msgs.srv import GetFaults
+from ros2_medkit_msgs.srv import ListFaults
 
 
 def generate_test_description():
@@ -80,14 +80,14 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         # Create publisher for diagnostics
         cls.diag_pub = cls.node.create_publisher(DiagnosticArray, '/diagnostics', 10)
 
-        # Create client for GetFaults service
-        cls.get_faults_client = cls.node.create_client(
-            GetFaults, '/fault_manager/get_faults'
+        # Create client for ListFaults service
+        cls.list_faults_client = cls.node.create_client(
+            ListFaults, '/fault_manager/list_faults'
         )
 
         # Wait for services
-        assert cls.get_faults_client.wait_for_service(timeout_sec=10.0), \
-            'GetFaults service not available'
+        assert cls.list_faults_client.wait_for_service(timeout_sec=10.0), \
+            'ListFaults service not available'
 
         # Wait for bridge to connect
         time.sleep(1.0)
@@ -98,13 +98,13 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         cls.node.destroy_node()
         rclpy.shutdown()
 
-    def get_faults(self, statuses=None):
+    def list_faults(self, statuses=None):
         """Get faults from FaultManager."""
-        request = GetFaults.Request()
+        request = ListFaults.Request()
         request.filter_by_severity = False
         request.statuses = statuses or []
 
-        future = self.get_faults_client.call_async(request)
+        future = self.list_faults_client.call_async(request)
         rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
         return future.result().faults
 
@@ -127,7 +127,7 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         """Test that ERROR diagnostic creates a fault in FaultManager."""
         self.publish_diagnostic('test_sensor', DiagnosticStatus.ERROR, 'Sensor failure')
 
-        faults = self.get_faults()
+        faults = self.list_faults()
         fault_codes = [f.fault_code for f in faults]
 
         self.assertIn('TEST_SENSOR', fault_codes)
@@ -140,7 +140,7 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         for _ in range(3):
             self.publish_diagnostic('warning_component', DiagnosticStatus.WARN, 'Low battery')
 
-        faults = self.get_faults()
+        faults = self.list_faults()
         fault_codes = [f.fault_code for f in faults]
 
         self.assertIn('WARNING_COMPONENT', fault_codes)
@@ -151,7 +151,7 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         """Test that STALE diagnostic creates a CRITICAL fault."""
         self.publish_diagnostic('stale_sensor', DiagnosticStatus.STALE, 'No data')
 
-        faults = self.get_faults()
+        faults = self.list_faults()
         fault_codes = [f.fault_code for f in faults]
 
         self.assertIn('STALE_SENSOR', fault_codes)
@@ -163,7 +163,7 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         # First create a fault
         self.publish_diagnostic('healing_test', DiagnosticStatus.ERROR, 'Error')
 
-        faults = self.get_faults()
+        faults = self.list_faults()
         self.assertIn('HEALING_TEST', [f.fault_code for f in faults])
 
         # Send OK multiple times to ensure PASSED event reaches FaultManager
@@ -171,7 +171,7 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
             self.publish_diagnostic('healing_test', DiagnosticStatus.OK)
 
         # Check fault is healed (query all statuses to find it)
-        faults = self.get_faults(statuses=[Fault.STATUS_CONFIRMED, Fault.STATUS_HEALED])
+        faults = self.list_faults(statuses=[Fault.STATUS_CONFIRMED, Fault.STATUS_HEALED])
         fault = next((f for f in faults if f.fault_code == 'HEALING_TEST'), None)
         self.assertIsNotNone(fault, 'HEALING_TEST fault not found')
         # After PASSED events with healing_threshold=1, fault should be HEALED
@@ -188,7 +188,7 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         for diag_name, expected_code in test_cases:
             self.publish_diagnostic(diag_name, DiagnosticStatus.ERROR)
 
-            faults = self.get_faults()
+            faults = self.list_faults()
             fault_codes = [f.fault_code for f in faults]
 
             self.assertIn(expected_code, fault_codes,

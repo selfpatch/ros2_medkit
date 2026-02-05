@@ -24,7 +24,7 @@ import launch_testing.actions
 import rclpy
 from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
-from ros2_medkit_msgs.srv import GetFaults, ReportFault
+from ros2_medkit_msgs.srv import ListFaults, ReportFault
 
 
 def get_coverage_env():
@@ -98,15 +98,15 @@ class TestFaultReporterIntegration(unittest.TestCase):
         cls.report_fault_client = cls.node.create_client(
             ReportFault, '/fault_manager/report_fault'
         )
-        cls.get_faults_client = cls.node.create_client(
-            GetFaults, '/fault_manager/get_faults'
+        cls.list_faults_client = cls.node.create_client(
+            ListFaults, '/fault_manager/list_faults'
         )
 
         # Wait for services to be available
         assert cls.report_fault_client.wait_for_service(timeout_sec=10.0), \
             'report_fault service not available'
-        assert cls.get_faults_client.wait_for_service(timeout_sec=10.0), \
-            'get_faults service not available'
+        assert cls.list_faults_client.wait_for_service(timeout_sec=10.0), \
+            'list_faults service not available'
 
     @classmethod
     def tearDownClass(cls):
@@ -132,18 +132,18 @@ class TestFaultReporterIntegration(unittest.TestCase):
         request.source_id = source_id
         return self._call_service(self.report_fault_client, request)
 
-    def _get_faults(self, statuses=None):
+    def _list_faults(self, statuses=None):
         """Get faults with given statuses via service call."""
-        request = GetFaults.Request()
+        request = ListFaults.Request()
         request.filter_by_severity = False
         request.severity = 0
         request.statuses = statuses or ['PREFAILED', 'CONFIRMED']
-        return self._call_service(self.get_faults_client, request)
+        return self._call_service(self.list_faults_client, request)
 
     def test_01_service_connectivity(self):
         """Test that FaultManager services are available."""
         self.assertTrue(self.report_fault_client.service_is_ready())
-        self.assertTrue(self.get_faults_client.service_is_ready())
+        self.assertTrue(self.list_faults_client.service_is_ready())
 
     def test_02_report_fault_is_stored(self):
         """Test that reported faults are stored in FaultManager."""
@@ -158,7 +158,7 @@ class TestFaultReporterIntegration(unittest.TestCase):
         self.assertTrue(response.accepted)
 
         # Verify fault is in storage with CONFIRMED status
-        faults_response = self._get_faults(statuses=['CONFIRMED'])
+        faults_response = self._list_faults(statuses=['CONFIRMED'])
         fault_codes = [f.fault_code for f in faults_response.faults]
         self.assertIn('REPORTER_TEST_001', fault_codes)
 
@@ -189,7 +189,7 @@ class TestFaultReporterIntegration(unittest.TestCase):
         )
 
         # Verify aggregation
-        faults_response = self._get_faults(statuses=['CONFIRMED'])
+        faults_response = self._list_faults(statuses=['CONFIRMED'])
         fault = next(
             (f for f in faults_response.faults if f.fault_code == 'REPORTER_TEST_002'),
             None
@@ -211,7 +211,7 @@ class TestFaultReporterIntegration(unittest.TestCase):
             source_id='/perception/lidar/scanner_node'
         )
 
-        faults_response = self._get_faults(statuses=['CONFIRMED'])
+        faults_response = self._list_faults(statuses=['CONFIRMED'])
         fault = next(
             (f for f in faults_response.faults if f.fault_code == 'REPORTER_TEST_003'),
             None

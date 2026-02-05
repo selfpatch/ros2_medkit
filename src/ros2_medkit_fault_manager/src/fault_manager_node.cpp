@@ -121,10 +121,10 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
         handle_report_fault(request, response);
       });
 
-  get_faults_srv_ = create_service<ros2_medkit_msgs::srv::GetFaults>(
-      "~/get_faults", [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Request> & request,
-                             const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Response> & response) {
-        handle_get_faults(request, response);
+  list_faults_srv_ = create_service<ros2_medkit_msgs::srv::ListFaults>(
+      "~/list_faults", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
+                              const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> & response) {
+        handle_list_faults(request, response);
       });
 
   get_fault_srv_ = create_service<ros2_medkit_msgs::srv::GetFault>(
@@ -151,10 +151,10 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
         handle_get_rosbag(request, response);
       });
 
-  get_rosbags_srv_ = create_service<ros2_medkit_msgs::srv::GetRosbags>(
-      "~/get_rosbags", [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbags::Request> & request,
-                              const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbags::Response> & response) {
-        handle_get_rosbags(request, response);
+  list_rosbags_srv_ = create_service<ros2_medkit_msgs::srv::ListRosbags>(
+      "~/list_rosbags", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Request> & request,
+                               const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Response> & response) {
+        handle_list_rosbags(request, response);
       });
 
   list_faults_for_entity_srv_ = create_service<ros2_medkit_msgs::srv::ListFaultsForEntity>(
@@ -373,9 +373,10 @@ void FaultManagerNode::handle_report_fault(
   }
 }
 
-void FaultManagerNode::handle_get_faults(const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Request> & request,
-                                         const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Response> & response) {
-  response->faults = storage_->get_faults(request->filter_by_severity, request->severity, request->statuses);
+void FaultManagerNode::handle_list_faults(
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> & response) {
+  response->faults = storage_->list_faults(request->filter_by_severity, request->severity, request->statuses);
 
   // Include correlation data if engine is enabled
   if (correlation_engine_) {
@@ -422,7 +423,7 @@ void FaultManagerNode::handle_get_faults(const std::shared_ptr<ros2_medkit_msgs:
     }
   }
 
-  RCLCPP_DEBUG(get_logger(), "GetFaults returned %zu faults (muted=%u, clusters=%u)", response->faults.size(),
+  RCLCPP_DEBUG(get_logger(), "ListFaults returned %zu faults (muted=%u, clusters=%u)", response->faults.size(),
                response->muted_count, response->cluster_count);
 }
 
@@ -888,10 +889,10 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
                request->fault_code.c_str());
 }
 
-void FaultManagerNode::handle_get_rosbags(
-    const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbags::Request> & request,
-    const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbags::Response> & response) {
-  RCLCPP_DEBUG(get_logger(), "GetRosbags request for entity: %s", request->entity_fqn.c_str());
+void FaultManagerNode::handle_list_rosbags(
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Response> & response) {
+  RCLCPP_DEBUG(get_logger(), "ListRosbags request for entity: %s", request->entity_fqn.c_str());
 
   if (request->entity_fqn.empty()) {
     response->success = false;
@@ -900,7 +901,7 @@ void FaultManagerNode::handle_get_rosbags(
   }
 
   // Use batch storage API to get all rosbags for this entity
-  auto rosbags = storage_->get_rosbags_for_entity(request->entity_fqn);
+  auto rosbags = storage_->list_rosbags_for_entity(request->entity_fqn);
 
   for (const auto & info : rosbags) {
     // Skip rosbags whose files no longer exist on disk
@@ -917,7 +918,7 @@ void FaultManagerNode::handle_get_rosbags(
   }
 
   response->success = true;
-  RCLCPP_DEBUG(get_logger(), "GetRosbags returned %zu rosbags for entity '%s'", response->fault_codes.size(),
+  RCLCPP_DEBUG(get_logger(), "ListRosbags returned %zu rosbags for entity '%s'", response->fault_codes.size(),
                request->entity_fqn.c_str());
 }
 

@@ -89,7 +89,7 @@ TEST_F(FaultStorageTest, ReportExistingFaultEventUpdates) {
   EXPECT_EQ(fault->reporting_sources.size(), 2u);
 }
 
-TEST_F(FaultStorageTest, GetFaultsDefaultReturnsConfirmedOnly) {
+TEST_F(FaultStorageTest, ListFaultsDefaultReturnsConfirmedOnly) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
@@ -98,12 +98,12 @@ TEST_F(FaultStorageTest, GetFaultsDefaultReturnsConfirmedOnly) {
                               timestamp);
 
   // Default query should return the CONFIRMED fault
-  auto faults = storage_.get_faults(false, 0, {});
+  auto faults = storage_.list_faults(false, 0, {});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].status, Fault::STATUS_CONFIRMED);
 }
 
-TEST_F(FaultStorageTest, GetFaultsWithPrefailedStatus) {
+TEST_F(FaultStorageTest, ListFaultsWithPrefailedStatus) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
@@ -116,13 +116,13 @@ TEST_F(FaultStorageTest, GetFaultsWithPrefailedStatus) {
                               timestamp);
 
   // Query with PREFAILED status
-  auto faults = storage_.get_faults(false, 0, {Fault::STATUS_PREFAILED});
+  auto faults = storage_.list_faults(false, 0, {Fault::STATUS_PREFAILED});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].fault_code, "FAULT_1");
   EXPECT_EQ(faults[0].status, Fault::STATUS_PREFAILED);
 }
 
-TEST_F(FaultStorageTest, GetFaultsFilterBySeverity) {
+TEST_F(FaultStorageTest, ListFaultsFilterBySeverity) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
@@ -133,7 +133,7 @@ TEST_F(FaultStorageTest, GetFaultsFilterBySeverity) {
                               "/node1", timestamp);
 
   // Filter by ERROR severity (query CONFIRMED since that's the default status now)
-  auto faults = storage_.get_faults(true, Fault::SEVERITY_ERROR, {Fault::STATUS_CONFIRMED});
+  auto faults = storage_.list_faults(true, Fault::SEVERITY_ERROR, {Fault::STATUS_CONFIRMED});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].fault_code, "FAULT_ERROR");
 }
@@ -167,7 +167,7 @@ TEST_F(FaultStorageTest, GetClearedFaults) {
   storage_.clear_fault("FAULT_1");
 
   // Query cleared faults
-  auto faults = storage_.get_faults(false, 0, {Fault::STATUS_CLEARED});
+  auto faults = storage_.list_faults(false, 0, {Fault::STATUS_CLEARED});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].status, Fault::STATUS_CLEARED);
 }
@@ -181,7 +181,7 @@ TEST_F(FaultStorageTest, InvalidStatusDefaultsToConfirmed) {
                               timestamp);
 
   // Query with invalid status - defaults to CONFIRMED, which now matches our fault
-  auto faults = storage_.get_faults(false, 0, {"INVALID_STATUS"});
+  auto faults = storage_.list_faults(false, 0, {"INVALID_STATUS"});
   EXPECT_EQ(faults.size(), 1u);
   EXPECT_EQ(faults[0].status, Fault::STATUS_CONFIRMED);
 }

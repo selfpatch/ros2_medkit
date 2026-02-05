@@ -25,11 +25,11 @@
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
-#include "ros2_medkit_msgs/srv/get_faults.hpp"
 #include "ros2_medkit_msgs/srv/get_rosbag.hpp"
-#include "ros2_medkit_msgs/srv/get_rosbags.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
+#include "ros2_medkit_msgs/srv/list_faults.hpp"
 #include "ros2_medkit_msgs/srv/list_faults_for_entity.hpp"
+#include "ros2_medkit_msgs/srv/list_rosbags.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
 namespace ros2_medkit_fault_manager {
@@ -71,9 +71,9 @@ class FaultManagerNode : public rclcpp::Node {
   void handle_report_fault(const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
                            const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response);
 
-  /// Handle GetFaults service request
-  void handle_get_faults(const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Request> & request,
-                         const std::shared_ptr<ros2_medkit_msgs::srv::GetFaults::Response> & response);
+  /// Handle ListFaults service request
+  void handle_list_faults(const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
+                          const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> & response);
 
   /// Handle GetFault service request (single fault with environment_data)
   void handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
@@ -91,9 +91,9 @@ class FaultManagerNode : public rclcpp::Node {
   void handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
                          const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response);
 
-  /// Handle GetRosbags batch service request
-  void handle_get_rosbags(const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbags::Request> & request,
-                          const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbags::Response> & response);
+  /// Handle ListRosbags batch service request
+  void handle_list_rosbags(const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Request> & request,
+                           const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Response> & response);
 
   /// Handle ListFaultsForEntity service request
   void
@@ -134,12 +134,12 @@ class FaultManagerNode : public rclcpp::Node {
   std::unique_ptr<FaultStorage> storage_;
 
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
-  rclcpp::Service<ros2_medkit_msgs::srv::GetFaults>::SharedPtr get_faults_srv_;
+  rclcpp::Service<ros2_medkit_msgs::srv::ListFaults>::SharedPtr list_faults_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetFault>::SharedPtr get_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetSnapshots>::SharedPtr get_snapshots_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetRosbag>::SharedPtr get_rosbag_srv_;
-  rclcpp::Service<ros2_medkit_msgs::srv::GetRosbags>::SharedPtr get_rosbags_srv_;
+  rclcpp::Service<ros2_medkit_msgs::srv::ListRosbags>::SharedPtr list_rosbags_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ListFaultsForEntity>::SharedPtr list_faults_for_entity_srv_;
   rclcpp::TimerBase::SharedPtr auto_confirm_timer_;
 

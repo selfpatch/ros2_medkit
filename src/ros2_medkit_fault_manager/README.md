@@ -21,7 +21,7 @@ ros2 service call /fault_manager/report_fault ros2_medkit_msgs/srv/ReportFault \
   "{fault_code: 'MOTOR_OVERHEAT', event_type: 0, severity: 2, description: 'Motor temp exceeded', source_id: '/motor_node'}"
 
 # Query faults
-ros2 service call /fault_manager/get_faults ros2_medkit_msgs/srv/GetFaults \
+ros2 service call /fault_manager/list_faults ros2_medkit_msgs/srv/ListFaults \
   "{statuses: ['CONFIRMED']}"
 
 # Clear a fault
@@ -34,7 +34,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 | Service | Type | Description |
 |---------|------|-------------|
 | `~/report_fault` | `ros2_medkit_msgs/srv/ReportFault` | Report a fault occurrence |
-| `~/get_faults` | `ros2_medkit_msgs/srv/GetFaults` | Query faults with filtering |
+| `~/list_faults` | `ros2_medkit_msgs/srv/ListFaults` | Query faults with filtering |
 | `~/clear_fault` | `ros2_medkit_msgs/srv/ClearFault` | Clear/acknowledge a fault |
 | `~/get_snapshots` | `ros2_medkit_msgs/srv/GetSnapshots` | Get topic snapshots for a fault |
 
@@ -172,7 +172,7 @@ ros2 service call /fault_manager/report_fault ros2_medkit_msgs/srv/ReportFault \
   "{fault_code: 'SENSOR_FAIL', event_type: 1, severity: 0, description: '', source_id: '/sensor'}"
 
 # Query all statuses including PREFAILED
-ros2 service call /fault_manager/get_faults ros2_medkit_msgs/srv/GetFaults \
+ros2 service call /fault_manager/list_faults ros2_medkit_msgs/srv/ListFaults \
   "{statuses: ['PREFAILED', 'CONFIRMED', 'HEALED']}"
 ```
 
@@ -266,7 +266,7 @@ Use `include_muted` and `include_clusters` to retrieve correlation information:
 
 ```bash
 # Get faults with muted fault details
-ros2 service call /fault_manager/get_faults ros2_medkit_msgs/srv/GetFaults \
+ros2 service call /fault_manager/list_faults ros2_medkit_msgs/srv/ListFaults \
   "{statuses: ['CONFIRMED'], include_muted: true, include_clusters: true}"
 ```
 

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# GetRosbags.srv - Batch retrieve rosbag file information for an entity.
+# ListRosbags.srv - Batch retrieve rosbag file information for an entity.
 #
 # Returns all rosbag files associated with faults from a given entity.
 # This is more efficient than calling GetRosbag for each fault individually.

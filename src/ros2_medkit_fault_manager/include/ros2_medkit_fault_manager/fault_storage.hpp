@@ -122,8 +122,8 @@ class FaultStorage {
   /// @param severity Severity level to filter (if filter_by_severity is true)
   /// @param statuses List of statuses to include (empty = CONFIRMED only)
   /// @return Vector of matching faults
-  virtual std::vector<ros2_medkit_msgs::msg::Fault> get_faults(bool filter_by_severity, uint8_t severity,
-                                                               const std::vector<std::string> & statuses) const = 0;
+  virtual std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
+                                                                const std::vector<std::string> & statuses) const = 0;
 
   /// Get a single fault by fault_code
   /// @param fault_code The fault code to look up
@@ -192,7 +192,7 @@ class FaultStorage {
   /// Get rosbags for all faults associated with an entity
   /// @param entity_fqn The entity's fully qualified name to filter by
   /// @return Vector of rosbag file info for faults reported by this entity
-  virtual std::vector<RosbagFileInfo> get_rosbags_for_entity(const std::string & entity_fqn) const = 0;
+  virtual std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const = 0;
 
   /// Get all stored faults regardless of status (for filtering)
   /// @return Vector of all faults in storage
@@ -222,8 +222,8 @@ class InMemoryFaultStorage : public FaultStorage {
                           const std::string & description, const std::string & source_id,
                           const rclcpp::Time & timestamp) override;
 
-  std::vector<ros2_medkit_msgs::msg::Fault> get_faults(bool filter_by_severity, uint8_t severity,
-                                                       const std::vector<std::string> & statuses) const override;
+  std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
+                                                        const std::vector<std::string> & statuses) const override;
 
   std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override;
 
@@ -246,7 +246,7 @@ class InMemoryFaultStorage : public FaultStorage {
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::optional<RosbagFileInfo> get_rosbag_by_id(const std::string & bulk_data_id) const override;
   std::string get_rosbag_path(const std::string & bulk_data_id) const override;
-  std::vector<RosbagFileInfo> get_rosbags_for_entity(const std::string & entity_fqn) const override;
+  std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
   std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
 
  private:

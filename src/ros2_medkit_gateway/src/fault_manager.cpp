@@ -27,11 +27,11 @@ FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
   // Create service clients for fault_manager services
   report_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
   get_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::GetFault>("/fault_manager/get_fault");
-  get_faults_client_ = node_->create_client<ros2_medkit_msgs::srv::GetFaults>("/fault_manager/get_faults");
+  list_faults_client_ = node_->create_client<ros2_medkit_msgs::srv::ListFaults>("/fault_manager/list_faults");
   clear_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ClearFault>("/fault_manager/clear_fault");
   get_snapshots_client_ = node_->create_client<ros2_medkit_msgs::srv::GetSnapshots>("/fault_manager/get_snapshots");
   get_rosbag_client_ = node_->create_client<ros2_medkit_msgs::srv::GetRosbag>("/fault_manager/get_rosbag");
-  get_rosbags_client_ = node_->create_client<ros2_medkit_msgs::srv::GetRosbags>("/fault_manager/get_rosbags");
+  list_rosbags_client_ = node_->create_client<ros2_medkit_msgs::srv::ListRosbags>("/fault_manager/list_rosbags");
 
   // Get configurable timeout
   service_timeout_sec_ = node_->declare_parameter("fault_service_timeout_sec", 5.0);
@@ -41,12 +41,12 @@ FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
 
 bool FaultManager::wait_for_services(std::chrono::duration<double> timeout) {
   return report_fault_client_->wait_for_service(timeout) && get_fault_client_->wait_for_service(timeout) &&
-         get_faults_client_->wait_for_service(timeout) && clear_fault_client_->wait_for_service(timeout);
+         list_faults_client_->wait_for_service(timeout) && clear_fault_client_->wait_for_service(timeout);
 }
 
 bool FaultManager::is_available() const {
   return report_fault_client_->service_is_ready() && get_fault_client_->service_is_ready() &&
-         get_faults_client_->service_is_ready() && clear_fault_client_->service_is_ready();
+         list_faults_client_->service_is_ready() && clear_fault_client_->service_is_ready();
 }
 
 /// Convert a ROS 2 Fault message to JSON for REST API responses.
@@ -127,19 +127,19 @@ FaultResult FaultManager::report_fault(const std::string & fault_code, uint8_t s
   return result;
 }
 
-FaultResult FaultManager::get_faults(const std::string & source_id, bool include_prefailed, bool include_confirmed,
-                                     bool include_cleared, bool include_muted, bool include_clusters) {
+FaultResult FaultManager::list_faults(const std::string & source_id, bool include_prefailed, bool include_confirmed,
+                                      bool include_cleared, bool include_muted, bool include_clusters) {
   std::lock_guard<std::mutex> lock(service_mutex_);
   FaultResult result;
 
   auto timeout = std::chrono::duration<double>(service_timeout_sec_);
-  if (!get_faults_client_->wait_for_service(timeout)) {
+  if (!list_faults_client_->wait_for_service(timeout)) {
     result.success = false;
-    result.error_message = "GetFaults service not available";
+    result.error_message = "ListFaults service not available";
     return result;
   }
 
-  auto request = std::make_shared<ros2_medkit_msgs::srv::GetFaults::Request>();
+  auto request = std::make_shared<ros2_medkit_msgs::srv::ListFaults::Request>();
   request->filter_by_severity = false;
   request->severity = 0;
 
@@ -158,11 +158,11 @@ FaultResult FaultManager::get_faults(const std::string & source_id, bool include
   request->include_muted = include_muted;
   request->include_clusters = include_clusters;
 
-  auto future = get_faults_client_->async_send_request(request);
+  auto future = list_faults_client_->async_send_request(request);
 
   if (future.wait_for(timeout) != std::future_status::ready) {
     result.success = false;
-    result.error_message = "GetFaults service call timed out";
+    result.error_message = "ListFaults service call timed out";
     return result;
   }
 
@@ -413,25 +413,25 @@ FaultResult FaultManager::get_rosbag(const std::string & fault_code) {
   return result;
 }
 
-FaultResult FaultManager::get_rosbags(const std::string & entity_fqn) {
+FaultResult FaultManager::list_rosbags(const std::string & entity_fqn) {
   std::lock_guard<std::mutex> lock(service_mutex_);
   FaultResult result;
 
   auto timeout = std::chrono::duration<double>(service_timeout_sec_);
-  if (!get_rosbags_client_->wait_for_service(timeout)) {
+  if (!list_rosbags_client_->wait_for_service(timeout)) {
     result.success = false;
-    result.error_message = "GetRosbags service not available";
+    result.error_message = "ListRosbags service not available";
     return result;
   }
 
-  auto request = std::make_shared<ros2_medkit_msgs::srv::GetRosbags::Request>();
+  auto request = std::make_shared<ros2_medkit_msgs::srv::ListRosbags::Request>();
   request->entity_fqn = entity_fqn;
 
-  auto future = get_rosbags_client_->async_send_request(request);
+  auto future = list_rosbags_client_->async_send_request(request);
 
   if (future.wait_for(timeout) != std::future_status::ready) {
     result.success = false;
-    result.error_message = "GetRosbags service call timed out";
+    result.error_message = "ListRosbags service call timed out";
     return result;
   }
 

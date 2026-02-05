@@ -29,7 +29,7 @@ import launch_testing.markers
 import rclpy
 from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
-from ros2_medkit_msgs.srv import ClearFault, GetFaults, GetSnapshots, ReportFault
+from ros2_medkit_msgs.srv import ClearFault, GetSnapshots, ListFaults, ReportFault
 from sensor_msgs.msg import Temperature
 
 
@@ -118,8 +118,8 @@ class TestFaultManagerIntegration(unittest.TestCase):
         cls.report_fault_client = cls.node.create_client(
             ReportFault, '/fault_manager/report_fault'
         )
-        cls.get_faults_client = cls.node.create_client(
-            GetFaults, '/fault_manager/get_faults'
+        cls.list_faults_client = cls.node.create_client(
+            ListFaults, '/fault_manager/list_faults'
         )
         cls.clear_fault_client = cls.node.create_client(
             ClearFault, '/fault_manager/clear_fault'
@@ -136,8 +136,8 @@ class TestFaultManagerIntegration(unittest.TestCase):
         # Wait for services to be available
         assert cls.report_fault_client.wait_for_service(timeout_sec=10.0), \
             'report_fault service not available'
-        assert cls.get_faults_client.wait_for_service(timeout_sec=10.0), \
-            'get_faults service not available'
+        assert cls.list_faults_client.wait_for_service(timeout_sec=10.0), \
+            'list_faults service not available'
         assert cls.clear_fault_client.wait_for_service(timeout_sec=10.0), \
             'clear_fault service not available'
         assert cls.get_snapshots_client.wait_for_service(timeout_sec=10.0), \
@@ -212,7 +212,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self.assertFalse(response.accepted)
         print('Invalid severity rejected as expected')
 
-    def test_05_get_faults_prefailed(self):
+    def test_05_list_faults_prefailed(self):
         """Test getting faults with PREFAILED status."""
         # First report a fault
         report_request = ReportFault.Request()
@@ -224,19 +224,19 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self._call_service(self.report_fault_client, report_request)
 
         # Query PREFAILED faults
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
         get_request.statuses = [Fault.STATUS_PREFAILED]
 
-        response = self._call_service(self.get_faults_client, get_request)
+        response = self._call_service(self.list_faults_client, get_request)
 
         self.assertGreater(len(response.faults), 0)
         fault_codes = [f.fault_code for f in response.faults]
         self.assertIn('TEST_FAULT_GET_001', fault_codes)
         print(f'Get faults returned {len(response.faults)} faults')
 
-    def test_06_get_faults_filter_by_severity(self):
+    def test_06_list_faults_filter_by_severity(self):
         """Test filtering faults by severity."""
         # Report faults with different severities
         for i, severity in enumerate([Fault.SEVERITY_INFO, Fault.SEVERITY_ERROR]):
@@ -249,12 +249,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
             self._call_service(self.report_fault_client, request)
 
         # Query ERROR severity only
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = True
         get_request.severity = Fault.SEVERITY_ERROR
         get_request.statuses = [Fault.STATUS_PREFAILED]
 
-        response = self._call_service(self.get_faults_client, get_request)
+        response = self._call_service(self.list_faults_client, get_request)
 
         for fault in response.faults:
             self.assertEqual(fault.severity, Fault.SEVERITY_ERROR)
@@ -282,12 +282,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
         print(f'Clear fault response: {response.message}')
 
         # Verify fault is now CLEARED
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
         get_request.statuses = [Fault.STATUS_CLEARED]
 
-        get_response = self._call_service(self.get_faults_client, get_request)
+        get_response = self._call_service(self.list_faults_client, get_request)
 
         cleared_codes = [f.fault_code for f in get_response.faults]
         self.assertIn('TEST_FAULT_CLEAR', cleared_codes)
@@ -341,12 +341,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self.assertTrue(response2.accepted)
 
         # Verify fault was updated
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
         get_request.statuses = [Fault.STATUS_PREFAILED]
 
-        get_response = self._call_service(self.get_faults_client, get_request)
+        get_response = self._call_service(self.list_faults_client, get_request)
 
         updated_fault = None
         for f in get_response.faults:
@@ -376,12 +376,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
             self._call_service(self.report_fault_client, request)
 
         # Query CONFIRMED faults (should include our fault now)
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
         get_request.statuses = [Fault.STATUS_CONFIRMED]
 
-        response = self._call_service(self.get_faults_client, get_request)
+        response = self._call_service(self.list_faults_client, get_request)
 
         confirmed_codes = [f.fault_code for f in response.faults]
         self.assertIn(fault_code, confirmed_codes)
@@ -407,12 +407,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self._call_service(self.report_fault_client, request)
 
         # Query with empty statuses (default = CONFIRMED only)
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
         get_request.statuses = []  # Empty = CONFIRMED only
 
-        response = self._call_service(self.get_faults_client, get_request)
+        response = self._call_service(self.list_faults_client, get_request)
 
         # Fault should NOT be in results (it's PREFAILED)
         fault_codes = [f.fault_code for f in response.faults]
@@ -420,12 +420,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
         print('Default query excluded PREFAILED fault as expected')
 
         # But it should be visible when querying PREFAILED explicitly
-        get_prefailed = GetFaults.Request()
+        get_prefailed = ListFaults.Request()
         get_prefailed.filter_by_severity = False
         get_prefailed.severity = 0
         get_prefailed.statuses = [Fault.STATUS_PREFAILED]
 
-        prefailed_response = self._call_service(self.get_faults_client, get_prefailed)
+        prefailed_response = self._call_service(self.list_faults_client, get_prefailed)
         prefailed_codes = [f.fault_code for f in prefailed_response.faults]
         self.assertIn(fault_code, prefailed_codes)
         print('PREFAILED query found the fault as expected')
@@ -446,12 +446,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
             self._call_service(self.report_fault_client, request)
 
         # Query and verify
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
         get_request.statuses = [Fault.STATUS_CONFIRMED]
 
-        response = self._call_service(self.get_faults_client, get_request)
+        response = self._call_service(self.list_faults_client, get_request)
 
         fault = next((f for f in response.faults if f.fault_code == fault_code), None)
         self.assertIsNotNone(fault)
@@ -474,12 +474,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self._call_service(self.report_fault_client, request)
 
         # Query CONFIRMED faults
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
         get_request.statuses = [Fault.STATUS_CONFIRMED]
 
-        response = self._call_service(self.get_faults_client, get_request)
+        response = self._call_service(self.list_faults_client, get_request)
 
         fault = next((f for f in response.faults if f.fault_code == fault_code), None)
         self.assertIsNotNone(fault)
@@ -502,12 +502,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
             self._call_service(self.report_fault_client, request)
 
         # Verify fault is PREFAILED
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
         get_request.statuses = [Fault.STATUS_PREFAILED]
 
-        response = self._call_service(self.get_faults_client, get_request)
+        response = self._call_service(self.list_faults_client, get_request)
         fault = next((f for f in response.faults if f.fault_code == fault_code), None)
         self.assertIsNotNone(fault)
         self.assertEqual(fault.status, Fault.STATUS_PREFAILED)
@@ -523,12 +523,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
             self._call_service(self.report_fault_client, request)
 
         # Verify fault is PREPASSED (counter > 0)
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
         get_request.statuses = [Fault.STATUS_PREPASSED]
 
-        response = self._call_service(self.get_faults_client, get_request)
+        response = self._call_service(self.list_faults_client, get_request)
         fault = next((f for f in response.faults if f.fault_code == fault_code), None)
         self.assertIsNotNone(fault)
         self.assertEqual(fault.status, Fault.STATUS_PREPASSED)
@@ -747,11 +747,11 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self.assertTrue(response.accepted)
 
         # Verify fault is confirmed
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.statuses = [Fault.STATUS_CONFIRMED]
 
-        get_response = self._call_service(self.get_faults_client, get_request)
+        get_response = self._call_service(self.list_faults_client, get_request)
 
         fault_codes = [f.fault_code for f in get_response.faults]
         self.assertIn('ESTOP_001', fault_codes)
@@ -787,12 +787,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
             self.assertTrue(response.accepted)
 
         # Query with include_muted=true to see muted faults
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.statuses = [Fault.STATUS_CONFIRMED]
         get_request.include_muted = True
 
-        get_response = self._call_service(self.get_faults_client, get_request)
+        get_response = self._call_service(self.list_faults_client, get_request)
 
         # Check muted_count > 0
         self.assertGreater(get_response.muted_count, 0)
@@ -833,12 +833,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self.assertGreater(len(auto_cleared), 0)
 
         # Verify muted count is now 0
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.statuses = [Fault.STATUS_CONFIRMED]
         get_request.include_muted = True
 
-        get_response = self._call_service(self.get_faults_client, get_request)
+        get_response = self._call_service(self.list_faults_client, get_request)
 
         # Muted faults related to ESTOP_001 should be cleared
         remaining_muted = [m for m in get_response.muted_faults
@@ -867,12 +867,12 @@ class TestFaultManagerIntegration(unittest.TestCase):
             time.sleep(0.1)  # Small delay to stay within window
 
         # Query with include_clusters=true
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.statuses = [Fault.STATUS_CONFIRMED]
         get_request.include_clusters = True
 
-        get_response = self._call_service(self.get_faults_client, get_request)
+        get_response = self._call_service(self.list_faults_client, get_request)
 
         # Check cluster_count > 0
         self.assertGreater(get_response.cluster_count, 0)
@@ -895,13 +895,13 @@ class TestFaultManagerIntegration(unittest.TestCase):
         The muted_count should still be returned, but muted_faults array
         should be empty when include_muted=false (default).
         """
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.statuses = [Fault.STATUS_CONFIRMED]
         get_request.include_muted = False  # Default
         get_request.include_clusters = False  # Default
 
-        get_response = self._call_service(self.get_faults_client, get_request)
+        get_response = self._call_service(self.list_faults_client, get_request)
 
         # muted_count is always returned
         self.assertIsNotNone(get_response.muted_count)
@@ -945,9 +945,9 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self.assertTrue(response.accepted)
 
         # Verify fault is CONFIRMED again
-        get_request = GetFaults.Request()
+        get_request = ListFaults.Request()
         get_request.statuses = [Fault.STATUS_CONFIRMED]
-        get_response = self._call_service(self.get_faults_client, get_request)
+        get_response = self._call_service(self.list_faults_client, get_request)
 
         fault = next((f for f in get_response.faults if f.fault_code == fault_code), None)
         self.assertIsNotNone(fault)

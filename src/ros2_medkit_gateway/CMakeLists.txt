@@ -231,13 +231,13 @@ if(BUILD_TESTING)
   )
   ament_lint_auto_find_test_dependencies()
 
-  # Configure clang-tidy manually with increased timeout (600s instead of default 300s)
+  # Configure clang-tidy manually with increased timeout (1500s instead of default 300s)
   # This is needed because the project has many files and clang-tidy analysis takes time
   ament_clang_tidy(
     "${CMAKE_CURRENT_BINARY_DIR}"
     CONFIG_FILE "${ament_cmake_clang_tidy_CONFIG_FILE}"
     HEADER_FILTER "${ament_cmake_clang_tidy_HEADER_FILTER}"
-    TIMEOUT 1200
+    TIMEOUT 1500
   )
 
   # Add GTest

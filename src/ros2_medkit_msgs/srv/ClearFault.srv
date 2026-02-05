@@ -15,7 +15,7 @@
 # ClearFault.srv - Clear/acknowledge a fault in the FaultManager.
 #
 # Marks the specified fault as CLEARED. The fault record is retained for historical
-# purposes and can be retrieved by calling GetFaults with statuses=["CLEARED"].
+# purposes and can be retrieved by calling ListFaults with statuses=["CLEARED"].
 # Cleared faults are retained indefinitely unless storage cleanup is configured.
 # A FaultEvent with EVENT_CLEARED is published when a fault is successfully cleared.
 

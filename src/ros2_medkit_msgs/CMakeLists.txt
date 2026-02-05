@@ -32,12 +32,12 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Snapshot.msg"
   "msg/EnvironmentData.msg"
   "srv/ReportFault.srv"
-  "srv/GetFaults.srv"
+  "srv/ListFaults.srv"
   "srv/GetFault.srv"
   "srv/ClearFault.srv"
   "srv/GetSnapshots.srv"
   "srv/GetRosbag.srv"
-  "srv/GetRosbags.srv"
+  "srv/ListRosbags.srv"
   "srv/ListFaultsForEntity.srv"
   DEPENDENCIES builtin_interfaces
 )

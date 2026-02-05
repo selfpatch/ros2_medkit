@@ -43,7 +43,7 @@ The following diagram shows the relationships between the main components of the
            +Response: success, message
        }
 
-       class "srv::GetFaults" {
+       class "srv::ListFaults" {
            +Request: filter_by_severity, severity, statuses
            +Response: faults[]
        }
@@ -62,7 +62,7 @@ The following diagram shows the relationships between the main components of the
 
        abstract class FaultStorage <<interface>> {
            + {abstract} report_fault(): bool
-           + {abstract} get_faults(): vector<Fault>
+           + {abstract} list_faults(): vector<Fault>
            + {abstract} get_fault(): optional<Fault>
            + {abstract} clear_fault(): bool
            + {abstract} size(): size_t
@@ -71,7 +71,7 @@ The following diagram shows the relationships between the main components of the
 
        class InMemoryFaultStorage {
            + report_fault(): bool
-           + get_faults(): vector<Fault>
+           + list_faults(): vector<Fault>
            + get_fault(): optional<Fault>
            + clear_fault(): bool
            + size(): size_t
@@ -100,7 +100,7 @@ The following diagram shows the relationships between the main components of the
 
    ' Node uses service types
    FaultManagerNode ..> "srv::ReportFault" : handles
-   FaultManagerNode ..> "srv::GetFaults" : handles
+   FaultManagerNode ..> "srv::ListFaults" : handles
    FaultManagerNode ..> "srv::ClearFault" : handles
 
    @enduml
@@ -148,7 +148,7 @@ Reports a new fault or updates an existing one.
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
 - **Returns**: ``accepted=true`` if event was processed
 
-~/get_faults
+~/list_faults
 ~~~~~~~~~~~~
 
 Queries faults with optional filtering.

@@ -60,7 +60,7 @@ struct ProcessClearResult {
   std::vector<std::string> auto_cleared_codes;
 };
 
-/// Information about a muted fault (for GetFaults response)
+/// Information about a muted fault (for ListFaults response)
 struct MutedFaultData {
   std::string fault_code;
   std::string root_cause_code;
@@ -68,7 +68,7 @@ struct MutedFaultData {
   uint32_t delay_ms{0};
 };
 
-/// Information about an active cluster (for GetFaults response)
+/// Information about an active cluster (for ListFaults response)
 struct ClusterData {
   std::string cluster_id;
   std::string rule_id;
