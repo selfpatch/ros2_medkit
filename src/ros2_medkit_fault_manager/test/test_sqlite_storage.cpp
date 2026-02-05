@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <memory>
 #include <random>
+#include <set>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
@@ -706,6 +707,187 @@ TEST_F(SqliteFaultStorageTest, ClearFaultDeletesAssociatedSnapshots) {
   // Verify snapshots are deleted
   auto snapshots_after = storage_->get_snapshots("SNAPSHOT_CLEAR_TEST");
   EXPECT_TRUE(snapshots_after.empty());
+}
+
+// UUID generation tests
+
+// @verifies REQ_INTEROP_073
+TEST(UUIDGenerationTest, GeneratesValidFormat) {
+  auto uuid = ros2_medkit_fault_manager::FaultStorage::generate_uuid();
+
+  // UUID v4 format: xxxxxxxx-xxxx-4xxx-Nxxx-xxxxxxxxxxxx (36 chars with hyphens)
+  EXPECT_EQ(uuid.length(), 36u);
+  EXPECT_EQ(uuid[8], '-');
+  EXPECT_EQ(uuid[13], '-');
+  EXPECT_EQ(uuid[18], '-');
+  EXPECT_EQ(uuid[23], '-');
+
+  // Version 4 indicator
+  EXPECT_EQ(uuid[14], '4');
+}
+
+// @verifies REQ_INTEROP_073
+TEST(UUIDGenerationTest, GeneratesUniqueValues) {
+  std::set<std::string> uuids;
+  for (int i = 0; i < 1000; ++i) {
+    uuids.insert(ros2_medkit_fault_manager::FaultStorage::generate_uuid());
+  }
+  EXPECT_EQ(uuids.size(), 1000u);  // All should be unique
+}
+
+// Rosbag UUID-based lookup tests
+
+// @verifies REQ_INTEROP_073
+TEST_F(SqliteFaultStorageTest, StoreRosbagWithUUID) {
+  using ros2_medkit_fault_manager::RosbagFileInfo;
+
+  RosbagFileInfo info;
+  info.bulk_data_id = "550e8400-e29b-41d4-a716-446655440000";
+  info.fault_code = "TEST_FAULT";
+  info.file_path = "/tmp/test.mcap";
+  info.format = "mcap";
+  info.duration_sec = 5.0;
+  info.size_bytes = 1024;
+  info.created_at_ns = 1234567890;
+
+  storage_->store_rosbag_file(info);
+
+  auto result = storage_->get_rosbag_file("TEST_FAULT");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->bulk_data_id, "550e8400-e29b-41d4-a716-446655440000");
+}
+
+// @verifies REQ_INTEROP_073
+TEST_F(SqliteFaultStorageTest, GetRosbagByIdSuccess) {
+  using ros2_medkit_fault_manager::RosbagFileInfo;
+
+  RosbagFileInfo info;
+  info.bulk_data_id = "test-uuid-1234-5678-9012";
+  info.fault_code = "MY_FAULT";
+  info.file_path = "/tmp/my.mcap";
+  info.format = "mcap";
+  info.duration_sec = 10.0;
+  info.size_bytes = 2048;
+  info.created_at_ns = 9876543210;
+
+  storage_->store_rosbag_file(info);
+
+  auto result = storage_->get_rosbag_by_id("test-uuid-1234-5678-9012");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->fault_code, "MY_FAULT");
+  EXPECT_EQ(result->file_path, "/tmp/my.mcap");
+}
+
+// @verifies REQ_INTEROP_073
+TEST_F(SqliteFaultStorageTest, GetRosbagByIdNotFound) {
+  auto result = storage_->get_rosbag_by_id("nonexistent-uuid");
+  EXPECT_FALSE(result.has_value());
+}
+
+// @verifies REQ_INTEROP_073
+TEST_F(SqliteFaultStorageTest, GetRosbagPathSuccess) {
+  using ros2_medkit_fault_manager::RosbagFileInfo;
+
+  RosbagFileInfo info;
+  info.bulk_data_id = "path-test-uuid";
+  info.fault_code = "PATH_TEST_FAULT";
+  info.file_path = "/data/recordings/fault.mcap";
+  info.format = "mcap";
+  info.duration_sec = 3.0;
+  info.size_bytes = 512;
+  info.created_at_ns = 1111111111;
+
+  storage_->store_rosbag_file(info);
+
+  std::string path = storage_->get_rosbag_path("path-test-uuid");
+  EXPECT_EQ(path, "/data/recordings/fault.mcap");
+}
+
+// @verifies REQ_INTEROP_073
+TEST_F(SqliteFaultStorageTest, GetRosbagPathNotFound) {
+  std::string path = storage_->get_rosbag_path("nonexistent-path-uuid");
+  EXPECT_TRUE(path.empty());
+}
+
+// @verifies REQ_INTEROP_071
+TEST_F(SqliteFaultStorageTest, GetRosbagsForEntityFiltersCorrectly) {
+  using ros2_medkit_fault_manager::RosbagFileInfo;
+  rclcpp::Clock clock;
+
+  // Create fault with reporting source for entity
+  storage_->report_fault_event("ENTITY_FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                               "Fault from entity", "/powertrain/motor", clock.now());
+
+  // Create another fault with different reporting source
+  storage_->report_fault_event("ENTITY_FAULT_2", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
+                               "Fault from other entity", "/chassis/brake", clock.now());
+
+  // Store rosbags for both faults
+  RosbagFileInfo info1;
+  info1.bulk_data_id = "entity-uuid-1";
+  info1.fault_code = "ENTITY_FAULT_1";
+  info1.file_path = "/tmp/entity1.mcap";
+  info1.format = "mcap";
+  info1.duration_sec = 5.0;
+  info1.size_bytes = 1024;
+  info1.created_at_ns = clock.now().nanoseconds();
+  storage_->store_rosbag_file(info1);
+
+  RosbagFileInfo info2;
+  info2.bulk_data_id = "entity-uuid-2";
+  info2.fault_code = "ENTITY_FAULT_2";
+  info2.file_path = "/tmp/entity2.mcap";
+  info2.format = "mcap";
+  info2.duration_sec = 3.0;
+  info2.size_bytes = 512;
+  info2.created_at_ns = clock.now().nanoseconds();
+  storage_->store_rosbag_file(info2);
+
+  // Get rosbags for motor entity
+  auto rosbags = storage_->get_rosbags_for_entity("/powertrain/motor");
+  ASSERT_EQ(rosbags.size(), 1u);
+  EXPECT_EQ(rosbags[0].bulk_data_id, "entity-uuid-1");
+
+  // Get rosbags for brake entity
+  auto brake_rosbags = storage_->get_rosbags_for_entity("/chassis/brake");
+  ASSERT_EQ(brake_rosbags.size(), 1u);
+  EXPECT_EQ(brake_rosbags[0].bulk_data_id, "entity-uuid-2");
+
+  // Get rosbags for unknown entity
+  auto unknown_rosbags = storage_->get_rosbags_for_entity("/unknown/entity");
+  EXPECT_TRUE(unknown_rosbags.empty());
+}
+
+// @verifies REQ_INTEROP_073
+TEST_F(SqliteFaultStorageTest, GetAllRosbagFilesIncludesBulkDataId) {
+  using ros2_medkit_fault_manager::RosbagFileInfo;
+
+  RosbagFileInfo info1;
+  info1.bulk_data_id = "bulk-uuid-1";
+  info1.fault_code = "FAULT_A";
+  info1.file_path = "/tmp/a.mcap";
+  info1.format = "mcap";
+  info1.duration_sec = 1.0;
+  info1.size_bytes = 100;
+  info1.created_at_ns = 1000;
+  storage_->store_rosbag_file(info1);
+
+  RosbagFileInfo info2;
+  info2.bulk_data_id = "bulk-uuid-2";
+  info2.fault_code = "FAULT_B";
+  info2.file_path = "/tmp/b.mcap";
+  info2.format = "mcap";
+  info2.duration_sec = 2.0;
+  info2.size_bytes = 200;
+  info2.created_at_ns = 2000;
+  storage_->store_rosbag_file(info2);
+
+  auto all_rosbags = storage_->get_all_rosbag_files();
+  ASSERT_EQ(all_rosbags.size(), 2u);
+
+  // Should be sorted by created_at_ns (oldest first)
+  EXPECT_EQ(all_rosbags[0].bulk_data_id, "bulk-uuid-1");
+  EXPECT_EQ(all_rosbags[1].bulk_data_id, "bulk-uuid-2");
 }
 
 int main(int argc, char ** argv) {

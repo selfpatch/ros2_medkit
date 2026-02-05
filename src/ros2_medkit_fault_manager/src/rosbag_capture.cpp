@@ -209,6 +209,7 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
     size_t bag_size = calculate_bag_size(bag_path);
 
     RosbagFileInfo info;
+    info.bulk_data_id = FaultStorage::generate_uuid();
     info.fault_code = fault_code;
     info.file_path = bag_path;
     info.format = config_.format;
@@ -649,6 +650,7 @@ void RosbagCapture::post_fault_timer_callback() {
   size_t bag_size = calculate_bag_size(current_bag_path_);
 
   RosbagFileInfo info;
+  info.bulk_data_id = FaultStorage::generate_uuid();
   info.fault_code = current_fault_code_;
   info.file_path = current_bag_path_;
   info.format = config_.format;

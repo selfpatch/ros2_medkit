@@ -192,6 +192,7 @@ void SqliteFaultStorage::initialize_schema() {
   const char * create_rosbag_files_table_sql = R"(
     CREATE TABLE IF NOT EXISTS rosbag_files (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bulk_data_id TEXT NOT NULL UNIQUE,
       fault_code TEXT NOT NULL UNIQUE,
       file_path TEXT NOT NULL,
       format TEXT NOT NULL,
@@ -200,6 +201,7 @@ void SqliteFaultStorage::initialize_schema() {
       created_at_ns INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_rosbag_files_fault_code ON rosbag_files(fault_code);
+    CREATE INDEX IF NOT EXISTS idx_rosbag_files_bulk_data_id ON rosbag_files(bulk_data_id);
     CREATE INDEX IF NOT EXISTS idx_rosbag_files_created_at ON rosbag_files(created_at_ns);
   )";
 
@@ -207,6 +209,48 @@ void SqliteFaultStorage::initialize_schema() {
     std::string error = err_msg ? err_msg : "Unknown error";
     sqlite3_free(err_msg);
     throw std::runtime_error("Failed to create rosbag_files table: " + error);
+  }
+
+  // Migration: Add bulk_data_id column if it doesn't exist (for existing databases)
+  // Check if bulk_data_id column exists
+  bool has_bulk_data_id = false;
+  SqliteStatement check_stmt(db_, "PRAGMA table_info(rosbag_files)");
+  while (check_stmt.step() == SQLITE_ROW) {
+    std::string col_name = check_stmt.column_text(1);
+    if (col_name == "bulk_data_id") {
+      has_bulk_data_id = true;
+      break;
+    }
+  }
+
+  if (!has_bulk_data_id) {
+    // Add column and populate with UUIDs
+    const char * add_column_sql = "ALTER TABLE rosbag_files ADD COLUMN bulk_data_id TEXT";
+    if (sqlite3_exec(db_, add_column_sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
+      std::string error = err_msg ? err_msg : "Unknown error";
+      sqlite3_free(err_msg);
+      RCUTILS_LOG_WARN_NAMED("SqliteFaultStorage", "Failed to add bulk_data_id column: %s", error.c_str());
+    } else {
+      // Generate UUIDs for existing rows
+      SqliteStatement select_stmt(db_, "SELECT fault_code FROM rosbag_files WHERE bulk_data_id IS NULL");
+      std::vector<std::string> fault_codes;
+      while (select_stmt.step() == SQLITE_ROW) {
+        fault_codes.push_back(select_stmt.column_text(0));
+      }
+
+      for (const auto & fc : fault_codes) {
+        std::string uuid = FaultStorage::generate_uuid();
+        SqliteStatement update_stmt(db_, "UPDATE rosbag_files SET bulk_data_id = ? WHERE fault_code = ?");
+        update_stmt.bind_text(1, uuid);
+        update_stmt.bind_text(2, fc);
+        update_stmt.step();
+      }
+
+      // Create index for bulk_data_id
+      const char * create_idx_sql =
+          "CREATE INDEX IF NOT EXISTS idx_rosbag_files_bulk_data_id ON rosbag_files(bulk_data_id)";
+      sqlite3_exec(db_, create_idx_sql, nullptr, nullptr, nullptr);
+    }
   }
 }
 
@@ -757,18 +801,19 @@ void SqliteFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
   // Use INSERT OR REPLACE to handle updates (fault_code is UNIQUE)
   SqliteStatement stmt(db_,
                        "INSERT OR REPLACE INTO rosbag_files "
-                       "(fault_code, file_path, format, duration_sec, size_bytes, created_at_ns) "
-                       "VALUES (?, ?, ?, ?, ?, ?)");
+                       "(bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns) "
+                       "VALUES (?, ?, ?, ?, ?, ?, ?)");
 
-  stmt.bind_text(1, info.fault_code);
-  stmt.bind_text(2, info.file_path);
-  stmt.bind_text(3, info.format);
+  stmt.bind_text(1, info.bulk_data_id);
+  stmt.bind_text(2, info.fault_code);
+  stmt.bind_text(3, info.file_path);
+  stmt.bind_text(4, info.format);
   // Bind duration_sec as a double using sqlite3_bind_double directly
-  if (sqlite3_bind_double(stmt.get(), 4, info.duration_sec) != SQLITE_OK) {
+  if (sqlite3_bind_double(stmt.get(), 5, info.duration_sec) != SQLITE_OK) {
     throw std::runtime_error(std::string("Failed to bind duration_sec: ") + sqlite3_errmsg(db_));
   }
-  stmt.bind_int64(5, static_cast<int64_t>(info.size_bytes));
-  stmt.bind_int64(6, info.created_at_ns);
+  stmt.bind_int64(6, static_cast<int64_t>(info.size_bytes));
+  stmt.bind_int64(7, info.created_at_ns);
 
   if (stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to store rosbag file: ") + sqlite3_errmsg(db_));
@@ -779,7 +824,7 @@ std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(const std::str
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_,
-                       "SELECT fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
+                       "SELECT bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
                        "FROM rosbag_files WHERE fault_code = ?");
   stmt.bind_text(1, fault_code);
 
@@ -788,12 +833,13 @@ std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(const std::str
   }
 
   RosbagFileInfo info;
-  info.fault_code = stmt.column_text(0);
-  info.file_path = stmt.column_text(1);
-  info.format = stmt.column_text(2);
-  info.duration_sec = sqlite3_column_double(stmt.get(), 3);
-  info.size_bytes = static_cast<size_t>(stmt.column_int64(4));
-  info.created_at_ns = stmt.column_int64(5);
+  info.bulk_data_id = stmt.column_text(0);
+  info.fault_code = stmt.column_text(1);
+  info.file_path = stmt.column_text(2);
+  info.format = stmt.column_text(3);
+  info.duration_sec = sqlite3_column_double(stmt.get(), 4);
+  info.size_bytes = static_cast<size_t>(stmt.column_int64(5));
+  info.created_at_ns = stmt.column_int64(6);
 
   return info;
 }
@@ -842,17 +888,83 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::get_all_rosbag_files() const {
   std::vector<RosbagFileInfo> result;
 
   SqliteStatement stmt(db_,
-                       "SELECT fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
+                       "SELECT bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
                        "FROM rosbag_files ORDER BY created_at_ns ASC");
 
   while (stmt.step() == SQLITE_ROW) {
     RosbagFileInfo info;
-    info.fault_code = stmt.column_text(0);
-    info.file_path = stmt.column_text(1);
-    info.format = stmt.column_text(2);
-    info.duration_sec = sqlite3_column_double(stmt.get(), 3);
-    info.size_bytes = static_cast<size_t>(stmt.column_int64(4));
-    info.created_at_ns = stmt.column_int64(5);
+    info.bulk_data_id = stmt.column_text(0);
+    info.fault_code = stmt.column_text(1);
+    info.file_path = stmt.column_text(2);
+    info.format = stmt.column_text(3);
+    info.duration_sec = sqlite3_column_double(stmt.get(), 4);
+    info.size_bytes = static_cast<size_t>(stmt.column_int64(5));
+    info.created_at_ns = stmt.column_int64(6);
+    result.push_back(info);
+  }
+
+  return result;
+}
+
+std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_by_id(const std::string & bulk_data_id) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  SqliteStatement stmt(db_,
+                       "SELECT bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
+                       "FROM rosbag_files WHERE bulk_data_id = ?");
+  stmt.bind_text(1, bulk_data_id);
+
+  if (stmt.step() != SQLITE_ROW) {
+    return std::nullopt;
+  }
+
+  RosbagFileInfo info;
+  info.bulk_data_id = stmt.column_text(0);
+  info.fault_code = stmt.column_text(1);
+  info.file_path = stmt.column_text(2);
+  info.format = stmt.column_text(3);
+  info.duration_sec = sqlite3_column_double(stmt.get(), 4);
+  info.size_bytes = static_cast<size_t>(stmt.column_int64(5));
+  info.created_at_ns = stmt.column_int64(6);
+
+  return info;
+}
+
+std::string SqliteFaultStorage::get_rosbag_path(const std::string & bulk_data_id) const {
+  auto rosbag = get_rosbag_by_id(bulk_data_id);
+  if (rosbag) {
+    return rosbag->file_path;
+  }
+  return "";
+}
+
+std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbags_for_entity(const std::string & entity_fqn) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  std::vector<RosbagFileInfo> result;
+
+  // Join rosbag_files with faults table and filter by reporting_sources containing entity_fqn
+  // reporting_sources is stored as JSON array
+  SqliteStatement stmt(
+      db_,
+      "SELECT r.bulk_data_id, r.fault_code, r.file_path, r.format, r.duration_sec, r.size_bytes, r.created_at_ns "
+      "FROM rosbag_files r "
+      "JOIN faults f ON r.fault_code = f.fault_code "
+      "WHERE f.reporting_sources LIKE ?");
+
+  // Use LIKE with wildcards for JSON array search
+  std::string pattern = "%\"" + entity_fqn + "\"%";
+  stmt.bind_text(1, pattern);
+
+  while (stmt.step() == SQLITE_ROW) {
+    RosbagFileInfo info;
+    info.bulk_data_id = stmt.column_text(0);
+    info.fault_code = stmt.column_text(1);
+    info.file_path = stmt.column_text(2);
+    info.format = stmt.column_text(3);
+    info.duration_sec = sqlite3_column_double(stmt.get(), 4);
+    info.size_bytes = static_cast<size_t>(stmt.column_int64(5));
+    info.created_at_ns = stmt.column_int64(6);
     result.push_back(info);
   }
 

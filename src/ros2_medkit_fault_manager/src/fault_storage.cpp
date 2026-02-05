@@ -16,8 +16,30 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <iomanip>
+#include <random>
+#include <sstream>
 
 namespace ros2_medkit_fault_manager {
+
+std::string FaultStorage::generate_uuid() {
+  static std::random_device rd;
+  static std::mt19937 gen(rd());
+  static std::uniform_int_distribution<uint32_t> dis;
+
+  std::stringstream ss;
+  ss << std::hex << std::setfill('0');
+
+  // xxxxxxxx-xxxx-4xxx-Nxxx-xxxxxxxxxxxx (UUID v4 format)
+  ss << std::setw(8) << dis(gen) << '-';
+  ss << std::setw(4) << (dis(gen) & 0xFFFF) << '-';
+  ss << std::setw(4) << ((dis(gen) & 0x0FFF) | 0x4000) << '-';  // Version 4
+  ss << std::setw(4) << ((dis(gen) & 0x3FFF) | 0x8000) << '-';  // Variant 1
+  ss << std::setw(8) << dis(gen);
+  ss << std::setw(4) << (dis(gen) & 0xFFFF);
+
+  return ss.str();
+}
 
 ros2_medkit_msgs::msg::Fault FaultState::to_msg() const {
   ros2_medkit_msgs::msg::Fault msg;
@@ -315,13 +337,21 @@ void InMemoryFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
 
   // Delete existing bag file if present (prevent orphaned files on re-confirm)
   auto it = rosbag_files_.find(info.fault_code);
-  if (it != rosbag_files_.end() && it->second.file_path != info.file_path) {
-    std::error_code ec;
-    std::filesystem::remove_all(it->second.file_path, ec);
-    // Ignore errors - file may already be deleted
+  if (it != rosbag_files_.end()) {
+    // Remove old entry from UUID index
+    rosbag_by_id_.erase(it->second.bulk_data_id);
+    if (it->second.file_path != info.file_path) {
+      std::error_code ec;
+      std::filesystem::remove_all(it->second.file_path, ec);
+      // Ignore errors - file may already be deleted
+    }
   }
 
   rosbag_files_[info.fault_code] = info;
+  // Update UUID index
+  if (!info.bulk_data_id.empty()) {
+    rosbag_by_id_[info.bulk_data_id] = info.fault_code;
+  }
 }
 
 std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(const std::string & fault_code) const {
@@ -341,6 +371,9 @@ bool InMemoryFaultStorage::delete_rosbag_file(const std::string & fault_code) {
   if (it == rosbag_files_.end()) {
     return false;
   }
+
+  // Remove from UUID index
+  rosbag_by_id_.erase(it->second.bulk_data_id);
 
   // Try to delete the actual file
   std::error_code ec;
@@ -374,6 +407,49 @@ std::vector<RosbagFileInfo> InMemoryFaultStorage::get_all_rosbag_files() const {
   std::sort(result.begin(), result.end(), [](const RosbagFileInfo & a, const RosbagFileInfo & b) {
     return a.created_at_ns < b.created_at_ns;
   });
+
+  return result;
+}
+
+std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_by_id(const std::string & bulk_data_id) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  auto it = rosbag_by_id_.find(bulk_data_id);
+  if (it == rosbag_by_id_.end()) {
+    return std::nullopt;
+  }
+
+  auto rosbag_it = rosbag_files_.find(it->second);
+  if (rosbag_it == rosbag_files_.end()) {
+    return std::nullopt;
+  }
+
+  return rosbag_it->second;
+}
+
+std::string InMemoryFaultStorage::get_rosbag_path(const std::string & bulk_data_id) const {
+  auto rosbag = get_rosbag_by_id(bulk_data_id);
+  if (rosbag) {
+    return rosbag->file_path;
+  }
+  return "";
+}
+
+std::vector<RosbagFileInfo> InMemoryFaultStorage::get_rosbags_for_entity(const std::string & entity_fqn) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  std::vector<RosbagFileInfo> result;
+
+  for (const auto & [fault_code, rosbag_info] : rosbag_files_) {
+    // Check if any of the fault's reporting sources contain this entity
+    auto fault_it = faults_.find(fault_code);
+    if (fault_it != faults_.end()) {
+      const auto & fault_state = fault_it->second;
+      if (fault_state.reporting_sources.find(entity_fqn) != fault_state.reporting_sources.end()) {
+        result.push_back(rosbag_info);
+      }
+    }
+  }
 
   return result;
 }
