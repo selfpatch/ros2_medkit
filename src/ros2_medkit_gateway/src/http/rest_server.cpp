@@ -60,6 +60,7 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
   auth_handlers_ = std::make_unique<handlers::AuthHandlers>(*handler_ctx_);
   sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_);
+  bulkdata_handlers_ = std::make_unique<handlers::BulkDataHandlers>(*handler_ctx_);
 
   // Set up global error handlers for SOVD GenericError compliance
   setup_global_error_handlers();
@@ -777,6 +778,89 @@ void RESTServer::setup_routes() {
   srv->Get((api_path("/apps") + R"(/([^/]+)/faults/([^/]+)/snapshots$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              fault_handlers_->handle_get_component_snapshots(req, res);
+           });
+
+  // === Bulk Data Routes (REQ_INTEROP_071-073) ===
+  // List bulk-data categories
+  srv->Get((api_path("/apps") + R"(/([^/]+)/bulk-data$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_categories(req, res);
+           });
+  srv->Get((api_path("/components") + R"(/([^/]+)/bulk-data$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_categories(req, res);
+           });
+  srv->Get((api_path("/areas") + R"(/([^/]+)/bulk-data$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_categories(req, res);
+           });
+  srv->Get((api_path("/functions") + R"(/([^/]+)/bulk-data$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_categories(req, res);
+           });
+
+  // List bulk-data descriptors (by category)
+  srv->Get((api_path("/apps") + R"(/([^/]+)/bulk-data/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_descriptors(req, res);
+           });
+  srv->Get((api_path("/components") + R"(/([^/]+)/bulk-data/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_descriptors(req, res);
+           });
+  srv->Get((api_path("/areas") + R"(/([^/]+)/bulk-data/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_descriptors(req, res);
+           });
+  srv->Get((api_path("/functions") + R"(/([^/]+)/bulk-data/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_descriptors(req, res);
+           });
+
+  // Download bulk-data file
+  srv->Get((api_path("/apps") + R"(/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_download(req, res);
+           });
+  srv->Get((api_path("/components") + R"(/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_download(req, res);
+           });
+  srv->Get((api_path("/areas") + R"(/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_download(req, res);
+           });
+  srv->Get((api_path("/functions") + R"(/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_download(req, res);
+           });
+
+  // Nested entities - subareas
+  srv->Get((api_path("/areas") + R"(/([^/]+)/subareas/([^/]+)/bulk-data$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_categories(req, res);
+           });
+  srv->Get((api_path("/areas") + R"(/([^/]+)/subareas/([^/]+)/bulk-data/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_descriptors(req, res);
+           });
+  srv->Get((api_path("/areas") + R"(/([^/]+)/subareas/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_download(req, res);
+           });
+
+  // Nested entities - subcomponents
+  srv->Get((api_path("/components") + R"(/([^/]+)/subcomponents/([^/]+)/bulk-data$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_categories(req, res);
+           });
+  srv->Get((api_path("/components") + R"(/([^/]+)/subcomponents/([^/]+)/bulk-data/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_list_descriptors(req, res);
+           });
+  srv->Get((api_path("/components") + R"(/([^/]+)/subcomponents/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             bulkdata_handlers_->handle_download(req, res);
            });
 
   // Authentication endpoints (REQ_INTEROP_086, REQ_INTEROP_087)

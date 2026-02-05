@@ -142,6 +142,7 @@ add_library(gateway_lib STATIC
   src/http/handlers/operation_handlers.cpp
   src/http/handlers/config_handlers.cpp
   src/http/handlers/fault_handlers.cpp
+  src/http/handlers/bulkdata_handlers.cpp
   src/http/handlers/sse_fault_handler.cpp
   src/http/handlers/auth_handlers.cpp
   # HTTP utilities
@@ -327,6 +328,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fault_handlers test/test_fault_handlers.cpp)
   target_link_libraries(test_fault_handlers gateway_lib)
 
+  # Add bulk data handlers tests
+  ament_add_gtest(test_bulkdata_handlers test/test_bulkdata_handlers.cpp)
+  target_link_libraries(test_bulkdata_handlers gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
@@ -361,6 +366,10 @@ if(BUILD_TESTING)
     target_link_options(test_data_access_manager PRIVATE --coverage)
     target_compile_options(test_entity_path_utils PRIVATE --coverage -O0 -g)
     target_link_options(test_entity_path_utils PRIVATE --coverage)
+    target_compile_options(test_fault_handlers PRIVATE --coverage -O0 -g)
+    target_link_options(test_fault_handlers PRIVATE --coverage)
+    target_compile_options(test_bulkdata_handlers PRIVATE --coverage -O0 -g)
+    target_link_options(test_bulkdata_handlers PRIVATE --coverage)
   endif()
 
   # Integration testing
