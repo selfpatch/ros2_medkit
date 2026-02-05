@@ -15,9 +15,9 @@ Faults
 
    The endpoint shall return detailed information for the addressed diagnostic fault code,
    including environment data captured at fault confirmation.
-   
+
    Response includes:
-   
+
    - ``item``: Fault details with SOVD-compliant ``status`` object (aggregatedStatus, testFailed, confirmedDTC, pendingDTC)
    - ``environment_data``: Extended data records (timestamps) and snapshots array
    - ``environment_data.snapshots[]``: Array of freeze_frame (topic data) and rosbag (bulk-data reference) entries

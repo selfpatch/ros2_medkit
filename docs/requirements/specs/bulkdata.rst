@@ -7,7 +7,7 @@ BulkData
    :tags: BulkData, SOVD
 
    The endpoint shall provide an overview of bulk-data categories supported by the addressed entity.
-   
+
    Gateway supports all entity types: apps, components, areas, functions, and nested entities.
    Currently implemented category: ``rosbags``.
 
@@ -17,7 +17,7 @@ BulkData
    :tags: BulkData, SOVD
 
    The endpoint shall list all bulk-data items available in the addressed bulk-data category on the entity.
-   
+
    Returns BulkDataDescriptor array with id, name, mimetype, size, creation_date fields.
    Includes ``x-medkit`` extensions with fault_code, duration_sec, format.
 
@@ -27,7 +27,7 @@ BulkData
    :tags: BulkData, SOVD
 
    The endpoint shall return the content of the addressed bulk-data item or its access information (e.g. download location).
-   
+
    Returns binary file content with appropriate Content-Type (application/x-mcap or application/x-sqlite3)
    and Content-Disposition headers for browser download.
 
