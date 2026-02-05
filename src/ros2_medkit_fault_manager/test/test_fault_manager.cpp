@@ -27,6 +27,7 @@
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
+#include "ros2_medkit_msgs/srv/list_faults_for_entity.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
 using ros2_medkit_fault_manager::DebounceConfig;
@@ -36,6 +37,7 @@ using ros2_medkit_msgs::msg::Fault;
 using ros2_medkit_msgs::msg::FaultEvent;
 using ros2_medkit_msgs::srv::ClearFault;
 using ros2_medkit_msgs::srv::GetFault;
+using ros2_medkit_msgs::srv::ListFaultsForEntity;
 using ros2_medkit_msgs::srv::ReportFault;
 
 class FaultStorageTest : public ::testing::Test {
@@ -603,6 +605,27 @@ TEST_F(FaultStorageTest, HealedFaultCanRecurWithFailedEvents) {
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
+TEST_F(FaultStorageTest, GetAllFaultsReturnsAllFaults) {
+  rclcpp::Clock clock;
+  auto timestamp = clock.now();
+
+  // Add faults with different statuses
+  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test 1", "/node1",
+                              timestamp);
+  storage_.report_fault_event("FAULT_2", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN, "Test 2", "/node2",
+                              timestamp);
+  storage_.report_fault_event("FAULT_3", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_INFO, "Test 3", "/node3",
+                              timestamp);
+
+  auto all_faults = storage_.get_all_faults();
+  EXPECT_EQ(all_faults.size(), 3u);
+}
+
+TEST_F(FaultStorageTest, GetAllFaultsReturnsEmptyForEmptyStorage) {
+  auto all_faults = storage_.get_all_faults();
+  EXPECT_TRUE(all_faults.empty());
+}
+
 // FaultManagerNode tests
 class FaultManagerNodeTest : public ::testing::Test {
  protected:
@@ -708,11 +731,14 @@ class FaultEventPublishingTest : public ::testing::Test {
     report_fault_client_ = test_node_->create_client<ReportFault>("/fault_manager/report_fault");
     clear_fault_client_ = test_node_->create_client<ClearFault>("/fault_manager/clear_fault");
     get_fault_client_ = test_node_->create_client<GetFault>("/fault_manager/get_fault");
+    list_faults_for_entity_client_ =
+        test_node_->create_client<ListFaultsForEntity>("/fault_manager/list_faults_for_entity");
 
     // Wait for services
     ASSERT_TRUE(report_fault_client_->wait_for_service(std::chrono::seconds(5)));
     ASSERT_TRUE(clear_fault_client_->wait_for_service(std::chrono::seconds(5)));
     ASSERT_TRUE(get_fault_client_->wait_for_service(std::chrono::seconds(5)));
+    ASSERT_TRUE(list_faults_for_entity_client_->wait_for_service(std::chrono::seconds(5)));
   }
 
   void TearDown() override {
@@ -720,6 +746,7 @@ class FaultEventPublishingTest : public ::testing::Test {
     report_fault_client_.reset();
     clear_fault_client_.reset();
     get_fault_client_.reset();
+    list_faults_for_entity_client_.reset();
     test_node_.reset();
     fault_manager_.reset();
     received_events_.clear();
@@ -774,12 +801,25 @@ class FaultEventPublishingTest : public ::testing::Test {
     return *future.get();
   }
 
+  std::optional<ListFaultsForEntity::Response> call_list_faults_for_entity(const std::string & entity_id) {
+    auto request = std::make_shared<ListFaultsForEntity::Request>();
+    request->entity_id = entity_id;
+
+    auto future = list_faults_for_entity_client_->async_send_request(request);
+    spin_for(std::chrono::milliseconds(100));
+    if (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      return std::nullopt;
+    }
+    return *future.get();
+  }
+
   std::shared_ptr<FaultManagerNode> fault_manager_;
   std::shared_ptr<rclcpp::Node> test_node_;
   rclcpp::Subscription<FaultEvent>::SharedPtr event_subscription_;
   rclcpp::Client<ReportFault>::SharedPtr report_fault_client_;
   rclcpp::Client<ClearFault>::SharedPtr clear_fault_client_;
   rclcpp::Client<GetFault>::SharedPtr get_fault_client_;
+  rclcpp::Client<ListFaultsForEntity>::SharedPtr list_faults_for_entity_client_;
   std::vector<FaultEvent> received_events_;
 };
 
@@ -962,6 +1002,85 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsExtendedDataRecords) {
   const auto & edr = response->environment_data.extended_data_records;
   EXPECT_NE(edr.first_occurence_ns, 0);
   EXPECT_NE(edr.last_occurence_ns, 0);
+}
+
+// @verifies REQ_INTEROP_071
+TEST_F(FaultEventPublishingTest, ListFaultsForEntitySuccess) {
+  // Report faults from different sources
+  ASSERT_TRUE(call_report_fault("MOTOR_FAULT", Fault::SEVERITY_ERROR, "/powertrain/motor_controller"));
+  ASSERT_TRUE(call_report_fault("SENSOR_FAULT", Fault::SEVERITY_WARN, "/powertrain/motor_controller"));
+  ASSERT_TRUE(call_report_fault("BRAKE_FAULT", Fault::SEVERITY_ERROR, "/chassis/brake_system"));
+  spin_for(std::chrono::milliseconds(100));
+
+  // Query faults for motor_controller entity
+  auto response = call_list_faults_for_entity("motor_controller");
+  ASSERT_TRUE(response.has_value());
+  EXPECT_TRUE(response->success);
+  EXPECT_EQ(response->faults.size(), 2u);
+
+  // Verify the returned faults are from motor_controller
+  std::set<std::string> codes;
+  for (const auto & fault : response->faults) {
+    codes.insert(fault.fault_code);
+  }
+  EXPECT_TRUE(codes.count("MOTOR_FAULT"));
+  EXPECT_TRUE(codes.count("SENSOR_FAULT"));
+  EXPECT_FALSE(codes.count("BRAKE_FAULT"));
+}
+
+// @verifies REQ_INTEROP_071
+TEST_F(FaultEventPublishingTest, ListFaultsForEntityEmptyResult) {
+  // Report faults from a different entity
+  ASSERT_TRUE(call_report_fault("SOME_FAULT", Fault::SEVERITY_ERROR, "/some/other_entity"));
+  spin_for(std::chrono::milliseconds(100));
+
+  // Query faults for non-existent entity
+  auto response = call_list_faults_for_entity("motor_controller");
+  ASSERT_TRUE(response.has_value());
+  EXPECT_TRUE(response->success);
+  EXPECT_TRUE(response->faults.empty());
+}
+
+// @verifies REQ_INTEROP_071
+TEST_F(FaultEventPublishingTest, ListFaultsForEntityWithEmptyId) {
+  auto response = call_list_faults_for_entity("");
+  ASSERT_TRUE(response.has_value());
+  EXPECT_FALSE(response->success);
+  EXPECT_FALSE(response->error_message.empty());
+}
+
+// matches_entity helper tests
+TEST(MatchesEntityTest, ExactMatch) {
+  std::vector<std::string> sources = {"motor_controller"};
+  EXPECT_TRUE(FaultManagerNode::matches_entity(sources, "motor_controller"));
+  EXPECT_FALSE(FaultManagerNode::matches_entity(sources, "other"));
+}
+
+TEST(MatchesEntityTest, FQNSuffixMatch) {
+  std::vector<std::string> sources = {"/powertrain/motor_controller"};
+  EXPECT_TRUE(FaultManagerNode::matches_entity(sources, "motor_controller"));
+  EXPECT_FALSE(FaultManagerNode::matches_entity(sources, "powertrain"));
+  EXPECT_FALSE(FaultManagerNode::matches_entity(sources, "controller"));  // Partial - not a suffix
+}
+
+TEST(MatchesEntityTest, HierarchicalMatch) {
+  std::vector<std::string> sources = {"/perception/lidar/front_sensor"};
+  EXPECT_TRUE(FaultManagerNode::matches_entity(sources, "front_sensor"));
+  EXPECT_FALSE(FaultManagerNode::matches_entity(sources, "lidar"));
+  EXPECT_FALSE(FaultManagerNode::matches_entity(sources, "perception"));  // Root only
+}
+
+TEST(MatchesEntityTest, MultipleSources) {
+  std::vector<std::string> sources = {"/chassis/brake_system", "/powertrain/motor_controller", "/sensor/temperature"};
+  EXPECT_TRUE(FaultManagerNode::matches_entity(sources, "brake_system"));
+  EXPECT_TRUE(FaultManagerNode::matches_entity(sources, "motor_controller"));
+  EXPECT_TRUE(FaultManagerNode::matches_entity(sources, "temperature"));
+  EXPECT_FALSE(FaultManagerNode::matches_entity(sources, "unknown"));
+}
+
+TEST(MatchesEntityTest, EmptySources) {
+  std::vector<std::string> sources;
+  EXPECT_FALSE(FaultManagerNode::matches_entity(sources, "motor_controller"));
 }
 
 int main(int argc, char ** argv) {

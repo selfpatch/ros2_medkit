@@ -28,6 +28,7 @@
 #include "ros2_medkit_msgs/srv/get_faults.hpp"
 #include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
+#include "ros2_medkit_msgs/srv/list_faults_for_entity.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
 namespace ros2_medkit_fault_manager {
@@ -54,6 +55,12 @@ class FaultManagerNode : public rclcpp::Node {
   const std::string & get_storage_type() const {
     return storage_type_;
   }
+
+  /// Check if entity matches any reporting source
+  /// @param reporting_sources List of reporting sources from fault
+  /// @param entity_id Entity ID to match (exact match or as suffix of FQN)
+  /// @return true if entity_id matches any source
+  static bool matches_entity(const std::vector<std::string> & reporting_sources, const std::string & entity_id);
 
  private:
   /// Create storage backend based on configuration
@@ -82,6 +89,11 @@ class FaultManagerNode : public rclcpp::Node {
   /// Handle GetRosbag service request
   void handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
                          const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response);
+
+  /// Handle ListFaultsForEntity service request
+  void
+  handle_list_faults_for_entity(const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
+                                const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response);
 
   /// Create snapshot configuration from parameters
   SnapshotConfig create_snapshot_config();
@@ -122,6 +134,7 @@ class FaultManagerNode : public rclcpp::Node {
   rclcpp::Service<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetSnapshots>::SharedPtr get_snapshots_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetRosbag>::SharedPtr get_rosbag_srv_;
+  rclcpp::Service<ros2_medkit_msgs::srv::ListFaultsForEntity>::SharedPtr list_faults_for_entity_srv_;
   rclcpp::TimerBase::SharedPtr auto_confirm_timer_;
 
   /// Timer for periodic cleanup of expired correlation data

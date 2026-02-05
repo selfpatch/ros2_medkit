@@ -73,6 +73,7 @@ class SqliteFaultStorage : public FaultStorage {
   std::optional<RosbagFileInfo> get_rosbag_by_id(const std::string & bulk_data_id) const override;
   std::string get_rosbag_path(const std::string & bulk_data_id) const override;
   std::vector<RosbagFileInfo> get_rosbags_for_entity(const std::string & entity_fqn) const override;
+  std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
 
   /// Get the database path
   const std::string & db_path() const {

@@ -454,4 +454,17 @@ std::vector<RosbagFileInfo> InMemoryFaultStorage::get_rosbags_for_entity(const s
   return result;
 }
 
+std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_all_faults() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  std::vector<ros2_medkit_msgs::msg::Fault> result;
+  result.reserve(faults_.size());
+
+  for (const auto & [code, state] : faults_) {
+    result.push_back(state.to_msg());
+  }
+
+  return result;
+}
+
 }  // namespace ros2_medkit_fault_manager
