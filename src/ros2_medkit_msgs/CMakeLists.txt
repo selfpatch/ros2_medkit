@@ -28,11 +28,16 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FaultEvent.msg"
   "msg/MutedFaultInfo.msg"
   "msg/ClusterInfo.msg"
+  "msg/ExtendedDataRecords.msg"
+  "msg/Snapshot.msg"
+  "msg/EnvironmentData.msg"
   "srv/ReportFault.srv"
   "srv/GetFaults.srv"
+  "srv/GetFault.srv"
   "srv/ClearFault.srv"
   "srv/GetSnapshots.srv"
   "srv/GetRosbag.srv"
+  "srv/ListFaultsForEntity.srv"
   DEPENDENCIES builtin_interfaces
 )
 
