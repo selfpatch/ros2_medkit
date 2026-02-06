@@ -31,22 +31,19 @@
 #include "ros2_medkit_msgs/srv/list_rosbags.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
-namespace ros2_medkit_gateway
-{
+namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
 
 /// Result of a fault operation
-struct FaultResult
-{
+struct FaultResult {
   bool success;
   json data;
   std::string error_message;
 };
 
 /// Result of get_fault operation with full message types
-struct FaultWithEnvResult
-{
+struct FaultWithEnvResult {
   bool success;
   std::string error_message;
   ros2_medkit_msgs::msg::Fault fault;
@@ -55,9 +52,8 @@ struct FaultWithEnvResult
 
 /// Manager for fault management operations
 /// Provides interface to the ros2_medkit_fault_manager services
-class FaultManager
-{
-public:
+class FaultManager {
+ public:
   explicit FaultManager(rclcpp::Node * node);
 
   /// Report a fault from a component
@@ -66,9 +62,8 @@ public:
   /// @param description Human-readable description
   /// @param source_id Component identifier (namespace path)
   /// @return FaultResult with success status
-  FaultResult report_fault(
-    const std::string & fault_code, uint8_t severity, const std::string & description,
-    const std::string & source_id);
+  FaultResult report_fault(const std::string & fault_code, uint8_t severity, const std::string & description,
+                           const std::string & source_id);
 
   /// Get all faults, optionally filtered by component
   /// @param source_id Optional component identifier to filter by (empty = all)
@@ -78,17 +73,15 @@ public:
   /// @param include_muted Include muted faults (correlation symptoms) in response
   /// @param include_clusters Include cluster info in response
   /// @return FaultResult with array of faults (and optionally muted_faults and clusters)
-  FaultResult list_faults(
-    const std::string & source_id = "", bool include_prefailed = true,
-    bool include_confirmed = true, bool include_cleared = false, bool include_muted = false,
-    bool include_clusters = false);
+  FaultResult list_faults(const std::string & source_id = "", bool include_prefailed = true,
+                          bool include_confirmed = true, bool include_cleared = false, bool include_muted = false,
+                          bool include_clusters = false);
 
   /// Get a specific fault by code with environment data
   /// @param fault_code Fault identifier
   /// @param source_id Optional component identifier to verify fault belongs to component
   /// @return FaultWithEnvResult with fault and environment_data, or error if not found
-  FaultWithEnvResult get_fault_with_env(
-    const std::string & fault_code, const std::string & source_id = "");
+  FaultWithEnvResult get_fault_with_env(const std::string & fault_code, const std::string & source_id = "");
 
   /// Get a specific fault by code (JSON result - legacy)
   /// @param fault_code Fault identifier
@@ -126,7 +119,7 @@ public:
   /// Convert Fault message to JSON (static utility for reuse by SSE handler)
   static json fault_to_json(const ros2_medkit_msgs::msg::Fault & fault);
 
-private:
+ private:
   /// Wait for services to become available
   bool wait_for_services(std::chrono::duration<double> timeout);
 

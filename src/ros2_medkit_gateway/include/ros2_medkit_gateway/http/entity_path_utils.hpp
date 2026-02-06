@@ -19,8 +19,7 @@
 
 #include "ros2_medkit_gateway/models/entity_types.hpp"
 
-namespace ros2_medkit_gateway
-{
+namespace ros2_medkit_gateway {
 
 /**
  * @brief Parsed entity path information from HTTP request URL
@@ -29,15 +28,13 @@ namespace ros2_medkit_gateway
  * supporting both top-level entities (apps, components, areas, functions) and
  * nested entities (subareas, subcomponents).
  */
-struct EntityPathInfo
-{
+struct EntityPathInfo {
   SovdEntityType type;        ///< APP, COMPONENT, AREA, FUNCTION, or UNKNOWN
   std::string entity_id;      ///< Entity identifier (e.g., "motor_controller")
   std::string resource_path;  ///< Remainder after entity (e.g., "/faults/MOTOR_ERR")
   std::string entity_path;    ///< Full entity path (e.g., "/apps/motor_controller")
-  std::string
-    parent_id;  ///< For nested entities: parent entity ID (e.g., "perception" for subarea)
-  bool is_nested{false};  ///< True if this is a nested entity (subarea/subcomponent)
+  std::string parent_id;      ///< For nested entities: parent entity ID (e.g., "perception" for subarea)
+  bool is_nested{false};      ///< True if this is a nested entity (subarea/subcomponent)
 };
 
 /**

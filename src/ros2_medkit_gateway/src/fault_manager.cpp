@@ -20,26 +20,17 @@
 
 using namespace std::chrono_literals;
 
-namespace ros2_medkit_gateway
-{
+namespace ros2_medkit_gateway {
 
-FaultManager::FaultManager(rclcpp::Node * node) : node_(node)
-{
+FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
   // Create service clients for fault_manager services
-  report_fault_client_ =
-    node_->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
-  get_fault_client_ =
-    node_->create_client<ros2_medkit_msgs::srv::GetFault>("/fault_manager/get_fault");
-  list_faults_client_ =
-    node_->create_client<ros2_medkit_msgs::srv::ListFaults>("/fault_manager/list_faults");
-  clear_fault_client_ =
-    node_->create_client<ros2_medkit_msgs::srv::ClearFault>("/fault_manager/clear_fault");
-  get_snapshots_client_ =
-    node_->create_client<ros2_medkit_msgs::srv::GetSnapshots>("/fault_manager/get_snapshots");
-  get_rosbag_client_ =
-    node_->create_client<ros2_medkit_msgs::srv::GetRosbag>("/fault_manager/get_rosbag");
-  list_rosbags_client_ =
-    node_->create_client<ros2_medkit_msgs::srv::ListRosbags>("/fault_manager/list_rosbags");
+  report_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
+  get_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::GetFault>("/fault_manager/get_fault");
+  list_faults_client_ = node_->create_client<ros2_medkit_msgs::srv::ListFaults>("/fault_manager/list_faults");
+  clear_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ClearFault>("/fault_manager/clear_fault");
+  get_snapshots_client_ = node_->create_client<ros2_medkit_msgs::srv::GetSnapshots>("/fault_manager/get_snapshots");
+  get_rosbag_client_ = node_->create_client<ros2_medkit_msgs::srv::GetRosbag>("/fault_manager/get_rosbag");
+  list_rosbags_client_ = node_->create_client<ros2_medkit_msgs::srv::ListRosbags>("/fault_manager/list_rosbags");
 
   // Get configurable timeout
   service_timeout_sec_ = node_->declare_parameter("fault_service_timeout_sec", 5.0);
@@ -47,16 +38,12 @@ FaultManager::FaultManager(rclcpp::Node * node) : node_(node)
   RCLCPP_INFO(node_->get_logger(), "FaultManager initialized");
 }
 
-bool FaultManager::wait_for_services(std::chrono::duration<double> timeout)
-{
-  return report_fault_client_->wait_for_service(timeout) &&
-         get_fault_client_->wait_for_service(timeout) &&
-         list_faults_client_->wait_for_service(timeout) &&
-         clear_fault_client_->wait_for_service(timeout);
+bool FaultManager::wait_for_services(std::chrono::duration<double> timeout) {
+  return report_fault_client_->wait_for_service(timeout) && get_fault_client_->wait_for_service(timeout) &&
+         list_faults_client_->wait_for_service(timeout) && clear_fault_client_->wait_for_service(timeout);
 }
 
-bool FaultManager::is_available() const
-{
+bool FaultManager::is_available() const {
   return report_fault_client_->service_is_ready() && get_fault_client_->service_is_ready() &&
          list_faults_client_->service_is_ready() && clear_fault_client_->service_is_ready();
 }
@@ -64,8 +51,7 @@ bool FaultManager::is_available() const
 /// Convert a ROS 2 Fault message to JSON for REST API responses.
 /// Timestamps are converted from builtin_interfaces::msg::Time (sec + nanosec) to seconds as double.
 /// A human-readable severity_label is added based on the severity level.
-json FaultManager::fault_to_json(const ros2_medkit_msgs::msg::Fault & fault)
-{
+json FaultManager::fault_to_json(const ros2_medkit_msgs::msg::Fault & fault) {
   // Convert ROS 2 Time to seconds as double
   auto to_seconds = [](const builtin_interfaces::msg::Time & t) {
     return t.sec + static_cast<double>(t.nanosec) / 1e9;
@@ -103,10 +89,8 @@ json FaultManager::fault_to_json(const ros2_medkit_msgs::msg::Fault & fault)
   return j;
 }
 
-FaultResult FaultManager::report_fault(
-  const std::string & fault_code, uint8_t severity, const std::string & description,
-  const std::string & source_id)
-{
+FaultResult FaultManager::report_fault(const std::string & fault_code, uint8_t severity,
+                                       const std::string & description, const std::string & source_id) {
   std::lock_guard<std::mutex> lock(report_mutex_);
   FaultResult result;
 
@@ -142,10 +126,8 @@ FaultResult FaultManager::report_fault(
   return result;
 }
 
-FaultResult FaultManager::list_faults(
-  const std::string & source_id, bool include_prefailed, bool include_confirmed,
-  bool include_cleared, bool include_muted, bool include_clusters)
-{
+FaultResult FaultManager::list_faults(const std::string & source_id, bool include_prefailed, bool include_confirmed,
+                                      bool include_cleared, bool include_muted, bool include_clusters) {
   std::lock_guard<std::mutex> lock(list_mutex_);
   FaultResult result;
 
@@ -217,11 +199,10 @@ FaultResult FaultManager::list_faults(
   if (include_muted && !response->muted_faults.empty()) {
     json muted_array = json::array();
     for (const auto & muted : response->muted_faults) {
-      muted_array.push_back(
-        {{"fault_code", muted.fault_code},
-         {"root_cause_code", muted.root_cause_code},
-         {"rule_id", muted.rule_id},
-         {"delay_ms", muted.delay_ms}});
+      muted_array.push_back({{"fault_code", muted.fault_code},
+                             {"root_cause_code", muted.root_cause_code},
+                             {"rule_id", muted.rule_id},
+                             {"delay_ms", muted.delay_ms}});
     }
     result.data["muted_faults"] = muted_array;
   }
@@ -233,17 +214,16 @@ FaultResult FaultManager::list_faults(
 
     json clusters_array = json::array();
     for (const auto & cluster : response->clusters) {
-      clusters_array.push_back(
-        {{"cluster_id", cluster.cluster_id},
-         {"rule_id", cluster.rule_id},
-         {"rule_name", cluster.rule_name},
-         {"label", cluster.label},
-         {"representative_code", cluster.representative_code},
-         {"representative_severity", cluster.representative_severity},
-         {"fault_codes", cluster.fault_codes},
-         {"count", cluster.count},
-         {"first_at", to_seconds(cluster.first_at)},
-         {"last_at", to_seconds(cluster.last_at)}});
+      clusters_array.push_back({{"cluster_id", cluster.cluster_id},
+                                {"rule_id", cluster.rule_id},
+                                {"rule_name", cluster.rule_name},
+                                {"label", cluster.label},
+                                {"representative_code", cluster.representative_code},
+                                {"representative_severity", cluster.representative_severity},
+                                {"fault_codes", cluster.fault_codes},
+                                {"count", cluster.count},
+                                {"first_at", to_seconds(cluster.first_at)},
+                                {"last_at", to_seconds(cluster.last_at)}});
     }
     result.data["clusters"] = clusters_array;
   }
@@ -251,9 +231,7 @@ FaultResult FaultManager::list_faults(
   return result;
 }
 
-FaultWithEnvResult FaultManager::get_fault_with_env(
-  const std::string & fault_code, const std::string & source_id)
-{
+FaultWithEnvResult FaultManager::get_fault_with_env(const std::string & fault_code, const std::string & source_id) {
   std::lock_guard<std::mutex> lock(get_mutex_);
   FaultWithEnvResult result;
 
@@ -305,8 +283,7 @@ FaultWithEnvResult FaultManager::get_fault_with_env(
   return result;
 }
 
-FaultResult FaultManager::get_fault(const std::string & fault_code, const std::string & source_id)
-{
+FaultResult FaultManager::get_fault(const std::string & fault_code, const std::string & source_id) {
   // Use get_fault_with_env and convert to JSON
   auto env_result = get_fault_with_env(fault_code, source_id);
 
@@ -321,8 +298,7 @@ FaultResult FaultManager::get_fault(const std::string & fault_code, const std::s
   return result;
 }
 
-FaultResult FaultManager::clear_fault(const std::string & fault_code)
-{
+FaultResult FaultManager::clear_fault(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(clear_mutex_);
   FaultResult result;
 
@@ -359,8 +335,7 @@ FaultResult FaultManager::clear_fault(const std::string & fault_code)
   return result;
 }
 
-FaultResult FaultManager::get_snapshots(const std::string & fault_code, const std::string & topic)
-{
+FaultResult FaultManager::get_snapshots(const std::string & fault_code, const std::string & topic) {
   std::lock_guard<std::mutex> lock(snapshots_mutex_);
   FaultResult result;
 
@@ -400,8 +375,7 @@ FaultResult FaultManager::get_snapshots(const std::string & fault_code, const st
   return result;
 }
 
-FaultResult FaultManager::get_rosbag(const std::string & fault_code)
-{
+FaultResult FaultManager::get_rosbag(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(rosbag_mutex_);
   FaultResult result;
 
@@ -427,11 +401,10 @@ FaultResult FaultManager::get_rosbag(const std::string & fault_code)
   result.success = response->success;
 
   if (response->success) {
-    result.data = {
-      {"file_path", response->file_path},
-      {"format", response->format},
-      {"duration_sec", response->duration_sec},
-      {"size_bytes", response->size_bytes}};
+    result.data = {{"file_path", response->file_path},
+                   {"format", response->format},
+                   {"duration_sec", response->duration_sec},
+                   {"size_bytes", response->size_bytes}};
   } else {
     result.error_message = response->error_message;
   }
@@ -439,8 +412,7 @@ FaultResult FaultManager::get_rosbag(const std::string & fault_code)
   return result;
 }
 
-FaultResult FaultManager::list_rosbags(const std::string & entity_fqn)
-{
+FaultResult FaultManager::list_rosbags(const std::string & entity_fqn) {
   std::lock_guard<std::mutex> lock(list_rosbags_mutex_);
   FaultResult result;
 
@@ -468,12 +440,11 @@ FaultResult FaultManager::list_rosbags(const std::string & entity_fqn)
   if (response->success) {
     json rosbags = json::array();
     for (size_t i = 0; i < response->fault_codes.size(); ++i) {
-      rosbags.push_back(
-        {{"fault_code", response->fault_codes[i]},
-         {"file_path", response->file_paths[i]},
-         {"format", response->formats[i]},
-         {"duration_sec", response->durations_sec[i]},
-         {"size_bytes", response->sizes_bytes[i]}});
+      rosbags.push_back({{"fault_code", response->fault_codes[i]},
+                         {"file_path", response->file_paths[i]},
+                         {"format", response->formats[i]},
+                         {"duration_sec", response->durations_sec[i]},
+                         {"size_bytes", response->sizes_bytes[i]}});
     }
     result.data = {{"rosbags", rosbags}};
   } else {

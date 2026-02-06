@@ -29,12 +29,10 @@ using json = nlohmann::json;
 // HandlerContext static method tests (don't require GatewayNode)
 // =============================================================================
 
-TEST(HandlerContextStaticTest, SendErrorSetsStatusAndBody)
-{
+TEST(HandlerContextStaticTest, SendErrorSetsStatusAndBody) {
   httplib::Response res;
 
-  HandlerContext::send_error(
-    res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Test error message");
+  HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Test error message");
 
   EXPECT_EQ(res.status, 400);
   EXPECT_EQ(res.get_header_value("Content-Type"), "application/json");
@@ -44,13 +42,11 @@ TEST(HandlerContextStaticTest, SendErrorSetsStatusAndBody)
   EXPECT_EQ(body["message"], "Test error message");
 }
 
-TEST(HandlerContextStaticTest, SendErrorWithExtraFields)
-{
+TEST(HandlerContextStaticTest, SendErrorWithExtraFields) {
   httplib::Response res;
   json extra = {{"details", "More info"}, {"code", 42}};
 
-  HandlerContext::send_error(
-    res, httplib::StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Not found", extra);
+  HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Not found", extra);
 
   EXPECT_EQ(res.status, 404);
 
@@ -62,12 +58,10 @@ TEST(HandlerContextStaticTest, SendErrorWithExtraFields)
   EXPECT_EQ(body["parameters"]["code"], 42);
 }
 
-TEST(HandlerContextStaticTest, SendErrorInternalServerError)
-{
+TEST(HandlerContextStaticTest, SendErrorInternalServerError) {
   httplib::Response res;
 
-  HandlerContext::send_error(
-    res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Server error");
+  HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Server error");
 
   EXPECT_EQ(res.status, 500);
   auto body = json::parse(res.body);
@@ -75,8 +69,7 @@ TEST(HandlerContextStaticTest, SendErrorInternalServerError)
   EXPECT_EQ(body["message"], "Server error");
 }
 
-TEST(HandlerContextStaticTest, SendJsonSetsContentTypeAndBody)
-{
+TEST(HandlerContextStaticTest, SendJsonSetsContentTypeAndBody) {
   httplib::Response res;
   json data = {{"name", "test"}, {"value", 123}, {"items", {1, 2, 3}}};
 
@@ -90,8 +83,7 @@ TEST(HandlerContextStaticTest, SendJsonSetsContentTypeAndBody)
   EXPECT_EQ(body["items"].size(), 3);
 }
 
-TEST(HandlerContextStaticTest, SendJsonEmptyObject)
-{
+TEST(HandlerContextStaticTest, SendJsonEmptyObject) {
   httplib::Response res;
   json data = json::object();
 
@@ -102,8 +94,7 @@ TEST(HandlerContextStaticTest, SendJsonEmptyObject)
   EXPECT_EQ(body.size(), 0);
 }
 
-TEST(HandlerContextStaticTest, SendJsonArray)
-{
+TEST(HandlerContextStaticTest, SendJsonArray) {
   httplib::Response res;
   json data = json::array({1, 2, 3, 4, 5});
 
@@ -114,8 +105,7 @@ TEST(HandlerContextStaticTest, SendJsonArray)
   EXPECT_EQ(body.size(), 5);
 }
 
-TEST(HandlerContextStaticTest, LoggerReturnsValidLogger)
-{
+TEST(HandlerContextStaticTest, LoggerReturnsValidLogger) {
   auto logger = HandlerContext::logger();
   // Just verify it doesn't throw and returns a valid logger name
   EXPECT_NE(logger.get_name(), nullptr);
@@ -126,17 +116,15 @@ TEST(HandlerContextStaticTest, LoggerReturnsValidLogger)
 // HandlerContext instance tests with CorsConfig
 // =============================================================================
 
-class HandlerContextCorsTest : public ::testing::Test
-{
-protected:
-  void SetUp() override
-  {
+class HandlerContextCorsTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
     cors_config_ = CorsConfigBuilder()
-                     .with_origins({"http://localhost:3000", "http://example.com"})
-                     .with_methods({"GET", "POST", "PUT", "DELETE"})
-                     .with_headers({"Content-Type", "Authorization"})
-                     .with_credentials(true)
-                     .build();
+                       .with_origins({"http://localhost:3000", "http://example.com"})
+                       .with_methods({"GET", "POST", "PUT", "DELETE"})
+                       .with_headers({"Content-Type", "Authorization"})
+                       .with_credentials(true)
+                       .build();
   }
 
   CorsConfig cors_config_;
@@ -144,16 +132,14 @@ protected:
   TlsConfig tls_config_;    // Default (disabled)
 };
 
-TEST_F(HandlerContextCorsTest, IsOriginAllowedReturnsTrueForConfiguredOrigins)
-{
+TEST_F(HandlerContextCorsTest, IsOriginAllowedReturnsTrueForConfiguredOrigins) {
   HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
 
   EXPECT_TRUE(ctx.is_origin_allowed("http://localhost:3000"));
   EXPECT_TRUE(ctx.is_origin_allowed("http://example.com"));
 }
 
-TEST_F(HandlerContextCorsTest, IsOriginAllowedReturnsFalseForUnknownOrigins)
-{
+TEST_F(HandlerContextCorsTest, IsOriginAllowedReturnsFalseForUnknownOrigins) {
   HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
 
   EXPECT_FALSE(ctx.is_origin_allowed("http://malicious.com"));
@@ -161,14 +147,13 @@ TEST_F(HandlerContextCorsTest, IsOriginAllowedReturnsFalseForUnknownOrigins)
   EXPECT_FALSE(ctx.is_origin_allowed(""));
 }
 
-TEST_F(HandlerContextCorsTest, IsOriginAllowedWithWildcard)
-{
+TEST_F(HandlerContextCorsTest, IsOriginAllowedWithWildcard) {
   auto wildcard_config = CorsConfigBuilder()
-                           .with_origins({"*"})
-                           .with_methods({"GET"})
-                           .with_headers({"Content-Type"})
-                           .with_credentials(false)  // Must be false with wildcard
-                           .build();
+                             .with_origins({"*"})
+                             .with_methods({"GET"})
+                             .with_headers({"Content-Type"})
+                             .with_credentials(false)  // Must be false with wildcard
+                             .build();
 
   HandlerContext ctx(nullptr, wildcard_config, auth_config_, tls_config_, nullptr);
 
@@ -176,8 +161,7 @@ TEST_F(HandlerContextCorsTest, IsOriginAllowedWithWildcard)
   EXPECT_TRUE(ctx.is_origin_allowed("http://localhost:12345"));
 }
 
-TEST_F(HandlerContextCorsTest, SetCorsHeadersSetsAllHeaders)
-{
+TEST_F(HandlerContextCorsTest, SetCorsHeadersSetsAllHeaders) {
   HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
   httplib::Response res;
 
@@ -187,18 +171,16 @@ TEST_F(HandlerContextCorsTest, SetCorsHeadersSetsAllHeaders)
   EXPECT_EQ(res.get_header_value("Access-Control-Allow-Methods"), "GET, POST, PUT, DELETE");
   EXPECT_EQ(res.get_header_value("Access-Control-Allow-Headers"), "Content-Type, Authorization");
   EXPECT_EQ(res.get_header_value("Access-Control-Allow-Credentials"), "true");
-  EXPECT_EQ(
-    res.get_header_value("Access-Control-Expose-Headers"), "Content-Disposition, Content-Length");
+  EXPECT_EQ(res.get_header_value("Access-Control-Expose-Headers"), "Content-Disposition, Content-Length");
 }
 
-TEST_F(HandlerContextCorsTest, SetCorsHeadersWithoutCredentials)
-{
+TEST_F(HandlerContextCorsTest, SetCorsHeadersWithoutCredentials) {
   auto config = CorsConfigBuilder()
-                  .with_origins({"http://localhost:3000"})
-                  .with_methods({"GET"})
-                  .with_headers({"Content-Type"})
-                  .with_credentials(false)
-                  .build();
+                    .with_origins({"http://localhost:3000"})
+                    .with_methods({"GET"})
+                    .with_headers({"Content-Type"})
+                    .with_credentials(false)
+                    .build();
 
   HandlerContext ctx(nullptr, config, auth_config_, tls_config_, nullptr);
   httplib::Response res;
@@ -214,8 +196,7 @@ TEST_F(HandlerContextCorsTest, SetCorsHeadersWithoutCredentials)
 // Entity ID validation tests
 // =============================================================================
 
-TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsValidIds)
-{
+TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsValidIds) {
   HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
 
   EXPECT_TRUE(ctx.validate_entity_id("engine").has_value());
@@ -228,8 +209,7 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsValidIds)
   EXPECT_TRUE(ctx.validate_entity_id("X1").has_value());
 }
 
-TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsEmptyString)
-{
+TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsEmptyString) {
   HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
 
   auto result = ctx.validate_entity_id("");
@@ -237,8 +217,7 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsEmptyString)
   EXPECT_TRUE(result.error().find("empty") != std::string::npos);
 }
 
-TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsTooLongIds)
-{
+TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsTooLongIds) {
   HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
 
   // Create a string longer than 256 characters
@@ -249,8 +228,7 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsTooLongIds)
   EXPECT_TRUE(result.error().find("too long") != std::string::npos);
 }
 
-TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsForwardSlash)
-{
+TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsForwardSlash) {
   HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
 
   auto result = ctx.validate_entity_id("path/injection");
@@ -258,8 +236,7 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsForwardSlash)
   EXPECT_TRUE(result.error().find("invalid character") != std::string::npos);
 }
 
-TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsSpecialCharacters)
-{
+TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsSpecialCharacters) {
   HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
 
   // Test various invalid characters
@@ -275,8 +252,7 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsSpecialCharacters)
   EXPECT_FALSE(ctx.validate_entity_id("test\tvalue").has_value());  // Tab
 }
 
-TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsNonPrintableCharacters)
-{
+TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsNonPrintableCharacters) {
   HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
 
   // Test non-printable characters
@@ -290,8 +266,7 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsNonPrintableCharacters)
   EXPECT_TRUE(result.error().find("0x00") != std::string::npos);
 }
 
-TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsMaxLengthId)
-{
+TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsMaxLengthId) {
   HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
 
   // Create exactly 256 character string (max allowed)
@@ -305,15 +280,14 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsMaxLengthId)
 // CorsConfigBuilder tests
 // =============================================================================
 
-TEST(CorsConfigBuilderTest, BuildsValidConfig)
-{
+TEST(CorsConfigBuilderTest, BuildsValidConfig) {
   auto config = CorsConfigBuilder()
-                  .with_origins({"http://localhost:3000"})
-                  .with_methods({"GET", "POST"})
-                  .with_headers({"Content-Type"})
-                  .with_credentials(true)
-                  .with_max_age(3600)
-                  .build();
+                    .with_origins({"http://localhost:3000"})
+                    .with_methods({"GET", "POST"})
+                    .with_headers({"Content-Type"})
+                    .with_credentials(true)
+                    .with_max_age(3600)
+                    .build();
 
   EXPECT_TRUE(config.enabled);
   EXPECT_EQ(config.allowed_origins.size(), 1);
@@ -326,24 +300,18 @@ TEST(CorsConfigBuilderTest, BuildsValidConfig)
   EXPECT_EQ(config.headers_header, "Content-Type");
 }
 
-TEST(CorsConfigBuilderTest, EmptyOriginsDisablesCors)
-{
-  auto config = CorsConfigBuilder()
-                  .with_origins({})
-                  .with_methods({"GET"})
-                  .with_headers({"Content-Type"})
-                  .build();
+TEST(CorsConfigBuilderTest, EmptyOriginsDisablesCors) {
+  auto config = CorsConfigBuilder().with_origins({}).with_methods({"GET"}).with_headers({"Content-Type"}).build();
 
   EXPECT_FALSE(config.enabled);
 }
 
-TEST(CorsConfigBuilderTest, FiltersEmptyStringsFromOrigins)
-{
+TEST(CorsConfigBuilderTest, FiltersEmptyStringsFromOrigins) {
   auto config = CorsConfigBuilder()
-                  .with_origins({"http://localhost:3000", "", "http://example.com", ""})
-                  .with_methods({"GET"})
-                  .with_headers({"Content-Type"})
-                  .build();
+                    .with_origins({"http://localhost:3000", "", "http://example.com", ""})
+                    .with_methods({"GET"})
+                    .with_headers({"Content-Type"})
+                    .build();
 
   EXPECT_TRUE(config.enabled);
   EXPECT_EQ(config.allowed_origins.size(), 2);
@@ -351,58 +319,53 @@ TEST(CorsConfigBuilderTest, FiltersEmptyStringsFromOrigins)
   EXPECT_EQ(config.allowed_origins[1], "http://example.com");
 }
 
-TEST(CorsConfigBuilderTest, CredentialsWithWildcardThrows)
-{
+TEST(CorsConfigBuilderTest, CredentialsWithWildcardThrows) {
   EXPECT_THROW(
-    {
-      CorsConfigBuilder()
-        .with_origins({"*"})
-        .with_methods({"GET"})
-        .with_headers({"Content-Type"})
-        .with_credentials(true)
-        .build();
-    },
-    std::invalid_argument);
+      {
+        CorsConfigBuilder()
+            .with_origins({"*"})
+            .with_methods({"GET"})
+            .with_headers({"Content-Type"})
+            .with_credentials(true)
+            .build();
+      },
+      std::invalid_argument);
 }
 
-TEST(CorsConfigBuilderTest, WildcardWithoutCredentialsSucceeds)
-{
+TEST(CorsConfigBuilderTest, WildcardWithoutCredentialsSucceeds) {
   auto config = CorsConfigBuilder()
-                  .with_origins({"*"})
-                  .with_methods({"GET", "POST"})
-                  .with_headers({"Content-Type", "Authorization"})
-                  .with_credentials(false)
-                  .build();
+                    .with_origins({"*"})
+                    .with_methods({"GET", "POST"})
+                    .with_headers({"Content-Type", "Authorization"})
+                    .with_credentials(false)
+                    .build();
 
   EXPECT_TRUE(config.enabled);
   EXPECT_EQ(config.allowed_origins[0], "*");
 }
 
-TEST(CorsConfigBuilderTest, MultipleMethodsAndHeadersJoined)
-{
+TEST(CorsConfigBuilderTest, MultipleMethodsAndHeadersJoined) {
   auto config = CorsConfigBuilder()
-                  .with_origins({"http://localhost"})
-                  .with_methods({"GET", "POST", "PUT", "DELETE", "OPTIONS"})
-                  .with_headers({"Content-Type", "Authorization", "X-Custom-Header"})
-                  .build();
+                    .with_origins({"http://localhost"})
+                    .with_methods({"GET", "POST", "PUT", "DELETE", "OPTIONS"})
+                    .with_headers({"Content-Type", "Authorization", "X-Custom-Header"})
+                    .build();
 
   EXPECT_EQ(config.methods_header, "GET, POST, PUT, DELETE, OPTIONS");
   EXPECT_EQ(config.headers_header, "Content-Type, Authorization, X-Custom-Header");
 }
 
-TEST(CorsConfigBuilderTest, DefaultMaxAge)
-{
+TEST(CorsConfigBuilderTest, DefaultMaxAge) {
   auto config = CorsConfigBuilder()
-                  .with_origins({"http://localhost"})
-                  .with_methods({"GET"})
-                  .with_headers({"Content-Type"})
-                  .build();
+                    .with_origins({"http://localhost"})
+                    .with_methods({"GET"})
+                    .with_headers({"Content-Type"})
+                    .build();
 
   EXPECT_EQ(config.max_age_seconds, 86400);  // Default value
 }
 
-int main(int argc, char ** argv)
-{
+int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

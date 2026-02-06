@@ -29,8 +29,7 @@
 #include "ros2_medkit_gateway/http/handlers/handlers.hpp"
 #include "ros2_medkit_gateway/http/http_server.hpp"
 
-namespace ros2_medkit_gateway
-{
+namespace ros2_medkit_gateway {
 
 class GatewayNode;
 
@@ -48,21 +47,21 @@ class GatewayNode;
  * The server delegates request handling to specialized handler classes
  * organized by domain (health, areas, components, operations, config, faults, auth).
  */
-class RESTServer
-{
-public:
-  RESTServer(
-    GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
-    const AuthConfig & auth_config, const TlsConfig & tls_config = TlsConfig{});
+class RESTServer {
+ public:
+  RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
+             const AuthConfig & auth_config, const TlsConfig & tls_config = TlsConfig{});
   ~RESTServer();
 
   void start();
   void stop();
 
   /// Check if TLS/HTTPS is enabled
-  bool is_tls_enabled() const { return http_server_ && http_server_->is_tls_enabled(); }
+  bool is_tls_enabled() const {
+    return http_server_ && http_server_->is_tls_enabled();
+  }
 
-private:
+ private:
   void setup_routes();
   void setup_pre_routing_handler();
   void setup_global_error_handlers();

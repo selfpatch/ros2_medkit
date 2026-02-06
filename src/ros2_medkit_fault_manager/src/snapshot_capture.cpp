@@ -24,13 +24,10 @@
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"
 
-namespace ros2_medkit_fault_manager
-{
+namespace ros2_medkit_fault_manager {
 
-SnapshotCapture::SnapshotCapture(
-  rclcpp::Node * node, FaultStorage * storage, const SnapshotConfig & config)
-: node_(node), storage_(storage), config_(config)
-{
+SnapshotCapture::SnapshotCapture(rclcpp::Node * node, FaultStorage * storage, const SnapshotConfig & config)
+  : node_(node), storage_(storage), config_(config) {
   if (!node_) {
     throw std::invalid_argument("SnapshotCapture requires a valid node pointer");
   }
@@ -44,9 +41,8 @@ SnapshotCapture::SnapshotCapture(
     try {
       compiled_patterns_.emplace_back(std::regex(pattern), topics);
     } catch (const std::regex_error & e) {
-      RCLCPP_ERROR(
-        node_->get_logger(), "Invalid regex pattern '%s' in snapshot config will be IGNORED: %s",
-        pattern.c_str(), e.what());
+      RCLCPP_ERROR(node_->get_logger(), "Invalid regex pattern '%s' in snapshot config will be IGNORED: %s",
+                   pattern.c_str(), e.what());
       ++failed_patterns;
     }
   }
@@ -57,30 +53,24 @@ SnapshotCapture::SnapshotCapture(
   }
 
   if (failed_patterns > 0) {
-    RCLCPP_WARN(
-      node_->get_logger(), "SnapshotCapture initialized with %zu/%zu patterns failed to compile",
-      failed_patterns, config_.patterns.size());
+    RCLCPP_WARN(node_->get_logger(), "SnapshotCapture initialized with %zu/%zu patterns failed to compile",
+                failed_patterns, config_.patterns.size());
   }
 
-  RCLCPP_INFO(
-    node_->get_logger(),
-    "SnapshotCapture initialized (enabled=%s, background=%s, timeout=%.1fs, patterns=%zu)",
-    config_.enabled ? "true" : "false", config_.background_capture ? "true" : "false",
-    config_.timeout_sec, compiled_patterns_.size());
+  RCLCPP_INFO(node_->get_logger(),
+              "SnapshotCapture initialized (enabled=%s, background=%s, timeout=%.1fs, patterns=%zu)",
+              config_.enabled ? "true" : "false", config_.background_capture ? "true" : "false", config_.timeout_sec,
+              compiled_patterns_.size());
 }
 
-SnapshotCapture::~SnapshotCapture()
-{
+SnapshotCapture::~SnapshotCapture() {
   // Subscriptions are automatically cleaned up by shared_ptr
   background_subscriptions_.clear();
 }
 
-void SnapshotCapture::capture(const std::string & fault_code)
-{
+void SnapshotCapture::capture(const std::string & fault_code) {
   if (!config_.enabled) {
-    RCLCPP_DEBUG(
-      node_->get_logger(), "Snapshot capture disabled, skipping for fault '%s'",
-      fault_code.c_str());
+    RCLCPP_DEBUG(node_->get_logger(), "Snapshot capture disabled, skipping for fault '%s'", fault_code.c_str());
     return;
   }
 
@@ -90,9 +80,8 @@ void SnapshotCapture::capture(const std::string & fault_code)
     return;
   }
 
-  RCLCPP_INFO(
-    node_->get_logger(), "Capturing snapshots for fault '%s' (%zu topics)", fault_code.c_str(),
-    topics.size());
+  RCLCPP_INFO(node_->get_logger(), "Capturing snapshots for fault '%s' (%zu topics)", fault_code.c_str(),
+              topics.size());
 
   size_t captured_count = 0;
   for (const auto & topic : topics) {
@@ -108,13 +97,11 @@ void SnapshotCapture::capture(const std::string & fault_code)
     }
   }
 
-  RCLCPP_INFO(
-    node_->get_logger(), "Captured %zu/%zu snapshots for fault '%s'", captured_count, topics.size(),
-    fault_code.c_str());
+  RCLCPP_INFO(node_->get_logger(), "Captured %zu/%zu snapshots for fault '%s'", captured_count, topics.size(),
+              fault_code.c_str());
 }
 
-std::vector<std::string> SnapshotCapture::resolve_topics(const std::string & fault_code) const
-{
+std::vector<std::string> SnapshotCapture::resolve_topics(const std::string & fault_code) const {
   // Priority 1: Exact match in fault_specific
   auto it = config_.fault_specific.find(fault_code);
   if (it != config_.fault_specific.end()) {
@@ -125,8 +112,7 @@ std::vector<std::string> SnapshotCapture::resolve_topics(const std::string & fau
   // Priority 2: First matching regex pattern
   for (const auto & [pattern_regex, topics] : compiled_patterns_) {
     if (std::regex_match(fault_code, pattern_regex)) {
-      RCLCPP_DEBUG(
-        node_->get_logger(), "Using pattern-matched topics for '%s'", fault_code.c_str());
+      RCLCPP_DEBUG(node_->get_logger(), "Using pattern-matched topics for '%s'", fault_code.c_str());
       return topics;
     }
   }
@@ -140,9 +126,7 @@ std::vector<std::string> SnapshotCapture::resolve_topics(const std::string & fau
   return {};
 }
 
-bool SnapshotCapture::capture_topic_on_demand(
-  const std::string & fault_code, const std::string & topic)
-{
+bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, const std::string & topic) {
   // Get topic type
   std::string msg_type = get_topic_type(topic);
   if (msg_type.empty()) {
@@ -152,8 +136,7 @@ bool SnapshotCapture::capture_topic_on_demand(
 
   // Check if topic has publishers
   if (node_->count_publishers(topic) == 0) {
-    RCLCPP_DEBUG(
-      node_->get_logger(), "Topic '%s' has no publishers, skipping snapshot", topic.c_str());
+    RCLCPP_DEBUG(node_->get_logger(), "Topic '%s' has no publishers, skipping snapshot", topic.c_str());
     return false;
   }
 
@@ -175,14 +158,12 @@ bool SnapshotCapture::capture_topic_on_demand(
   // Create a local callback group for this capture operation (ensures clean executor lifecycle).
   // Pass false to prevent automatic association with the node's main executor —
   // we manually add this group to a local SingleThreadedExecutor below.
-  auto local_callback_group =
-    node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+  auto local_callback_group = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
 
   rclcpp::GenericSubscription::SharedPtr subscription;
   try {
     // NOLINTNEXTLINE(performance-unnecessary-value-param)
-    auto callback = [&received, &captured_msg,
-                     &msg_mutex](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+    auto callback = [&received, &captured_msg, &msg_mutex](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
       bool expected = false;
       if (received.compare_exchange_strong(expected, true)) {
         std::lock_guard<std::mutex> lock(msg_mutex);
@@ -196,8 +177,7 @@ bool SnapshotCapture::capture_topic_on_demand(
 
     subscription = node_->create_generic_subscription(topic, msg_type, qos, callback, sub_options);
   } catch (const std::exception & e) {
-    RCLCPP_WARN(
-      node_->get_logger(), "Failed to create subscription for '%s': %s", topic.c_str(), e.what());
+    RCLCPP_WARN(node_->get_logger(), "Failed to create subscription for '%s': %s", topic.c_str(), e.what());
     return false;
   }
 
@@ -226,9 +206,8 @@ bool SnapshotCapture::capture_topic_on_demand(
 
     // Check message size
     if (captured_msg.size() > config_.max_message_size) {
-      RCLCPP_WARN(
-        node_->get_logger(), "Message from '%s' too large (%zu > %zu), skipping", topic.c_str(),
-        captured_msg.size(), config_.max_message_size);
+      RCLCPP_WARN(node_->get_logger(), "Message from '%s' too large (%zu > %zu), skipping", topic.c_str(),
+                  captured_msg.size(), config_.max_message_size);
       return false;
     }
 
@@ -245,29 +224,21 @@ bool SnapshotCapture::capture_topic_on_demand(
 
     storage_->store_snapshot(snapshot);
 
-    RCLCPP_DEBUG(
-      node_->get_logger(), "Captured snapshot from '%s' for fault '%s'", topic.c_str(),
-      fault_code.c_str());
+    RCLCPP_DEBUG(node_->get_logger(), "Captured snapshot from '%s' for fault '%s'", topic.c_str(), fault_code.c_str());
     return true;
 
   } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
-    RCLCPP_WARN(
-      node_->get_logger(), "Unknown type '%s' for topic '%s': %s", msg_type.c_str(), topic.c_str(),
-      e.what());
+    RCLCPP_WARN(node_->get_logger(), "Unknown type '%s' for topic '%s': %s", msg_type.c_str(), topic.c_str(), e.what());
   } catch (const ros2_medkit_serialization::SerializationError & e) {
-    RCLCPP_WARN(
-      node_->get_logger(), "Failed to deserialize message from '%s': %s", topic.c_str(), e.what());
+    RCLCPP_WARN(node_->get_logger(), "Failed to deserialize message from '%s': %s", topic.c_str(), e.what());
   } catch (const std::exception & e) {
-    RCLCPP_WARN(
-      node_->get_logger(), "Failed to process message from '%s': %s", topic.c_str(), e.what());
+    RCLCPP_WARN(node_->get_logger(), "Failed to process message from '%s': %s", topic.c_str(), e.what());
   }
 
   return false;
 }
 
-bool SnapshotCapture::capture_topic_from_cache(
-  const std::string & fault_code, const std::string & topic)
-{
+bool SnapshotCapture::capture_topic_from_cache(const std::string & fault_code, const std::string & topic) {
   std::lock_guard<std::mutex> lock(cache_mutex_);
 
   auto it = message_cache_.find(topic);
@@ -288,30 +259,25 @@ bool SnapshotCapture::capture_topic_from_cache(
 
   storage_->store_snapshot(snapshot);
 
-  RCLCPP_DEBUG(
-    node_->get_logger(), "Captured snapshot from cache for '%s' (fault '%s')", topic.c_str(),
-    fault_code.c_str());
+  RCLCPP_DEBUG(node_->get_logger(), "Captured snapshot from cache for '%s' (fault '%s')", topic.c_str(),
+               fault_code.c_str());
   return true;
 }
 
-void SnapshotCapture::init_background_subscriptions()
-{
+void SnapshotCapture::init_background_subscriptions() {
   auto topics = collect_all_configured_topics();
   if (topics.empty()) {
     RCLCPP_WARN(node_->get_logger(), "No topics configured for background capture");
     return;
   }
 
-  RCLCPP_INFO(
-    node_->get_logger(), "Initializing %zu background subscriptions for snapshot capture",
-    topics.size());
+  RCLCPP_INFO(node_->get_logger(), "Initializing %zu background subscriptions for snapshot capture", topics.size());
 
   for (const auto & topic : topics) {
     std::string msg_type = get_topic_type(topic);
     if (msg_type.empty()) {
-      RCLCPP_WARN(
-        node_->get_logger(),
-        "Cannot determine type for topic '%s', skipping background subscription", topic.c_str());
+      RCLCPP_WARN(node_->get_logger(), "Cannot determine type for topic '%s', skipping background subscription",
+                  topic.c_str());
       continue;
     }
 
@@ -319,8 +285,7 @@ void SnapshotCapture::init_background_subscriptions()
       rclcpp::QoS qos = rclcpp::SensorDataQoS();
 
       // NOLINTNEXTLINE(performance-unnecessary-value-param)
-      auto callback = [this, topic,
-                       msg_type](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+      auto callback = [this, topic, msg_type](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
         try {
           // Check message size
           if (msg->size() > config_.max_message_size) {
@@ -339,8 +304,7 @@ void SnapshotCapture::init_background_subscriptions()
           cached.timestamp_ns = get_wall_clock_ns();
 
         } catch (const std::exception & e) {
-          RCLCPP_DEBUG(
-            node_->get_logger(), "Failed to cache message from '%s': %s", topic.c_str(), e.what());
+          RCLCPP_DEBUG(node_->get_logger(), "Failed to cache message from '%s': %s", topic.c_str(), e.what());
         }
       };
 
@@ -350,15 +314,13 @@ void SnapshotCapture::init_background_subscriptions()
       RCLCPP_DEBUG(node_->get_logger(), "Created background subscription for '%s'", topic.c_str());
 
     } catch (const std::exception & e) {
-      RCLCPP_WARN(
-        node_->get_logger(), "Failed to create background subscription for '%s': %s", topic.c_str(),
-        e.what());
+      RCLCPP_WARN(node_->get_logger(), "Failed to create background subscription for '%s': %s", topic.c_str(),
+                  e.what());
     }
   }
 }
 
-std::vector<std::string> SnapshotCapture::collect_all_configured_topics() const
-{
+std::vector<std::string> SnapshotCapture::collect_all_configured_topics() const {
   std::set<std::string> unique_topics;
 
   // Collect from fault_specific
@@ -377,8 +339,7 @@ std::vector<std::string> SnapshotCapture::collect_all_configured_topics() const
   return {unique_topics.begin(), unique_topics.end()};
 }
 
-std::string SnapshotCapture::get_topic_type(const std::string & topic) const
-{
+std::string SnapshotCapture::get_topic_type(const std::string & topic) const {
   auto topic_names_and_types = node_->get_topic_names_and_types();
   auto it = topic_names_and_types.find(topic);
   if (it != topic_names_and_types.end() && !it->second.empty()) {

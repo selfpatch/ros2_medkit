@@ -25,16 +25,16 @@
 using json = nlohmann::json;
 using ros2_medkit_gateway::handlers::FaultHandlers;
 
-class FaultHandlersTest : public ::testing::Test
-{
-protected:
-  void SetUp() override {}
-  void TearDown() override {}
+class FaultHandlersTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+  }
+  void TearDown() override {
+  }
 };
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseBasicFields)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseBasicFields) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "TEST_FAULT";
   fault.description = "Test fault description";
@@ -47,8 +47,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseBasicFields)
   env_data.extended_data_records.first_occurrence_ns = 1707044400000000000;
   env_data.extended_data_records.last_occurrence_ns = 1707044460000000000;
 
-  auto response =
-    FaultHandlers::build_sovd_fault_response(fault, env_data, "/apps/motor_controller");
+  auto response = FaultHandlers::build_sovd_fault_response(fault, env_data, "/apps/motor_controller");
 
   // Verify item structure
   EXPECT_EQ(response["item"]["code"], "TEST_FAULT");
@@ -65,14 +64,12 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseBasicFields)
   // Verify x-medkit
   EXPECT_EQ(response["x-medkit"]["occurrence_count"], 5);
   EXPECT_EQ(response["x-medkit"]["severity_label"], "ERROR");
-  EXPECT_EQ(
-    response["x-medkit"]["status_raw"],
-    "CONFIRMED");  // Raw status in x-medkit, not in status object
+  EXPECT_EQ(response["x-medkit"]["status_raw"],
+            "CONFIRMED");  // Raw status in x-medkit, not in status object
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithFreezeFrame)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithFreezeFrame) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "TEMP_FAULT";
 
@@ -98,8 +95,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithFreezeFrame)
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithRosbag)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithRosbag) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "ROSBAG_FAULT";
 
@@ -113,8 +109,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithRosbag)
   rosbag.format = "mcap";
   env_data.snapshots.push_back(rosbag);
 
-  auto response =
-    FaultHandlers::build_sovd_fault_response(fault, env_data, "/apps/motor_controller");
+  auto response = FaultHandlers::build_sovd_fault_response(fault, env_data, "/apps/motor_controller");
 
   auto & snap = response["environment_data"]["snapshots"][0];
   EXPECT_EQ(snap["type"], "rosbag");
@@ -125,8 +120,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithRosbag)
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseNestedEntityPath)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseNestedEntityPath) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "NESTED_FAULT";
 
@@ -136,17 +130,14 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseNestedEntityPath)
   rosbag.bulk_data_id = "NESTED_FAULT";
   env_data.snapshots.push_back(rosbag);
 
-  auto response =
-    FaultHandlers::build_sovd_fault_response(fault, env_data, "/areas/perception/subareas/lidar");
+  auto response = FaultHandlers::build_sovd_fault_response(fault, env_data, "/areas/perception/subareas/lidar");
 
   auto & snap = response["environment_data"]["snapshots"][0];
-  EXPECT_EQ(
-    snap["bulk_data_uri"], "/areas/perception/subareas/lidar/bulk-data/rosbags/NESTED_FAULT");
+  EXPECT_EQ(snap["bulk_data_uri"], "/areas/perception/subareas/lidar/bulk-data/rosbags/NESTED_FAULT");
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseStatusCleared)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseStatusCleared) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "CLEARED_FAULT";
   fault.status = "CLEARED";  // Cleared status
@@ -163,8 +154,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseStatusCleared)
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseStatusPassive)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseStatusPassive) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "PASSIVE_FAULT";
   fault.status = "PREFAILED";  // Pending/passive status
@@ -179,8 +169,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseStatusPassive)
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseSeverityLabels)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseSeverityLabels) {
   ros2_medkit_msgs::msg::EnvironmentData env_data;
 
   // Test DEBUG (0)
@@ -228,8 +217,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseSeverityLabels)
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithInvalidJson)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithInvalidJson) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "INVALID_JSON_FAULT";
 
@@ -250,8 +238,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithInvalidJson)
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseExtendedDataRecords)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseExtendedDataRecords) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "TEST_FAULT";
 
@@ -273,8 +260,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseExtendedDataRecords)
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponsePrimaryValueExtraction)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponsePrimaryValueExtraction) {
   ros2_medkit_msgs::msg::EnvironmentData env_data;
 
   // Test std_msgs/msg/Float64 - should extract "data" field
@@ -309,8 +295,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponsePrimaryValueExtraction)
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseMultipleSources)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseMultipleSources) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "MULTI_SOURCE_FAULT";
   fault.reporting_sources = {"/perception/lidar", "/perception/camera", "/control/motor"};
@@ -327,8 +312,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseMultipleSources)
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseMixedSnapshots)
-{
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseMixedSnapshots) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "MIXED_FAULT";
 

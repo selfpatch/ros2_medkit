@@ -24,20 +24,17 @@
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 
-namespace ros2_medkit_gateway
-{
-namespace handlers
-{
+namespace ros2_medkit_gateway {
+namespace handlers {
 
-BulkDataHandlers::BulkDataHandlers(HandlerContext & ctx) : ctx_(ctx) {}
+BulkDataHandlers::BulkDataHandlers(HandlerContext & ctx) : ctx_(ctx) {
+}
 
-void BulkDataHandlers::handle_list_categories(const httplib::Request & req, httplib::Response & res)
-{
+void BulkDataHandlers::handle_list_categories(const httplib::Request & req, httplib::Response & res) {
   // Parse entity path from request URL
   auto entity_info = parse_entity_path(req.path);
   if (!entity_info) {
-    HandlerContext::send_error(
-      res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
     return;
   }
 
@@ -53,14 +50,11 @@ void BulkDataHandlers::handle_list_categories(const httplib::Request & req, http
   HandlerContext::send_json(res, response);
 }
 
-void BulkDataHandlers::handle_list_descriptors(
-  const httplib::Request & req, httplib::Response & res)
-{
+void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, httplib::Response & res) {
   // Parse entity path from request URL
   auto entity_info = parse_entity_path(req.path);
   if (!entity_info) {
-    HandlerContext::send_error(
-      res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
     return;
   }
 
@@ -74,15 +68,13 @@ void BulkDataHandlers::handle_list_descriptors(
   // Extract and validate category from path
   auto category = extract_bulk_data_category(req.path);
   if (category.empty()) {
-    HandlerContext::send_error(
-      res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing category");
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing category");
     return;
   }
 
   if (category != "rosbags") {
-    HandlerContext::send_error(
-      res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
-      "Unknown category: " + category);
+    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+                               "Unknown category: " + category);
     return;
   }
 
@@ -129,13 +121,12 @@ void BulkDataHandlers::handle_list_descriptors(
       }
 
       nlohmann::json descriptor = {
-        {"id", bulk_data_id},
-        {"name", fault_code + " recording " + format_timestamp_ns(created_at_ns)},
-        {"mimetype", get_rosbag_mimetype(format)},
-        {"size", size_bytes},
-        {"creation_date", format_timestamp_ns(created_at_ns)},
-        {"x-medkit",
-         {{"fault_code", fault_code}, {"duration_sec", duration_sec}, {"format", format}}}};
+          {"id", bulk_data_id},
+          {"name", fault_code + " recording " + format_timestamp_ns(created_at_ns)},
+          {"mimetype", get_rosbag_mimetype(format)},
+          {"size", size_bytes},
+          {"creation_date", format_timestamp_ns(created_at_ns)},
+          {"x-medkit", {{"fault_code", fault_code}, {"duration_sec", duration_sec}, {"format", format}}}};
       items.push_back(descriptor);
     }
   }
@@ -144,13 +135,11 @@ void BulkDataHandlers::handle_list_descriptors(
   HandlerContext::send_json(res, response);
 }
 
-void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Response & res)
-{
+void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Response & res) {
   // Parse entity path from request URL
   auto entity_info = parse_entity_path(req.path);
   if (!entity_info) {
-    HandlerContext::send_error(
-      res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
     return;
   }
 
@@ -166,15 +155,13 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
   auto bulk_data_id = extract_bulk_data_id(req.path);
 
   if (category != "rosbags") {
-    HandlerContext::send_error(
-      res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
-      "Unknown category: " + category);
+    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+                               "Unknown category: " + category);
     return;
   }
 
   if (bulk_data_id.empty()) {
-    HandlerContext::send_error(
-      res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing bulk-data ID");
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing bulk-data ID");
     return;
   }
 
@@ -187,9 +174,8 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
   // Get rosbag info
   auto rosbag_result = fault_mgr->get_rosbag(fault_code);
   if (!rosbag_result.success || !rosbag_result.data.contains("file_path")) {
-    HandlerContext::send_error(
-      res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found",
-      {{"bulk_data_id", bulk_data_id}});
+    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found",
+                               {{"bulk_data_id", bulk_data_id}});
     return;
   }
 
@@ -199,9 +185,8 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
   auto fault_result = fault_mgr->get_fault(fault_code, source_filter);
 
   if (!fault_result.success) {
-    HandlerContext::send_error(
-      res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
-      "Bulk-data not found for this entity", {{"entity_id", entity_info->entity_id}});
+    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+                               "Bulk-data not found for this entity", {{"entity_id", entity_info->entity_id}});
     return;
   }
 
@@ -215,15 +200,13 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
   res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
 
   if (!stream_file_to_response(res, file_path, mimetype)) {
-    HandlerContext::send_error(
-      res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
-      "Failed to read rosbag file");
+    HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                               "Failed to read rosbag file");
   }
 }
 
-bool BulkDataHandlers::stream_file_to_response(
-  httplib::Response & res, const std::string & file_path, const std::string & content_type)
-{
+bool BulkDataHandlers::stream_file_to_response(httplib::Response & res, const std::string & file_path,
+                                               const std::string & content_type) {
   // Resolve the actual file path - rosbag2 creates a directory with the db3/mcap file inside
   std::string actual_path = resolve_rosbag_file_path(file_path);
   if (actual_path.empty()) {
@@ -241,41 +224,39 @@ bool BulkDataHandlers::stream_file_to_response(
   // Rosbag files can be hundreds of MB to multiple GB.
   static constexpr size_t kChunkSize = 64 * 1024;  // 64 KB chunks
 
-  res.set_content_provider(
-    static_cast<size_t>(file_size), content_type,
-    [actual_path](size_t offset, size_t length, httplib::DataSink & sink) -> bool {
-      std::ifstream file(actual_path, std::ios::binary);
-      if (!file.is_open()) {
-        return false;
-      }
+  res.set_content_provider(static_cast<size_t>(file_size), content_type,
+                           [actual_path](size_t offset, size_t length, httplib::DataSink & sink) -> bool {
+                             std::ifstream file(actual_path, std::ios::binary);
+                             if (!file.is_open()) {
+                               return false;
+                             }
 
-      file.seekg(static_cast<std::streamoff>(offset));
-      if (!file.good()) {
-        return false;
-      }
+                             file.seekg(static_cast<std::streamoff>(offset));
+                             if (!file.good()) {
+                               return false;
+                             }
 
-      size_t remaining = length;
-      std::vector<char> buf(std::min(remaining, kChunkSize));
+                             size_t remaining = length;
+                             std::vector<char> buf(std::min(remaining, kChunkSize));
 
-      while (remaining > 0 && file.good()) {
-        size_t to_read = std::min(remaining, kChunkSize);
-        file.read(buf.data(), static_cast<std::streamsize>(to_read));
-        auto bytes_read = static_cast<size_t>(file.gcount());
-        if (bytes_read == 0) {
-          break;
-        }
-        sink.write(buf.data(), bytes_read);
-        remaining -= bytes_read;
-      }
+                             while (remaining > 0 && file.good()) {
+                               size_t to_read = std::min(remaining, kChunkSize);
+                               file.read(buf.data(), static_cast<std::streamsize>(to_read));
+                               auto bytes_read = static_cast<size_t>(file.gcount());
+                               if (bytes_read == 0) {
+                                 break;
+                               }
+                               sink.write(buf.data(), bytes_read);
+                               remaining -= bytes_read;
+                             }
 
-      return remaining == 0;
-    });
+                             return remaining == 0;
+                           });
 
   return true;
 }
 
-std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path)
-{
+std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path) {
   // If it's a regular file, return as-is
   if (std::filesystem::is_regular_file(path)) {
     return path;
@@ -297,8 +278,7 @@ std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path)
   return "";  // File not found
 }
 
-std::string BulkDataHandlers::get_rosbag_mimetype(const std::string & format)
-{
+std::string BulkDataHandlers::get_rosbag_mimetype(const std::string & format) {
   if (format == "mcap") {
     return "application/x-mcap";
   } else if (format == "sqlite3" || format == "db3") {

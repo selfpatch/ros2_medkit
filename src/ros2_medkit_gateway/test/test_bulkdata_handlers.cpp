@@ -19,48 +19,43 @@
 
 using ros2_medkit_gateway::handlers::BulkDataHandlers;
 
-class BulkDataHandlersTest : public ::testing::Test
-{
-protected:
-  void SetUp() override {}
-  void TearDown() override {}
+class BulkDataHandlersTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+  }
+  void TearDown() override {
+  }
 };
 
 // === MIME type tests ===
 
 // @verifies REQ_INTEROP_071
-TEST_F(BulkDataHandlersTest, GetRosbagMimetypeMcap)
-{
+TEST_F(BulkDataHandlersTest, GetRosbagMimetypeMcap) {
   EXPECT_EQ(BulkDataHandlers::get_rosbag_mimetype("mcap"), "application/x-mcap");
 }
 
 // @verifies REQ_INTEROP_071
-TEST_F(BulkDataHandlersTest, GetRosbagMimetypeSqlite3)
-{
+TEST_F(BulkDataHandlersTest, GetRosbagMimetypeSqlite3) {
   EXPECT_EQ(BulkDataHandlers::get_rosbag_mimetype("sqlite3"), "application/x-sqlite3");
 }
 
 // @verifies REQ_INTEROP_071
-TEST_F(BulkDataHandlersTest, GetRosbagMimetypeDb3)
-{
+TEST_F(BulkDataHandlersTest, GetRosbagMimetypeDb3) {
   EXPECT_EQ(BulkDataHandlers::get_rosbag_mimetype("db3"), "application/x-sqlite3");
 }
 
 // @verifies REQ_INTEROP_071
-TEST_F(BulkDataHandlersTest, GetRosbagMimetypeUnknown)
-{
+TEST_F(BulkDataHandlersTest, GetRosbagMimetypeUnknown) {
   EXPECT_EQ(BulkDataHandlers::get_rosbag_mimetype("unknown"), "application/octet-stream");
 }
 
 // @verifies REQ_INTEROP_071
-TEST_F(BulkDataHandlersTest, GetRosbagMimetypeEmpty)
-{
+TEST_F(BulkDataHandlersTest, GetRosbagMimetypeEmpty) {
   EXPECT_EQ(BulkDataHandlers::get_rosbag_mimetype(""), "application/octet-stream");
 }
 
 // @verifies REQ_INTEROP_071
-TEST_F(BulkDataHandlersTest, GetRosbagMimetypeCasesSensitive)
-{
+TEST_F(BulkDataHandlersTest, GetRosbagMimetypeCasesSensitive) {
   // MCAP should not match mcap (case sensitive)
   EXPECT_EQ(BulkDataHandlers::get_rosbag_mimetype("MCAP"), "application/octet-stream");
   EXPECT_EQ(BulkDataHandlers::get_rosbag_mimetype("Mcap"), "application/octet-stream");
@@ -69,8 +64,7 @@ TEST_F(BulkDataHandlersTest, GetRosbagMimetypeCasesSensitive)
 // === Shared timestamp utility tests ===
 
 // @verifies REQ_INTEROP_013
-TEST_F(BulkDataHandlersTest, FormatTimestampNsValidTimestamp)
-{
+TEST_F(BulkDataHandlersTest, FormatTimestampNsValidTimestamp) {
   // 2026-02-08T00:00:00.000Z
   int64_t ns = 1770458400000000000;
   auto result = ros2_medkit_gateway::format_timestamp_ns(ns);
@@ -80,15 +74,13 @@ TEST_F(BulkDataHandlersTest, FormatTimestampNsValidTimestamp)
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(BulkDataHandlersTest, FormatTimestampNsEpoch)
-{
+TEST_F(BulkDataHandlersTest, FormatTimestampNsEpoch) {
   auto result = ros2_medkit_gateway::format_timestamp_ns(0);
   EXPECT_EQ(result, "1970-01-01T00:00:00.000Z");
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(BulkDataHandlersTest, FormatTimestampNsWithMilliseconds)
-{
+TEST_F(BulkDataHandlersTest, FormatTimestampNsWithMilliseconds) {
   // 1 second + 123 ms
   int64_t ns = 1'000'000'000 + 123'000'000;
   auto result = ros2_medkit_gateway::format_timestamp_ns(ns);
@@ -96,8 +88,7 @@ TEST_F(BulkDataHandlersTest, FormatTimestampNsWithMilliseconds)
 }
 
 // @verifies REQ_INTEROP_013
-TEST_F(BulkDataHandlersTest, FormatTimestampNsNegativeFallback)
-{
+TEST_F(BulkDataHandlersTest, FormatTimestampNsNegativeFallback) {
   // Negative timestamps should return fallback
   auto result = ros2_medkit_gateway::format_timestamp_ns(-1);
   EXPECT_FALSE(result.empty());

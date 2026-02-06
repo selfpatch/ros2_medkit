@@ -32,11 +32,9 @@
 #include "ros2_medkit_msgs/msg/muted_fault_info.hpp"
 #include "ros2_medkit_msgs/msg/snapshot.hpp"
 
-namespace ros2_medkit_fault_manager
-{
+namespace ros2_medkit_fault_manager {
 
-namespace
-{
+namespace {
 
 /// Maximum allowed length for fault_code
 constexpr size_t kMaxFaultCodeLength = 128;
@@ -44,8 +42,7 @@ constexpr size_t kMaxFaultCodeLength = 128;
 /// Validate fault_code format
 /// @param fault_code The fault code to validate
 /// @return Empty string if valid, error message if invalid
-std::string validate_fault_code(const std::string & fault_code)
-{
+std::string validate_fault_code(const std::string & fault_code) {
   if (fault_code.empty()) {
     return "fault_code cannot be empty";
   }
@@ -73,21 +70,16 @@ std::string validate_fault_code(const std::string & fault_code)
 
 }  // namespace
 
-FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options)
-: Node("fault_manager", options)
-{
+FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("fault_manager", options) {
   // Declare and get parameters
   storage_type_ = declare_parameter<std::string>("storage_type", "sqlite");
-  database_path_ =
-    declare_parameter<std::string>("database_path", "/var/lib/ros2_medkit/faults.db");
+  database_path_ = declare_parameter<std::string>("database_path", "/var/lib/ros2_medkit/faults.db");
 
   auto confirmation_threshold_param = declare_parameter<int>("confirmation_threshold", -1);
   if (confirmation_threshold_param > 0) {
-    RCLCPP_WARN(
-      get_logger(),
-      "confirmation_threshold should be <= 0 (0 or -1 = immediate confirmation), got %d. Using %d.",
-      static_cast<int>(confirmation_threshold_param),
-      static_cast<int>(-confirmation_threshold_param));
+    RCLCPP_WARN(get_logger(),
+                "confirmation_threshold should be <= 0 (0 or -1 = immediate confirmation), got %d. Using %d.",
+                static_cast<int>(confirmation_threshold_param), static_cast<int>(-confirmation_threshold_param));
     confirmation_threshold_param = -confirmation_threshold_param;
   }
   confirmation_threshold_ = static_cast<int32_t>(confirmation_threshold_param);
@@ -96,9 +88,8 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options)
   healing_enabled_ = declare_parameter<bool>("healing_enabled", false);
   auto healing_threshold_param = declare_parameter<int>("healing_threshold", 3);
   if (healing_threshold_param < 0) {
-    RCLCPP_WARN(
-      get_logger(), "healing_threshold should be >= 0, got %d. Using %d.",
-      static_cast<int>(healing_threshold_param), static_cast<int>(-healing_threshold_param));
+    RCLCPP_WARN(get_logger(), "healing_threshold should be >= 0, got %d. Using %d.",
+                static_cast<int>(healing_threshold_param), static_cast<int>(-healing_threshold_param));
     healing_threshold_param = -healing_threshold_param;
   }
   healing_threshold_ = static_cast<int32_t>(healing_threshold_param);
@@ -106,9 +97,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options)
   // Time-based auto-confirmation parameter
   auto_confirm_after_sec_ = declare_parameter<double>("auto_confirm_after_sec", 0.0);
   if (auto_confirm_after_sec_ < 0.0) {
-    RCLCPP_WARN(
-      get_logger(), "auto_confirm_after_sec should be >= 0, got %.2f. Disabling.",
-      auto_confirm_after_sec_);
+    RCLCPP_WARN(get_logger(), "auto_confirm_after_sec should be >= 0, got %.2f. Disabling.", auto_confirm_after_sec_);
     auto_confirm_after_sec_ = 0.0;
   }
 
@@ -116,8 +105,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options)
   storage_ = create_storage();
 
   // Create event publisher for SSE streaming
-  event_publisher_ =
-    create_publisher<ros2_medkit_msgs::msg::FaultEvent>("~/events", rclcpp::QoS(100).reliable());
+  event_publisher_ = create_publisher<ros2_medkit_msgs::msg::FaultEvent>("~/events", rclcpp::QoS(100).reliable());
 
   // Configure debounce settings
   DebounceConfig config;
@@ -129,67 +117,53 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options)
 
   // Create service servers
   report_fault_srv_ = create_service<ros2_medkit_msgs::srv::ReportFault>(
-    "~/report_fault",
-    [this](
-      const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
-      const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response) {
-      handle_report_fault(request, response);
-    });
+      "~/report_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
+                               const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response) {
+        handle_report_fault(request, response);
+      });
 
   list_faults_srv_ = create_service<ros2_medkit_msgs::srv::ListFaults>(
-    "~/list_faults",
-    [this](
-      const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
-      const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> & response) {
-      handle_list_faults(request, response);
-    });
+      "~/list_faults", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
+                              const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> & response) {
+        handle_list_faults(request, response);
+      });
 
   get_fault_srv_ = create_service<ros2_medkit_msgs::srv::GetFault>(
-    "~/get_fault", [this](
-                     const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
-                     const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> & response) {
-      handle_get_fault(request, response);
-    });
+      "~/get_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
+                            const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> & response) {
+        handle_get_fault(request, response);
+      });
 
   clear_fault_srv_ = create_service<ros2_medkit_msgs::srv::ClearFault>(
-    "~/clear_fault",
-    [this](
-      const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
-      const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response) {
-      handle_clear_fault(request, response);
-    });
+      "~/clear_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
+                              const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response) {
+        handle_clear_fault(request, response);
+      });
 
   get_snapshots_srv_ = create_service<ros2_medkit_msgs::srv::GetSnapshots>(
-    "~/get_snapshots",
-    [this](
-      const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Request> & request,
-      const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> & response) {
-      handle_get_snapshots(request, response);
-    });
+      "~/get_snapshots", [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Request> & request,
+                                const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> & response) {
+        handle_get_snapshots(request, response);
+      });
 
   get_rosbag_srv_ = create_service<ros2_medkit_msgs::srv::GetRosbag>(
-    "~/get_rosbag",
-    [this](
-      const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
-      const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response) {
-      handle_get_rosbag(request, response);
-    });
+      "~/get_rosbag", [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
+                             const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response) {
+        handle_get_rosbag(request, response);
+      });
 
   list_rosbags_srv_ = create_service<ros2_medkit_msgs::srv::ListRosbags>(
-    "~/list_rosbags",
-    [this](
-      const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Request> & request,
-      const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Response> & response) {
-      handle_list_rosbags(request, response);
-    });
+      "~/list_rosbags", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Request> & request,
+                               const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Response> & response) {
+        handle_list_rosbags(request, response);
+      });
 
   list_faults_for_entity_srv_ = create_service<ros2_medkit_msgs::srv::ListFaultsForEntity>(
-    "~/list_faults_for_entity",
-    [this](
-      const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
-      const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response) {
-      handle_list_faults_for_entity(request, response);
-    });
+      "~/list_faults_for_entity",
+      [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
+             const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response) {
+        handle_list_faults_for_entity(request, response);
+      });
 
   // Initialize snapshot capture
   auto snapshot_config = create_snapshot_config();
@@ -199,8 +173,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options)
 
   // Initialize rosbag capture if enabled
   if (snapshot_config.rosbag.enabled) {
-    rosbag_capture_ = std::make_shared<RosbagCapture>(
-      this, storage_.get(), snapshot_config.rosbag, snapshot_config);
+    rosbag_capture_ = std::make_shared<RosbagCapture>(this, storage_.get(), snapshot_config.rosbag, snapshot_config);
   }
 
   // Initialize correlation engine (nullptr if disabled or not configured)
@@ -210,16 +183,14 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options)
   if (correlation_engine_) {
     auto cleanup_interval_sec = declare_parameter<double>("correlation.cleanup_interval_sec", 5.0);
     if (cleanup_interval_sec <= 0.0) {
-      RCLCPP_WARN(
-        get_logger(),
-        "correlation.cleanup_interval_sec must be positive, got %.2f. Using default 5.0s",
-        cleanup_interval_sec);
+      RCLCPP_WARN(get_logger(), "correlation.cleanup_interval_sec must be positive, got %.2f. Using default 5.0s",
+                  cleanup_interval_sec);
       cleanup_interval_sec = 5.0;
     }
     auto cleanup_interval_ms = static_cast<int64_t>(cleanup_interval_sec * 1000);
-    correlation_cleanup_timer_ = create_wall_timer(
-      std::chrono::milliseconds(cleanup_interval_ms),
-      [this]() { correlation_engine_->cleanup_expired(); });
+    correlation_cleanup_timer_ = create_wall_timer(std::chrono::milliseconds(cleanup_interval_ms), [this]() {
+      correlation_engine_->cleanup_expired();
+    });
   }
 
   // Create auto-confirmation timer if enabled
@@ -227,25 +198,21 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options)
     auto_confirm_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() {
       size_t confirmed = storage_->check_time_based_confirmation(get_wall_clock_time());
       if (confirmed > 0) {
-        RCLCPP_INFO(
-          get_logger(), "Auto-confirmed %zu PREFAILED fault(s) due to time threshold", confirmed);
+        RCLCPP_INFO(get_logger(), "Auto-confirmed %zu PREFAILED fault(s) due to time threshold", confirmed);
       }
     });
-    RCLCPP_INFO(
-      get_logger(),
-      "FaultManager node started (storage=%s, confirmation_threshold=%d, "
-      "healing=%s, auto_confirm_after=%.1fs)",
-      storage_type_.c_str(), confirmation_threshold_, healing_enabled_ ? "enabled" : "disabled",
-      auto_confirm_after_sec_);
+    RCLCPP_INFO(get_logger(),
+                "FaultManager node started (storage=%s, confirmation_threshold=%d, "
+                "healing=%s, auto_confirm_after=%.1fs)",
+                storage_type_.c_str(), confirmation_threshold_, healing_enabled_ ? "enabled" : "disabled",
+                auto_confirm_after_sec_);
   } else {
-    RCLCPP_INFO(
-      get_logger(), "FaultManager node started (storage=%s, confirmation_threshold=%d, healing=%s)",
-      storage_type_.c_str(), confirmation_threshold_, healing_enabled_ ? "enabled" : "disabled");
+    RCLCPP_INFO(get_logger(), "FaultManager node started (storage=%s, confirmation_threshold=%d, healing=%s)",
+                storage_type_.c_str(), confirmation_threshold_, healing_enabled_ ? "enabled" : "disabled");
   }
 }
 
-std::unique_ptr<FaultStorage> FaultManagerNode::create_storage()
-{
+std::unique_ptr<FaultStorage> FaultManagerNode::create_storage() {
   if (storage_type_ == "memory") {
     RCLCPP_INFO(get_logger(), "Using in-memory fault storage");
     return std::make_unique<InMemoryFaultStorage>();
@@ -262,10 +229,8 @@ std::unique_ptr<FaultStorage> FaultManagerNode::create_storage()
           std::filesystem::create_directories(parent_dir);
           RCLCPP_INFO(get_logger(), "Created database directory: %s", parent_dir_str.c_str());
         } catch (const std::filesystem::filesystem_error & e) {
-          RCLCPP_ERROR(
-            get_logger(),
-            "Failed to create database directory for fault manager storage at '%s': %s",
-            parent_dir_str.c_str(), e.what());
+          RCLCPP_ERROR(get_logger(), "Failed to create database directory for fault manager storage at '%s': %s",
+                       parent_dir_str.c_str(), e.what());
           throw;
         }
       }
@@ -275,15 +240,13 @@ std::unique_ptr<FaultStorage> FaultManagerNode::create_storage()
     return std::make_unique<SqliteFaultStorage>(database_path_);
   }
 
-  RCLCPP_ERROR(
-    get_logger(), "Unknown storage_type '%s', falling back to in-memory", storage_type_.c_str());
+  RCLCPP_ERROR(get_logger(), "Unknown storage_type '%s', falling back to in-memory", storage_type_.c_str());
   return std::make_unique<InMemoryFaultStorage>();
 }
 
 void FaultManagerNode::handle_report_fault(
-  const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
-  const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response)
-{
+    const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response) {
   // Validate fault_code
   std::string validation_error = validate_fault_code(request->fault_code);
   if (!validation_error.empty()) {
@@ -293,22 +256,18 @@ void FaultManagerNode::handle_report_fault(
   }
 
   // Validate event_type
-  if (
-    request->event_type != ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED &&
-    request->event_type != ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED) {
+  if (request->event_type != ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED &&
+      request->event_type != ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED) {
     response->accepted = false;
     RCLCPP_WARN(get_logger(), "ReportFault rejected: invalid event_type %d", request->event_type);
     return;
   }
 
   // For FAILED events, validate severity
-  if (
-    request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED &&
-    !is_valid_severity(request->severity)) {
+  if (request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED &&
+      !is_valid_severity(request->severity)) {
     response->accepted = false;
-    RCLCPP_WARN(
-      get_logger(), "ReportFault rejected: invalid severity %d for FAILED event",
-      request->severity);
+    RCLCPP_WARN(get_logger(), "ReportFault rejected: invalid severity %d for FAILED event", request->severity);
     return;
   }
 
@@ -324,9 +283,8 @@ void FaultManagerNode::handle_report_fault(
   std::string status_before = fault_before ? fault_before->status : "";
 
   // Report the fault event (use wall clock time, not sim time, for proper timestamps)
-  bool is_new = storage_->report_fault_event(
-    request->fault_code, request->event_type, request->severity, request->description,
-    request->source_id, get_wall_clock_time());
+  bool is_new = storage_->report_fault_event(request->fault_code, request->event_type, request->severity,
+                                             request->description, request->source_id, get_wall_clock_time());
 
   response->accepted = true;
 
@@ -336,33 +294,26 @@ void FaultManagerNode::handle_report_fault(
     // Process through correlation engine (if enabled)
     // Only process FAILED events with correlation
     bool should_mute = false;
-    if (
-      correlation_engine_ &&
-      request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
-      auto correlation_result = correlation_engine_->process_fault(
-        request->fault_code, correlation::severity_to_string(request->severity));
+    if (correlation_engine_ && request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
+      auto correlation_result =
+          correlation_engine_->process_fault(request->fault_code, correlation::severity_to_string(request->severity));
 
       should_mute = correlation_result.should_mute;
 
       if (correlation_result.is_root_cause) {
-        RCLCPP_DEBUG(
-          get_logger(), "Fault %s identified as root cause (rule=%s)", request->fault_code.c_str(),
-          correlation_result.rule_id.c_str());
+        RCLCPP_DEBUG(get_logger(), "Fault %s identified as root cause (rule=%s)", request->fault_code.c_str(),
+                     correlation_result.rule_id.c_str());
       } else if (should_mute) {
-        RCLCPP_DEBUG(
-          get_logger(), "Fault %s muted as symptom of %s (rule=%s, delay=%ums)",
-          request->fault_code.c_str(), correlation_result.root_cause_code.c_str(),
-          correlation_result.rule_id.c_str(), correlation_result.delay_ms);
+        RCLCPP_DEBUG(get_logger(), "Fault %s muted as symptom of %s (rule=%s, delay=%ums)", request->fault_code.c_str(),
+                     correlation_result.root_cause_code.c_str(), correlation_result.rule_id.c_str(),
+                     correlation_result.delay_ms);
       } else if (!correlation_result.cluster_id.empty()) {
-        RCLCPP_DEBUG(
-          get_logger(), "Fault %s added to cluster %s", request->fault_code.c_str(),
-          correlation_result.cluster_id.c_str());
+        RCLCPP_DEBUG(get_logger(), "Fault %s added to cluster %s", request->fault_code.c_str(),
+                     correlation_result.cluster_id.c_str());
         // Log retroactively muted faults when cluster becomes active
         if (!correlation_result.retroactive_mute_codes.empty()) {
-          RCLCPP_DEBUG(
-            get_logger(), "Cluster %s activated: retroactively muting %zu faults",
-            correlation_result.cluster_id.c_str(),
-            correlation_result.retroactive_mute_codes.size());
+          RCLCPP_DEBUG(get_logger(), "Cluster %s activated: retroactively muting %zu faults",
+                       correlation_result.cluster_id.c_str(), correlation_result.retroactive_mute_codes.size());
         }
       }
     }
@@ -375,9 +326,8 @@ void FaultManagerNode::handle_report_fault(
         publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault_after);
       }
       just_confirmed = true;
-    } else if (
-      !is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED &&
-      fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
+    } else if (!is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED &&
+               fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
       // Existing fault transitioned to CONFIRMED
       if (!should_mute) {
         publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault_after);
@@ -412,10 +362,9 @@ void FaultManagerNode::handle_report_fault(
     }
 
     // Handle PREFAILED state for lazy_start rosbag capture
-    bool just_prefailed =
-      (is_new && fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED) ||
-      (!is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED &&
-       fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
+    bool just_prefailed = (is_new && fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED) ||
+                          (!is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED &&
+                           fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
     if (just_prefailed && rosbag_capture_) {
       rosbag_capture_->on_fault_prefailed(request->fault_code);
     }
@@ -423,27 +372,22 @@ void FaultManagerNode::handle_report_fault(
 
   if (request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
     if (is_new) {
-      RCLCPP_INFO(
-        get_logger(), "New fault reported: %s (severity=%d, source=%s)",
-        request->fault_code.c_str(), request->severity, request->source_id.c_str());
+      RCLCPP_INFO(get_logger(), "New fault reported: %s (severity=%d, source=%s)", request->fault_code.c_str(),
+                  request->severity, request->source_id.c_str());
     } else {
-      RCLCPP_DEBUG(
-        get_logger(), "Fault updated: %s (source=%s)", request->fault_code.c_str(),
-        request->source_id.c_str());
+      RCLCPP_DEBUG(get_logger(), "Fault updated: %s (source=%s)", request->fault_code.c_str(),
+                   request->source_id.c_str());
     }
   } else {
-    RCLCPP_DEBUG(
-      get_logger(), "PASSED event for fault: %s (source=%s)", request->fault_code.c_str(),
-      request->source_id.c_str());
+    RCLCPP_DEBUG(get_logger(), "PASSED event for fault: %s (source=%s)", request->fault_code.c_str(),
+                 request->source_id.c_str());
   }
 }
 
 void FaultManagerNode::handle_list_faults(
-  const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
-  const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> & response)
-{
-  response->faults =
-    storage_->list_faults(request->filter_by_severity, request->severity, request->statuses);
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> & response) {
+  response->faults = storage_->list_faults(request->filter_by_severity, request->severity, request->statuses);
 
   // Include correlation data if engine is enabled
   if (correlation_engine_) {
@@ -481,11 +425,8 @@ void FaultManagerNode::handle_list_faults(
         info.count = static_cast<uint32_t>(cluster.fault_codes.size());
         // Convert chrono time_points to ROS time
         auto first_ns =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(cluster.first_at.time_since_epoch())
-            .count();
-        auto last_ns =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(cluster.last_at.time_since_epoch())
-            .count();
+            std::chrono::duration_cast<std::chrono::nanoseconds>(cluster.first_at.time_since_epoch()).count();
+        auto last_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(cluster.last_at.time_since_epoch()).count();
         info.first_at = rclcpp::Time(first_ns, RCL_SYSTEM_TIME);
         info.last_at = rclcpp::Time(last_ns, RCL_SYSTEM_TIME);
         response->clusters.push_back(info);
@@ -493,15 +434,13 @@ void FaultManagerNode::handle_list_faults(
     }
   }
 
-  RCLCPP_DEBUG(
-    get_logger(), "ListFaults returned %zu faults (muted=%u, clusters=%u)", response->faults.size(),
-    response->muted_count, response->cluster_count);
+  RCLCPP_DEBUG(get_logger(), "ListFaults returned %zu faults (muted=%u, clusters=%u)", response->faults.size(),
+               response->muted_count, response->cluster_count);
 }
 
 void FaultManagerNode::handle_clear_fault(
-  const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
-  const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response)
-{
+    const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response) {
   // Validate fault_code
   std::string validation_error = validate_fault_code(request->fault_code);
   if (!validation_error.empty()) {
@@ -524,9 +463,8 @@ void FaultManagerNode::handle_clear_fault(
     // Auto-clear correlated symptoms
     for (const auto & symptom_code : auto_cleared_codes) {
       storage_->clear_fault(symptom_code);
-      RCLCPP_DEBUG(
-        get_logger(), "Auto-cleared symptom: %s (root cause: %s)", symptom_code.c_str(),
-        request->fault_code.c_str());
+      RCLCPP_DEBUG(get_logger(), "Auto-cleared symptom: %s (root cause: %s)", symptom_code.c_str(),
+                   request->fault_code.c_str());
       // Also cleanup rosbag for auto-cleared faults
       if (rosbag_capture_) {
         rosbag_capture_->on_fault_cleared(symptom_code);
@@ -540,9 +478,8 @@ void FaultManagerNode::handle_clear_fault(
       response->message = "Fault cleared: " + request->fault_code + " (auto-cleared " +
                           std::to_string(auto_cleared_codes.size()) + " symptoms)";
     }
-    RCLCPP_INFO(
-      get_logger(), "Fault cleared: %s (auto-cleared %zu symptoms)", request->fault_code.c_str(),
-      auto_cleared_codes.size());
+    RCLCPP_INFO(get_logger(), "Fault cleared: %s (auto-cleared %zu symptoms)", request->fault_code.c_str(),
+                auto_cleared_codes.size());
 
     // Cleanup rosbag for the main fault (auto_cleanup handled inside RosbagCapture)
     if (rosbag_capture_) {
@@ -552,23 +489,19 @@ void FaultManagerNode::handle_clear_fault(
     // Publish EVENT_CLEARED - get the cleared fault to include in event
     auto fault = storage_->get_fault(request->fault_code);
     if (fault) {
-      publish_fault_event(
-        ros2_medkit_msgs::msg::FaultEvent::EVENT_CLEARED, *fault, auto_cleared_codes);
+      publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CLEARED, *fault, auto_cleared_codes);
     }
   } else {
     response->message = "Fault not found: " + request->fault_code;
-    RCLCPP_WARN(
-      get_logger(), "Attempted to clear non-existent fault: %s", request->fault_code.c_str());
+    RCLCPP_WARN(get_logger(), "Attempted to clear non-existent fault: %s", request->fault_code.c_str());
   }
 }
 
-bool FaultManagerNode::is_valid_severity(uint8_t severity)
-{
+bool FaultManagerNode::is_valid_severity(uint8_t severity) {
   return severity <= ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL;
 }
 
-std::string FaultManagerNode::extract_topic_name(const std::string & topic_path)
-{
+std::string FaultManagerNode::extract_topic_name(const std::string & topic_path) {
   auto pos = topic_path.rfind('/');
   if (pos != std::string::npos && pos < topic_path.length() - 1) {
     return topic_path.substr(pos + 1);
@@ -576,10 +509,8 @@ std::string FaultManagerNode::extract_topic_name(const std::string & topic_path)
   return topic_path;
 }
 
-void FaultManagerNode::handle_get_fault(
-  const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
-  const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> & response)
-{
+void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
+                                        const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> & response) {
   RCLCPP_DEBUG(get_logger(), "GetFault request for: %s", request->fault_code.c_str());
 
   // Validate fault_code
@@ -636,15 +567,12 @@ void FaultManagerNode::handle_get_fault(
     response->environment_data.snapshots.push_back(rosbag_snapshot);
   }
 
-  RCLCPP_DEBUG(
-    get_logger(), "GetFault returned fault '%s' with %zu snapshots", request->fault_code.c_str(),
-    response->environment_data.snapshots.size());
+  RCLCPP_DEBUG(get_logger(), "GetFault returned fault '%s' with %zu snapshots", request->fault_code.c_str(),
+               response->environment_data.snapshots.size());
 }
 
-void FaultManagerNode::publish_fault_event(
-  const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault,
-  const std::vector<std::string> & auto_cleared_codes)
-{
+void FaultManagerNode::publish_fault_event(const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault,
+                                           const std::vector<std::string> & auto_cleared_codes) {
   ros2_medkit_msgs::msg::FaultEvent event;
   event.event_type = event_type;
   event.fault = fault;
@@ -653,13 +581,11 @@ void FaultManagerNode::publish_fault_event(
 
   event_publisher_->publish(event);
 
-  RCLCPP_DEBUG(
-    get_logger(), "Published fault event: %s for fault_code=%s", event_type.c_str(),
-    fault.fault_code.c_str());
+  RCLCPP_DEBUG(get_logger(), "Published fault event: %s for fault_code=%s", event_type.c_str(),
+               fault.fault_code.c_str());
 }
 
-SnapshotConfig FaultManagerNode::create_snapshot_config()
-{
+SnapshotConfig FaultManagerNode::create_snapshot_config() {
   SnapshotConfig config;
 
   // Declare snapshot parameters
@@ -669,25 +595,23 @@ SnapshotConfig FaultManagerNode::create_snapshot_config()
   // Validate timeout_sec (must be positive)
   config.timeout_sec = declare_parameter<double>("snapshots.timeout_sec", 1.0);
   if (config.timeout_sec <= 0.0) {
-    RCLCPP_WARN(
-      get_logger(), "snapshots.timeout_sec must be positive, got %.2f. Using default 1.0s",
-      config.timeout_sec);
+    RCLCPP_WARN(get_logger(), "snapshots.timeout_sec must be positive, got %.2f. Using default 1.0s",
+                config.timeout_sec);
     config.timeout_sec = 1.0;
   }
 
   // Validate max_message_size (must be positive before casting to size_t)
   auto max_message_size_param = declare_parameter<int>("snapshots.max_message_size", 65536);
   if (max_message_size_param <= 0) {
-    RCLCPP_WARN(
-      get_logger(), "snapshots.max_message_size must be positive, got %ld. Using default 65536",
-      static_cast<long>(max_message_size_param));
+    RCLCPP_WARN(get_logger(), "snapshots.max_message_size must be positive, got %ld. Using default 65536",
+                static_cast<long>(max_message_size_param));
     max_message_size_param = 65536;
   }
   config.max_message_size = static_cast<size_t>(max_message_size_param);
 
   // Default topics (catch-all)
-  config.default_topics = declare_parameter<std::vector<std::string>>(
-    "snapshots.default_topics", std::vector<std::string>{});
+  config.default_topics =
+      declare_parameter<std::vector<std::string>>("snapshots.default_topics", std::vector<std::string>{});
 
   // Load fault_specific and patterns from YAML config file if provided
   auto config_file = declare_parameter<std::string>("snapshots.config_file", "");
@@ -700,33 +624,27 @@ SnapshotConfig FaultManagerNode::create_snapshot_config()
   if (config.rosbag.enabled) {
     config.rosbag.duration_sec = declare_parameter<double>("snapshots.rosbag.duration_sec", 5.0);
     if (config.rosbag.duration_sec <= 0.0) {
-      RCLCPP_WARN(
-        get_logger(),
-        "snapshots.rosbag.duration_sec must be positive, got %.2f. Using default 5.0s",
-        config.rosbag.duration_sec);
+      RCLCPP_WARN(get_logger(), "snapshots.rosbag.duration_sec must be positive, got %.2f. Using default 5.0s",
+                  config.rosbag.duration_sec);
       config.rosbag.duration_sec = 5.0;
     }
 
-    config.rosbag.duration_after_sec =
-      declare_parameter<double>("snapshots.rosbag.duration_after_sec", 1.0);
+    config.rosbag.duration_after_sec = declare_parameter<double>("snapshots.rosbag.duration_after_sec", 1.0);
     if (config.rosbag.duration_after_sec < 0.0) {
-      RCLCPP_WARN(
-        get_logger(),
-        "snapshots.rosbag.duration_after_sec must be non-negative, got %.2f. Using 0.0s",
-        config.rosbag.duration_after_sec);
+      RCLCPP_WARN(get_logger(), "snapshots.rosbag.duration_after_sec must be non-negative, got %.2f. Using 0.0s",
+                  config.rosbag.duration_after_sec);
       config.rosbag.duration_after_sec = 0.0;
     }
 
     config.rosbag.topics = declare_parameter<std::string>("snapshots.rosbag.topics", "config");
-    config.rosbag.include_topics = declare_parameter<std::vector<std::string>>(
-      "snapshots.rosbag.include_topics", std::vector<std::string>{});
-    config.rosbag.exclude_topics = declare_parameter<std::vector<std::string>>(
-      "snapshots.rosbag.exclude_topics", std::vector<std::string>{});
+    config.rosbag.include_topics =
+        declare_parameter<std::vector<std::string>>("snapshots.rosbag.include_topics", std::vector<std::string>{});
+    config.rosbag.exclude_topics =
+        declare_parameter<std::vector<std::string>>("snapshots.rosbag.exclude_topics", std::vector<std::string>{});
 
     config.rosbag.lazy_start = declare_parameter<bool>("snapshots.rosbag.lazy_start", false);
     config.rosbag.format = declare_parameter<std::string>("snapshots.rosbag.format", "sqlite3");
-    config.rosbag.storage_path =
-      declare_parameter<std::string>("snapshots.rosbag.storage_path", "");
+    config.rosbag.storage_path = declare_parameter<std::string>("snapshots.rosbag.storage_path", "");
 
     int64_t max_bag_size = declare_parameter<int64_t>("snapshots.rosbag.max_bag_size_mb", 50);
     if (max_bag_size <= 0) {
@@ -735,33 +653,29 @@ SnapshotConfig FaultManagerNode::create_snapshot_config()
     }
     config.rosbag.max_bag_size_mb = static_cast<size_t>(max_bag_size);
 
-    int64_t max_total_storage =
-      declare_parameter<int64_t>("snapshots.rosbag.max_total_storage_mb", 500);
+    int64_t max_total_storage = declare_parameter<int64_t>("snapshots.rosbag.max_total_storage_mb", 500);
     if (max_total_storage <= 0) {
-      RCLCPP_WARN(
-        get_logger(), "snapshots.rosbag.max_total_storage_mb must be positive. Using 500MB");
+      RCLCPP_WARN(get_logger(), "snapshots.rosbag.max_total_storage_mb must be positive. Using 500MB");
       max_total_storage = 500;
     }
     config.rosbag.max_total_storage_mb = static_cast<size_t>(max_total_storage);
 
     config.rosbag.auto_cleanup = declare_parameter<bool>("snapshots.rosbag.auto_cleanup", true);
 
-    RCLCPP_INFO(
-      get_logger(),
-      "Rosbag capture enabled (duration=%.1fs+%.1fs, topics=%s, lazy=%s, format=%s, "
-      "max_bag=%zuMB, max_total=%zuMB)",
-      config.rosbag.duration_sec, config.rosbag.duration_after_sec, config.rosbag.topics.c_str(),
-      config.rosbag.lazy_start ? "true" : "false", config.rosbag.format.c_str(),
-      config.rosbag.max_bag_size_mb, config.rosbag.max_total_storage_mb);
+    RCLCPP_INFO(get_logger(),
+                "Rosbag capture enabled (duration=%.1fs+%.1fs, topics=%s, lazy=%s, format=%s, "
+                "max_bag=%zuMB, max_total=%zuMB)",
+                config.rosbag.duration_sec, config.rosbag.duration_after_sec, config.rosbag.topics.c_str(),
+                config.rosbag.lazy_start ? "true" : "false", config.rosbag.format.c_str(),
+                config.rosbag.max_bag_size_mb, config.rosbag.max_total_storage_mb);
   }
 
   if (config.enabled) {
-    RCLCPP_INFO(
-      get_logger(),
-      "Snapshot capture enabled (background=%s, timeout=%.1fs, max_size=%zu, "
-      "fault_specific=%zu, patterns=%zu, default_topics=%zu)",
-      config.background_capture ? "true" : "false", config.timeout_sec, config.max_message_size,
-      config.fault_specific.size(), config.patterns.size(), config.default_topics.size());
+    RCLCPP_INFO(get_logger(),
+                "Snapshot capture enabled (background=%s, timeout=%.1fs, max_size=%zu, "
+                "fault_specific=%zu, patterns=%zu, default_topics=%zu)",
+                config.background_capture ? "true" : "false", config.timeout_sec, config.max_message_size,
+                config.fault_specific.size(), config.patterns.size(), config.default_topics.size());
   } else {
     RCLCPP_INFO(get_logger(), "Snapshot capture disabled");
   }
@@ -769,9 +683,7 @@ SnapshotConfig FaultManagerNode::create_snapshot_config()
   return config;
 }
 
-void FaultManagerNode::load_snapshot_config_from_yaml(
-  const std::string & config_file, SnapshotConfig & config)
-{
+void FaultManagerNode::load_snapshot_config_from_yaml(const std::string & config_file, SnapshotConfig & config) {
   if (!std::filesystem::exists(config_file)) {
     RCLCPP_ERROR(get_logger(), "Snapshot config file not found: %s", config_file.c_str());
     return;
@@ -789,9 +701,7 @@ void FaultManagerNode::load_snapshot_config_from_yaml(
           topics.push_back(topic.as<std::string>());
         }
         config.fault_specific[fault_code] = topics;
-        RCLCPP_DEBUG(
-          get_logger(), "Loaded fault_specific[%s] with %zu topics", fault_code.c_str(),
-          topics.size());
+        RCLCPP_DEBUG(get_logger(), "Loaded fault_specific[%s] with %zu topics", fault_code.c_str(), topics.size());
       }
     }
 
@@ -804,8 +714,7 @@ void FaultManagerNode::load_snapshot_config_from_yaml(
           topics.push_back(topic.as<std::string>());
         }
         config.patterns[pattern] = topics;
-        RCLCPP_DEBUG(
-          get_logger(), "Loaded pattern[%s] with %zu topics", pattern.c_str(), topics.size());
+        RCLCPP_DEBUG(get_logger(), "Loaded pattern[%s] with %zu topics", pattern.c_str(), topics.size());
       }
     }
 
@@ -814,22 +723,18 @@ void FaultManagerNode::load_snapshot_config_from_yaml(
       for (const auto & topic : yaml_config["default_topics"]) {
         config.default_topics.push_back(topic.as<std::string>());
       }
-      RCLCPP_DEBUG(
-        get_logger(), "Loaded %zu default_topics from config file", config.default_topics.size());
+      RCLCPP_DEBUG(get_logger(), "Loaded %zu default_topics from config file", config.default_topics.size());
     }
 
-    RCLCPP_INFO(
-      get_logger(), "Loaded snapshot config from %s (fault_specific=%zu, patterns=%zu)",
-      config_file.c_str(), config.fault_specific.size(), config.patterns.size());
+    RCLCPP_INFO(get_logger(), "Loaded snapshot config from %s (fault_specific=%zu, patterns=%zu)", config_file.c_str(),
+                config.fault_specific.size(), config.patterns.size());
 
   } catch (const YAML::Exception & e) {
-    RCLCPP_ERROR(
-      get_logger(), "Failed to parse snapshot config file %s: %s", config_file.c_str(), e.what());
+    RCLCPP_ERROR(get_logger(), "Failed to parse snapshot config file %s: %s", config_file.c_str(), e.what());
   }
 }
 
-std::unique_ptr<correlation::CorrelationEngine> FaultManagerNode::create_correlation_engine()
-{
+std::unique_ptr<correlation::CorrelationEngine> FaultManagerNode::create_correlation_engine() {
   // Get correlation config file path from parameter
   auto config_file = declare_parameter<std::string>("correlation.config_file", "");
 
@@ -863,9 +768,8 @@ std::unique_ptr<correlation::CorrelationEngine> FaultManagerNode::create_correla
       return nullptr;
     }
 
-    RCLCPP_INFO(
-      get_logger(), "Correlation engine enabled (default_window=%ums, patterns=%zu, rules=%zu)",
-      config.default_window_ms, config.patterns.size(), config.rules.size());
+    RCLCPP_INFO(get_logger(), "Correlation engine enabled (default_window=%ums, patterns=%zu, rules=%zu)",
+                config.default_window_ms, config.patterns.size(), config.rules.size());
 
     return std::make_unique<correlation::CorrelationEngine>(config);
 
@@ -876,9 +780,8 @@ std::unique_ptr<correlation::CorrelationEngine> FaultManagerNode::create_correla
 }
 
 void FaultManagerNode::handle_get_snapshots(
-  const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Request> & request,
-  const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> & response)
-{
+    const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> & response) {
   // Validate fault_code
   std::string validation_error = validate_fault_code(request->fault_code);
   if (!validation_error.empty()) {
@@ -923,9 +826,7 @@ void FaultManagerNode::handle_get_snapshots(
     try {
       topic_entry["data"] = nlohmann::json::parse(snapshot.data);
     } catch (const nlohmann::json::exception & e) {
-      RCLCPP_WARN(
-        get_logger(), "Failed to parse snapshot data for topic '%s': %s", snapshot.topic.c_str(),
-        e.what());
+      RCLCPP_WARN(get_logger(), "Failed to parse snapshot data for topic '%s': %s", snapshot.topic.c_str(), e.what());
       topic_entry["data"] = snapshot.data;  // Store as raw string if parsing fails
     }
 
@@ -950,15 +851,12 @@ void FaultManagerNode::handle_get_snapshots(
   response->success = true;
   response->data = result.dump();
 
-  RCLCPP_DEBUG(
-    get_logger(), "GetSnapshots returned %zu topics for fault '%s' (rosbag=%s)", snapshots.size(),
-    request->fault_code.c_str(), rosbag_info ? "available" : "not available");
+  RCLCPP_DEBUG(get_logger(), "GetSnapshots returned %zu topics for fault '%s' (rosbag=%s)", snapshots.size(),
+               request->fault_code.c_str(), rosbag_info ? "available" : "not available");
 }
 
-void FaultManagerNode::handle_get_rosbag(
-  const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
-  const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response)
-{
+void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
+                                         const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response) {
   // Validate fault_code
   std::string validation_error = validate_fault_code(request->fault_code);
   if (!validation_error.empty()) {
@@ -998,15 +896,13 @@ void FaultManagerNode::handle_get_rosbag(
   response->duration_sec = rosbag_info->duration_sec;
   response->size_bytes = rosbag_info->size_bytes;
 
-  RCLCPP_DEBUG(
-    get_logger(), "GetRosbag returned file '%s' for fault '%s'", rosbag_info->file_path.c_str(),
-    request->fault_code.c_str());
+  RCLCPP_DEBUG(get_logger(), "GetRosbag returned file '%s' for fault '%s'", rosbag_info->file_path.c_str(),
+               request->fault_code.c_str());
 }
 
 void FaultManagerNode::handle_list_rosbags(
-  const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Request> & request,
-  const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Response> & response)
-{
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Response> & response) {
   RCLCPP_DEBUG(get_logger(), "ListRosbags request for entity: %s", request->entity_fqn.c_str());
 
   if (request->entity_fqn.empty()) {
@@ -1033,17 +929,14 @@ void FaultManagerNode::handle_list_rosbags(
   }
 
   response->success = true;
-  RCLCPP_DEBUG(
-    get_logger(), "ListRosbags returned %zu rosbags for entity '%s'", response->fault_codes.size(),
-    request->entity_fqn.c_str());
+  RCLCPP_DEBUG(get_logger(), "ListRosbags returned %zu rosbags for entity '%s'", response->fault_codes.size(),
+               request->entity_fqn.c_str());
 }
 
 void FaultManagerNode::handle_list_faults_for_entity(
-  const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
-  const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response)
-{
-  RCLCPP_DEBUG(
-    get_logger(), "ListFaultsForEntity request for entity: %s", request->entity_id.c_str());
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response) {
+  RCLCPP_DEBUG(get_logger(), "ListFaultsForEntity request for entity: %s", request->entity_id.c_str());
 
   // Validate entity_id is not empty
   if (request->entity_id.empty()) {
@@ -1063,14 +956,12 @@ void FaultManagerNode::handle_list_faults_for_entity(
   }
 
   response->success = true;
-  RCLCPP_DEBUG(
-    get_logger(), "ListFaultsForEntity returned %zu faults for entity '%s'",
-    response->faults.size(), request->entity_id.c_str());
+  RCLCPP_DEBUG(get_logger(), "ListFaultsForEntity returned %zu faults for entity '%s'", response->faults.size(),
+               request->entity_id.c_str());
 }
 
-bool FaultManagerNode::matches_entity(
-  const std::vector<std::string> & reporting_sources, const std::string & entity_id)
-{
+bool FaultManagerNode::matches_entity(const std::vector<std::string> & reporting_sources,
+                                      const std::string & entity_id) {
   for (const auto & source : reporting_sources) {
     // Exact match
     if (source == entity_id) {

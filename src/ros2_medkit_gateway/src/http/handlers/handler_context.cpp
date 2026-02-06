@@ -21,14 +21,10 @@
 using json = nlohmann::json;
 using httplib::StatusCode;
 
-namespace ros2_medkit_gateway
-{
-namespace handlers
-{
+namespace ros2_medkit_gateway {
+namespace handlers {
 
-tl::expected<void, std::string> HandlerContext::validate_entity_id(
-  const std::string & entity_id) const
-{
+tl::expected<void, std::string> HandlerContext::validate_entity_id(const std::string & entity_id) const {
   // Check for empty string
   if (entity_id.empty()) {
     return tl::unexpected("Entity ID cannot be empty");
@@ -44,8 +40,7 @@ tl::expected<void, std::string> HandlerContext::validate_entity_id(
   // Reject: forward slash (conflicts with URL routing), special characters, escape sequences
   // Note: Hyphens are allowed in manifest entity IDs (e.g., "engine-ecu", "front-left-door")
   for (char c : entity_id) {
-    bool is_alphanumeric =
-      (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+    bool is_alphanumeric = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
     bool is_allowed_special = (c == '_' || c == '-');
 
     if (!is_alphanumeric && !is_allowed_special) {
@@ -59,18 +54,16 @@ tl::expected<void, std::string> HandlerContext::validate_entity_id(
       } else {
         char_repr = std::string(1, c);
       }
-      return tl::unexpected(
-        "Entity ID contains invalid character: '" + char_repr +
-        "'. Only alphanumeric, underscore and hyphen are allowed");
+      return tl::unexpected("Entity ID contains invalid character: '" + char_repr +
+                            "'. Only alphanumeric, underscore and hyphen are allowed");
     }
   }
 
   return {};
 }
 
-tl::expected<std::string, std::string> HandlerContext::get_component_namespace_path(
-  const std::string & component_id) const
-{
+tl::expected<std::string, std::string>
+HandlerContext::get_component_namespace_path(const std::string & component_id) const {
   const auto & cache = node_->get_thread_safe_cache();
   auto component = cache.get_component(component_id);
   if (component) {
@@ -79,9 +72,7 @@ tl::expected<std::string, std::string> HandlerContext::get_component_namespace_p
   return tl::unexpected("Component not found");
 }
 
-EntityInfo HandlerContext::get_entity_info(
-  const std::string & entity_id, SovdEntityType expected_type) const
-{
+EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEntityType expected_type) const {
   const auto & cache = node_->get_thread_safe_cache();
   EntityInfo info;
   info.id = entity_id;
@@ -192,9 +183,8 @@ EntityInfo HandlerContext::get_entity_info(
   return info;
 }
 
-std::optional<std::string> HandlerContext::validate_collection_access(
-  const EntityInfo & entity, ResourceCollection collection)
-{
+std::optional<std::string> HandlerContext::validate_collection_access(const EntityInfo & entity,
+                                                                      ResourceCollection collection) {
   auto caps = EntityCapabilities::for_type(entity.sovd_type());
 
   if (!caps.supports_collection(collection)) {
@@ -204,15 +194,14 @@ std::optional<std::string> HandlerContext::validate_collection_access(
   return std::nullopt;
 }
 
-std::optional<EntityInfo> HandlerContext::validate_entity_for_route(
-  const httplib::Request & req, httplib::Response & res, const std::string & entity_id) const
-{
+std::optional<EntityInfo> HandlerContext::validate_entity_for_route(const httplib::Request & req,
+                                                                    httplib::Response & res,
+                                                                    const std::string & entity_id) const {
   // Step 1: Validate entity ID format
   auto validation_result = validate_entity_id(entity_id);
   if (!validation_result) {
-    send_error(
-      res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-      {{"details", validation_result.error()}, {"entity_id", entity_id}});
+    send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+               {{"details", validation_result.error()}, {"entity_id", entity_id}});
     return std::nullopt;
   }
 
@@ -225,18 +214,15 @@ std::optional<EntityInfo> HandlerContext::validate_entity_for_route(
     auto any_entity = get_entity_info(entity_id);
     if (any_entity.type != EntityType::UNKNOWN) {
       // Entity exists but wrong type for this route -> 400
-      send_error(
-        res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
-        "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-          to_string(any_entity.sovd_type()),
-        {{"entity_id", entity_id},
-         {"expected_type", to_string(expected_type)},
-         {"actual_type", to_string(any_entity.sovd_type())}});
+      send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                     to_string(any_entity.sovd_type()),
+                 {{"entity_id", entity_id},
+                  {"expected_type", to_string(expected_type)},
+                  {"actual_type", to_string(any_entity.sovd_type())}});
     } else {
       // Entity doesn't exist at all -> 404
-      send_error(
-        res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-        {{"entity_id", entity_id}});
+      send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
     }
     return std::nullopt;
   }
@@ -244,8 +230,7 @@ std::optional<EntityInfo> HandlerContext::validate_entity_for_route(
   return entity_info;
 }
 
-void HandlerContext::set_cors_headers(httplib::Response & res, const std::string & origin) const
-{
+void HandlerContext::set_cors_headers(httplib::Response & res, const std::string & origin) const {
   res.set_header("Access-Control-Allow-Origin", origin);
 
   // Use pre-built header strings from CorsConfig
@@ -265,8 +250,7 @@ void HandlerContext::set_cors_headers(httplib::Response & res, const std::string
   }
 }
 
-bool HandlerContext::is_origin_allowed(const std::string & origin) const
-{
+bool HandlerContext::is_origin_allowed(const std::string & origin) const {
   // Check if origin matches any allowed origin
   // Note: Wildcard "*" is allowed here but credentials+wildcard is blocked at startup
   // (see gateway_node.cpp validation). When wildcard is used, we echo back the actual
@@ -279,10 +263,8 @@ bool HandlerContext::is_origin_allowed(const std::string & origin) const
   return false;
 }
 
-void HandlerContext::send_error(
-  httplib::Response & res, httplib::StatusCode status, const std::string & error_code,
-  const std::string & message, const json & parameters)
-{
+void HandlerContext::send_error(httplib::Response & res, httplib::StatusCode status, const std::string & error_code,
+                                const std::string & message, const json & parameters) {
   res.status = status;
   json error_json;
 
@@ -304,8 +286,7 @@ void HandlerContext::send_error(
   res.set_content(error_json.dump(2), "application/json");
 }
 
-void HandlerContext::send_json(httplib::Response & res, const json & data)
-{
+void HandlerContext::send_json(httplib::Response & res, const json & data) {
   res.set_content(data.dump(2), "application/json");
 }
 

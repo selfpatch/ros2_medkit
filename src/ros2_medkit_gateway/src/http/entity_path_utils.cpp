@@ -17,23 +17,19 @@
 #include <regex>
 #include <vector>
 
-namespace ros2_medkit_gateway
-{
+namespace ros2_medkit_gateway {
 
-namespace
-{
+namespace {
 
 // Pattern definition for entity path matching
-struct PatternDef
-{
+struct PatternDef {
   std::regex pattern;
   SovdEntityType type;
   bool is_nested;
 };
 
 // Get static patterns - order matters (nested patterns must come first)
-const std::vector<PatternDef> & get_patterns()
-{
+const std::vector<PatternDef> & get_patterns() {
   // clang-format off
   static const std::vector<PatternDef> patterns = {
     // Nested entities (must be checked first due to more specific patterns)
@@ -50,8 +46,7 @@ const std::vector<PatternDef> & get_patterns()
 }
 
 // Get entity type path segment
-std::string get_type_segment(SovdEntityType type, bool is_nested)
-{
+std::string get_type_segment(SovdEntityType type, bool is_nested) {
   if (is_nested) {
     switch (type) {
       case SovdEntityType::AREA:
@@ -78,8 +73,7 @@ std::string get_type_segment(SovdEntityType type, bool is_nested)
 
 }  // namespace
 
-std::optional<EntityPathInfo> parse_entity_path(const std::string & request_path)
-{
+std::optional<EntityPathInfo> parse_entity_path(const std::string & request_path) {
   if (request_path.empty()) {
     return std::nullopt;
   }
@@ -100,17 +94,16 @@ std::optional<EntityPathInfo> parse_entity_path(const std::string & request_path
         // Build entity path: /{parent_type}/{parent_id}/{sub_type}/{entity_id}
         std::string parent_segment = (def.type == SovdEntityType::AREA) ? "areas" : "components";
         std::string sub_segment = get_type_segment(def.type, true);
-        info.entity_path.reserve(
-          parent_segment.size() + info.parent_id.size() + sub_segment.size() +
-          info.entity_id.size() + 4);
+        info.entity_path.reserve(parent_segment.size() + info.parent_id.size() + sub_segment.size() +
+                                 info.entity_id.size() + 4);
         info.entity_path = "/";
         info.entity_path.append(parent_segment)
-          .append("/")
-          .append(info.parent_id)
-          .append("/")
-          .append(sub_segment)
-          .append("/")
-          .append(info.entity_id);
+            .append("/")
+            .append(info.parent_id)
+            .append("/")
+            .append(sub_segment)
+            .append("/")
+            .append(info.entity_id);
       } else {
         // For top-level: match[1] = entity_id, match[2] = resource_path
         info.entity_id = match[1].str();
@@ -130,8 +123,7 @@ std::optional<EntityPathInfo> parse_entity_path(const std::string & request_path
   return std::nullopt;
 }
 
-std::string extract_bulk_data_category(const std::string & path)
-{
+std::string extract_bulk_data_category(const std::string & path) {
   static const std::regex pattern(R"(/bulk-data/([^/]+))");
   std::smatch match;
   if (std::regex_search(path, match, pattern)) {
@@ -140,8 +132,7 @@ std::string extract_bulk_data_category(const std::string & path)
   return "";
 }
 
-std::string extract_bulk_data_id(const std::string & path)
-{
+std::string extract_bulk_data_id(const std::string & path) {
   static const std::regex pattern(R"(/bulk-data/[^/]+/([^/]+))");
   std::smatch match;
   if (std::regex_search(path, match, pattern)) {

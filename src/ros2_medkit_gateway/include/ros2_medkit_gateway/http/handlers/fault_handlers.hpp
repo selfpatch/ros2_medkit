@@ -21,10 +21,8 @@
 #include "ros2_medkit_msgs/msg/environment_data.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 
-namespace ros2_medkit_gateway
-{
-namespace handlers
-{
+namespace ros2_medkit_gateway {
+namespace handlers {
 
 /**
  * @brief Handlers for fault management REST API endpoints.
@@ -38,14 +36,14 @@ namespace handlers
  * Note: Snapshot data is inline in fault responses (environment_data).
  * Rosbag downloads use the bulk-data endpoint pattern.
  */
-class FaultHandlers
-{
-public:
+class FaultHandlers {
+ public:
   /**
    * @brief Construct fault handlers with shared context.
    * @param ctx The shared handler context
    */
-  explicit FaultHandlers(HandlerContext & ctx) : ctx_(ctx) {}
+  explicit FaultHandlers(HandlerContext & ctx) : ctx_(ctx) {
+  }
 
   /**
    * @brief Handle GET /faults - list all faults.
@@ -85,11 +83,11 @@ public:
    * @param entity_path Entity path for bulk_data_uri generation (e.g., "/apps/motor")
    * @return SOVD-compliant JSON response
    */
-  static nlohmann::json build_sovd_fault_response(
-    const ros2_medkit_msgs::msg::Fault & fault,
-    const ros2_medkit_msgs::msg::EnvironmentData & env_data, const std::string & entity_path);
+  static nlohmann::json build_sovd_fault_response(const ros2_medkit_msgs::msg::Fault & fault,
+                                                  const ros2_medkit_msgs::msg::EnvironmentData & env_data,
+                                                  const std::string & entity_path);
 
-private:
+ private:
   HandlerContext & ctx_;
 };
 

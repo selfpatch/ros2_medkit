@@ -20,10 +20,8 @@
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
-namespace ros2_medkit_gateway
-{
-namespace handlers
-{
+namespace ros2_medkit_gateway {
+namespace handlers {
 
 /**
  * @brief HTTP handlers for SOVD bulk-data endpoints.
@@ -38,9 +36,8 @@ namespace handlers
  * - /functions/{id}/bulk-data[/{category}[/{id}]]
  * - Nested entities (subareas, subcomponents)
  */
-class BulkDataHandlers
-{
-public:
+class BulkDataHandlers {
+ public:
   /**
    * @brief Construct BulkDataHandlers.
    * @param ctx Handler context for sending responses and accessing FaultManager
@@ -88,7 +85,7 @@ public:
    */
   static std::string get_rosbag_mimetype(const std::string & format);
 
-private:
+ private:
   HandlerContext & ctx_;
 
   /**
@@ -98,8 +95,8 @@ private:
    * @param content_type MIME type for Content-Type header
    * @return true if successful, false if file could not be read
    */
-  bool stream_file_to_response(
-    httplib::Response & res, const std::string & file_path, const std::string & content_type);
+  bool stream_file_to_response(httplib::Response & res, const std::string & file_path,
+                               const std::string & content_type);
 
   /**
    * @brief Resolve rosbag file path from storage path.

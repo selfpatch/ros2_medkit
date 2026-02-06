@@ -26,12 +26,10 @@
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
-namespace ros2_medkit_fault_manager
-{
+namespace ros2_medkit_fault_manager {
 
 /// Debounce configuration for fault filtering
-struct DebounceConfig
-{
+struct DebounceConfig {
   /// Confirmation threshold (typically negative). Fault is CONFIRMED when counter <= this value.
   /// Default: -1 (immediate confirmation - first FAILED event confirms the fault).
   /// Set to lower values (e.g., -3) for debounce filtering.
@@ -53,8 +51,7 @@ struct DebounceConfig
 };
 
 /// Internal fault state stored in memory
-struct FaultState
-{
+struct FaultState {
   std::string fault_code;
   uint8_t severity{0};
   std::string description;
@@ -77,8 +74,7 @@ struct FaultState
 using EventType = ros2_medkit_msgs::srv::ReportFault::Request;
 
 /// Snapshot data captured when a fault is confirmed
-struct SnapshotData
-{
+struct SnapshotData {
   std::string fault_code;
   std::string topic;
   std::string message_type;
@@ -87,8 +83,7 @@ struct SnapshotData
 };
 
 /// Rosbag file metadata for time-window recording
-struct RosbagFileInfo
-{
+struct RosbagFileInfo {
   std::string fault_code;
   std::string file_path;
   std::string format;        ///< "sqlite3" or "mcap"
@@ -98,9 +93,8 @@ struct RosbagFileInfo
 };
 
 /// Abstract interface for fault storage backends
-class FaultStorage
-{
-public:
+class FaultStorage {
+ public:
   virtual ~FaultStorage() = default;
 
   /// Set debounce configuration
@@ -118,24 +112,22 @@ public:
   /// @param timestamp Current time for tracking
   /// @return true if this is a new occurrence (new fault or reactivated CLEARED fault),
   ///         false if existing active fault was updated
-  virtual bool report_fault_event(
-    const std::string & fault_code, uint8_t event_type, uint8_t severity,
-    const std::string & description, const std::string & source_id,
-    const rclcpp::Time & timestamp) = 0;
+  virtual bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+                                  const std::string & description, const std::string & source_id,
+                                  const rclcpp::Time & timestamp) = 0;
 
   /// Get faults matching filter criteria
   /// @param filter_by_severity Whether to filter by severity
   /// @param severity Severity level to filter (if filter_by_severity is true)
   /// @param statuses List of statuses to include (empty = CONFIRMED only)
   /// @return Vector of matching faults
-  virtual std::vector<ros2_medkit_msgs::msg::Fault> list_faults(
-    bool filter_by_severity, uint8_t severity, const std::vector<std::string> & statuses) const = 0;
+  virtual std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
+                                                                const std::vector<std::string> & statuses) const = 0;
 
   /// Get a single fault by fault_code
   /// @param fault_code The fault code to look up
   /// @return The fault if found, nullopt otherwise
-  virtual std::optional<ros2_medkit_msgs::msg::Fault> get_fault(
-    const std::string & fault_code) const = 0;
+  virtual std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const = 0;
 
   /// Clear a fault by fault_code (manual acknowledgment)
   /// @param fault_code The fault code to clear
@@ -161,8 +153,8 @@ public:
   /// @param fault_code The fault code to get snapshots for
   /// @param topic_filter Optional topic filter (empty = all topics)
   /// @return Vector of snapshots for the fault
-  virtual std::vector<SnapshotData> get_snapshots(
-    const std::string & fault_code, const std::string & topic_filter = "") const = 0;
+  virtual std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
+                                                  const std::string & topic_filter = "") const = 0;
 
   /// Store rosbag file metadata for a fault
   /// @param info The rosbag file info to store (replaces any existing entry for fault_code)
@@ -189,14 +181,13 @@ public:
   /// Get rosbags for all faults associated with an entity
   /// @param entity_fqn The entity's fully qualified name to filter by
   /// @return Vector of rosbag file info for faults reported by this entity
-  virtual std::vector<RosbagFileInfo> list_rosbags_for_entity(
-    const std::string & entity_fqn) const = 0;
+  virtual std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const = 0;
 
   /// Get all stored faults regardless of status (for filtering)
   /// @return Vector of all faults in storage
   virtual std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const = 0;
 
-protected:
+ protected:
   FaultStorage() = default;
   FaultStorage(const FaultStorage &) = default;
   FaultStorage & operator=(const FaultStorage &) = default;
@@ -205,25 +196,21 @@ protected:
 };
 
 /// Thread-safe in-memory fault storage implementation
-class InMemoryFaultStorage : public FaultStorage
-{
-public:
+class InMemoryFaultStorage : public FaultStorage {
+ public:
   InMemoryFaultStorage() = default;
 
   void set_debounce_config(const DebounceConfig & config) override;
   DebounceConfig get_debounce_config() const override;
 
-  bool report_fault_event(
-    const std::string & fault_code, uint8_t event_type, uint8_t severity,
-    const std::string & description, const std::string & source_id,
-    const rclcpp::Time & timestamp) override;
+  bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+                          const std::string & description, const std::string & source_id,
+                          const rclcpp::Time & timestamp) override;
 
-  std::vector<ros2_medkit_msgs::msg::Fault> list_faults(
-    bool filter_by_severity, uint8_t severity,
-    const std::vector<std::string> & statuses) const override;
+  std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
+                                                        const std::vector<std::string> & statuses) const override;
 
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(
-    const std::string & fault_code) const override;
+  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override;
 
   bool clear_fault(const std::string & fault_code) override;
 
@@ -234,19 +221,18 @@ public:
   size_t check_time_based_confirmation(const rclcpp::Time & current_time) override;
 
   void store_snapshot(const SnapshotData & snapshot) override;
-  std::vector<SnapshotData> get_snapshots(
-    const std::string & fault_code, const std::string & topic_filter = "") const override;
+  std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
+                                          const std::string & topic_filter = "") const override;
 
   void store_rosbag_file(const RosbagFileInfo & info) override;
   std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
   bool delete_rosbag_file(const std::string & fault_code) override;
   size_t get_total_rosbag_storage_bytes() const override;
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
-  std::vector<RosbagFileInfo> list_rosbags_for_entity(
-    const std::string & entity_fqn) const override;
+  std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
   std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
 
-private:
+ private:
   /// Update fault status based on debounce counter
   void update_status(FaultState & state);
 

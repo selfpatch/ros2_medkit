@@ -17,11 +17,9 @@
 #include <algorithm>
 #include <filesystem>
 
-namespace ros2_medkit_fault_manager
-{
+namespace ros2_medkit_fault_manager {
 
-ros2_medkit_msgs::msg::Fault FaultState::to_msg() const
-{
+ros2_medkit_msgs::msg::Fault FaultState::to_msg() const {
   ros2_medkit_msgs::msg::Fault msg;
   msg.fault_code = fault_code;
   msg.severity = severity;
@@ -40,20 +38,17 @@ ros2_medkit_msgs::msg::Fault FaultState::to_msg() const
   return msg;
 }
 
-void InMemoryFaultStorage::set_debounce_config(const DebounceConfig & config)
-{
+void InMemoryFaultStorage::set_debounce_config(const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
   config_ = config;
 }
 
-DebounceConfig InMemoryFaultStorage::get_debounce_config() const
-{
+DebounceConfig InMemoryFaultStorage::get_debounce_config() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return config_;
 }
 
-void InMemoryFaultStorage::update_status(FaultState & state)
-{
+void InMemoryFaultStorage::update_status(FaultState & state) {
   // Note: CLEARED faults are handled in report_fault_event() before this is called
 
   if (state.debounce_counter <= config_.confirmation_threshold) {
@@ -69,10 +64,9 @@ void InMemoryFaultStorage::update_status(FaultState & state)
   // This avoids rapid status flapping at the zero crossing boundary.
 }
 
-bool InMemoryFaultStorage::report_fault_event(
-  const std::string & fault_code, uint8_t event_type, uint8_t severity,
-  const std::string & description, const std::string & source_id, const rclcpp::Time & timestamp)
-{
+bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+                                              const std::string & description, const std::string & source_id,
+                                              const rclcpp::Time & timestamp) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
@@ -96,9 +90,7 @@ bool InMemoryFaultStorage::report_fault_event(
     state.reporting_sources.insert(source_id);
 
     // CRITICAL severity bypasses debounce and confirms immediately
-    if (
-      config_.critical_immediate_confirm &&
-      severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+    if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
       state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
     } else {
       // Set status based on debounce counter vs threshold
@@ -133,9 +125,7 @@ bool InMemoryFaultStorage::report_fault_event(
       state.description = description;
     }
     // Check for immediate CRITICAL confirmation
-    if (
-      config_.critical_immediate_confirm &&
-      severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+    if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
       state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
     } else {
       update_status(state);
@@ -172,9 +162,7 @@ bool InMemoryFaultStorage::report_fault_event(
     }
 
     // Check for immediate confirmation of CRITICAL
-    if (
-      config_.critical_immediate_confirm &&
-      severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+    if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
       state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
       return false;
     }
@@ -194,9 +182,9 @@ bool InMemoryFaultStorage::report_fault_event(
   return false;
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::list_faults(
-  bool filter_by_severity, uint8_t severity, const std::vector<std::string> & statuses) const
-{
+std::vector<ros2_medkit_msgs::msg::Fault>
+InMemoryFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
+                                  const std::vector<std::string> & statuses) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
@@ -207,12 +195,9 @@ std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::list_faults(
   } else {
     for (const auto & s : statuses) {
       // Only add valid statuses (invalid ones are silently ignored)
-      if (
-        s == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED ||
-        s == ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED ||
-        s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED ||
-        s == ros2_medkit_msgs::msg::Fault::STATUS_HEALED ||
-        s == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
+      if (s == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED || s == ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED ||
+          s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED || s == ros2_medkit_msgs::msg::Fault::STATUS_HEALED ||
+          s == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
         status_filter.insert(s);
       }
     }
@@ -242,9 +227,7 @@ std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::list_faults(
   return result;
 }
 
-std::optional<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_fault(
-  const std::string & fault_code) const
-{
+std::optional<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_fault(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = faults_.find(fault_code);
@@ -255,8 +238,7 @@ std::optional<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_fault(
   return it->second.to_msg();
 }
 
-bool InMemoryFaultStorage::clear_fault(const std::string & fault_code)
-{
+bool InMemoryFaultStorage::clear_fault(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = faults_.find(fault_code);
@@ -265,30 +247,27 @@ bool InMemoryFaultStorage::clear_fault(const std::string & fault_code)
   }
 
   // Delete associated snapshots when fault is cleared
-  snapshots_.erase(
-    std::remove_if(
-      snapshots_.begin(), snapshots_.end(),
-      [&fault_code](const SnapshotData & s) { return s.fault_code == fault_code; }),
-    snapshots_.end());
+  snapshots_.erase(std::remove_if(snapshots_.begin(), snapshots_.end(),
+                                  [&fault_code](const SnapshotData & s) {
+                                    return s.fault_code == fault_code;
+                                  }),
+                   snapshots_.end());
 
   it->second.status = ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
   return true;
 }
 
-size_t InMemoryFaultStorage::size() const
-{
+size_t InMemoryFaultStorage::size() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return faults_.size();
 }
 
-bool InMemoryFaultStorage::contains(const std::string & fault_code) const
-{
+bool InMemoryFaultStorage::contains(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
   return faults_.find(fault_code) != faults_.end();
 }
 
-size_t InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time)
-{
+size_t InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (config_.auto_confirm_after_sec <= 0.0) {
@@ -311,15 +290,13 @@ size_t InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & 
   return confirmed_count;
 }
 
-void InMemoryFaultStorage::store_snapshot(const SnapshotData & snapshot)
-{
+void InMemoryFaultStorage::store_snapshot(const SnapshotData & snapshot) {
   std::lock_guard<std::mutex> lock(mutex_);
   snapshots_.push_back(snapshot);
 }
 
-std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(
-  const std::string & fault_code, const std::string & topic_filter) const
-{
+std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(const std::string & fault_code,
+                                                              const std::string & topic_filter) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<SnapshotData> result;
@@ -333,8 +310,7 @@ std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(
   return result;
 }
 
-void InMemoryFaultStorage::store_rosbag_file(const RosbagFileInfo & info)
-{
+void InMemoryFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Delete existing bag file if present (prevent orphaned files on re-confirm)
@@ -350,9 +326,7 @@ void InMemoryFaultStorage::store_rosbag_file(const RosbagFileInfo & info)
   rosbag_files_[info.fault_code] = info;
 }
 
-std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(
-  const std::string & fault_code) const
-{
+std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = rosbag_files_.find(fault_code);
@@ -362,8 +336,7 @@ std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(
   return it->second;
 }
 
-bool InMemoryFaultStorage::delete_rosbag_file(const std::string & fault_code)
-{
+bool InMemoryFaultStorage::delete_rosbag_file(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = rosbag_files_.find(fault_code);
@@ -380,8 +353,7 @@ bool InMemoryFaultStorage::delete_rosbag_file(const std::string & fault_code)
   return true;
 }
 
-size_t InMemoryFaultStorage::get_total_rosbag_storage_bytes() const
-{
+size_t InMemoryFaultStorage::get_total_rosbag_storage_bytes() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   size_t total = 0;
@@ -391,8 +363,7 @@ size_t InMemoryFaultStorage::get_total_rosbag_storage_bytes() const
   return total;
 }
 
-std::vector<RosbagFileInfo> InMemoryFaultStorage::get_all_rosbag_files() const
-{
+std::vector<RosbagFileInfo> InMemoryFaultStorage::get_all_rosbag_files() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<RosbagFileInfo> result;
@@ -409,9 +380,7 @@ std::vector<RosbagFileInfo> InMemoryFaultStorage::get_all_rosbag_files() const
   return result;
 }
 
-std::vector<RosbagFileInfo> InMemoryFaultStorage::list_rosbags_for_entity(
-  const std::string & entity_fqn) const
-{
+std::vector<RosbagFileInfo> InMemoryFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<RosbagFileInfo> result;
@@ -430,8 +399,7 @@ std::vector<RosbagFileInfo> InMemoryFaultStorage::list_rosbags_for_entity(
   return result;
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_all_faults() const
-{
+std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_all_faults() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<ros2_medkit_msgs::msg::Fault> result;

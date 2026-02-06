@@ -23,8 +23,7 @@
 
 #include "ros2_medkit_gateway/models/entity_types.hpp"
 
-namespace ros2_medkit_gateway
-{
+namespace ros2_medkit_gateway {
 
 /// API version prefix for all endpoints
 constexpr const char * API_BASE_PATH = "/api/v1";
@@ -34,8 +33,7 @@ constexpr const char * API_BASE_PATH = "/api/v1";
  * @param endpoint The endpoint path (e.g., "/health")
  * @return Full API path (e.g., "/api/v1/health")
  */
-inline std::string api_path(const std::string & endpoint)
-{
+inline std::string api_path(const std::string & endpoint) {
   return std::string(API_BASE_PATH) + endpoint;
 }
 
@@ -49,8 +47,7 @@ inline std::string api_path(const std::string & endpoint)
  * @param path Request path (e.g., "/api/v1/components/my_component/data")
  * @return Expected entity type, or UNKNOWN if path doesn't match entity routes
  */
-inline SovdEntityType extract_entity_type_from_path(const std::string & path)
-{
+inline SovdEntityType extract_entity_type_from_path(const std::string & path) {
   // Path format: /api/v1/{entity_type}/{id}/...
   // Check for each entity type prefix after API base path
   const std::string base = std::string(API_BASE_PATH) + "/";
@@ -89,8 +86,7 @@ inline SovdEntityType extract_entity_type_from_path(const std::string & path)
 /**
  * @brief Fault status filter flags for fault listing endpoints
  */
-struct FaultStatusFilter
-{
+struct FaultStatusFilter {
   bool include_pending = true;
   bool include_confirmed = true;
   bool include_cleared = false;
@@ -102,8 +98,7 @@ struct FaultStatusFilter
  * @param req HTTP request
  * @return Filter flags and validity. If status param is invalid, is_valid=false.
  */
-inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req)
-{
+inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req) {
   FaultStatusFilter filter;
 
   if (req.has_param("status")) {
@@ -141,8 +136,7 @@ inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req)
  * @return ISO 8601 formatted string (e.g., "2025-01-15T10:30:00.123Z"),
  *         or "1970-01-01T00:00:00.000Z" on conversion failure
  */
-inline std::string format_timestamp_ns(int64_t ns)
-{
+inline std::string format_timestamp_ns(int64_t ns) {
   auto seconds = ns / 1'000'000'000;
   auto nanos = ns % 1'000'000'000;
 

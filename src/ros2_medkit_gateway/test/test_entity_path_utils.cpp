@@ -20,8 +20,7 @@ using namespace ros2_medkit_gateway;
 
 // ==================== parse_entity_path tests ====================
 
-TEST(EntityPathUtilsTest, ParseTopLevelApp)
-{
+TEST(EntityPathUtilsTest, ParseTopLevelApp) {
   auto info = parse_entity_path("/api/v1/apps/motor_controller/bulk-data/rosbags");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->type, SovdEntityType::APP);
@@ -32,8 +31,7 @@ TEST(EntityPathUtilsTest, ParseTopLevelApp)
   EXPECT_FALSE(info->is_nested);
 }
 
-TEST(EntityPathUtilsTest, ParseTopLevelComponent)
-{
+TEST(EntityPathUtilsTest, ParseTopLevelComponent) {
   auto info = parse_entity_path("/api/v1/components/perception_lidar/faults/ERROR");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->type, SovdEntityType::COMPONENT);
@@ -44,8 +42,7 @@ TEST(EntityPathUtilsTest, ParseTopLevelComponent)
   EXPECT_FALSE(info->is_nested);
 }
 
-TEST(EntityPathUtilsTest, ParseTopLevelArea)
-{
+TEST(EntityPathUtilsTest, ParseTopLevelArea) {
   auto info = parse_entity_path("/api/v1/areas/powertrain/data");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->type, SovdEntityType::AREA);
@@ -56,8 +53,7 @@ TEST(EntityPathUtilsTest, ParseTopLevelArea)
   EXPECT_FALSE(info->is_nested);
 }
 
-TEST(EntityPathUtilsTest, ParseTopLevelFunction)
-{
+TEST(EntityPathUtilsTest, ParseTopLevelFunction) {
   auto info = parse_entity_path("/api/v1/functions/motor_control/operations");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->type, SovdEntityType::FUNCTION);
@@ -68,8 +64,7 @@ TEST(EntityPathUtilsTest, ParseTopLevelFunction)
   EXPECT_FALSE(info->is_nested);
 }
 
-TEST(EntityPathUtilsTest, ParseNestedSubarea)
-{
+TEST(EntityPathUtilsTest, ParseNestedSubarea) {
   auto info = parse_entity_path("/api/v1/areas/perception/subareas/lidar/faults/LIDAR_ERROR");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->type, SovdEntityType::AREA);
@@ -80,8 +75,7 @@ TEST(EntityPathUtilsTest, ParseNestedSubarea)
   EXPECT_TRUE(info->is_nested);
 }
 
-TEST(EntityPathUtilsTest, ParseNestedSubcomponent)
-{
+TEST(EntityPathUtilsTest, ParseNestedSubcomponent) {
   auto info = parse_entity_path("/api/v1/components/ecu/subcomponents/sensor_hub/data");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->type, SovdEntityType::COMPONENT);
@@ -92,8 +86,7 @@ TEST(EntityPathUtilsTest, ParseNestedSubcomponent)
   EXPECT_TRUE(info->is_nested);
 }
 
-TEST(EntityPathUtilsTest, ParseEntityWithNoResourcePath)
-{
+TEST(EntityPathUtilsTest, ParseEntityWithNoResourcePath) {
   auto info = parse_entity_path("/api/v1/apps/motor_controller");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->type, SovdEntityType::APP);
@@ -102,27 +95,23 @@ TEST(EntityPathUtilsTest, ParseEntityWithNoResourcePath)
   EXPECT_EQ(info->entity_path, "/apps/motor_controller");
 }
 
-TEST(EntityPathUtilsTest, ParseInvalidPath)
-{
+TEST(EntityPathUtilsTest, ParseInvalidPath) {
   auto info = parse_entity_path("/api/v1/invalid/path");
   EXPECT_FALSE(info.has_value());
 }
 
-TEST(EntityPathUtilsTest, ParseEmptyPath)
-{
+TEST(EntityPathUtilsTest, ParseEmptyPath) {
   auto info = parse_entity_path("");
   EXPECT_FALSE(info.has_value());
 }
 
-TEST(EntityPathUtilsTest, ParsePathWithoutApiPrefix)
-{
+TEST(EntityPathUtilsTest, ParsePathWithoutApiPrefix) {
   // Should not match without /api/v1 prefix
   auto info = parse_entity_path("/apps/motor_controller/faults");
   EXPECT_FALSE(info.has_value());
 }
 
-TEST(EntityPathUtilsTest, ParsePathWithTrailingSlash)
-{
+TEST(EntityPathUtilsTest, ParsePathWithTrailingSlash) {
   auto info = parse_entity_path("/api/v1/apps/motor_controller/");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->type, SovdEntityType::APP);
@@ -132,41 +121,32 @@ TEST(EntityPathUtilsTest, ParsePathWithTrailingSlash)
 
 // ==================== extract_bulk_data_category tests ====================
 
-TEST(EntityPathUtilsTest, ExtractCategoryFromBulkDataPath)
-{
+TEST(EntityPathUtilsTest, ExtractCategoryFromBulkDataPath) {
   EXPECT_EQ(extract_bulk_data_category("/bulk-data/rosbags/abc-123"), "rosbags");
   EXPECT_EQ(extract_bulk_data_category("/bulk-data/snapshots/xyz"), "snapshots");
 }
 
-TEST(EntityPathUtilsTest, ExtractCategoryFromFullPath)
-{
+TEST(EntityPathUtilsTest, ExtractCategoryFromFullPath) {
   EXPECT_EQ(extract_bulk_data_category("/api/v1/apps/motor/bulk-data/rosbags/uuid"), "rosbags");
 }
 
-TEST(EntityPathUtilsTest, ExtractCategoryEmpty)
-{
+TEST(EntityPathUtilsTest, ExtractCategoryEmpty) {
   EXPECT_EQ(extract_bulk_data_category("/api/v1/apps/motor/faults"), "");
   EXPECT_EQ(extract_bulk_data_category(""), "");
 }
 
 // ==================== extract_bulk_data_id tests ====================
 
-TEST(EntityPathUtilsTest, ExtractBulkDataIdFromPath)
-{
-  EXPECT_EQ(
-    extract_bulk_data_id("/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000"),
-    "550e8400-e29b-41d4-a716-446655440000");
+TEST(EntityPathUtilsTest, ExtractBulkDataIdFromPath) {
+  EXPECT_EQ(extract_bulk_data_id("/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000"),
+            "550e8400-e29b-41d4-a716-446655440000");
 }
 
-TEST(EntityPathUtilsTest, ExtractBulkDataIdFromFullPath)
-{
-  EXPECT_EQ(
-    extract_bulk_data_id("/api/v1/apps/motor/bulk-data/snapshots/my-snapshot-id"),
-    "my-snapshot-id");
+TEST(EntityPathUtilsTest, ExtractBulkDataIdFromFullPath) {
+  EXPECT_EQ(extract_bulk_data_id("/api/v1/apps/motor/bulk-data/snapshots/my-snapshot-id"), "my-snapshot-id");
 }
 
-TEST(EntityPathUtilsTest, ExtractBulkDataIdEmpty)
-{
+TEST(EntityPathUtilsTest, ExtractBulkDataIdEmpty) {
   EXPECT_EQ(extract_bulk_data_id("/bulk-data/rosbags"), "");  // No ID after category
   EXPECT_EQ(extract_bulk_data_id("/api/v1/apps/motor"), "");  // No bulk-data segment
   EXPECT_EQ(extract_bulk_data_id(""), "");
@@ -174,8 +154,7 @@ TEST(EntityPathUtilsTest, ExtractBulkDataIdEmpty)
 
 // ==================== Complex path scenarios ====================
 
-TEST(EntityPathUtilsTest, ParseAppWithMultipleResourceSegments)
-{
+TEST(EntityPathUtilsTest, ParseAppWithMultipleResourceSegments) {
   auto info = parse_entity_path("/api/v1/apps/motor_controller/faults/MOTOR_ERR/snapshots");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->type, SovdEntityType::APP);
@@ -183,8 +162,7 @@ TEST(EntityPathUtilsTest, ParseAppWithMultipleResourceSegments)
   EXPECT_EQ(info->resource_path, "/faults/MOTOR_ERR/snapshots");
 }
 
-TEST(EntityPathUtilsTest, ParseComponentWithBulkData)
-{
+TEST(EntityPathUtilsTest, ParseComponentWithBulkData) {
   auto info = parse_entity_path("/api/v1/components/sensor_hub/bulk-data/rosbags/uuid-123");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->type, SovdEntityType::COMPONENT);
@@ -196,10 +174,8 @@ TEST(EntityPathUtilsTest, ParseComponentWithBulkData)
   EXPECT_EQ(extract_bulk_data_id(info->resource_path), "uuid-123");
 }
 
-TEST(EntityPathUtilsTest, ParseNestedSubareaWithBulkData)
-{
-  auto info =
-    parse_entity_path("/api/v1/areas/perception/subareas/camera/bulk-data/snapshots/snap-001");
+TEST(EntityPathUtilsTest, ParseNestedSubareaWithBulkData) {
+  auto info = parse_entity_path("/api/v1/areas/perception/subareas/camera/bulk-data/snapshots/snap-001");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->type, SovdEntityType::AREA);
   EXPECT_EQ(info->entity_id, "camera");

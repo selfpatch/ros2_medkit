@@ -32,8 +32,7 @@
 #include "ros2_medkit_msgs/srv/list_rosbags.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
-namespace ros2_medkit_fault_manager
-{
+namespace ros2_medkit_fault_manager {
 
 /// Central fault manager node
 ///
@@ -44,67 +43,62 @@ namespace ros2_medkit_fault_manager
 /// - storage_type (string): "memory" or "sqlite" (default: "sqlite")
 /// - database_path (string): Path to SQLite database file (default: "/var/lib/ros2_medkit/faults.db")
 ///   Use ":memory:" for in-memory SQLite database (useful for testing)
-class FaultManagerNode : public rclcpp::Node
-{
-public:
+class FaultManagerNode : public rclcpp::Node {
+ public:
   explicit FaultManagerNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
   /// Get read-only access to fault storage (for testing)
-  const FaultStorage & get_storage() const { return *storage_; }
+  const FaultStorage & get_storage() const {
+    return *storage_;
+  }
 
   /// Get the storage type being used
-  const std::string & get_storage_type() const { return storage_type_; }
+  const std::string & get_storage_type() const {
+    return storage_type_;
+  }
 
   /// Check if entity matches any reporting source
   /// @param reporting_sources List of reporting sources from fault
   /// @param entity_id Entity ID to match (exact match or as suffix of FQN)
   /// @return true if entity_id matches any source
-  static bool matches_entity(
-    const std::vector<std::string> & reporting_sources, const std::string & entity_id);
+  static bool matches_entity(const std::vector<std::string> & reporting_sources, const std::string & entity_id);
 
-private:
+ private:
   /// Create storage backend based on configuration
   std::unique_ptr<FaultStorage> create_storage();
 
   /// Handle ReportFault service request
-  void handle_report_fault(
-    const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
-    const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response);
+  void handle_report_fault(const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
+                           const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response);
 
   /// Handle ListFaults service request
-  void handle_list_faults(
-    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
-    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> & response);
+  void handle_list_faults(const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
+                          const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> & response);
 
   /// Handle GetFault service request (single fault with environment_data)
-  void handle_get_fault(
-    const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
-    const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> & response);
+  void handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
+                        const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> & response);
 
   /// Handle ClearFault service request
-  void handle_clear_fault(
-    const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
-    const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response);
+  void handle_clear_fault(const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
+                          const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response);
 
   /// Handle GetSnapshots service request
-  void handle_get_snapshots(
-    const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Request> & request,
-    const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> & response);
+  void handle_get_snapshots(const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Request> & request,
+                            const std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> & response);
 
   /// Handle GetRosbag service request
-  void handle_get_rosbag(
-    const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
-    const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response);
+  void handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
+                         const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response);
 
   /// Handle ListRosbags batch service request
-  void handle_list_rosbags(
-    const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Request> & request,
-    const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Response> & response);
+  void handle_list_rosbags(const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Request> & request,
+                           const std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Response> & response);
 
   /// Handle ListFaultsForEntity service request
-  void handle_list_faults_for_entity(
-    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
-    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response);
+  void
+  handle_list_faults_for_entity(const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
+                                const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response);
 
   /// Create snapshot configuration from parameters
   SnapshotConfig create_snapshot_config();
@@ -122,9 +116,8 @@ private:
   /// @param event_type One of FaultEvent::EVENT_CONFIRMED, EVENT_CLEARED, EVENT_UPDATED
   /// @param fault The fault data associated with this event
   /// @param auto_cleared_codes Optional list of auto-cleared symptom fault codes (for EVENT_CLEARED)
-  void publish_fault_event(
-    const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault,
-    const std::vector<std::string> & auto_cleared_codes = {});
+  void publish_fault_event(const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault,
+                           const std::vector<std::string> & auto_cleared_codes = {});
 
   /// Validate severity value
   static bool is_valid_severity(uint8_t severity);
@@ -147,8 +140,7 @@ private:
   rclcpp::Service<ros2_medkit_msgs::srv::GetSnapshots>::SharedPtr get_snapshots_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::GetRosbag>::SharedPtr get_rosbag_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ListRosbags>::SharedPtr list_rosbags_srv_;
-  rclcpp::Service<ros2_medkit_msgs::srv::ListFaultsForEntity>::SharedPtr
-    list_faults_for_entity_srv_;
+  rclcpp::Service<ros2_medkit_msgs::srv::ListFaultsForEntity>::SharedPtr list_faults_for_entity_srv_;
   rclcpp::TimerBase::SharedPtr auto_confirm_timer_;
 
   /// Timer for periodic cleanup of expired correlation data

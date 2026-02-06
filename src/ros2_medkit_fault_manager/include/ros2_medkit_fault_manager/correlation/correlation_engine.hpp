@@ -25,14 +25,11 @@
 #include "ros2_medkit_fault_manager/correlation/pattern_matcher.hpp"
 #include "ros2_medkit_fault_manager/correlation/types.hpp"
 
-namespace ros2_medkit_fault_manager
-{
-namespace correlation
-{
+namespace ros2_medkit_fault_manager {
+namespace correlation {
 
 /// Result of processing a fault through the correlation engine
-struct ProcessFaultResult
-{
+struct ProcessFaultResult {
   /// Whether this fault should be muted (not published as event)
   bool should_mute{false};
 
@@ -58,15 +55,13 @@ struct ProcessFaultResult
 };
 
 /// Result of clearing a fault
-struct ProcessClearResult
-{
+struct ProcessClearResult {
   /// List of symptom fault codes that should be auto-cleared
   std::vector<std::string> auto_cleared_codes;
 };
 
 /// Information about a muted fault (for ListFaults response)
-struct MutedFaultData
-{
+struct MutedFaultData {
   std::string fault_code;
   std::string root_cause_code;
   std::string rule_id;
@@ -74,8 +69,7 @@ struct MutedFaultData
 };
 
 /// Information about an active cluster (for ListFaults response)
-struct ClusterData
-{
+struct ClusterData {
   std::string cluster_id;
   std::string rule_id;
   std::string rule_name;
@@ -95,9 +89,8 @@ struct ClusterData
 /// - Whether they form part of an auto-detected cluster
 ///
 /// Thread-safe: all public methods can be called from multiple threads.
-class CorrelationEngine
-{
-public:
+class CorrelationEngine {
+ public:
   /// Create correlation engine from configuration
   /// @param config Correlation configuration (must be enabled and valid)
   explicit CorrelationEngine(const CorrelationConfig & config);
@@ -107,9 +100,8 @@ public:
   /// @param severity The fault severity (for representative selection)
   /// @param timestamp When the fault occurred
   /// @return Processing result indicating whether to mute, correlations, etc.
-  ProcessFaultResult process_fault(
-    const std::string & fault_code, const std::string & severity,
-    std::chrono::steady_clock::time_point timestamp = std::chrono::steady_clock::now());
+  ProcessFaultResult process_fault(const std::string & fault_code, const std::string & severity,
+                                   std::chrono::steady_clock::time_point timestamp = std::chrono::steady_clock::now());
 
   /// Process a fault being cleared
   /// @param fault_code The fault code being cleared
@@ -134,21 +126,20 @@ public:
   /// Called periodically to remove old state
   void cleanup_expired();
 
-private:
+ private:
   /// Check if fault matches a root cause pattern in any hierarchical rule
   /// @return Rule ID if matched, empty optional otherwise
   std::optional<std::string> try_as_root_cause(const std::string & fault_code);
 
   /// Check if fault is a symptom of any pending root cause
   /// @return ProcessFaultResult with correlation info if matched
-  std::optional<ProcessFaultResult> try_as_symptom(
-    const std::string & fault_code, std::chrono::steady_clock::time_point timestamp);
+  std::optional<ProcessFaultResult> try_as_symptom(const std::string & fault_code,
+                                                   std::chrono::steady_clock::time_point timestamp);
 
   /// Check if fault matches an auto-cluster rule
   /// @return ProcessFaultResult with cluster info if matched
-  std::optional<ProcessFaultResult> try_auto_cluster(
-    const std::string & fault_code, const std::string & severity,
-    std::chrono::steady_clock::time_point timestamp);
+  std::optional<ProcessFaultResult> try_auto_cluster(const std::string & fault_code, const std::string & severity,
+                                                     std::chrono::steady_clock::time_point timestamp);
 
   /// Generate unique cluster ID
   std::string generate_cluster_id(const std::string & rule_id);
@@ -157,8 +148,7 @@ private:
   std::unique_ptr<PatternMatcher> matcher_;
 
   /// Active root causes waiting for symptoms
-  struct PendingRootCause
-  {
+  struct PendingRootCause {
     std::string fault_code;
     std::string rule_id;
     std::chrono::steady_clock::time_point timestamp;
@@ -179,8 +169,7 @@ private:
   std::map<std::string, std::string> fault_to_cluster_;
 
   /// Pending cluster with steady_clock timestamp for window tracking
-  struct PendingCluster
-  {
+  struct PendingCluster {
     ClusterData data;
     std::chrono::steady_clock::time_point steady_first_at;
   };
