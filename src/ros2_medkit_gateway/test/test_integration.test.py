@@ -4742,7 +4742,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
         # Verify item structure
         item = data['item']
-        self.assertIn('faultCode', item)
+        self.assertIn('code', item)
         self.assertIn('status', item)
 
         print(f'✓ Fault response structure test passed: {fault_code}')
@@ -4799,7 +4799,10 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         # SOVD environment_data structure
         self.assertIn('extended_data_records', env_data)
         self.assertIn('snapshots', env_data)
-        self.assertIsInstance(env_data['extended_data_records'], list)
+        # extended_data_records is an object with first/last_occurrence
+        self.assertIsInstance(env_data['extended_data_records'], dict)
+        self.assertIn('first_occurrence', env_data['extended_data_records'])
+        self.assertIn('last_occurrence', env_data['extended_data_records'])
         self.assertIsInstance(env_data['snapshots'], list)
 
         print(f'✓ Fault environment_data structure test passed: '
@@ -4827,7 +4830,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         # Find freeze_frame snapshot
         freeze_frame = None
         for snapshot in snapshots:
-            if snapshot.get('category') == 'freeze_frame':
+            if snapshot.get('type') == 'freeze_frame':
                 freeze_frame = snapshot
                 break
 
@@ -4835,10 +4838,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.skipTest('No freeze_frame snapshot in fault response')
 
         # Verify freeze_frame structure
-        self.assertIn('id', freeze_frame)
-        self.assertIn('category', freeze_frame)
-        self.assertIn('timestamp', freeze_frame)
-        self.assertEqual(freeze_frame['category'], 'freeze_frame')
+        self.assertIn('type', freeze_frame)
+        self.assertIn('name', freeze_frame)
+        self.assertEqual(freeze_frame['type'], 'freeze_frame')
         # freeze_frame has inline data
         self.assertIn('data', freeze_frame)
 
@@ -4866,7 +4868,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         # Find rosbag snapshot
         rosbag = None
         for snapshot in snapshots:
-            if snapshot.get('category') == 'rosbag':
+            if snapshot.get('type') == 'rosbag':
                 rosbag = snapshot
                 break
 
@@ -4874,9 +4876,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.skipTest('No rosbag snapshot in fault response')
 
         # Verify rosbag structure
-        self.assertIn('id', rosbag)
-        self.assertIn('category', rosbag)
-        self.assertEqual(rosbag['category'], 'rosbag')
+        self.assertIn('type', rosbag)
+        self.assertIn('name', rosbag)
+        self.assertEqual(rosbag['type'], 'rosbag')
         # rosbag has bulk_data_uri instead of inline data
         self.assertIn('bulk_data_uri', rosbag)
         self.assertIn('/bulk-data/rosbags/', rosbag['bulk_data_uri'])
