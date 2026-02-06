@@ -156,8 +156,11 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
     }
   }
 
-  // Create a local callback group for this capture operation (ensures clean executor lifecycle)
-  auto local_callback_group = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  // Create a local callback group for this capture operation (ensures clean executor lifecycle).
+  // Pass false to prevent automatic association with the node's main executor —
+  // we manually add this group to a local SingleThreadedExecutor below.
+  auto local_callback_group =
+      node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
 
   rclcpp::GenericSubscription::SharedPtr subscription;
   try {
