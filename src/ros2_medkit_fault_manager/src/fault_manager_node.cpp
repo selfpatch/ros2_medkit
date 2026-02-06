@@ -627,7 +627,7 @@ void FaultManagerNode::handle_get_fault(
     ros2_medkit_msgs::msg::Snapshot rosbag_snapshot;
     rosbag_snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_ROSBAG;
     rosbag_snapshot.name = "rosbag_" + request->fault_code;
-    rosbag_snapshot.bulk_data_id = rosbag_info->bulk_data_id;
+    rosbag_snapshot.bulk_data_id = request->fault_code;
     rosbag_snapshot.size_bytes = rosbag_info->size_bytes;
     rosbag_snapshot.duration_sec = rosbag_info->duration_sec;
     rosbag_snapshot.format = rosbag_info->format;

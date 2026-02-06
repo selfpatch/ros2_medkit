@@ -108,7 +108,6 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithRosbag)
   ros2_medkit_msgs::msg::Snapshot rosbag;
   rosbag.type = "rosbag";
   rosbag.name = "fault_recording";
-  rosbag.bulk_data_id = "550e8400-e29b-41d4-a716-446655440000";
   rosbag.size_bytes = 1234567;
   rosbag.duration_sec = 6.0;
   rosbag.format = "mcap";
@@ -134,7 +133,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseNestedEntityPath)
   ros2_medkit_msgs::msg::EnvironmentData env_data;
   ros2_medkit_msgs::msg::Snapshot rosbag;
   rosbag.type = "rosbag";
-  rosbag.bulk_data_id = "test-uuid";
+  rosbag.bulk_data_id = "NESTED_FAULT";
   env_data.snapshots.push_back(rosbag);
 
   auto response =
@@ -347,7 +346,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseMixedSnapshots)
   ros2_medkit_msgs::msg::Snapshot rosbag;
   rosbag.type = "rosbag";
   rosbag.name = "recording";
-  rosbag.bulk_data_id = "uuid-123";
+  rosbag.bulk_data_id = "MIXED_FAULT";
   rosbag.size_bytes = 1000;
   rosbag.format = "mcap";
   env_data.snapshots.push_back(rosbag);

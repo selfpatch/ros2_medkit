@@ -89,7 +89,6 @@ struct SnapshotData
 /// Rosbag file metadata for time-window recording
 struct RosbagFileInfo
 {
-  std::string bulk_data_id;  ///< UUID - globally unique identifier for bulk-data download
   std::string fault_code;
   std::string file_path;
   std::string format;        ///< "sqlite3" or "mcap"
@@ -187,17 +186,6 @@ public:
   /// @return Vector of rosbag file info
   virtual std::vector<RosbagFileInfo> get_all_rosbag_files() const = 0;
 
-  /// Get rosbag by bulk_data_id (UUID)
-  /// @param bulk_data_id The UUID to look up
-  /// @return Rosbag file info if exists, nullopt otherwise
-  virtual std::optional<RosbagFileInfo> get_rosbag_by_id(
-    const std::string & bulk_data_id) const = 0;
-
-  /// Get file path for a rosbag by bulk_data_id
-  /// @param bulk_data_id The UUID to look up
-  /// @return File path if exists, empty string otherwise
-  virtual std::string get_rosbag_path(const std::string & bulk_data_id) const = 0;
-
   /// Get rosbags for all faults associated with an entity
   /// @param entity_fqn The entity's fully qualified name to filter by
   /// @return Vector of rosbag file info for faults reported by this entity
@@ -207,10 +195,6 @@ public:
   /// Get all stored faults regardless of status (for filtering)
   /// @return Vector of all faults in storage
   virtual std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const = 0;
-
-  /// Generate a UUID v4 string
-  /// @return A new UUID in format "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-  static std::string generate_uuid();
 
 protected:
   FaultStorage() = default;
@@ -258,8 +242,6 @@ public:
   bool delete_rosbag_file(const std::string & fault_code) override;
   size_t get_total_rosbag_storage_bytes() const override;
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
-  std::optional<RosbagFileInfo> get_rosbag_by_id(const std::string & bulk_data_id) const override;
-  std::string get_rosbag_path(const std::string & bulk_data_id) const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(
     const std::string & entity_fqn) const override;
   std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
@@ -272,7 +254,6 @@ private:
   std::map<std::string, FaultState> faults_;
   std::vector<SnapshotData> snapshots_;
   std::map<std::string, RosbagFileInfo> rosbag_files_;  ///< fault_code -> rosbag info
-  std::map<std::string, std::string> rosbag_by_id_;     ///< bulk_data_id -> fault_code (index)
   DebounceConfig config_;
 };
 

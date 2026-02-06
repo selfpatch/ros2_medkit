@@ -75,8 +75,6 @@ public:
   bool delete_rosbag_file(const std::string & fault_code) override;
   size_t get_total_rosbag_storage_bytes() const override;
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
-  std::optional<RosbagFileInfo> get_rosbag_by_id(const std::string & bulk_data_id) const override;
-  std::string get_rosbag_path(const std::string & bulk_data_id) const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(
     const std::string & entity_fqn) const override;
   std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
