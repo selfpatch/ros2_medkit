@@ -347,16 +347,16 @@ void FaultManagerNode::handle_report_fault(
     // from being processed during capture. SnapshotCapture::capture_topic_on_demand
     // uses a local callback group + local executor, so it's safe from a separate thread.
     if (just_confirmed && (snapshot_capture_ || rosbag_capture_)) {
-      std::string fc = request->fault_code;
-      auto * sc = snapshot_capture_.get();
-      auto * rc = rosbag_capture_.get();
+      std::string fault_code = request->fault_code;
+      auto * snapshot_capture_ptr = snapshot_capture_.get();
+      auto * rosbag_capture_ptr = rosbag_capture_.get();
       auto logger = get_logger();
-      std::thread([sc, rc, fc, logger]() {
-        if (sc) {
-          sc->capture(fc);
+      std::thread([snapshot_capture_ptr, rosbag_capture_ptr, fault_code, logger]() {
+        if (snapshot_capture_ptr) {
+          snapshot_capture_ptr->capture(fault_code);
         }
-        if (rc) {
-          rc->on_fault_confirmed(fc);
+        if (rosbag_capture_ptr) {
+          rosbag_capture_ptr->on_fault_confirmed(fault_code);
         }
       }).detach();
     }

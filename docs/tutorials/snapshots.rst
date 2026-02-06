@@ -149,8 +149,8 @@ Snapshots are included inline in the fault response as ``environment_data``:
      },
      "environment_data": {
        "extended_data_records": {
-         "first_occurence": "2026-02-04T10:30:00.000Z",
-         "last_occurence": "2026-02-04T10:35:00.000Z"
+         "first_occurrence": "2026-02-04T10:30:00.000Z",
+         "last_occurrence": "2026-02-04T10:35:00.000Z"
        },
        "snapshots": [
          {

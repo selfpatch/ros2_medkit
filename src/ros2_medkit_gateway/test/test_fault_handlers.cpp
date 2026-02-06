@@ -113,7 +113,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithRosbag) {
 
   auto & snap = response["environment_data"]["snapshots"][0];
   EXPECT_EQ(snap["type"], "rosbag");
-  EXPECT_EQ(snap["bulk_data_uri"], "/apps/motor_controller/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000");
+  EXPECT_EQ(snap["bulk_data_uri"], "/apps/motor_controller/bulk-data/rosbags/ROSBAG_FAULT");
   EXPECT_EQ(snap["size_bytes"], 1234567);
   EXPECT_DOUBLE_EQ(snap["duration_sec"], 6.0);
   EXPECT_EQ(snap["format"], "mcap");
@@ -133,7 +133,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseNestedEntityPath) {
   auto response = FaultHandlers::build_sovd_fault_response(fault, env_data, "/areas/perception/subareas/lidar");
 
   auto & snap = response["environment_data"]["snapshots"][0];
-  EXPECT_EQ(snap["bulk_data_uri"], "/areas/perception/subareas/lidar/bulk-data/rosbags/test-uuid");
+  EXPECT_EQ(snap["bulk_data_uri"], "/areas/perception/subareas/lidar/bulk-data/rosbags/NESTED_FAULT");
 }
 
 // @verifies REQ_INTEROP_013
@@ -347,5 +347,5 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseMixedSnapshots) {
   // Verify rosbag
   auto & snap1 = response["environment_data"]["snapshots"][1];
   EXPECT_EQ(snap1["type"], "rosbag");
-  EXPECT_EQ(snap1["bulk_data_uri"], "/components/motor/bulk-data/rosbags/uuid-123");
+  EXPECT_EQ(snap1["bulk_data_uri"], "/components/motor/bulk-data/rosbags/MIXED_FAULT");
 }
