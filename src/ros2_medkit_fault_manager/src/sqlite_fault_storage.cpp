@@ -943,18 +943,17 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(const st
 
   std::vector<RosbagFileInfo> result;
 
-  // Join rosbag_files with faults table and filter by reporting_sources containing entity_fqn
-  // reporting_sources is stored as JSON array
+  // Join rosbag_files with faults table and filter by reporting_sources containing entity_fqn.
+  // Use json_each() for proper JSON array querying instead of LIKE, which treats
+  // '_' as a single-char wildcard and would produce false positives on ROS names.
   SqliteStatement stmt(
       db_,
       "SELECT r.bulk_data_id, r.fault_code, r.file_path, r.format, r.duration_sec, r.size_bytes, r.created_at_ns "
       "FROM rosbag_files r "
       "JOIN faults f ON r.fault_code = f.fault_code "
-      "WHERE f.reporting_sources LIKE ?");
+      "JOIN json_each(f.reporting_sources) j ON j.value = ?");
 
-  // Use LIKE with wildcards for JSON array search
-  std::string pattern = "%\"" + entity_fqn + "\"%";
-  stmt.bind_text(1, pattern);
+  stmt.bind_text(1, entity_fqn);
 
   while (stmt.step() == SQLITE_ROW) {
     RosbagFileInfo info;
