@@ -149,7 +149,7 @@ Reports a new fault or updates an existing one.
 - **Returns**: ``accepted=true`` if event was processed
 
 ~/list_faults
-~~~~~~~~~~~~
+~~~~~~~~~~~~~
 
 Queries faults with optional filtering.
 

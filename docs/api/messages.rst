@@ -219,7 +219,7 @@ Clear/acknowledge a fault.
    string[] auto_cleared_codes  # Symptoms auto-cleared with root cause
 
 ListFaults.srv
-~~~~~~~~~~~~~
+~~~~~~~~~~~~~~
 
 Query faults from the FaultManager with optional filtering.
 

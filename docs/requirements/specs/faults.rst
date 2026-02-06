@@ -37,3 +37,13 @@ Faults
 
    The endpoint shall clear the addressed diagnostic fault code for the entity, if permitted.
 
+.. req:: Fault Snapshot and Rosbag Capture
+   :id: REQ_INTEROP_088
+   :status: verified
+   :tags: Faults, BulkData
+
+   When a fault is confirmed, the system shall automatically capture diagnostic snapshots
+   (freeze-frame topic data) and rosbag recordings as configured. Captured data shall be
+   stored as environment data associated with the fault and accessible via the bulk-data
+   endpoints on the fault's reporting entity.
+
