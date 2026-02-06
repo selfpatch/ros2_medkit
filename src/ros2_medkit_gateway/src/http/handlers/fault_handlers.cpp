@@ -195,8 +195,10 @@ json FaultHandlers::build_sovd_fault_response(const ros2_medkit_msgs::msg::Fault
         snap["x-medkit"] = {{"topic", s.topic}, {"message_type", s.message_type}, {"parse_error", e.what()}};
       }
     } else if (s.type == "rosbag") {
-      // Build absolute URI using entity path + UUID
-      snap["bulk_data_uri"] = entity_path + "/bulk-data/rosbags/" + s.bulk_data_id;
+      // Build absolute URI using entity path + fault_code as the bulk-data ID.
+      // This must match the download handler which looks up rosbags by fault_code,
+      // and handle_list_descriptors which also uses fault_code as the descriptor ID.
+      snap["bulk_data_uri"] = entity_path + "/bulk-data/rosbags/" + fault.fault_code;
       snap["size_bytes"] = s.size_bytes;
       snap["duration_sec"] = s.duration_sec;
       snap["format"] = s.format;

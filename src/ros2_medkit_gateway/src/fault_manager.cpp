@@ -92,7 +92,7 @@ json FaultManager::fault_to_json(const ros2_medkit_msgs::msg::Fault & fault) {
 
 FaultResult FaultManager::report_fault(const std::string & fault_code, uint8_t severity,
                                        const std::string & description, const std::string & source_id) {
-  std::lock_guard<std::mutex> lock(service_mutex_);
+  std::lock_guard<std::mutex> lock(report_mutex_);
   FaultResult result;
 
   auto timeout = std::chrono::duration<double>(service_timeout_sec_);
@@ -129,7 +129,7 @@ FaultResult FaultManager::report_fault(const std::string & fault_code, uint8_t s
 
 FaultResult FaultManager::list_faults(const std::string & source_id, bool include_prefailed, bool include_confirmed,
                                       bool include_cleared, bool include_muted, bool include_clusters) {
-  std::lock_guard<std::mutex> lock(service_mutex_);
+  std::lock_guard<std::mutex> lock(list_mutex_);
   FaultResult result;
 
   auto timeout = std::chrono::duration<double>(service_timeout_sec_);
@@ -233,7 +233,7 @@ FaultResult FaultManager::list_faults(const std::string & source_id, bool includ
 }
 
 FaultWithEnvResult FaultManager::get_fault_with_env(const std::string & fault_code, const std::string & source_id) {
-  std::lock_guard<std::mutex> lock(service_mutex_);
+  std::lock_guard<std::mutex> lock(get_mutex_);
   FaultWithEnvResult result;
 
   auto timeout = std::chrono::duration<double>(service_timeout_sec_);
@@ -300,7 +300,7 @@ FaultResult FaultManager::get_fault(const std::string & fault_code, const std::s
 }
 
 FaultResult FaultManager::clear_fault(const std::string & fault_code) {
-  std::lock_guard<std::mutex> lock(service_mutex_);
+  std::lock_guard<std::mutex> lock(clear_mutex_);
   FaultResult result;
 
   auto timeout = std::chrono::duration<double>(service_timeout_sec_);
@@ -337,7 +337,7 @@ FaultResult FaultManager::clear_fault(const std::string & fault_code) {
 }
 
 FaultResult FaultManager::get_snapshots(const std::string & fault_code, const std::string & topic) {
-  std::lock_guard<std::mutex> lock(service_mutex_);
+  std::lock_guard<std::mutex> lock(snapshots_mutex_);
   FaultResult result;
 
   auto timeout = std::chrono::duration<double>(service_timeout_sec_);
@@ -377,7 +377,7 @@ FaultResult FaultManager::get_snapshots(const std::string & fault_code, const st
 }
 
 FaultResult FaultManager::get_rosbag(const std::string & fault_code) {
-  std::lock_guard<std::mutex> lock(service_mutex_);
+  std::lock_guard<std::mutex> lock(rosbag_mutex_);
   FaultResult result;
 
   auto timeout = std::chrono::duration<double>(service_timeout_sec_);
@@ -414,7 +414,7 @@ FaultResult FaultManager::get_rosbag(const std::string & fault_code) {
 }
 
 FaultResult FaultManager::list_rosbags(const std::string & entity_fqn) {
-  std::lock_guard<std::mutex> lock(service_mutex_);
+  std::lock_guard<std::mutex> lock(list_rosbags_mutex_);
   FaultResult result;
 
   auto timeout = std::chrono::duration<double>(service_timeout_sec_);

@@ -87,8 +87,8 @@ class FaultManager {
   /// @param fault_code Fault identifier
   /// @param source_id Optional component identifier to verify fault belongs to component
   /// @return FaultResult with fault data or error if not found
-  /// @note Thread-safe: delegates to get_fault_with_env() which acquires service_mutex_.
-  ///       Do NOT call this method while holding service_mutex_.
+  /// @note Thread-safe: delegates to get_fault_with_env() which acquires get_mutex_.
+  ///       Do NOT call this method while holding get_mutex_.
   FaultResult get_fault(const std::string & fault_code, const std::string & source_id = "");
 
   /// Clear a fault
@@ -137,11 +137,16 @@ class FaultManager {
   /// Service timeout
   double service_timeout_sec_{5.0};
 
-  /// Mutex for thread-safe service calls.
-  /// Each public method that makes a ROS 2 service call acquires this mutex.
-  /// Methods must NOT call other public locking methods while holding this mutex
-  /// (e.g., get_fault() delegates to get_fault_with_env() without locking first).
-  mutable std::mutex service_mutex_;
+  /// Per-client mutexes for thread-safe service calls.
+  /// Split by service client so that read operations (list, get) are not blocked
+  /// by slow write operations (report_fault with snapshot capture).
+  mutable std::mutex report_mutex_;
+  mutable std::mutex list_mutex_;
+  mutable std::mutex get_mutex_;
+  mutable std::mutex clear_mutex_;
+  mutable std::mutex snapshots_mutex_;
+  mutable std::mutex rosbag_mutex_;
+  mutable std::mutex list_rosbags_mutex_;
 };
 
 }  // namespace ros2_medkit_gateway

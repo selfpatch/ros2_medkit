@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 #include <yaml-cpp/yaml.h>
@@ -340,14 +341,24 @@ void FaultManagerNode::handle_report_fault(
     }
     // Note: PREFAILED/PREPASSED status changes don't emit events (debounce in progress)
 
-    // Capture snapshots when fault is confirmed (even if muted)
-    if (just_confirmed && snapshot_capture_) {
-      snapshot_capture_->capture(request->fault_code);
-    }
-
-    // Trigger rosbag capture when fault is confirmed (even if muted)
-    if (just_confirmed && rosbag_capture_) {
-      rosbag_capture_->on_fault_confirmed(request->fault_code);
+    // Capture snapshots and rosbag when fault is confirmed (even if muted).
+    // Run asynchronously to avoid blocking the service callback for seconds,
+    // which would prevent other service calls (list_faults, get_fault, etc.)
+    // from being processed during capture. SnapshotCapture::capture_topic_on_demand
+    // uses a local callback group + local executor, so it's safe from a separate thread.
+    if (just_confirmed && (snapshot_capture_ || rosbag_capture_)) {
+      std::string fc = request->fault_code;
+      auto * sc = snapshot_capture_.get();
+      auto * rc = rosbag_capture_.get();
+      auto logger = get_logger();
+      std::thread([sc, rc, fc, logger]() {
+        if (sc) {
+          sc->capture(fc);
+        }
+        if (rc) {
+          rc->on_fault_confirmed(fc);
+        }
+      }).detach();
     }
 
     // Handle PREFAILED state for lazy_start rosbag capture
