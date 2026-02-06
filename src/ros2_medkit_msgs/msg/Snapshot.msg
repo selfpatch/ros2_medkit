@@ -37,7 +37,7 @@ string message_type
 
 # --- Rosbag fields (empty for freeze_frame type) ---
 
-# UUID - globally unique identifier for bulk-data download
+# Identifier for bulk-data download (set to fault_code)
 string bulk_data_id
 
 # File size in bytes
