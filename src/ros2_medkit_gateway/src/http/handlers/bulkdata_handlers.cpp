@@ -38,12 +38,10 @@ void BulkDataHandlers::handle_list_categories(const httplib::Request & req, http
     return;
   }
 
-  // Verify entity exists
-  auto entity = ctx_.get_entity_info(entity_info->entity_id);
-  if (entity.type == EntityType::UNKNOWN) {
-    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                               {{"entity_id", entity_info->entity_id}});
-    return;
+  // Validate entity exists and matches the route type (e.g., /components/ only accepts components)
+  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
+  if (!entity_opt) {
+    return;  // Error response already sent
   }
 
   // Currently only "rosbags" category is supported
@@ -60,13 +58,12 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
     return;
   }
 
-  // Get entity for FQN lookup
-  auto entity = ctx_.get_entity_info(entity_info->entity_id);
-  if (entity.type == EntityType::UNKNOWN) {
-    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                               {{"entity_id", entity_info->entity_id}});
-    return;
+  // Validate entity exists and matches the route type
+  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
+  if (!entity_opt) {
+    return;  // Error response already sent
   }
+  auto entity = *entity_opt;
 
   // Extract and validate category from path
   auto category = extract_bulk_data_category(req.path);
@@ -146,13 +143,12 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
     return;
   }
 
-  // Get entity to verify it exists
-  auto entity = ctx_.get_entity_info(entity_info->entity_id);
-  if (entity.type == EntityType::UNKNOWN) {
-    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                               {{"entity_id", entity_info->entity_id}});
-    return;
+  // Validate entity exists and matches the route type
+  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
+  if (!entity_opt) {
+    return;  // Error response already sent
   }
+  auto entity = *entity_opt;
 
   // Extract category and bulk_data_id from path
   auto category = extract_bulk_data_category(req.path);
@@ -184,21 +180,11 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
   }
 
   // Security check: verify rosbag belongs to this entity
-  // Get faults for entity and check if fault_code is in the list
+  // Use targeted get_fault lookup instead of loading the entire fault list
   std::string source_filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
-  auto faults_result = fault_mgr->list_faults(source_filter);
+  auto fault_result = fault_mgr->get_fault(fault_code, source_filter);
 
-  bool belongs_to_entity = false;
-  if (faults_result.success && faults_result.data.contains("faults")) {
-    for (const auto & fault_json : faults_result.data["faults"]) {
-      if (fault_json.contains("fault_code") && fault_json["fault_code"].get<std::string>() == fault_code) {
-        belongs_to_entity = true;
-        break;
-      }
-    }
-  }
-
-  if (!belongs_to_entity) {
+  if (!fault_result.success) {
     HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
                                "Bulk-data not found for this entity", {{"entity_id", entity_info->entity_id}});
     return;

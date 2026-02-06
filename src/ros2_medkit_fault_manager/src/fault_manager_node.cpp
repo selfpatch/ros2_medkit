@@ -168,12 +168,12 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // Initialize snapshot capture
   auto snapshot_config = create_snapshot_config();
   if (snapshot_config.enabled) {
-    snapshot_capture_ = std::make_unique<SnapshotCapture>(this, storage_.get(), snapshot_config);
+    snapshot_capture_ = std::make_shared<SnapshotCapture>(this, storage_.get(), snapshot_config);
   }
 
   // Initialize rosbag capture if enabled
   if (snapshot_config.rosbag.enabled) {
-    rosbag_capture_ = std::make_unique<RosbagCapture>(this, storage_.get(), snapshot_config.rosbag, snapshot_config);
+    rosbag_capture_ = std::make_shared<RosbagCapture>(this, storage_.get(), snapshot_config.rosbag, snapshot_config);
   }
 
   // Initialize correlation engine (nullptr if disabled or not configured)
@@ -348,15 +348,15 @@ void FaultManagerNode::handle_report_fault(
     // uses a local callback group + local executor, so it's safe from a separate thread.
     if (just_confirmed && (snapshot_capture_ || rosbag_capture_)) {
       std::string fault_code = request->fault_code;
-      auto * snapshot_capture_ptr = snapshot_capture_.get();
-      auto * rosbag_capture_ptr = rosbag_capture_.get();
+      auto snapshot_cap = snapshot_capture_;
+      auto rosbag_cap = rosbag_capture_;
       auto logger = get_logger();
-      std::thread([snapshot_capture_ptr, rosbag_capture_ptr, fault_code, logger]() {
-        if (snapshot_capture_ptr) {
-          snapshot_capture_ptr->capture(fault_code);
+      std::thread([snapshot_cap, rosbag_cap, fault_code, logger]() {
+        if (snapshot_cap) {
+          snapshot_cap->capture(fault_code);
         }
-        if (rosbag_capture_ptr) {
-          rosbag_capture_ptr->on_fault_confirmed(fault_code);
+        if (rosbag_cap) {
+          rosbag_cap->on_fault_confirmed(fault_code);
         }
       }).detach();
     }

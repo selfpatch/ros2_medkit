@@ -23,9 +23,9 @@
 namespace ros2_medkit_fault_manager {
 
 std::string FaultStorage::generate_uuid() {
-  static std::random_device rd;
-  static std::mt19937 gen(rd());
-  static std::uniform_int_distribution<uint32_t> dis;
+  thread_local std::random_device rd;
+  thread_local std::mt19937 gen(rd());
+  thread_local std::uniform_int_distribution<uint32_t> dis;
 
   std::stringstream ss;
   ss << std::hex << std::setfill('0');
