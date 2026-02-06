@@ -23,20 +23,25 @@
 #include "rcutils/logging_macros.h"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 
-namespace ros2_medkit_fault_manager {
+namespace ros2_medkit_fault_manager
+{
 
-namespace {
+namespace
+{
 
 /// RAII wrapper for SQLite statements
-class SqliteStatement {
- public:
-  SqliteStatement(sqlite3 * db, const char * sql) : db_(db) {
+class SqliteStatement
+{
+public:
+  SqliteStatement(sqlite3 * db, const char * sql) : db_(db)
+  {
     if (sqlite3_prepare_v2(db, sql, -1, &stmt_, nullptr) != SQLITE_OK) {
       throw std::runtime_error(std::string("Failed to prepare statement: ") + sqlite3_errmsg(db));
     }
   }
 
-  ~SqliteStatement() {
+  ~SqliteStatement()
+  {
     if (stmt_) {
       sqlite3_finalize(stmt_);
     }
@@ -45,11 +50,10 @@ class SqliteStatement {
   SqliteStatement(const SqliteStatement &) = delete;
   SqliteStatement & operator=(const SqliteStatement &) = delete;
 
-  sqlite3_stmt * get() const {
-    return stmt_;
-  }
+  sqlite3_stmt * get() const { return stmt_; }
 
-  void bind_text(int index, const std::string & value) {
+  void bind_text(int index, const std::string & value)
+  {
     const auto size = value.size();
     if (size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
       throw std::runtime_error("Failed to bind text: value size exceeds SQLite int length limit");
@@ -60,48 +64,47 @@ class SqliteStatement {
     }
   }
 
-  void bind_int(int index, int value) {
+  void bind_int(int index, int value)
+  {
     if (sqlite3_bind_int(stmt_, index, value) != SQLITE_OK) {
       throw std::runtime_error(std::string("Failed to bind int: ") + sqlite3_errmsg(db_));
     }
   }
 
-  void bind_int64(int index, int64_t value) {
+  void bind_int64(int index, int64_t value)
+  {
     if (sqlite3_bind_int64(stmt_, index, value) != SQLITE_OK) {
       throw std::runtime_error(std::string("Failed to bind int64: ") + sqlite3_errmsg(db_));
     }
   }
 
-  int step() {
-    return sqlite3_step(stmt_);
-  }
+  int step() { return sqlite3_step(stmt_); }
 
-  void reset() {
+  void reset()
+  {
     sqlite3_reset(stmt_);
     sqlite3_clear_bindings(stmt_);
   }
 
-  std::string column_text(int index) {
+  std::string column_text(int index)
+  {
     const auto * text = reinterpret_cast<const char *>(sqlite3_column_text(stmt_, index));
     return text ? std::string(text) : std::string();
   }
 
-  int column_int(int index) {
-    return sqlite3_column_int(stmt_, index);
-  }
+  int column_int(int index) { return sqlite3_column_int(stmt_, index); }
 
-  int64_t column_int64(int index) {
-    return sqlite3_column_int64(stmt_, index);
-  }
+  int64_t column_int64(int index) { return sqlite3_column_int64(stmt_, index); }
 
- private:
+private:
   sqlite3 * db_;
   sqlite3_stmt * stmt_{nullptr};
 };
 
 }  // namespace
 
-SqliteFaultStorage::SqliteFaultStorage(const std::string & db_path) : db_path_(db_path) {
+SqliteFaultStorage::SqliteFaultStorage(const std::string & db_path) : db_path_(db_path)
+{
   int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX;
   if (sqlite3_open_v2(db_path.c_str(), &db_, flags, nullptr) != SQLITE_OK) {
     std::string error = db_ ? sqlite3_errmsg(db_) : "Unknown error";
@@ -128,23 +131,27 @@ SqliteFaultStorage::SqliteFaultStorage(const std::string & db_path) : db_path_(d
   initialize_schema();
 }
 
-SqliteFaultStorage::~SqliteFaultStorage() {
+SqliteFaultStorage::~SqliteFaultStorage()
+{
   if (db_) {
     sqlite3_close(db_);
   }
 }
 
-void SqliteFaultStorage::set_debounce_config(const DebounceConfig & config) {
+void SqliteFaultStorage::set_debounce_config(const DebounceConfig & config)
+{
   std::lock_guard<std::mutex> lock(mutex_);
   config_ = config;
 }
 
-DebounceConfig SqliteFaultStorage::get_debounce_config() const {
+DebounceConfig SqliteFaultStorage::get_debounce_config() const
+{
   std::lock_guard<std::mutex> lock(mutex_);
   return config_;
 }
 
-void SqliteFaultStorage::initialize_schema() {
+void SqliteFaultStorage::initialize_schema()
+{
   const char * create_faults_table_sql = R"(
     CREATE TABLE IF NOT EXISTS faults (
       fault_code TEXT PRIMARY KEY,
@@ -229,10 +236,12 @@ void SqliteFaultStorage::initialize_schema() {
     if (sqlite3_exec(db_, add_column_sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
       std::string error = err_msg ? err_msg : "Unknown error";
       sqlite3_free(err_msg);
-      RCUTILS_LOG_WARN_NAMED("SqliteFaultStorage", "Failed to add bulk_data_id column: %s", error.c_str());
+      RCUTILS_LOG_WARN_NAMED(
+        "SqliteFaultStorage", "Failed to add bulk_data_id column: %s", error.c_str());
     } else {
       // Generate UUIDs for existing rows
-      SqliteStatement select_stmt(db_, "SELECT fault_code FROM rosbag_files WHERE bulk_data_id IS NULL");
+      SqliteStatement select_stmt(
+        db_, "SELECT fault_code FROM rosbag_files WHERE bulk_data_id IS NULL");
       std::vector<std::string> fault_codes;
       while (select_stmt.step() == SQLITE_ROW) {
         fault_codes.push_back(select_stmt.column_text(0));
@@ -240,7 +249,8 @@ void SqliteFaultStorage::initialize_schema() {
 
       for (const auto & fc : fault_codes) {
         std::string uuid = FaultStorage::generate_uuid();
-        SqliteStatement update_stmt(db_, "UPDATE rosbag_files SET bulk_data_id = ? WHERE fault_code = ?");
+        SqliteStatement update_stmt(
+          db_, "UPDATE rosbag_files SET bulk_data_id = ? WHERE fault_code = ?");
         update_stmt.bind_text(1, uuid);
         update_stmt.bind_text(2, fc);
         update_stmt.step();
@@ -248,19 +258,21 @@ void SqliteFaultStorage::initialize_schema() {
 
       // Create index for bulk_data_id
       const char * create_idx_sql =
-          "CREATE INDEX IF NOT EXISTS idx_rosbag_files_bulk_data_id ON rosbag_files(bulk_data_id)";
+        "CREATE INDEX IF NOT EXISTS idx_rosbag_files_bulk_data_id ON rosbag_files(bulk_data_id)";
       sqlite3_exec(db_, create_idx_sql, nullptr, nullptr, nullptr);
     }
   }
 }
 
-std::vector<std::string> SqliteFaultStorage::parse_json_array(const std::string & json_str) {
+std::vector<std::string> SqliteFaultStorage::parse_json_array(const std::string & json_str)
+{
   std::vector<std::string> result;
 
   // Simple JSON array parser for ["a", "b", "c"] format
   if (json_str.size() < 2 || json_str.front() != '[' || json_str.back() != ']') {
     if (!json_str.empty()) {
-      RCUTILS_LOG_WARN_NAMED("sqlite_fault_storage", "Malformed JSON array in database: '%s'", json_str.c_str());
+      RCUTILS_LOG_WARN_NAMED(
+        "sqlite_fault_storage", "Malformed JSON array in database: '%s'", json_str.c_str());
     }
     return result;
   }
@@ -336,7 +348,8 @@ std::vector<std::string> SqliteFaultStorage::parse_json_array(const std::string 
     result.push_back(value);
 
     // Skip whitespace and comma
-    while (pos < content.size() && (std::isspace(static_cast<unsigned char>(content[pos])) || content[pos] == ',')) {
+    while (pos < content.size() &&
+           (std::isspace(static_cast<unsigned char>(content[pos])) || content[pos] == ',')) {
       ++pos;
     }
   }
@@ -344,7 +357,8 @@ std::vector<std::string> SqliteFaultStorage::parse_json_array(const std::string 
   return result;
 }
 
-std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::string> & vec) {
+std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::string> & vec)
+{
   std::ostringstream oss;
   oss << '[';
   for (size_t i = 0; i < vec.size(); ++i) {
@@ -387,18 +401,20 @@ std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::stri
   return oss.str();
 }
 
-bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
-                                            const std::string & description, const std::string & source_id,
-                                            const rclcpp::Time & timestamp) {
+bool SqliteFaultStorage::report_fault_event(
+  const std::string & fault_code, uint8_t event_type, uint8_t severity,
+  const std::string & description, const std::string & source_id, const rclcpp::Time & timestamp)
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   int64_t timestamp_ns = timestamp.nanoseconds();
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
 
   // Check if fault exists
-  SqliteStatement check_stmt(db_,
-                             "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter FROM "
-                             "faults WHERE fault_code = ?");
+  SqliteStatement check_stmt(
+    db_,
+    "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter FROM "
+    "faults WHERE fault_code = ?");
   check_stmt.bind_text(1, fault_code);
 
   if (check_stmt.step() == SQLITE_ROW) {
@@ -446,7 +462,9 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
 
       // Check for immediate confirmation of CRITICAL
       std::string new_status = current_status;
-      if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+      if (
+        config_.critical_immediate_confirm &&
+        severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
       } else if (debounce_counter <= config_.confirmation_threshold) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
@@ -459,12 +477,14 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
 
       // Update with new values
       SqliteStatement update_stmt(
-          db_,
-          description.empty()
-              ? "UPDATE faults SET severity = ?, last_occurred_ns = ?, last_failed_ns = ?, occurrence_count = ?, "
-                "reporting_sources = ?, status = ?, debounce_counter = ? WHERE fault_code = ?"
-              : "UPDATE faults SET severity = ?, description = ?, last_occurred_ns = ?, last_failed_ns = ?, "
-                "occurrence_count = ?, reporting_sources = ?, status = ?, debounce_counter = ? WHERE fault_code = ?");
+        db_, description.empty()
+               ? "UPDATE faults SET severity = ?, last_occurred_ns = ?, last_failed_ns = ?, "
+                 "occurrence_count = ?, "
+                 "reporting_sources = ?, status = ?, debounce_counter = ? WHERE fault_code = ?"
+               : "UPDATE faults SET severity = ?, description = ?, last_occurred_ns = ?, "
+                 "last_failed_ns = ?, "
+                 "occurrence_count = ?, reporting_sources = ?, status = ?, debounce_counter = ? "
+                 "WHERE fault_code = ?");
 
       if (description.empty()) {
         update_stmt.bind_int(1, new_severity);
@@ -506,9 +526,10 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
       }
 
       SqliteStatement update_stmt(
-          db_,
-          "UPDATE faults SET last_occurred_ns = ?, last_passed_ns = ?, status = ?, debounce_counter = ? WHERE "
-          "fault_code = ?");
+        db_,
+        "UPDATE faults SET last_occurred_ns = ?, last_passed_ns = ?, status = ?, debounce_counter "
+        "= ? WHERE "
+        "fault_code = ?");
       update_stmt.bind_int64(1, timestamp_ns);
       update_stmt.bind_int64(2, timestamp_ns);
       update_stmt.bind_text(3, new_status);
@@ -532,7 +553,9 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   std::string initial_status;
   constexpr int32_t initial_counter = -1;  // First FAILED event sets counter to -1
   // CRITICAL severity bypasses debounce and confirms immediately
-  if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+  if (
+    config_.critical_immediate_confirm &&
+    severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
     initial_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
   } else if (initial_counter <= config_.confirmation_threshold) {
     // Counter already meets threshold (e.g., threshold >= -1)
@@ -542,11 +565,12 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   }
 
   // New fault - insert with debounce_counter = -1
-  SqliteStatement insert_stmt(db_,
-                              "INSERT INTO faults (fault_code, severity, description, first_occurred_ns, "
-                              "last_occurred_ns, occurrence_count, status, reporting_sources, "
-                              "debounce_counter, last_failed_ns, last_passed_ns) "
-                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  SqliteStatement insert_stmt(
+    db_,
+    "INSERT INTO faults (fault_code, severity, description, first_occurred_ns, "
+    "last_occurred_ns, occurrence_count, status, reporting_sources, "
+    "debounce_counter, last_failed_ns, last_passed_ns) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
   insert_stmt.bind_text(1, fault_code);
   insert_stmt.bind_int(2, static_cast<int>(severity));
@@ -567,9 +591,9 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   return true;  // New fault created
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault>
-SqliteFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
-                                const std::vector<std::string> & statuses) const {
+std::vector<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::list_faults(
+  bool filter_by_severity, uint8_t severity, const std::vector<std::string> & statuses) const
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
@@ -578,9 +602,12 @@ SqliteFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
     status_filter.insert(ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
   } else {
     for (const auto & s : statuses) {
-      if (s == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED || s == ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED ||
-          s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED || s == ros2_medkit_msgs::msg::Fault::STATUS_HEALED ||
-          s == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
+      if (
+        s == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED ||
+        s == ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED ||
+        s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED ||
+        s == ros2_medkit_msgs::msg::Fault::STATUS_HEALED ||
+        s == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
         status_filter.insert(s);
       }
     }
@@ -591,8 +618,8 @@ SqliteFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
 
   // Build query
   std::string sql =
-      "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
-      "occurrence_count, status, reporting_sources FROM faults WHERE status IN (";
+    "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
+    "occurrence_count, status, reporting_sources FROM faults WHERE status IN (";
   for (size_t i = 0; i < status_filter.size(); ++i) {
     if (i > 0) {
       sql += ", ";
@@ -637,12 +664,15 @@ SqliteFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
   return result;
 }
 
-std::optional<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_fault(const std::string & fault_code) const {
+std::optional<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_fault(
+  const std::string & fault_code) const
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
-  SqliteStatement stmt(db_,
-                       "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
-                       "occurrence_count, status, reporting_sources FROM faults WHERE fault_code = ?");
+  SqliteStatement stmt(
+    db_,
+    "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
+    "occurrence_count, status, reporting_sources FROM faults WHERE fault_code = ?");
   stmt.bind_text(1, fault_code);
 
   if (stmt.step() != SQLITE_ROW) {
@@ -666,7 +696,8 @@ std::optional<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_fault(const 
   return fault;
 }
 
-bool SqliteFaultStorage::clear_fault(const std::string & fault_code) {
+bool SqliteFaultStorage::clear_fault(const std::string & fault_code)
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Delete associated snapshots when fault is cleared
@@ -687,7 +718,8 @@ bool SqliteFaultStorage::clear_fault(const std::string & fault_code) {
   return sqlite3_changes(db_) > 0;
 }
 
-size_t SqliteFaultStorage::size() const {
+size_t SqliteFaultStorage::size() const
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_, "SELECT COUNT(*) FROM faults");
@@ -699,7 +731,8 @@ size_t SqliteFaultStorage::size() const {
   return static_cast<size_t>(stmt.column_int64(0));
 }
 
-bool SqliteFaultStorage::contains(const std::string & fault_code) const {
+bool SqliteFaultStorage::contains(const std::string & fault_code) const
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_, "SELECT 1 FROM faults WHERE fault_code = ? LIMIT 1");
@@ -708,7 +741,8 @@ bool SqliteFaultStorage::contains(const std::string & fault_code) const {
   return stmt.step() == SQLITE_ROW;
 }
 
-size_t SqliteFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
+size_t SqliteFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time)
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (config_.auto_confirm_after_sec <= 0.0) {
@@ -720,7 +754,8 @@ size_t SqliteFaultStorage::check_time_based_confirmation(const rclcpp::Time & cu
   int64_t cutoff_ns = current_ns - threshold_ns;
 
   SqliteStatement update_stmt(
-      db_, "UPDATE faults SET status = ? WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
+    db_,
+    "UPDATE faults SET status = ? WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
   update_stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
   update_stmt.bind_text(2, ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
   update_stmt.bind_int64(3, cutoff_ns);
@@ -732,12 +767,14 @@ size_t SqliteFaultStorage::check_time_based_confirmation(const rclcpp::Time & cu
   return static_cast<size_t>(sqlite3_changes(db_));
 }
 
-void SqliteFaultStorage::store_snapshot(const SnapshotData & snapshot) {
+void SqliteFaultStorage::store_snapshot(const SnapshotData & snapshot)
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
-  SqliteStatement stmt(db_,
-                       "INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns) "
-                       "VALUES (?, ?, ?, ?, ?)");
+  SqliteStatement stmt(
+    db_,
+    "INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns) "
+    "VALUES (?, ?, ?, ?, ?)");
 
   stmt.bind_text(1, snapshot.fault_code);
   stmt.bind_text(2, snapshot.topic);
@@ -750,13 +787,16 @@ void SqliteFaultStorage::store_snapshot(const SnapshotData & snapshot) {
   }
 }
 
-std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(const std::string & fault_code,
-                                                            const std::string & topic_filter) const {
+std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(
+  const std::string & fault_code, const std::string & topic_filter) const
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<SnapshotData> result;
 
-  std::string sql = "SELECT fault_code, topic, message_type, data, captured_at_ns FROM snapshots WHERE fault_code = ?";
+  std::string sql =
+    "SELECT fault_code, topic, message_type, data, captured_at_ns FROM snapshots WHERE fault_code "
+    "= ?";
   if (!topic_filter.empty()) {
     sql += " AND topic = ?";
   }
@@ -781,7 +821,8 @@ std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(const std::string & 
   return result;
 }
 
-void SqliteFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
+void SqliteFaultStorage::store_rosbag_file(const RosbagFileInfo & info)
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Query existing record to delete old file (prevent orphaned files on re-confirm)
@@ -799,10 +840,11 @@ void SqliteFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
   }
 
   // Use INSERT OR REPLACE to handle updates (fault_code is UNIQUE)
-  SqliteStatement stmt(db_,
-                       "INSERT OR REPLACE INTO rosbag_files "
-                       "(bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns) "
-                       "VALUES (?, ?, ?, ?, ?, ?, ?)");
+  SqliteStatement stmt(
+    db_,
+    "INSERT OR REPLACE INTO rosbag_files "
+    "(bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?)");
 
   stmt.bind_text(1, info.bulk_data_id);
   stmt.bind_text(2, info.fault_code);
@@ -820,12 +862,15 @@ void SqliteFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
   }
 }
 
-std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(const std::string & fault_code) const {
+std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(
+  const std::string & fault_code) const
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
-  SqliteStatement stmt(db_,
-                       "SELECT bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
-                       "FROM rosbag_files WHERE fault_code = ?");
+  SqliteStatement stmt(
+    db_,
+    "SELECT bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
+    "FROM rosbag_files WHERE fault_code = ?");
   stmt.bind_text(1, fault_code);
 
   if (stmt.step() != SQLITE_ROW) {
@@ -844,7 +889,8 @@ std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(const std::str
   return info;
 }
 
-bool SqliteFaultStorage::delete_rosbag_file(const std::string & fault_code) {
+bool SqliteFaultStorage::delete_rosbag_file(const std::string & fault_code)
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   // First get the file path so we can delete the actual file
@@ -864,13 +910,15 @@ bool SqliteFaultStorage::delete_rosbag_file(const std::string & fault_code) {
   delete_stmt.bind_text(1, fault_code);
 
   if (delete_stmt.step() != SQLITE_DONE) {
-    throw std::runtime_error(std::string("Failed to delete rosbag file record: ") + sqlite3_errmsg(db_));
+    throw std::runtime_error(
+      std::string("Failed to delete rosbag file record: ") + sqlite3_errmsg(db_));
   }
 
   return sqlite3_changes(db_) > 0;
 }
 
-size_t SqliteFaultStorage::get_total_rosbag_storage_bytes() const {
+size_t SqliteFaultStorage::get_total_rosbag_storage_bytes() const
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_, "SELECT COALESCE(SUM(size_bytes), 0) FROM rosbag_files");
@@ -882,14 +930,16 @@ size_t SqliteFaultStorage::get_total_rosbag_storage_bytes() const {
   return static_cast<size_t>(stmt.column_int64(0));
 }
 
-std::vector<RosbagFileInfo> SqliteFaultStorage::get_all_rosbag_files() const {
+std::vector<RosbagFileInfo> SqliteFaultStorage::get_all_rosbag_files() const
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<RosbagFileInfo> result;
 
-  SqliteStatement stmt(db_,
-                       "SELECT bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
-                       "FROM rosbag_files ORDER BY created_at_ns ASC");
+  SqliteStatement stmt(
+    db_,
+    "SELECT bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
+    "FROM rosbag_files ORDER BY created_at_ns ASC");
 
   while (stmt.step() == SQLITE_ROW) {
     RosbagFileInfo info;
@@ -906,12 +956,15 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::get_all_rosbag_files() const {
   return result;
 }
 
-std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_by_id(const std::string & bulk_data_id) const {
+std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_by_id(
+  const std::string & bulk_data_id) const
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
-  SqliteStatement stmt(db_,
-                       "SELECT bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
-                       "FROM rosbag_files WHERE bulk_data_id = ?");
+  SqliteStatement stmt(
+    db_,
+    "SELECT bulk_data_id, fault_code, file_path, format, duration_sec, size_bytes, created_at_ns "
+    "FROM rosbag_files WHERE bulk_data_id = ?");
   stmt.bind_text(1, bulk_data_id);
 
   if (stmt.step() != SQLITE_ROW) {
@@ -930,7 +983,8 @@ std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_by_id(const std::st
   return info;
 }
 
-std::string SqliteFaultStorage::get_rosbag_path(const std::string & bulk_data_id) const {
+std::string SqliteFaultStorage::get_rosbag_path(const std::string & bulk_data_id) const
+{
   auto rosbag = get_rosbag_by_id(bulk_data_id);
   if (rosbag) {
     return rosbag->file_path;
@@ -938,7 +992,9 @@ std::string SqliteFaultStorage::get_rosbag_path(const std::string & bulk_data_id
   return "";
 }
 
-std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) const {
+std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(
+  const std::string & entity_fqn) const
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<RosbagFileInfo> result;
@@ -947,11 +1003,12 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(const st
   // Use json_each() for proper JSON array querying instead of LIKE, which treats
   // '_' as a single-char wildcard and would produce false positives on ROS names.
   SqliteStatement stmt(
-      db_,
-      "SELECT r.bulk_data_id, r.fault_code, r.file_path, r.format, r.duration_sec, r.size_bytes, r.created_at_ns "
-      "FROM rosbag_files r "
-      "JOIN faults f ON r.fault_code = f.fault_code "
-      "JOIN json_each(f.reporting_sources) j ON j.value = ?");
+    db_,
+    "SELECT r.bulk_data_id, r.fault_code, r.file_path, r.format, r.duration_sec, r.size_bytes, "
+    "r.created_at_ns "
+    "FROM rosbag_files r "
+    "JOIN faults f ON r.fault_code = f.fault_code "
+    "JOIN json_each(f.reporting_sources) j ON j.value = ?");
 
   stmt.bind_text(1, entity_fqn);
 
@@ -970,12 +1027,14 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(const st
   return result;
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_all_faults() const {
+std::vector<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_all_faults() const
+{
   std::lock_guard<std::mutex> lock(mutex_);
 
-  SqliteStatement stmt(db_,
-                       "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
-                       "occurrence_count, status, reporting_sources FROM faults");
+  SqliteStatement stmt(
+    db_,
+    "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
+    "occurrence_count, status, reporting_sources FROM faults");
 
   std::vector<ros2_medkit_msgs::msg::Fault> result;
   while (stmt.step() == SQLITE_ROW) {
