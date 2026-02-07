@@ -20,6 +20,7 @@
   <depend>libcpp-httplib-dev</depend>
   <!-- jwt-cpp is fetched via CMake FetchContent (header-only, no system package) -->
   <!-- OpenSSL is found via CMake find_package (system package) -->
+  <depend>libssl-dev</depend>
   <depend>yaml_cpp_vendor</depend>
   <depend>ros2_medkit_msgs</depend>
   <depend>ros2_medkit_serialization</depend>
