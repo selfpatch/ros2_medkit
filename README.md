@@ -7,6 +7,10 @@
 [![ROS 2](https://img.shields.io/badge/ROS%202-Jazzy-blue)](https://docs.ros.org/en/jazzy/)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289DA?logo=discord&logoColor=white)](https://discord.gg/6CXPMApAyq)
 
+<p align="center">
+  <img src="hero-full.gif" alt="Robots break. Now you'll know why." width="600">
+</p>
+
 **Modern, SOVD-compatible diagnostics for ROS 2 robots** — built around an entity tree
 (Area / Component / Function / App) for runtime discovery, health modeling, and troubleshooting.
 
