@@ -45,54 +45,18 @@ find_package(OpenSSL REQUIRED)
 # This enables the httplib::SSLServer class for HTTPS support
 add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
 
-# Fetch header-only libraries
-include(FetchContent)
-
-# Fetch tl::expected (C++11/14/17 compatible std::expected alternative)
-# Disable tests and examples to avoid clang-tidy analyzing external code
-set(EXPECTED_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(EXPECTED_BUILD_PACKAGE OFF CACHE BOOL "" FORCE)
-fetchcontent_declare(
-  tl_expected
-  GIT_REPOSITORY https://github.com/TartanLlama/expected.git
-  GIT_TAG        v1.3.1
-  SYSTEM         # Treat as system headers to suppress warnings
-  EXCLUDE_FROM_ALL  # Don't build tests/examples
-)
-fetchcontent_getproperties(tl_expected)
-if(NOT tl_expected_POPULATED)
-  fetchcontent_populate(tl_expected)
-  # Only add include directory, don't add_subdirectory to avoid install conflicts
-endif()
-
-# Create interface library for tl::expected manually
+# Vendored header-only libraries (no network access on ROS build farm)
+# tl::expected v1.3.1 (CC0) - https://github.com/TartanLlama/expected
 add_library(tl_expected_iface INTERFACE)
 target_include_directories(tl_expected_iface SYSTEM INTERFACE
-  ${tl_expected_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/vendored/tl_expected/include
 )
 add_library(tl::expected ALIAS tl_expected_iface)
 
-# Fetch jwt-cpp header-only library
-# Disable tests and examples to avoid clang-tidy analyzing external code
-set(JWT_CPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(JWT_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-fetchcontent_declare(
-  jwt-cpp
-  GIT_REPOSITORY https://github.com/Thalhammer/jwt-cpp.git
-  GIT_TAG        v0.7.0
-  SYSTEM         # Treat as system headers to suppress warnings
-  EXCLUDE_FROM_ALL  # Don't build tests/examples
-)
-fetchcontent_getproperties(jwt-cpp)
-if(NOT jwt-cpp_POPULATED)
-  fetchcontent_populate(jwt-cpp)
-  # Only add include directory, don't add_subdirectory to avoid install conflicts
-endif()
-
-# Create interface library for jwt-cpp manually
+# jwt-cpp v0.7.0 (MIT) - https://github.com/Thalhammer/jwt-cpp
 add_library(jwt_cpp_iface INTERFACE)
 target_include_directories(jwt_cpp_iface SYSTEM INTERFACE
-  ${jwt-cpp_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/vendored/jwt_cpp/include
 )
 add_library(jwt-cpp::jwt-cpp ALIAS jwt_cpp_iface)
 
@@ -217,12 +181,12 @@ if(BUILD_TESTING)
   set(ament_cmake_clang_format_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-format")
   set(ament_cmake_clang_tidy_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-tidy")
 
-  # Limit clang-tidy to only report issues from our source files (not FetchContent deps)
+  # Limit clang-tidy to only report issues from our source files (not vendored deps)
   set(ament_cmake_clang_tidy_HEADER_FILTER "^${CMAKE_CURRENT_SOURCE_DIR}/(include|src|test)/")
 
-  # Exclude linters that don't work well with FetchContent dependencies:
+  # Exclude linters that don't work well with vendored dependencies:
   # - uncrustify/cpplint: conflicts with clang-format
-  # - copyright/lint_cmake: flags generated/fetched files in install/
+  # - copyright/lint_cmake: flags vendored files
   # - clang_tidy: we configure it manually below with increased timeout
   list(APPEND AMENT_LINT_AUTO_EXCLUDE
     ament_cmake_uncrustify
