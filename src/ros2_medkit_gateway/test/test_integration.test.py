@@ -3816,8 +3816,11 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         config_found = False
         for app in apps_data['items']:
             configs_data = self._get_json(f'/apps/{app["id"]}/configurations')
-            if configs_data.get('items'):
-                config_id = configs_data['items'][0]['id']
+            if not configs_data.get('items'):
+                continue
+
+            for config_item in configs_data['items']:
+                config_id = config_item['id']
 
                 # Get current value first
                 get_response = requests.get(
@@ -3825,36 +3828,51 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
                     timeout=10
                 )
 
-                if get_response.status_code == 200:
-                    current_data = get_response.json()
-                    current_value = current_data.get('data', 1.0)
+                if get_response.status_code != 200:
+                    continue
 
-                    # Try to set the same value back - should succeed
-                    response = requests.put(
-                        f'{self.BASE_URL}/apps/{app["id"]}/configurations/{config_id}',
-                        json={'data': current_value},
-                        timeout=10
-                    )
+                current_data = get_response.json()
 
-                    # Setting an existing config to the same value should succeed
-                    self.assertEqual(
-                        response.status_code, 200,
-                        f'Expected 200 for setting config {config_id}, '
-                        f'got {response.status_code}: {response.text}'
-                    )
+                # Skip read-only parameters - they will return 403
+                if current_data.get('read_only', False):
+                    continue
 
-                    # Verify response structure
-                    data = response.json()
-                    self.assertIn('id', data)
-                    self.assertEqual(data['id'], config_id)
-                    self.assertIn('data', data)
+                current_value = current_data.get('data', 1.0)
 
-                    config_found = True
-                    print(f'✓ Set configuration test passed: {config_id}')
-                    break
+                # Try to set the same value back - should succeed
+                response = requests.put(
+                    f'{self.BASE_URL}/apps/{app["id"]}/configurations/{config_id}',
+                    json={'data': current_value},
+                    timeout=10
+                )
+
+                # Read-only params may not report read_only in descriptor,
+                # so also handle 403 gracefully by trying the next param
+                if response.status_code == 403:
+                    continue
+
+                # Setting an existing config to the same value should succeed
+                self.assertEqual(
+                    response.status_code, 200,
+                    f'Expected 200 for setting config {config_id}, '
+                    f'got {response.status_code}: {response.text}'
+                )
+
+                # Verify response structure
+                data = response.json()
+                self.assertIn('id', data)
+                self.assertEqual(data['id'], config_id)
+                self.assertIn('data', data)
+
+                config_found = True
+                print(f'✓ Set configuration test passed: {config_id}')
+                break
+
+            if config_found:
+                break
 
         if not config_found:
-            self.skipTest('No app configurations found')
+            self.skipTest('No writable app configurations found')
 
     # ==================== REQ_INTEROP_051: Reset All Configurations ====================
 
