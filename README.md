@@ -11,10 +11,38 @@
   <img src="hero-full.gif" alt="Robots break. Now you'll know why." width="600">
 </p>
 
-**Modern, SOVD-compatible diagnostics for ROS 2 robots** — built around an entity tree
-(Area / Component / Function / App) for runtime discovery, health modeling, and troubleshooting.
+<p align="center">
+  <b>Automotive-grade diagnostics for ROS 2 robots.</b><br>
+  When your robot fails, find out why — in minutes, not hours.
+</p>
 
----
+<p align="center">
+  Fault correlation · Black-box recording · REST API · <a href="https://github.com/selfpatch/ros2_medkit_mcp">AI via MCP</a>
+</p>
+
+## 🚀 Quick Start
+
+**Try the full demo** (Docker, no ROS 2 needed):
+
+```bash
+git clone https://github.com/selfpatch/selfpatch_demos.git
+cd selfpatch_demos/demos/turtlebot3_integration
+./run-demo.sh --headless
+# → API: http://localhost:8080/api/v1/  Web UI: http://localhost:3000
+```
+
+**Build from source** (ROS 2 Jazzy):
+
+```bash
+git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
+cd ros2_medkit
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install && source install/setup.bash
+ros2 launch ros2_medkit_gateway gateway.launch.py
+# → http://localhost:8080/api/v1/areas
+```
+
+For more examples, see our [Postman collection](postman/).
 
 ## ✨ Features
 
@@ -27,10 +55,7 @@
 
 ## 📖 Overview
 
-ros2_medkit provides **modern diagnostics for ROS 2–based systems**.
-
-Instead of hardcoding knowledge about every node, topic, or ECU, ros2_medkit models a robot
-as a **diagnostic entity tree**:
+ros2_medkit models a robot as a **diagnostic entity tree**:
 
 | Entity | Description | Example |
 |--------|-------------|---------|
@@ -39,8 +64,7 @@ as a **diagnostic entity tree**:
 | **Function** | Capability provided by one or more components | `localization`, `obstacle_detection` |
 | **App** | Deployable software unit | node, container, process |
 
-The goal is to make this tree **compatible with the SOVD (Service-Oriented Vehicle Diagnostics) model**,
-so the same concepts can be used across robots, vehicles, and other embedded systems.
+Compatible with the **SOVD (Service-Oriented Vehicle Diagnostics)** model — same concepts across robots, vehicles, and embedded systems.
 
 ## 📋 Requirements
 
@@ -48,44 +72,6 @@ so the same concepts can be used across robots, vehicles, and other embedded sys
 - **ROS 2:** Jazzy Jalisco
 - **Compiler:** GCC 13+ (C++17 support)
 - **Build System:** colcon + ament_cmake
-
-## 🚀 Quick Start
-
-### 1. Clone and Install Dependencies
-
-```bash
-mkdir -p ~/ros2_medkit_ws/src
-cd ~/ros2_medkit_ws/src
-git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
-cd ~/ros2_medkit_ws
-rosdep install --from-paths src --ignore-src -r -y
-```
-
-> **Note:** If you cloned without `--recurse-submodules`, run:
-> `git submodule update --init --recursive`
-
-### 2. Build
-
-```bash
-colcon build --symlink-install
-source install/setup.bash
-```
-
-### 3. Launch the Gateway
-
-```bash
-ros2 launch ros2_medkit_gateway gateway.launch.py
-```
-
-### 4. Explore the API
-
-Open your browser at `http://localhost:8080/api/v1/areas` or use curl:
-
-```bash
-curl http://localhost:8080/api/v1/areas
-```
-
-For more examples, see our [Postman collection](postman/).
 
 ## 📚 Documentation
 
