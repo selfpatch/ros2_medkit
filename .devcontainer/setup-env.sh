@@ -8,9 +8,11 @@ grep -Fxq "source /opt/ros/jazzy/setup.zsh" ~/.zshrc || echo "source /opt/ros/ja
 # Source the current shell to apply changes immediately
 if [ -n "$ZSH_VERSION" ]; then
     # Running in zsh
+    # shellcheck source=/dev/null
     source ~/.zshrc 2>/dev/null || true
 elif [ -n "$BASH_VERSION" ]; then
     # Running in bash
+    # shellcheck source=/dev/null
     source ~/.bashrc 2>/dev/null || true
 fi
 

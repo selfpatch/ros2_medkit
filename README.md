@@ -103,6 +103,22 @@ We'd love to have you join our community!
 
 This section is for contributors and developers who want to build and test ros2_medkit locally.
 
+### Pre-commit Hooks
+
+This project uses [pre-commit](https://pre-commit.com/) to automatically run
+`clang-format`, `flake8`, and other checks on staged files before each commit.
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+To run all hooks against every file (useful after first setup):
+
+```bash
+pre-commit run --all-files
+```
+
 ### Installing Dependencies
 
 ```bash

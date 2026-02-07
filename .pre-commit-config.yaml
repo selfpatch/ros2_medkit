@@ -1,0 +1,62 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+  # ── C / C++ ────────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v18.1.8
+    hooks:
+      - id: clang-format
+        name: clang-format
+        types_or: [c, c++]
+        exclude: /vendored/
+        # Uses the project's .clang-format automatically
+
+  # ── CMake ──────────────────────────────────────────────────────────────
+  - repo: https://github.com/cmake-lint/cmake-lint
+    rev: 1.4.3
+    hooks:
+      - id: cmakelint
+        name: cmake-lint
+        args: [--filter=-linelength]
+
+  # ── Shell ──────────────────────────────────────────────────────────────
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        name: shellcheck
+
+  # ── Python (matches ament_lint_common: flake8 + pep257) ─────────────
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.1
+    hooks:
+      - id: flake8
+        name: flake8
+        additional_dependencies:
+          - flake8-blind-except
+          - flake8-class-newline
+          - flake8-docstrings
+          - flake8-import-order
+        # Config read from .flake8 (matches ament_flake8 defaults)
+
+  # ── General ────────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-xml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+
+  # ── Copyright / License (matches ament_cmake_copyright) ────────────
+  - repo: local
+    hooks:
+      - id: ament-copyright
+        name: ament-copyright
+        entry: ament_copyright
+        language: system
+        types_or: [c, c++, python, cmake]
+        exclude: /vendored/

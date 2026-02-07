@@ -1,3 +1,17 @@
+# Copyright 2025 bburda
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Generate verification.rst from test files with @verifies tags."""
 
 import os
@@ -29,7 +43,7 @@ def parse_cpp_file(file_path):
         start_index = match.end()
 
         # Extract a chunk of text after the match to search for comments
-        search_window = content[start_index : start_index + 2000]
+        search_window = content[start_index:start_index + 2000]
         lines = search_window.split("\n")
 
         # Auto-generate ID and Title
@@ -99,7 +113,7 @@ def parse_py_file(file_path):
         start_index = match.end()
 
         # Extract a chunk of text after the match to search for docstrings/comments
-        search_window = content[start_index : start_index + 2000]
+        search_window = content[start_index:start_index + 2000]
         lines = search_window.split("\n")
 
         # Auto-generate ID and Title
@@ -231,7 +245,7 @@ def generate_rst(tests):
 
 
 def update_requirement_status(verified_reqs):
-    """Update status in requirement spec files from 'open' to 'verified' for verified requirements."""
+    """Update requirement spec file statuses from open to verified."""
     if not REQUIREMENTS_SPECS_DIR.exists():
         print(f"Requirements specs directory {REQUIREMENTS_SPECS_DIR} does not exist.")
         return
@@ -264,7 +278,10 @@ def update_requirement_status(verified_reqs):
                 while i < len(lines):
                     next_line = lines[i]
                     # Check if line is indented (part of directive) or empty
-                    if re.match(r'^\s+:', next_line) or (next_line.strip() == '' and i + 1 < len(lines) and re.match(r'^\s+:', lines[i + 1])):
+                    if (re.match(r'^\s+:', next_line)
+                            or (next_line.strip() == ''
+                                and i + 1 < len(lines)
+                                and re.match(r'^\s+:', lines[i + 1]))):
                         req_block_lines.append(next_line)
                         i += 1
                     elif next_line.strip() == '':
@@ -289,7 +306,9 @@ def update_requirement_status(verified_reqs):
                         current_status = status_match.group(2)
 
                 # If we found a verified requirement with open status, update it
-                if req_id and req_id in verified_reqs and status_line_idx is not None and current_status == 'open':
+                if (req_id and req_id in verified_reqs
+                        and status_line_idx is not None
+                        and current_status == 'open'):
                     indent = re.match(r'(\s*)', req_block_lines[status_line_idx]).group(1)
                     req_block_lines[status_line_idx] = f"{indent}:status: verified"
                     modified = True
@@ -306,7 +325,10 @@ def update_requirement_status(verified_reqs):
             updated_files.append(spec_file.name)
 
     if updated_files:
-        print(f"Updated {total_updated_reqs} requirement(s) to 'verified' status in {len(updated_files)} file(s):")
+        print(
+            f"Updated {total_updated_reqs} requirement(s)"
+            f" to 'verified' status in {len(updated_files)} file(s):"
+        )
         for filename in updated_files:
             print(f"  - {filename}")
     else:
