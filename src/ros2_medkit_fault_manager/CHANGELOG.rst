@@ -4,10 +4,7 @@ Changelog for package ros2_medkit_fault_manager
 
 Forthcoming
 -----------
-
-0.1.0 (2026-02-01)
-------------------
-* Initial release
+* Initial rosdistro release
 * Central fault management node with ROS 2 services:
 
   * ReportFault - report FAILED/PASSED events with debounce filtering

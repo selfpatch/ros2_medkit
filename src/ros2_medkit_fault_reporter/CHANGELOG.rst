@@ -4,10 +4,7 @@ Changelog for package ros2_medkit_fault_reporter
 
 Forthcoming
 -----------
-
-0.1.0 (2026-02-01)
-------------------
-* Initial release
+* Initial rosdistro release
 * FaultReporter client library with simple API:
 
   * report(fault_code, severity, description) - report FAILED events

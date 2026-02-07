@@ -186,14 +186,46 @@ if(BUILD_TESTING)
 
   # Exclude linters that don't work well with vendored dependencies:
   # - uncrustify/cpplint: conflicts with clang-format
-  # - copyright/lint_cmake: flags vendored files
+  # - copyright/clang_format: we configure manually to skip src/vendored/
   # - clang_tidy: we configure it manually below with increased timeout
   list(APPEND AMENT_LINT_AUTO_EXCLUDE
     ament_cmake_uncrustify
     ament_cmake_cpplint
     ament_cmake_clang_tidy
+    ament_cmake_copyright
+    ament_cmake_clang_format
   )
   ament_lint_auto_find_test_dependencies()
+
+  # Configure copyright check to exclude vendored dependencies
+  find_package(ament_cmake_copyright REQUIRED)
+  set(VENDORED_FILES
+    "src/vendored/jwt_cpp/include/jwt-cpp/base.h"
+    "src/vendored/jwt_cpp/include/jwt-cpp/jwt.h"
+    "src/vendored/jwt_cpp/include/jwt-cpp/traits/boost-json/defaults.h"
+    "src/vendored/jwt_cpp/include/jwt-cpp/traits/boost-json/traits.h"
+    "src/vendored/jwt_cpp/include/jwt-cpp/traits/danielaparker-jsoncons/defaults.h"
+    "src/vendored/jwt_cpp/include/jwt-cpp/traits/danielaparker-jsoncons/traits.h"
+    "src/vendored/jwt_cpp/include/jwt-cpp/traits/kazuho-picojson/defaults.h"
+    "src/vendored/jwt_cpp/include/jwt-cpp/traits/kazuho-picojson/traits.h"
+    "src/vendored/jwt_cpp/include/jwt-cpp/traits/nlohmann-json/defaults.h"
+    "src/vendored/jwt_cpp/include/jwt-cpp/traits/nlohmann-json/traits.h"
+    "src/vendored/jwt_cpp/include/picojson/picojson.h"
+    "src/vendored/tl_expected/include/tl/expected.hpp"
+  )
+  ament_copyright(EXCLUDE ${VENDORED_FILES})
+
+  # Configure clang-format to only check our source files (not vendored)
+  find_package(ament_cmake_clang_format REQUIRED)
+  file(GLOB_RECURSE _format_files
+    "include/*.h" "include/*.hpp"
+    "src/*.cpp" "src/*.h" "src/*.hpp"
+    "test/*.cpp" "test/*.h" "test/*.hpp"
+  )
+  list(FILTER _format_files EXCLUDE REGEX ".*/vendored/.*")
+  ament_clang_format(${_format_files}
+    CONFIG_FILE "${ament_cmake_clang_format_CONFIG_FILE}"
+  )
 
   # Configure clang-tidy manually with increased timeout (1500s instead of default 300s)
   # This is needed because the project has many files and clang-tidy analysis takes time

@@ -4,10 +4,7 @@ Changelog for package ros2_medkit_msgs
 
 Forthcoming
 -----------
-
-0.1.0 (2026-02-01)
-------------------
-* Initial release
+* Initial rosdistro release
 * Fault management messages:
 
   * Fault.msg - Core fault data model with severity levels (INFO/WARN/ERROR/CRITICAL)

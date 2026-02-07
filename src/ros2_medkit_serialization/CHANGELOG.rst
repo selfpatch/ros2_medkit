@@ -4,10 +4,7 @@ Changelog for package ros2_medkit_serialization
 
 Forthcoming
 -----------
-
-0.1.0 (2026-02-01)
-------------------
-* Initial release
+* Initial rosdistro release
 * Runtime JSON to ROS 2 message serialization using vendored dynmsg C++ API
 * TypeCache - thread-safe caching of ROS type introspection data with shared_mutex
   for read concurrency
