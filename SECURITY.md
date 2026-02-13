@@ -11,7 +11,7 @@ Security vulnerabilities are taken seriously. I appreciate your efforts to respo
 Instead, please report them using one of the following methods:
 
 1. **Preferred: GitHub Security Advisories** (recommended)
-   - Go to the [Security tab](https://github.com/bburda/ros2_medkit/security/advisories/new) of this repository
+   - Go to the [Security tab](https://github.com/selfpatch/ros2_medkit/security/advisories/new) of this repository
    - Click "Report a vulnerability"
    - Fill out the form with details about the vulnerability
 
