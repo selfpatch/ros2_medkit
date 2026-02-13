@@ -6,8 +6,8 @@ Thanks for your interest in contributing to ros2_medkit! This guide explains how
 
 ### Did you find a bug?
 
-- **Ensure the bug was not already reported** by searching [Issues](https://github.com/bburda/ros2_medkit/issues)
-- If you can't find an existing issue, [open a new one](https://github.com/bburda/ros2_medkit/issues/new/choose) and select the **Bug report** template
+- **Ensure the bug was not already reported** by searching [Issues](https://github.com/selfpatch/ros2_medkit/issues)
+- If you can't find an existing issue, [open a new one](https://github.com/selfpatch/ros2_medkit/issues/new/choose) and select the **Bug report** template
 - Fill in all sections of the template:
   - **Steps to reproduce** - numbered steps to recreate the issue
   - **Expected behavior** - what you expected to happen
@@ -17,8 +17,8 @@ Thanks for your interest in contributing to ros2_medkit! This guide explains how
 
 ### Do you want to suggest a feature or improvement?
 
-- Check if the feature has already been suggested in [Issues](https://github.com/bburda/ros2_medkit/issues)
-- If not, [open a new issue](https://github.com/bburda/ros2_medkit/issues/new/choose) and select the **Feature request / General issue** template
+- Check if the feature has already been suggested in [Issues](https://github.com/selfpatch/ros2_medkit/issues)
+- If not, [open a new issue](https://github.com/selfpatch/ros2_medkit/issues/new/choose) and select the **Feature request / General issue** template
 - Fill in all sections:
   - **Proposal** - describe the change or feature you'd like to see
   - **Motivation** - why is this important? Who does it benefit?
@@ -109,7 +109,7 @@ Before submitting your PR, ensure:
 
 ## Questions and Help
 
-- For questions about **using ros2_medkit**, open a [Discussion](https://github.com/bburda/ros2_medkit/discussions) or an Issue with the question label
+- For questions about **using ros2_medkit**, open a [Discussion](https://github.com/selfpatch/ros2_medkit/discussions) or an Issue with the question label
 - For questions about **contributing**, feel free to ask in your PR or Issue
 - For **security vulnerabilities**, see [`SECURITY.md`](SECURITY.md)
 
