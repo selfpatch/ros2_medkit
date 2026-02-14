@@ -38,7 +38,22 @@ find_package(ros2_medkit_serialization REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 # yaml-cpp is required as transitive dependency from ros2_medkit_serialization
-find_package(yaml-cpp REQUIRED)
+# yaml-cpp target resolution: Jazzy provides yaml-cpp::yaml-cpp via find_package,
+# Humble's yaml_cpp_vendor bundles yaml-cpp without the namespaced cmake target.
+find_package(yaml-cpp QUIET)
+if(NOT TARGET yaml-cpp::yaml-cpp)
+  find_library(YAML_CPP_LIB yaml-cpp)
+  find_path(YAML_CPP_INCLUDE yaml-cpp/yaml.h)
+  if(YAML_CPP_LIB AND YAML_CPP_INCLUDE)
+    add_library(yaml-cpp::yaml-cpp IMPORTED INTERFACE)
+    set_target_properties(yaml-cpp::yaml-cpp PROPERTIES
+      INTERFACE_LINK_LIBRARIES "${YAML_CPP_LIB}"
+      INTERFACE_INCLUDE_DIRECTORIES "${YAML_CPP_INCLUDE}"
+    )
+  else()
+    message(FATAL_ERROR "Could not find yaml-cpp library")
+  endif()
+endif()
 # rosbag2 for time-window snapshot recording
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_storage REQUIRED)

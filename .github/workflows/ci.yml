@@ -61,10 +61,10 @@ jobs:
           fi
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           rosdep update
-          # Use -r only on Humble to tolerate the missing libcpp-httplib-dev key on Jammy.
-          # cpp-httplib is built from source earlier in this workflow for Humble.
+          # On Humble, skip the libcpp-httplib-dev rosdep key — the apt version (0.10.3)
+          # is too old; cpp-httplib v0.14.3 is built from source in an earlier step.
           if [ "${{ matrix.ros_distro }}" = "humble" ]; then
-            rosdep install --from-paths src --ignore-src -r -y
+            rosdep install --from-paths src --ignore-src -r -y --skip-keys="libcpp-httplib-dev"
           else
             rosdep install --from-paths src --ignore-src -y
           fi
