@@ -86,7 +86,7 @@ GitHub Copilot code review is used in addition to human review.
 
 All pull requests must pass CI before merging:
 
-- **Build & Test job:** Full build + linter tests + unit/integration tests on Ubuntu Noble / ROS 2 Jazzy
+- **Build & Test job:** Full build + unit/integration tests on Ubuntu Noble / ROS 2 Jazzy **and** Ubuntu Jammy / ROS 2 Humble (linter tests on Jazzy only)
 - **Coverage job:** Debug build with coverage. Reports are generated for all PRs as artifacts and uploaded to [Codecov](https://codecov.io/gh/selfpatch/ros2_medkit) on pushes to `main`
 - Linting enforced: `clang-format`, `clang-tidy` via `ament_lint_auto`
 
@@ -201,9 +201,10 @@ Linter tests are enforced in CI on every pull request.
 
 `ros2_medkit` is tested and supported on:
 
-- **Ubuntu 24.04 (Noble)** with **ROS 2 Jazzy**
+- **Ubuntu 24.04 (Noble)** with **ROS 2 Jazzy** (primary)
+- **Ubuntu 22.04 (Jammy)** with **ROS 2 Humble**
 
-This is the primary Tier 1 platform for ROS 2 Jazzy per [REP-2000](https://www.ros.org/reps/rep-2000.html).
+These are the Tier 1 platforms per [REP-2000](https://www.ros.org/reps/rep-2000.html). Both are tested in CI.
 
 ---
 
@@ -232,7 +233,7 @@ Security issues can be reported via GitHub Security Advisories on the
 | Feature tests | Met | 65 tests across unit + integration |
 | Coverage | Met | 75% line coverage |
 | Linting | Met | clang-format, clang-tidy, ament_lint |
-| Platform support | Met | Ubuntu Noble / ROS 2 Jazzy |
+| Platform support | Met | Ubuntu Noble / ROS 2 Jazzy + Ubuntu Jammy / ROS 2 Humble |
 | Security policy | Met | REP-2006 compliant |
 
 **Caveat:** Version is 0.2.0 (pre-1.0.0, requirement 1.ii). The REST API is versioned (`/api/v1/`)

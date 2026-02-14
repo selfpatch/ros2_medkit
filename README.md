@@ -4,7 +4,8 @@
 [![codecov](https://codecov.io/gh/selfpatch/ros2_medkit/branch/main/graph/badge.svg)](https://codecov.io/gh/selfpatch/ros2_medkit)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://selfpatch.github.io/ros2_medkit/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![ROS 2](https://img.shields.io/badge/ROS%202-Jazzy-blue)](https://docs.ros.org/en/jazzy/)
+[![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-blue)](https://docs.ros.org/en/jazzy/)
+[![ROS 2 Humble](https://img.shields.io/badge/ROS%202-Humble-blue)](https://docs.ros.org/en/humble/)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289DA?logo=discord&logoColor=white)](https://discord.gg/6CXPMApAyq)
 [![Quality Level 3](https://img.shields.io/badge/Quality-Level%203-yellow)](QUALITY_DECLARATION.md)
 
@@ -32,7 +33,7 @@ cd selfpatch_demos/demos/turtlebot3_integration
 # → API: http://localhost:8080/api/v1/  Web UI: http://localhost:3000
 ```
 
-**Build from source** (ROS 2 Jazzy):
+**Build from source** (ROS 2 Jazzy or Humble):
 
 ```bash
 git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
@@ -52,7 +53,7 @@ For more examples, see our [Postman collection](postman/).
 - **🔗 SOVD Compatible** — Align with Service-Oriented Vehicle Diagnostics standards
 - **🌐 REST API Gateway** — HTTP interface for integration with external tools and UIs
 - **📊 Health Modeling** — Track health state per entity for fleet-level observability
-- **🔧 Easy Integration** — Works with existing ROS 2 Jazzy nodes out of the box
+- **🔧 Easy Integration** — Works with existing ROS 2 nodes out of the box (Jazzy & Humble)
 
 ## 📖 Overview
 
@@ -69,9 +70,9 @@ Compatible with the **SOVD (Service-Oriented Vehicle Diagnostics)** model — sa
 
 ## 📋 Requirements
 
-- **OS:** Ubuntu 24.04 LTS
-- **ROS 2:** Jazzy Jalisco
-- **Compiler:** GCC 13+ (C++17 support)
+- **OS:** Ubuntu 24.04 LTS (Jazzy) or Ubuntu 22.04 LTS (Humble)
+- **ROS 2:** Jazzy Jalisco or Humble Hawksbill
+- **Compiler:** GCC 11+ (C++17 support)
 - **Build System:** colcon + ament_cmake
 
 ## 📚 Documentation
@@ -192,14 +193,14 @@ Then open `coverage_html/index.html` in your browser.
 ### CI/CD
 
 All pull requests and pushes to main are automatically built and tested using GitHub Actions.
-The CI workflow runs on Ubuntu 24.04 with ROS 2 Jazzy and consists of two parallel jobs:
+The CI workflow runs a build matrix across **ROS 2 Jazzy** (Ubuntu 24.04) and **ROS 2 Humble** (Ubuntu 22.04) and consists of the following jobs:
 
-**build-and-test:**
+**build-and-test** (matrix: Jazzy + Humble):
 
-- Code linting and formatting checks (clang-format, clang-tidy)
-- Unit tests and integration tests with demo automotive nodes
+- Full build and unit/integration tests on both distros
+- Code linting and formatting checks (clang-format, clang-tidy) — Jazzy only
 
-**coverage:**
+**coverage** (Jazzy only):
 
 - Builds with coverage instrumentation (Debug mode)
 - Runs unit tests only (for stable coverage metrics)
