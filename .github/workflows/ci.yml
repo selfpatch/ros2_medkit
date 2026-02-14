@@ -42,12 +42,13 @@ jobs:
         if: matrix.ros_distro == 'humble'
         run: |
           apt-get update
-          apt-get install -y cmake g++ libssl-dev
+          apt-get install -y cmake g++ libssl-dev pkg-config
           git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib
           cd /tmp/cpp-httplib
           mkdir build && cd build
           cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON
           make install
+          pkg-config --exists cpp-httplib && echo "cpp-httplib installed successfully" || exit 1
 
       - name: Install dependencies
         run: |
@@ -59,7 +60,13 @@ jobs:
           fi
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           rosdep update
-          rosdep install --from-paths src --ignore-src -r -y
+          # Use -r only on Humble to tolerate the missing libcpp-httplib-dev key on Jammy.
+          # cpp-httplib is built from source earlier in this workflow for Humble.
+          if [ "${{ matrix.ros_distro }}" = "humble" ]; then
+            rosdep install --from-paths src --ignore-src -r -y
+          else
+            rosdep install --from-paths src --ignore-src -y
+          fi
 
       - name: Build packages
         run: |
