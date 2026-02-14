@@ -34,9 +34,18 @@ find_package(example_interfaces REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 find_package(ros2_medkit_serialization REQUIRED)
 
-# Find cpp-httplib using pkg-config
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(cpp_httplib REQUIRED IMPORTED_TARGET cpp-httplib)
+# Find cpp-httplib — prefer pkg-config (system package on Jazzy/Noble),
+# fall back to CMake config (built from source on Humble/Jammy)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(cpp_httplib IMPORTED_TARGET cpp-httplib)
+endif()
+if(cpp_httplib_FOUND)
+  add_library(cpp_httplib_target ALIAS PkgConfig::cpp_httplib)
+else()
+  find_package(httplib REQUIRED)
+  add_library(cpp_httplib_target ALIAS httplib::httplib)
+endif()
 
 # Find OpenSSL (required by jwt-cpp for RS256 and optional TLS support)
 find_package(OpenSSL REQUIRED)
@@ -132,7 +141,7 @@ ament_target_dependencies(gateway_lib
 )
 
 target_link_libraries(gateway_lib
-  PkgConfig::cpp_httplib
+  cpp_httplib_target
   nlohmann_json::nlohmann_json
   yaml-cpp::yaml-cpp
   OpenSSL::SSL

@@ -48,7 +48,8 @@ jobs:
           mkdir build && cd build
           cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON
           make install
-          pkg-config --exists cpp-httplib && echo "cpp-httplib installed successfully" || exit 1
+          # Verify installation — cpp-httplib from source installs cmake config (not pkg-config .pc)
+          test -f /usr/include/httplib.h && echo "cpp-httplib installed successfully" || exit 1
 
       - name: Install dependencies
         run: |
