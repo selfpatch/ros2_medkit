@@ -1,7 +1,8 @@
 Installation
 ============
 
-This guide covers installation of ros2_medkit on Ubuntu 24.04 with ROS 2 Jazzy.
+This guide covers installation of ros2_medkit on Ubuntu 24.04 with ROS 2 Jazzy
+or Ubuntu 22.04 with ROS 2 Humble.
 
 System Requirements
 -------------------
@@ -13,21 +14,37 @@ System Requirements
    * - Requirement
      - Version
    * - Operating System
-     - Ubuntu 24.04 LTS (Noble Numbat)
+     - Ubuntu 24.04 LTS (Noble) or Ubuntu 22.04 LTS (Jammy)
    * - ROS 2 Distribution
-     - Jazzy
+     - Jazzy or Humble
    * - C++ Compiler
-     - GCC 13+ (C++17 support required)
+     - GCC 11+ (C++17 support required)
    * - CMake
      - 3.22+
    * - Python
-     - 3.12+
+     - 3.10+ (Humble) / 3.12+ (Jazzy)
 
 Prerequisites
 -------------
 
-**ROS 2 Jazzy** must be installed and sourced. Follow the official installation guide:
-https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html
+**ROS 2 Jazzy or Humble** must be installed and sourced. Follow the official installation guide
+for your distribution:
+
+- Jazzy: https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html
+- Humble: https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html
+
+.. note::
+
+   On Ubuntu 22.04 (Humble), the ``libcpp-httplib-dev`` system package is not available.
+   You must install cpp-httplib from source before building:
+
+   .. code-block:: bash
+
+      sudo apt install cmake g++ libssl-dev
+      git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib
+      cd /tmp/cpp-httplib && mkdir build && cd build
+      cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON
+      sudo make install
 
 Installation from Source
 ------------------------
