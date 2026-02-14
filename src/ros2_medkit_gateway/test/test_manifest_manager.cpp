@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
