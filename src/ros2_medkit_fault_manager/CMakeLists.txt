@@ -58,6 +58,14 @@ endif()
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_storage REQUIRED)
 
+# rosbag2 API compatibility: Humble uses time_stamp, Iron+ uses recv_timestamp/send_timestamp
+if(rosbag2_storage_VERSION VERSION_LESS "0.22.0")
+  message(STATUS "rosbag2_storage ${rosbag2_storage_VERSION} detected (Humble): using time_stamp field")
+  set(ROSBAG2_COMPAT_DEFS ROSBAG2_USE_OLD_TIMESTAMP_FIELD)
+else()
+  message(STATUS "rosbag2_storage ${rosbag2_storage_VERSION} detected (Iron+): using recv_timestamp/send_timestamp")
+endif()
+
 # Library target (shared between executable and tests)
 add_library(fault_manager_lib STATIC
   src/fault_manager_node.cpp
@@ -89,6 +97,10 @@ target_link_libraries(fault_manager_lib PUBLIC
   nlohmann_json::nlohmann_json
   yaml-cpp::yaml-cpp
 )
+
+if(ROSBAG2_COMPAT_DEFS)
+  target_compile_definitions(fault_manager_lib PRIVATE ${ROSBAG2_COMPAT_DEFS})
+endif()
 
 if(ENABLE_COVERAGE)
   target_compile_options(fault_manager_lib PRIVATE --coverage -O0 -g)

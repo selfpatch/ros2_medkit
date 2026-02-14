@@ -53,8 +53,13 @@ std::shared_ptr<rosbag2_storage::SerializedBagMessage> create_bag_message(const 
                                                                           const rclcpp::Logger & logger) {
   auto bag_msg = std::make_shared<rosbag2_storage::SerializedBagMessage>();
   bag_msg->topic_name = topic;
+  // rosbag2 API changed in Iron: Humble uses time_stamp, Iron+ uses recv_timestamp/send_timestamp
+#ifdef ROSBAG2_USE_OLD_TIMESTAMP_FIELD
+  bag_msg->time_stamp = timestamp_ns;
+#else
   bag_msg->recv_timestamp = timestamp_ns;
   bag_msg->send_timestamp = timestamp_ns;
+#endif
 
   // Create serialized_data with custom deleter that calls rcutils_uint8_array_fini
   auto serialized_data = std::shared_ptr<rcutils_uint8_array_t>(new rcutils_uint8_array_t(), Uint8ArrayDeleter{});
