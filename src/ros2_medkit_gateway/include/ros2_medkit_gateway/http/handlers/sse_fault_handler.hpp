@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__SSE_FAULT_HANDLER_HPP_
-#define ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__SSE_FAULT_HANDLER_HPP_
+#pragma once
 
 #include <atomic>
 #include <condition_variable>
@@ -123,4 +122,3 @@ class SSEFaultHandler {
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway
 
-#endif  // ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__SSE_FAULT_HANDLER_HPP_

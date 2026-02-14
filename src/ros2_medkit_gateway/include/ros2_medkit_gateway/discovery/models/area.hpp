@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef ROS2_MEDKIT_GATEWAY__DISCOVERY__MODELS__AREA_HPP_
-#define ROS2_MEDKIT_GATEWAY__DISCOVERY__MODELS__AREA_HPP_
+#pragma once
 
 #include <nlohmann/json.hpp>
 #include <string>
@@ -122,4 +121,3 @@ struct Area {
 
 }  // namespace ros2_medkit_gateway
 
-#endif  // ROS2_MEDKIT_GATEWAY__DISCOVERY__MODELS__AREA_HPP_

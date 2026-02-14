@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef ROS2_MEDKIT_GATEWAY__DISCOVERY__MANIFEST__VALIDATION_ERROR_HPP_
-#define ROS2_MEDKIT_GATEWAY__DISCOVERY__MANIFEST__VALIDATION_ERROR_HPP_
+#pragma once
 
 #include <string>
 #include <vector>
@@ -88,4 +87,3 @@ struct ValidationResult {
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway
 
-#endif  // ROS2_MEDKIT_GATEWAY__DISCOVERY__MANIFEST__VALIDATION_ERROR_HPP_

@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef ROS2_MEDKIT_GATEWAY__DISCOVERY__MANIFEST__MANIFEST_HPP_
-#define ROS2_MEDKIT_GATEWAY__DISCOVERY__MANIFEST__MANIFEST_HPP_
+#pragma once
 
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/discovery/models/area.hpp"
@@ -92,4 +91,3 @@ struct Manifest {
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway
 
-#endif  // ROS2_MEDKIT_GATEWAY__DISCOVERY__MANIFEST__MANIFEST_HPP_

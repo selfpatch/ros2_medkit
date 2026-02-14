@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef ROS2_MEDKIT_GATEWAY__DISCOVERY__MANIFEST__MANIFEST_PARSER_HPP_
-#define ROS2_MEDKIT_GATEWAY__DISCOVERY__MANIFEST__MANIFEST_PARSER_HPP_
+#pragma once
 
 #include "ros2_medkit_gateway/discovery/manifest/manifest.hpp"
 
@@ -71,4 +70,3 @@ class ManifestParser {
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway
 
-#endif  // ROS2_MEDKIT_GATEWAY__DISCOVERY__MANIFEST__MANIFEST_PARSER_HPP_

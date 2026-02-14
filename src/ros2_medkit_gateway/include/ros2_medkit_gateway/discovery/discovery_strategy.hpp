@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef ROS2_MEDKIT_GATEWAY__DISCOVERY__DISCOVERY_STRATEGY_HPP_
-#define ROS2_MEDKIT_GATEWAY__DISCOVERY__DISCOVERY_STRATEGY_HPP_
+#pragma once
 
 #include <string>
 #include <vector>
@@ -61,4 +60,3 @@ class DiscoveryStrategy {
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway
 
-#endif  // ROS2_MEDKIT_GATEWAY__DISCOVERY__DISCOVERY_STRATEGY_HPP_

@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef ROS2_MEDKIT_GATEWAY__DISCOVERY__DISCOVERY_ENUMS_HPP_
-#define ROS2_MEDKIT_GATEWAY__DISCOVERY__DISCOVERY_ENUMS_HPP_
+#pragma once
 
 #include <string>
 
@@ -93,4 +92,3 @@ std::string topic_only_policy_to_string(TopicOnlyPolicy policy);
 
 }  // namespace ros2_medkit_gateway
 
-#endif  // ROS2_MEDKIT_GATEWAY__DISCOVERY__DISCOVERY_ENUMS_HPP_

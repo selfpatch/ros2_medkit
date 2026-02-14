@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__HANDLERS_HPP_
-#define ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__HANDLERS_HPP_
+#pragma once
 
 /**
  * @file handlers.hpp
@@ -38,4 +37,3 @@
 #include "ros2_medkit_gateway/http/handlers/operation_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/sse_fault_handler.hpp"
 
-#endif  // ROS2_MEDKIT_GATEWAY__HTTP__HANDLERS__HANDLERS_HPP_
