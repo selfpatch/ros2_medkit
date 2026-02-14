@@ -9,8 +9,16 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ros_distro: jazzy
+            os_image: ubuntu:noble
+          - ros_distro: humble
+            os_image: ubuntu:jammy
     container:
-      image: ubuntu:noble
+      image: ${{ matrix.os_image }}
     timeout-minutes: 60
     defaults:
       run:
@@ -25,29 +33,45 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up ROS 2 Jazzy
+      - name: Set up ROS 2 ${{ matrix.ros_distro }}
         uses: ros-tooling/setup-ros@v0.7
         with:
-          required-ros-distributions: jazzy
+          required-ros-distributions: ${{ matrix.ros_distro }}
+
+      - name: Install cpp-httplib from source (Humble)
+        if: matrix.ros_distro == 'humble'
+        run: |
+          apt-get update
+          apt-get install -y cmake g++ libssl-dev
+          git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib
+          cd /tmp/cpp-httplib
+          mkdir build && cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON
+          make install
 
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y clang-format clang-tidy ros-jazzy-test-msgs
-          source /opt/ros/jazzy/setup.bash
+          apt-get install -y ros-${{ matrix.ros_distro }}-test-msgs
+          # Linter tools only needed on Jazzy (clang versions differ across Ubuntu releases)
+          if [ "${{ matrix.ros_distro }}" = "jazzy" ]; then
+            apt-get install -y clang-format clang-tidy
+          fi
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           rosdep update
           rosdep install --from-paths src --ignore-src -r -y
 
       - name: Build packages
         run: |
-          source /opt/ros/jazzy/setup.bash
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           colcon build --symlink-install \
             --cmake-args -DCMAKE_BUILD_TYPE=Release \
             --event-handlers console_direct+
 
       - name: Run linters (clang-format, clang-tidy, etc.)
+        if: matrix.ros_distro == 'jazzy'
         run: |
-          source /opt/ros/jazzy/setup.bash
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           source install/setup.bash
           colcon test --return-code-on-test-failure \
             --ctest-args -L linter \
@@ -56,7 +80,7 @@ jobs:
       - name: Run unit and integration tests
         timeout-minutes: 15
         run: |
-          source /opt/ros/jazzy/setup.bash
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           source install/setup.bash
           colcon test --return-code-on-test-failure \
             --ctest-args -LE linter \
@@ -70,7 +94,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-results-${{ matrix.ros_distro }}
           path: |
             log/
             build/*/test_results/
