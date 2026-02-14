@@ -27,7 +27,22 @@ find_package(rosidl_typesupport_introspection_cpp REQUIRED)
 find_package(rosidl_runtime_cpp REQUIRED)
 find_package(rcpputils REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
-find_package(yaml-cpp REQUIRED)
+# yaml-cpp target resolution: Jazzy provides yaml-cpp::yaml-cpp via find_package,
+# Humble's yaml_cpp_vendor bundles yaml-cpp without the namespaced cmake target.
+find_package(yaml-cpp QUIET)
+if(NOT TARGET yaml-cpp::yaml-cpp)
+  find_library(YAML_CPP_LIB yaml-cpp)
+  find_path(YAML_CPP_INCLUDE yaml-cpp/yaml.h)
+  if(YAML_CPP_LIB AND YAML_CPP_INCLUDE)
+    add_library(yaml-cpp::yaml-cpp IMPORTED INTERFACE)
+    set_target_properties(yaml-cpp::yaml-cpp PROPERTIES
+      INTERFACE_LINK_LIBRARIES "${YAML_CPP_LIB}"
+      INTERFACE_INCLUDE_DIRECTORIES "${YAML_CPP_INCLUDE}"
+    )
+  else()
+    message(FATAL_ERROR "Could not find yaml-cpp library")
+  endif()
+endif()
 find_package(nlohmann_json REQUIRED)
 
 # Library
