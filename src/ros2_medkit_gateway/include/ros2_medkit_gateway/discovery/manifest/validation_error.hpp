@@ -86,4 +86,3 @@ struct ValidationResult {
 
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway
-

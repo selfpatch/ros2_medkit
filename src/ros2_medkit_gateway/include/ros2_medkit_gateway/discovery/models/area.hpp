@@ -120,4 +120,3 @@ struct Area {
 };
 
 }  // namespace ros2_medkit_gateway
-

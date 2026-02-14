@@ -69,4 +69,3 @@ class ConfigHandlers {
 
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway
-

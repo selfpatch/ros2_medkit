@@ -91,4 +91,3 @@ TopicOnlyPolicy parse_topic_only_policy(const std::string & str);
 std::string topic_only_policy_to_string(TopicOnlyPolicy policy);
 
 }  // namespace ros2_medkit_gateway
-

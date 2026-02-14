@@ -59,4 +59,3 @@ class DiscoveryStrategy {
 
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway
-

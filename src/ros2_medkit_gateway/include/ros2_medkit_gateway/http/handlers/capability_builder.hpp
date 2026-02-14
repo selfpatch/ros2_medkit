@@ -150,4 +150,3 @@ class LinksBuilder {
 
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway
-

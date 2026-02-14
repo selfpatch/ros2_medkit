@@ -132,4 +132,3 @@ class HybridDiscoveryStrategy : public DiscoveryStrategy {
 
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway
-

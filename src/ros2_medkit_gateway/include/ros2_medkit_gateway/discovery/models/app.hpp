@@ -114,4 +114,3 @@ struct App {
 };
 
 }  // namespace ros2_medkit_gateway
-

@@ -92,4 +92,3 @@ class FaultHandlers {
 
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway
-
