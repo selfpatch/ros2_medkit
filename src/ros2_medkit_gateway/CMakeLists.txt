@@ -141,20 +141,16 @@ target_link_libraries(gateway_lib
   jwt-cpp::jwt-cpp
 )
 
-# Apply coverage flags to library
-if(ENABLE_COVERAGE)
-  target_compile_options(gateway_lib PRIVATE --coverage -O0 -g)
-  target_link_options(gateway_lib PRIVATE --coverage)
-endif()
-
 # Gateway node executable
 add_executable(gateway_node src/main.cpp)
 target_link_libraries(gateway_node gateway_lib)
 
-# Apply coverage flags to gateway_node target
+# Apply coverage flags to main targets
 if(ENABLE_COVERAGE)
-  target_compile_options(gateway_node PRIVATE --coverage -O0 -g)
-  target_link_options(gateway_node PRIVATE --coverage)
+  foreach(_target gateway_lib gateway_node)
+    target_compile_options(${_target} PRIVATE --coverage -O0 -g)
+    target_link_options(${_target} PRIVATE --coverage)
+  endforeach()
 endif()
 
 # Install
@@ -330,42 +326,30 @@ if(BUILD_TESTING)
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
-    target_compile_options(test_gateway_node PRIVATE --coverage -O0 -g)
-    target_link_options(test_gateway_node PRIVATE --coverage)
-    target_compile_options(test_auth_manager PRIVATE --coverage -O0 -g)
-    target_link_options(test_auth_manager PRIVATE --coverage)
-    target_compile_options(test_operation_manager PRIVATE --coverage -O0 -g)
-    target_link_options(test_operation_manager PRIVATE --coverage)
-    target_compile_options(test_configuration_manager PRIVATE --coverage -O0 -g)
-    target_link_options(test_configuration_manager PRIVATE --coverage)
-    target_compile_options(test_native_topic_sampler PRIVATE --coverage -O0 -g)
-    target_link_options(test_native_topic_sampler PRIVATE --coverage)
-    target_compile_options(test_discovery_manager PRIVATE --coverage -O0 -g)
-    target_link_options(test_discovery_manager PRIVATE --coverage)
-    target_compile_options(test_tls_config PRIVATE --coverage -O0 -g)
-    target_link_options(test_tls_config PRIVATE --coverage)
-    target_compile_options(test_fault_manager PRIVATE --coverage -O0 -g)
-    target_link_options(test_fault_manager PRIVATE --coverage)
-    target_compile_options(test_discovery_models PRIVATE --coverage -O0 -g)
-    target_link_options(test_discovery_models PRIVATE --coverage)
-    target_compile_options(test_manifest_parser PRIVATE --coverage -O0 -g)
-    target_link_options(test_manifest_parser PRIVATE --coverage)
-    target_compile_options(test_manifest_validator PRIVATE --coverage -O0 -g)
-    target_link_options(test_manifest_validator PRIVATE --coverage)
-    target_compile_options(test_capability_builder PRIVATE --coverage -O0 -g)
-    target_link_options(test_capability_builder PRIVATE --coverage)
-    target_compile_options(test_handler_context PRIVATE --coverage -O0 -g)
-    target_link_options(test_handler_context PRIVATE --coverage)
-    target_compile_options(test_auth_config PRIVATE --coverage -O0 -g)
-    target_link_options(test_auth_config PRIVATE --coverage)
-    target_compile_options(test_data_access_manager PRIVATE --coverage -O0 -g)
-    target_link_options(test_data_access_manager PRIVATE --coverage)
-    target_compile_options(test_entity_path_utils PRIVATE --coverage -O0 -g)
-    target_link_options(test_entity_path_utils PRIVATE --coverage)
-    target_compile_options(test_fault_handlers PRIVATE --coverage -O0 -g)
-    target_link_options(test_fault_handlers PRIVATE --coverage)
-    target_compile_options(test_bulkdata_handlers PRIVATE --coverage -O0 -g)
-    target_link_options(test_bulkdata_handlers PRIVATE --coverage)
+    set(_test_targets
+      test_gateway_node
+      test_auth_manager
+      test_operation_manager
+      test_configuration_manager
+      test_native_topic_sampler
+      test_discovery_manager
+      test_tls_config
+      test_fault_manager
+      test_discovery_models
+      test_manifest_parser
+      test_manifest_validator
+      test_capability_builder
+      test_handler_context
+      test_auth_config
+      test_data_access_manager
+      test_entity_path_utils
+      test_fault_handlers
+      test_bulkdata_handlers
+    )
+    foreach(_target ${_test_targets})
+      target_compile_options(${_target} PRIVATE --coverage -O0 -g)
+      target_link_options(${_target} PRIVATE --coverage)
+    endforeach()
   endif()
 
   # Integration testing
