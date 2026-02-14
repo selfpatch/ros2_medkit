@@ -4,7 +4,7 @@
 
 **ros2_medkit** is a ROS 2 diagnostics gateway that exposes ROS 2 system information via a RESTful HTTP API. It models robots as a **diagnostic entity tree** (Area → Component → Function → App) aligned with the SOVD (Service-Oriented Vehicle Diagnostics) specification.
 
-**Tech Stack**: C++17, ROS 2 Jazzy, Ubuntu 24.04
+**Tech Stack**: C++17, ROS 2 Jazzy/Humble, Ubuntu 24.04/22.04
 
 ## Architecture
 
@@ -25,7 +25,7 @@ GatewayNode (src/ros2_medkit_gateway/src/gateway_node.cpp)
 ## Code Style & Conventions
 
 - **C++ Standard**: C++17 with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion`
-- **ROS 2 Distribution**: Jazzy (Ubuntu 24.04)
+- **ROS 2 Distribution**: Jazzy (Ubuntu 24.04) or Humble (Ubuntu 22.04)
 - **Formatting**: Google-based clang-format with 120 column limit, 2-space indent
 - **Pointer style**: Middle alignment (`Type * ptr`) per ROS 2 conventions
 - **Namespace**: All gateway code lives in `ros2_medkit_gateway` namespace
@@ -65,7 +65,7 @@ When adding a new endpoint or feature:
 
 ## Key Dependencies
 
-- **ROS 2 Jazzy** (Ubuntu 24.04)
+- **ROS 2 Jazzy** (Ubuntu 24.04) / **ROS 2 Humble** (Ubuntu 22.04)
 - **cpp-httplib**: HTTP server (found via pkg-config)
 - **nlohmann_json**: JSON serialization
 - **yaml-cpp**: Configuration parsing
