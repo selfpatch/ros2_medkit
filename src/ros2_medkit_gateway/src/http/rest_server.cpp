@@ -60,7 +60,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
 
   // Create handler context and domain-specific handlers
   handler_ctx_ =
-      std::make_unique<handlers::HandlerContext>(node_, cors_config_, auth_config_, tls_config_, auth_manager_.get());
+      std::make_unique<handlers::HandlerContext>(node_, cors_config_, auth_config_, tls_config_, auth_manager_.get(),
+                                                 node_->get_bulk_data_store());
 
   health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_);
   discovery_handlers_ = std::make_unique<handlers::DiscoveryHandlers>(*handler_ctx_);

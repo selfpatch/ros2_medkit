@@ -89,6 +89,7 @@ struct EntityInfo {
 // Forward declarations
 class GatewayNode;
 class AuthManager;
+class BulkDataStore;
 
 namespace handlers {
 
@@ -101,12 +102,14 @@ namespace handlers {
 class HandlerContext {
  public:
   HandlerContext(GatewayNode * node, const CorsConfig & cors_config, const AuthConfig & auth_config,
-                 const TlsConfig & tls_config, AuthManager * auth_manager)
+                 const TlsConfig & tls_config, AuthManager * auth_manager,
+                 BulkDataStore * bulk_data_store = nullptr)
     : node_(node)
     , cors_config_(cors_config)
     , auth_config_(auth_config)
     , tls_config_(tls_config)
-    , auth_manager_(auth_manager) {
+    , auth_manager_(auth_manager)
+    , bulk_data_store_(bulk_data_store) {
   }
 
   /// Get gateway node
@@ -132,6 +135,11 @@ class HandlerContext {
   /// Get authentication manager (may be nullptr if auth disabled)
   AuthManager * auth_manager() const {
     return auth_manager_;
+  }
+
+  /// Get bulk data store (may be nullptr if not configured)
+  BulkDataStore * bulk_data_store() const {
+    return bulk_data_store_;
   }
 
   /**
@@ -253,6 +261,7 @@ class HandlerContext {
   AuthConfig auth_config_;
   TlsConfig tls_config_;
   AuthManager * auth_manager_;
+  BulkDataStore * bulk_data_store_;
 };
 
 }  // namespace handlers
