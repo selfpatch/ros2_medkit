@@ -17,6 +17,7 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
@@ -290,6 +291,12 @@ class NativeTopicSampler {
 
   /// Native JSON serializer for topic deserialization
   std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
+
+  /// Cached component topic map, updated by build_component_topic_map()
+  std::map<std::string, ComponentTopics> topic_map_cache_;
+
+  /// Protects topic_map_cache_ for concurrent access from HTTP and refresh threads
+  mutable std::mutex topic_map_mutex_;
 };
 
 }  // namespace ros2_medkit_gateway
