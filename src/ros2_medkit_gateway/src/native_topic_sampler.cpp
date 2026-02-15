@@ -486,30 +486,27 @@ std::map<std::string, ComponentTopics> NativeTopicSampler::build_component_topic
   RCLCPP_DEBUG(node_->get_logger(), "Built topic map for %zu components", component_map.size());
   return component_map;
 }
-const std::map<std::string, ComponentTopics>&
+std::map<std::string, ComponentTopics>
 NativeTopicSampler::get_component_topic_map()
 {
   std::lock_guard<std::mutex> lock(topic_map_mutex_);
 
   // Use ROS 2 graph change counter
-  auto current_graph_change = node_->count_publishers(""); 
-  // You may replace this with a better graph change tracker if available
+  auto current_graph_change = node_->count_publishers("");
 
-  if (topic_map_cache_.empty() ||
-      cached_graph_change_count_ != current_graph_change)
-  {
+  if (topic_map_cache_.empty() || cached_graph_change_count_ != current_graph_change) {
     topic_map_cache_ = build_component_topic_map();
     cached_graph_change_count_ = current_graph_change;
   }
 
+  // Return a copy to avoid callers holding a reference to internal cache
   return topic_map_cache_;
 }
 
 
 ComponentTopics NativeTopicSampler::get_component_topics(const std::string & component_fqn) {
   // Build full map and extract for this component
-  // TODO(optimization): Cache the map and invalidate on graph changes
- const auto& full_map = get_component_topic_map();
+  const auto full_map = get_component_topic_map();
 
   auto it = full_map.find(component_fqn);
   if (it != full_map.end()) {

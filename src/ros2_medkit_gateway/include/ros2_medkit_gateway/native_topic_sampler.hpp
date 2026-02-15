@@ -278,17 +278,18 @@ class NativeTopicSampler {
    * @param topic_name Full topic path
    * @return true if this is a system topic that should be filtered
    */
-  static bool is_system_topic(const std::string & topic_name);
+    static bool is_system_topic(const std::string & topic_name);
 
-private:
-  std::string get_topic_type(const std::string & topic_name);
+    private:
+    std::string get_topic_type(const std::string & topic_name);
 
   rclcpp::Node * node_;
 
   std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
 
   // Getter for cached component-topic map
-  const std::map<std::string, ComponentTopics>&
+  // Returns a copy to avoid exposing internal data while the mutex is released.
+  std::map<std::string, ComponentTopics>
   get_component_topic_map();
 
   // --- Component topic map cache ---
@@ -296,6 +297,5 @@ private:
   size_t cached_graph_change_count_{0};
   mutable std::mutex topic_map_mutex_;
 };
-
 
 }  // namespace ros2_medkit_gateway
