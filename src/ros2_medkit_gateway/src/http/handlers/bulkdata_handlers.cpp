@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <unordered_map>
 
+#include "ros2_medkit_gateway/bulk_data_store.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/entity_path_utils.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
@@ -143,6 +144,120 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
 
   nlohmann::json response = {{"items", items}};
   HandlerContext::send_json(res, response);
+}
+
+void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Response & res) {
+  // Parse entity path from request URL
+  auto entity_info = parse_entity_path(req.path);
+  if (!entity_info) {
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
+    return;
+  }
+
+  // Validate entity exists and matches the route type
+  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
+  if (!entity_opt) {
+    return;  // Error response already sent
+  }
+
+  // Validate entity type supports bulk-data collection (SOVD Table 8)
+  if (auto err = HandlerContext::validate_collection_access(*entity_opt, ResourceCollection::BULK_DATA)) {
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    return;
+  }
+
+  // Extract and validate category from path
+  auto category = extract_bulk_data_category(req.path);
+  if (category.empty()) {
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing category");
+    return;
+  }
+
+  // Rosbags are managed by the fault system, not user-uploadable
+  if (category == "rosbags") {
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                               "Category 'rosbags' does not support upload. "
+                               "Rosbags are managed by the fault system.");
+    return;
+  }
+
+  // Check BulkDataStore is available
+  auto * store = ctx_.bulk_data_store();
+  if (store == nullptr) {
+    HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                               "Bulk data storage not configured");
+    return;
+  }
+
+  // Validate category is known
+  if (!store->is_known_category(category)) {
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                               "Unknown bulk-data category: " + category);
+    return;
+  }
+
+  // Extract multipart file
+  if (!req.has_file("file")) {
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST,
+                               "Missing 'file' field in multipart/form-data request");
+    return;
+  }
+
+  const auto & file = req.get_file_value("file");
+  std::string filename = file.filename.empty() ? "upload" : file.filename;
+  std::string content_type = file.content_type.empty() ? "application/octet-stream" : file.content_type;
+
+  // Check file size against limit
+  if (store->max_upload_bytes() > 0 && file.content.size() > store->max_upload_bytes()) {
+    HandlerContext::send_error(res, static_cast<httplib::StatusCode>(413), ERR_PAYLOAD_TOO_LARGE,
+                               "File size exceeds maximum upload limit");
+    return;
+  }
+
+  // Extract optional description and metadata
+  std::string description;
+  if (req.has_file("description")) {
+    description = req.get_file_value("description").content;
+  }
+
+  nlohmann::json metadata = nlohmann::json::object();
+  if (req.has_file("metadata")) {
+    const auto & meta_str = req.get_file_value("metadata").content;
+    if (!meta_str.empty()) {
+      auto parsed = nlohmann::json::parse(meta_str, nullptr, false);
+      if (parsed.is_discarded()) {
+        HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                   "Invalid JSON in 'metadata' field");
+        return;
+      }
+      metadata = std::move(parsed);
+    }
+  }
+
+  // Store the file
+  auto result =
+      store->store(entity_info->entity_id, category, filename, content_type, file.content, description, metadata);
+  if (!result) {
+    HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, result.error());
+    return;
+  }
+
+  // Build response JSON
+  const auto & desc = *result;
+  nlohmann::json descriptor_json = {{"id", desc.id},
+                                    {"name", desc.name},
+                                    {"mimetype", desc.mime_type},
+                                    {"size", desc.size},
+                                    {"creation_date", desc.created},
+                                    {"description", desc.description}};
+  if (!desc.metadata.empty()) {
+    descriptor_json["x-medkit"] = desc.metadata;
+  }
+
+  // Return 201 Created with Location header
+  res.status = 201;
+  res.set_header("Location", req.path + "/" + desc.id);
+  HandlerContext::send_json(res, descriptor_json);
 }
 
 void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Response & res) {

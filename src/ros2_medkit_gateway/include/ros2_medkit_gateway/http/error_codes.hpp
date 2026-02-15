@@ -50,6 +50,9 @@ constexpr const char * ERR_INTERNAL_ERROR = "internal-error";
 /// Collection not supported on entity type
 constexpr const char * ERR_COLLECTION_NOT_SUPPORTED = "collection-not-supported";
 
+/// Payload too large (used for file upload size limits)
+constexpr const char * ERR_PAYLOAD_TOO_LARGE = "payload-too-large";
+
 /// Feature not implemented (SOVD 501 Not Implemented)
 constexpr const char * ERR_NOT_IMPLEMENTED = "not-implemented";
 

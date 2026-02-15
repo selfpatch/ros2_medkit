@@ -79,6 +79,21 @@ class BulkDataHandlers {
   void handle_download(const httplib::Request & req, httplib::Response & res);
 
   /**
+   * @brief POST {entity-path}/bulk-data/{category} - Upload bulk-data file.
+   *
+   * Accepts multipart/form-data with:
+   * - "file" (required): the file to upload
+   * - "description" (optional): text description
+   * - "metadata" (optional): JSON string with additional metadata
+   *
+   * Returns 201 with ItemDescriptor JSON on success.
+   *
+   * @param req HTTP request
+   * @param res HTTP response
+   */
+  void handle_upload(const httplib::Request & req, httplib::Response & res);
+
+  /**
    * @brief Get MIME type for rosbag format.
    * @param format Storage format ("mcap", "sqlite3", "db3")
    * @return MIME type string
