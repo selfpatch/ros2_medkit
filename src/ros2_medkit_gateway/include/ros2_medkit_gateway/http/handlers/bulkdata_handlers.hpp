@@ -94,6 +94,17 @@ class BulkDataHandlers {
   void handle_upload(const httplib::Request & req, httplib::Response & res);
 
   /**
+   * @brief DELETE {entity-path}/bulk-data/{category}/{id} - Delete bulk-data file.
+   *
+   * Removes an uploaded bulk-data item. Returns 204 on success, 404 if not found.
+   * Only items uploaded via POST can be deleted (rosbags managed by fault system cannot).
+   *
+   * @param req HTTP request
+   * @param res HTTP response
+   */
+  void handle_delete(const httplib::Request & req, httplib::Response & res);
+
+  /**
    * @brief Get MIME type for rosbag format.
    * @param format Storage format ("mcap", "sqlite3", "db3")
    * @return MIME type string

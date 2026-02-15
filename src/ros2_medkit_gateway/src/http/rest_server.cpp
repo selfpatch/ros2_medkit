@@ -828,6 +828,23 @@ void RESTServer::setup_routes() {
   srv->Post((api_path("/areas") + R"(/([^/]+)/bulk-data/([^/]+)$)"), bulk_upload_405);
   srv->Post((api_path("/functions") + R"(/([^/]+)/bulk-data/([^/]+)$)"), bulk_upload_405);
 
+  // Delete bulk-data (DELETE) — apps and components only (REQ_INTEROP_074)
+  srv->Delete((api_path("/apps") + R"(/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                bulkdata_handlers_->handle_delete(req, res);
+              });
+  srv->Delete((api_path("/components") + R"(/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                bulkdata_handlers_->handle_delete(req, res);
+              });
+  // Bulk data deletion not supported for areas and functions (405)
+  auto bulk_delete_405 = [this](const httplib::Request & /*req*/, httplib::Response & res) {
+    handlers::HandlerContext::send_error(res, httplib::StatusCode::MethodNotAllowed_405, ERR_INVALID_REQUEST,
+                                 "Bulk data deletion is only supported for components and apps");
+  };
+  srv->Delete((api_path("/areas") + R"(/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"), bulk_delete_405);
+  srv->Delete((api_path("/functions") + R"(/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"), bulk_delete_405);
+
   // Nested entities - subareas
   srv->Get((api_path("/areas") + R"(/([^/]+)/subareas/([^/]+)/bulk-data$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
