@@ -37,6 +37,16 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // Create HTTP/HTTPS server manager
   http_server_ = std::make_unique<HttpServerManager>(tls_config_);
 
+  // Set maximum payload size for uploads (cpp-httplib default is 8MB)
+  auto * srv = http_server_->get_server();
+  if (srv) {
+    size_t max_payload = node_->get_bulk_data_store() ? node_->get_bulk_data_store()->max_upload_bytes() : 0;
+    if (max_payload > 0) {
+      srv->set_payload_max_length(max_payload);
+      RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Max payload length set to %zu bytes", max_payload);
+    }
+  }
+
   // Initialize auth manager and middleware if auth is enabled
   if (auth_config_.enabled) {
     auth_manager_ = std::make_unique<AuthManager>(auth_config_);

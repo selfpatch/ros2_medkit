@@ -61,6 +61,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("manifest_path", "");
   declare_parameter("manifest_strict_validation", true);
 
+  // Bulk data storage parameters
+  declare_parameter("bulk_data.storage_dir", "/tmp/ros2_medkit_bulk_data");
+  declare_parameter("bulk_data.max_upload_size", 104857600);  // 100MB
+  declare_parameter("bulk_data.categories", std::vector<std::string>{});
+
   // Runtime (heuristic) discovery options
   // These control how nodes are mapped to SOVD entities in runtime mode
   declare_parameter("discovery.runtime.create_synthetic_components", true);
@@ -244,6 +249,14 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   config_mgr_ = std::make_unique<ConfigurationManager>(this);
   fault_mgr_ = std::make_unique<FaultManager>(this);
 
+  // Initialize bulk data store
+  auto bd_storage_dir = get_parameter("bulk_data.storage_dir").as_string();
+  auto bd_max_upload = static_cast<size_t>(get_parameter("bulk_data.max_upload_size").as_int());
+  auto bd_categories = get_parameter("bulk_data.categories").as_string_array();
+  bulk_data_store_ = std::make_unique<BulkDataStore>(bd_storage_dir, bd_max_upload, bd_categories);
+  RCLCPP_INFO(get_logger(), "Bulk data store: dir=%s, max_upload=%zuB, categories=%zu", bd_storage_dir.c_str(),
+              bd_max_upload, bd_categories.size());
+
   // Connect topic sampler to discovery manager for component-topic mapping
   discovery_mgr_->set_topic_sampler(data_access_mgr_->get_native_sampler());
 
@@ -300,6 +313,10 @@ ConfigurationManager * GatewayNode::get_configuration_manager() const {
 
 FaultManager * GatewayNode::get_fault_manager() const {
   return fault_mgr_.get();
+}
+
+BulkDataStore * GatewayNode::get_bulk_data_store() const {
+  return bulk_data_store_.get();
 }
 
 void GatewayNode::refresh_cache() {

@@ -64,8 +64,8 @@ ros2_medkit_gateway:
       allowed_origins: [""]
 
       # Allowed HTTP methods for CORS requests
-      # Default: ["GET", "PUT", "OPTIONS"]
-      allowed_methods: ["GET", "PUT", "OPTIONS"]
+      # Default: ["GET", "PUT", "POST", "DELETE", "OPTIONS"]
+      allowed_methods: ["GET", "PUT", "POST", "DELETE", "OPTIONS"]
 
       # Allowed headers in CORS requests
       # List the allowed headers explicitly (wildcard "*" is not supported)
@@ -204,3 +204,22 @@ ros2_medkit_gateway:
       # Example:
       #   clients: ["admin:admin_secret_123:admin", "viewer:viewer_pass:viewer"]
       clients: [""]
+
+    # Bulk Data Storage Configuration
+    # Controls where uploaded bulk data files are stored and size limits
+    bulk_data:
+      # Base directory for uploaded files
+      # Created automatically if it doesn't exist
+      # Default: /tmp/ros2_medkit_bulk_data
+      storage_dir: "/tmp/ros2_medkit_bulk_data"
+
+      # Maximum upload file size in bytes
+      # Also sets cpp-httplib set_payload_max_length() globally
+      # Default: 104857600 (100MB)
+      # Set to 0 for unlimited (not recommended in production)
+      max_upload_size: 104857600
+
+      # Allowed bulk data categories (besides "rosbags" which is always
+      # available via FaultManager)
+      # Example: ["calibration", "firmware", "comlogs", "snapshots"]
+      categories: []

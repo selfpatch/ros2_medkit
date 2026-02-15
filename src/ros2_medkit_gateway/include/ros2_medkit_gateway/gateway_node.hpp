@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/auth/auth_config.hpp"
+#include "ros2_medkit_gateway/bulk_data_store.hpp"
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/configuration_manager.hpp"
 #include "ros2_medkit_gateway/data_access_manager.hpp"
@@ -78,6 +79,12 @@ class GatewayNode : public rclcpp::Node {
    */
   FaultManager * get_fault_manager() const;
 
+  /**
+   * @brief Get the BulkDataStore instance
+   * @return Raw pointer to BulkDataStore (valid for lifetime of GatewayNode)
+   */
+  BulkDataStore * get_bulk_data_store() const;
+
  private:
   void refresh_cache();
   void start_rest_server();
@@ -97,6 +104,7 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<OperationManager> operation_mgr_;
   std::unique_ptr<ConfigurationManager> config_mgr_;
   std::unique_ptr<FaultManager> fault_mgr_;
+  std::unique_ptr<BulkDataStore> bulk_data_store_;
   std::unique_ptr<RESTServer> rest_server_;
 
   // Cache with thread safety
