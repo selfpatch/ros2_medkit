@@ -491,12 +491,28 @@ NativeTopicSampler::get_component_topic_map()
 {
   std::lock_guard<std::mutex> lock(topic_map_mutex_);
 
-  // Use ROS 2 graph change counter
-  auto current_graph_change = node_->count_publishers("");
+  // Compute a lightweight fingerprint of the ROS graph (topics+types)
+  // Note: ROS 2 does not expose a simple graph change counter; using
+  // get_topic_names_and_types() and hashing the result is a reliable
+  // way to detect graph changes that affect topic/component mapping.
+  auto all_topics = node_->get_topic_names_and_types();
 
-  if (topic_map_cache_.empty() || cached_graph_change_count_ != current_graph_change) {
+  size_t current_graph_fingerprint = 1469598103934665603ULL;  // FNV-1a seed-ish
+  std::hash<std::string> hasher;
+  // Incorporate topic count
+  current_graph_fingerprint ^= all_topics.size() + 0x9e3779b97f4a7c15ULL + (current_graph_fingerprint << 6) + (current_graph_fingerprint >> 2);
+  for (const auto & kv : all_topics) {
+    const auto & topic = kv.first;
+    const auto & types = kv.second;
+    current_graph_fingerprint ^= hasher(topic) + 0x9e3779b97f4a7c15ULL + (current_graph_fingerprint << 6) + (current_graph_fingerprint >> 2);
+    if (!types.empty()) {
+      current_graph_fingerprint ^= hasher(types[0]) + 0x9e3779b97f4a7c15ULL + (current_graph_fingerprint << 6) + (current_graph_fingerprint >> 2);
+    }
+  }
+
+  if (topic_map_cache_.empty() || cached_graph_change_count_ != current_graph_fingerprint) {
     topic_map_cache_ = build_component_topic_map();
-    cached_graph_change_count_ = current_graph_change;
+    cached_graph_change_count_ = current_graph_fingerprint;
   }
 
   // Return a copy to avoid callers holding a reference to internal cache
