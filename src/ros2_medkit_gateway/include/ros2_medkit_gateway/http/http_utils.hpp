@@ -16,10 +16,14 @@
 
 #include <httplib.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <vector>
 
 #include "ros2_medkit_gateway/models/entity_types.hpp"
 
@@ -161,6 +165,59 @@ inline std::string format_timestamp_ns(int64_t ns) {
   std::snprintf(result, sizeof(result), "%s.%03dZ", buf, static_cast<int>(nanos / 1'000'000));
 
   return result;
+}
+
+/**
+ * @brief Stream file contents to HTTP response using chunked transfer.
+ *
+ * Generic utility for streaming any file to an HTTP response. The file path
+ * must point to an existing regular file (resolve rosbag directories etc.
+ * before calling this function).
+ *
+ * @param res HTTP response to write to
+ * @param file_path Path to an existing regular file
+ * @param content_type MIME type for Content-Type header
+ * @return true if successful, false if file could not be read
+ */
+inline bool stream_file_to_response(httplib::Response & res, const std::string & file_path,
+                                    const std::string & content_type) {
+  std::error_code ec;
+  auto file_size = std::filesystem::file_size(file_path, ec);
+  if (ec) {
+    return false;
+  }
+
+  static constexpr size_t kChunkSize = 64 * 1024;  // 64 KB chunks
+
+  res.set_content_provider(static_cast<size_t>(file_size), content_type,
+                           [file_path](size_t offset, size_t length, httplib::DataSink & sink) -> bool {
+                             std::ifstream file(file_path, std::ios::binary);
+                             if (!file.is_open()) {
+                               return false;
+                             }
+
+                             file.seekg(static_cast<std::streamoff>(offset));
+                             if (!file.good()) {
+                               return false;
+                             }
+
+                             size_t remaining = length;
+                             std::vector<char> buf(std::min(remaining, kChunkSize));
+
+                             while (remaining > 0 && file.good()) {
+                               size_t to_read = std::min(remaining, kChunkSize);
+                               file.read(buf.data(), static_cast<std::streamsize>(to_read));
+                               auto bytes_read = static_cast<size_t>(file.gcount());
+                               if (bytes_read == 0) {
+                                 break;
+                               }
+                               sink.write(buf.data(), bytes_read);
+                               remaining -= bytes_read;
+                             }
+
+                             return remaining == 0;
+                           });
+  return true;
 }
 
 }  // namespace ros2_medkit_gateway

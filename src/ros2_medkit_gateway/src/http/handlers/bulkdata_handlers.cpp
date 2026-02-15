@@ -14,9 +14,7 @@
 
 #include "ros2_medkit_gateway/http/handlers/bulkdata_handlers.hpp"
 
-#include <algorithm>
 #include <filesystem>
-#include <fstream>
 #include <unordered_map>
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -231,47 +229,8 @@ bool BulkDataHandlers::stream_file_to_response(httplib::Response & res, const st
     return false;
   }
 
-  // Get file size without reading entire file into memory
-  std::error_code ec;
-  auto file_size = std::filesystem::file_size(actual_path, ec);
-  if (ec) {
-    return false;
-  }
-
-  // Use chunked streaming via content provider to avoid loading large rosbag files into memory.
-  // Rosbag files can be hundreds of MB to multiple GB.
-  static constexpr size_t kChunkSize = 64 * 1024;  // 64 KB chunks
-
-  res.set_content_provider(static_cast<size_t>(file_size), content_type,
-                           [actual_path](size_t offset, size_t length, httplib::DataSink & sink) -> bool {
-                             std::ifstream file(actual_path, std::ios::binary);
-                             if (!file.is_open()) {
-                               return false;
-                             }
-
-                             file.seekg(static_cast<std::streamoff>(offset));
-                             if (!file.good()) {
-                               return false;
-                             }
-
-                             size_t remaining = length;
-                             std::vector<char> buf(std::min(remaining, kChunkSize));
-
-                             while (remaining > 0 && file.good()) {
-                               size_t to_read = std::min(remaining, kChunkSize);
-                               file.read(buf.data(), static_cast<std::streamsize>(to_read));
-                               auto bytes_read = static_cast<size_t>(file.gcount());
-                               if (bytes_read == 0) {
-                                 break;
-                               }
-                               sink.write(buf.data(), bytes_read);
-                               remaining -= bytes_read;
-                             }
-
-                             return remaining == 0;
-                           });
-
-  return true;
+  // Delegate to the generic stream utility
+  return ros2_medkit_gateway::stream_file_to_response(res, actual_path, content_type);
 }
 
 std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path) {
