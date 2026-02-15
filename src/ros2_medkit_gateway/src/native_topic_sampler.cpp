@@ -484,20 +484,38 @@ std::map<std::string, ComponentTopics> NativeTopicSampler::build_component_topic
   }
 
   RCLCPP_DEBUG(node_->get_logger(), "Built topic map for %zu components", component_map.size());
+
+  // Update cache for use by get_component_topics()
+  {
+    std::lock_guard<std::mutex> lock(topic_map_mutex_);
+    topic_map_cache_ = component_map;
+  }
+
   return component_map;
 }
 
 ComponentTopics NativeTopicSampler::get_component_topics(const std::string & component_fqn) {
-  // Build full map and extract for this component
-  // TODO(optimization): Cache the map and invalidate on graph changes
-  auto full_map = build_component_topic_map();
-
-  auto it = full_map.find(component_fqn);
-  if (it != full_map.end()) {
-    return it->second;
+  // Fast path: return from cache
+  {
+    std::lock_guard<std::mutex> lock(topic_map_mutex_);
+    if (!topic_map_cache_.empty()) {
+      auto it = topic_map_cache_.find(component_fqn);
+      if (it != topic_map_cache_.end()) {
+        return it->second;
+      }
+      return ComponentTopics{};
+    }
   }
 
-  // Component not found or has no topics
+  // Cache empty (first call before any refresh cycle) - build and populate cache
+  build_component_topic_map();
+
+  // Read from newly populated cache
+  std::lock_guard<std::mutex> lock(topic_map_mutex_);
+  auto it = topic_map_cache_.find(component_fqn);
+  if (it != topic_map_cache_.end()) {
+    return it->second;
+  }
   return ComponentTopics{};
 }
 
