@@ -139,15 +139,46 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
   if (cluster_it != fault_to_cluster_.end()) {
     const std::string cluster_id = cluster_it->second;
 
-    // TODO(#127): Clean up pending_clusters_ when fault is cleared.
-    // Currently, if a fault is cleared before cluster reaches min_count,
-    // the pending cluster retains a phantom reference. Low impact since
-    // pending clusters expire after window_ms, but could cause brief
-    // inconsistency if cluster becomes active with cleared fault in list.
-    // Fix requires: iteration (pending_clusters_ keyed by rule_id),
-    // representative reassignment if cleared fault was representative.
+    // Clean up pending_clusters_ when fault is cleared before min_count (#127)
+    for (auto pending_it = pending_clusters_.begin(); pending_it != pending_clusters_.end();) {
+      auto & pending_cluster = pending_it->second.data;
+      if (pending_cluster.cluster_id != cluster_id) {
+        ++pending_it;
+        continue;
+      }
 
-    // Remove fault from cluster
+      auto & codes = pending_cluster.fault_codes;
+      codes.erase(std::remove(codes.begin(), codes.end(), fault_code), codes.end());
+
+      if (codes.empty()) {
+        pending_it = pending_clusters_.erase(pending_it);
+        continue;
+      }
+
+      // Reassign representative if the cleared fault was the representative
+      if (pending_cluster.representative_code == fault_code) {
+        for (const auto & rule : config_.rules) {
+          if (rule.id == pending_it->first) {
+            switch (rule.representative) {
+              case Representative::FIRST:
+              case Representative::HIGHEST_SEVERITY:
+                // For HIGHEST_SEVERITY, individual severities are not stored;
+                // fall back to first remaining fault
+                pending_cluster.representative_code = codes.front();
+                break;
+              case Representative::MOST_RECENT:
+                pending_cluster.representative_code = codes.back();
+                break;
+            }
+            break;
+          }
+        }
+      }
+
+      ++pending_it;
+    }
+
+    // Remove fault from active cluster
     auto active_it = active_clusters_.find(cluster_id);
     if (active_it != active_clusters_.end()) {
       auto & codes = active_it->second.fault_codes;

@@ -541,6 +541,90 @@ correlation:
   EXPECT_EQ("SENSOR_001", clusters[0].representative_code);  // FIRST policy
 }
 
+// ============================================================================
+// Pending cluster cleanup on clear (#127)
+// ============================================================================
+
+TEST_F(CorrelationEngineTest, ClearFaultRemovesFromPendingCluster) {
+  auto config = create_auto_cluster_config();
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+
+  // Add 2 faults (below min_count=3), creating a pending cluster
+  engine.process_fault("MOTOR_COMM_FL", "ERROR", t0);
+  engine.process_fault("SENSOR_TIMEOUT", "ERROR", t0 + 10ms);
+  EXPECT_EQ(0u, engine.get_cluster_count());  // Still pending
+
+  // Clear one of the faults
+  engine.process_clear("MOTOR_COMM_FL");
+
+  // Now add a third fault - should NOT activate the cluster because
+  // the cleared fault was removed from pending, so only 2 faults total
+  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t0 + 20ms);
+  EXPECT_EQ(0u, engine.get_cluster_count());  // Still not enough
+}
+
+TEST_F(CorrelationEngineTest, ClearRepresentativeReassignsPendingCluster) {
+  const std::string yaml = R"(
+correlation:
+  enabled: true
+  patterns:
+    errors:
+      codes: ["*_ERROR"]
+  rules:
+    - id: test_cluster
+      mode: auto_cluster
+      match:
+        - pattern: errors
+      min_count: 3
+      window_ms: 500
+      show_as_single: true
+      representative: first
+)";
+  auto config = parse_config_string(yaml);
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+
+  // Add 2 faults, creating a pending cluster
+  engine.process_fault("FIRST_ERROR", "CRITICAL", t0);
+  engine.process_fault("SECOND_ERROR", "ERROR", t0 + 10ms);
+
+  // Clear the representative (first fault)
+  engine.process_clear("FIRST_ERROR");
+
+  // Add 2 more faults to reach min_count (SECOND_ERROR + 2 new = 3)
+  engine.process_fault("THIRD_ERROR", "ERROR", t0 + 20ms);
+  engine.process_fault("FOURTH_ERROR", "ERROR", t0 + 30ms);
+
+  EXPECT_EQ(1u, engine.get_cluster_count());
+  auto clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  // SECOND_ERROR should be the new representative (first remaining after clear)
+  EXPECT_EQ("SECOND_ERROR", clusters[0].representative_code);
+}
+
+TEST_F(CorrelationEngineTest, ClearAllFaultsRemovesPendingCluster) {
+  auto config = create_auto_cluster_config();
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+
+  // Add 2 faults
+  engine.process_fault("MOTOR_COMM_FL", "ERROR", t0);
+  engine.process_fault("SENSOR_TIMEOUT", "ERROR", t0 + 10ms);
+
+  // Clear both
+  engine.process_clear("MOTOR_COMM_FL");
+  engine.process_clear("SENSOR_TIMEOUT");
+
+  // Adding 2 new faults should start a fresh pending cluster, not join old one
+  engine.process_fault("DRIVE_COMM_NEW", "ERROR", t0 + 100ms);
+  engine.process_fault("MOTOR_COMM_NEW", "ERROR", t0 + 110ms);
+  EXPECT_EQ(0u, engine.get_cluster_count());  // Still 2 faults, below min_count=3
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
