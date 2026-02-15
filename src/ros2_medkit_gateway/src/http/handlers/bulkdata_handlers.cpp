@@ -163,7 +163,10 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
     nlohmann::json json_items = nlohmann::json::array();
     for (const auto & item : items_list) {
       nlohmann::json desc = {
-          {"id", item.id}, {"name", item.name}, {"mimetype", item.mime_type}, {"size", item.size},
+          {"id", item.id},
+          {"name", item.name},
+          {"mimetype", item.mime_type},
+          {"size", item.size},
           {"creation_date", item.created},
       };
       if (!item.description.empty()) {
@@ -445,8 +448,8 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
 
     auto file_path = store->get_file_path(entity_info->entity_id, category, bulk_data_id);
     if (!file_path) {
-      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
-                                 "Bulk-data not found", {{"bulk_data_id", bulk_data_id}});
+      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found",
+                                 {{"bulk_data_id", bulk_data_id}});
       return;
     }
 

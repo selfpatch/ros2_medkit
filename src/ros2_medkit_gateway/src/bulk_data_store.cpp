@@ -90,7 +90,7 @@ std::filesystem::path BulkDataStore::item_dir(const std::string & entity_id, con
 
 // --- Descriptor I/O ---
 
-void BulkDataStore::write_descriptor(const std::filesystem::path & dir, const ItemDescriptor & desc) {
+bool BulkDataStore::write_descriptor(const std::filesystem::path & dir, const ItemDescriptor & desc) {
   nlohmann::json j;
   j["id"] = desc.id;
   j["category"] = desc.category;
@@ -105,7 +105,12 @@ void BulkDataStore::write_descriptor(const std::filesystem::path & dir, const It
 
   auto path = dir / "descriptor.json";
   std::ofstream ofs(path);
+  if (!ofs.is_open()) {
+    return false;
+  }
   ofs << j.dump(2);
+  ofs.flush();
+  return ofs.good();
 }
 
 std::optional<BulkDataStore::ItemDescriptor> BulkDataStore::read_descriptor(const std::filesystem::path & dir) {
@@ -216,11 +221,19 @@ BulkDataStore::store(const std::string & entity_id, const std::string & category
       // Fallback: try copy + remove (cross-device rename)
       std::filesystem::copy_file(tmp_path, final_path, ec);
       if (ec) {
+        // Clean up temp file on failure
+        std::error_code cleanup_ec;
+        std::filesystem::remove(tmp_path, cleanup_ec);
         return tl::unexpected("Failed to finalize file: " + ec.message());
       }
       std::filesystem::remove(tmp_path, ec);
     }
-    write_descriptor(dir, desc);
+    if (!write_descriptor(dir, desc)) {
+      // Clean up the payload file we just moved — the item is incomplete
+      std::error_code cleanup_ec;
+      std::filesystem::remove_all(dir, cleanup_ec);
+      return tl::unexpected("Failed to write descriptor");
+    }
   }
 
   return desc;
@@ -239,11 +252,12 @@ tl::expected<void, std::string> BulkDataStore::remove(const std::string & entity
   }
 
   auto dir = item_dir(entity_id, category, item_id);
+
+  std::lock_guard<std::mutex> lock(mutex_);
   if (!std::filesystem::is_directory(dir)) {
     return tl::unexpected("Bulk-data item not found: " + item_id);
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
   if (ec) {
@@ -260,11 +274,12 @@ std::vector<BulkDataStore::ItemDescriptor> BulkDataStore::list_items(const std::
   std::vector<ItemDescriptor> items;
 
   auto cat_dir = std::filesystem::path(storage_dir_) / entity_id / category;
+
+  std::lock_guard<std::mutex> lock(mutex_);
   if (!std::filesystem::is_directory(cat_dir)) {
     return items;
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
   for (const auto & entry : std::filesystem::directory_iterator(cat_dir)) {
     if (entry.is_directory()) {
       auto desc = read_descriptor(entry.path());
@@ -281,22 +296,24 @@ std::optional<BulkDataStore::ItemDescriptor> BulkDataStore::get_item(const std::
                                                                      const std::string & category,
                                                                      const std::string & item_id) const {
   auto dir = item_dir(entity_id, category, item_id);
+
+  std::lock_guard<std::mutex> lock(mutex_);
   if (!std::filesystem::is_directory(dir)) {
     return std::nullopt;
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
   return read_descriptor(dir);
 }
 
 std::optional<std::string> BulkDataStore::get_file_path(const std::string & entity_id, const std::string & category,
                                                         const std::string & item_id) const {
   auto dir = item_dir(entity_id, category, item_id);
+
+  std::lock_guard<std::mutex> lock(mutex_);
   if (!std::filesystem::is_directory(dir)) {
     return std::nullopt;
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
   // Find the payload file (not descriptor.json and not .data.tmp)
   for (const auto & entry : std::filesystem::directory_iterator(dir)) {
     if (entry.is_regular_file()) {

@@ -59,9 +59,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   }
 
   // Create handler context and domain-specific handlers
-  handler_ctx_ =
-      std::make_unique<handlers::HandlerContext>(node_, cors_config_, auth_config_, tls_config_, auth_manager_.get(),
-                                                 node_->get_bulk_data_store());
+  handler_ctx_ = std::make_unique<handlers::HandlerContext>(node_, cors_config_, auth_config_, tls_config_,
+                                                            auth_manager_.get(), node_->get_bulk_data_store());
 
   health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_);
   discovery_handlers_ = std::make_unique<handlers::DiscoveryHandlers>(*handler_ctx_);
@@ -823,7 +822,7 @@ void RESTServer::setup_routes() {
   // Bulk data upload not supported for areas and functions (405)
   auto bulk_upload_405 = [this](const httplib::Request & /*req*/, httplib::Response & res) {
     handlers::HandlerContext::send_error(res, httplib::StatusCode::MethodNotAllowed_405, ERR_INVALID_REQUEST,
-                               "Bulk data upload is only supported for components and apps");
+                                         "Bulk data upload is only supported for components and apps");
   };
   srv->Post((api_path("/areas") + R"(/([^/]+)/bulk-data/([^/]+)$)"), bulk_upload_405);
   srv->Post((api_path("/functions") + R"(/([^/]+)/bulk-data/([^/]+)$)"), bulk_upload_405);
@@ -840,7 +839,7 @@ void RESTServer::setup_routes() {
   // Bulk data deletion not supported for areas and functions (405)
   auto bulk_delete_405 = [this](const httplib::Request & /*req*/, httplib::Response & res) {
     handlers::HandlerContext::send_error(res, httplib::StatusCode::MethodNotAllowed_405, ERR_INVALID_REQUEST,
-                                 "Bulk data deletion is only supported for components and apps");
+                                         "Bulk data deletion is only supported for components and apps");
   };
   srv->Delete((api_path("/areas") + R"(/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"), bulk_delete_405);
   srv->Delete((api_path("/functions") + R"(/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"), bulk_delete_405);

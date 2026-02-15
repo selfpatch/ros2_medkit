@@ -102,8 +102,7 @@ namespace handlers {
 class HandlerContext {
  public:
   HandlerContext(GatewayNode * node, const CorsConfig & cors_config, const AuthConfig & auth_config,
-                 const TlsConfig & tls_config, AuthManager * auth_manager,
-                 BulkDataStore * bulk_data_store = nullptr)
+                 const TlsConfig & tls_config, AuthManager * auth_manager, BulkDataStore * bulk_data_store = nullptr)
     : node_(node)
     , cors_config_(cors_config)
     , auth_config_(auth_config)

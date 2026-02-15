@@ -52,10 +52,10 @@ class BulkDataStore {
   struct ItemDescriptor {
     std::string id;
     std::string category;
-    std::string name;       ///< Original filename
+    std::string name;  ///< Original filename
     std::string mime_type;
     size_t size{0};
-    std::string created;    ///< ISO 8601 timestamp
+    std::string created;  ///< ISO 8601 timestamp
     std::string description;
     nlohmann::json metadata;
   };
@@ -66,8 +66,7 @@ class BulkDataStore {
    * @param max_upload_bytes Global max upload size in bytes (0 = unlimited)
    * @param categories List of allowed category names (besides "rosbags")
    */
-  BulkDataStore(const std::string & storage_dir, size_t max_upload_bytes,
-                std::vector<std::string> categories = {});
+  BulkDataStore(const std::string & storage_dir, size_t max_upload_bytes, std::vector<std::string> categories = {});
 
   // === CRUD ===
 
@@ -139,15 +138,14 @@ class BulkDataStore {
   std::filesystem::path item_dir(const std::string & entity_id, const std::string & category,
                                  const std::string & item_id) const;
 
-  /// Write descriptor.json sidecar
-  static void write_descriptor(const std::filesystem::path & dir, const ItemDescriptor & desc);
+  /// Write descriptor.json sidecar. Returns false on I/O error.
+  static bool write_descriptor(const std::filesystem::path & dir, const ItemDescriptor & desc);
 
   /// Read descriptor.json sidecar
   static std::optional<ItemDescriptor> read_descriptor(const std::filesystem::path & dir);
 
   /// Validate path component (reject traversal attacks)
-  static tl::expected<void, std::string> validate_path_component(const std::string & value,
-                                                                  const std::string & name);
+  static tl::expected<void, std::string> validate_path_component(const std::string & value, const std::string & name);
 };
 
 }  // namespace ros2_medkit_gateway
