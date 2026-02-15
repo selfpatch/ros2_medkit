@@ -352,5 +352,24 @@ TEST_F(BulkDataStoreTest, MaxUploadZeroMeansUnlimited) {
   EXPECT_TRUE(result.has_value());
 }
 
+// @verifies REQ_INTEROP_074
+TEST_F(BulkDataStoreTest, StoreLargeFile) {
+  BulkDataStore store(test_dir_.string(), 10 * 1024 * 1024, {"calibration"});
+
+  // 5MB payload
+  std::string payload(5 * 1024 * 1024, 'A');
+  auto result = store.store("app1", "calibration", "large.bin", "application/octet-stream", payload);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->size, payload.size());
+
+  // Verify file contents match
+  auto path = store.get_file_path("app1", "calibration", result->id);
+  ASSERT_TRUE(path.has_value());
+  std::ifstream f(*path, std::ios::binary);
+  ASSERT_TRUE(f.good());
+  std::string read_back((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  EXPECT_EQ(read_back, payload);
+}
+
 }  // namespace
 }  // namespace ros2_medkit_gateway
