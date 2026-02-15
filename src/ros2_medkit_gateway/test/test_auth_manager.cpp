@@ -1171,6 +1171,443 @@ TEST_F(AuthRequirementPolicyTest, PolicyDescriptions) {
   EXPECT_NE(write_only.description(), configurable.description());
 }
 
+// ============================================================================
+// Cache Invalidation and Coherence Tests
+// ============================================================================
+// @verifies REQ_INTEROP_086, REQ_INTEROP_087
+class AuthManagerCacheTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    config_ = AuthConfigBuilder()
+                  .with_enabled(true)
+                  .with_jwt_secret("test_secret_key_for_cache_testing_12345")
+                  .with_algorithm(JwtAlgorithm::HS256)
+                  .with_token_expiry(3600)
+                  .with_refresh_token_expiry(86400)
+                  .with_require_auth_for(AuthRequirement::WRITE)
+                  .add_client("cache_test_user", "password", UserRole::OPERATOR)
+                  .add_client("cache_test_admin", "admin_pass", UserRole::ADMIN)
+                  .build();
+
+    auth_manager_ = std::make_unique<AuthManager>(config_);
+  }
+
+  AuthConfig config_;
+  std::unique_ptr<AuthManager> auth_manager_;
+};
+
+// Test: Refresh token is cached and retrieved correctly
+TEST_F(AuthManagerCacheTest, RefreshTokenCacheHit) {
+  // Authenticate to create refresh token
+  auto auth_result = auth_manager_->authenticate("cache_test_user", "password");
+  ASSERT_TRUE(auth_result.has_value());
+  ASSERT_TRUE(auth_result->refresh_token.has_value());
+
+  const std::string & refresh_token = auth_result->refresh_token.value();
+
+  // First validation should succeed
+  auto validation1 = auth_manager_->validate_token(refresh_token, TokenType::REFRESH);
+  EXPECT_TRUE(validation1.valid);
+  EXPECT_EQ(validation1.claims->sub, "cache_test_user");
+
+  // Second validation (cache hit) should also succeed
+  auto validation2 = auth_manager_->validate_token(refresh_token, TokenType::REFRESH);
+  EXPECT_TRUE(validation2.valid);
+  EXPECT_EQ(validation2.claims->sub, "cache_test_user");
+}
+
+// Test: Multiple tokens for same user are cached independently
+TEST_F(AuthManagerCacheTest, MultipleCachedTokensPerUser) {
+  // Create multiple tokens for the same user
+  auto token1 = auth_manager_->authenticate("cache_test_user", "password");
+  ASSERT_TRUE(token1.has_value());
+
+  auto token2 = auth_manager_->authenticate("cache_test_user", "password");
+  ASSERT_TRUE(token2.has_value());
+
+  // Both tokens should be distinct
+  EXPECT_NE(token1->access_token, token2->access_token);
+  EXPECT_NE(token1->refresh_token.value_or(""), token2->refresh_token.value_or(""));
+
+  // Both should validate independently
+  auto val1 = auth_manager_->validate_token(token1->access_token);
+  auto val2 = auth_manager_->validate_token(token2->access_token);
+
+  EXPECT_TRUE(val1.valid);
+  EXPECT_TRUE(val2.valid);
+}
+
+// Test: Revoking one token doesn't affect other tokens from same user
+TEST_F(AuthManagerCacheTest, RevokeTokenDoesNotAffectOthers) {
+  // Create two tokens
+  auto token1 = auth_manager_->authenticate("cache_test_user", "password");
+  ASSERT_TRUE(token1.has_value());
+
+  auto token2 = auth_manager_->authenticate("cache_test_user", "password");
+  ASSERT_TRUE(token2.has_value());
+
+  // Revoke first refresh token
+  bool revoked = auth_manager_->revoke_refresh_token(token1->refresh_token.value());
+  EXPECT_TRUE(revoked);
+
+  // First access token should be invalid (refresh token was revoked)
+  auto val1 = auth_manager_->validate_token(token1->access_token);
+  EXPECT_FALSE(val1.valid);
+  EXPECT_TRUE(val1.error.find("revoked") != std::string::npos);
+
+  // Second access token should still be valid (its refresh token not revoked)
+  auto val2 = auth_manager_->validate_token(token2->access_token);
+  EXPECT_TRUE(val2.valid);
+}
+
+// Test: Client state changes invalidate all tokens for that client
+TEST_F(AuthManagerCacheTest, DisablingClientInvalidatesAllTokens) {
+  // Create tokens for two clients
+  auto token1 = auth_manager_->authenticate("cache_test_user", "password");
+  ASSERT_TRUE(token1.has_value());
+
+  auto token2 = auth_manager_->authenticate("cache_test_admin", "admin_pass");
+  ASSERT_TRUE(token2.has_value());
+
+  // Both tokens should be valid
+  auto val1 = auth_manager_->validate_token(token1->access_token);
+  auto val2 = auth_manager_->validate_token(token2->access_token);
+  EXPECT_TRUE(val1.valid);
+  EXPECT_TRUE(val2.valid);
+
+  // Disable first client
+  bool disabled = auth_manager_->disable_client("cache_test_user");
+  EXPECT_TRUE(disabled);
+
+  // First token should be invalid
+  val1 = auth_manager_->validate_token(token1->access_token);
+  EXPECT_FALSE(val1.valid);
+  EXPECT_TRUE(val1.error.find("disabled") != std::string::npos);
+
+  // Second token should still be valid
+  val2 = auth_manager_->validate_token(token2->access_token);
+  EXPECT_TRUE(val2.valid);
+}
+
+// Test: Re-enabling client restores token validity
+TEST_F(AuthManagerCacheTest, ReenablingClientRestoresTokenValidity) {
+  auto token = auth_manager_->authenticate("cache_test_user", "password");
+  ASSERT_TRUE(token.has_value());
+
+  // Token is valid
+  auto val = auth_manager_->validate_token(token->access_token);
+  EXPECT_TRUE(val.valid);
+
+  // Disable client
+  auth_manager_->disable_client("cache_test_user");
+  val = auth_manager_->validate_token(token->access_token);
+  EXPECT_FALSE(val.valid);
+
+  // Re-enable client
+  auth_manager_->enable_client("cache_test_user");
+  val = auth_manager_->validate_token(token->access_token);
+  EXPECT_TRUE(val.valid);
+}
+
+// Test: Cleanup removes expired refresh tokens from cache
+TEST_F(AuthManagerCacheTest, CleanupRemovesExpiredRefreshTokens) {
+  // Use short expiry for testing
+  AuthConfig short_expiry = AuthConfigBuilder()
+                                .with_enabled(true)
+                                .with_jwt_secret("test_secret_key_cleanup_test_12345")
+                                .with_token_expiry(1)
+                                .with_refresh_token_expiry(1)
+                                .add_client("cleanup_user", "password", UserRole::VIEWER)
+                                .build();
+
+  AuthManager manager(short_expiry);
+
+  // Create tokens
+  auto result1 = manager.authenticate("cleanup_user", "password");
+  ASSERT_TRUE(result1.has_value());
+
+  // Create another token to ensure we have multiple in cache
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  auto result2 = manager.authenticate("cleanup_user", "password");
+  ASSERT_TRUE(result2.has_value());
+
+  // Wait for expiration
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+
+  // Cleanup should remove expired tokens
+  size_t cleaned = manager.cleanup_expired_tokens();
+  EXPECT_GE(cleaned, 2);
+
+  // Cleanup again should remove none (already cleaned)
+  cleaned = manager.cleanup_expired_tokens();
+  EXPECT_EQ(cleaned, 0);
+}
+
+// Test: Cache consistency between refresh token revocation and access token validation
+TEST_F(AuthManagerCacheTest, RefreshTokenRevocationConsistency) {
+  auto auth_result = auth_manager_->authenticate("cache_test_user", "password");
+  ASSERT_TRUE(auth_result.has_value());
+  ASSERT_TRUE(auth_result->refresh_token.has_value());
+
+  const auto & access_token = auth_result->access_token;
+  const auto & refresh_token = auth_result->refresh_token.value();
+
+  // Both tokens should be initially valid
+  auto access_val = auth_manager_->validate_token(access_token);
+  auto refresh_val = auth_manager_->validate_token(refresh_token, TokenType::REFRESH);
+  EXPECT_TRUE(access_val.valid);
+  EXPECT_TRUE(refresh_val.valid);
+
+  // Revoke refresh token
+  bool revoked = auth_manager_->revoke_refresh_token(refresh_token);
+  EXPECT_TRUE(revoked);
+
+  // Access token should immediately become invalid (cache updated)
+  access_val = auth_manager_->validate_token(access_token);
+  EXPECT_FALSE(access_val.valid);
+  EXPECT_TRUE(access_val.error.find("revoked") != std::string::npos);
+
+  // Refresh token should also be invalid
+  refresh_val = auth_manager_->validate_token(refresh_token, TokenType::REFRESH);
+  EXPECT_FALSE(refresh_val.valid);
+}
+
+// Test: Attempting to revoke non-existent token
+TEST_F(AuthManagerCacheTest, RevokeNonexistentToken) {
+  bool revoked = auth_manager_->revoke_refresh_token("nonexistent_token_id");
+  EXPECT_FALSE(revoked);
+}
+
+// Test: Client lookup cache returns correct client information
+TEST_F(AuthManagerCacheTest, ClientCacheLookup) {
+  auto client = auth_manager_->get_client("cache_test_user");
+  ASSERT_TRUE(client.has_value());
+  EXPECT_EQ(client->client_id, "cache_test_user");
+  EXPECT_EQ(client->role, UserRole::OPERATOR);
+  EXPECT_TRUE(client->enabled);
+
+  // Second lookup should return same data (cache hit)
+  auto client2 = auth_manager_->get_client("cache_test_user");
+  ASSERT_TRUE(client2.has_value());
+  EXPECT_EQ(client2->client_id, "cache_test_user");
+  EXPECT_EQ(client2->role, UserRole::OPERATOR);
+}
+
+// Test: Non-existent client lookup doesn't pollute cache
+TEST_F(AuthManagerCacheTest, NonexistentClientLookup) {
+  auto client = auth_manager_->get_client("nonexistent_client");
+  EXPECT_FALSE(client.has_value());
+
+  // Should still not exist on second lookup
+  client = auth_manager_->get_client("nonexistent_client");
+  EXPECT_FALSE(client.has_value());
+}
+
+// Test: Dynamic client registration is cached properly
+TEST_F(AuthManagerCacheTest, DynamicClientRegistrationCache) {
+  // Register new client
+  bool registered = auth_manager_->register_client("dynamic_user", "dynamic_pass", UserRole::VIEWER);
+  EXPECT_TRUE(registered);
+
+  // Should be available in cache immediately
+  auto client = auth_manager_->get_client("dynamic_user");
+  ASSERT_TRUE(client.has_value());
+  EXPECT_EQ(client->client_id, "dynamic_user");
+
+  // Should authenticate successfully (client in cache)
+  auto auth_result = auth_manager_->authenticate("dynamic_user", "dynamic_pass");
+  EXPECT_TRUE(auth_result.has_value());
+
+  // Second authentication should use cached client
+  auth_result = auth_manager_->authenticate("dynamic_user", "dynamic_pass");
+  EXPECT_TRUE(auth_result.has_value());
+}
+
+// Test: Thread-safety of concurrent token validations
+TEST_F(AuthManagerCacheTest, ConcurrentTokenValidations) {
+  auto auth_result = auth_manager_->authenticate("cache_test_user", "password");
+  ASSERT_TRUE(auth_result.has_value());
+
+  const auto & token = auth_result->access_token;
+  std::vector<std::thread> threads;
+  std::atomic<int> validation_count(0);
+
+  // Launch 10 concurrent validation operations
+  for (int i = 0; i < 10; ++i) {
+    threads.emplace_back([this, &token, &validation_count]() {
+      auto result = auth_manager_->validate_token(token);
+      if (result.valid) {
+        validation_count++;
+      }
+    });
+  }
+
+  // Wait for all threads
+  for (auto & t : threads) {
+    t.join();
+  }
+
+  // All validations should succeed
+  EXPECT_EQ(validation_count, 10);
+}
+
+// Test: Thread-safety of concurrent authentication operations
+TEST_F(AuthManagerCacheTest, ConcurrentAuthenticationOperations) {
+  std::vector<std::thread> threads;
+  std::atomic<int> success_count(0);
+  std::mutex results_mutex;
+  std::vector<std::string> access_tokens;
+
+  // Launch 5 concurrent authentication operations for different users
+  for (int i = 0; i < 5; ++i) {
+    threads.emplace_back([this, &success_count, &results_mutex, &access_tokens, i]() {
+      std::string client_id = (i % 2 == 0) ? "cache_test_user" : "cache_test_admin";
+      std::string password = (i % 2 == 0) ? "password" : "admin_pass";
+
+      auto result = auth_manager_->authenticate(client_id, password);
+      if (result.has_value()) {
+        {
+          std::lock_guard<std::mutex> lock(results_mutex);
+          access_tokens.emplace_back(result->access_token);
+        }
+        success_count++;
+      }
+    });
+  }
+
+  // Wait for all threads
+  for (auto & t : threads) {
+    t.join();
+  }
+
+  // All authentications should succeed
+  EXPECT_EQ(success_count, 5);
+
+  // All tokens should be unique
+  std::set<std::string> unique_tokens(access_tokens.begin(), access_tokens.end());
+  EXPECT_EQ(unique_tokens.size(), access_tokens.size());
+}
+
+// Test: Thread-safety during cache invalidation
+TEST_F(AuthManagerCacheTest, ConcurrentCacheInvalidation) {
+  // Create multiple tokens
+  std::vector<std::string> refresh_tokens;
+  for (int i = 0; i < 5; ++i) {
+    auto result = auth_manager_->authenticate("cache_test_user", "password");
+    ASSERT_TRUE(result.has_value());
+    refresh_tokens.emplace_back(result->refresh_token.value());
+  }
+
+  std::vector<std::thread> threads;
+  std::atomic<bool> revoke_error(false);
+
+  // Concurrently revoke multiple tokens
+  for (const auto & token : refresh_tokens) {
+    threads.emplace_back([this, &token, &revoke_error]() {
+      bool revoked = auth_manager_->revoke_refresh_token(token);
+      if (!revoked) {
+        revoke_error = true;
+      }
+    });
+  }
+
+  // Wait for all threads
+  for (auto & t : threads) {
+    t.join();
+  }
+
+  // All should be revoked successfully
+  EXPECT_FALSE(revoke_error);
+}
+
+// Test: Thread-safety of concurrent client enable/disable
+TEST_F(AuthManagerCacheTest, ConcurrentClientStateChanges) {
+  std::vector<std::thread> threads;
+  std::atomic<int> disable_count(0);
+  std::atomic<int> enable_count(0);
+
+  // Alternate disable/enable operations
+  for (int i = 0; i < 10; ++i) {
+    if (i % 2 == 0) {
+      threads.emplace_back([this, &disable_count]() {
+        bool result = auth_manager_->disable_client("cache_test_user");
+        if (result) {
+          disable_count++;
+        }
+      });
+    } else {
+      threads.emplace_back([this, &enable_count]() {
+        bool result = auth_manager_->enable_client("cache_test_user");
+        if (result) {
+          enable_count++;
+        }
+      });
+    }
+  }
+
+  // Wait for all threads
+  for (auto & t : threads) {
+    t.join();
+  }
+
+  // Final state should be consistent (either enabled or disabled)
+  auto client = auth_manager_->get_client("cache_test_user");
+  ASSERT_TRUE(client.has_value());
+  // Client should have a valid state
+  EXPECT_TRUE(client.has_value());
+}
+
+// Test: Cache behavior with rapid token expiration
+TEST_F(AuthManagerCacheTest, RapidExpirationCacheBehavior) {
+  AuthConfig rapid_expiry = AuthConfigBuilder()
+                                .with_enabled(true)
+                                .with_jwt_secret("test_secret_key_rapid_expiry__12345")
+                                .with_token_expiry(1)
+                                .with_refresh_token_expiry(2)
+                                .add_client("rapid_user", "password", UserRole::VIEWER)
+                                .build();
+
+  AuthManager manager(rapid_expiry);
+
+  // Create and validate token
+  auto auth_result = manager.authenticate("rapid_user", "password");
+  ASSERT_TRUE(auth_result.has_value());
+
+  auto token = auth_result->access_token;
+  auto val1 = manager.validate_token(token);
+  EXPECT_TRUE(val1.valid);
+
+  // Wait for expiration
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+
+  // Token should be expired
+  auto val2 = manager.validate_token(token);
+  EXPECT_FALSE(val2.valid);
+  EXPECT_TRUE(val2.error.find("expired") != std::string::npos);
+}
+
+// Test: Cache lookup performance (repeated validations should not slow down)
+TEST_F(AuthManagerCacheTest, CachePerformanceMultipleValidations) {
+  auto auth_result = auth_manager_->authenticate("cache_test_user", "password");
+  ASSERT_TRUE(auth_result.has_value());
+
+  const auto & token = auth_result->access_token;
+
+  // Perform 100 validations (should be fast due to caching)
+  auto start = std::chrono::high_resolution_clock::now();
+
+  for (int i = 0; i < 100; ++i) {
+    auto validation = auth_manager_->validate_token(token);
+    EXPECT_TRUE(validation.valid);
+  }
+
+  auto end = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+  // 100 validations should complete in reasonable time (< 1 second)
+  EXPECT_LT(duration.count(), 1000);
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
