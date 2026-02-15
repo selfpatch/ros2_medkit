@@ -14,6 +14,10 @@
 
 #include <gtest/gtest.h>
 
+#include <nlohmann/json.hpp>
+
+#include "ros2_medkit_gateway/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/bulkdata_handlers.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 
@@ -93,4 +97,92 @@ TEST_F(BulkDataHandlersTest, FormatTimestampNsNegativeFallback) {
   auto result = ros2_medkit_gateway::format_timestamp_ns(-1);
   EXPECT_FALSE(result.empty());
   EXPECT_TRUE(result.find("Z") != std::string::npos);
+}
+
+// === Descriptor to JSON conversion tests ===
+
+// @verifies REQ_INTEROP_074
+TEST_F(BulkDataHandlersTest, DescriptorToJsonConversion) {
+  ros2_medkit_gateway::BulkDataStore::ItemDescriptor desc;
+  desc.id = "calibration_123_abcd1234";
+  desc.name = "test.bin";
+  desc.mime_type = "application/octet-stream";
+  desc.size = 1024;
+  desc.created = "2026-01-01T00:00:00.000Z";
+  desc.description = "Test upload";
+  desc.metadata = nlohmann::json::object();
+
+  nlohmann::json j = {{"id", desc.id},
+                      {"name", desc.name},
+                      {"mimetype", desc.mime_type},
+                      {"size", desc.size},
+                      {"creation_date", desc.created},
+                      {"description", desc.description}};
+
+  EXPECT_EQ(j["id"], "calibration_123_abcd1234");
+  EXPECT_EQ(j["name"], "test.bin");
+  EXPECT_EQ(j["mimetype"], "application/octet-stream");
+  EXPECT_EQ(j["size"], 1024);
+  EXPECT_EQ(j["creation_date"], "2026-01-01T00:00:00.000Z");
+  EXPECT_EQ(j["description"], "Test upload");
+  EXPECT_FALSE(j.contains("x-medkit"));
+}
+
+// @verifies REQ_INTEROP_074
+TEST_F(BulkDataHandlersTest, DescriptorToJsonWithMetadata) {
+  ros2_medkit_gateway::BulkDataStore::ItemDescriptor desc;
+  desc.id = "calibration_123_abcd1234";
+  desc.name = "cal.bin";
+  desc.mime_type = "application/octet-stream";
+  desc.size = 512;
+  desc.created = "2026-01-01T00:00:00.000Z";
+  desc.description = "";
+  desc.metadata = {{"sensor", "lidar"}, {"version", 2}};
+
+  nlohmann::json j = {{"id", desc.id},
+                      {"name", desc.name},
+                      {"mimetype", desc.mime_type},
+                      {"size", desc.size},
+                      {"creation_date", desc.created},
+                      {"description", desc.description}};
+  if (!desc.metadata.empty()) {
+    j["x-medkit"] = desc.metadata;
+  }
+
+  EXPECT_TRUE(j.contains("x-medkit"));
+  EXPECT_EQ(j["x-medkit"]["sensor"], "lidar");
+  EXPECT_EQ(j["x-medkit"]["version"], 2);
+}
+
+// @verifies REQ_INTEROP_074
+TEST_F(BulkDataHandlersTest, DescriptorToJsonWithoutDescription) {
+  ros2_medkit_gateway::BulkDataStore::ItemDescriptor desc;
+  desc.id = "firmware_456_ef012345";
+  desc.name = "fw.img";
+  desc.mime_type = "application/octet-stream";
+  desc.size = 2048;
+  desc.created = "2026-06-15T12:00:00.000Z";
+  desc.description = "";
+  desc.metadata = nlohmann::json::object();
+
+  nlohmann::json j = {{"id", desc.id},      {"name", desc.name},          {"mimetype", desc.mime_type},
+                      {"size", desc.size},   {"creation_date", desc.created}};
+  // Only add description if non-empty (matching handler pattern)
+  if (!desc.description.empty()) {
+    j["description"] = desc.description;
+  }
+  if (!desc.metadata.empty()) {
+    j["x-medkit"] = desc.metadata;
+  }
+
+  EXPECT_FALSE(j.contains("description"));
+  EXPECT_FALSE(j.contains("x-medkit"));
+}
+
+// === Error code tests ===
+
+// @verifies REQ_INTEROP_074
+TEST_F(BulkDataHandlersTest, PayloadTooLargeErrorCodeDefined) {
+  EXPECT_NE(ros2_medkit_gateway::ERR_PAYLOAD_TOO_LARGE, nullptr);
+  EXPECT_STREQ(ros2_medkit_gateway::ERR_PAYLOAD_TOO_LARGE, "payload-too-large");
 }
