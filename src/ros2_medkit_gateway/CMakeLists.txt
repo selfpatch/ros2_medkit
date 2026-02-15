@@ -431,6 +431,13 @@ if(BUILD_TESTING)
     TIMEOUT 120
   )
 
+  # Add bulk data upload/delete integration tests
+  add_launch_test(
+    test/test_bulkdata_upload.test.py
+    TARGET test_bulkdata_upload
+    TIMEOUT 120
+  )
+
   # Demo automotive nodes
   add_executable(demo_engine_temp_sensor
     test/demo_nodes/engine_temp_sensor.cpp
