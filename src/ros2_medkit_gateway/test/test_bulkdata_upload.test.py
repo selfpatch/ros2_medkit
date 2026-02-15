@@ -154,9 +154,12 @@ class TestBulkDataUploadDelete(unittest.TestCase):
 
     # === Upload (POST) tests ===
 
-    # @verifies REQ_INTEROP_074
     def test_upload_small_file(self):
-        """POST multipart with small file returns 201 with descriptor."""
+        """
+        POST multipart with small file returns 201 with descriptor.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/calibration'
         files = {'file': ('test.bin', b'x' * 100, 'application/octet-stream')}
         r = requests.post(url, files=files, timeout=10)
@@ -168,9 +171,12 @@ class TestBulkDataUploadDelete(unittest.TestCase):
         self.assertEqual(data['size'], 100)
         self.assertIn('creation_date', data)
 
-    # @verifies REQ_INTEROP_074
     def test_upload_returns_location_header(self):
-        """201 response has Location header pointing to uploaded resource."""
+        """
+        201 response has Location header pointing to uploaded resource.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/calibration'
         files = {'file': ('loc.bin', b'data', 'application/octet-stream')}
         r = requests.post(url, files=files, timeout=10)
@@ -184,9 +190,12 @@ class TestBulkDataUploadDelete(unittest.TestCase):
         item_id = r.json()['id']
         self.assertTrue(location.endswith(item_id))
 
-    # @verifies REQ_INTEROP_074
     def test_upload_with_description(self):
-        """POST with description field includes it in descriptor."""
+        """
+        POST with description field includes it in descriptor.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/calibration'
         files = {'file': ('desc.bin', b'data', 'application/octet-stream')}
         data = {'description': 'Test calibration data'}
@@ -194,9 +203,12 @@ class TestBulkDataUploadDelete(unittest.TestCase):
         self.assertEqual(r.status_code, 201)
         self.assertEqual(r.json()['description'], 'Test calibration data')
 
-    # @verifies REQ_INTEROP_074
     def test_upload_with_metadata(self):
-        """POST with metadata JSON field includes x-medkit in descriptor."""
+        """
+        POST with metadata JSON field includes x-medkit in descriptor.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/calibration'
         files = {'file': ('meta.bin', b'data', 'application/octet-stream')}
         data = {'metadata': json.dumps({'sensor': 'lidar', 'version': 2})}
@@ -206,52 +218,70 @@ class TestBulkDataUploadDelete(unittest.TestCase):
         self.assertIn('x-medkit', resp)
         self.assertEqual(resp['x-medkit']['sensor'], 'lidar')
 
-    # @verifies REQ_INTEROP_074
     def test_upload_missing_file_field(self):
-        """POST without file field returns 400."""
+        """
+        POST without file field returns 400.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/calibration'
         # Send empty multipart with only description, no file
         data = {'description': 'no file'}
         r = requests.post(url, data=data, timeout=10)
         self.assertEqual(r.status_code, 400)
 
-    # @verifies REQ_INTEROP_074
     def test_upload_unknown_category(self):
-        """POST to unknown category returns 400."""
+        """
+        POST to unknown category returns 400.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/bogus'
         files = {'file': ('test.bin', b'data', 'application/octet-stream')}
         r = requests.post(url, files=files, timeout=10)
         self.assertEqual(r.status_code, 400)
 
-    # @verifies REQ_INTEROP_074
     def test_upload_rosbags_rejected(self):
-        """POST to rosbags category returns 400."""
+        """
+        POST to rosbags category returns 400.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/rosbags'
         files = {'file': ('test.bin', b'data', 'application/octet-stream')}
         r = requests.post(url, files=files, timeout=10)
         self.assertEqual(r.status_code, 400)
         self.assertIn('fault system', r.json().get('message', ''))
 
-    # @verifies REQ_INTEROP_074
     def test_upload_nonexistent_entity(self):
-        """POST to nonexistent entity returns 404."""
+        """
+        POST to nonexistent entity returns 404.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/apps/fake_entity_12345/bulk-data/calibration'
         files = {'file': ('test.bin', b'data', 'application/octet-stream')}
         r = requests.post(url, files=files, timeout=10)
         self.assertEqual(r.status_code, 404)
 
-    # @verifies REQ_INTEROP_074
     def test_upload_to_areas_405(self):
-        """POST to areas returns 405."""
+        """
+        POST to areas returns 405.
+
+        @verifies REQ_INTEROP_074
+        """
         area_id = getattr(self, 'test_area_id', 'powertrain')
         url = f'{self.BASE_URL}/areas/{area_id}/bulk-data/calibration'
         files = {'file': ('test.bin', b'data', 'application/octet-stream')}
         r = requests.post(url, files=files, timeout=10)
         self.assertEqual(r.status_code, 405)
 
-    # @verifies REQ_INTEROP_074
     def test_upload_to_functions_405(self):
-        """POST to functions returns 405."""
+        """
+        POST to functions returns 405.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/functions/some_func/bulk-data/calibration'
         files = {'file': ('test.bin', b'data', 'application/octet-stream')}
         r = requests.post(url, files=files, timeout=10)
@@ -259,9 +289,12 @@ class TestBulkDataUploadDelete(unittest.TestCase):
 
     # === Delete (DELETE) tests ===
 
-    # @verifies REQ_INTEROP_074
     def test_delete_uploaded_item(self):
-        """Upload then DELETE returns 204."""
+        """
+        Upload then DELETE returns 204.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/calibration'
         files = {'file': ('del.bin', b'delete_me', 'application/octet-stream')}
         upload_r = requests.post(url, files=files, timeout=10)
@@ -272,23 +305,32 @@ class TestBulkDataUploadDelete(unittest.TestCase):
         del_r = requests.delete(del_url, timeout=10)
         self.assertEqual(del_r.status_code, 204)
 
-    # @verifies REQ_INTEROP_074
     def test_delete_nonexistent_item(self):
-        """DELETE nonexistent ID returns 404."""
+        """
+        DELETE nonexistent ID returns 404.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/calibration/nonexistent_id'
         r = requests.delete(url, timeout=10)
         self.assertEqual(r.status_code, 404)
 
-    # @verifies REQ_INTEROP_074
     def test_delete_rosbags_rejected(self):
-        """DELETE rosbags category returns 400."""
+        """
+        DELETE rosbags category returns 400.
+
+        @verifies REQ_INTEROP_074
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/rosbags/some_id'
         r = requests.delete(url, timeout=10)
         self.assertEqual(r.status_code, 400)
 
-    # @verifies REQ_INTEROP_074
     def test_delete_to_areas_405(self):
-        """DELETE on areas returns 405."""
+        """
+        DELETE on areas returns 405.
+
+        @verifies REQ_INTEROP_074
+        """
         area_id = getattr(self, 'test_area_id', 'powertrain')
         url = f'{self.BASE_URL}/areas/{area_id}/bulk-data/calibration/some_id'
         r = requests.delete(url, timeout=10)
@@ -296,9 +338,12 @@ class TestBulkDataUploadDelete(unittest.TestCase):
 
     # === List / Download (GET — extended) tests ===
 
-    # @verifies REQ_INTEROP_071
     def test_list_categories_includes_configured(self):
-        """GET /bulk-data returns rosbags + configured categories."""
+        """
+        GET /bulk-data returns rosbags + configured categories.
+
+        @verifies REQ_INTEROP_071
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data'
         r = requests.get(url, timeout=10)
         self.assertEqual(r.status_code, 200)
@@ -307,9 +352,12 @@ class TestBulkDataUploadDelete(unittest.TestCase):
         self.assertIn('calibration', items)
         self.assertIn('firmware', items)
 
-    # @verifies REQ_INTEROP_072
     def test_list_descriptors_after_upload(self):
-        """Upload 2 files, list shows 2 items."""
+        """
+        Upload 2 files, list shows 2 items.
+
+        @verifies REQ_INTEROP_072
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/firmware'
         for name in ['fw1.bin', 'fw2.bin']:
             files = {'file': (name, b'firmware_data', 'application/octet-stream')}
@@ -321,9 +369,12 @@ class TestBulkDataUploadDelete(unittest.TestCase):
         items = r.json().get('items', [])
         self.assertGreaterEqual(len(items), 2)
 
-    # @verifies REQ_INTEROP_073
     def test_download_uploaded_file(self):
-        """Upload 'hello' then download returns same content."""
+        """
+        Upload 'hello' then download returns same content.
+
+        @verifies REQ_INTEROP_073
+        """
         base_url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/calibration'
         files = {'file': ('hello.txt', b'hello', 'text/plain')}
         upload_r = requests.post(base_url, files=files, timeout=10)
@@ -338,16 +389,22 @@ class TestBulkDataUploadDelete(unittest.TestCase):
         cd = dl_r.headers.get('Content-Disposition', '')
         self.assertIn('hello.txt', cd)
 
-    # @verifies REQ_INTEROP_073
     def test_download_nonexistent_returns_404(self):
-        """GET download with fake ID returns 404."""
+        """
+        GET download with fake ID returns 404.
+
+        @verifies REQ_INTEROP_073
+        """
         url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/calibration/nonexistent_id'
         r = requests.get(url, timeout=10)
         self.assertEqual(r.status_code, 404)
 
-    # @verifies REQ_INTEROP_074
     def test_list_empty_after_delete(self):
-        """Upload, delete, then list shows no items from this upload."""
+        """
+        Upload, delete, then list shows no items from this upload.
+
+        @verifies REQ_INTEROP_074
+        """
         # Use firmware category to avoid interference from other tests
         base_url = f'{self.BASE_URL}/components/{self.test_component_id}/bulk-data/firmware'
         files = {'file': ('gone.bin', b'data', 'application/octet-stream')}
@@ -365,10 +422,13 @@ class TestBulkDataUploadDelete(unittest.TestCase):
 
     # === Full CRUD flow ===
 
-    # @verifies REQ_INTEROP_071
-    # @verifies REQ_INTEROP_074
     def test_full_crud_cycle(self):
-        """Upload -> List (present) -> Download (content) -> Delete -> List (absent)."""
+        """
+        Upload -> List (present) -> Download (content) -> Delete -> List (absent).
+
+        @verifies REQ_INTEROP_071
+        @verifies REQ_INTEROP_074
+        """
         base_url = f'{self.BASE_URL}/apps/{self.test_app_id}/bulk-data/calibration'
         payload = b'full_crud_test_data'
         files = {'file': ('crud.bin', payload, 'application/octet-stream')}
