@@ -49,8 +49,18 @@ void BulkDataHandlers::handle_list_categories(const httplib::Request & req, http
     return;
   }
 
-  // Currently only "rosbags" category is supported
-  nlohmann::json response = {{"items", nlohmann::json::array({"rosbags"})}};
+  // Build categories list: "rosbags" always available + BulkDataStore categories
+  nlohmann::json categories = nlohmann::json::array();
+  categories.push_back("rosbags");  // Always available via FaultManager
+
+  auto * store = ctx_.bulk_data_store();
+  if (store) {
+    for (const auto & cat : store->list_categories()) {
+      categories.push_back(cat);
+    }
+  }
+
+  nlohmann::json response = {{"items", categories}};
 
   HandlerContext::send_json(res, response);
 }
@@ -83,67 +93,90 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
     return;
   }
 
-  if (category != "rosbags") {
-    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
-                               "Unknown category: " + category);
-    return;
-  }
+  if (category == "rosbags") {
+    // === Rosbags: served via FaultManager ===
+    // Get FaultManager from node
+    auto fault_mgr = ctx_.node()->get_fault_manager();
 
-  // Get FaultManager from node
-  auto fault_mgr = ctx_.node()->get_fault_manager();
+    // Get all faults for this entity (filter by FQN/namespace path)
+    // Use the entity's FQN or namespace_path as the source_id filter
+    std::string source_filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
+    auto faults_result = fault_mgr->list_faults(source_filter);
 
-  // Get all faults for this entity (filter by FQN/namespace path)
-  // Use the entity's FQN or namespace_path as the source_id filter
-  std::string source_filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
-  auto faults_result = fault_mgr->list_faults(source_filter);
-
-  // Build a map of fault_code -> fault_json for quick lookup
-  std::unordered_map<std::string, nlohmann::json> fault_map;
-  if (faults_result.success && faults_result.data.contains("faults")) {
-    for (const auto & fault_json : faults_result.data["faults"]) {
-      if (fault_json.contains("fault_code")) {
-        std::string fc = fault_json["fault_code"].get<std::string>();
-        fault_map[fc] = fault_json;
+    // Build a map of fault_code -> fault_json for quick lookup
+    std::unordered_map<std::string, nlohmann::json> fault_map;
+    if (faults_result.success && faults_result.data.contains("faults")) {
+      for (const auto & fault_json : faults_result.data["faults"]) {
+        if (fault_json.contains("fault_code")) {
+          std::string fc = fault_json["fault_code"].get<std::string>();
+          fault_map[fc] = fault_json;
+        }
       }
     }
-  }
 
-  // Use batch rosbag retrieval (single service call) instead of N+1 individual calls
-  auto rosbags_result = fault_mgr->list_rosbags(source_filter);
+    // Use batch rosbag retrieval (single service call) instead of N+1 individual calls
+    auto rosbags_result = fault_mgr->list_rosbags(source_filter);
 
-  nlohmann::json items = nlohmann::json::array();
+    nlohmann::json items = nlohmann::json::array();
 
-  if (rosbags_result.success && rosbags_result.data.contains("rosbags")) {
-    for (const auto & rosbag : rosbags_result.data["rosbags"]) {
-      std::string fault_code = rosbag.value("fault_code", "");
-      std::string format = rosbag.value("format", "mcap");
-      uint64_t size_bytes = rosbag.value("size_bytes", 0);
-      double duration_sec = rosbag.value("duration_sec", 0.0);
+    if (rosbags_result.success && rosbags_result.data.contains("rosbags")) {
+      for (const auto & rosbag : rosbags_result.data["rosbags"]) {
+        std::string fault_code = rosbag.value("fault_code", "");
+        std::string format = rosbag.value("format", "mcap");
+        uint64_t size_bytes = rosbag.value("size_bytes", 0);
+        double duration_sec = rosbag.value("duration_sec", 0.0);
 
-      // Use fault_code as bulk_data_id
-      std::string bulk_data_id = fault_code;
+        // Use fault_code as bulk_data_id
+        std::string bulk_data_id = fault_code;
 
-      // Get timestamp from fault if available
-      int64_t created_at_ns = 0;
-      auto it = fault_map.find(fault_code);
-      if (it != fault_map.end()) {
-        double first_occurred = it->second.value("first_occurred", 0.0);
-        created_at_ns = static_cast<int64_t>(first_occurred * 1'000'000'000);
+        // Get timestamp from fault if available
+        int64_t created_at_ns = 0;
+        auto it = fault_map.find(fault_code);
+        if (it != fault_map.end()) {
+          double first_occurred = it->second.value("first_occurred", 0.0);
+          created_at_ns = static_cast<int64_t>(first_occurred * 1'000'000'000);
+        }
+
+        nlohmann::json descriptor = {
+            {"id", bulk_data_id},
+            {"name", fault_code + " recording " + format_timestamp_ns(created_at_ns)},
+            {"mimetype", get_rosbag_mimetype(format)},
+            {"size", size_bytes},
+            {"creation_date", format_timestamp_ns(created_at_ns)},
+            {"x-medkit", {{"fault_code", fault_code}, {"duration_sec", duration_sec}, {"format", format}}}};
+        items.push_back(descriptor);
       }
-
-      nlohmann::json descriptor = {
-          {"id", bulk_data_id},
-          {"name", fault_code + " recording " + format_timestamp_ns(created_at_ns)},
-          {"mimetype", get_rosbag_mimetype(format)},
-          {"size", size_bytes},
-          {"creation_date", format_timestamp_ns(created_at_ns)},
-          {"x-medkit", {{"fault_code", fault_code}, {"duration_sec", duration_sec}, {"format", format}}}};
-      items.push_back(descriptor);
     }
-  }
 
-  nlohmann::json response = {{"items", items}};
-  HandlerContext::send_json(res, response);
+    nlohmann::json response = {{"items", items}};
+    HandlerContext::send_json(res, response);
+  } else {
+    // === Non-rosbag categories: served via BulkDataStore ===
+    auto * store = ctx_.bulk_data_store();
+    if (!store || !store->is_known_category(category)) {
+      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+                                 "Unknown category: " + category);
+      return;
+    }
+
+    auto items_list = store->list_items(entity_info->entity_id, category);
+    nlohmann::json json_items = nlohmann::json::array();
+    for (const auto & item : items_list) {
+      nlohmann::json desc = {
+          {"id", item.id}, {"name", item.name}, {"mimetype", item.mime_type}, {"size", item.size},
+          {"creation_date", item.created},
+      };
+      if (!item.description.empty()) {
+        desc["description"] = item.description;
+      }
+      if (!item.metadata.empty()) {
+        desc["x-medkit"] = item.metadata;
+      }
+      json_items.push_back(desc);
+    }
+    nlohmann::json response = {{"items", json_items}};
+    HandlerContext::send_json(res, response);
+  }
 }
 
 void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Response & res) {
@@ -354,54 +387,80 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
   auto category = extract_bulk_data_category(req.path);
   auto bulk_data_id = extract_bulk_data_id(req.path);
 
-  if (category != "rosbags") {
-    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
-                               "Unknown category: " + category);
-    return;
-  }
-
   if (bulk_data_id.empty()) {
     HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing bulk-data ID");
     return;
   }
 
-  // Get FaultManager from node
-  auto fault_mgr = ctx_.node()->get_fault_manager();
+  if (category == "rosbags") {
+    // === Rosbags: served via FaultManager ===
+    // Get FaultManager from node
+    auto fault_mgr = ctx_.node()->get_fault_manager();
 
-  // bulk_data_id is the fault_code
-  std::string fault_code = bulk_data_id;
+    // bulk_data_id is the fault_code
+    std::string fault_code = bulk_data_id;
 
-  // Get rosbag info
-  auto rosbag_result = fault_mgr->get_rosbag(fault_code);
-  if (!rosbag_result.success || !rosbag_result.data.contains("file_path")) {
-    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found",
-                               {{"bulk_data_id", bulk_data_id}});
-    return;
-  }
+    // Get rosbag info
+    auto rosbag_result = fault_mgr->get_rosbag(fault_code);
+    if (!rosbag_result.success || !rosbag_result.data.contains("file_path")) {
+      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found",
+                                 {{"bulk_data_id", bulk_data_id}});
+      return;
+    }
 
-  // Security check: verify rosbag belongs to this entity
-  // Use targeted get_fault lookup instead of loading the entire fault list
-  std::string source_filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
-  auto fault_result = fault_mgr->get_fault(fault_code, source_filter);
+    // Security check: verify rosbag belongs to this entity
+    // Use targeted get_fault lookup instead of loading the entire fault list
+    std::string source_filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
+    auto fault_result = fault_mgr->get_fault(fault_code, source_filter);
 
-  if (!fault_result.success) {
-    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
-                               "Bulk-data not found for this entity", {{"entity_id", entity_info->entity_id}});
-    return;
-  }
+    if (!fault_result.success) {
+      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+                                 "Bulk-data not found for this entity", {{"entity_id", entity_info->entity_id}});
+      return;
+    }
 
-  // Get file path and stream the file
-  std::string file_path = rosbag_result.data["file_path"].get<std::string>();
-  std::string format = rosbag_result.data.value("format", "mcap");
-  auto mimetype = get_rosbag_mimetype(format);
-  std::string filename = fault_code + "." + format;
+    // Get file path and stream the file
+    std::string file_path = rosbag_result.data["file_path"].get<std::string>();
+    std::string format = rosbag_result.data.value("format", "mcap");
+    auto mimetype = get_rosbag_mimetype(format);
+    std::string filename = fault_code + "." + format;
 
-  // Set response headers for file download
-  res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+    // Set response headers for file download
+    res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
 
-  if (!stream_file_to_response(res, file_path, mimetype)) {
-    HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
-                               "Failed to read rosbag file");
+    if (!stream_file_to_response(res, file_path, mimetype)) {
+      HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                                 "Failed to read rosbag file");
+    }
+  } else {
+    // === Non-rosbag categories: served via BulkDataStore ===
+    auto * store = ctx_.bulk_data_store();
+    if (!store || !store->is_known_category(category)) {
+      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+                                 "Unknown category: " + category);
+      return;
+    }
+
+    auto file_path = store->get_file_path(entity_info->entity_id, category, bulk_data_id);
+    if (!file_path) {
+      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+                                 "Bulk-data not found", {{"bulk_data_id", bulk_data_id}});
+      return;
+    }
+
+    // Get descriptor for filename and MIME type
+    auto item = store->get_item(entity_info->entity_id, category, bulk_data_id);
+    std::string filename = item ? item->name : bulk_data_id;
+    std::string mimetype = item ? item->mime_type : "application/octet-stream";
+
+    // Content-Disposition with original filename
+    res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+
+    // Use generic stream utility (from subtask 1)
+    if (!ros2_medkit_gateway::stream_file_to_response(res, *file_path, mimetype)) {
+      HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                                 "Failed to read file");
+    }
   }
 }
 
