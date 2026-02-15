@@ -116,6 +116,8 @@ add_library(gateway_lib STATIC
   src/http/handlers/bulkdata_handlers.cpp
   src/http/handlers/sse_fault_handler.cpp
   src/http/handlers/auth_handlers.cpp
+  # Bulk data storage
+  src/bulk_data_store.cpp
   # HTTP utilities
   src/http/x_medkit.cpp
   src/http/entity_path_utils.cpp
@@ -333,6 +335,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fault_handlers test/test_fault_handlers.cpp)
   target_link_libraries(test_fault_handlers gateway_lib)
 
+  # Add bulk data store tests
+  ament_add_gtest(test_bulk_data_store test/test_bulk_data_store.cpp)
+  target_link_libraries(test_bulk_data_store gateway_lib)
+
   # Add bulk data handlers tests
   ament_add_gtest(test_bulkdata_handlers test/test_bulkdata_handlers.cpp)
   target_link_libraries(test_bulkdata_handlers gateway_lib)
@@ -358,6 +364,7 @@ if(BUILD_TESTING)
       test_data_access_manager
       test_entity_path_utils
       test_fault_handlers
+      test_bulk_data_store
       test_bulkdata_handlers
     )
     foreach(_target ${_test_targets})
