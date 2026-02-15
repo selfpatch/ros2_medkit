@@ -480,15 +480,17 @@ Query and manage faults.
 Bulk Data Endpoints
 -------------------
 
-Download large binary data (rosbags, logs) associated with entities.
-All entity types are supported: apps, components, areas, functions, and nested entities.
+Access, upload, and delete large binary data (rosbags, calibration files, firmware, etc.)
+associated with entities. Read endpoints (GET) support all entity types. Write endpoints
+(POST, DELETE) are supported for components and apps only.
 
 List Categories
 ~~~~~~~~~~~~~~~
 
 ``GET /api/v1/{entity-path}/bulk-data``
 
-List available bulk-data categories for an entity.
+List available bulk-data categories for an entity. Returns the union of rosbag categories
+(from the fault manager) and configured categories (from ``bulk_data.categories``).
 
 **Supported entity paths:**
 
@@ -510,7 +512,7 @@ List available bulk-data categories for an entity.
 .. code-block:: json
 
    {
-     "items": ["rosbags"]
+     "items": ["rosbags", "calibration", "firmware"]
    }
 
 List Bulk Data Items
@@ -570,6 +572,95 @@ Download a specific bulk-data file.
 
 - **200 OK**: File content
 - **404 Not Found**: Entity, category, or bulk-data ID not found
+
+Upload Bulk Data
+~~~~~~~~~~~~~~~~
+
+``POST /api/v1/{entity-path}/bulk-data/{category}``
+
+Upload a new bulk-data file to the specified category. Files are sent as
+``multipart/form-data``. The ``rosbags`` category is read-only and cannot be
+used for uploads.
+
+**Supported entity types:** components, apps only. Areas and functions return 405.
+
+**Form Fields:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 15 65
+
+   * - Field
+     - Required
+     - Description
+   * - ``file``
+     - Yes
+     - The file to upload (binary data with filename and content type).
+   * - ``description``
+     - No
+     - Human-readable description of the file.
+   * - ``metadata``
+     - No
+     - JSON string with arbitrary key-value metadata.
+
+**Example:**
+
+.. code-block:: bash
+
+   curl -X POST http://localhost:8080/api/v1/components/motor_controller/bulk-data/calibration \
+     -F "file=@calibration_data.bin;type=application/octet-stream" \
+     -F "description=Motor calibration parameters v2.1" \
+     -F 'metadata={"version": "2.1", "author": "engineer_01"}'
+
+**Response (201 Created):**
+
+.. code-block:: json
+
+   {
+     "id": "calibration_1739612345000000000_ab12cd34",
+     "name": "calibration_data.bin",
+     "mimetype": "application/octet-stream",
+     "size": 4096,
+     "creation_date": "2026-03-15T14:30:00.000Z",
+     "description": "Motor calibration parameters v2.1",
+     "x-medkit": {
+       "version": "2.1",
+       "author": "engineer_01"
+     }
+   }
+
+**Response Headers:**
+
+- ``Location``: ``/api/v1/components/motor_controller/bulk-data/calibration/calibration_1739612345000000000_ab12cd34``
+
+**Error Responses:**
+
+- **400 Bad Request**: Missing ``file`` field, unknown category, or ``rosbags`` category
+- **405 Method Not Allowed**: Upload attempted on areas or functions
+- **413 Payload Too Large**: File exceeds ``bulk_data.max_upload_size``
+
+Delete Bulk Data
+~~~~~~~~~~~~~~~~
+
+``DELETE /api/v1/{entity-path}/bulk-data/{category}/{id}``
+
+Delete a specific bulk-data item. The ``rosbags`` category is managed by the
+fault manager and cannot be deleted via this endpoint.
+
+**Supported entity types:** components, apps only. Areas and functions return 405.
+
+**Example:**
+
+.. code-block:: bash
+
+   curl -X DELETE http://localhost:8080/api/v1/components/motor_controller/bulk-data/calibration/calibration_1739612345000000000_ab12cd34
+
+**Response Codes:**
+
+- **204 No Content**: Item deleted successfully
+- **400 Bad Request**: ``rosbags`` category (managed by fault manager)
+- **404 Not Found**: Entity, category, or bulk-data ID not found
+- **405 Method Not Allowed**: Delete attempted on areas or functions
 
 Authentication Endpoints
 ------------------------

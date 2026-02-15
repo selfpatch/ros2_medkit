@@ -55,6 +55,7 @@ For more examples, see our [Postman collection](postman/).
 - **🌐 REST API Gateway** — HTTP interface for integration with external tools and UIs
 - **📊 Health Modeling** — Track health state per entity for fleet-level observability
 - **🔧 Easy Integration** — Works with existing ROS 2 nodes out of the box (Jazzy, Humble & Rolling)
+- **📦 Bulk Data Management** — Upload, download, list, and delete bulk data files (calibration, firmware, etc.)
 
 ## 📖 Overview
 

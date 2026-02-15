@@ -281,8 +281,10 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
                                     {"name", desc.name},
                                     {"mimetype", desc.mime_type},
                                     {"size", desc.size},
-                                    {"creation_date", desc.created},
-                                    {"description", desc.description}};
+                                    {"creation_date", desc.created}};
+  if (!desc.description.empty()) {
+    descriptor_json["description"] = desc.description;
+  }
   if (!desc.metadata.empty()) {
     descriptor_json["x-medkit"] = desc.metadata;
   }

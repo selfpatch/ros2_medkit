@@ -38,6 +38,11 @@ namespace ros2_medkit_gateway {
  *
  * Categories are configured at construction time. The "rosbags" category
  * is NOT managed here — it is handled by FaultManager.
+ *
+ * @todo #215 Per-category config (BulkDataCategoryConfig): access mode
+ *   (read-only/write-only/read-write), per-category max_file_size, source_path/upload_path
+ *   templates, human-readable name. Currently categories are plain string IDs with a single
+ *   global upload limit. See https://github.com/selfpatch/ros2_medkit/issues/215
  */
 class BulkDataStore {
  public:

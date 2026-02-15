@@ -165,8 +165,11 @@ TEST_F(BulkDataHandlersTest, DescriptorToJsonWithoutDescription) {
   desc.description = "";
   desc.metadata = nlohmann::json::object();
 
-  nlohmann::json j = {{"id", desc.id},      {"name", desc.name},          {"mimetype", desc.mime_type},
-                      {"size", desc.size},   {"creation_date", desc.created}};
+  nlohmann::json j = {{"id", desc.id},
+                      {"name", desc.name},
+                      {"mimetype", desc.mime_type},
+                      {"size", desc.size},
+                      {"creation_date", desc.created}};
   // Only add description if non-empty (matching handler pattern)
   if (!desc.description.empty()) {
     j["description"] = desc.description;

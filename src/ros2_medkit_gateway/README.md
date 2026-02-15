@@ -11,6 +11,7 @@ The ROS 2 Medkit Gateway exposes ROS 2 system information and data through a RES
 - **Area-based organization**: Groups nodes by namespace (e.g., `/powertrain`, `/chassis`, `/body`)
 - **REST API**: Standard HTTP/JSON interface
 - **Real-time updates**: Configurable cache refresh for up-to-date system state
+- **Bulk Data Management**: Upload, download, list, and delete bulk data files (calibration, firmware, etc.)
 
 ## Endpoints
 
@@ -54,6 +55,14 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `PUT /api/v1/components/{component_id}/configurations/{param}` - Set parameter value
 - `DELETE /api/v1/components/{component_id}/configurations/{param}` - Reset parameter to default value
 - `DELETE /api/v1/components/{component_id}/configurations` - Reset all parameters to default values
+
+### Bulk Data Endpoints
+
+- `GET /api/v1/{entity}/{id}/bulk-data` - List bulk-data categories (rosbags + configured)
+- `GET /api/v1/{entity}/{id}/bulk-data/{category}` - List bulk-data items in a category
+- `GET /api/v1/{entity}/{id}/bulk-data/{category}/{item_id}` - Download a bulk-data file
+- `POST /api/v1/{entity}/{id}/bulk-data/{category}` - Upload bulk data (components/apps only)
+- `DELETE /api/v1/{entity}/{id}/bulk-data/{category}/{item_id}` - Delete bulk data (components/apps only)
 
 ### API Reference
 

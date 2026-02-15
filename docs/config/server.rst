@@ -173,6 +173,50 @@ Performance Tuning
 
 Lower values provide faster updates but increase CPU usage.
 
+Bulk Data Storage
+-----------------
+
+Configure file-based bulk data storage for uploads (calibration files, firmware, etc.).
+The ``rosbags`` category is always available via the Fault Manager and does not need
+configuration.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 25 35
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``bulk_data.storage_dir``
+     - string
+     - ``/tmp/ros2_medkit_bulk_data``
+     - Base directory for uploaded files. Each entity gets a subdirectory.
+   * - ``bulk_data.max_upload_size``
+     - int
+     - ``104857600``
+     - Maximum upload file size in bytes (default: 100 MB). Set to 0 for unlimited.
+   * - ``bulk_data.categories``
+     - string[]
+     - ``[]``
+     - Allowed bulk data categories for upload/download (e.g., ``calibration``, ``firmware``).
+
+Example:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       bulk_data:
+         storage_dir: "/var/ros2_medkit/bulk_data"
+         max_upload_size: 52428800   # 50 MB
+         categories: ["calibration", "firmware", "logs"]
+
+.. note::
+
+   The ``rosbags`` category is always available through the Fault Manager and cannot be
+   used for uploads or deletes. It is automatically included in the category list.
+
 .. note::
 
    The gateway uses native rclcpp APIs for all ROS 2 interactions—no ROS 2 CLI
@@ -202,6 +246,11 @@ Complete Example
          allowed_headers: ["Content-Type", "Accept", "Authorization"]
          allow_credentials: true
          max_age_seconds: 86400
+
+       bulk_data:
+         storage_dir: "/var/ros2_medkit/bulk_data"
+         max_upload_size: 104857600
+         categories: ["calibration", "firmware"]
 
 See Also
 --------

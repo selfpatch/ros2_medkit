@@ -28,8 +28,8 @@ class BulkDataStoreTest : public ::testing::Test {
  protected:
   void SetUp() override {
     // Create unique temp directory for each test
-    test_dir_ = std::filesystem::temp_directory_path() / ("bulk_data_test_" + std::to_string(getpid()) + "_" +
-                                                          std::to_string(test_counter_++));
+    test_dir_ = std::filesystem::temp_directory_path() /
+                ("bulk_data_test_" + std::to_string(getpid()) + "_" + std::to_string(test_counter_++));
     std::filesystem::create_directories(test_dir_);
   }
 

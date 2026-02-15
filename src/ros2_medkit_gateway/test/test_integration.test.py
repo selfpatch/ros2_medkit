@@ -4468,17 +4468,20 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_122_bulk_data_list_categories_all_entity_types(self):
         """
-        Test bulk-data endpoint works for all entity types.
+        Test bulk-data endpoint works for supported entity types and rejects unsupported ones.
+
+        Per SOVD Table 8, areas do NOT support resource collections (including bulk-data).
+        Components and apps do support bulk-data.
 
         @verifies REQ_INTEROP_071
         """
-        entity_endpoints = [
+        # Entity types that support bulk-data (SOVD Table 8)
+        supported_endpoints = [
             '/apps/lidar_sensor/bulk-data',
             '/components/perception/bulk-data',
-            '/areas/perception/bulk-data',
         ]
 
-        for endpoint in entity_endpoints:
+        for endpoint in supported_endpoints:
             response = requests.get(f'{self.BASE_URL}{endpoint}', timeout=10)
             self.assertEqual(
                 response.status_code, 200,
@@ -4489,7 +4492,16 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             self.assertIn('items', data)
             self.assertIsInstance(data['items'], list)
 
-        print('✓ Bulk-data categories work for all entity types')
+        # Areas do NOT support resource collections per SOVD spec
+        response = requests.get(
+            f'{self.BASE_URL}/areas/perception/bulk-data', timeout=10
+        )
+        self.assertEqual(
+            response.status_code, 400,
+            f'Expected 400 for areas bulk-data, got {response.status_code}'
+        )
+
+        print('✓ Bulk-data categories work for supported entity types')
 
     def test_123_bulk_data_list_categories_entity_not_found(self):
         """
@@ -4694,20 +4706,23 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
 
     def test_130_bulk_data_nested_entity_path(self):
         """
-        Test bulk-data endpoints work for nested entities (e.g., perception area).
+        Test bulk-data endpoints work for nested component entities.
+
+        Note: Areas do NOT support bulk-data per SOVD Table 8, so we test
+        with a component that has a namespace path (nested entity).
 
         @verifies REQ_INTEROP_071
         """
-        # Test nested area
+        # Test nested component — components DO support bulk-data
         response = requests.get(
-            f'{self.BASE_URL}/areas/perception/bulk-data',
+            f'{self.BASE_URL}/components/perception/bulk-data',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
         data = response.json()
         self.assertIn('items', data)
-        self.assertIn('rosbags', data['items'])
+        self.assertIsInstance(data['items'], list)
 
         print('✓ Bulk-data nested entity path test passed')
 

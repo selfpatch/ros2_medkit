@@ -39,7 +39,7 @@ BulkDataStore::BulkDataStore(const std::string & storage_dir, size_t max_upload_
 // --- Validation ---
 
 tl::expected<void, std::string> BulkDataStore::validate_path_component(const std::string & value,
-                                                                        const std::string & name) {
+                                                                       const std::string & name) {
   if (value.empty()) {
     return tl::unexpected(name + " cannot be empty");
   }
@@ -140,19 +140,16 @@ std::optional<BulkDataStore::ItemDescriptor> BulkDataStore::read_descriptor(cons
 
 // --- CRUD ---
 
-tl::expected<BulkDataStore::ItemDescriptor, std::string> BulkDataStore::store(
-    const std::string & entity_id, const std::string & category, const std::string & filename,
-    const std::string & content_type, const std::string & data, const std::string & description,
-    const nlohmann::json & metadata) {
+tl::expected<BulkDataStore::ItemDescriptor, std::string>
+BulkDataStore::store(const std::string & entity_id, const std::string & category, const std::string & filename,
+                     const std::string & content_type, const std::string & data, const std::string & description,
+                     const nlohmann::json & metadata) {
   // Validate inputs
-  if (auto err = validate_path_component(entity_id, "entity_id")) {
-    // err is void on success
-  } else {
-    return tl::unexpected(err.error());
+  if (auto v = validate_path_component(entity_id, "entity_id"); !v) {
+    return tl::unexpected(v.error());
   }
-  if (auto err = validate_path_component(category, "category")) {
-  } else {
-    return tl::unexpected(err.error());
+  if (auto v = validate_path_component(category, "category"); !v) {
+    return tl::unexpected(v.error());
   }
 
   // Validate category is known
@@ -230,7 +227,7 @@ tl::expected<BulkDataStore::ItemDescriptor, std::string> BulkDataStore::store(
 }
 
 tl::expected<void, std::string> BulkDataStore::remove(const std::string & entity_id, const std::string & category,
-                                                       const std::string & item_id) {
+                                                      const std::string & item_id) {
   if (auto err = validate_path_component(entity_id, "entity_id"); !err) {
     return tl::unexpected(err.error());
   }

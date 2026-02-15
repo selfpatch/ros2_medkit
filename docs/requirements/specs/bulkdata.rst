@@ -33,15 +33,25 @@ BulkData
 
 .. req:: POST /{entity}/bulk-data/{category}
    :id: REQ_INTEROP_074
-   :status: open
-   :tags: BulkData
+   :status: verified
+   :tags: BulkData, SOVD
+   :links: REQ_INTEROP_071
 
-   The endpoint shall upload new bulk data in the addressed category and create a corresponding bulk-data resource on the entity.
+   The endpoint shall upload new bulk data in the addressed category and create a
+   corresponding bulk-data resource on the entity.
+
+   Accepts multipart/form-data with a required ``file`` field and optional ``description``
+   and ``metadata`` fields. Returns 201 Created with a Location header pointing to the new
+   resource. Supported for components and apps. The ``rosbags`` category is read-only.
 
 .. req:: DELETE /{entity}/bulk-data/{category}/{bulk-data-id}
    :id: REQ_INTEROP_075
-   :status: open
-   :tags: BulkData
+   :status: verified
+   :tags: BulkData, SOVD
+   :links: REQ_INTEROP_071
 
    The endpoint shall delete the addressed bulk-data item from the entity, if permitted.
+
+   Returns 204 No Content on success. Supported for components and apps.
+   The ``rosbags`` category is managed by the fault manager and cannot be deleted.
 
