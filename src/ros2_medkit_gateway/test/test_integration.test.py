@@ -2337,8 +2337,8 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         self.assertIn('x-medkit', data)
         self.assertIn('count', data['x-medkit'])
 
-        # Test other valid status values
-        for status in ['pending', 'confirmed', 'cleared']:
+        # Test other valid status values (including healed)
+        for status in ['pending', 'confirmed', 'cleared', 'healed']:
             response = requests.get(
                 f'{self.BASE_URL}/faults?status={status}',
                 timeout=10
@@ -2364,6 +2364,7 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         params = data['parameters']
         self.assertIn('allowed_values', params)
         self.assertIn('pending', params['allowed_values'])  # Should mention valid values
+        self.assertIn('healed', params['allowed_values'])  # Must include healed
         self.assertIn('parameter', params)
         self.assertEqual(params.get('parameter'), 'status')
         self.assertIn('value', params)

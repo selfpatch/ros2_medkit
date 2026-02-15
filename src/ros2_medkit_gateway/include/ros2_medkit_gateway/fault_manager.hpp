@@ -70,12 +70,13 @@ class FaultManager {
   /// @param include_prefailed Include PREFAILED status faults (debounce not yet confirmed)
   /// @param include_confirmed Include CONFIRMED status faults
   /// @param include_cleared Include CLEARED status faults
+  /// @param include_healed Include HEALED and PREPASSED status faults
   /// @param include_muted Include muted faults (correlation symptoms) in response
   /// @param include_clusters Include cluster info in response
   /// @return FaultResult with array of faults (and optionally muted_faults and clusters)
   FaultResult list_faults(const std::string & source_id = "", bool include_prefailed = true,
-                          bool include_confirmed = true, bool include_cleared = false, bool include_muted = false,
-                          bool include_clusters = false);
+                          bool include_confirmed = true, bool include_cleared = false, bool include_healed = false,
+                          bool include_muted = false, bool include_clusters = false);
 
   /// Get a specific fault by code with environment data
   /// @param fault_code Fault identifier

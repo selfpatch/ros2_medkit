@@ -233,7 +233,7 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
     if (!filter.is_valid) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
                                  "Invalid status parameter value",
-                                 {{"allowed_values", "pending, confirmed, cleared, all"},
+                                 {{"allowed_values", "pending, confirmed, cleared, healed, all"},
                                   {"parameter", "status"},
                                   {"value", req.get_param_value("status")}});
       return;
@@ -246,7 +246,7 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
     auto fault_mgr = ctx_.node()->get_fault_manager();
     // Empty source_id = no filtering, return all faults
     auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                                         include_muted, include_clusters);
+                                         filter.include_healed, include_muted, include_clusters);
 
     if (result.success) {
       // Format: items array at top level
@@ -304,7 +304,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
     if (!filter.is_valid) {
       HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
                                  "Invalid status parameter value",
-                                 {{"allowed_values", "pending, confirmed, cleared, all"},
+                                 {{"allowed_values", "pending, confirmed, cleared, healed, all"},
                                   {"parameter", "status"},
                                   {"value", req.get_param_value("status")},
                                   {entity_info.id_field, entity_id}});
@@ -322,7 +322,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
     if (entity_info.type == EntityType::FUNCTION) {
       // Get all faults (no namespace filter)
       auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                                           include_muted, include_clusters);
+                                           filter.include_healed, include_muted, include_clusters);
 
       if (!result.success) {
         HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
@@ -363,7 +363,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
     if (entity_info.type == EntityType::COMPONENT) {
       // Get all faults (no namespace filter)
       auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                                           include_muted, include_clusters);
+                                           filter.include_healed, include_muted, include_clusters);
 
       if (!result.success) {
         HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
@@ -402,8 +402,9 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
 
     // For other entity types (App, Area), use namespace_path filtering
     std::string namespace_path = entity_info.namespace_path;
-    auto result = fault_mgr->list_faults(namespace_path, filter.include_pending, filter.include_confirmed,
-                                         filter.include_cleared, include_muted, include_clusters);
+    auto result =
+        fault_mgr->list_faults(namespace_path, filter.include_pending, filter.include_confirmed, filter.include_cleared,
+                               filter.include_healed, include_muted, include_clusters);
 
     if (result.success) {
       // Format: items array at top level
@@ -578,7 +579,7 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
 
     // Get all faults for this entity
     auto fault_mgr = ctx_.node()->get_fault_manager();
-    auto faults_result = fault_mgr->list_faults(entity_info.namespace_path, "", "");
+    auto faults_result = fault_mgr->list_faults(entity_info.namespace_path);
 
     if (!faults_result.success) {
       HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
@@ -590,8 +591,8 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
     // Clear each fault
     if (faults_result.data.contains("faults") && faults_result.data["faults"].is_array()) {
       for (const auto & fault : faults_result.data["faults"]) {
-        if (fault.contains("faultCode")) {
-          std::string fault_code = fault["faultCode"].get<std::string>();
+        if (fault.contains("fault_code")) {
+          std::string fault_code = fault["fault_code"].get<std::string>();
           auto clear_result = fault_mgr->clear_fault(fault_code);
           if (!clear_result.success) {
             RCLCPP_WARN(HandlerContext::logger(), "Failed to clear fault '%s' for entity '%s': %s", fault_code.c_str(),

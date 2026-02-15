@@ -90,6 +90,7 @@ struct FaultStatusFilter {
   bool include_pending = true;
   bool include_confirmed = true;
   bool include_cleared = false;
+  bool include_healed = false;
   bool is_valid = true;
 };
 
@@ -107,6 +108,7 @@ inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req) 
     filter.include_pending = false;
     filter.include_confirmed = false;
     filter.include_cleared = false;
+    filter.include_healed = false;
 
     if (status == "pending") {
       filter.include_pending = true;
@@ -114,10 +116,14 @@ inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req) 
       filter.include_confirmed = true;
     } else if (status == "cleared") {
       filter.include_cleared = true;
+      filter.include_healed = true;  // SOVD maps both CLEARED and HEALED to "cleared"
+    } else if (status == "healed") {
+      filter.include_healed = true;
     } else if (status == "all") {
       filter.include_pending = true;
       filter.include_confirmed = true;
       filter.include_cleared = true;
+      filter.include_healed = true;
     } else {
       filter.is_valid = false;
     }

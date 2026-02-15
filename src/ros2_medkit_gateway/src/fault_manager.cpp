@@ -127,7 +127,8 @@ FaultResult FaultManager::report_fault(const std::string & fault_code, uint8_t s
 }
 
 FaultResult FaultManager::list_faults(const std::string & source_id, bool include_prefailed, bool include_confirmed,
-                                      bool include_cleared, bool include_muted, bool include_clusters) {
+                                      bool include_cleared, bool include_healed, bool include_muted,
+                                      bool include_clusters) {
   std::lock_guard<std::mutex> lock(list_mutex_);
   FaultResult result;
 
@@ -151,6 +152,10 @@ FaultResult FaultManager::list_faults(const std::string & source_id, bool includ
   }
   if (include_cleared) {
     request->statuses.push_back(ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
+  }
+  if (include_healed) {
+    request->statuses.push_back(ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
+    request->statuses.push_back(ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED);
   }
 
   // Correlation options

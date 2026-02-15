@@ -359,8 +359,30 @@ Query and manage faults.
    Faults are reported by ROS 2 nodes via the FaultReporter library, not via REST API.
    The gateway queries faults from the ros2_medkit_fault_manager node.
 
+``GET /api/v1/faults``
+   List all faults across the system.
+
 ``GET /api/v1/components/{id}/faults``
    List all faults for an entity.
+
+   Both endpoints accept an optional ``?status=`` query parameter:
+
+   +-----------------+--------------------------------------------------+
+   | Value           | Returns                                          |
+   +=================+==================================================+
+   | *(default)*     | ``PREFAILED`` + ``CONFIRMED`` (active faults)    |
+   +-----------------+--------------------------------------------------+
+   | ``pending``     | ``PREFAILED`` only                               |
+   +-----------------+--------------------------------------------------+
+   | ``confirmed``   | ``CONFIRMED`` only                               |
+   +-----------------+--------------------------------------------------+
+   | ``cleared``     | ``CLEARED`` + ``HEALED`` + ``PREPASSED``         |
+   |                 | (SOVD "cleared" semantics)                       |
+   +-----------------+--------------------------------------------------+
+   | ``healed``      | ``HEALED`` + ``PREPASSED`` only                  |
+   +-----------------+--------------------------------------------------+
+   | ``all``         | All statuses                                     |
+   +-----------------+--------------------------------------------------+
 
    **Example Response:**
 

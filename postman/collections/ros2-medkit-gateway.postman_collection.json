@@ -1122,7 +1122,7 @@
                 }
               ]
             },
-            "description": "List all faults across the system including cleared ones. Use status=pending, status=confirmed, status=cleared, or status=all to filter."
+            "description": "List all faults across the system including cleared ones. Use status=pending, status=confirmed, status=cleared, status=healed, or status=all to filter."
           },
           "response": []
         },
@@ -1168,7 +1168,7 @@
                 }
               ]
             },
-            "description": "List all faults including cleared ones. Use status=prefailed, status=confirmed, status=cleared, or status=all to filter."
+            "description": "List all faults including cleared ones. Use status=prefailed, status=confirmed, status=cleared, status=healed, or status=all to filter."
           },
           "response": []
         },
