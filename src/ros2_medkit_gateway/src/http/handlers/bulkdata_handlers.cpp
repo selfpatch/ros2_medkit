@@ -44,6 +44,12 @@ void BulkDataHandlers::handle_list_categories(const httplib::Request & req, http
     return;  // Error response already sent
   }
 
+  // Validate entity type supports bulk-data collection (SOVD Table 8)
+  if (auto err = HandlerContext::validate_collection_access(*entity_opt, ResourceCollection::BULK_DATA)) {
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    return;
+  }
+
   // Currently only "rosbags" category is supported
   nlohmann::json response = {{"items", nlohmann::json::array({"rosbags"})}};
 
@@ -64,6 +70,12 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
     return;  // Error response already sent
   }
   auto entity = *entity_opt;
+
+  // Validate entity type supports bulk-data collection (SOVD Table 8)
+  if (auto err = HandlerContext::validate_collection_access(entity, ResourceCollection::BULK_DATA)) {
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    return;
+  }
 
   // Extract and validate category from path
   auto category = extract_bulk_data_category(req.path);
@@ -149,6 +161,12 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
     return;  // Error response already sent
   }
   auto entity = *entity_opt;
+
+  // Validate entity type supports bulk-data collection (SOVD Table 8)
+  if (auto err = HandlerContext::validate_collection_access(entity, ResourceCollection::BULK_DATA)) {
+    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    return;
+  }
 
   // Extract category and bulk_data_id from path
   auto category = extract_bulk_data_category(req.path);
