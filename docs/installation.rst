@@ -1,8 +1,8 @@
 Installation
 ============
 
-This guide covers installation of ros2_medkit on Ubuntu 24.04 with ROS 2 Jazzy
-or Ubuntu 22.04 with ROS 2 Humble.
+This guide covers installation of ros2_medkit on Ubuntu 24.04 with ROS 2 Jazzy,
+Ubuntu 22.04 with ROS 2 Humble, or Ubuntu 24.04 with ROS 2 Rolling.
 
 System Requirements
 -------------------
@@ -16,22 +16,23 @@ System Requirements
    * - Operating System
      - Ubuntu 24.04 LTS (Noble) or Ubuntu 22.04 LTS (Jammy)
    * - ROS 2 Distribution
-     - Jazzy or Humble
+     - Jazzy, Humble, or Rolling
    * - C++ Compiler
      - GCC 11+ (C++17 support required)
    * - CMake
      - 3.22+
    * - Python
-     - 3.10+ (Humble) / 3.12+ (Jazzy)
+     - 3.10+ (Humble) / 3.12+ (Jazzy / Rolling)
 
 Prerequisites
 -------------
 
-**ROS 2 Jazzy or Humble** must be installed and sourced. Follow the official installation guide
+**ROS 2 Jazzy, Humble, or Rolling** must be installed and sourced. Follow the official installation guide
 for your distribution:
 
 - Jazzy: https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html
 - Humble: https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html
+- Rolling: https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html
 
 .. note::
 

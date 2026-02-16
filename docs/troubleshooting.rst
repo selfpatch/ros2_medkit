@@ -214,7 +214,7 @@ parameter changes) only happen when explicitly requested via the API.
 
 **Q: Can I use ros2_medkit with ROS 1?**
 
-No. ros2_medkit requires ROS 2 (Jazzy or Humble). For ROS 1 systems, consider using
+No. ros2_medkit requires ROS 2 (Jazzy, Humble, or Rolling). For ROS 1 systems, consider using
 the ``ros1_bridge`` and running ros2_medkit on the ROS 2 side.
 
 **Q: Is ros2_medkit production-ready?**
