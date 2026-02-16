@@ -369,7 +369,7 @@ std::optional<json> ManifestManager::get_capabilities_override(const std::string
 
   auto it = manifest_->capabilities.find(entity_id);
   if (it != manifest_->capabilities.end()) {
-    return it->second;
+    return std::optional<json>{it->second};
   }
   return std::nullopt;
 }
