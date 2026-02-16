@@ -17,6 +17,9 @@ jobs:
             os_image: ubuntu:noble
           - ros_distro: humble
             os_image: ubuntu:jammy
+          - ros_distro: rolling
+            os_image: ubuntu:noble
+    continue-on-error: ${{ matrix.ros_distro == 'rolling' }}
     container:
       image: ${{ matrix.os_image }}
     timeout-minutes: 60

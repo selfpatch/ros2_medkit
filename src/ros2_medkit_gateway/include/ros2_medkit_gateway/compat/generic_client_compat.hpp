@@ -344,8 +344,7 @@ create_generic_service_client(rclcpp::Node * node, const std::string & service_n
   // Register the client with the node's default callback group so the executor
   // polls it for incoming responses.  Without this, handle_response() is never
   // called and every future hangs until timeout.
-  node->get_node_services_interface()->add_client(
-      std::dynamic_pointer_cast<rclcpp::ClientBase>(client), nullptr);
+  node->get_node_services_interface()->add_client(std::dynamic_pointer_cast<rclcpp::ClientBase>(client), nullptr);
 
   return client;
 }

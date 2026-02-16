@@ -19,6 +19,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Multi-distro compatibility (Humble / Jazzy / Rolling)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake")
+include(ROS2MedkitCompat)
+
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic -Wshadow -Wconversion)
 endif()
@@ -38,33 +42,12 @@ find_package(ros2_medkit_serialization REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 # yaml-cpp is required as transitive dependency from ros2_medkit_serialization
-# yaml-cpp target resolution: Jazzy provides yaml-cpp::yaml-cpp via find_package,
-# Humble's yaml_cpp_vendor bundles yaml-cpp without the namespaced cmake target.
-find_package(yaml-cpp QUIET)
-if(NOT TARGET yaml-cpp::yaml-cpp)
-  find_library(YAML_CPP_LIB yaml-cpp)
-  find_path(YAML_CPP_INCLUDE yaml-cpp/yaml.h)
-  if(YAML_CPP_LIB AND YAML_CPP_INCLUDE)
-    add_library(yaml-cpp::yaml-cpp IMPORTED INTERFACE)
-    set_target_properties(yaml-cpp::yaml-cpp PROPERTIES
-      INTERFACE_LINK_LIBRARIES "${YAML_CPP_LIB}"
-      INTERFACE_INCLUDE_DIRECTORIES "${YAML_CPP_INCLUDE}"
-    )
-  else()
-    message(FATAL_ERROR "Could not find yaml-cpp library")
-  endif()
-endif()
+medkit_find_yaml_cpp()
 # rosbag2 for time-window snapshot recording
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_storage REQUIRED)
 
-# rosbag2 API compatibility: Humble uses time_stamp, Iron+ uses recv_timestamp/send_timestamp
-if(rosbag2_storage_VERSION VERSION_LESS "0.22.0")
-  message(STATUS "rosbag2_storage ${rosbag2_storage_VERSION} detected (Humble): using time_stamp field")
-  set(ROSBAG2_COMPAT_DEFS ROSBAG2_USE_OLD_TIMESTAMP_FIELD)
-else()
-  message(STATUS "rosbag2_storage ${rosbag2_storage_VERSION} detected (Iron+): using recv_timestamp/send_timestamp")
-endif()
+medkit_detect_compat_defs()
 
 # Library target (shared between executable and tests)
 add_library(fault_manager_lib STATIC
@@ -98,9 +81,7 @@ target_link_libraries(fault_manager_lib PUBLIC
   yaml-cpp::yaml-cpp
 )
 
-if(ROSBAG2_COMPAT_DEFS)
-  target_compile_definitions(fault_manager_lib PRIVATE ${ROSBAG2_COMPAT_DEFS})
-endif()
+medkit_apply_compat_defs(fault_manager_lib)
 
 if(ENABLE_COVERAGE)
   target_compile_options(fault_manager_lib PRIVATE --coverage -O0 -g)

@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Multi-distro compatibility (Humble / Jazzy / Rolling)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake")
+include(ROS2MedkitCompat)
+
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic -Wshadow -Wconversion)
 endif()
@@ -26,22 +30,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
-# yaml-cpp target resolution: Jazzy provides yaml-cpp::yaml-cpp via find_package,
-# Humble's yaml_cpp_vendor bundles yaml-cpp without the namespaced cmake target.
-find_package(yaml-cpp QUIET)
-if(NOT TARGET yaml-cpp::yaml-cpp)
-  find_library(YAML_CPP_LIB yaml-cpp)
-  find_path(YAML_CPP_INCLUDE yaml-cpp/yaml.h)
-  if(YAML_CPP_LIB AND YAML_CPP_INCLUDE)
-    add_library(yaml-cpp::yaml-cpp IMPORTED INTERFACE)
-    set_target_properties(yaml-cpp::yaml-cpp PROPERTIES
-      INTERFACE_LINK_LIBRARIES "${YAML_CPP_LIB}"
-      INTERFACE_INCLUDE_DIRECTORIES "${YAML_CPP_INCLUDE}"
-    )
-  else()
-    message(FATAL_ERROR "Could not find yaml-cpp library")
-  endif()
-endif()
+medkit_find_yaml_cpp()
 find_package(ament_index_cpp REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
@@ -54,18 +43,7 @@ find_package(ros2_medkit_serialization REQUIRED)
 find_package(rosidl_typesupport_cpp REQUIRED)
 find_package(rosidl_typesupport_introspection_cpp REQUIRED)
 
-# Find cpp-httplib — prefer pkg-config (system package on Jazzy/Noble),
-# fall back to CMake config (built from source on Humble/Jammy)
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-  pkg_check_modules(cpp_httplib IMPORTED_TARGET cpp-httplib)
-endif()
-if(cpp_httplib_FOUND)
-  add_library(cpp_httplib_target ALIAS PkgConfig::cpp_httplib)
-else()
-  find_package(httplib REQUIRED)
-  add_library(cpp_httplib_target ALIAS httplib::httplib)
-endif()
+medkit_find_cpp_httplib()
 
 # Find OpenSSL (required by jwt-cpp for RS256 and optional TLS support)
 find_package(OpenSSL REQUIRED)
@@ -272,6 +250,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_auth_manager test/test_auth_manager.cpp)
   target_link_libraries(test_auth_manager gateway_lib)
 
+  ament_add_gtest(test_generic_client_compat test/test_generic_client_compat.cpp)
+  target_link_libraries(test_generic_client_compat gateway_lib)
+  ament_target_dependencies(test_generic_client_compat rclcpp std_srvs)
+
   ament_add_gtest(test_operation_manager test/test_operation_manager.cpp)
   target_link_libraries(test_operation_manager gateway_lib)
 
@@ -360,6 +342,7 @@ if(BUILD_TESTING)
     set(_test_targets
       test_gateway_node
       test_auth_manager
+      test_generic_client_compat
       test_operation_manager
       test_configuration_manager
       test_native_topic_sampler

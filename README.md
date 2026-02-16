@@ -6,6 +6,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-blue)](https://docs.ros.org/en/jazzy/)
 [![ROS 2 Humble](https://img.shields.io/badge/ROS%202-Humble-blue)](https://docs.ros.org/en/humble/)
+[![ROS 2 Rolling](https://img.shields.io/badge/ROS%202-Rolling-orange)](https://docs.ros.org/en/rolling/)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289DA?logo=discord&logoColor=white)](https://discord.gg/6CXPMApAyq)
 [![Quality Level 3](https://img.shields.io/badge/Quality-Level%203-yellow)](QUALITY_DECLARATION.md)
 
@@ -33,7 +34,7 @@ cd selfpatch_demos/demos/turtlebot3_integration
 # → API: http://localhost:8080/api/v1/  Web UI: http://localhost:3000
 ```
 
-**Build from source** (ROS 2 Jazzy or Humble):
+**Build from source** (ROS 2 Jazzy, Humble, or Rolling):
 
 ```bash
 git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
@@ -53,7 +54,7 @@ For more examples, see our [Postman collection](postman/).
 - **🔗 SOVD Compatible** — Align with Service-Oriented Vehicle Diagnostics standards
 - **🌐 REST API Gateway** — HTTP interface for integration with external tools and UIs
 - **📊 Health Modeling** — Track health state per entity for fleet-level observability
-- **🔧 Easy Integration** — Works with existing ROS 2 nodes out of the box (Jazzy & Humble)
+- **🔧 Easy Integration** — Works with existing ROS 2 nodes out of the box (Jazzy, Humble & Rolling)
 
 ## 📖 Overview
 
@@ -70,8 +71,8 @@ Compatible with the **SOVD (Service-Oriented Vehicle Diagnostics)** model — sa
 
 ## 📋 Requirements
 
-- **OS:** Ubuntu 24.04 LTS (Jazzy) or Ubuntu 22.04 LTS (Humble)
-- **ROS 2:** Jazzy Jalisco or Humble Hawksbill
+- **OS:** Ubuntu 24.04 LTS (Jazzy / Rolling) or Ubuntu 22.04 LTS (Humble)
+- **ROS 2:** Jazzy Jalisco, Humble Hawksbill, or Rolling (experimental)
 - **Compiler:** GCC 11+ (C++17 support)
 - **Build System:** colcon + ament_cmake
 
@@ -193,11 +194,12 @@ Then open `coverage_html/index.html` in your browser.
 ### CI/CD
 
 All pull requests and pushes to main are automatically built and tested using GitHub Actions.
-The CI workflow runs a build matrix across **ROS 2 Jazzy** (Ubuntu 24.04) and **ROS 2 Humble** (Ubuntu 22.04) and consists of the following jobs:
+The CI workflow runs a build matrix across **ROS 2 Jazzy** (Ubuntu 24.04), **ROS 2 Humble** (Ubuntu 22.04), and **ROS 2 Rolling** (Ubuntu 24.04, allow-failure) and consists of the following jobs:
 
-**build-and-test** (matrix: Jazzy + Humble):
+**build-and-test** (matrix: Jazzy + Humble + Rolling):
 
-- Full build and unit/integration tests on both distros
+- Full build and unit/integration tests on all distros
+- Rolling jobs are allowed to fail (best-effort forward-compatibility)
 - Code linting and formatting checks (clang-format, clang-tidy) — Jazzy only
 
 **coverage** (Jazzy only):
