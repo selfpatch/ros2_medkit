@@ -338,8 +338,16 @@ class GenericServiceClient : public rclcpp::ClientBase {
 inline GenericServiceClient::SharedPtr
 create_generic_service_client(rclcpp::Node * node, const std::string & service_name, const std::string & service_type) {
   rcl_client_options_t options = rcl_client_get_default_options();
-  return std::make_shared<GenericServiceClient>(node->get_node_base_interface().get(), node->get_node_graph_interface(),
-                                                service_name, service_type, options);
+  auto client = std::make_shared<GenericServiceClient>(
+      node->get_node_base_interface().get(), node->get_node_graph_interface(), service_name, service_type, options);
+
+  // Register the client with the node's default callback group so the executor
+  // polls it for incoming responses.  Without this, handle_response() is never
+  // called and every future hangs until timeout.
+  node->get_node_services_interface()->add_client(
+      std::dynamic_pointer_cast<rclcpp::ClientBase>(client), nullptr);
+
+  return client;
 }
 
 }  // namespace compat
