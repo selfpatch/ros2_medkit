@@ -18,45 +18,44 @@ namespace ros2_medkit_fault_reporter {
 
 FaultReporter::FaultReporter(const rclcpp::Node::SharedPtr & node, const std::string & source_id,
                              const std::string & service_name)
-  : node_(node), source_id_(source_id), logger_(node->get_logger()) {
+  : source_id_(source_id), logger_(node->get_logger()) {
   // Validate source_id
   if (source_id_.empty()) {
     RCLCPP_WARN(logger_, "FaultReporter created with empty source_id, fault origins will be difficult to trace");
   }
 
-  // Create service client
-  client_ = node_->create_client<ros2_medkit_msgs::srv::ReportFault>(service_name);
+  // Create service client (stored as shared_ptr, independent of node lifetime)
+  client_ = node->create_client<ros2_medkit_msgs::srv::ReportFault>(service_name);
 
-  // Load configuration from parameters
-  load_parameters();
+  // Load configuration from parameters (node only needed during construction)
+  load_parameters(node);
 
   RCLCPP_DEBUG(logger_, "FaultReporter initialized for source: %s", source_id_.c_str());
 }
 
-void FaultReporter::load_parameters() {
+void FaultReporter::load_parameters(const rclcpp::Node::SharedPtr & node) {
   FilterConfig config;
 
   // Declare parameters with defaults if not already declared
-  if (!node_->has_parameter("fault_reporter.local_filtering.enabled")) {
-    node_->declare_parameter("fault_reporter.local_filtering.enabled", config.enabled);
+  if (!node->has_parameter("fault_reporter.local_filtering.enabled")) {
+    node->declare_parameter("fault_reporter.local_filtering.enabled", config.enabled);
   }
-  if (!node_->has_parameter("fault_reporter.local_filtering.default_threshold")) {
-    node_->declare_parameter("fault_reporter.local_filtering.default_threshold", config.default_threshold);
+  if (!node->has_parameter("fault_reporter.local_filtering.default_threshold")) {
+    node->declare_parameter("fault_reporter.local_filtering.default_threshold", config.default_threshold);
   }
-  if (!node_->has_parameter("fault_reporter.local_filtering.default_window_sec")) {
-    node_->declare_parameter("fault_reporter.local_filtering.default_window_sec", config.default_window_sec);
+  if (!node->has_parameter("fault_reporter.local_filtering.default_window_sec")) {
+    node->declare_parameter("fault_reporter.local_filtering.default_window_sec", config.default_window_sec);
   }
-  if (!node_->has_parameter("fault_reporter.local_filtering.bypass_severity")) {
-    node_->declare_parameter("fault_reporter.local_filtering.bypass_severity",
-                             static_cast<int>(config.bypass_severity));
+  if (!node->has_parameter("fault_reporter.local_filtering.bypass_severity")) {
+    node->declare_parameter("fault_reporter.local_filtering.bypass_severity", static_cast<int>(config.bypass_severity));
   }
 
-  config.enabled = node_->get_parameter("fault_reporter.local_filtering.enabled").as_bool();
+  config.enabled = node->get_parameter("fault_reporter.local_filtering.enabled").as_bool();
   config.default_threshold =
-      static_cast<int>(node_->get_parameter("fault_reporter.local_filtering.default_threshold").as_int());
-  config.default_window_sec = node_->get_parameter("fault_reporter.local_filtering.default_window_sec").as_double();
+      static_cast<int>(node->get_parameter("fault_reporter.local_filtering.default_threshold").as_int());
+  config.default_window_sec = node->get_parameter("fault_reporter.local_filtering.default_window_sec").as_double();
   config.bypass_severity =
-      static_cast<uint8_t>(node_->get_parameter("fault_reporter.local_filtering.bypass_severity").as_int());
+      static_cast<uint8_t>(node->get_parameter("fault_reporter.local_filtering.bypass_severity").as_int());
 
   filter_.set_config(config);
 

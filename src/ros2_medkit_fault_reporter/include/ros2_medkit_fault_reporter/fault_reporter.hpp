@@ -83,13 +83,12 @@ class FaultReporter {
 
  private:
   /// Load filter configuration from ROS parameters
-  void load_parameters();
+  void load_parameters(const rclcpp::Node::SharedPtr & node);
 
   /// Send the fault report to FaultManager (async, fire-and-forget)
   void send_report(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                    const std::string & description);
 
-  rclcpp::Node::SharedPtr node_;
   std::string source_id_;
   rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr client_;
   LocalFilter filter_;
