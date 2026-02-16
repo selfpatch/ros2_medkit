@@ -358,6 +358,9 @@ OperationManager::ActionClientSet & OperationManager::get_or_create_action_clien
   clients.cancel_goal_client =
       compat::create_generic_service_client(node_, cancel_service, "action_msgs/srv/CancelGoal");
 
+  RCLCPP_DEBUG(node_->get_logger(), "Created action clients for %s (type: %s)", action_path.c_str(),
+               action_type.c_str());
+
   action_clients_[action_path] = std::move(clients);
   return action_clients_[action_path];
 }
