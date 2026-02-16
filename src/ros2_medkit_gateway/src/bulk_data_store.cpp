@@ -53,6 +53,9 @@ tl::expected<void, std::string> BulkDataStore::validate_path_component(const std
   if (value.find('\0') != std::string::npos) {
     return tl::unexpected(name + " contains null byte");
   }
+  if (value == ".") {
+    return tl::unexpected(name + " cannot be '.'");
+  }
   return {};
 }
 
@@ -253,6 +256,10 @@ tl::expected<void, std::string> BulkDataStore::remove(const std::string & entity
 
   auto dir = item_dir(entity_id, category, item_id);
 
+  // NOTE: The lock is held for the entire remove_all() which blocks other store operations.
+  // For our current use case this is fine (small directories, rare deletes). If this becomes
+  // a bottleneck, consider renaming the dir to a `.deleting_` prefix under lock, then
+  // removing outside the lock.
   std::lock_guard<std::mutex> lock(mutex_);
   if (!std::filesystem::is_directory(dir)) {
     return tl::unexpected("Bulk-data item not found: " + item_id);

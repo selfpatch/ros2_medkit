@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/http/handlers/bulkdata_handlers.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <unordered_map>
 
@@ -266,6 +267,11 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
                                    "Invalid JSON in 'metadata' field");
         return;
       }
+      if (!parsed.is_object()) {
+        HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                   "metadata must be a JSON object");
+        return;
+      }
       metadata = std::move(parsed);
     }
   }
@@ -430,8 +436,12 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
     auto mimetype = get_rosbag_mimetype(format);
     std::string filename = fault_code + "." + format;
 
+    // Sanitize quotes in filename for Content-Disposition header safety
+    std::string safe_name = filename;
+    std::replace(safe_name.begin(), safe_name.end(), '"', '_');
+
     // Set response headers for file download
-    res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+    res.set_header("Content-Disposition", "attachment; filename=\"" + safe_name + "\"");
 
     if (!stream_file_to_response(res, file_path, mimetype)) {
       HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
@@ -458,8 +468,12 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
     std::string filename = item ? item->name : bulk_data_id;
     std::string mimetype = item ? item->mime_type : "application/octet-stream";
 
+    // Sanitize quotes in filename for Content-Disposition header safety
+    std::string safe_name = filename;
+    std::replace(safe_name.begin(), safe_name.end(), '"', '_');
+
     // Content-Disposition with original filename
-    res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+    res.set_header("Content-Disposition", "attachment; filename=\"" + safe_name + "\"");
 
     // Use generic stream utility (from subtask 1)
     if (!ros2_medkit_gateway::stream_file_to_response(res, *file_path, mimetype)) {
