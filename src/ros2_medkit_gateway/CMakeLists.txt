@@ -49,6 +49,11 @@ find_package(example_interfaces REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 find_package(ros2_medkit_serialization REQUIRED)
 
+# GenericClient compat shim dependencies (needed explicitly for Humble,
+# transitively available on Iron+/Jazzy but harmless to declare unconditionally)
+find_package(rosidl_typesupport_cpp REQUIRED)
+find_package(rosidl_typesupport_introspection_cpp REQUIRED)
+
 # Find cpp-httplib — prefer pkg-config (system package on Jazzy/Noble),
 # fall back to CMake config (built from source on Humble/Jammy)
 find_package(PkgConfig QUIET)
@@ -153,6 +158,8 @@ ament_target_dependencies(gateway_lib
   action_msgs
   ros2_medkit_msgs
   ros2_medkit_serialization
+  rosidl_typesupport_cpp
+  rosidl_typesupport_introspection_cpp
 )
 
 target_link_libraries(gateway_lib

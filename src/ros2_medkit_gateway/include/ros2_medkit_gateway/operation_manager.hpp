@@ -23,12 +23,12 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <random>
-#include <rclcpp/generic_client.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <shared_mutex>
 #include <string>
 #include <vector>
 
+#include "ros2_medkit_gateway/compat/generic_client_compat.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/discovery/models/common.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
@@ -210,9 +210,9 @@ class OperationManager {
  private:
   /// Set of clients for an action (internal services)
   struct ActionClientSet {
-    rclcpp::GenericClient::SharedPtr send_goal_client;
-    rclcpp::GenericClient::SharedPtr get_result_client;
-    rclcpp::GenericClient::SharedPtr cancel_goal_client;
+    compat::GenericServiceClient::SharedPtr send_goal_client;
+    compat::GenericServiceClient::SharedPtr get_result_client;
+    compat::GenericServiceClient::SharedPtr cancel_goal_client;
     std::string action_type;  // Store type for later use
   };
 
@@ -228,9 +228,9 @@ class OperationManager {
   /// Track a new goal
   void track_goal(const std::string & goal_id, const std::string & action_path, const std::string & action_type);
 
-  /// Get or create a cached GenericClient for a service
-  rclcpp::GenericClient::SharedPtr get_or_create_service_client(const std::string & service_path,
-                                                                const std::string & service_type);
+  /// Get or create a cached GenericServiceClient for a service
+  compat::GenericServiceClient::SharedPtr get_or_create_service_client(const std::string & service_path,
+                                                                      const std::string & service_type);
 
   /// Get or create cached action clients for an action
   ActionClientSet & get_or_create_action_clients(const std::string & action_path, const std::string & action_type);
@@ -248,9 +248,9 @@ class OperationManager {
   /// Native JSON serializer for service calls
   std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
 
-  /// Cache for GenericClient instances (key = "service_path|service_type")
+  /// Cache for GenericServiceClient instances (key = "service_path|service_type")
   mutable std::shared_mutex clients_mutex_;
-  std::map<std::string, rclcpp::GenericClient::SharedPtr> generic_clients_;
+  std::map<std::string, compat::GenericServiceClient::SharedPtr> generic_clients_;
 
   /// Cache for action client sets (key = action_path)
   std::map<std::string, ActionClientSet> action_clients_;

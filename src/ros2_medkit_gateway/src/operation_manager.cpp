@@ -74,7 +74,7 @@ std::string OperationManager::make_client_key(const std::string & service_path, 
   return service_path + "|" + service_type;
 }
 
-rclcpp::GenericClient::SharedPtr OperationManager::get_or_create_service_client(const std::string & service_path,
+compat::GenericServiceClient::SharedPtr OperationManager::get_or_create_service_client(const std::string & service_path,
                                                                                 const std::string & service_type) {
   const std::string key = make_client_key(service_path, service_type);
 
@@ -97,7 +97,7 @@ rclcpp::GenericClient::SharedPtr OperationManager::get_or_create_service_client(
   }
 
   // Create new client
-  auto client = node_->create_generic_client(service_path, service_type);
+  auto client = compat::create_generic_service_client(node_, service_path, service_type);
   generic_clients_[key] = client;
 
   RCLCPP_DEBUG(node_->get_logger(), "Created generic client for %s (%s)", service_path.c_str(), service_type.c_str());
@@ -346,19 +346,16 @@ OperationManager::ActionClientSet & OperationManager::get_or_create_action_clien
   // Send goal service: {action}/_action/send_goal
   std::string send_goal_service = action_path + "/_action/send_goal";
   std::string send_goal_type = ServiceActionTypes::get_action_send_goal_service_type(action_type);
-  clients.send_goal_client = node_->create_generic_client(send_goal_service, send_goal_type);
+    clients.send_goal_client = compat::create_generic_service_client(node_, send_goal_service, send_goal_type);
 
-  // Get result service: {action}/_action/get_result
-  std::string get_result_service = action_path + "/_action/get_result";
-  std::string get_result_type = ServiceActionTypes::get_action_get_result_service_type(action_type);
-  clients.get_result_client = node_->create_generic_client(get_result_service, get_result_type);
+    // Get result service: {action}/_action/get_result
+    std::string get_result_service = action_path + "/_action/get_result";
+    std::string get_result_type = ServiceActionTypes::get_action_get_result_service_type(action_type);
+    clients.get_result_client = compat::create_generic_service_client(node_, get_result_service, get_result_type);
 
-  // Cancel goal service (standard type for all actions)
-  std::string cancel_service = action_path + "/_action/cancel_goal";
-  clients.cancel_goal_client = node_->create_generic_client(cancel_service, "action_msgs/srv/CancelGoal");
-
-  RCLCPP_DEBUG(node_->get_logger(), "Created action clients for %s (type: %s)", action_path.c_str(),
-               action_type.c_str());
+    // Cancel goal service (standard type for all actions)
+    std::string cancel_service = action_path + "/_action/cancel_goal";
+    clients.cancel_goal_client = compat::create_generic_service_client(node_, cancel_service, "action_msgs/srv/CancelGoal");
 
   action_clients_[action_path] = std::move(clients);
   return action_clients_[action_path];
