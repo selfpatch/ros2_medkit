@@ -230,7 +230,7 @@ class OperationManager {
 
   /// Get or create a cached GenericServiceClient for a service
   compat::GenericServiceClient::SharedPtr get_or_create_service_client(const std::string & service_path,
-                                                                      const std::string & service_type);
+                                                                       const std::string & service_type);
 
   /// Get or create cached action clients for an action
   ActionClientSet & get_or_create_action_clients(const std::string & action_path, const std::string & action_type);

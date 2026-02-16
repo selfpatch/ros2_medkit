@@ -74,8 +74,8 @@ std::string OperationManager::make_client_key(const std::string & service_path, 
   return service_path + "|" + service_type;
 }
 
-compat::GenericServiceClient::SharedPtr OperationManager::get_or_create_service_client(const std::string & service_path,
-                                                                                const std::string & service_type) {
+compat::GenericServiceClient::SharedPtr
+OperationManager::get_or_create_service_client(const std::string & service_path, const std::string & service_type) {
   const std::string key = make_client_key(service_path, service_type);
 
   // Try read lock first (fast path)
@@ -346,16 +346,17 @@ OperationManager::ActionClientSet & OperationManager::get_or_create_action_clien
   // Send goal service: {action}/_action/send_goal
   std::string send_goal_service = action_path + "/_action/send_goal";
   std::string send_goal_type = ServiceActionTypes::get_action_send_goal_service_type(action_type);
-    clients.send_goal_client = compat::create_generic_service_client(node_, send_goal_service, send_goal_type);
+  clients.send_goal_client = compat::create_generic_service_client(node_, send_goal_service, send_goal_type);
 
-    // Get result service: {action}/_action/get_result
-    std::string get_result_service = action_path + "/_action/get_result";
-    std::string get_result_type = ServiceActionTypes::get_action_get_result_service_type(action_type);
-    clients.get_result_client = compat::create_generic_service_client(node_, get_result_service, get_result_type);
+  // Get result service: {action}/_action/get_result
+  std::string get_result_service = action_path + "/_action/get_result";
+  std::string get_result_type = ServiceActionTypes::get_action_get_result_service_type(action_type);
+  clients.get_result_client = compat::create_generic_service_client(node_, get_result_service, get_result_type);
 
-    // Cancel goal service (standard type for all actions)
-    std::string cancel_service = action_path + "/_action/cancel_goal";
-    clients.cancel_goal_client = compat::create_generic_service_client(node_, cancel_service, "action_msgs/srv/CancelGoal");
+  // Cancel goal service (standard type for all actions)
+  std::string cancel_service = action_path + "/_action/cancel_goal";
+  clients.cancel_goal_client =
+      compat::create_generic_service_client(node_, cancel_service, "action_msgs/srv/CancelGoal");
 
   action_clients_[action_path] = std::move(clients);
   return action_clients_[action_path];

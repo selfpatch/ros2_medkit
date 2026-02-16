@@ -27,6 +27,8 @@
 #include <sstream>
 #include <thread>
 
+#include <rclcpp/version.h>
+
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"
 
@@ -35,7 +37,6 @@ namespace ros2_medkit_gateway {
 namespace {
 
 /// Convert rclcpp ReliabilityPolicy to string
-/// Note: BestAvailable policy requires ROS 2 Humble or newer
 std::string reliability_to_string(rclcpp::ReliabilityPolicy policy) {
   switch (policy) {
     case rclcpp::ReliabilityPolicy::Reliable:
@@ -44,15 +45,16 @@ std::string reliability_to_string(rclcpp::ReliabilityPolicy policy) {
       return "best_effort";
     case rclcpp::ReliabilityPolicy::SystemDefault:
       return "system_default";
+#if RCLCPP_VERSION_MAJOR >= 21
     case rclcpp::ReliabilityPolicy::BestAvailable:
       return "best_available";
+#endif
     default:
       return "unknown";
   }
 }
 
 /// Convert rclcpp DurabilityPolicy to string
-/// Note: BestAvailable policy requires ROS 2 Humble or newer
 std::string durability_to_string(rclcpp::DurabilityPolicy policy) {
   switch (policy) {
     case rclcpp::DurabilityPolicy::Volatile:
@@ -61,8 +63,10 @@ std::string durability_to_string(rclcpp::DurabilityPolicy policy) {
       return "transient_local";
     case rclcpp::DurabilityPolicy::SystemDefault:
       return "system_default";
+#if RCLCPP_VERSION_MAJOR >= 21
     case rclcpp::DurabilityPolicy::BestAvailable:
       return "best_available";
+#endif
     default:
       return "unknown";
   }
@@ -83,7 +87,6 @@ std::string history_to_string(rclcpp::HistoryPolicy policy) {
 }
 
 /// Convert rclcpp LivelinessPolicy to string
-/// Note: BestAvailable policy requires ROS 2 Humble or newer
 std::string liveliness_to_string(rclcpp::LivelinessPolicy policy) {
   switch (policy) {
     case rclcpp::LivelinessPolicy::Automatic:
@@ -92,8 +95,10 @@ std::string liveliness_to_string(rclcpp::LivelinessPolicy policy) {
       return "manual_by_topic";
     case rclcpp::LivelinessPolicy::SystemDefault:
       return "system_default";
+#if RCLCPP_VERSION_MAJOR >= 21
     case rclcpp::LivelinessPolicy::BestAvailable:
       return "best_available";
+#endif
     default:
       return "unknown";
   }
