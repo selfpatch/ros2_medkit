@@ -99,8 +99,10 @@ std::string DiagnosticBridgeNode::map_to_fault_code(const std::string & diagnost
   }
 
   // Log warning and return empty string if no mapping and auto-generate disabled
-  RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-                       "No mapping for diagnostic '%s' and auto_generate_codes is disabled", diagnostic_name.c_str());
+  // Use a mutable clock copy — Humble's RCLCPP_WARN_THROTTLE requires non-const Clock
+  rclcpp::Clock clock(*get_clock());
+  RCLCPP_WARN_THROTTLE(get_logger(), clock, 5000, "No mapping for diagnostic '%s' and auto_generate_codes is disabled",
+                       diagnostic_name.c_str());
   return "";
 }
 

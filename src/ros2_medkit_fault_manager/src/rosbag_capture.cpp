@@ -366,8 +366,8 @@ void RosbagCapture::message_callback(const std::string & topic, const std::strin
         }
         // Memory is automatically cleaned up by RAII when bag_msg goes out of scope
       } catch (const std::exception & e) {
-        RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000, "Failed to write post-fault message: %s",
-                             e.what());
+        rclcpp::Clock clock(*node_->get_clock());
+        RCLCPP_WARN_THROTTLE(node_->get_logger(), clock, 1000, "Failed to write post-fault message: %s", e.what());
       }
     }
     return;  // Don't buffer during post-fault recording
