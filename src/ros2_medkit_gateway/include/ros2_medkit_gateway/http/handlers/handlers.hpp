@@ -31,6 +31,7 @@
 #include "ros2_medkit_gateway/http/handlers/auth_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/bulkdata_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/config_handlers.hpp"
+#include "ros2_medkit_gateway/http/handlers/cyclic_subscription_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/handlers/health_handlers.hpp"

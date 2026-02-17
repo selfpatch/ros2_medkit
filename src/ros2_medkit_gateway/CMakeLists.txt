@@ -116,6 +116,7 @@ add_library(gateway_lib STATIC
   src/http/handlers/fault_handlers.cpp
   src/http/handlers/bulkdata_handlers.cpp
   src/http/handlers/sse_fault_handler.cpp
+  src/http/handlers/cyclic_subscription_handlers.cpp
   src/http/handlers/auth_handlers.cpp
   # Bulk data storage
   src/bulk_data_store.cpp
