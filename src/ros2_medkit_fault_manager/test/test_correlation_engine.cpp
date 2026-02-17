@@ -625,6 +625,68 @@ TEST_F(CorrelationEngineTest, ClearAllFaultsRemovesPendingCluster) {
   EXPECT_EQ(0u, engine.get_cluster_count());  // Still 2 faults, below min_count=3
 }
 
+// ============================================================================
+// HIGHEST_SEVERITY reassignment on clear (#213)
+// ============================================================================
+
+TEST_F(CorrelationEngineTest, ClearHighestSeverityRepresentativeReassigns) {
+  auto config = create_auto_cluster_config();  // highest_severity, min_count=3
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+
+  // WARNING, CRITICAL (rep), ERROR
+  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
+  engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 10ms);
+  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t0 + 20ms);
+
+  // SENSOR_TIMEOUT is representative (highest severity)
+  auto clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ("SENSOR_TIMEOUT", clusters[0].representative_code);
+
+  // Clear the representative
+  engine.process_clear("SENSOR_TIMEOUT");
+
+  // Remaining: WARNING, ERROR -> ERROR should become new representative
+  clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ("DRIVE_COMM_ERROR", clusters[0].representative_code);
+  EXPECT_EQ("ERROR", clusters[0].representative_severity);
+}
+
+// ============================================================================
+// cleanup_expired removes stale fault_to_cluster_ entries (#214)
+// ============================================================================
+
+TEST_F(CorrelationEngineTest, CleanupExpiredRemovesFaultToClusterEntries) {
+  auto config = create_auto_cluster_config();
+  CorrelationEngine engine(config);
+
+  // Create pending cluster with old timestamp
+  auto past = std::chrono::steady_clock::now() - std::chrono::milliseconds(1000);
+  engine.process_fault("MOTOR_COMM_FL", "ERROR", past);
+  engine.process_fault("SENSOR_TIMEOUT", "ERROR", past + 10ms);
+  EXPECT_EQ(0u, engine.get_cluster_count());
+
+  // Cleanup removes expired pending cluster
+  engine.cleanup_expired();
+
+  // Faults from expired cluster should be able to start fresh.
+  // If fault_to_cluster_ was NOT cleaned, these would try to join
+  // a non-existent cluster instead of creating a new one.
+  auto t1 = std::chrono::steady_clock::now();
+  engine.process_fault("MOTOR_COMM_FL", "ERROR", t1);
+  engine.process_fault("SENSOR_TIMEOUT", "ERROR", t1 + 10ms);
+  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t1 + 20ms);
+
+  // Should form a NEW cluster with all 3 faults
+  EXPECT_EQ(1u, engine.get_cluster_count());
+  auto clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ(3u, clusters[0].fault_codes.size());
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

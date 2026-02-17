@@ -149,6 +149,7 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
 
       auto & codes = pending_cluster.fault_codes;
       codes.erase(std::remove(codes.begin(), codes.end(), fault_code), codes.end());
+      pending_it->second.fault_severities.erase(fault_code);
 
       if (codes.empty()) {
         pending_it = pending_clusters_.erase(pending_it);
@@ -161,12 +162,25 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
           if (rule.id == pending_it->first) {
             switch (rule.representative) {
               case Representative::FIRST:
-              case Representative::HIGHEST_SEVERITY:
-                // TODO(#213): HIGHEST_SEVERITY reassignment is approximate —
-                // PendingCluster lacks per-fault severity, so we fall back to
-                // first remaining fault. Store severities to fix.
                 pending_cluster.representative_code = codes.front();
                 break;
+              case Representative::HIGHEST_SEVERITY: {
+                auto & sevs = pending_it->second.fault_severities;
+                std::string best_code = codes.front();
+                int best_rank = -1;
+                for (const auto & code : codes) {
+                  auto sev_it = sevs.find(code);
+                  int rank = (sev_it != sevs.end()) ? severity_rank(sev_it->second) : 0;
+                  if (rank > best_rank) {
+                    best_rank = rank;
+                    best_code = code;
+                  }
+                }
+                pending_cluster.representative_code = best_code;
+                auto best_sev_it = sevs.find(best_code);
+                pending_cluster.representative_severity = (best_sev_it != sevs.end()) ? best_sev_it->second : "";
+                break;
+              }
               case Representative::MOST_RECENT:
                 pending_cluster.representative_code = codes.back();
                 break;
@@ -182,12 +196,21 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
     // Remove fault from active cluster
     auto active_it = active_clusters_.find(cluster_id);
     if (active_it != active_clusters_.end()) {
-      auto & codes = active_it->second.fault_codes;
+      auto & active_cluster = active_it->second;
+      auto & codes = active_cluster.fault_codes;
       codes.erase(std::remove(codes.begin(), codes.end(), fault_code), codes.end());
 
-      // If cluster is now empty, remove it
       if (codes.empty()) {
         active_clusters_.erase(active_it);
+      } else if (active_cluster.representative_code == fault_code) {
+        // Sync representative from pending cluster (already updated above)
+        for (const auto & [rule_id, pending] : pending_clusters_) {
+          if (pending.data.cluster_id == cluster_id) {
+            active_cluster.representative_code = pending.data.representative_code;
+            active_cluster.representative_severity = pending.data.representative_severity;
+            break;
+          }
+        }
       }
     }
 
@@ -267,7 +290,13 @@ void CorrelationEngine::cleanup_expired() {
   }
 
   for (const auto & rule_id : expired_pending) {
-    pending_clusters_.erase(rule_id);
+    auto it = pending_clusters_.find(rule_id);
+    if (it != pending_clusters_.end()) {
+      for (const auto & fault_code : it->second.data.fault_codes) {
+        fault_to_cluster_.erase(fault_code);
+      }
+      pending_clusters_.erase(it);
+    }
   }
 }
 
@@ -395,6 +424,7 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
       pending.data.representative_code = fault_code;
       pending.data.representative_severity = severity;
       pending.data.fault_codes.push_back(fault_code);
+      pending.fault_severities[fault_code] = severity;
       pending.data.first_at = now_system;
       pending.data.last_at = now_system;
 
@@ -425,6 +455,7 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
     }
 
     cluster.fault_codes.push_back(fault_code);
+    pending.fault_severities[fault_code] = severity;
     cluster.last_at = now_system;
     fault_to_cluster_[fault_code] = cluster.cluster_id;
 

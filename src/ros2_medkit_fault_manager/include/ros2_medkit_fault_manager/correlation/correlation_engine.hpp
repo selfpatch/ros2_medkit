@@ -172,6 +172,7 @@ class CorrelationEngine {
   struct PendingCluster {
     ClusterData data;
     std::chrono::steady_clock::time_point steady_first_at;
+    std::map<std::string, std::string> fault_severities;  ///< fault_code -> severity
   };
 
   /// Pending clusters being formed (rule_id -> cluster data)
