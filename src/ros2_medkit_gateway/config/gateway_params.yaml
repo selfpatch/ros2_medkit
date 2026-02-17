@@ -100,6 +100,18 @@ ros2_medkit_gateway:
     # - Action operations: Internal action services via GenericClient
     # No ROS 2 CLI dependencies - pure C++ implementation using ros2_medkit_serialization.
 
+    # SSE (Server-Sent Events) Configuration
+    sse:
+      # Maximum number of concurrent SSE connections
+      # Applies to fault streams and cyclic subscription streams combined
+      # Default: 10
+      max_clients: 10
+
+      # Maximum number of active cyclic subscriptions across all entities
+      # Returns HTTP 503 when this limit is reached
+      # Default: 100
+      max_subscriptions: 100
+
     # Discovery Configuration
     # Controls how ROS 2 graph entities are mapped to SOVD entities
     discovery:

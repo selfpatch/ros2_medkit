@@ -93,6 +93,7 @@ class RESTServer {
   std::unique_ptr<handlers::AuthHandlers> auth_handlers_;
   std::unique_ptr<handlers::SSEFaultHandler> sse_fault_handler_;
   std::unique_ptr<handlers::BulkDataHandlers> bulkdata_handlers_;
+  std::unique_ptr<handlers::CyclicSubscriptionHandlers> cyclic_sub_handlers_;
 };
 
 }  // namespace ros2_medkit_gateway

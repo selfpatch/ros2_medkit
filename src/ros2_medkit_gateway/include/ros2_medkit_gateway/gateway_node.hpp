@@ -33,6 +33,7 @@
 #include "ros2_medkit_gateway/http/rest_server.hpp"
 #include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
+#include "ros2_medkit_gateway/subscription_manager.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -85,6 +86,12 @@ class GatewayNode : public rclcpp::Node {
    */
   BulkDataStore * get_bulk_data_store() const;
 
+  /**
+   * @brief Get the SubscriptionManager instance
+   * @return Raw pointer to SubscriptionManager (valid for lifetime of GatewayNode)
+   */
+  SubscriptionManager * get_subscription_manager() const;
+
  private:
   void refresh_cache();
   void start_rest_server();
@@ -105,6 +112,7 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<ConfigurationManager> config_mgr_;
   std::unique_ptr<FaultManager> fault_mgr_;
   std::unique_ptr<BulkDataStore> bulk_data_store_;
+  std::unique_ptr<SubscriptionManager> subscription_mgr_;
   std::unique_ptr<RESTServer> rest_server_;
 
   // Cache with thread safety
@@ -115,6 +123,9 @@ class GatewayNode : public rclcpp::Node {
 
   // Timer for periodic cleanup of old action goals
   rclcpp::TimerBase::SharedPtr cleanup_timer_;
+
+  // Timer for periodic cleanup of expired cyclic subscriptions
+  rclcpp::TimerBase::SharedPtr subscription_cleanup_timer_;
 
   // REST server thread management
   std::unique_ptr<std::thread> server_thread_;

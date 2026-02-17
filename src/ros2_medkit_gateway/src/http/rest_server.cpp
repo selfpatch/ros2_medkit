@@ -71,6 +71,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   auth_handlers_ = std::make_unique<handlers::AuthHandlers>(*handler_ctx_);
   sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_);
   bulkdata_handlers_ = std::make_unique<handlers::BulkDataHandlers>(*handler_ctx_);
+  cyclic_sub_handlers_ =
+      std::make_unique<handlers::CyclicSubscriptionHandlers>(*handler_ctx_, *node_->get_subscription_manager());
 
   // Set up global error handlers for SOVD GenericError compliance
   setup_global_error_handlers();
@@ -871,6 +873,67 @@ void RESTServer::setup_routes() {
            [this](const httplib::Request & req, httplib::Response & res) {
              bulkdata_handlers_->handle_download(req, res);
            });
+
+  // === Cyclic Subscription Routes (REQ_INTEROP_025-028, REQ_INTEROP_089-090) ===
+  // SSE events stream - must be registered before CRUD routes to avoid regex conflict
+  srv->Get((api_path("/apps") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)/events$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_events(req, res);
+           });
+  srv->Get((api_path("/components") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)/events$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_events(req, res);
+           });
+
+  // Create cyclic subscription
+  srv->Post((api_path("/apps") + R"(/([^/]+)/cyclic-subscriptions$)"),
+            [this](const httplib::Request & req, httplib::Response & res) {
+              cyclic_sub_handlers_->handle_create(req, res);
+            });
+  srv->Post((api_path("/components") + R"(/([^/]+)/cyclic-subscriptions$)"),
+            [this](const httplib::Request & req, httplib::Response & res) {
+              cyclic_sub_handlers_->handle_create(req, res);
+            });
+
+  // List cyclic subscriptions
+  srv->Get((api_path("/apps") + R"(/([^/]+)/cyclic-subscriptions$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_list(req, res);
+           });
+  srv->Get((api_path("/components") + R"(/([^/]+)/cyclic-subscriptions$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_list(req, res);
+           });
+
+  // Get single subscription
+  srv->Get((api_path("/apps") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_get(req, res);
+           });
+  srv->Get((api_path("/components") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_get(req, res);
+           });
+
+  // Update subscription
+  srv->Put((api_path("/apps") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_update(req, res);
+           });
+  srv->Put((api_path("/components") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_update(req, res);
+           });
+
+  // Delete subscription
+  srv->Delete((api_path("/apps") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                cyclic_sub_handlers_->handle_delete(req, res);
+              });
+  srv->Delete((api_path("/components") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                cyclic_sub_handlers_->handle_delete(req, res);
+              });
 
   // Authentication endpoints (REQ_INTEROP_086, REQ_INTEROP_087)
   // POST /auth/authorize - Authenticate and get tokens (client_credentials grant)

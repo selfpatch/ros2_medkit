@@ -34,7 +34,8 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("cors.max_age_seconds", 86400);
 
   // SSE (Server-Sent Events) parameters
-  declare_parameter("sse.max_clients", 10);  // Limit concurrent SSE connections to prevent resource exhaustion
+  declare_parameter("sse.max_clients", 10);         // Limit concurrent SSE connections to prevent resource exhaustion
+  declare_parameter("sse.max_subscriptions", 100);  // Maximum active cyclic subscriptions across all entities
 
   // TLS/HTTPS parameters
   declare_parameter("server.tls.enabled", false);
@@ -257,6 +258,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   RCLCPP_INFO(get_logger(), "Bulk data store: dir=%s, max_upload=%zuB, categories=%zu", bd_storage_dir.c_str(),
               bd_max_upload, bd_categories.size());
 
+  // Initialize subscription manager for cyclic subscriptions
+  auto max_subscriptions = static_cast<size_t>(get_parameter("sse.max_subscriptions").as_int());
+  subscription_mgr_ = std::make_unique<SubscriptionManager>(max_subscriptions);
+  RCLCPP_INFO(get_logger(), "Subscription manager: max_subscriptions=%zu", max_subscriptions);
+
   // Connect topic sampler to discovery manager for component-topic mapping
   discovery_mgr_->set_topic_sampler(data_access_mgr_->get_native_sampler());
 
@@ -274,6 +280,14 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   // Setup periodic cleanup of old action goals (every 60 seconds, remove goals older than 5 minutes)
   cleanup_timer_ = create_wall_timer(60s, [this]() {
     operation_mgr_->cleanup_old_goals(std::chrono::seconds(300));
+  });
+
+  // Setup periodic cleanup of expired cyclic subscriptions (every 30 seconds)
+  subscription_cleanup_timer_ = create_wall_timer(30s, [this]() {
+    size_t removed = subscription_mgr_->cleanup_expired();
+    if (removed > 0) {
+      RCLCPP_DEBUG(get_logger(), "Cleaned up %zu expired cyclic subscriptions", removed);
+    }
   });
 
   // Start REST server with configured host, port, CORS, auth, and TLS
@@ -317,6 +331,10 @@ FaultManager * GatewayNode::get_fault_manager() const {
 
 BulkDataStore * GatewayNode::get_bulk_data_store() const {
   return bulk_data_store_.get();
+}
+
+SubscriptionManager * GatewayNode::get_subscription_manager() const {
+  return subscription_mgr_.get();
 }
 
 void GatewayNode::refresh_cache() {
