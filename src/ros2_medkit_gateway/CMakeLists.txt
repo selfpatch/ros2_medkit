@@ -80,6 +80,7 @@ add_library(gateway_lib STATIC
   src/operation_manager.cpp
   src/configuration_manager.cpp
   src/fault_manager.cpp
+  src/subscription_manager.cpp
   # Entity resource model
   src/models/entity_types.cpp
   src/models/entity_capabilities.cpp
