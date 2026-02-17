@@ -438,6 +438,13 @@ if(BUILD_TESTING)
     TIMEOUT 120
   )
 
+  # Add cyclic subscriptions integration tests
+  add_launch_test(
+    test/test_cyclic_subscriptions.test.py
+    TARGET test_cyclic_subscriptions
+    TIMEOUT 120
+  )
+
   # Demo automotive nodes
   add_executable(demo_engine_temp_sensor
     test/demo_nodes/engine_temp_sensor.cpp
