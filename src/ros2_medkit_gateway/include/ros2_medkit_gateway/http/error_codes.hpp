@@ -62,6 +62,9 @@ constexpr const char * ERR_UNAUTHORIZED = "unauthorized";
 /// Access denied / insufficient permissions
 constexpr const char * ERR_FORBIDDEN = "forbidden";
 
+/// Rate limit exceeded (429 Too Many Requests)
+constexpr const char * ERR_RATE_LIMIT_EXCEEDED = "rate-limit-exceeded";
+
 /// Generic vendor-specific error (used with vendor_code field)
 constexpr const char * ERR_VENDOR_ERROR = "vendor-error";
 

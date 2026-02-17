@@ -27,7 +27,8 @@ using httplib::StatusCode;
 namespace ros2_medkit_gateway {
 
 RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
-                       const AuthConfig & auth_config, const TlsConfig & tls_config)
+                       const AuthConfig & auth_config, const RateLimitConfig & rate_limit_config,
+                       const TlsConfig & tls_config)
   : node_(node)
   , host_(host)
   , port_(port)
@@ -56,6 +57,13 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
                 auth_config_.require_auth_for == AuthRequirement::NONE    ? "none"
                 : auth_config_.require_auth_for == AuthRequirement::WRITE ? "write"
                                                                           : "all");
+  }
+
+  // Initialize rate limiter if enabled
+  if (rate_limit_config.enabled) {
+    rate_limiter_ = std::make_unique<RateLimiter>(rate_limit_config);
+    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Rate limiting enabled - global: %d rpm, per-client: %d rpm",
+                rate_limit_config.global_requests_per_minute, rate_limit_config.client_requests_per_minute);
   }
 
   // Create handler context and domain-specific handlers
@@ -92,6 +100,16 @@ void RESTServer::setup_pre_routing_handler() {
   // Set up pre-routing handler for CORS and Authentication
   // This handler runs before any route handler
   srv->set_pre_routing_handler([this](const httplib::Request & req, httplib::Response & res) {
+    // Rate limiting check (before CORS and Auth for early rejection)
+    if (rate_limiter_ && rate_limiter_->is_enabled() && req.method != "OPTIONS") {
+      auto rl_result = rate_limiter_->check(req.remote_addr, req.path);
+      RateLimiter::apply_headers(rl_result, res);
+      if (!rl_result.allowed) {
+        RateLimiter::apply_rejection(rl_result, res);
+        return httplib::Server::HandlerResponse::Handled;
+      }
+    }
+
     // Handle CORS if enabled
     if (cors_config_.enabled) {
       std::string origin = req.get_header_value("Origin");
@@ -981,7 +999,9 @@ void RESTServer::set_cors_headers(httplib::Response & res, const std::string & o
   }
 
   // Expose headers that JavaScript needs access to (e.g., for file downloads)
-  res.set_header("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
+  res.set_header("Access-Control-Expose-Headers",
+                 "Content-Disposition, Content-Length, X-RateLimit-Limit, X-RateLimit-Remaining, "
+                 "X-RateLimit-Reset, Retry-After");
 
   // Set credentials header if enabled
   if (cors_config_.allow_credentials) {

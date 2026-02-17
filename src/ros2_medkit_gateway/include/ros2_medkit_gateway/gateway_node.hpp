@@ -30,6 +30,7 @@
 #include "ros2_medkit_gateway/data_access_manager.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/fault_manager.hpp"
+#include "ros2_medkit_gateway/http/rate_limiter.hpp"
 #include "ros2_medkit_gateway/http/rest_server.hpp"
 #include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
@@ -103,6 +104,7 @@ class GatewayNode : public rclcpp::Node {
   int refresh_interval_ms_;
   CorsConfig cors_config_;
   AuthConfig auth_config_;
+  RateLimitConfig rate_limit_config_;
   TlsConfig tls_config_;
 
   // Managers

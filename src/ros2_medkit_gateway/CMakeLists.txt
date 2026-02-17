@@ -102,6 +102,7 @@ add_library(gateway_lib STATIC
   # HTTP module (subfolder)
   src/http/http_server.cpp
   src/http/rest_server.cpp
+  src/http/rate_limiter.cpp
   # HTTP handlers - discovery (unified)
   src/http/handlers/discovery_handlers.cpp
   # HTTP handlers - utilities
@@ -316,6 +317,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_x_medkit test/test_x_medkit.cpp)
   target_link_libraries(test_x_medkit gateway_lib)
 
+  # Add rate limiter tests
+  ament_add_gtest(test_rate_limiter test/test_rate_limiter.cpp)
+  target_link_libraries(test_rate_limiter gateway_lib)
+
   # Add auth config tests
   ament_add_gtest(test_auth_config test/test_auth_config.cpp)
   target_link_libraries(test_auth_config gateway_lib)
@@ -370,6 +375,7 @@ if(BUILD_TESTING)
       test_manifest_validator
       test_capability_builder
       test_handler_context
+      test_rate_limiter
       test_auth_config
       test_data_access_manager
       test_entity_path_utils

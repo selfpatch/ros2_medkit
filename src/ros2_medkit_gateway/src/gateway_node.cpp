@@ -57,6 +57,14 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("auth.issuer", "ros2_medkit_gateway");
   declare_parameter("auth.clients", std::vector<std::string>{});
 
+  // Rate limiting parameters
+  declare_parameter("rate_limiting.enabled", false);
+  declare_parameter("rate_limiting.global_requests_per_minute", 600);
+  declare_parameter("rate_limiting.client_requests_per_minute", 60);
+  declare_parameter("rate_limiting.endpoint_limits", std::vector<std::string>{});
+  declare_parameter("rate_limiting.client_cleanup_interval_seconds", 300);
+  declare_parameter("rate_limiting.client_max_idle_seconds", 600);
+
   // Discovery mode parameters
   declare_parameter("discovery_mode", "runtime_only");  // runtime_only, manifest_only, hybrid
   declare_parameter("manifest_path", "");
@@ -219,6 +227,46 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
     auth_config_ = AuthConfig{};
   }
 
+  // Build Rate Limiting configuration
+  bool rate_limit_enabled = get_parameter("rate_limiting.enabled").as_bool();
+  if (rate_limit_enabled) {
+    try {
+      RateLimitConfigBuilder rl_builder;
+      rl_builder.with_enabled(true)
+          .with_global_rpm(static_cast<int>(get_parameter("rate_limiting.global_requests_per_minute").as_int()))
+          .with_client_rpm(static_cast<int>(get_parameter("rate_limiting.client_requests_per_minute").as_int()))
+          .with_cleanup_interval(
+              static_cast<int>(get_parameter("rate_limiting.client_cleanup_interval_seconds").as_int()))
+          .with_max_idle(static_cast<int>(get_parameter("rate_limiting.client_max_idle_seconds").as_int()));
+
+      // Parse endpoint limits from "pattern:rpm" format
+      auto endpoint_strs = get_parameter("rate_limiting.endpoint_limits").as_string_array();
+      for (const auto & entry : endpoint_strs) {
+        if (entry.empty()) {
+          continue;
+        }
+        size_t colon = entry.rfind(':');
+        if (colon != std::string::npos && colon > 0) {
+          std::string pattern = entry.substr(0, colon);
+          int rpm = std::stoi(entry.substr(colon + 1));
+          rl_builder.add_endpoint_limit(pattern, rpm);
+        } else {
+          RCLCPP_WARN(get_logger(), "Invalid endpoint_limit format: '%s'. Expected 'pattern:rpm'", entry.c_str());
+        }
+      }
+
+      rate_limit_config_ = rl_builder.build();
+      RCLCPP_INFO(get_logger(), "Rate limiting enabled - global: %d rpm, per-client: %d rpm",
+                  rate_limit_config_.global_requests_per_minute, rate_limit_config_.client_requests_per_minute);
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(get_logger(), "Invalid rate limiting configuration: %s. Rate limiting disabled.", e.what());
+      rate_limit_config_ = RateLimitConfig{};
+    }
+  } else {
+    RCLCPP_INFO(get_logger(), "Rate limiting: disabled");
+    rate_limit_config_ = RateLimitConfig{};
+  }
+
   // Initialize managers
   discovery_mgr_ = std::make_unique<DiscoveryManager>(this);
 
@@ -291,8 +339,8 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   });
 
   // Start REST server with configured host, port, CORS, auth, and TLS
-  rest_server_ =
-      std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_, auth_config_, tls_config_);
+  rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_, auth_config_,
+                                              rate_limit_config_, tls_config_);
   start_rest_server();
 
   std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";

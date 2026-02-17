@@ -235,3 +235,27 @@ ros2_medkit_gateway:
       # available via FaultManager)
       # Example: ["calibration", "firmware", "comlogs", "snapshots"]
       categories: []
+
+    # Rate Limiting Configuration
+    # Token-bucket-based rate limiting for API requests.
+    # Disabled by default for backward compatibility.
+    rate_limiting:
+      enabled: false
+
+      # Maximum requests per minute across all clients combined
+      global_requests_per_minute: 600
+
+      # Maximum requests per minute per client IP
+      client_requests_per_minute: 60
+
+      # Endpoint-specific rate limit overrides
+      # Format: "pattern:requests_per_minute"
+      # Pattern uses * as single-segment wildcard
+      # Example: "/api/v1/*/operations/*:10"
+      endpoint_limits: [""]
+
+      # How often to scan and remove idle client tracking entries (seconds)
+      client_cleanup_interval_seconds: 300
+
+      # Remove client entries idle longer than this (seconds)
+      client_max_idle_seconds: 600

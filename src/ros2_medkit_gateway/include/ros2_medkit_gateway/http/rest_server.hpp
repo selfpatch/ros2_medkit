@@ -29,6 +29,7 @@
 #include "ros2_medkit_gateway/http/handlers/handlers.hpp"
 #include "ros2_medkit_gateway/http/http_server.hpp"
 #include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
+#include "ros2_medkit_gateway/http/rate_limiter.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -51,7 +52,8 @@ class GatewayNode;
 class RESTServer {
  public:
   RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
-             const AuthConfig & auth_config, const TlsConfig & tls_config = TlsConfig{});
+             const AuthConfig & auth_config, const RateLimitConfig & rate_limit_config,
+             const TlsConfig & tls_config = TlsConfig{});
   ~RESTServer();
 
   void start();
@@ -79,6 +81,7 @@ class RESTServer {
   TlsConfig tls_config_;
   std::unique_ptr<AuthManager> auth_manager_;
   std::unique_ptr<AuthMiddleware> auth_middleware_;
+  std::unique_ptr<RateLimiter> rate_limiter_;
 
   // HTTP/HTTPS server manager
   std::unique_ptr<HttpServerManager> http_server_;
