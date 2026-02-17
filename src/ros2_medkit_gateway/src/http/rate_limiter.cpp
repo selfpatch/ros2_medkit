@@ -105,7 +105,7 @@ TokenBucket RateLimiter::make_bucket(int requests_per_minute) {
 RateLimiter::RateLimiter(const RateLimitConfig & config)
   : config_(config)
   , global_bucket_(make_bucket(config.global_requests_per_minute))
-  , last_cleanup_(std::chrono::steady_clock::now()) {
+  , last_cleanup_ns_(std::chrono::steady_clock::now().time_since_epoch().count()) {
 }
 
 bool RateLimiter::try_consume(TokenBucket & bucket) {
@@ -176,10 +176,12 @@ bool RateLimiter::path_matches_pattern(const std::string & path, const std::stri
 RateLimitResult RateLimiter::check(const std::string & client_ip, const std::string & path) {
   RateLimitResult result;
 
-  // Periodic cleanup of stale client entries
+  // Periodic cleanup of stale client entries (last_cleanup_ns_ is atomic, no mutex needed)
   {
     auto now = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(now - last_cleanup_).count();
+    int64_t now_ns = now.time_since_epoch().count();
+    int64_t last_ns = last_cleanup_ns_.load(std::memory_order_relaxed);
+    double elapsed = std::chrono::duration<double>(std::chrono::nanoseconds(now_ns - last_ns)).count();
     if (elapsed >= static_cast<double>(config_.client_cleanup_interval_seconds)) {
       cleanup_stale_clients();
     }
@@ -273,7 +275,7 @@ void RateLimiter::apply_rejection(const RateLimitResult & result, httplib::Respo
 void RateLimiter::cleanup_stale_clients() {
   std::lock_guard<std::mutex> lock(clients_mutex_);
   auto now = std::chrono::steady_clock::now();
-  last_cleanup_ = now;
+  last_cleanup_ns_.store(now.time_since_epoch().count(), std::memory_order_relaxed);
 
   for (auto it = client_buckets_.begin(); it != client_buckets_.end();) {
     double idle = std::chrono::duration<double>(now - it->second.last_seen).count();

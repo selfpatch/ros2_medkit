@@ -16,6 +16,7 @@
 
 #include <httplib.h>
 
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <string>
@@ -154,7 +155,7 @@ class RateLimiter {
   std::unordered_map<std::string, ClientState> client_buckets_;
   mutable std::mutex clients_mutex_;
 
-  std::chrono::steady_clock::time_point last_cleanup_;
+  std::atomic<int64_t> last_cleanup_ns_{0};  ///< steady_clock epoch nanos, atomic for thread safety
 };
 
 }  // namespace ros2_medkit_gateway

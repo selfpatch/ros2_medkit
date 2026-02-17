@@ -100,8 +100,22 @@ void RESTServer::setup_pre_routing_handler() {
   // Set up pre-routing handler for CORS and Authentication
   // This handler runs before any route handler
   srv->set_pre_routing_handler([this](const httplib::Request & req, httplib::Response & res) {
-    // Rate limiting check (before CORS and Auth for early rejection)
+    // Rate limiting check. CORS headers are applied here so that browser clients
+    // can read 429 responses across origins (without CORS headers, the browser
+    // treats the response as a CORS error rather than a rate-limit error).
     if (rate_limiter_ && rate_limiter_->is_enabled() && req.method != "OPTIONS") {
+      if (cors_config_.enabled) {
+        std::string origin = req.get_header_value("Origin");
+        if (!origin.empty() && is_origin_allowed(origin)) {
+          set_cors_headers(res, origin);
+          if (auth_config_.enabled) {
+            std::string current_headers = res.get_header_value("Access-Control-Allow-Headers");
+            if (!current_headers.empty() && current_headers.find("Authorization") == std::string::npos) {
+              res.set_header("Access-Control-Allow-Headers", current_headers + ", Authorization");
+            }
+          }
+        }
+      }
       auto rl_result = rate_limiter_->check(req.remote_addr, req.path);
       RateLimiter::apply_headers(rl_result, res);
       if (!rl_result.allowed) {

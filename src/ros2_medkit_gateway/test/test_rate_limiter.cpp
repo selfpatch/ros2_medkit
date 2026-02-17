@@ -370,23 +370,28 @@ TEST_F(RateLimiterTest, RejectedResultHas429Fields) {
 // ===========================================================================
 
 TEST_F(RateLimiterTest, StaleClientsAreCleaned) {
+  // Use 2 RPM so natural refill (2/60 tokens/s) cannot recover within 2.5s
   // max_idle=2s, cleanup_interval=1s
-  auto config = make_config(600, 60);
+  auto config = make_config(600, 2);
   RateLimiter limiter(config);
 
-  // Create a client entry
-  limiter.check("192.168.1.100", "/api/v1/health");
+  // Exhaust the client's 2-token bucket
+  auto first = limiter.check("192.168.1.100", "/api/v1/health");
+  EXPECT_TRUE(first.allowed);
+  auto second = limiter.check("192.168.1.100", "/api/v1/health");
+  EXPECT_TRUE(second.allowed);
+  auto rejected = limiter.check("192.168.1.100", "/api/v1/health");
+  EXPECT_FALSE(rejected.allowed);
 
   // Wait for the client to become stale (> 2 seconds)
+  // At 2 RPM, natural refill in 2.5s = ~0.08 tokens — not enough for a new request
   std::this_thread::sleep_for(std::chrono::milliseconds(2500));
 
-  // Trigger cleanup via another check (cleanup runs on interval)
+  // Trigger cleanup via a different client's check (cleanup runs on interval)
   limiter.check("192.168.1.200", "/api/v1/health");
 
-  // The stale client should get a fresh bucket (full tokens)
-  // If cleanup worked, client 100 should have been removed and get a new bucket
+  // Client 100 should have been removed and gets a fresh full bucket
   auto result = limiter.check("192.168.1.100", "/api/v1/health");
   EXPECT_TRUE(result.allowed);
-  // remaining should be near max since it's a fresh bucket
-  EXPECT_GE(result.remaining, 50);
+  EXPECT_GT(result.remaining, 0);
 }
