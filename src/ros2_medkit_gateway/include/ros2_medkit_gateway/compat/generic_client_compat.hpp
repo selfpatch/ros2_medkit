@@ -32,10 +32,8 @@
 #include <rclcpp/rclcpp.hpp>
 
 // Detect whether rclcpp::GenericClient is available.
-// rclcpp/version.h was added in Iron; Humble may not have it.
-#if __has_include(<rclcpp/version.h>)
+// rclcpp/version.h exists in all supported distros (Humble, Jazzy, Rolling).
 #include <rclcpp/version.h>
-#endif
 
 #if defined(RCLCPP_VERSION_MAJOR) && RCLCPP_VERSION_MAJOR >= 21
 #define HAS_GENERIC_CLIENT 1
