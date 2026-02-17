@@ -603,6 +603,7 @@ correlation:
   ASSERT_EQ(1u, clusters.size());
   // SECOND_ERROR should be the new representative (first remaining after clear)
   EXPECT_EQ("SECOND_ERROR", clusters[0].representative_code);
+  EXPECT_EQ("ERROR", clusters[0].representative_severity);
 }
 
 TEST_F(CorrelationEngineTest, ClearAllFaultsRemovesPendingCluster) {
@@ -623,6 +624,50 @@ TEST_F(CorrelationEngineTest, ClearAllFaultsRemovesPendingCluster) {
   engine.process_fault("DRIVE_COMM_NEW", "ERROR", t0 + 100ms);
   engine.process_fault("MOTOR_COMM_NEW", "ERROR", t0 + 110ms);
   EXPECT_EQ(0u, engine.get_cluster_count());  // Still 2 faults, below min_count=3
+}
+
+// ============================================================================
+// MOST_RECENT reassignment on clear
+// ============================================================================
+
+TEST_F(CorrelationEngineTest, ClearMostRecentRepresentativeReassignsActiveCluster) {
+  const std::string yaml = R"(
+correlation:
+  enabled: true
+  patterns:
+    errors:
+      codes: ["*_ERROR"]
+  rules:
+    - id: test_cluster
+      mode: auto_cluster
+      match:
+        - pattern: errors
+      min_count: 3
+      window_ms: 500
+      show_as_single: true
+      representative: most_recent
+)";
+  auto config = parse_config_string(yaml);
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+
+  engine.process_fault("FIRST_ERROR", "WARNING", t0);
+  engine.process_fault("SECOND_ERROR", "ERROR", t0 + 10ms);
+  engine.process_fault("THIRD_ERROR", "CRITICAL", t0 + 20ms);
+
+  EXPECT_EQ(1u, engine.get_cluster_count());
+  auto clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ("THIRD_ERROR", clusters[0].representative_code);
+  EXPECT_EQ("CRITICAL", clusters[0].representative_severity);
+
+  engine.process_clear("THIRD_ERROR");
+
+  clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ("SECOND_ERROR", clusters[0].representative_code);
+  EXPECT_EQ("ERROR", clusters[0].representative_severity);
 }
 
 // ============================================================================

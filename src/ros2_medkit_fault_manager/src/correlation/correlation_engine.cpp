@@ -161,9 +161,14 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
         for (const auto & rule : config_.rules) {
           if (rule.id == pending_it->first) {
             switch (rule.representative) {
-              case Representative::FIRST:
-                pending_cluster.representative_code = codes.front();
+              case Representative::FIRST: {
+                auto & sevs = pending_it->second.fault_severities;
+                const std::string & first_code = codes.front();
+                pending_cluster.representative_code = first_code;
+                auto sev_it = sevs.find(first_code);
+                pending_cluster.representative_severity = (sev_it != sevs.end()) ? sev_it->second : "";
                 break;
+              }
               case Representative::HIGHEST_SEVERITY: {
                 auto & sevs = pending_it->second.fault_severities;
                 std::string best_code = codes.front();
@@ -181,9 +186,14 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
                 pending_cluster.representative_severity = (best_sev_it != sevs.end()) ? best_sev_it->second : "";
                 break;
               }
-              case Representative::MOST_RECENT:
-                pending_cluster.representative_code = codes.back();
+              case Representative::MOST_RECENT: {
+                auto & sevs = pending_it->second.fault_severities;
+                const std::string & most_recent_code = codes.back();
+                pending_cluster.representative_code = most_recent_code;
+                auto sev_it = sevs.find(most_recent_code);
+                pending_cluster.representative_severity = (sev_it != sevs.end()) ? sev_it->second : "";
                 break;
+              }
             }
             break;
           }
