@@ -225,11 +225,12 @@ bool SubscriptionManager::wait_for_update(const std::string & sub_id, std::chron
   }
 
   std::unique_lock<std::mutex> sub_lock(state->mtx);
-  bool notified = state->cv.wait_for(sub_lock, timeout, [&]() {
-    return !state->active.load() || shutdown_flag_.load();
+  bool woken = state->cv.wait_for(sub_lock, timeout, [&]() {
+    return state->notified || !state->active.load() || shutdown_flag_.load();
   });
+  state->notified = false;
 
-  return notified;
+  return woken;
 }
 
 bool SubscriptionManager::is_active(const std::string & sub_id) const {
@@ -251,6 +252,10 @@ void SubscriptionManager::notify(const std::string & sub_id) {
       return;
     }
     state = it->second;
+  }
+  {
+    std::lock_guard<std::mutex> sub_lock(state->mtx);
+    state->notified = true;
   }
   state->cv.notify_all();
 }

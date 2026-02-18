@@ -345,6 +345,14 @@ if(BUILD_TESTING)
   ament_add_gtest(test_bulkdata_handlers test/test_bulkdata_handlers.cpp)
   target_link_libraries(test_bulkdata_handlers gateway_lib)
 
+  # Add subscription manager tests
+  ament_add_gtest(test_subscription_manager test/test_subscription_manager.cpp)
+  target_link_libraries(test_subscription_manager gateway_lib)
+
+  # Add cyclic subscription handler tests
+  ament_add_gtest(test_cyclic_subscription_handlers test/test_cyclic_subscription_handlers.cpp)
+  target_link_libraries(test_cyclic_subscription_handlers gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -368,6 +376,8 @@ if(BUILD_TESTING)
       test_fault_handlers
       test_bulk_data_store
       test_bulkdata_handlers
+      test_subscription_manager
+      test_cyclic_subscription_handlers
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)

@@ -61,6 +61,7 @@ struct SubscriptionState {
   std::mutex mtx;
   std::condition_variable cv;
   std::atomic<bool> active{true};
+  bool notified{false};  ///< Set by notify(), cleared by wait_for_update()
 };
 
 /**
