@@ -69,10 +69,12 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   config_handlers_ = std::make_unique<handlers::ConfigHandlers>(*handler_ctx_);
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
   auth_handlers_ = std::make_unique<handlers::AuthHandlers>(*handler_ctx_);
-  sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_);
+  auto max_sse_clients = static_cast<size_t>(node_->get_parameter("sse.max_clients").as_int());
+  sse_client_tracker_ = std::make_shared<SSEClientTracker>(max_sse_clients);
+  sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_, sse_client_tracker_);
   bulkdata_handlers_ = std::make_unique<handlers::BulkDataHandlers>(*handler_ctx_);
-  cyclic_sub_handlers_ =
-      std::make_unique<handlers::CyclicSubscriptionHandlers>(*handler_ctx_, *node_->get_subscription_manager());
+  cyclic_sub_handlers_ = std::make_unique<handlers::CyclicSubscriptionHandlers>(
+      *handler_ctx_, *node_->get_subscription_manager(), sse_client_tracker_);
 
   // Set up global error handlers for SOVD GenericError compliance
   setup_global_error_handlers();

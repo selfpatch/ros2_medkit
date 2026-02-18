@@ -28,6 +28,7 @@
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/http/handlers/handlers.hpp"
 #include "ros2_medkit_gateway/http/http_server.hpp"
+#include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -91,6 +92,7 @@ class RESTServer {
   std::unique_ptr<handlers::ConfigHandlers> config_handlers_;
   std::unique_ptr<handlers::FaultHandlers> fault_handlers_;
   std::unique_ptr<handlers::AuthHandlers> auth_handlers_;
+  std::shared_ptr<SSEClientTracker> sse_client_tracker_;
   std::unique_ptr<handlers::SSEFaultHandler> sse_fault_handler_;
   std::unique_ptr<handlers::BulkDataHandlers> bulkdata_handlers_;
   std::unique_ptr<handlers::CyclicSubscriptionHandlers> cyclic_sub_handlers_;

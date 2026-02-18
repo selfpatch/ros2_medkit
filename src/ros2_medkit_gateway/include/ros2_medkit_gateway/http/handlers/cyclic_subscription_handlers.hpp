@@ -16,10 +16,12 @@
 
 #include <httplib.h>
 
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/subscription_manager.hpp"
 
 namespace ros2_medkit_gateway {
@@ -38,7 +40,8 @@ namespace handlers {
  */
 class CyclicSubscriptionHandlers {
  public:
-  CyclicSubscriptionHandlers(HandlerContext & ctx, SubscriptionManager & sub_mgr);
+  CyclicSubscriptionHandlers(HandlerContext & ctx, SubscriptionManager & sub_mgr,
+                             std::shared_ptr<SSEClientTracker> client_tracker);
 
   /// POST /{entity}/cyclic-subscriptions — create subscription
   void handle_create(const httplib::Request & req, httplib::Response & res);
@@ -73,6 +76,7 @@ class CyclicSubscriptionHandlers {
 
   HandlerContext & ctx_;
   SubscriptionManager & sub_mgr_;
+  std::shared_ptr<SSEClientTracker> client_tracker_;
 
   /// Keepalive interval for SSE streams
   static constexpr int kKeepaliveIntervalSec = 15;

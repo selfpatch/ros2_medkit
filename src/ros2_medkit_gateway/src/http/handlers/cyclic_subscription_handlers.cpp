@@ -31,8 +31,9 @@ using httplib::StatusCode;
 namespace ros2_medkit_gateway {
 namespace handlers {
 
-CyclicSubscriptionHandlers::CyclicSubscriptionHandlers(HandlerContext & ctx, SubscriptionManager & sub_mgr)
-  : ctx_(ctx), sub_mgr_(sub_mgr) {
+CyclicSubscriptionHandlers::CyclicSubscriptionHandlers(HandlerContext & ctx, SubscriptionManager & sub_mgr,
+                                                       std::shared_ptr<SSEClientTracker> client_tracker)
+  : ctx_(ctx), sub_mgr_(sub_mgr), client_tracker_(std::move(client_tracker)) {
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +268,19 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
     return;
   }
 
+  // Check combined SSE client limit (shared with fault streams)
+  if (!client_tracker_->try_connect()) {
+    RCLCPP_WARN(HandlerContext::logger(),
+                "SSE client limit reached (%zu), rejecting cyclic subscription stream from %s",
+                client_tracker_->max_clients(), req.remote_addr.c_str());
+    HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
+                               "Maximum number of SSE clients reached. Please try again later.");
+    return;
+  }
+
+  RCLCPP_INFO(HandlerContext::logger(), "SSE cyclic subscription client connected from %s (%zu/%zu)",
+              req.remote_addr.c_str(), client_tracker_->connected_clients(), client_tracker_->max_clients());
+
   // Set SSE headers (Content-Type set by set_chunked_content_provider below)
   res.set_header("Cache-Control", "no-cache");
   res.set_header("Connection", "keep-alive");
@@ -279,11 +293,22 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
       "text/event-stream",
       [this, captured_sub_id, captured_topic](size_t /*offset*/, httplib::DataSink & sink) {
         auto keepalive_timeout = std::chrono::seconds(kKeepaliveIntervalSec);
+        auto last_write = std::chrono::steady_clock::now();
 
         while (true) {
           // Check if subscription is still active
           if (!sub_mgr_.is_active(captured_sub_id)) {
             return false;  // Subscription expired or removed
+          }
+
+          // Send keepalive if no data was written recently (e.g. after a slow sample_topic)
+          auto since_last_write = std::chrono::steady_clock::now() - last_write;
+          if (since_last_write >= keepalive_timeout) {
+            const char * keepalive = ":keepalive\n\n";
+            if (!sink.write(keepalive, std::strlen(keepalive))) {
+              return false;  // Client disconnected
+            }
+            last_write = std::chrono::steady_clock::now();
           }
 
           // Get current interval from subscription (may have been updated)
@@ -329,6 +354,7 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
           if (!sink.write(sse_msg.data(), sse_msg.size())) {
             return false;  // Client disconnected
           }
+          last_write = std::chrono::steady_clock::now();
 
           // Wait for interval or notification (update/delete/shutdown)
           sub_mgr_.wait_for_update(captured_sub_id, sample_interval);
@@ -336,8 +362,8 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
 
         return true;
       },
-      [captured_sub_id](bool /*success*/) {
-        // Client disconnected — subscription persists until expiry/delete
+      [this, captured_sub_id](bool /*success*/) {
+        client_tracker_->disconnect();
         RCLCPP_DEBUG(rclcpp::get_logger("rest_server"), "SSE cyclic subscription stream disconnected: %s",
                      captured_sub_id.c_str());
       });
