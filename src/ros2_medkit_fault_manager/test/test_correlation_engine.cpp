@@ -431,6 +431,36 @@ TEST_F(CorrelationEngineTest, CleanupExpiredRemovesPendingClusters) {
   EXPECT_EQ(0u, engine.get_cluster_count());  // Still not enough
 }
 
+TEST_F(CorrelationEngineTest, CleanupExpiredDoesNotBreakActiveCluster) {
+  auto config = create_auto_cluster_config();
+  CorrelationEngine engine(config);
+
+  // Create an active cluster with old timestamps (past the 500ms window)
+  auto past = std::chrono::steady_clock::now() - std::chrono::milliseconds(1000);
+  engine.process_fault("MOTOR_COMM_FL", "ERROR", past);
+  engine.process_fault("SENSOR_TIMEOUT", "ERROR", past + 10ms);
+  engine.process_fault("DRIVE_COMM_ERROR", "WARNING", past + 20ms);
+
+  // Cluster should be active (3 faults >= min_count=3)
+  EXPECT_EQ(1u, engine.get_cluster_count());
+
+  // Cleanup expires the pending cluster but must NOT wipe fault_to_cluster_
+  // entries that the active cluster still needs
+  engine.cleanup_expired();
+
+  // Active cluster should still exist
+  EXPECT_EQ(1u, engine.get_cluster_count());
+
+  // process_clear must still find the active cluster via fault_to_cluster_
+  engine.process_clear("MOTOR_COMM_FL");
+
+  // Cluster should still exist with 2 remaining fault codes
+  EXPECT_EQ(1u, engine.get_cluster_count());
+  auto clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ(2u, clusters[0].fault_codes.size());
+}
+
 // ============================================================================
 // Mixed mode tests
 // ============================================================================

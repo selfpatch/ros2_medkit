@@ -302,8 +302,10 @@ void CorrelationEngine::cleanup_expired() {
   for (const auto & rule_id : expired_pending) {
     auto it = pending_clusters_.find(rule_id);
     if (it != pending_clusters_.end()) {
-      for (const auto & fault_code : it->second.data.fault_codes) {
-        fault_to_cluster_.erase(fault_code);
+      if (active_clusters_.find(it->second.data.cluster_id) == active_clusters_.end()) {
+        for (const auto & fault_code : it->second.data.fault_codes) {
+          fault_to_cluster_.erase(fault_code);
+        }
       }
       pending_clusters_.erase(it);
     }
