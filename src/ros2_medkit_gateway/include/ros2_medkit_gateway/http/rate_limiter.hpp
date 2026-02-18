@@ -21,6 +21,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace ros2_medkit_gateway {
@@ -134,8 +135,9 @@ class RateLimiter {
   /// Compute seconds until next token is available.
   static double seconds_until_next_token(const TokenBucket & bucket);
 
-  /// Get the effective RPM for a given request path.
-  int get_effective_rpm(const std::string & path) const;
+  /// Get the effective RPM and matched pattern for a given request path.
+  /// @return pair of (RPM, matched pattern string; empty for default)
+  std::pair<int, std::string> get_effective_limit(const std::string & path) const;
 
   /// Check if a path matches a glob-like pattern (* = single segment).
   static bool path_matches_pattern(const std::string & path, const std::string & pattern);
