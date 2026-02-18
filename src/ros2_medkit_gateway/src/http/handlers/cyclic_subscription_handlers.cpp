@@ -118,6 +118,15 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
 
   std::string entity_type = extract_entity_type(req);
 
+  // Validate resource URI references the same entity as the route
+  std::string expected_prefix = "/api/v1/" + entity_type + "/" + entity_id + "/data/";
+  if (resource.find(expected_prefix) != 0) {
+    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                               "Resource URI must reference the same entity as the route",
+                               {{"parameter", "resource"}, {"value", resource}});
+    return;
+  }
+
   // Create subscription
   auto result = sub_mgr_.create(entity_id, entity_type, resource, *topic_result, protocol, interval, duration);
   if (!result) {
@@ -165,7 +174,7 @@ void CyclicSubscriptionHandlers::handle_get(const httplib::Request & req, httpli
 
   auto sub_id = req.matches[2].str();
   auto sub = sub_mgr_.get(sub_id);
-  if (!sub) {
+  if (!sub || sub->entity_id != entity_id) {
     HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
                                {{"subscription_id", sub_id}});
     return;
@@ -220,6 +229,14 @@ void CyclicSubscriptionHandlers::handle_update(const httplib::Request & req, htt
     }
   }
 
+  // Verify subscription exists and belongs to this entity before updating
+  auto existing = sub_mgr_.get(sub_id);
+  if (!existing || existing->entity_id != entity_id) {
+    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
+                               {{"subscription_id", sub_id}});
+    return;
+  }
+
   auto result = sub_mgr_.update(sub_id, new_interval, new_duration);
   if (!result) {
     HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
@@ -241,6 +258,15 @@ void CyclicSubscriptionHandlers::handle_delete(const httplib::Request & req, htt
   }
 
   auto sub_id = req.matches[2].str();
+
+  // Verify subscription exists and belongs to this entity before deleting
+  auto existing = sub_mgr_.get(sub_id);
+  if (!existing || existing->entity_id != entity_id) {
+    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
+                               {{"subscription_id", sub_id}});
+    return;
+  }
+
   if (!sub_mgr_.remove(sub_id)) {
     HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
                                {{"subscription_id", sub_id}});
@@ -265,6 +291,20 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
   if (!sub) {
     HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
                                {{"subscription_id", sub_id}});
+    return;
+  }
+
+  // Verify subscription belongs to this entity
+  if (sub->entity_id != entity_id) {
+    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
+                               {{"subscription_id", sub_id}});
+    return;
+  }
+
+  // Reject SSE connections for expired or inactive subscriptions
+  if (!sub_mgr_.is_active(sub_id)) {
+    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+                               "Subscription expired or inactive", {{"subscription_id", sub_id}});
     return;
   }
 
@@ -332,7 +372,9 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
           auto time_t = std::chrono::system_clock::to_time_t(now);
           auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
           std::ostringstream ts;
-          ts << std::put_time(std::gmtime(&time_t), "%Y-%m-%dT%H:%M:%S");
+          struct tm tm_buf;
+          gmtime_r(&time_t, &tm_buf);
+          ts << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%S");
           ts << "." << std::setw(3) << std::setfill('0') << ms << "Z";
           envelope["timestamp"] = ts.str();
 
