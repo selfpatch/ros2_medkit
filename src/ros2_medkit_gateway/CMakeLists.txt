@@ -414,6 +414,13 @@ if(BUILD_TESTING)
     TIMEOUT 60
   )
 
+  # Add rate limiting integration tests
+  add_launch_test(
+    test/test_rate_limiting.test.py
+    TARGET test_rate_limiting
+    TIMEOUT 90
+  )
+
   # Add authentication integration tests
   add_launch_test(
     test/test_auth.test.py
