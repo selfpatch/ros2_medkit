@@ -25,10 +25,8 @@
 namespace ros2_medkit_gateway {
 namespace handlers {
 
-SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx) : ctx_(ctx) {
-  // Read max clients limit from parameter
-  max_sse_clients_ = static_cast<size_t>(ctx_.node()->get_parameter("sse.max_clients").as_int());
-
+SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker)
+  : ctx_(ctx), client_tracker_(std::move(client_tracker)) {
   // Create subscription to fault events topic
   // Use fully qualified topic name since FaultManager publishes on ~/events
   subscription_ = ctx_.node()->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
@@ -40,7 +38,7 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx) : ctx_(ctx) {
   RCLCPP_INFO(HandlerContext::logger(),
               "SSE fault handler initialized, subscribed to /fault_manager/events, "
               "max_clients=%zu",
-              max_sse_clients_);
+              client_tracker_->max_clients());
 }
 
 SSEFaultHandler::~SSEFaultHandler() {
@@ -72,17 +70,17 @@ void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::Co
 }
 
 void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Response & res) {
-  // Check if we're at the client limit before accepting connection
-  if (client_count_.load() >= max_sse_clients_) {
+  // Check if we're at the combined SSE client limit before accepting connection
+  if (!client_tracker_->try_connect()) {
     RCLCPP_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
-                max_sse_clients_, req.remote_addr.c_str());
+                client_tracker_->max_clients(), req.remote_addr.c_str());
     HandlerContext::send_error(res, httplib::StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
                                "Maximum number of SSE clients reached. Please try again later.");
     return;
   }
 
-  RCLCPP_INFO(HandlerContext::logger(), "SSE client connected from %s (%zu/%zu)", req.remote_addr.c_str(),
-              client_count_.load() + 1, max_sse_clients_);
+  RCLCPP_INFO(HandlerContext::logger(), "SSE fault client connected from %s (%zu/%zu)", req.remote_addr.c_str(),
+              client_tracker_->connected_clients(), client_tracker_->max_clients());
 
   // Parse Last-Event-ID header for reconnection support
   uint64_t last_event_id = 0;
@@ -93,8 +91,6 @@ void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Respo
       // Ignore invalid Last-Event-ID
     }
   }
-
-  client_count_.fetch_add(1);
 
   // Set SSE headers
   res.set_header("Content-Type", "text/event-stream");
@@ -173,13 +169,14 @@ void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Respo
         return true;
       },
       [this, addr = req.remote_addr](bool success) {
-        client_count_.fetch_sub(1);
-        RCLCPP_INFO(HandlerContext::logger(), "SSE client disconnected from %s (success=%d)", addr.c_str(), success);
+        client_tracker_->disconnect();
+        RCLCPP_INFO(HandlerContext::logger(), "SSE fault client disconnected from %s (success=%d)", addr.c_str(),
+                    success);
       });
 }
 
 size_t SSEFaultHandler::connected_clients() const {
-  return client_count_.load();
+  return client_tracker_->connected_clients();
 }
 
 std::string SSEFaultHandler::format_sse_event(const ros2_medkit_msgs::msg::FaultEvent & event, uint64_t event_id) {

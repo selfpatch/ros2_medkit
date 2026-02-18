@@ -101,18 +101,24 @@ SubscriptionManager::create(const std::string & entity_id, const std::string & e
 }
 
 std::optional<CyclicSubscriptionInfo> SubscriptionManager::get(const std::string & sub_id) const {
-  std::lock_guard<std::mutex> lock(map_mutex_);
-  auto it = subscriptions_.find(sub_id);
-  if (it == subscriptions_.end()) {
-    return std::nullopt;
+  std::shared_ptr<SubscriptionState> state;
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    auto it = subscriptions_.find(sub_id);
+    if (it == subscriptions_.end()) {
+      return std::nullopt;
+    }
+    state = it->second;
   }
-  return it->second->info;
+  std::lock_guard<std::mutex> sub_lock(state->mtx);
+  return state->info;
 }
 
 std::vector<CyclicSubscriptionInfo> SubscriptionManager::list(const std::string & entity_id) const {
   std::lock_guard<std::mutex> lock(map_mutex_);
   std::vector<CyclicSubscriptionInfo> result;
   for (const auto & [id, state] : subscriptions_) {
+    std::lock_guard<std::mutex> sub_lock(state->mtx);
     if (state->info.entity_id == entity_id) {
       result.push_back(state->info);
     }

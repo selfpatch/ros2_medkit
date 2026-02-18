@@ -23,6 +23,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 
 namespace ros2_medkit_gateway {
@@ -52,8 +53,9 @@ class SSEFaultHandler {
   /**
    * @brief Construct SSE fault handler with shared context.
    * @param ctx The shared handler context
+   * @param client_tracker Shared SSE client counter (across all SSE handlers)
    */
-  explicit SSEFaultHandler(HandlerContext & ctx);
+  SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker);
 
   /// Destructor - cleanup subscription
   ~SSEFaultHandler();
@@ -91,6 +93,7 @@ class SSEFaultHandler {
   static std::string format_sse_event(const ros2_medkit_msgs::msg::FaultEvent & event, uint64_t event_id);
 
   HandlerContext & ctx_;
+  std::shared_ptr<SSEClientTracker> client_tracker_;
 
   /// Subscription to fault events topic
   rclcpp::Subscription<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr subscription_;
@@ -102,12 +105,6 @@ class SSEFaultHandler {
 
   /// Monotonically increasing event ID for Last-Event-ID support
   std::atomic<uint64_t> next_event_id_{1};
-
-  /// Number of connected clients (for monitoring)
-  std::atomic<size_t> client_count_{0};
-
-  /// Maximum allowed concurrent SSE clients (from sse.max_clients parameter)
-  size_t max_sse_clients_{10};
 
   /// Shutdown flag for clean termination
   std::atomic<bool> shutdown_flag_{false};
