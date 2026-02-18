@@ -152,6 +152,7 @@ SubscriptionManager::update(const std::string & sub_id, std::optional<CyclicInte
   auto info_copy = state->info;
 
   // Wake up any waiting SSE stream so it picks up the new interval
+  state->notified = true;
   state->cv.notify_all();
 
   return info_copy;
@@ -182,6 +183,7 @@ size_t SubscriptionManager::cleanup_expired() {
   {
     std::lock_guard<std::mutex> lock(map_mutex_);
     for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
+      std::lock_guard<std::mutex> sub_lock(it->second->mtx);
       if (it->second->info.expires_at <= now) {
         expired_states.push_back(it->second);
         it = subscriptions_.erase(it);
@@ -240,13 +242,18 @@ bool SubscriptionManager::wait_for_update(const std::string & sub_id, std::chron
 }
 
 bool SubscriptionManager::is_active(const std::string & sub_id) const {
-  std::lock_guard<std::mutex> lock(map_mutex_);
-  auto it = subscriptions_.find(sub_id);
-  if (it == subscriptions_.end()) {
-    return false;
+  std::shared_ptr<SubscriptionState> state;
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    auto it = subscriptions_.find(sub_id);
+    if (it == subscriptions_.end()) {
+      return false;
+    }
+    state = it->second;
   }
-  // Check both the active flag and expiry
-  return it->second->active.load() && it->second->info.expires_at > std::chrono::steady_clock::now();
+  // Check both the active flag and expiry under per-subscription lock
+  std::lock_guard<std::mutex> sub_lock(state->mtx);
+  return state->active.load() && state->info.expires_at > std::chrono::steady_clock::now();
 }
 
 void SubscriptionManager::notify(const std::string & sub_id) {

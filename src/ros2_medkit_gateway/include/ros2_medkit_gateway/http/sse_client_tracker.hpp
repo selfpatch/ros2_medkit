@@ -37,9 +37,14 @@ class SSEClientTracker {
     return false;
   }
 
-  /// Unregister an SSE client.
+  /// Unregister an SSE client. Guards against underflow.
   void disconnect() {
-    count_.fetch_sub(1);
+    size_t current = count_.load();
+    while (current > 0) {
+      if (count_.compare_exchange_weak(current, current - 1)) {
+        return;
+      }
+    }
   }
 
   size_t connected_clients() const {
