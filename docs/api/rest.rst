@@ -662,6 +662,92 @@ fault manager and cannot be deleted via this endpoint.
 - **404 Not Found**: Entity, category, or bulk-data ID not found
 - **405 Method Not Allowed**: Delete attempted on areas or functions
 
+Cyclic Subscriptions
+--------------------
+
+Cyclic subscriptions provide periodic push-based data delivery via Server-Sent Events (SSE).
+A client creates a subscription specifying which data resource to observe and at what interval.
+The server then pushes the latest value of that resource at the requested frequency.
+
+Subscriptions are temporary — they do not survive server restart.
+
+``POST /api/v1/{entity_type}/{entity_id}/cyclic-subscriptions``
+   Create a new cyclic subscription.
+
+   **Applies to:** ``/apps``, ``/components``
+
+   **Request Body:**
+
+   .. code-block:: json
+
+      {
+        "resource": "/api/v1/apps/temp_sensor/data/temperature",
+        "protocol": "sse",
+        "interval": "normal",
+        "duration": 300
+      }
+
+   **Fields:**
+
+   - ``resource`` (string, required): Full URI of the data resource to observe
+   - ``protocol`` (string, optional): Transport protocol. Only ``"sse"`` supported. Default: ``"sse"``
+   - ``interval`` (string, required): One of ``fast`` (<100ms), ``normal`` (100-250ms), ``slow`` (250-500ms)
+   - ``duration`` (integer, required): Subscription lifetime in seconds (must be > 0)
+
+   **Response 201 Created:**
+
+   .. code-block:: json
+
+      {
+        "id": "sub_001",
+        "observed_resource": "/api/v1/apps/temp_sensor/data/temperature",
+        "event_source": "/api/v1/apps/temp_sensor/cyclic-subscriptions/sub_001/events",
+        "protocol": "sse",
+        "interval": "normal"
+      }
+
+``GET /api/v1/{entity_type}/{entity_id}/cyclic-subscriptions``
+   List all active cyclic subscriptions for an entity. Returns ``{"items": [...]}``.
+
+``GET /api/v1/{entity_type}/{entity_id}/cyclic-subscriptions/{id}``
+   Get details of a single subscription.
+
+``PUT /api/v1/{entity_type}/{entity_id}/cyclic-subscriptions/{id}``
+   Update ``interval`` and/or ``duration`` of an existing subscription.
+   Only provided fields are updated.
+
+   **Request Body:**
+
+   .. code-block:: json
+
+      {
+        "interval": "fast",
+        "duration": 600
+      }
+
+``DELETE /api/v1/{entity_type}/{entity_id}/cyclic-subscriptions/{id}``
+   Cancel and remove a subscription. Returns 204 No Content.
+
+``GET /api/v1/{entity_type}/{entity_id}/cyclic-subscriptions/{id}/events``
+   SSE event stream. Connect to receive periodic data updates.
+
+   **Response Headers:**
+
+   .. code-block:: text
+
+      Content-Type: text/event-stream
+      Cache-Control: no-cache
+      Connection: keep-alive
+
+   **Event Format (EventEnvelope):**
+
+   .. code-block:: text
+
+      data: {"timestamp":"2026-02-14T10:30:00.250Z","payload":{"id":"/temperature","data":{"data":23.5}}}
+
+   The stream auto-closes when the duration expires, the client disconnects,
+   or the subscription is deleted.
+
 Authentication Endpoints
 ------------------------
 
@@ -798,6 +884,7 @@ The gateway implements a subset of the SOVD (Service-Oriented Vehicle Diagnostic
 - Configurations (``/configurations``)
 - Faults (``/faults``) with ``environment_data`` and SOVD status object
 - Bulk Data (``/bulk-data``) for binary data downloads (rosbags, logs)
+- Cyclic Subscriptions (``/cyclic-subscriptions``) with SSE-based periodic data delivery
 
 **ros2_medkit Extensions:**
 

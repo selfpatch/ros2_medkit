@@ -223,6 +223,38 @@ Example:
    dependencies. Topic discovery, sampling, publishing, service calls, and
    action operations are implemented in pure C++ using ros2_medkit_serialization.
 
+SSE (Server-Sent Events)
+------------------------
+
+Configure limits for SSE-based streaming (fault events and cyclic subscriptions).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 25 35
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``sse.max_clients``
+     - int
+     - ``10``
+     - Maximum number of concurrent SSE connections (fault stream + cyclic subscription streams combined).
+   * - ``sse.max_subscriptions``
+     - int
+     - ``100``
+     - Maximum number of active cyclic subscriptions across all entities. Returns HTTP 503 when this limit is reached.
+
+Example:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       sse:
+         max_clients: 10
+         max_subscriptions: 100
+
 Complete Example
 ----------------
 
@@ -251,6 +283,10 @@ Complete Example
          storage_dir: "/var/ros2_medkit/bulk_data"
          max_upload_size: 104857600
          categories: ["calibration", "firmware"]
+
+       sse:
+         max_clients: 10
+         max_subscriptions: 100
 
 See Also
 --------
