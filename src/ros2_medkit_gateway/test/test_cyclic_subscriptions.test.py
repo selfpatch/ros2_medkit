@@ -145,15 +145,20 @@ class TestCyclicSubscriptions(unittest.TestCase):
             raise unittest.SkipTest('Demo temp sensor app not discovered')
 
         # Phase 3: Wait for data availability on the discovered app
+        # Skip ROS 2 system topics that don't have continuous data flow
+        system_topics = {'/parameter_events', '/rosout'}
         deadline = time.time() + 15.0
         while time.time() < deadline:
             try:
                 r = requests.get(f'{BASE_URL}/apps/{cls.app_id}/data', timeout=5)
                 if r.status_code == 200:
                     items = r.json().get('items', [])
-                    if items:
-                        cls.topic_id = items[0]['id']
-                        cls.resource_uri = f'/api/v1/apps/{cls.app_id}/data{cls.topic_id}'
+                    for item in items:
+                        if item['id'] not in system_topics:
+                            cls.topic_id = item['id']
+                            cls.resource_uri = f'/api/v1/apps/{cls.app_id}/data{cls.topic_id}'
+                            break
+                    if cls.topic_id:
                         break
             except Exception:
                 pass
