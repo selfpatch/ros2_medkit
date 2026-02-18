@@ -170,8 +170,8 @@ TEST_F(RateLimiterTest, TokensRefillOverTime) {
   auto rejected = limiter.check("192.168.1.1", "/api/v1/health");
   EXPECT_FALSE(rejected.allowed);
 
-  // Wait for tokens to refill (1 token per second, need at least 1 second)
-  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  // Wait for tokens to refill (1 token per second, need at least 1 second; 50% margin)
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 
   // Should be allowed again
   auto allowed = limiter.check("192.168.1.1", "/api/v1/health");
@@ -383,9 +383,9 @@ TEST_F(RateLimiterTest, StaleClientsAreCleaned) {
   auto rejected = limiter.check("192.168.1.100", "/api/v1/health");
   EXPECT_FALSE(rejected.allowed);
 
-  // Wait for the client to become stale (> 2 seconds)
-  // At 2 RPM, natural refill in 2.5s = ~0.08 tokens — not enough for a new request
-  std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+  // Wait for the client to become stale (> 2 seconds; 50% margin)
+  // At 2 RPM, natural refill in 3.0s = ~0.10 tokens — not enough for a new request
+  std::this_thread::sleep_for(std::chrono::milliseconds(3000));
 
   // Trigger cleanup via a different client's check (cleanup runs on interval)
   limiter.check("192.168.1.200", "/api/v1/health");
@@ -394,4 +394,62 @@ TEST_F(RateLimiterTest, StaleClientsAreCleaned) {
   auto result = limiter.check("192.168.1.100", "/api/v1/health");
   EXPECT_TRUE(result.allowed);
   EXPECT_GT(result.remaining, 0);
+}
+
+// ===========================================================================
+// Global Token Waste Prevention Tests
+// ===========================================================================
+
+TEST_F(RateLimiterTest, PerClientRejectionDoesNotWasteGlobalTokens) {
+  // Global: 6 tokens, Client: 2 tokens
+  auto config = make_config(6, 2);
+  RateLimiter limiter(config);
+
+  // Exhaust client A's 2 per-client tokens
+  EXPECT_TRUE(limiter.check("192.168.1.1", "/api/v1/health").allowed);
+  EXPECT_TRUE(limiter.check("192.168.1.1", "/api/v1/health").allowed);
+
+  // 4 more requests from A — rejected at per-client level, global untouched
+  for (int i = 0; i < 4; ++i) {
+    auto r = limiter.check("192.168.1.1", "/api/v1/health");
+    EXPECT_FALSE(r.allowed) << "Request " << i << " from exhausted client A should be rejected";
+  }
+
+  // Client B should still be able to use the global pool (6 - 2 = 4 tokens remaining)
+  EXPECT_TRUE(limiter.check("192.168.1.2", "/api/v1/health").allowed);
+  EXPECT_TRUE(limiter.check("192.168.1.2", "/api/v1/health").allowed);
+}
+
+// ===========================================================================
+// Endpoint Override with Composite Bucket Key Tests
+// ===========================================================================
+
+TEST_F(RateLimiterTest, EndpointOverrideAppliesForExistingClient) {
+  auto config = RateLimitConfigBuilder()
+                    .with_enabled(true)
+                    .with_global_rpm(600)
+                    .with_client_rpm(60)
+                    .add_endpoint_limit("/api/v1/*/operations/*", 3)
+                    .with_cleanup_interval(300)
+                    .with_max_idle(600)
+                    .build();
+  RateLimiter limiter(config);
+
+  // Client hits default endpoint first (creates bucket for default pattern)
+  auto r1 = limiter.check("192.168.1.1", "/api/v1/health");
+  EXPECT_TRUE(r1.allowed);
+
+  // Same client hits operations endpoint (3 RPM) — gets a separate bucket
+  for (int i = 0; i < 3; ++i) {
+    auto r = limiter.check("192.168.1.1", "/api/v1/myapp/operations/calibrate");
+    EXPECT_TRUE(r.allowed);
+  }
+
+  // 4th operations request should be rejected (operations bucket exhausted)
+  auto r_ops = limiter.check("192.168.1.1", "/api/v1/myapp/operations/calibrate");
+  EXPECT_FALSE(r_ops.allowed);
+
+  // Default endpoint should still work (separate bucket with 59 tokens remaining)
+  auto r_default = limiter.check("192.168.1.1", "/api/v1/health");
+  EXPECT_TRUE(r_default.allowed);
 }

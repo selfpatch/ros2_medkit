@@ -130,13 +130,13 @@ double RateLimiter::seconds_until_next_token(const TokenBucket & bucket) {
   return (1.0 - bucket.tokens) / bucket.refill_rate;
 }
 
-int RateLimiter::get_effective_rpm(const std::string & path) const {
+std::pair<int, std::string> RateLimiter::get_effective_limit(const std::string & path) const {
   for (const auto & ep : config_.endpoint_limits) {
     if (path_matches_pattern(path, ep.pattern)) {
-      return ep.requests_per_minute;
+      return {ep.requests_per_minute, ep.pattern};
     }
   }
-  return config_.client_requests_per_minute;
+  return {config_.client_requests_per_minute, ""};
 }
 
 bool RateLimiter::path_matches_pattern(const std::string & path, const std::string & pattern) {
@@ -176,18 +176,74 @@ bool RateLimiter::path_matches_pattern(const std::string & path, const std::stri
 RateLimitResult RateLimiter::check(const std::string & client_ip, const std::string & path) {
   RateLimitResult result;
 
-  // Periodic cleanup of stale client entries (last_cleanup_ns_ is atomic, no mutex needed)
+  // Periodic cleanup of stale client entries (CAS ensures only one thread runs cleanup)
   {
     auto now = std::chrono::steady_clock::now();
     int64_t now_ns = now.time_since_epoch().count();
-    int64_t last_ns = last_cleanup_ns_.load(std::memory_order_relaxed);
+    int64_t last_ns = last_cleanup_ns_.load(std::memory_order_acquire);
     double elapsed = std::chrono::duration<double>(std::chrono::nanoseconds(now_ns - last_ns)).count();
     if (elapsed >= static_cast<double>(config_.client_cleanup_interval_seconds)) {
-      cleanup_stale_clients();
+      int64_t expected = last_ns;
+      if (last_cleanup_ns_.compare_exchange_strong(expected, now_ns, std::memory_order_acq_rel)) {
+        cleanup_stale_clients();
+      }
     }
   }
 
-  // 1. Global bucket check
+  // 1. Per-client bucket check first (avoids wasting global tokens on already-rejected clients)
+  auto [effective_rpm, matched_pattern] = get_effective_limit(path);
+  std::string bucket_key = client_ip + "|" + matched_pattern;
+  {
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    auto it = client_buckets_.find(bucket_key);
+    if (it == client_buckets_.end()) {
+      // New client — create bucket with effective RPM
+      ClientState state;
+      state.bucket = make_bucket(effective_rpm);
+      state.last_seen = std::chrono::steady_clock::now();
+      // Consume one token for this request
+      state.bucket.tokens -= 1.0;
+      client_buckets_[bucket_key] = state;
+
+      result.allowed = true;
+      result.limit = effective_rpm;
+      result.remaining = static_cast<int>(state.bucket.tokens);
+      double secs = seconds_until_next_token(state.bucket);
+      int reset_secs = (secs > 0.0) ? static_cast<int>(std::ceil(secs)) : 1;
+      auto reset_time = std::chrono::system_clock::now() + std::chrono::seconds(reset_secs);
+      result.reset_epoch_seconds =
+          std::chrono::duration_cast<std::chrono::seconds>(reset_time.time_since_epoch()).count();
+      // Fall through to global check
+    } else {
+      auto & state = it->second;
+      state.last_seen = std::chrono::steady_clock::now();
+
+      if (!try_consume(state.bucket)) {
+        // Per-client rejected — return immediately, global tokens untouched
+        result.allowed = false;
+        result.limit = effective_rpm;
+        result.remaining = 0;
+        double wait = seconds_until_next_token(state.bucket);
+        result.retry_after_seconds = std::max(1, static_cast<int>(std::ceil(wait)));
+        auto reset_time = std::chrono::system_clock::now() + std::chrono::seconds(result.retry_after_seconds);
+        result.reset_epoch_seconds =
+            std::chrono::duration_cast<std::chrono::seconds>(reset_time.time_since_epoch()).count();
+        return result;
+      }
+
+      result.allowed = true;
+      result.limit = effective_rpm;
+      result.remaining = std::max(0, static_cast<int>(state.bucket.tokens));
+      double secs = seconds_until_next_token(state.bucket);
+      int reset_secs = (secs > 0.0) ? static_cast<int>(std::ceil(secs)) : 1;
+      auto reset_time = std::chrono::system_clock::now() + std::chrono::seconds(reset_secs);
+      result.reset_epoch_seconds =
+          std::chrono::duration_cast<std::chrono::seconds>(reset_time.time_since_epoch()).count();
+      // Fall through to global check
+    }
+  }
+
+  // 2. Global bucket check
   {
     std::lock_guard<std::mutex> lock(global_mutex_);
     if (!try_consume(global_bucket_)) {
@@ -201,52 +257,6 @@ RateLimitResult RateLimiter::check(const std::string & client_ip, const std::str
           std::chrono::duration_cast<std::chrono::seconds>(reset_time.time_since_epoch()).count();
       return result;
     }
-  }
-
-  // 2. Per-client bucket check
-  int effective_rpm = get_effective_rpm(path);
-  {
-    std::lock_guard<std::mutex> lock(clients_mutex_);
-    auto it = client_buckets_.find(client_ip);
-    if (it == client_buckets_.end()) {
-      // New client — create bucket with effective RPM
-      ClientState state;
-      state.bucket = make_bucket(effective_rpm);
-      state.last_seen = std::chrono::steady_clock::now();
-      // Consume one token for this request
-      state.bucket.tokens -= 1.0;
-      client_buckets_[client_ip] = state;
-
-      result.allowed = true;
-      result.limit = effective_rpm;
-      result.remaining = static_cast<int>(state.bucket.tokens);
-      auto reset_time = std::chrono::system_clock::now() + std::chrono::seconds(60);
-      result.reset_epoch_seconds =
-          std::chrono::duration_cast<std::chrono::seconds>(reset_time.time_since_epoch()).count();
-      return result;
-    }
-
-    auto & state = it->second;
-    state.last_seen = std::chrono::steady_clock::now();
-
-    if (!try_consume(state.bucket)) {
-      result.allowed = false;
-      result.limit = effective_rpm;
-      result.remaining = 0;
-      double wait = seconds_until_next_token(state.bucket);
-      result.retry_after_seconds = std::max(1, static_cast<int>(std::ceil(wait)));
-      auto reset_time = std::chrono::system_clock::now() + std::chrono::seconds(result.retry_after_seconds);
-      result.reset_epoch_seconds =
-          std::chrono::duration_cast<std::chrono::seconds>(reset_time.time_since_epoch()).count();
-      return result;
-    }
-
-    result.allowed = true;
-    result.limit = effective_rpm;
-    result.remaining = std::max(0, static_cast<int>(state.bucket.tokens));
-    auto reset_time = std::chrono::system_clock::now() + std::chrono::seconds(60);
-    result.reset_epoch_seconds =
-        std::chrono::duration_cast<std::chrono::seconds>(reset_time.time_since_epoch()).count();
   }
 
   return result;
@@ -275,7 +285,6 @@ void RateLimiter::apply_rejection(const RateLimitResult & result, httplib::Respo
 void RateLimiter::cleanup_stale_clients() {
   std::lock_guard<std::mutex> lock(clients_mutex_);
   auto now = std::chrono::steady_clock::now();
-  last_cleanup_ns_.store(now.time_since_epoch().count(), std::memory_order_relaxed);
 
   for (auto it = client_buckets_.begin(); it != client_buckets_.end();) {
     double idle = std::chrono::duration<double>(now - it->second.last_seen).count();
