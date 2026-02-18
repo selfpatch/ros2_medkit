@@ -267,8 +267,7 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
     return;
   }
 
-  // Set SSE headers
-  res.set_header("Content-Type", "text/event-stream");
+  // Set SSE headers (Content-Type set by set_chunked_content_provider below)
   res.set_header("Cache-Control", "no-cache");
   res.set_header("Connection", "keep-alive");
   res.set_header("X-Accel-Buffering", "no");
