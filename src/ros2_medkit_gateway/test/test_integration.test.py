@@ -5010,10 +5010,9 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
         print('✓ Delete all faults globally test passed')
 
     def test_139_delete_all_faults_globally_with_status_filter(self):
-        """Test DELETE /faults?status=all includes all statuses.
-        TODO(#229): Add unit test with mock fault manager to verify filter actually works
-        (e.g. inject confirmed fault -> DELETE ?status=pending -> confirm fault still exists).
-        """
+        """Test DELETE /faults?status=all includes all statuses."""
+        # TODO(#229): Add unit test with mock fault manager to verify filter actually works
+        # (e.g. inject confirmed fault -> DELETE ?status=pending -> confirm fault still exists).
         response = requests.delete(
             f'{self.BASE_URL}/faults?status=all',
             timeout=10
