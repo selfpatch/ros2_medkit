@@ -27,12 +27,12 @@ namespace handlers {
  * @brief Handlers for fault management REST API endpoints.
  *
  * Provides handlers for:
- * - GET /faults - List all faults
- * - GET /components/{component_id}/faults - List faults for a component
- * - GET /components/{component_id}/faults/{fault_code} - Get specific fault
- * - DELETE /components/{component_id}/faults/{fault_code} - Clear fault
- * - DELETE /components/{component_id}/faults - Clear all faults for entity
+ * - GET /faults - List all faults (extension)
  * - DELETE /faults - Clear all faults globally (extension)
+ * - GET /{entity-path}/faults - List faults for entity
+ * - GET /{entity-path}/faults/{code} - Get specific fault
+ * - DELETE /{entity-path}/faults/{code} - Clear fault
+ * - DELETE /{entity-path}/faults - Clear all faults for entity
  *
  * Note: Snapshot data is inline in fault responses (environment_data).
  * Rosbag downloads use the bulk-data endpoint pattern.

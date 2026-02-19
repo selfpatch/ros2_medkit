@@ -481,7 +481,7 @@ Query and manage faults.
    Clear all faults across the system *(ros2_medkit extension, not SOVD)*.
 
    Accepts the optional ``?status=`` query parameter (same values as ``GET /faults``).
-   Without it, clears active faults (pending + confirmed).
+   Without it, clears pending and confirmed faults.
 
    - **204:** Faults cleared (or none to clear)
    - **400:** Invalid status parameter
