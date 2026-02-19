@@ -291,10 +291,10 @@ class TestShutdown(unittest.TestCase):
     """Post-shutdown tests for heuristic apps discovery tests."""
 
     def test_exit_codes(self, proc_info):
-        """Check all processes exited cleanly."""
-        # Allow processes to be killed (exit code -15) during test shutdown
+        """Check all processes exited cleanly (SIGTERM allowed)."""
         for info in proc_info:
-            allowed_codes = [0, -2, -15]  # OK, SIGINT, SIGTERM
-            if info.returncode is not None and info.returncode not in allowed_codes:
-                # Only fail on unexpected exit codes
-                pass  # Some demo nodes may exit differently
+            allowed = {0, -2, -15}  # OK, SIGINT, SIGTERM
+            self.assertIn(
+                info.returncode, allowed,
+                f'{info.process_name} exited with code {info.returncode}'
+            )

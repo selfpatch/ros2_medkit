@@ -44,6 +44,10 @@ class BrakeActuator : public rclcpp::Node {
     RCLCPP_INFO(this->get_logger(), "Brake actuator started");
   }
 
+  ~BrakeActuator() {
+    timer_->cancel();
+  }
+
  private:
   void command_callback(const std_msgs::msg::Float32::SharedPtr msg) {
     target_pressure_ = msg->data;

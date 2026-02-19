@@ -86,6 +86,14 @@ class LidarSensor : public rclcpp::Node {
     });
   }
 
+  ~LidarSensor() {
+    scan_timer_->cancel();
+    fault_check_timer_->cancel();
+    if (initial_check_timer_) {
+      initial_check_timer_->cancel();
+    }
+  }
+
  private:
   rcl_interfaces::msg::SetParametersResult on_parameter_change(const std::vector<rclcpp::Parameter> & parameters) {
     rcl_interfaces::msg::SetParametersResult result;

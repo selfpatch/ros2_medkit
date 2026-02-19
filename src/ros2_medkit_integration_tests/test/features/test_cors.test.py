@@ -324,5 +324,5 @@ class TestShutdown(unittest.TestCase):
             allowed = {0, -2, -15}  # OK, SIGINT, SIGTERM
             self.assertIn(
                 info.returncode, allowed,
-                f'Process {info.process_name} exited with code {info.returncode}'
+                f'{info.process_name} exited with code {info.returncode}'
             )
