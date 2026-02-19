@@ -132,8 +132,8 @@ Running Tests
    # All tests
    colcon test && colcon test-result --verbose
 
-   # Unit tests only
-   colcon test --ctest-args -E test_integration
+   # Unit tests only (exclude integration tests package)
+   colcon test --packages-skip ros2_medkit_integration_tests
 
    # Linters only
    colcon test --ctest-args -L linters

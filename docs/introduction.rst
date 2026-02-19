@@ -62,6 +62,9 @@ ros2_medkit consists of several ROS 2 packages:
 **ros2_medkit_msgs**
    Message and service definitions for fault management.
 
+**ros2_medkit_integration_tests**
+   Integration tests, automotive-themed demo nodes, and shared test utilities.
+
 Next Steps
 ----------
 
@@ -76,4 +79,3 @@ Community
 - 💬 **Discord**: `Join our server <https://discord.gg/6CXPMApAyq>`_
 - 🐛 **Issues**: `Report bugs <https://github.com/selfpatch/ros2_medkit/issues>`_
 - 💡 **Discussions**: `GitHub Discussions <https://github.com/selfpatch/ros2_medkit/discussions>`_
-

@@ -53,9 +53,10 @@ You should see:
 
 .. code-block:: bash
 
-   ros2 launch ros2_medkit_gateway demo_nodes.launch.py
+   ros2 launch ros2_medkit_integration_tests demo_nodes.launch.py
 
-This launches automotive demo nodes that we'll use to explore the API.
+This launches automotive demo nodes from the integration tests package that we'll
+use to explore the API.
 
 .. list-table:: Demo Nodes Created by demo_nodes.launch.py
    :header-rows: 1
