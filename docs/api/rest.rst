@@ -474,7 +474,7 @@ Query and manage faults.
 ``DELETE /api/v1/components/{id}/faults/{fault_code}``
    Clear a fault.
 
-   - **200:** Fault cleared
+   - **204:** Fault cleared
    - **404:** Fault not found
 
 ``DELETE /api/v1/faults``
