@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+# Copyright 2026 bburda
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Feature tests for operations API (services, actions, executions).
+
+Validates operation listing, service calls, action details, operation schema,
+error handling, and execution listing.
+
+Migrated from:
+- test_31 through test_38 (service/action calls)
+- test_53 (service operation schema)
+- test_84 (operation details for service)
+- test_86 through test_89 (operation not found, list executions, create execution, cancel)
+- test_93 (operation details for apps)
+- test_99 (list operations)
+"""
+
+import time
+import unittest
+
+import launch_testing
+import launch_testing.actions
+import requests
+
+from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
+from ros2_medkit_test_utils.launch_helpers import create_test_launch
+
+
+def generate_test_description():
+    return create_test_launch(
+        demo_nodes=['calibration_service', 'long_calibration_action'],
+        fault_manager=False,
+    )
+
+
+class TestOperationsApi(GatewayTestCase):
+    """Operations API tests for services, actions, and executions."""
+
+    MIN_EXPECTED_APPS = 2
+    REQUIRED_APPS = {'calibration', 'long_calibration'}
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _ensure_calibration_app_ready(self, timeout=10.0, interval=0.2):
+        """Wait for the calibration app REST resource to become available."""
+        start_time = time.monotonic()
+        last_error = None
+        while time.monotonic() - start_time < timeout:
+            try:
+                response = requests.get(
+                    f'{self.BASE_URL}/apps/calibration', timeout=2
+                )
+                if response.status_code == 200:
+                    return
+                last_error = f'Status {response.status_code}'
+            except requests.exceptions.RequestException as e:
+                last_error = str(e)
+            time.sleep(interval)
+        raise unittest.SkipTest(
+            f'Calibration app not available after {timeout}s. '
+            f'Last error: {last_error}'
+        )
+
+    # ------------------------------------------------------------------
+    # Service calls (test_31-36)
+    # ------------------------------------------------------------------
+
+    def test_operation_call_calibrate_service(self):
+        """POST /apps/{app_id}/operations/{op}/executions calls a service.
+
+        Operations are exposed on Apps (ROS 2 nodes), not synthetic Components.
+
+        @verifies REQ_INTEROP_035
+        """
+        self._ensure_calibration_app_ready()
+
+        response = requests.post(
+            f'{self.BASE_URL}/apps/calibration/operations/calibrate/executions',
+            json={},
+            timeout=15
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        # SOVD service response: {"parameters": {...}}
+        self.assertIn('parameters', data)
+
+        # Verify service response structure (std_srvs/srv/Trigger response)
+        params = data['parameters']
+        self.assertIn('success', params)
+        self.assertIn('message', params)
+        self.assertIsInstance(params['success'], bool)
+        self.assertIsInstance(params['message'], str)
+
+    def test_operation_call_nonexistent_operation(self):
+        """Operation call returns 404 for unknown operation.
+
+        @verifies REQ_INTEROP_035
+        """
+        self._ensure_calibration_app_ready()
+
+        response = requests.post(
+            f'{self.BASE_URL}/apps/calibration/operations/nonexistent_op/executions',
+            json={},
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+        self.assertIn('not found', data['message'].lower())
+
+    def test_operation_call_nonexistent_entity(self):
+        """Operation call returns 404 for unknown entity.
+
+        @verifies REQ_INTEROP_035
+        """
+        response = requests.post(
+            f'{self.BASE_URL}/apps/nonexistent_app/operations/calibrate/executions',
+            json={},
+            timeout=5
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+        self.assertIn('not found', data['message'].lower())
+
+    def test_operation_call_invalid_entity_id(self):
+        """Operation call rejects invalid entity ID.
+
+        @verifies REQ_INTEROP_035
+        """
+        invalid_ids = [
+            'app;drop',
+            'app<script>',
+            'app name',
+        ]
+
+        for invalid_id in invalid_ids:
+            response = requests.post(
+                f'{self.BASE_URL}/apps/{invalid_id}/operations/calibrate/executions',
+                json={},
+                timeout=5
+            )
+            self.assertEqual(
+                response.status_code,
+                400,
+                f'Expected 400 for entity_id: {invalid_id}'
+            )
+
+            data = response.json()
+            self.assertIn('error_code', data)
+            self.assertIn('invalid', data['message'].lower())
+
+    def test_operation_call_invalid_operation_name(self):
+        """Operation call rejects invalid operation name.
+
+        @verifies REQ_INTEROP_021
+        """
+        invalid_names = [
+            'op;drop',
+            'op<script>',
+            'op name',
+        ]
+
+        for invalid_name in invalid_names:
+            response = requests.post(
+                f'{self.BASE_URL}/apps/calibration/operations/{invalid_name}/executions',
+                json={},
+                timeout=5
+            )
+            # Accept 400 (invalid) or 404 (not found) - both are valid rejections
+            self.assertIn(
+                response.status_code,
+                [400, 404],
+                f'Expected 400 or 404 for operation_name: {invalid_name}'
+            )
+
+            data = response.json()
+            self.assertIn('error_code', data)
+
+    def test_operation_call_with_invalid_json(self):
+        """Operation call returns 400 for invalid JSON body.
+
+        @verifies REQ_INTEROP_021
+        """
+        response = requests.post(
+            f'{self.BASE_URL}/apps/calibration/operations/calibrate/executions',
+            data='not valid json',
+            headers={'Content-Type': 'application/json'},
+            timeout=5
+        )
+        self.assertEqual(response.status_code, 400)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+        self.assertIn('json', data['message'].lower())
+
+    # ------------------------------------------------------------------
+    # Operation discovery (test_37-38)
+    # ------------------------------------------------------------------
+
+    def test_operations_listed_in_app_discovery(self):
+        """Operations (services) are available via app detail endpoint.
+
+        @verifies REQ_INTEROP_021
+        """
+        self._ensure_calibration_app_ready()
+
+        data = self.get_json('/apps/calibration')
+
+        # App detail should have capabilities including operations
+        self.assertIn('capabilities', data, 'App should have capabilities')
+        cap_names = [c.get('name') for c in data['capabilities']]
+        self.assertIn('operations', cap_names, 'App should have operations capability')
+
+        # Check operations endpoint directly
+        ops_data = self.get_json('/apps/calibration/operations')
+        self.assertIn('items', ops_data, 'Operations endpoint should return items')
+        ops = ops_data['items']
+
+        # Find the calibrate operation
+        calibrate_op = None
+        for op in ops:
+            if op['name'] == 'calibrate':
+                calibrate_op = op
+                break
+
+        self.assertIsNotNone(calibrate_op, 'Calibrate operation should be listed')
+        self.assertIn('x-medkit', calibrate_op)
+        x_medkit = calibrate_op['x-medkit']
+        self.assertIn('ros2', x_medkit)
+        self.assertEqual(x_medkit['ros2']['kind'], 'service')
+        self.assertEqual(x_medkit['ros2']['type'], 'std_srvs/srv/Trigger')
+        self.assertEqual(x_medkit['ros2']['service'], '/powertrain/engine/calibrate')
+
+    def test_root_endpoint_includes_operations(self):
+        """Root endpoint lists operations endpoint and capability.
+
+        @verifies REQ_INTEROP_021
+        """
+        data = self.get_json('/')
+
+        self.assertIn('endpoints', data)
+        operations_endpoints = [e for e in data['endpoints'] if 'operations' in e.lower()]
+        self.assertGreater(len(operations_endpoints), 0, 'Should have operations endpoints')
+
+        self.assertIn('capabilities', data)
+        self.assertIn('operations', data['capabilities'])
+        self.assertTrue(data['capabilities']['operations'])
+
+    # ------------------------------------------------------------------
+    # Operation schema (test_53)
+    # ------------------------------------------------------------------
+
+    def test_service_operation_has_type_info_schema(self):
+        """Service operations include type_info with request/response schemas."""
+        ops_data = self.get_json('/apps/calibration/operations')
+        self.assertIn('items', ops_data, 'Operations endpoint should return items')
+        ops = ops_data['items']
+
+        # Find the calibrate service operation
+        calibrate_op = None
+        for op in ops:
+            if op['name'] == 'calibrate':
+                x_medkit = op.get('x-medkit', {})
+                ros2 = x_medkit.get('ros2', {})
+                if ros2.get('kind') == 'service':
+                    calibrate_op = op
+                    break
+
+        self.assertIsNotNone(calibrate_op, 'Calibrate service should be listed')
+
+        # Verify type_info is present in x-medkit with request/response schemas
+        x_medkit = calibrate_op['x-medkit']
+        self.assertIn('type_info', x_medkit, 'Service should have type_info in x-medkit')
+        type_info = x_medkit['type_info']
+
+        self.assertIn('request', type_info, 'Service type_info should have request')
+        self.assertIn('response', type_info, 'Service type_info should have response')
+        self.assertIsInstance(type_info['request'], dict)
+        self.assertIsInstance(type_info['response'], dict)
+
+        # std_srvs/srv/Trigger has empty request and response with success+message
+        response_schema = type_info['response']
+        self.assertIn('properties', response_schema, 'Response schema should have properties')
+        self.assertIn('success', response_schema['properties'])
+        self.assertIn('message', response_schema['properties'])
+
+    # ------------------------------------------------------------------
+    # Operation details (test_84, test_93)
+    # ------------------------------------------------------------------
+
+    def test_get_operation_details_for_service(self):
+        """GET /{entity}/operations/{op-id} returns operation details for service.
+
+        @verifies REQ_INTEROP_034
+        """
+        data = self.get_json('/components/powertrain/operations')
+        self.assertIn('items', data)
+        operations = data['items']
+        self.assertGreater(len(operations), 0, 'Component should have operations')
+
+        # Find a service (asynchronous_execution: false)
+        service_op = None
+        for op in operations:
+            if not op.get('asynchronous_execution', True):
+                service_op = op
+                break
+
+        if service_op is None:
+            self.skipTest('No service operations found')
+            return
+
+        operation_id = service_op['id']
+
+        # Get the operation details
+        response = requests.get(
+            f'{self.BASE_URL}/components/powertrain/operations/{operation_id}',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('item', data)
+        item = data['item']
+
+        # Required fields
+        self.assertIn('id', item)
+        self.assertEqual(item['id'], operation_id)
+        self.assertIn('name', item)
+        self.assertIn('proximity_proof_required', item)
+        self.assertFalse(item['proximity_proof_required'])
+        self.assertIn('asynchronous_execution', item)
+        self.assertFalse(item['asynchronous_execution'])
+
+        # x-medkit extension
+        self.assertIn('x-medkit', item)
+        x_medkit = item['x-medkit']
+        self.assertIn('ros2', x_medkit)
+        self.assertIn('kind', x_medkit['ros2'])
+        self.assertEqual(x_medkit['ros2']['kind'], 'service')
+        self.assertIn('type', x_medkit['ros2'])
+        self.assertIn('service', x_medkit['ros2'])
+
+    def test_get_operation_details_for_apps(self):
+        """GET /apps/{id}/operations/{op-id} works for apps.
+
+        @verifies REQ_INTEROP_034
+        """
+        data = self.get_json('/apps')
+        apps = data['items']
+
+        operation_found = False
+        for app in apps:
+            ops_data = self.get_json(f'/apps/{app["id"]}/operations')
+            if ops_data.get('items'):
+                operation_id = ops_data['items'][0]['id']
+
+                # Get operation details
+                response = requests.get(
+                    f'{self.BASE_URL}/apps/{app["id"]}/operations/{operation_id}',
+                    timeout=10
+                )
+                self.assertEqual(response.status_code, 200)
+
+                data = response.json()
+                self.assertIn('item', data)
+                self.assertIn('id', data['item'])
+                self.assertIn('x-medkit', data['item'])
+
+                operation_found = True
+                break
+
+        if not operation_found:
+            self.skipTest('No app operations found')
+
+    # ------------------------------------------------------------------
+    # Operation errors (test_86)
+    # ------------------------------------------------------------------
+
+    def test_get_operation_not_found(self):
+        """GET /{entity}/operations/{op-id} returns 404 for nonexistent operation.
+
+        @verifies REQ_INTEROP_034
+        """
+        response = requests.get(
+            f'{self.BASE_URL}/components/powertrain/operations/nonexistent_op',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+        self.assertIn('message', data)
+        self.assertEqual(data['message'], 'Operation not found')
+
+    # ------------------------------------------------------------------
+    # Executions (test_87-89)
+    # ------------------------------------------------------------------
+
+    def test_list_executions_returns_items_array(self):
+        """GET /{entity}/operations/{op-id}/executions returns items array.
+
+        @verifies REQ_INTEROP_036
+        """
+        # Find an action to test with
+        data = self.get_json('/components')
+        components = data['items']
+
+        action_op = None
+        component_id = None
+
+        for comp in components:
+            ops_data = self.get_json(f'/components/{comp["id"]}/operations')
+            for op in ops_data.get('items', []):
+                if op.get('asynchronous_execution', False):
+                    action_op = op
+                    component_id = comp['id']
+                    break
+            if action_op:
+                break
+
+        if action_op is None:
+            self.skipTest('No action operations found')
+            return
+
+        operation_id = action_op['id']
+
+        # List executions - should return items array (may be empty)
+        response = requests.get(
+            f'{self.BASE_URL}/components/{component_id}/operations/{operation_id}/executions',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+
+    def test_create_execution_for_service(self):
+        """POST /{entity}/operations/{op-id}/executions calls service and returns.
+
+        @verifies REQ_INTEROP_035
+        """
+        data = self.get_json('/components/powertrain/operations')
+        operations = data['items']
+
+        service_op = None
+        for op in operations:
+            if not op.get('asynchronous_execution', True):
+                service_op = op
+                break
+
+        if service_op is None:
+            self.skipTest('No service operations found')
+            return
+
+        operation_id = service_op['id']
+
+        # Call the service
+        response = requests.post(
+            f'{self.BASE_URL}/components/powertrain/operations/{operation_id}/executions',
+            json={'parameters': {}},
+            timeout=30
+        )
+
+        # Should return 200 for sync or 400/500 if service is unavailable
+        self.assertIn(
+            response.status_code, [200, 400, 500, 503],
+            f'Expected 200/400/500/503, got {response.status_code}: {response.text}'
+        )
+
+        data = response.json()
+        if response.status_code == 200:
+            self.assertIn('parameters', data)
+
+    def test_cancel_nonexistent_execution(self):
+        """DELETE /{entity}/operations/{op-id}/executions/{exec-id} returns 404.
+
+        @verifies REQ_INTEROP_039
+        """
+        url = (f'{self.BASE_URL}/components/powertrain/operations/'
+               'nonexistent_op/executions/fake-exec-id')
+        response = requests.delete(url, timeout=10)
+        self.assertEqual(response.status_code, 404)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+        self.assertIn('message', data)
+        self.assertEqual(data['message'], 'Execution not found')
+
+    # ------------------------------------------------------------------
+    # List operations (test_99)
+    # ------------------------------------------------------------------
+
+    def test_list_operations(self):
+        """GET /apps/{id}/operations returns operations list.
+
+        @verifies REQ_INTEROP_033
+        """
+        data = self.get_json('/apps')
+        self.assertGreater(len(data['items']), 0)
+        app_id = data['items'][0]['id']
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/{app_id}/operations',
+            timeout=10
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn('items', data)
+
+
+@launch_testing.post_shutdown_test()
+class TestShutdown(unittest.TestCase):
+
+    def test_exit_codes(self, proc_info):
+        launch_testing.asserts.assertExitCodes(proc_info)
