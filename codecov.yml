@@ -23,6 +23,7 @@ ignore:
   - "test/**/*"                    # Test files
   - "**/test_*.cpp"                # Test source files
   - "**/demo_nodes/**"             # Demo nodes (test fixtures)
+  - "**/vendored/**"               # Third-party vendored code
   - "build/**/*"                   # Build artifacts
   - "install/**/*"                 # Install artifacts
   - "log/**/*"                     # Log files

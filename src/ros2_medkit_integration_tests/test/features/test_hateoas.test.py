@@ -52,6 +52,7 @@ class TestHateoas(GatewayTestCase):
 
     MIN_EXPECTED_APPS = 8
     REQUIRED_AREAS = {'powertrain', 'chassis', 'body'}
+    REQUIRED_APPS = {'temp_sensor'}
 
     # ------------------------------------------------------------------
     # List hrefs (test_70-72)

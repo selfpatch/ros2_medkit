@@ -42,9 +42,10 @@ class FaultManagerTest : public ::testing::Test {
   }
 
   void SetUp() override {
-    // Create node with short timeout for faster tests
+    // Create node with moderate timeout: must be long enough for Humble's slower
+    // DDS service discovery while still keeping tests reasonably fast.
     node_ = std::make_shared<rclcpp::Node>("test_fault_manager_node", rclcpp::NodeOptions().parameter_overrides({
-                                                                          {"fault_service_timeout_sec", 1.0},
+                                                                          {"fault_service_timeout_sec", 3.0},
                                                                       }));
 
     // Create executor for spinning
@@ -80,7 +81,10 @@ TEST_F(FaultManagerTest, GetSnapshotsServiceNotAvailable) {
   auto result = fault_manager.get_snapshots("TEST_FAULT");
 
   EXPECT_FALSE(result.success);
-  EXPECT_EQ(result.error_message, "GetSnapshots service not available");
+  // On Humble, wait_for_service may report ready before DDS confirms absence,
+  // so the call proceeds to async_send_request which then times out.
+  EXPECT_TRUE(result.error_message == "GetSnapshots service not available" ||
+              result.error_message == "GetSnapshots service call timed out");
 }
 
 // @verifies REQ_INTEROP_088
@@ -199,7 +203,10 @@ TEST_F(FaultManagerTest, GetRosbagServiceNotAvailable) {
   auto result = fault_manager.get_rosbag("TEST_FAULT");
 
   EXPECT_FALSE(result.success);
-  EXPECT_EQ(result.error_message, "GetRosbag service not available");
+  // On Humble, wait_for_service may report ready before DDS confirms absence,
+  // so the call proceeds to async_send_request which then times out.
+  EXPECT_TRUE(result.error_message == "GetRosbag service not available" ||
+              result.error_message == "GetRosbag service call timed out");
 }
 
 // @verifies REQ_INTEROP_088
