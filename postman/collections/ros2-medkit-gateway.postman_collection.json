@@ -1215,6 +1215,49 @@
           "response": []
         },
         {
+          "name": "DELETE Clear All Faults (System-wide)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/faults",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "faults"
+              ]
+            },
+            "description": "Clear all faults across the entire system (ros2_medkit extension, not SOVD).\n\nAccepts the optional `?status=` query parameter (same values as GET /faults). Without it, clears active faults (pending + confirmed).\n\n**Response codes:**\n- 204: Faults cleared (or none to clear)\n- 400: Invalid status parameter\n- 503: Fault manager unavailable"
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE Clear All Faults (All Statuses)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/faults?status=all",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "faults"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "all",
+                  "description": "Clear all faults including cleared/healed ones"
+                }
+              ]
+            },
+            "description": "Clear all faults across the system including all statuses (pending, confirmed, cleared, healed). Use status=pending, status=confirmed, status=cleared, status=healed, or status=all to filter."
+          },
+          "response": []
+        },
+        {
           "name": "GET Fault (Error - Not Found)",
           "request": {
             "method": "GET",

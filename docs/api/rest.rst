@@ -477,6 +477,16 @@ Query and manage faults.
    - **200:** Fault cleared
    - **404:** Fault not found
 
+``DELETE /api/v1/faults``
+   Clear all faults across the system *(ros2_medkit extension, not SOVD)*.
+
+   Accepts the optional ``?status=`` query parameter (same values as ``GET /faults``).
+   Without it, clears active faults (pending + confirmed).
+
+   - **204:** Faults cleared (or none to clear)
+   - **400:** Invalid status parameter
+   - **503:** Fault manager unavailable
+
 Bulk Data Endpoints
 -------------------
 

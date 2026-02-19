@@ -48,6 +48,8 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - ✅ DELETE `/api/v1/components/{component_id}/configurations` - Reset all parameters to default values
 
 ### Faults Endpoints (Fault Management)
+- ✅ GET `/api/v1/faults` - List all faults across the system
+- ✅ DELETE `/api/v1/faults` - Clear all faults system-wide (extension)
 - ✅ GET `/api/v1/components/{component_id}/faults` - List all faults for a component
 - ✅ GET `/api/v1/components/{component_id}/faults/{fault_code}` - Get specific fault details
 - ✅ DELETE `/api/v1/components/{component_id}/faults/{fault_code}` - Clear a fault

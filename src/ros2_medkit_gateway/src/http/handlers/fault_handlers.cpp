@@ -613,5 +613,51 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
   }
 }
 
+void FaultHandlers::handle_clear_all_faults_global(const httplib::Request & req, httplib::Response & res) {
+  try {
+    auto filter = parse_fault_status_param(req);
+    if (!filter.is_valid) {
+      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+                                 "Invalid status parameter value",
+                                 {{"allowed_values", "pending, confirmed, cleared, healed, all"},
+                                  {"parameter", "status"},
+                                  {"value", req.get_param_value("status")}});
+      return;
+    }
+
+    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto faults_result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed,
+                                                 filter.include_cleared, filter.include_healed);
+
+    if (!faults_result.success) {
+      HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
+                                 "Failed to retrieve faults", {{"details", faults_result.error_message}});
+      return;
+    }
+
+    // Clear each fault
+    if (faults_result.data.contains("faults") && faults_result.data["faults"].is_array()) {
+      for (const auto & fault : faults_result.data["faults"]) {
+        if (fault.contains("fault_code")) {
+          std::string fault_code = fault["fault_code"].get<std::string>();
+          auto clear_result = fault_mgr->clear_fault(fault_code);
+          if (!clear_result.success) {
+            RCLCPP_WARN(HandlerContext::logger(), "Failed to clear fault '%s': %s", fault_code.c_str(),
+                        clear_result.error_message.c_str());
+          }
+        }
+      }
+    }
+
+    // Return 204 No Content on successful delete
+    res.status = StatusCode::NoContent_204;
+
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+                               "Failed to clear faults", {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_clear_all_faults_global: %s", e.what());
+  }
+}
+
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway

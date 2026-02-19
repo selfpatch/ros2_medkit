@@ -31,6 +31,8 @@ namespace handlers {
  * - GET /components/{component_id}/faults - List faults for a component
  * - GET /components/{component_id}/faults/{fault_code} - Get specific fault
  * - DELETE /components/{component_id}/faults/{fault_code} - Clear fault
+ * - DELETE /components/{component_id}/faults - Clear all faults for entity
+ * - DELETE /faults - Clear all faults globally (extension)
  *
  * Note: Snapshot data is inline in fault responses (environment_data).
  * Rosbag downloads use the bulk-data endpoint pattern.
@@ -68,6 +70,13 @@ class FaultHandlers {
    * @brief Handle DELETE /components/{component_id}/faults - clear all faults for entity.
    */
   void handle_clear_all_faults(const httplib::Request & req, httplib::Response & res);
+
+  /**
+   * @brief Handle DELETE /faults - clear all faults globally (extension, not SOVD).
+   *
+   * Accepts optional ?status= query parameter to filter which faults to clear.
+   */
+  void handle_clear_all_faults_global(const httplib::Request & req, httplib::Response & res);
 
   /**
    * @brief Build SOVD-compliant fault response with environment data.

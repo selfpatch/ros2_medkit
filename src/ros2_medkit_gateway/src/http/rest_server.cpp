@@ -712,6 +712,11 @@ void RESTServer::setup_routes() {
     fault_handlers_->handle_list_all_faults(req, res);
   });
 
+  // DELETE /faults - extension: clear all faults globally (not SOVD)
+  srv->Delete(api_path("/faults"), [this](const httplib::Request & req, httplib::Response & res) {
+    fault_handlers_->handle_clear_all_faults_global(req, res);
+  });
+
   // List all faults for a component (REQ_INTEROP_012)
   srv->Get((api_path("/components") + R"(/([^/]+)/faults$)"),
            [this](const httplib::Request & req, httplib::Response & res) {

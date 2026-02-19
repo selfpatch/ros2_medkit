@@ -4988,3 +4988,48 @@ class TestROS2MedkitGatewayIntegration(unittest.TestCase):
             # For other formats, just verify we have content
             self.assertGreater(len(content), 0)
             print(f'✓ Downloaded rosbag has content ({len(content)} bytes)')
+
+    # ==================== DELETE /faults (global) ====================
+
+    def test_138_delete_all_faults_globally(self):
+        """
+        Test DELETE /faults clears all faults across the system.
+
+        The lidar_sensor continuously re-reports faults, so we only verify
+        the DELETE endpoint returns 204 (success).
+        """
+        response = requests.delete(
+            f'{self.BASE_URL}/faults',
+            timeout=10
+        )
+
+        # Should return 204 No Content on success
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(len(response.content), 0)
+
+        print('✓ Delete all faults globally test passed')
+
+    def test_139_delete_all_faults_globally_with_status_filter(self):
+        """Test DELETE /faults?status=all includes all statuses."""
+        response = requests.delete(
+            f'{self.BASE_URL}/faults?status=all',
+            timeout=10
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(len(response.content), 0)
+
+        print('✓ Delete all faults globally with status=all test passed')
+
+    def test_140_delete_all_faults_globally_invalid_status(self):
+        """Test DELETE /faults?status=invalid returns 400 Bad Request."""
+        response = requests.delete(
+            f'{self.BASE_URL}/faults?status=invalid_status',
+            timeout=10
+        )
+        self.assertEqual(response.status_code, 400)
+
+        data = response.json()
+        self.assertIn('error_code', data)
+
+        print('✓ Delete all faults globally invalid status test passed')
