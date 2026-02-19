@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
@@ -34,6 +35,10 @@ using ros2_medkit_msgs::srv::GetSnapshots;
 class FaultManagerTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
+    // Isolate from other packages' tests running in parallel (e.g. ros2_medkit_fault_manager
+    // launches a real fault_manager_node with /fault_manager/get_snapshots on the default domain).
+    // Without this, our mock services collide with real ones on Humble's slower DDS cleanup.
+    setenv("ROS_DOMAIN_ID", "99", 1);
     rclcpp::init(0, nullptr);
   }
 
@@ -42,11 +47,13 @@ class FaultManagerTest : public ::testing::Test {
   }
 
   void SetUp() override {
-    // Create node with moderate timeout: must be long enough for Humble's slower
-    // DDS service discovery while still keeping tests reasonably fast.
-    node_ = std::make_shared<rclcpp::Node>("test_fault_manager_node", rclcpp::NodeOptions().parameter_overrides({
-                                                                          {"fault_service_timeout_sec", 3.0},
-                                                                      }));
+    // Use unique node names to avoid DDS participant name collisions between tests.
+    // On Humble (CycloneDDS), reusing the same node name across sequential tests
+    // causes stale discovery state that can corrupt service responses.
+    std::string node_name = "test_fault_manager_node_" + std::to_string(test_counter_++);
+    node_ = std::make_shared<rclcpp::Node>(node_name, rclcpp::NodeOptions().parameter_overrides({
+                                                          {"fault_service_timeout_sec", 3.0},
+                                                      }));
 
     // Create executor for spinning
     executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
@@ -68,6 +75,7 @@ class FaultManagerTest : public ::testing::Test {
     });
   }
 
+  static inline int test_counter_ = 0;
   std::shared_ptr<rclcpp::Node> node_;
   std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::thread spin_thread_;
