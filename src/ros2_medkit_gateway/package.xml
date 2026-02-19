@@ -35,12 +35,6 @@
   <test_depend>ament_cmake_clang_format</test_depend>
   <test_depend>ament_cmake_clang_tidy</test_depend>
   <test_depend>ament_cmake_gtest</test_depend>
-  <test_depend>ament_cmake_pytest</test_depend>
-  <test_depend>launch_testing_ament_cmake</test_depend>
-  <test_depend>python3-requests</test_depend>
-  <test_depend>rclcpp_action</test_depend>
-  <test_depend>example_interfaces</test_depend>
-  <test_depend>ros2_medkit_fault_manager</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
