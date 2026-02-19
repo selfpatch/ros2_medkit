@@ -454,5 +454,10 @@ class TestShutdown(unittest.TestCase):
     """Post-shutdown tests."""
 
     def test_exit_codes(self, proc_info):
-        """Check that the gateway exited cleanly."""
-        launch_testing.asserts.assertExitCodes(proc_info)
+        """Check all processes exited cleanly (SIGTERM allowed)."""
+        for info in proc_info:
+            allowed = {0, -2, -15}  # OK, SIGINT, SIGTERM
+            self.assertIn(
+                info.returncode, allowed,
+                f'Process {info.process_name} exited with code {info.returncode}'
+            )

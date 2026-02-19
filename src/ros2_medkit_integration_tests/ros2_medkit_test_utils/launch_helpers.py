@@ -52,7 +52,11 @@ DEMO_NODE_REGISTRY = {
     'controller': ('demo_light_controller', 'controller', '/body/lights'),
     # Operations (services / actions)
     'calibration': ('demo_calibration_service', 'calibration', '/powertrain/engine'),
+    'calibration_service': ('demo_calibration_service', 'calibration', '/powertrain/engine'),
     'long_calibration': ('demo_long_calibration_action', 'long_calibration', '/powertrain/engine'),
+    'long_calibration_action': (
+        'demo_long_calibration_action', 'long_calibration', '/powertrain/engine',
+    ),
 }
 
 # Convenience groupings for callers that want subsets of demo nodes.

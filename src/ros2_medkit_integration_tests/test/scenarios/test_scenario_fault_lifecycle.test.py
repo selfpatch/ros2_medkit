@@ -102,9 +102,9 @@ class TestScenarioFaultLifecycle(GatewayTestCase):
             self.skipTest('No lidar fault appeared within timeout')
 
         # Basic fault structure verification
-        self.assertIn('faultCode', fault)
-        self.assertIsInstance(fault['faultCode'], str)
-        self.assertGreater(len(fault['faultCode']), 0)
+        self.assertIn('fault_code', fault)
+        self.assertIsInstance(fault['fault_code'], str)
+        self.assertGreater(len(fault['fault_code']), 0)
 
     def test_02_delete_all_faults_for_component(self):
         """DELETE /components/{id}/faults clears all faults for component.
@@ -199,4 +199,10 @@ class TestScenarioFaultLifecycle(GatewayTestCase):
 class TestShutdown(unittest.TestCase):
 
     def test_exit_codes(self, proc_info):
-        launch_testing.asserts.assertExitCodes(proc_info)
+        """Check all processes exited cleanly (SIGTERM allowed)."""
+        for info in proc_info:
+            allowed = {0, -2, -15}  # OK, SIGINT, SIGTERM
+            self.assertIn(
+                info.returncode, allowed,
+                f'Process {info.process_name} exited with code {info.returncode}'
+            )

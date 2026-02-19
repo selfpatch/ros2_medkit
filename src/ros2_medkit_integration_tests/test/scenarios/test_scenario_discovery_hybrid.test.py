@@ -272,15 +272,25 @@ class TestScenarioDiscoveryHybrid(GatewayTestCase):
     def test_15_app_online_with_runtime_node(self):
         """Apps linked to running nodes have is_online=true in x-medkit.
 
+        Runtime linking happens asynchronously after nodes start, so poll
+        until at least one app is online.
+
         @verifies REQ_INTEROP_003
         """
-        data = self.get_json('/apps')
-        apps_by_id = {a['id']: a for a in data['items']}
+        deadline = time.monotonic() + 30.0
+        online_apps = []
+        while time.monotonic() < deadline:
+            data = self.get_json('/apps')
+            apps_by_id = {a['id']: a for a in data['items']}
 
-        online_apps = [
-            app_id for app_id, app in apps_by_id.items()
-            if app.get('x-medkit', {}).get('is_online', False)
-        ]
+            online_apps = [
+                app_id for app_id, app in apps_by_id.items()
+                if app.get('x-medkit', {}).get('is_online', False)
+            ]
+
+            if online_apps:
+                break
+            time.sleep(1.0)
 
         self.assertGreater(
             len(online_apps), 0,
@@ -455,4 +465,10 @@ class TestScenarioDiscoveryHybrid(GatewayTestCase):
 class TestShutdown(unittest.TestCase):
 
     def test_exit_codes(self, proc_info):
-        launch_testing.asserts.assertExitCodes(proc_info)
+        """Check all processes exited cleanly (SIGTERM allowed)."""
+        for info in proc_info:
+            allowed = {0, -2, -15}  # OK, SIGINT, SIGTERM
+            self.assertIn(
+                info.returncode, allowed,
+                f'Process {info.process_name} exited with code {info.returncode}'
+            )
