@@ -36,8 +36,17 @@ for your distribution:
 
 .. note::
 
-   On Ubuntu 22.04 (Humble), the ``libcpp-httplib-dev`` system package is not available.
-   You must install cpp-httplib from source before building:
+   On Ubuntu 22.04 (Humble), the ``libcpp-httplib-dev`` system package is either not
+   available or too old (0.10.x). ros2_medkit requires cpp-httplib >= 0.14 for the
+   ``httplib::StatusCode`` enum and ``std::string`` API overloads.
+
+   If ``libcpp-httplib-dev`` is installed, **remove it first** to avoid version conflicts:
+
+   .. code-block:: bash
+
+      sudo apt remove libcpp-httplib-dev
+
+   Then install cpp-httplib >= 0.14 from source:
 
    .. code-block:: bash
 
@@ -166,6 +175,20 @@ Troubleshooting
    .. code-block:: bash
 
       gcc --version  # Should show 13.x or higher
+
+**Build fails on Humble with** ``httplib::StatusCode has not been declared``
+
+   The system ``libcpp-httplib-dev`` package on Ubuntu 22.04 provides cpp-httplib 0.10.x,
+   which is too old. ros2_medkit requires cpp-httplib >= 0.14. Remove the system package
+   and install from source:
+
+   .. code-block:: bash
+
+      sudo apt remove libcpp-httplib-dev
+      git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib
+      cd /tmp/cpp-httplib && mkdir build && cd build
+      cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON
+      sudo make install
 
 **Cannot find ros2_medkit packages after build**
 

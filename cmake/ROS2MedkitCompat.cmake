@@ -75,20 +75,38 @@ endmacro()
 # pkg-config .pc file.  On Humble/Jammy, cpp-httplib must be built from
 # source, which installs a CMake config file (httplibConfig.cmake).
 #
+# Requires cpp-httplib >= 0.14 (StatusCode enum, std::string overloads).
+# Older system packages (e.g. 0.10.x on Jammy) are rejected by pkg-config
+# so the fallback cmake/source path is used instead.
+#
 # Creates a unified alias target `cpp_httplib_target` for consumers.
 # ---------------------------------------------------------------------------
 macro(medkit_find_cpp_httplib)
   find_package(PkgConfig QUIET)
   if(PkgConfig_FOUND)
-    pkg_check_modules(cpp_httplib IMPORTED_TARGET cpp-httplib)
+    pkg_check_modules(cpp_httplib IMPORTED_TARGET cpp-httplib>=0.14)
   endif()
   if(cpp_httplib_FOUND)
     add_library(cpp_httplib_target ALIAS PkgConfig::cpp_httplib)
-    message(STATUS "[MedkitCompat] cpp-httplib: using pkg-config (system package)")
+    message(STATUS "[MedkitCompat] cpp-httplib: using pkg-config (${cpp_httplib_VERSION})")
   else()
-    find_package(httplib REQUIRED)
-    add_library(cpp_httplib_target ALIAS httplib::httplib)
-    message(STATUS "[MedkitCompat] cpp-httplib: using cmake config (source build)")
+    find_package(httplib QUIET)
+    if(TARGET httplib::httplib)
+      add_library(cpp_httplib_target ALIAS httplib::httplib)
+      message(STATUS "[MedkitCompat] cpp-httplib: using cmake config (source build)")
+    else()
+      message(FATAL_ERROR
+        "[MedkitCompat] Could not find cpp-httplib >= 0.14.\n"
+        "  The system libcpp-httplib-dev package on Ubuntu 22.04 provides 0.10.x which is too old.\n"
+        "  ros2_medkit requires cpp-httplib >= 0.14 for httplib::StatusCode and std::string overloads.\n"
+        "  Fix: remove the old system package and install from source:\n"
+        "    sudo apt remove libcpp-httplib-dev\n"
+        "    git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib\n"
+        "    cd /tmp/cpp-httplib && mkdir build && cd build\n"
+        "    cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON\n"
+        "    sudo make install\n"
+        "  See: https://selfpatch.github.io/ros2_medkit/installation.html")
+    endif()
   endif()
 endmacro()
 
