@@ -28,8 +28,8 @@
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/http/handlers/handlers.hpp"
 #include "ros2_medkit_gateway/http/http_server.hpp"
-#include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/http/rate_limiter.hpp"
+#include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
 
 namespace ros2_medkit_gateway {
 
