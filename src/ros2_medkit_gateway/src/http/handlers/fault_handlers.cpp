@@ -627,7 +627,7 @@ void FaultHandlers::handle_clear_all_faults_global(const httplib::Request & req,
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
     auto faults_result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed,
-                                                 filter.include_cleared, filter.include_healed, true);
+                                                filter.include_cleared, filter.include_healed, true);
 
     if (!faults_result.success) {
       HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
@@ -653,8 +653,8 @@ void FaultHandlers::handle_clear_all_faults_global(const httplib::Request & req,
     res.status = StatusCode::NoContent_204;
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
-                               "Failed to clear faults", {{"details", e.what()}});
+    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Failed to clear faults",
+                               {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_clear_all_faults_global: %s", e.what());
   }
 }
