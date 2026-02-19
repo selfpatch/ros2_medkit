@@ -626,6 +626,8 @@ void FaultHandlers::handle_clear_all_faults_global(const httplib::Request & req,
     }
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
+    // Global clear is the "nuclear option" — always include muted (correlated) faults,
+    // unlike per-entity clear which respects the default include_muted=false.
     auto faults_result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed,
                                                 filter.include_cleared, filter.include_healed, true);
 
