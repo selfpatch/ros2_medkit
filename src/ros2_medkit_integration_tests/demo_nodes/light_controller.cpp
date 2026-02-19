@@ -44,6 +44,10 @@ class LightController : public rclcpp::Node {
     RCLCPP_INFO(this->get_logger(), "Light controller started");
   }
 
+  ~LightController() {
+    timer_->cancel();
+  }
+
  private:
   void command_callback(const std_msgs::msg::Bool::SharedPtr msg) {
     light_on_ = msg->data;

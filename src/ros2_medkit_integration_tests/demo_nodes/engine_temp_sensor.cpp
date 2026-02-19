@@ -61,6 +61,10 @@ class EngineTempSensor : public rclcpp::Node {
                 publish_rate_, min_temp_, max_temp_);
   }
 
+  ~EngineTempSensor() {
+    timer_->cancel();
+  }
+
  private:
   rcl_interfaces::msg::SetParametersResult on_parameter_change(const std::vector<rclcpp::Parameter> & parameters) {
     rcl_interfaces::msg::SetParametersResult result;

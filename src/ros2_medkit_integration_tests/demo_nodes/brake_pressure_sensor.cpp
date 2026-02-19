@@ -26,6 +26,10 @@ class BrakePressureSensor : public rclcpp::Node {
     RCLCPP_INFO(this->get_logger(), "Brake pressure sensor started");
   }
 
+  ~BrakePressureSensor() {
+    timer_->cancel();
+  }
+
  private:
   void publish_data() {
     current_pressure_ += 5.0;

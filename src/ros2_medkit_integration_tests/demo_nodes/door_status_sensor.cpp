@@ -27,6 +27,10 @@ class DoorStatusSensor : public rclcpp::Node {
     RCLCPP_INFO(this->get_logger(), "Door status sensor started");
   }
 
+  ~DoorStatusSensor() {
+    timer_->cancel();
+  }
+
  private:
   void publish_data() {
     // Toggle door state

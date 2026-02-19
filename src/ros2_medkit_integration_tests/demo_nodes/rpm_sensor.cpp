@@ -25,6 +25,10 @@ class RPMSensor : public rclcpp::Node {
     RCLCPP_INFO(this->get_logger(), "RPM sensor started");
   }
 
+  ~RPMSensor() {
+    timer_->cancel();
+  }
+
  private:
   void publish_data() {
     current_rpm_ += 50.0;

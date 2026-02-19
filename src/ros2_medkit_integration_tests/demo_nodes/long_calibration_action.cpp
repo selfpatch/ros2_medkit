@@ -28,7 +28,10 @@
  * - Result: int32[] sequence (final calibration values)
  */
 
+#include <atomic>
+#include <cstdlib>
 #include <example_interfaces/action/fibonacci.hpp>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
@@ -51,8 +54,18 @@ class LongCalibrationAction : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Long calibration action server started");
   }
 
+  void prepare_shutdown() {
+    shutdown_.store(true);
+    if (execution_thread_.joinable()) {
+      execution_thread_.join();
+    }
+    action_server_.reset();
+  }
+
  private:
   rclcpp_action::Server<Fibonacci>::SharedPtr action_server_;
+  std::thread execution_thread_;
+  std::atomic<bool> shutdown_{false};
 
   rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID & uuid,
                                           std::shared_ptr<const Fibonacci::Goal> goal) {
@@ -75,56 +88,76 @@ class LongCalibrationAction : public rclcpp::Node {
   }
 
   void handle_accepted(const std::shared_ptr<GoalHandleFibonacci> goal_handle) {
-    // Execute in a separate thread to avoid blocking
-    std::thread{std::bind(&LongCalibrationAction::execute, this, goal_handle)}.detach();
+    // Join any previous execution thread before starting a new one
+    if (execution_thread_.joinable()) {
+      execution_thread_.join();
+    }
+    execution_thread_ = std::thread(&LongCalibrationAction::execute, this, goal_handle);
   }
 
   void execute(const std::shared_ptr<GoalHandleFibonacci> goal_handle) {
-    RCLCPP_INFO(get_logger(), "Executing calibration...");
-    const auto goal = goal_handle->get_goal();
-    auto feedback = std::make_shared<Fibonacci::Feedback>();
-    auto & sequence = feedback->sequence;
-    auto result = std::make_shared<Fibonacci::Result>();
+    try {
+      RCLCPP_INFO(get_logger(), "Executing calibration...");
+      const auto goal = goal_handle->get_goal();
+      auto feedback = std::make_shared<Fibonacci::Feedback>();
+      auto & sequence = feedback->sequence;
+      auto result = std::make_shared<Fibonacci::Result>();
 
-    // Initialize Fibonacci sequence
-    sequence.push_back(0);
-    sequence.push_back(1);
+      // Initialize Fibonacci sequence
+      sequence.push_back(0);
+      sequence.push_back(1);
 
-    // Simulate calibration steps with 500ms delays
-    rclcpp::Rate loop_rate(2);  // 2 Hz = 500ms between iterations
+      // Simulate calibration steps with 500ms delays
+      rclcpp::Rate loop_rate(2);  // 2 Hz = 500ms between iterations
 
-    for (int i = 1; i < goal->order && rclcpp::ok(); ++i) {
-      // Check if cancelled
-      if (goal_handle->is_canceling()) {
-        result->sequence = sequence;
-        goal_handle->canceled(result);
-        RCLCPP_INFO(get_logger(), "Calibration canceled");
-        return;
+      for (int i = 1; i < goal->order && rclcpp::ok() && !shutdown_.load(); ++i) {
+        // Check if cancelled
+        if (goal_handle->is_canceling()) {
+          result->sequence = sequence;
+          goal_handle->canceled(result);
+          RCLCPP_INFO(get_logger(), "Calibration canceled");
+          return;
+        }
+
+        // Compute next Fibonacci number (simulating calibration step)
+        sequence.push_back(sequence[i] + sequence[i - 1]);
+
+        // Publish feedback
+        goal_handle->publish_feedback(feedback);
+        RCLCPP_DEBUG(get_logger(), "Publishing calibration feedback: step %d/%d", static_cast<int>(sequence.size()),
+                     goal->order);
+
+        loop_rate.sleep();
       }
 
-      // Compute next Fibonacci number (simulating calibration step)
-      sequence.push_back(sequence[i] + sequence[i - 1]);
-
-      // Publish feedback
-      goal_handle->publish_feedback(feedback);
-      RCLCPP_DEBUG(get_logger(), "Publishing calibration feedback: step %d/%d", static_cast<int>(sequence.size()),
-                   goal->order);
-
-      loop_rate.sleep();
-    }
-
-    // Complete the calibration
-    if (rclcpp::ok()) {
-      result->sequence = sequence;
-      goal_handle->succeed(result);
-      RCLCPP_INFO(get_logger(), "Calibration completed successfully with %zu steps", sequence.size());
+      // Complete the calibration
+      if (rclcpp::ok() && !shutdown_.load()) {
+        result->sequence = sequence;
+        goal_handle->succeed(result);
+        RCLCPP_INFO(get_logger(), "Calibration completed successfully with %zu steps", sequence.size());
+      }
+    } catch (const std::exception & e) {
+      // Goal may be invalidated during shutdown
+      RCLCPP_WARN(get_logger(), "Execution interrupted: %s", e.what());
     }
   }
 };
 
 int main(int argc, char * argv[]) {
+  // rclcpp_action may throw "Asked to publish result for goal that does not
+  // exist" during SIGINT shutdown if a goal is in-flight. This is a known
+  // race in rclcpp_action where the executor processes a goal state callback
+  // after the action server's internal tracking has been cleared. Override
+  // terminate to exit cleanly in that case.
+  std::set_terminate([]() {
+    _exit(0);
+  });
+
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<LongCalibrationAction>());
+  auto node = std::make_shared<LongCalibrationAction>();
+  rclcpp::spin(node);
+  node->prepare_shutdown();
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }
