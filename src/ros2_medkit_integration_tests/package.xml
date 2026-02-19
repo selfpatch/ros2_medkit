@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ros2_medkit_integration_tests</name>
+  <version>0.1.0</version>
+  <description>Integration tests and demo nodes for ros2_medkit</description>
+
+  <maintainer email="bartoszburda93@gmail.com">bburda</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Demo node C++ dependencies -->
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>example_interfaces</depend>
+  <depend>ros2_medkit_msgs</depend>
+
+  <!-- Test dependencies (Python integration tests) -->
+  <test_depend>launch_testing_ament_cmake</test_depend>
+  <test_depend>python3-requests</test_depend>
+  <test_depend>ros2_medkit_gateway</test_depend>
+  <test_depend>ros2_medkit_fault_manager</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
