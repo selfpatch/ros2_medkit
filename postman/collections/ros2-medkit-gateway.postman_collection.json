@@ -1228,7 +1228,7 @@
                 "faults"
               ]
             },
-            "description": "Clear all faults across the entire system (ros2_medkit extension, not SOVD).\n\nAccepts the optional `?status=` query parameter (same values as GET /faults). Without it, clears active faults (pending + confirmed).\n\n**Response codes:**\n- 204: Faults cleared (or none to clear)\n- 400: Invalid status parameter\n- 503: Fault manager unavailable"
+            "description": "Clear all faults across the entire system (ros2_medkit extension, not SOVD).\n\nAccepts the optional `?status=` query parameter (same values as GET /faults). Without it, clears pending and confirmed faults.\n\n**Response codes:**\n- 204: Faults cleared (or none to clear)\n- 400: Invalid status parameter\n- 503: Fault manager unavailable"
           },
           "response": []
         },
