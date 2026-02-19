@@ -169,6 +169,11 @@ jobs:
           lcov --extract coverage.raw.info \
             '*/ros2_medkit/src/*/src/*' \
             '*/ros2_medkit/src/*/include/*' \
+            --output-file coverage.extracted.info \
+            --ignore-errors unused,empty
+
+          lcov --remove coverage.extracted.info \
+            '*/vendored/*' \
             --output-file coverage.info \
             --ignore-errors unused,empty
 
