@@ -18,6 +18,48 @@ find_package(rcl_interfaces REQUIRED)
 find_package(example_interfaces REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 
+# === Demo node executables ===
+
+add_executable(demo_engine_temp_sensor demo_nodes/engine_temp_sensor.cpp)
+ament_target_dependencies(demo_engine_temp_sensor rclcpp rcl_interfaces sensor_msgs)
+
+add_executable(demo_rpm_sensor demo_nodes/rpm_sensor.cpp)
+ament_target_dependencies(demo_rpm_sensor rclcpp std_msgs)
+
+add_executable(demo_brake_pressure_sensor demo_nodes/brake_pressure_sensor.cpp)
+ament_target_dependencies(demo_brake_pressure_sensor rclcpp std_msgs)
+
+add_executable(demo_door_status_sensor demo_nodes/door_status_sensor.cpp)
+ament_target_dependencies(demo_door_status_sensor rclcpp std_msgs)
+
+add_executable(demo_brake_actuator demo_nodes/brake_actuator.cpp)
+ament_target_dependencies(demo_brake_actuator rclcpp std_msgs)
+
+add_executable(demo_light_controller demo_nodes/light_controller.cpp)
+ament_target_dependencies(demo_light_controller rclcpp std_msgs)
+
+add_executable(demo_calibration_service demo_nodes/calibration_service.cpp)
+ament_target_dependencies(demo_calibration_service rclcpp std_srvs)
+
+add_executable(demo_long_calibration_action demo_nodes/long_calibration_action.cpp)
+ament_target_dependencies(demo_long_calibration_action rclcpp rclcpp_action example_interfaces)
+
+add_executable(demo_lidar_sensor demo_nodes/lidar_sensor.cpp)
+ament_target_dependencies(demo_lidar_sensor rclcpp rcl_interfaces sensor_msgs std_srvs ros2_medkit_msgs)
+
+install(TARGETS
+  demo_engine_temp_sensor
+  demo_rpm_sensor
+  demo_brake_pressure_sensor
+  demo_door_status_sensor
+  demo_brake_actuator
+  demo_light_controller
+  demo_calibration_service
+  demo_long_calibration_action
+  demo_lidar_sensor
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # === Python test utilities ===
 
 ament_python_install_package(ros2_medkit_test_utils)
