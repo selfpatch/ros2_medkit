@@ -69,8 +69,7 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
         entity_type = "function";
         break;
       default:
-        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                   {{"entity_id", entity_id}});
+        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
         return;
     }
 
@@ -153,8 +152,8 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
     response["items"] = operations;
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to list operations", {{"details", e.what()}, {"entity_id", entity_id}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to list operations",
+                               {{"details", e.what()}, {"entity_id", entity_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_operations for entity '%s': %s", entity_id.c_str(),
                  e.what());
   }
@@ -203,8 +202,8 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
         entity_type = "function";
         break;
       default:
-        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND,
-                                   "Entity type does not support operations", {{"entity_id", entity_id}});
+        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity type does not support operations",
+                                   {{"entity_id", entity_id}});
         return;
     }
 
@@ -302,8 +301,7 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
     HandlerContext::send_json(res, response);
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to get operation details",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to get operation details",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"operation_id", operation_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_operation for entity '%s', operation '%s': %s",
                  entity_id.c_str(), operation_id.c_str(), e.what());
@@ -382,8 +380,8 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
         entity_type = "function";
         break;
       default:
-        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND,
-                                   "Entity type does not support operations", {{"entity_id", entity_id}});
+        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity type does not support operations",
+                                   {{"entity_id", entity_id}});
         return;
     }
 
@@ -490,8 +488,7 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
     }
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to execute operation",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to execute operation",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"operation_id", operation_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_create_execution for entity '%s', operation '%s': %s",
                  entity_id.c_str(), operation_id.c_str(), e.what());
@@ -540,8 +537,7 @@ void OperationHandlers::handle_list_executions(const httplib::Request & req, htt
     }
 
     if (!entity_found) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found",
-                                 {{"entity_id", entity_id}});
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
       return;
     }
 
@@ -560,8 +556,7 @@ void OperationHandlers::handle_list_executions(const httplib::Request & req, htt
     HandlerContext::send_json(res, response);
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to list executions",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to list executions",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"operation_id", operation_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_executions: %s", e.what());
   }
@@ -617,8 +612,7 @@ void OperationHandlers::handle_get_execution(const httplib::Request & req, httpl
     HandlerContext::send_json(res, response);
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to get execution status",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to get execution status",
                                {{"details", e.what()},
                                 {"entity_id", entity_id},
                                 {"operation_id", operation_id},
@@ -687,8 +681,7 @@ void OperationHandlers::handle_cancel_execution(const httplib::Request & req, ht
     }
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to cancel execution",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to cancel execution",
                                {{"details", e.what()},
                                 {"entity_id", entity_id},
                                 {"operation_id", operation_id},
@@ -732,8 +725,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
 
     // Validate required 'capability' field
     if (!body.contains("capability") || !body["capability"].is_string()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                 "Missing required 'capability' field");
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing required 'capability' field");
       return;
     }
 
@@ -801,8 +793,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
     } else if (capability == "freeze" || capability == "reset") {
       // These I/O control capabilities are not applicable to ROS 2 actions
       // They are ECU-specific concepts for UDS-style I/O controls
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                 "Capability not supported for ROS 2 actions",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Capability not supported for ROS 2 actions",
                                  {{"entity_id", entity_id},
                                   {"operation_id", operation_id},
                                   {"execution_id", execution_id},
@@ -819,8 +810,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
     }
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to update execution",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to update execution",
                                {{"details", e.what()},
                                 {"entity_id", entity_id},
                                 {"operation_id", operation_id},
