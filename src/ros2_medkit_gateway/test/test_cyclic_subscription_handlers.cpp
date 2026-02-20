@@ -64,7 +64,7 @@ TEST(CyclicSubscriptionJsonTest, AllIntervalValuesSerialize) {
 
 TEST(CyclicSubscriptionErrorTest, InvalidParameterErrorFormat) {
   httplib::Response res;
-  HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid interval",
+  HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid interval",
                              {{"parameter", "interval"}, {"value", "turbo"}});
   auto body = json::parse(res.body);
   EXPECT_EQ(body["error_code"], "invalid-parameter");
@@ -75,7 +75,7 @@ TEST(CyclicSubscriptionErrorTest, InvalidParameterErrorFormat) {
 
 TEST(CyclicSubscriptionErrorTest, ResourceNotFoundErrorFormat) {
   httplib::Response res;
-  HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
+  HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
                              {{"subscription_id", "sub_999"}});
   auto body = json::parse(res.body);
   EXPECT_EQ(body["error_code"], "resource-not-found");

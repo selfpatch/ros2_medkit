@@ -189,7 +189,7 @@ inline bool stream_file_to_response(httplib::Response & res, const std::string &
 
   static constexpr size_t kChunkSize = 64 * 1024;  // 64 KB chunks
 
-  res.set_content_provider(static_cast<size_t>(file_size), content_type,
+  res.set_content_provider(static_cast<size_t>(file_size), content_type.c_str(),
                            [file_path](size_t offset, size_t length, httplib::DataSink & sink) -> bool {
                              std::ifstream file(file_path, std::ios::binary);
                              if (!file.is_open()) {

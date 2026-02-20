@@ -239,7 +239,7 @@ class HandlerContext {
    * @param message Human-readable error message
    * @param parameters Optional additional parameters for context
    */
-  static void send_error(httplib::Response & res, httplib::StatusCode status, const std::string & error_code,
+  static void send_error(httplib::Response & res, int status, const std::string & error_code,
                          const std::string & message, const nlohmann::json & parameters = {});
 
   /**

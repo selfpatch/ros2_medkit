@@ -758,6 +758,52 @@ Subscriptions are temporary — they do not survive server restart.
    The stream auto-closes when the duration expires, the client disconnects,
    or the subscription is deleted.
 
+Rate Limiting
+-------------
+
+The gateway supports token-bucket-based rate limiting to protect endpoints from abuse. Rate limiting is disabled by default and can be enabled via configuration parameters.
+
+Configuration
+~~~~~~~~~~~~~
+
+You can configure global and per-client RPM (requests per minute) limits:
+
+- ``rate_limiting.enabled``: ``true`` to enable.
+- ``rate_limiting.global_requests_per_minute``: Overarching limit across all clients.
+- ``rate_limiting.client_requests_per_minute``: Limit per individual client IP.
+
+Endpoint limits can also be overridden with patterns:
+
+- ``rate_limiting.endpoint_limits``: List of ``"pattern:rpm"`` strings. For example, ``["/api/v1/*/operations/*:10"]`` limits execution calls without affecting other data endpoints.
+
+Response Headers
+~~~~~~~~~~~~~~~~
+
+When rate limiting is enabled, the gateway includes the following HTTP response headers on every check:
+
+- ``X-RateLimit-Limit``: The effective RPM limit applied.
+- ``X-RateLimit-Remaining``: Number of requests remaining in the current minute window.
+- ``X-RateLimit-Reset``: Unix epoch time (in seconds) when the limit bucket resets.
+
+Rejection (429 Too Many Requests)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If a request exceeds the available tokens, it is rejected with an HTTP 429 status code and a ``Retry-After`` header indicating the number of seconds to wait before retrying.
+
+**Example Response:**
+
+.. code-block:: json
+
+   {
+     "error_code": 429,
+     "message": "Too many requests. Please retry after 10 seconds.",
+     "parameters": {
+       "retry_after": 10,
+       "limit": 60,
+       "reset": 1739612355
+     }
+   }
+
 Authentication Endpoints
 ------------------------
 

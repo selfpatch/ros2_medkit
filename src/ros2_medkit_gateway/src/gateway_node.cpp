@@ -248,8 +248,13 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
         size_t colon = entry.rfind(':');
         if (colon != std::string::npos && colon > 0) {
           std::string pattern = entry.substr(0, colon);
-          int rpm = std::stoi(entry.substr(colon + 1));
-          rl_builder.add_endpoint_limit(pattern, rpm);
+          try {
+            int rpm = std::stoi(entry.substr(colon + 1));
+            rl_builder.add_endpoint_limit(pattern, rpm);
+          } catch (...) {
+            RCLCPP_WARN(get_logger(), "Non-numeric RPM in endpoint_limit: '%s'", entry.c_str());
+            continue;
+          }
         } else {
           RCLCPP_WARN(get_logger(), "Invalid endpoint_limit format: '%s'. Expected 'pattern:rpm'", entry.c_str());
         }

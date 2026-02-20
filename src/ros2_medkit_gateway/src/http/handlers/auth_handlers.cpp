@@ -18,7 +18,6 @@
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 
 using json = nlohmann::json;
-using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -28,7 +27,7 @@ void AuthHandlers::handle_auth_authorize(const httplib::Request & req, httplib::
     const auto & auth_config = ctx_.auth_config();
 
     if (!auth_config.enabled) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                  "Authentication is not enabled");
       return;
     }
@@ -36,7 +35,7 @@ void AuthHandlers::handle_auth_authorize(const httplib::Request & req, httplib::
     // Parse request using DRY helper
     auto parse_result = AuthorizeRequest::parse_request(req.get_header_value("Content-Type"), req.body);
     if (!parse_result) {
-      res.status = StatusCode::BadRequest_400;
+      res.status = 400;
       res.set_content(parse_result.error().to_json().dump(2), "application/json");
       return;
     }
@@ -44,7 +43,7 @@ void AuthHandlers::handle_auth_authorize(const httplib::Request & req, httplib::
 
     // Validate grant_type
     if (auth_req.grant_type != "client_credentials") {
-      res.status = StatusCode::BadRequest_400;
+      res.status = 400;
       res.set_content(AuthErrorResponse::unsupported_grant_type("Only 'client_credentials' grant type is supported")
                           .to_json()
                           .dump(2),
@@ -54,14 +53,14 @@ void AuthHandlers::handle_auth_authorize(const httplib::Request & req, httplib::
 
     // Validate required fields
     if (!auth_req.client_id.has_value() || auth_req.client_id->empty()) {
-      res.status = StatusCode::BadRequest_400;
+      res.status = 400;
       res.set_content(AuthErrorResponse::invalid_request("client_id is required").to_json().dump(2),
                       "application/json");
       return;
     }
 
     if (!auth_req.client_secret.has_value() || auth_req.client_secret->empty()) {
-      res.status = StatusCode::BadRequest_400;
+      res.status = 400;
       res.set_content(AuthErrorResponse::invalid_request("client_secret is required").to_json().dump(2),
                       "application/json");
       return;
@@ -74,11 +73,11 @@ void AuthHandlers::handle_auth_authorize(const httplib::Request & req, httplib::
     if (result) {
       HandlerContext::send_json(res, result->to_json());
     } else {
-      res.status = StatusCode::Unauthorized_401;
+      res.status = 401;
       res.set_content(result.error().to_json().dump(2), "application/json");
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_auth_authorize: %s", e.what());
   }
@@ -89,7 +88,7 @@ void AuthHandlers::handle_auth_token(const httplib::Request & req, httplib::Resp
     const auto & auth_config = ctx_.auth_config();
 
     if (!auth_config.enabled) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                  "Authentication is not enabled");
       return;
     }
@@ -97,7 +96,7 @@ void AuthHandlers::handle_auth_token(const httplib::Request & req, httplib::Resp
     // Parse request using DRY helper
     auto parse_result = AuthorizeRequest::parse_request(req.get_header_value("Content-Type"), req.body);
     if (!parse_result) {
-      res.status = StatusCode::BadRequest_400;
+      res.status = 400;
       res.set_content(parse_result.error().to_json().dump(2), "application/json");
       return;
     }
@@ -105,7 +104,7 @@ void AuthHandlers::handle_auth_token(const httplib::Request & req, httplib::Resp
 
     // Validate grant_type
     if (auth_req.grant_type != "refresh_token") {
-      res.status = StatusCode::BadRequest_400;
+      res.status = 400;
       res.set_content(
           AuthErrorResponse::unsupported_grant_type("Only 'refresh_token' grant type is supported on this endpoint")
               .to_json()
@@ -116,7 +115,7 @@ void AuthHandlers::handle_auth_token(const httplib::Request & req, httplib::Resp
 
     // Validate required fields
     if (!auth_req.refresh_token.has_value() || auth_req.refresh_token->empty()) {
-      res.status = StatusCode::BadRequest_400;
+      res.status = 400;
       res.set_content(AuthErrorResponse::invalid_request("refresh_token is required").to_json().dump(2),
                       "application/json");
       return;
@@ -129,11 +128,11 @@ void AuthHandlers::handle_auth_token(const httplib::Request & req, httplib::Resp
     if (result) {
       HandlerContext::send_json(res, result->to_json());
     } else {
-      res.status = StatusCode::Unauthorized_401;
+      res.status = 401;
       res.set_content(result.error().to_json().dump(2), "application/json");
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_auth_token: %s", e.what());
   }
@@ -144,7 +143,7 @@ void AuthHandlers::handle_auth_revoke(const httplib::Request & req, httplib::Res
     const auto & auth_config = ctx_.auth_config();
 
     if (!auth_config.enabled) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                  "Authentication is not enabled");
       return;
     }
@@ -154,7 +153,7 @@ void AuthHandlers::handle_auth_revoke(const httplib::Request & req, httplib::Res
     try {
       body = json::parse(req.body);
     } catch (const json::parse_error & e) {
-      res.status = StatusCode::BadRequest_400;
+      res.status = 400;
       res.set_content(AuthErrorResponse::invalid_request("Invalid JSON: " + std::string(e.what())).to_json().dump(2),
                       "application/json");
       return;
@@ -162,7 +161,7 @@ void AuthHandlers::handle_auth_revoke(const httplib::Request & req, httplib::Res
 
     // Extract token to revoke
     if (!body.contains("token") || !body["token"].is_string()) {
-      res.status = StatusCode::BadRequest_400;
+      res.status = 400;
       res.set_content(AuthErrorResponse::invalid_request("token is required").to_json().dump(2), "application/json");
       return;
     }
@@ -177,7 +176,7 @@ void AuthHandlers::handle_auth_revoke(const httplib::Request & req, httplib::Res
     json response = {{"status", "revoked"}};
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_auth_revoke: %s", e.what());
   }

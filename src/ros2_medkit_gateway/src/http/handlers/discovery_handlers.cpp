@@ -24,7 +24,6 @@
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 using json = nlohmann::json;
-using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -73,7 +72,7 @@ void DiscoveryHandlers::handle_list_areas(const httplib::Request & req, httplib:
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error");
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_areas: %s", e.what());
   }
 }
@@ -81,7 +80,7 @@ void DiscoveryHandlers::handle_list_areas(const httplib::Request & req, httplib:
 void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -89,7 +88,7 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
 
     auto validation_result = ctx_.validate_entity_id(area_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid area ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid area ID",
                                  {{"details", validation_result.error()}, {"area_id", area_id}});
       return;
     }
@@ -98,7 +97,7 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
     auto area_opt = discovery->get_area(area_id);
 
     if (!area_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Area not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found",
                                  {{"area_id", area_id}});
       return;
     }
@@ -146,7 +145,7 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_area: %s", e.what());
   }
@@ -155,7 +154,7 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
 void DiscoveryHandlers::handle_area_components(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -163,7 +162,7 @@ void DiscoveryHandlers::handle_area_components(const httplib::Request & req, htt
 
     auto validation_result = ctx_.validate_entity_id(area_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid area ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid area ID",
                                  {{"details", validation_result.error()}, {"area_id", area_id}});
       return;
     }
@@ -171,7 +170,7 @@ void DiscoveryHandlers::handle_area_components(const httplib::Request & req, htt
     const auto & cache = ctx_.node()->get_thread_safe_cache();
 
     if (!cache.has_area(area_id)) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Area not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found",
                                  {{"area_id", area_id}});
       return;
     }
@@ -209,7 +208,7 @@ void DiscoveryHandlers::handle_area_components(const httplib::Request & req, htt
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error");
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_area_components: %s", e.what());
   }
 }
@@ -217,7 +216,7 @@ void DiscoveryHandlers::handle_area_components(const httplib::Request & req, htt
 void DiscoveryHandlers::handle_get_subareas(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -225,7 +224,7 @@ void DiscoveryHandlers::handle_get_subareas(const httplib::Request & req, httpli
 
     auto validation_result = ctx_.validate_entity_id(area_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid area ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid area ID",
                                  {{"details", validation_result.error()}, {"area_id", area_id}});
       return;
     }
@@ -234,7 +233,7 @@ void DiscoveryHandlers::handle_get_subareas(const httplib::Request & req, httpli
     auto area_opt = discovery->get_area(area_id);
 
     if (!area_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Area not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found",
                                  {{"area_id", area_id}});
       return;
     }
@@ -269,7 +268,7 @@ void DiscoveryHandlers::handle_get_subareas(const httplib::Request & req, httpli
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_subareas: %s", e.what());
   }
@@ -279,7 +278,7 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
   // @verifies REQ_INTEROP_006
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -287,7 +286,7 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
 
     auto validation_result = ctx_.validate_entity_id(area_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid area ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid area ID",
                                  {{"details", validation_result.error()}, {"area_id", area_id}});
       return;
     }
@@ -296,7 +295,7 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
     auto area_opt = discovery->get_area(area_id);
 
     if (!area_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Area not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found",
                                  {{"area_id", area_id}});
       return;
     }
@@ -334,7 +333,7 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_contains: %s", e.what());
   }
@@ -387,7 +386,7 @@ void DiscoveryHandlers::handle_list_components(const httplib::Request & req, htt
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error");
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_components: %s", e.what());
   }
 }
@@ -395,7 +394,7 @@ void DiscoveryHandlers::handle_list_components(const httplib::Request & req, htt
 void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -403,7 +402,7 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
 
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", validation_result.error()}, {"component_id", component_id}});
       return;
     }
@@ -412,7 +411,7 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     auto comp_opt = discovery->get_component(component_id);
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Component not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
@@ -479,7 +478,7 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_component: %s", e.what());
   }
@@ -488,7 +487,7 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
 void DiscoveryHandlers::handle_get_subcomponents(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -496,7 +495,7 @@ void DiscoveryHandlers::handle_get_subcomponents(const httplib::Request & req, h
 
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", validation_result.error()}, {"component_id", component_id}});
       return;
     }
@@ -505,7 +504,7 @@ void DiscoveryHandlers::handle_get_subcomponents(const httplib::Request & req, h
     auto comp_opt = discovery->get_component(component_id);
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Component not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
@@ -543,7 +542,7 @@ void DiscoveryHandlers::handle_get_subcomponents(const httplib::Request & req, h
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_subcomponents: %s", e.what());
   }
@@ -553,7 +552,7 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
   // @verifies REQ_INTEROP_007
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -561,7 +560,7 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
 
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", validation_result.error()}, {"component_id", component_id}});
       return;
     }
@@ -570,7 +569,7 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
     auto comp_opt = discovery->get_component(component_id);
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Component not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
@@ -608,7 +607,7 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_hosts: %s", e.what());
   }
@@ -617,7 +616,7 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
 void DiscoveryHandlers::handle_component_depends_on(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -625,7 +624,7 @@ void DiscoveryHandlers::handle_component_depends_on(const httplib::Request & req
 
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid component ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid component ID",
                                  {{"details", validation_result.error()}, {"component_id", component_id}});
       return;
     }
@@ -634,7 +633,7 @@ void DiscoveryHandlers::handle_component_depends_on(const httplib::Request & req
     auto comp_opt = discovery->get_component(component_id);
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Component not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
                                  {{"component_id", component_id}});
       return;
     }
@@ -680,7 +679,7 @@ void DiscoveryHandlers::handle_component_depends_on(const httplib::Request & req
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_component_depends_on: %s", e.what());
   }
@@ -734,7 +733,7 @@ void DiscoveryHandlers::handle_list_apps(const httplib::Request & req, httplib::
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_apps: %s", e.what());
   }
@@ -743,7 +742,7 @@ void DiscoveryHandlers::handle_list_apps(const httplib::Request & req, httplib::
 void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -751,7 +750,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
 
     auto validation_result = ctx_.validate_entity_id(app_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid app ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid app ID",
                                  {{"details", validation_result.error()}, {"app_id", app_id}});
       return;
     }
@@ -760,7 +759,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     auto app_opt = discovery->get_app(app_id);
 
     if (!app_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "App not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found",
                                  {{"app_id", app_id}});
       return;
     }
@@ -826,7 +825,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_app: %s", e.what());
   }
@@ -835,7 +834,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
 void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -843,7 +842,7 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
 
     auto validation_result = ctx_.validate_entity_id(app_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid app ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid app ID",
                                  {{"details", validation_result.error()}, {"app_id", app_id}});
       return;
     }
@@ -852,7 +851,7 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
     auto app_opt = discovery->get_app(app_id);
 
     if (!app_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "App not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found",
                                  {{"app_id", app_id}});
       return;
     }
@@ -898,7 +897,7 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_app_depends_on: %s", e.what());
   }
@@ -946,7 +945,7 @@ void DiscoveryHandlers::handle_list_functions(const httplib::Request & req, http
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_functions: %s", e.what());
   }
@@ -955,7 +954,7 @@ void DiscoveryHandlers::handle_list_functions(const httplib::Request & req, http
 void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -963,7 +962,7 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
 
     auto validation_result = ctx_.validate_entity_id(function_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid function ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid function ID",
                                  {{"details", validation_result.error()}, {"function_id", function_id}});
       return;
     }
@@ -972,7 +971,7 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
     auto func_opt = discovery->get_function(function_id);
 
     if (!func_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Function not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found",
                                  {{"function_id", function_id}});
       return;
     }
@@ -1022,7 +1021,7 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_function: %s", e.what());
   }
@@ -1031,7 +1030,7 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
 void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, httplib::Response & res) {
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -1039,7 +1038,7 @@ void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, http
 
     auto validation_result = ctx_.validate_entity_id(function_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid function ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid function ID",
                                  {{"details", validation_result.error()}, {"function_id", function_id}});
       return;
     }
@@ -1048,7 +1047,7 @@ void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, http
     auto func_opt = discovery->get_function(function_id);
 
     if (!func_opt) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Function not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found",
                                  {{"function_id", function_id}});
       return;
     }
@@ -1089,7 +1088,7 @@ void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, http
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Internal server error",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
                                {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_function_hosts: %s", e.what());
   }

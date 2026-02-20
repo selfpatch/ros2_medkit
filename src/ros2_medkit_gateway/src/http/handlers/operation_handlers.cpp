@@ -23,7 +23,6 @@
 #include "ros2_medkit_gateway/operation_manager.hpp"
 
 using json = nlohmann::json;
-using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -32,7 +31,7 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
   std::string entity_id;
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -70,7 +69,7 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
         entity_type = "function";
         break;
       default:
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found",
                                    {{"entity_id", entity_id}});
         return;
     }
@@ -154,7 +153,7 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
     response["items"] = operations;
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to list operations", {{"details", e.what()}, {"entity_id", entity_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_operations for entity '%s': %s", entity_id.c_str(),
                  e.what());
@@ -166,7 +165,7 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
   std::string operation_id;
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -204,7 +203,7 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
         entity_type = "function";
         break;
       default:
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND,
+        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND,
                                    "Entity type does not support operations", {{"entity_id", entity_id}});
         return;
     }
@@ -230,7 +229,7 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
     }
 
     if (!service_info.has_value() && !action_info.has_value()) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_OPERATION_NOT_FOUND, "Operation not found",
+      HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND, "Operation not found",
                                  {{"entity_id", entity_id}, {"operation_id", operation_id}});
       return;
     }
@@ -303,7 +302,7 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
     HandlerContext::send_json(res, response);
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to get operation details",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"operation_id", operation_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_operation for entity '%s', operation '%s': %s",
@@ -333,7 +332,7 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
   std::string operation_id;
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -353,7 +352,7 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
       try {
         body = json::parse(req.body);
       } catch (const json::parse_error & e) {
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
+        HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
                                    {{"details", e.what()}});
         return;
       }
@@ -383,7 +382,7 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
         entity_type = "function";
         break;
       default:
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND,
+        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND,
                                    "Entity type does not support operations", {{"entity_id", entity_id}});
         return;
     }
@@ -409,7 +408,7 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
     }
 
     if (!service_info.has_value() && !action_info.has_value()) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_OPERATION_NOT_FOUND, "Operation not found",
+      HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND, "Operation not found",
                                  {{"entity_id", entity_id}, {"operation_id", operation_id}});
       return;
     }
@@ -444,17 +443,17 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
             base_path + entity_id + "/operations/" + operation_id + "/executions/" + action_result.goal_id;
         res.set_header("Location", location);
 
-        res.status = StatusCode::Accepted_202;
+        res.status = 202;
         res.set_content(response.dump(), "application/json");
       } else if (action_result.success && !action_result.goal_accepted) {
         HandlerContext::send_error(
-            res, StatusCode::BadRequest_400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, "Goal rejected",
+            res, 400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, "Goal rejected",
             {{id_field, entity_id},
              {"operation_id", operation_id},
              {"details", action_result.error_message.empty() ? "Goal rejected" : action_result.error_message}});
       } else {
         HandlerContext::send_error(
-            res, StatusCode::InternalServerError_500, ERR_X_MEDKIT_ROS2_ACTION_UNAVAILABLE, "Action execution failed",
+            res, 500, ERR_X_MEDKIT_ROS2_ACTION_UNAVAILABLE, "Action execution failed",
             {{id_field, entity_id}, {"operation_id", operation_id}, {"details", action_result.error_message}});
       }
       return;
@@ -485,13 +484,13 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
                                 {{"code", ERR_X_MEDKIT_ROS2_SERVICE_UNAVAILABLE},
                                  {"message", "Service call failed"},
                                  {"details", result.error_message}}}};
-        res.status = StatusCode::InternalServerError_500;
+        res.status = 500;
         res.set_content(error_response.dump(), "application/json");
       }
     }
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to execute operation",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"operation_id", operation_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_create_execution for entity '%s', operation '%s': %s",
@@ -504,7 +503,7 @@ void OperationHandlers::handle_list_executions(const httplib::Request & req, htt
   std::string operation_id;
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -513,7 +512,7 @@ void OperationHandlers::handle_list_executions(const httplib::Request & req, htt
 
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                                  {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
@@ -541,7 +540,7 @@ void OperationHandlers::handle_list_executions(const httplib::Request & req, htt
     }
 
     if (!entity_found) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found",
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found",
                                  {{"entity_id", entity_id}});
       return;
     }
@@ -561,7 +560,7 @@ void OperationHandlers::handle_list_executions(const httplib::Request & req, htt
     HandlerContext::send_json(res, response);
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to list executions",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"operation_id", operation_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_executions: %s", e.what());
@@ -574,7 +573,7 @@ void OperationHandlers::handle_get_execution(const httplib::Request & req, httpl
   std::string execution_id;
   try {
     if (req.matches.size() < 4) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -584,7 +583,7 @@ void OperationHandlers::handle_get_execution(const httplib::Request & req, httpl
 
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                                  {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
@@ -594,7 +593,7 @@ void OperationHandlers::handle_get_execution(const httplib::Request & req, httpl
 
     if (!goal_info.has_value()) {
       HandlerContext::send_error(
-          res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
+          res, 404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
           {{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}});
       return;
     }
@@ -618,7 +617,7 @@ void OperationHandlers::handle_get_execution(const httplib::Request & req, httpl
     HandlerContext::send_json(res, response);
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to get execution status",
                                {{"details", e.what()},
                                 {"entity_id", entity_id},
@@ -634,7 +633,7 @@ void OperationHandlers::handle_cancel_execution(const httplib::Request & req, ht
   std::string execution_id;
   try {
     if (req.matches.size() < 4) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -644,7 +643,7 @@ void OperationHandlers::handle_cancel_execution(const httplib::Request & req, ht
 
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                                  {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
@@ -654,7 +653,7 @@ void OperationHandlers::handle_cancel_execution(const httplib::Request & req, ht
 
     if (!goal_info.has_value()) {
       HandlerContext::send_error(
-          res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
+          res, 404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
           {{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}});
       return;
     }
@@ -664,7 +663,7 @@ void OperationHandlers::handle_cancel_execution(const httplib::Request & req, ht
 
     if (result.success && result.return_code == 0) {
       // Return 204 No Content on successful cancellation request
-      res.status = StatusCode::NoContent_204;
+      res.status = 204;
     } else {
       std::string error_msg;
       switch (result.return_code) {
@@ -680,7 +679,7 @@ void OperationHandlers::handle_cancel_execution(const httplib::Request & req, ht
         default:
           error_msg = result.error_message.empty() ? "Cancel failed" : result.error_message;
       }
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, error_msg,
+      HandlerContext::send_error(res, 400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, error_msg,
                                  {{"entity_id", entity_id},
                                   {"operation_id", operation_id},
                                   {"execution_id", execution_id},
@@ -688,7 +687,7 @@ void OperationHandlers::handle_cancel_execution(const httplib::Request & req, ht
     }
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to cancel execution",
                                {{"details", e.what()},
                                 {"entity_id", entity_id},
@@ -704,7 +703,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
   std::string execution_id;
   try {
     if (req.matches.size() < 4) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -714,7 +713,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
 
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                                  {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
@@ -725,7 +724,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
       try {
         body = json::parse(req.body);
       } catch (const json::parse_error & e) {
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
+        HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
                                    {{"details", e.what()}});
         return;
       }
@@ -733,7 +732,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
 
     // Validate required 'capability' field
     if (!body.contains("capability") || !body["capability"].is_string()) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                  "Missing required 'capability' field");
       return;
     }
@@ -745,7 +744,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
 
     if (!goal_info.has_value()) {
       HandlerContext::send_error(
-          res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
+          res, 404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
           {{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}});
       return;
     }
@@ -765,7 +764,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
         res.set_header("Location", location);
 
         json response = {{"id", execution_id}, {"status", "running"}};  // Canceling is still "running" in SOVD terms
-        res.status = StatusCode::Accepted_202;
+        res.status = 202;
         res.set_content(response.dump(), "application/json");
       } else {
         std::string error_msg;
@@ -782,7 +781,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
           default:
             error_msg = result.error_message.empty() ? "Stop failed" : result.error_message;
         }
-        HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, error_msg,
+        HandlerContext::send_error(res, 400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, error_msg,
                                    {{"entity_id", entity_id},
                                     {"operation_id", operation_id},
                                     {"execution_id", execution_id},
@@ -793,7 +792,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
       // The goal would need to be cancelled and a new one sent
       // For now, return 409 Conflict indicating the operation is still running
       HandlerContext::send_error(
-          res, StatusCode::Conflict_409, ERR_INVALID_REQUEST,
+          res, 409, ERR_INVALID_REQUEST,
           "Cannot re-execute while operation is running. Cancel first, then start new execution.",
           {{"entity_id", entity_id},
            {"operation_id", operation_id},
@@ -802,7 +801,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
     } else if (capability == "freeze" || capability == "reset") {
       // These I/O control capabilities are not applicable to ROS 2 actions
       // They are ECU-specific concepts for UDS-style I/O controls
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                  "Capability not supported for ROS 2 actions",
                                  {{"entity_id", entity_id},
                                   {"operation_id", operation_id},
@@ -811,7 +810,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
                                   {"supported_capabilities", json::array({"stop"})}});
     } else {
       // Unknown or custom capability
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Unknown capability",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unknown capability",
                                  {{"entity_id", entity_id},
                                   {"operation_id", operation_id},
                                   {"execution_id", execution_id},
@@ -820,7 +819,7 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
     }
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to update execution",
                                {{"details", e.what()},
                                 {"entity_id", entity_id},

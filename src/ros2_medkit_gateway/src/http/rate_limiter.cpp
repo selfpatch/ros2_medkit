@@ -247,6 +247,7 @@ RateLimitResult RateLimiter::check(const std::string & client_ip, const std::str
   {
     std::lock_guard<std::mutex> lock(global_mutex_);
     if (!try_consume(global_bucket_)) {
+      // Note: client token already consumed; minor over-count under global pressure is acceptable
       result.allowed = false;
       result.limit = config_.global_requests_per_minute;
       result.remaining = 0;

@@ -22,7 +22,6 @@
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 
-using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 
@@ -100,31 +99,7 @@ void RESTServer::setup_pre_routing_handler() {
   // Set up pre-routing handler for CORS and Authentication
   // This handler runs before any route handler
   srv->set_pre_routing_handler([this](const httplib::Request & req, httplib::Response & res) {
-    // Rate limiting check. CORS headers are applied here so that browser clients
-    // can read 429 responses across origins (without CORS headers, the browser
-    // treats the response as a CORS error rather than a rate-limit error).
-    if (rate_limiter_ && rate_limiter_->is_enabled() && req.method != "OPTIONS") {
-      if (cors_config_.enabled) {
-        std::string origin = req.get_header_value("Origin");
-        if (!origin.empty() && is_origin_allowed(origin)) {
-          set_cors_headers(res, origin);
-          if (auth_config_.enabled) {
-            std::string current_headers = res.get_header_value("Access-Control-Allow-Headers");
-            if (!current_headers.empty() && current_headers.find("Authorization") == std::string::npos) {
-              res.set_header("Access-Control-Allow-Headers", current_headers + ", Authorization");
-            }
-          }
-        }
-      }
-      auto rl_result = rate_limiter_->check(req.remote_addr, req.path);
-      RateLimiter::apply_headers(rl_result, res);
-      if (!rl_result.allowed) {
-        RateLimiter::apply_rejection(rl_result, res);
-        return httplib::Server::HandlerResponse::Handled;
-      }
-    }
-
-    // Handle CORS if enabled
+    // 1. Handle CORS (existing logic)
     if (cors_config_.enabled) {
       std::string origin = req.get_header_value("Origin");
       bool origin_allowed = !origin.empty() && is_origin_allowed(origin);
@@ -140,17 +115,29 @@ void RESTServer::setup_pre_routing_handler() {
         }
       }
 
-      // Handle preflight OPTIONS requests
+      // 2. Handle preflight OPTIONS requests
       if (req.method == "OPTIONS") {
         if (origin_allowed) {
           res.set_header("Access-Control-Max-Age", std::to_string(cors_config_.max_age_seconds));
-          res.status = StatusCode::NoContent_204;
+          res.status = 204;
         } else {
-          res.status = StatusCode::Forbidden_403;
+          res.status = 403;
         }
         return httplib::Server::HandlerResponse::Handled;
       }
     }
+
+    // 3. Rate limiting check. If rejected, return Handled (CORS headers already set)
+    if (rate_limiter_ && rate_limiter_->is_enabled() && req.method != "OPTIONS") {
+      auto rl_result = rate_limiter_->check(req.remote_addr, req.path);
+      RateLimiter::apply_headers(rl_result, res);
+      if (!rl_result.allowed) {
+        RateLimiter::apply_rejection(rl_result, res);
+        return httplib::Server::HandlerResponse::Handled;
+      }
+    }
+
+    // 1. Handle CORS (existing logic)
 
     // Handle Authentication if enabled
     if (auth_middleware_ && auth_middleware_->is_enabled()) {
@@ -193,26 +180,15 @@ void RESTServer::setup_global_error_handlers() {
 
   // Global exception handler - catches unhandled exceptions in route handlers
   srv->set_exception_handler(
-      [](const httplib::Request & /*req*/, httplib::Response & res, const std::exception_ptr & ep) {
+      [](const httplib::Request & /*req*/, httplib::Response & res, std::exception & e) {
         nlohmann::json error;
         error["error_code"] = ERR_INTERNAL_ERROR;
+        error["message"] = "Internal server error";
+        error["parameters"] = nlohmann::json::object();
+        error["parameters"]["details"] = e.what();
+        RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
 
-        try {
-          if (ep) {
-            std::rethrow_exception(ep);
-          }
-        } catch (const std::exception & e) {
-          error["message"] = "Internal server error";
-          error["parameters"] = nlohmann::json::object();
-          error["parameters"]["details"] = e.what();
-          RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
-        } catch (...) {
-          error["message"] = "Unknown internal server error";
-          error["parameters"] = nlohmann::json::object();
-          RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unknown exception caught");
-        }
-
-        res.status = httplib::StatusCode::InternalServerError_500;
+        res.status = 500;
         res.set_content(error.dump(2), "application/json");
       });
 }
@@ -862,7 +838,7 @@ void RESTServer::setup_routes() {
             });
   // Bulk data upload not supported for areas and functions (405)
   auto bulk_upload_405 = [this](const httplib::Request & /*req*/, httplib::Response & res) {
-    handlers::HandlerContext::send_error(res, httplib::StatusCode::MethodNotAllowed_405, ERR_INVALID_REQUEST,
+    handlers::HandlerContext::send_error(res, 405, ERR_INVALID_REQUEST,
                                          "Bulk data upload is only supported for components and apps");
   };
   srv->Post((api_path("/areas") + R"(/([^/]+)/bulk-data/([^/]+)$)"), bulk_upload_405);
@@ -879,7 +855,7 @@ void RESTServer::setup_routes() {
               });
   // Bulk data deletion not supported for areas and functions (405)
   auto bulk_delete_405 = [this](const httplib::Request & /*req*/, httplib::Response & res) {
-    handlers::HandlerContext::send_error(res, httplib::StatusCode::MethodNotAllowed_405, ERR_INVALID_REQUEST,
+    handlers::HandlerContext::send_error(res, 405, ERR_INVALID_REQUEST,
                                          "Bulk data deletion is only supported for components and apps");
   };
   srv->Delete((api_path("/areas") + R"(/([^/]+)/bulk-data/([^/]+)/([^/]+)$)"), bulk_delete_405);

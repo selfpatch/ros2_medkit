@@ -26,7 +26,6 @@
 #include "ros2_medkit_gateway/native_topic_sampler.hpp"
 
 using json = nlohmann::json;
-using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -51,25 +50,25 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   try {
     body = json::parse(req.body);
   } catch (const json::exception &) {
-    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid JSON request body");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON request body");
     return;
   }
 
   // Validate required fields
   if (!body.contains("resource") || !body["resource"].is_string()) {
-    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Missing or invalid 'resource'",
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'resource'",
                                {{"parameter", "resource"}});
     return;
   }
 
   if (!body.contains("interval") || !body["interval"].is_string()) {
-    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Missing or invalid 'interval'",
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'interval'",
                                {{"parameter", "interval"}});
     return;
   }
 
   if (!body.contains("duration") || !body["duration"].is_number_integer()) {
-    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Missing or invalid 'duration'",
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'duration'",
                                {{"parameter", "duration"}});
     return;
   }
@@ -79,7 +78,7 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   if (body.contains("protocol")) {
     protocol = body["protocol"].get<std::string>();
     if (protocol != "sse") {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                  "Unsupported protocol. Only 'sse' is supported.",
                                  {{"parameter", "protocol"}, {"value", protocol}});
       return;
@@ -91,7 +90,7 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   try {
     interval = parse_interval(body["interval"].get<std::string>());
   } catch (const std::invalid_argument &) {
-    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                "Invalid interval. Must be 'fast', 'normal', or 'slow'.",
                                {{"parameter", "interval"}, {"value", body["interval"]}});
     return;
@@ -100,7 +99,7 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   // Validate duration
   int duration = body["duration"].get<int>();
   if (duration <= 0) {
-    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                "Duration must be a positive integer (seconds).",
                                {{"parameter", "duration"}, {"value", duration}});
     return;
@@ -110,7 +109,7 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   std::string resource = body["resource"].get<std::string>();
   auto topic_result = parse_resource_uri(resource);
   if (!topic_result) {
-    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                "Invalid resource URI: " + topic_result.error(),
                                {{"parameter", "resource"}, {"value", resource}});
     return;
@@ -121,7 +120,7 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   // Validate resource URI references the same entity as the route
   std::string expected_prefix = "/api/v1/" + entity_type + "/" + entity_id + "/data/";
   if (resource.find(expected_prefix) != 0) {
-    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                "Resource URI must reference the same entity as the route",
                                {{"parameter", "resource"}, {"value", resource}});
     return;
@@ -130,14 +129,14 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   // Create subscription
   auto result = sub_mgr_.create(entity_id, entity_type, resource, *topic_result, protocol, interval, duration);
   if (!result) {
-    HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE, result.error());
+    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, result.error());
     return;
   }
 
   std::string event_source = build_event_source(*result);
   auto response_json = subscription_to_json(*result, event_source);
 
-  res.status = StatusCode::Created_201;
+  res.status = 201;
   HandlerContext::send_json(res, response_json);
 }
 
@@ -175,7 +174,7 @@ void CyclicSubscriptionHandlers::handle_get(const httplib::Request & req, httpli
   auto sub_id = req.matches[2].str();
   auto sub = sub_mgr_.get(sub_id);
   if (!sub || sub->entity_id != entity_id) {
-    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
                                {{"subscription_id", sub_id}});
     return;
   }
@@ -200,7 +199,7 @@ void CyclicSubscriptionHandlers::handle_update(const httplib::Request & req, htt
   try {
     body = json::parse(req.body);
   } catch (const json::exception &) {
-    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid JSON request body");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON request body");
     return;
   }
 
@@ -210,7 +209,7 @@ void CyclicSubscriptionHandlers::handle_update(const httplib::Request & req, htt
     try {
       new_interval = parse_interval(body["interval"].get<std::string>());
     } catch (const std::invalid_argument &) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                  "Invalid interval. Must be 'fast', 'normal', or 'slow'.",
                                  {{"parameter", "interval"}, {"value", body["interval"]}});
       return;
@@ -222,7 +221,7 @@ void CyclicSubscriptionHandlers::handle_update(const httplib::Request & req, htt
   if (body.contains("duration") && body["duration"].is_number_integer()) {
     new_duration = body["duration"].get<int>();
     if (*new_duration <= 0) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                  "Duration must be a positive integer (seconds).",
                                  {{"parameter", "duration"}, {"value", *new_duration}});
       return;
@@ -232,14 +231,14 @@ void CyclicSubscriptionHandlers::handle_update(const httplib::Request & req, htt
   // Verify subscription exists and belongs to this entity before updating
   auto existing = sub_mgr_.get(sub_id);
   if (!existing || existing->entity_id != entity_id) {
-    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
                                {{"subscription_id", sub_id}});
     return;
   }
 
   auto result = sub_mgr_.update(sub_id, new_interval, new_duration);
   if (!result) {
-    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
                                {{"subscription_id", sub_id}});
     return;
   }
@@ -262,18 +261,18 @@ void CyclicSubscriptionHandlers::handle_delete(const httplib::Request & req, htt
   // Verify subscription exists and belongs to this entity before deleting
   auto existing = sub_mgr_.get(sub_id);
   if (!existing || existing->entity_id != entity_id) {
-    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
                                {{"subscription_id", sub_id}});
     return;
   }
 
   if (!sub_mgr_.remove(sub_id)) {
-    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
                                {{"subscription_id", sub_id}});
     return;
   }
 
-  res.status = StatusCode::NoContent_204;
+  res.status = 204;
 }
 
 // ---------------------------------------------------------------------------
@@ -289,21 +288,21 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
   auto sub_id = req.matches[2].str();
   auto sub = sub_mgr_.get(sub_id);
   if (!sub) {
-    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
                                {{"subscription_id", sub_id}});
     return;
   }
 
   // Verify subscription belongs to this entity
   if (sub->entity_id != entity_id) {
-    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
                                {{"subscription_id", sub_id}});
     return;
   }
 
   // Reject SSE connections for expired or inactive subscriptions
   if (!sub_mgr_.is_active(sub_id)) {
-    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                "Subscription expired or inactive", {{"subscription_id", sub_id}});
     return;
   }
@@ -313,7 +312,7 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
     RCLCPP_WARN(HandlerContext::logger(),
                 "SSE client limit reached (%zu), rejecting cyclic subscription stream from %s",
                 client_tracker_->max_clients(), req.remote_addr.c_str());
-    HandlerContext::send_error(res, StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
+    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE,
                                "Maximum number of SSE clients reached. Please try again later.");
     return;
   }

@@ -23,7 +23,6 @@
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 using json = nlohmann::json;
-using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -99,7 +98,7 @@ static const NodeConfigInfo * find_node_for_app(const std::vector<NodeConfigInfo
  * @brief Error classification result for parameter operations
  */
 struct ErrorClassification {
-  httplib::StatusCode status_code;
+  int status_code;
   std::string error_code;
 };
 
@@ -117,26 +116,26 @@ static ErrorClassification classify_error_code(ParameterErrorCode error_code) {
   switch (error_code) {
     case ParameterErrorCode::NOT_FOUND:
     case ParameterErrorCode::NO_DEFAULTS_CACHED:
-      result.status_code = StatusCode::NotFound_404;
+      result.status_code = 404;
       result.error_code = ERR_RESOURCE_NOT_FOUND;
       break;
     case ParameterErrorCode::READ_ONLY:
-      result.status_code = StatusCode::Forbidden_403;
+      result.status_code = 403;
       result.error_code = ERR_X_MEDKIT_ROS2_PARAMETER_READ_ONLY;
       break;
     case ParameterErrorCode::SERVICE_UNAVAILABLE:
     case ParameterErrorCode::TIMEOUT:
-      result.status_code = StatusCode::ServiceUnavailable_503;
+      result.status_code = 503;
       result.error_code = ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE;
       break;
     case ParameterErrorCode::TYPE_MISMATCH:
     case ParameterErrorCode::INVALID_VALUE:
-      result.status_code = StatusCode::BadRequest_400;
+      result.status_code = 400;
       result.error_code = ERR_INVALID_PARAMETER;
       break;
     case ParameterErrorCode::INTERNAL_ERROR:
     default:
-      result.status_code = StatusCode::InternalServerError_500;
+      result.status_code = 500;
       result.error_code = ERR_INTERNAL_ERROR;
       break;
   }
@@ -165,21 +164,21 @@ static ErrorClassification classify_parameter_error(const ParameterResult & resu
 
   if (error_message.find("not found") != std::string::npos ||
       error_message.find("Parameter not found") != std::string::npos) {
-    classification.status_code = StatusCode::NotFound_404;
+    classification.status_code = 404;
     classification.error_code = ERR_RESOURCE_NOT_FOUND;
   } else if (error_message.find("read-only") != std::string::npos ||
              error_message.find("read only") != std::string::npos ||
              error_message.find("is read_only") != std::string::npos) {
-    classification.status_code = StatusCode::Forbidden_403;
+    classification.status_code = 403;
     classification.error_code = ERR_X_MEDKIT_ROS2_PARAMETER_READ_ONLY;
   } else if (error_message.find("not available") != std::string::npos ||
              error_message.find("service not available") != std::string::npos ||
              error_message.find("timed out") != std::string::npos ||
              error_message.find("timeout") != std::string::npos) {
-    classification.status_code = StatusCode::ServiceUnavailable_503;
+    classification.status_code = 503;
     classification.error_code = ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE;
   } else {
-    classification.status_code = StatusCode::BadRequest_400;
+    classification.status_code = 400;
     classification.error_code = ERR_INVALID_REQUEST;
   }
 
@@ -215,7 +214,7 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
   std::string entity_id;
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -323,7 +322,7 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
     // If no successful queries, return error
     if (!any_success) {
       HandlerContext::send_error(
-          res, StatusCode::ServiceUnavailable_503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE,
+          res, 503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE,
           "Failed to list parameters from any node",
           {{"details", first_error}, {"entity_id", entity_id}, {"failed_node", first_error_node}});
       return;
@@ -344,7 +343,7 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
     HandlerContext::send_json(res, response);
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to list configurations", {{"details", e.what()}, {"entity_id", entity_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_configurations for entity '%s': %s", entity_id.c_str(),
                  e.what());
@@ -356,7 +355,7 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
   std::string param_id;
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -371,7 +370,7 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
 
     // Parameter ID may be prefixed with app_id: for aggregated configs
     if (param_id.empty() || param_id.length() > MAX_AGGREGATED_PARAM_ID_LENGTH) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid parameter ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid parameter ID",
                                  {{"details", "Parameter ID is empty or too long"}});
       return;
     }
@@ -381,7 +380,7 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
     if (agg_configs.nodes.empty()) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "No nodes available",
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "No nodes available",
                                  json{{"entity_id", entity_id}, {"id", param_id}});
       return;
     }
@@ -395,7 +394,7 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
     if (parsed.has_prefix) {
       const auto * node_info = find_node_for_app(agg_configs.nodes, parsed.app_id);
       if (!node_info) {
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+        HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                    "Source app not found in entity",
                                    json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", parsed.app_id}});
         return;
@@ -418,7 +417,7 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
       } else {
         auto err = classify_parameter_error(result);
         HandlerContext::send_error(res, err.status_code, err.error_code,
-                                   err.status_code == StatusCode::NotFound_404 ? "Parameter not found"
+                                   err.status_code == 404 ? "Parameter not found"
                                                                                : "Failed to get parameter",
                                    json{{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_id}});
       }
@@ -453,14 +452,14 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
       // Track the error for later reporting
       last_result = result;
       auto err = classify_parameter_error(result);
-      if (err.status_code != StatusCode::NotFound_404) {
+      if (err.status_code != 404) {
         all_not_found = false;
       }
     }
 
     // Parameter not found in any node - report appropriate error
     if (all_not_found) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Parameter not found",
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Parameter not found",
                                  json{{"entity_id", entity_id}, {"id", param_id}});
     } else {
       // Some nodes had non-"not found" errors (e.g., unavailable) - report 503
@@ -471,7 +470,7 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
     }
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to get configuration",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"param_id", param_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_configuration for entity '%s', param '%s': %s",
@@ -484,7 +483,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
   std::string param_id;
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -494,13 +493,13 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     // Validate entity_id format first
     auto entity_validation = ctx_.validate_entity_id(entity_id);
     if (!entity_validation) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                                  {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
     }
 
     if (param_id.empty() || param_id.length() > MAX_AGGREGATED_PARAM_ID_LENGTH) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid parameter ID",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid parameter ID",
                                  {{"details", "Parameter ID is empty or too long"}});
       return;
     }
@@ -510,7 +509,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     try {
       body = json::parse(req.body);
     } catch (const json::parse_error & e) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
                                  {{"details", e.what()}});
       return;
     }
@@ -522,7 +521,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     } else if (body.contains("value")) {
       value = body["value"];
     } else {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing 'data' field",
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing 'data' field",
                                  {{"details", "Request body must contain 'data' field"}});
       return;
     }
@@ -538,7 +537,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
     if (agg_configs.nodes.empty()) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "No nodes available",
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "No nodes available",
                                  json{{"entity_id", entity_id}, {"id", param_id}});
       return;
     }
@@ -575,7 +574,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     if (parsed.has_prefix) {
       const auto * node_info = find_node_for_app(agg_configs.nodes, parsed.app_id);
       if (!node_info) {
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+        HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                    "Source app not found in entity",
                                    json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", parsed.app_id}});
         return;
@@ -595,14 +594,14 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     }
 
     // For aggregated configs without prefix, we don't know which node to target
-    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST,
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST,
                                "Aggregated configuration requires app_id prefix",
                                {{"details", "Use format 'app_id:param_name' for aggregated configurations"},
                                 {"entity_id", entity_id},
                                 {"id", param_id}});
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to set configuration",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"param_id", param_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_set_configuration for entity '%s', param '%s': %s",
@@ -616,7 +615,7 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
 
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -634,7 +633,7 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
     if (agg_configs.nodes.empty()) {
-      HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "No nodes available",
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "No nodes available",
                                  json{{"entity_id", entity_id}, {"id", param_id}});
       return;
     }
@@ -647,7 +646,7 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
     // Helper to handle reset result
     auto handle_reset_result = [&](const auto & result) {
       if (result.success) {
-        res.status = StatusCode::NoContent_204;
+        res.status = 204;
         return true;
       }
       send_parameter_error(res, result, "reset", entity_id, param_id);
@@ -658,7 +657,7 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
     if (parsed.has_prefix) {
       const auto * node_info = find_node_for_app(agg_configs.nodes, parsed.app_id);
       if (!node_info) {
-        HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+        HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                    "Source app not found in entity",
                                    json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", parsed.app_id}});
         return;
@@ -678,14 +677,14 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
     }
 
     // For aggregated configs without prefix, we don't know which node to target
-    HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST,
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST,
                                "Aggregated configuration requires app_id prefix",
                                json{{"details", "Use format 'app_id:param_name' for aggregated configurations"},
                                     {"entity_id", entity_id},
                                     {"id", param_id}});
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to reset configuration",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"param_id", param_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_delete_configuration: %s", e.what());
@@ -697,7 +696,7 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
 
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -715,7 +714,7 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
 
     if (agg_configs.nodes.empty()) {
       // No nodes means nothing to reset, success
-      res.status = StatusCode::NoContent_204;
+      res.status = 204;
       return;
     }
 
@@ -748,17 +747,17 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
 
     if (all_success) {
       // SOVD compliance: DELETE returns 204 No Content on complete success
-      res.status = StatusCode::NoContent_204;
+      res.status = 204;
     } else {
       // Partial success - return 207 Multi-Status
       json response;
       response["entity_id"] = entity_id;
       response["results"] = multi_status;
-      res.status = StatusCode::MultiStatus_207;
+      res.status = 207;
       res.set_content(response.dump(2), "application/json");
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to reset configurations", {{"details", e.what()}, {"entity_id", entity_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_delete_all_configurations: %s", e.what());
   }

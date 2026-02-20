@@ -34,7 +34,7 @@ void BulkDataHandlers::handle_list_categories(const httplib::Request & req, http
   // Parse entity path from request URL
   auto entity_info = parse_entity_path(req.path);
   if (!entity_info) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid entity path");
     return;
   }
 
@@ -46,7 +46,7 @@ void BulkDataHandlers::handle_list_categories(const httplib::Request & req, http
 
   // Validate entity type supports bulk-data collection (SOVD Table 8)
   if (auto err = HandlerContext::validate_collection_access(*entity_opt, ResourceCollection::BULK_DATA)) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
     return;
   }
 
@@ -70,7 +70,7 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
   // Parse entity path from request URL
   auto entity_info = parse_entity_path(req.path);
   if (!entity_info) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid entity path");
     return;
   }
 
@@ -83,14 +83,14 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
 
   // Validate entity type supports bulk-data collection (SOVD Table 8)
   if (auto err = HandlerContext::validate_collection_access(entity, ResourceCollection::BULK_DATA)) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
     return;
   }
 
   // Extract and validate category from path
   auto category = extract_bulk_data_category(req.path);
   if (category.empty()) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing category");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing category");
     return;
   }
 
@@ -155,7 +155,7 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
     // === Non-rosbag categories: served via BulkDataStore ===
     auto * store = ctx_.bulk_data_store();
     if (!store || !store->is_known_category(category)) {
-      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                  "Unknown category: " + category);
       return;
     }
@@ -187,7 +187,7 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
   // Parse entity path from request URL
   auto entity_info = parse_entity_path(req.path);
   if (!entity_info) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid entity path");
     return;
   }
 
@@ -199,20 +199,20 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
 
   // Validate entity type supports bulk-data collection (SOVD Table 8)
   if (auto err = HandlerContext::validate_collection_access(*entity_opt, ResourceCollection::BULK_DATA)) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
     return;
   }
 
   // Extract and validate category from path
   auto category = extract_bulk_data_category(req.path);
   if (category.empty()) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing category");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing category");
     return;
   }
 
   // Rosbags are managed by the fault system, not user-uploadable
   if (category == "rosbags") {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                "Category 'rosbags' does not support upload. "
                                "Rosbags are managed by the fault system.");
     return;
@@ -221,21 +221,21 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
   // Check BulkDataStore is available
   auto * store = ctx_.bulk_data_store();
   if (store == nullptr) {
-    HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Bulk data storage not configured");
     return;
   }
 
   // Validate category is known
   if (!store->is_known_category(category)) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                "Unknown bulk-data category: " + category);
     return;
   }
 
   // Extract multipart file
   if (!req.has_file("file")) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST,
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST,
                                "Missing 'file' field in multipart/form-data request");
     return;
   }
@@ -246,7 +246,7 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
 
   // Check file size against limit
   if (store->max_upload_bytes() > 0 && file.content.size() > store->max_upload_bytes()) {
-    HandlerContext::send_error(res, static_cast<httplib::StatusCode>(413), ERR_PAYLOAD_TOO_LARGE,
+    HandlerContext::send_error(res, 413, ERR_PAYLOAD_TOO_LARGE,
                                "File size exceeds maximum upload limit");
     return;
   }
@@ -263,12 +263,12 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
     if (!meta_str.empty()) {
       auto parsed = nlohmann::json::parse(meta_str, nullptr, false);
       if (parsed.is_discarded()) {
-        HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+        HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                    "Invalid JSON in 'metadata' field");
         return;
       }
       if (!parsed.is_object()) {
-        HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+        HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                    "metadata must be a JSON object");
         return;
       }
@@ -280,7 +280,7 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
   auto result =
       store->store(entity_info->entity_id, category, filename, content_type, file.content, description, metadata);
   if (!result) {
-    HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, result.error());
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, result.error());
     return;
   }
 
@@ -308,7 +308,7 @@ void BulkDataHandlers::handle_delete(const httplib::Request & req, httplib::Resp
   // Parse entity path from request URL
   auto entity_info = parse_entity_path(req.path);
   if (!entity_info) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid entity path");
     return;
   }
 
@@ -320,20 +320,20 @@ void BulkDataHandlers::handle_delete(const httplib::Request & req, httplib::Resp
 
   // Validate entity type supports bulk-data collection (SOVD Table 8)
   if (auto err = HandlerContext::validate_collection_access(*entity_opt, ResourceCollection::BULK_DATA)) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
     return;
   }
 
   // Extract and validate category from path
   auto category = extract_bulk_data_category(req.path);
   if (category.empty()) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing category");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing category");
     return;
   }
 
   // Rosbags are managed by the fault system, not user-deletable
   if (category == "rosbags") {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                "Category 'rosbags' does not support deletion. "
                                "Rosbags are managed by the fault system.");
     return;
@@ -342,21 +342,21 @@ void BulkDataHandlers::handle_delete(const httplib::Request & req, httplib::Resp
   // Extract item ID
   auto item_id = extract_bulk_data_id(req.path);
   if (item_id.empty()) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing bulk-data ID");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing bulk-data ID");
     return;
   }
 
   // Check BulkDataStore is available
   auto * store = ctx_.bulk_data_store();
   if (store == nullptr) {
-    HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Bulk data storage not configured");
     return;
   }
 
   // Validate category is known
   if (!store->is_known_category(category)) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                "Unknown bulk-data category: " + category);
     return;
   }
@@ -364,7 +364,7 @@ void BulkDataHandlers::handle_delete(const httplib::Request & req, httplib::Resp
   // Delete the item
   auto result = store->remove(entity_info->entity_id, category, item_id);
   if (!result) {
-    HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                "Bulk-data item not found");
     return;
   }
@@ -377,7 +377,7 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
   // Parse entity path from request URL
   auto entity_info = parse_entity_path(req.path);
   if (!entity_info) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid entity path");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid entity path");
     return;
   }
 
@@ -390,7 +390,7 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
 
   // Validate entity type supports bulk-data collection (SOVD Table 8)
   if (auto err = HandlerContext::validate_collection_access(entity, ResourceCollection::BULK_DATA)) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
     return;
   }
 
@@ -399,7 +399,7 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
   auto bulk_data_id = extract_bulk_data_id(req.path);
 
   if (bulk_data_id.empty()) {
-    HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Missing bulk-data ID");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing bulk-data ID");
     return;
   }
 
@@ -414,7 +414,7 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
     // Get rosbag info
     auto rosbag_result = fault_mgr->get_rosbag(fault_code);
     if (!rosbag_result.success || !rosbag_result.data.contains("file_path")) {
-      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found",
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found",
                                  {{"bulk_data_id", bulk_data_id}});
       return;
     }
@@ -425,7 +425,7 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
     auto fault_result = fault_mgr->get_fault(fault_code, source_filter);
 
     if (!fault_result.success) {
-      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                  "Bulk-data not found for this entity", {{"entity_id", entity_info->entity_id}});
       return;
     }
@@ -444,21 +444,21 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
     res.set_header("Content-Disposition", "attachment; filename=\"" + safe_name + "\"");
 
     if (!stream_file_to_response(res, file_path, mimetype)) {
-      HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+      HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                  "Failed to read rosbag file");
     }
   } else {
     // === Non-rosbag categories: served via BulkDataStore ===
     auto * store = ctx_.bulk_data_store();
     if (!store || !store->is_known_category(category)) {
-      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND,
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                  "Unknown category: " + category);
       return;
     }
 
     auto file_path = store->get_file_path(entity_info->entity_id, category, bulk_data_id);
     if (!file_path) {
-      HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found",
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found",
                                  {{"bulk_data_id", bulk_data_id}});
       return;
     }
@@ -477,7 +477,7 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
 
     // Use generic stream utility (from subtask 1)
     if (!ros2_medkit_gateway::stream_file_to_response(res, *file_path, mimetype)) {
-      HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+      HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                  "Failed to read file");
     }
   }

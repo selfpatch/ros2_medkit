@@ -19,7 +19,6 @@
 #include "ros2_medkit_gateway/models/entity_types.hpp"
 
 using json = nlohmann::json;
-using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -200,7 +199,7 @@ std::optional<EntityInfo> HandlerContext::validate_entity_for_route(const httpli
   // Step 1: Validate entity ID format
   auto validation_result = validate_entity_id(entity_id);
   if (!validation_result) {
-    send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+    send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                {{"details", validation_result.error()}, {"entity_id", entity_id}});
     return std::nullopt;
   }
@@ -214,7 +213,7 @@ std::optional<EntityInfo> HandlerContext::validate_entity_for_route(const httpli
     auto any_entity = get_entity_info(entity_id);
     if (any_entity.type != EntityType::UNKNOWN) {
       // Entity exists but wrong type for this route -> 400
-      send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+      send_error(res, 400, ERR_INVALID_PARAMETER,
                  "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
                      to_string(any_entity.sovd_type()),
                  {{"entity_id", entity_id},
@@ -222,7 +221,7 @@ std::optional<EntityInfo> HandlerContext::validate_entity_for_route(const httpli
                   {"actual_type", to_string(any_entity.sovd_type())}});
     } else {
       // Entity doesn't exist at all -> 404
-      send_error(res, StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
+      send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
     }
     return std::nullopt;
   }
@@ -263,7 +262,7 @@ bool HandlerContext::is_origin_allowed(const std::string & origin) const {
   return false;
 }
 
-void HandlerContext::send_error(httplib::Response & res, httplib::StatusCode status, const std::string & error_code,
+void HandlerContext::send_error(httplib::Response & res, int status, const std::string & error_code,
                                 const std::string & message, const json & parameters) {
   res.status = status;
   json error_json;

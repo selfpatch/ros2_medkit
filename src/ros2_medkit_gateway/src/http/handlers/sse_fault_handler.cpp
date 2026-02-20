@@ -74,7 +74,7 @@ void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Respo
   if (!client_tracker_->try_connect()) {
     RCLCPP_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
                 client_tracker_->max_clients(), req.remote_addr.c_str());
-    HandlerContext::send_error(res, httplib::StatusCode::ServiceUnavailable_503, ERR_SERVICE_UNAVAILABLE,
+    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE,
                                "Maximum number of SSE clients reached. Please try again later.");
     return;
   }

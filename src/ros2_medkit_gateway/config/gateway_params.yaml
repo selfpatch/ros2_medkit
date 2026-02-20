@@ -252,6 +252,7 @@ ros2_medkit_gateway:
       # Format: "pattern:requests_per_minute"
       # Pattern uses * as single-segment wildcard
       # Example: "/api/v1/*/operations/*:10"
+      # ROS 2 requires at least one element; empty string is ignored at runtime.
       endpoint_limits: [""]
 
       # How often to scan and remove idle client tracking entries (seconds)

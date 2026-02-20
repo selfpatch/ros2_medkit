@@ -23,7 +23,6 @@
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 using json = nlohmann::json;
-using httplib::StatusCode;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -32,7 +31,7 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
   std::string entity_id;
   try {
     if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -101,7 +100,7 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to retrieve entity data", {{"details", e.what()}, {"entity_id", entity_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_data for entity '%s': %s", entity_id.c_str(),
                  e.what());
@@ -113,7 +112,7 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
   std::string topic_name;
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -178,12 +177,12 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
 
     HandlerContext::send_json(res, response);
   } catch (const TopicNotAvailableException & e) {
-    HandlerContext::send_error(res, StatusCode::NotFound_404, ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE, "Topic not found",
+    HandlerContext::send_error(res, 404, ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE, "Topic not found",
                                {{"entity_id", entity_id}, {"topic_name", topic_name}});
     RCLCPP_DEBUG(HandlerContext::logger(), "Topic not available for entity '%s', topic '%s': %s", entity_id.c_str(),
                  topic_name.c_str(), e.what());
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to retrieve topic data",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_data_item for entity '%s', topic '%s': %s",
@@ -196,7 +195,7 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
   std::string topic_name;
   try {
     if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid request");
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
       return;
     }
 
@@ -214,21 +213,21 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
     try {
       body = json::parse(req.body);
     } catch (const json::parse_error & e) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
                                  {{"details", e.what()}});
       return;
     }
 
     // Validate required fields: type and data
     if (!body.contains("type") || !body["type"].is_string()) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER,
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                  "Missing or invalid 'type' field",
                                  {{"details", "Request body must contain 'type' string field"}});
       return;
     }
 
     if (!body.contains("data")) {
-      HandlerContext::send_error(res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Missing 'data' field",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing 'data' field",
                                  {{"details", "Request body must contain 'data' field"}});
       return;
     }
@@ -244,7 +243,7 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
 
     if (!valid_format) {
       HandlerContext::send_error(
-          res, StatusCode::BadRequest_400, ERR_INVALID_PARAMETER, "Invalid message type format",
+          res, 400, ERR_INVALID_PARAMETER, "Invalid message type format",
           {{"details", "Message type should be in format: package/msg/Type"}, {"type", msg_type}});
       return;
     }
@@ -276,7 +275,7 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR,
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
                                "Failed to publish to topic",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_put_data_item for entity '%s', topic '%s': %s",
@@ -286,13 +285,13 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
 
 void DataHandlers::handle_data_categories(const httplib::Request & req, httplib::Response & res) {
   (void)req;
-  HandlerContext::send_error(res, StatusCode::NotImplemented_501, ERR_NOT_IMPLEMENTED,
+  HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED,
                              "Data categories are not implemented for ROS 2", {{"feature", "data-categories"}});
 }
 
 void DataHandlers::handle_data_groups(const httplib::Request & req, httplib::Response & res) {
   (void)req;
-  HandlerContext::send_error(res, StatusCode::NotImplemented_501, ERR_NOT_IMPLEMENTED,
+  HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED,
                              "Data groups are not implemented for ROS 2", {{"feature", "data-groups"}});
 }
 

@@ -67,12 +67,12 @@ void HttpServerManager::listen(const std::string & host, int port) {
 
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
   if (tls_config_.enabled && ssl_server_) {
-    ssl_server_->listen(host, port);
+    ssl_server_->listen(host.c_str(), port);
     return;
   }
 #endif
   if (server_) {
-    server_->listen(host, port);
+    server_->listen(host.c_str(), port);
   }
 }
 

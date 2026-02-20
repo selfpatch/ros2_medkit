@@ -32,7 +32,7 @@ using json = nlohmann::json;
 TEST(HandlerContextStaticTest, SendErrorSetsStatusAndBody) {
   httplib::Response res;
 
-  HandlerContext::send_error(res, httplib::StatusCode::BadRequest_400, ERR_INVALID_REQUEST, "Test error message");
+  HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Test error message");
 
   EXPECT_EQ(res.status, 400);
   EXPECT_EQ(res.get_header_value("Content-Type"), "application/json");
@@ -46,7 +46,7 @@ TEST(HandlerContextStaticTest, SendErrorWithExtraFields) {
   httplib::Response res;
   json extra = {{"details", "More info"}, {"code", 42}};
 
-  HandlerContext::send_error(res, httplib::StatusCode::NotFound_404, ERR_ENTITY_NOT_FOUND, "Not found", extra);
+  HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Not found", extra);
 
   EXPECT_EQ(res.status, 404);
 
@@ -61,7 +61,7 @@ TEST(HandlerContextStaticTest, SendErrorWithExtraFields) {
 TEST(HandlerContextStaticTest, SendErrorInternalServerError) {
   httplib::Response res;
 
-  HandlerContext::send_error(res, httplib::StatusCode::InternalServerError_500, ERR_INTERNAL_ERROR, "Server error");
+  HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Server error");
 
   EXPECT_EQ(res.status, 500);
   auto body = json::parse(res.body);
