@@ -997,7 +997,7 @@ ros2 launch ros2_medkit_gateway gateway_https.launch.py
 
 **Start demo nodes:**
 ```bash
-ros2 launch ros2_medkit_gateway demo_nodes.launch.py
+ros2 launch ros2_medkit_integration_tests demo_nodes.launch.py
 ```
 
 **Test the API:**
@@ -1340,7 +1340,7 @@ The package includes demo automotive nodes for testing:
 
 **Launch all demo nodes:**
 ```bash
-ros2 launch ros2_medkit_gateway demo_nodes.launch.py
+ros2 launch ros2_medkit_integration_tests demo_nodes.launch.py
 ```
 
 ## URL Encoding
@@ -1368,7 +1368,7 @@ We provide a Postman collection for easy API testing:
 2. **Import environment:** `postman/environments/local.postman_environment.json`
 3. **Activate environment:** Select "ROS 2 Medkit Gateway - Local" in Postman
 4. **Start gateway:** `ros2 launch ros2_medkit_gateway gateway.launch.py`
-5. **Start demo nodes:** `ros2 launch ros2_medkit_gateway demo_nodes.launch.py`
+5. **Start demo nodes:** `ros2 launch ros2_medkit_integration_tests demo_nodes.launch.py`
 6. **Test:** Send requests from Postman!
 
 See [postman/README.md](postman/README.md) for detailed instructions.

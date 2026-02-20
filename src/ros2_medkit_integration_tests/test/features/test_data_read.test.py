@@ -162,7 +162,7 @@ class TestDataRead(GatewayTestCase):
 
         @verifies REQ_INTEROP_018
         """
-        data = self.poll_endpoint('/apps/calibration/data', skip_on_timeout=True)
+        data = self.poll_endpoint('/apps/calibration/data')
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list, 'Response should have items array')
 

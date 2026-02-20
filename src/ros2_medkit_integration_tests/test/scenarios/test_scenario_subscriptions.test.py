@@ -100,8 +100,8 @@ class TestScenarioSubscriptions(GatewayTestCase):
         # Wait for data availability on the discovered app
         # Skip ROS 2 system topics that don't have continuous data flow
         system_topics = {'/parameter_events', '/rosout'}
-        deadline = time.time() + 15.0
-        while time.time() < deadline:
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
             try:
                 r = requests.get(
                     f'{cls.BASE_URL}/apps/{cls.app_id}/data', timeout=5,
@@ -165,6 +165,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
         @verifies REQ_INTEROP_089
         """
         sub = self._create_subscription(interval='normal', duration=120)
+        self.addCleanup(self._delete_subscription, sub['id'])
 
         # Verify response schema
         self.assertIn('id', sub)
@@ -178,15 +179,15 @@ class TestScenarioSubscriptions(GatewayTestCase):
         self.assertTrue(sub['event_source'].endswith('/events'))
         self.assertIn(sub['id'], sub['event_source'])
 
-        self._delete_subscription(sub['id'])
-
     def test_02_list_subscriptions_returns_created_ones(self):
         """List active subscriptions for an entity — shows all created subscriptions.
 
         @verifies REQ_INTEROP_025
         """
         s1 = self._create_subscription(interval='fast', duration=60)
+        self.addCleanup(self._delete_subscription, s1['id'])
         s2 = self._create_subscription(interval='slow', duration=60)
+        self.addCleanup(self._delete_subscription, s2['id'])
 
         r = requests.get(
             f'{self.BASE_URL}/apps/{self.app_id}/cyclic-subscriptions',
@@ -208,15 +209,13 @@ class TestScenarioSubscriptions(GatewayTestCase):
             self.assertIn('protocol', item)
             self.assertIn('interval', item)
 
-        self._delete_subscription(s1['id'])
-        self._delete_subscription(s2['id'])
-
     def test_03_get_single_subscription(self):
         """Read a single subscription's details by ID.
 
         @verifies REQ_INTEROP_026
         """
         sub = self._create_subscription()
+        self.addCleanup(self._delete_subscription, sub['id'])
 
         r = requests.get(
             f'{self.BASE_URL}/apps/{self.app_id}/cyclic-subscriptions/{sub["id"]}',
@@ -229,8 +228,6 @@ class TestScenarioSubscriptions(GatewayTestCase):
         self.assertEqual(data['observed_resource'], self.resource_uri)
         self.assertEqual(data['interval'], 'normal')
 
-        self._delete_subscription(sub['id'])
-
     def test_04_update_subscription_interval(self):
         """Update the interval of an existing subscription from normal to fast.
 
@@ -239,6 +236,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
         @verifies REQ_INTEROP_027
         """
         sub = self._create_subscription(interval='normal', duration=120)
+        self.addCleanup(self._delete_subscription, sub['id'])
 
         r = requests.put(
             f'{self.BASE_URL}/apps/{self.app_id}/cyclic-subscriptions/{sub["id"]}',
@@ -251,14 +249,13 @@ class TestScenarioSubscriptions(GatewayTestCase):
         self.assertEqual(r.json()['id'], sub['id'])
         self.assertEqual(r.json()['observed_resource'], self.resource_uri)
 
-        self._delete_subscription(sub['id'])
-
     def test_05_update_subscription_duration(self):
         """Extend a subscription's duration — user wants to keep monitoring longer.
 
         @verifies REQ_INTEROP_027
         """
         sub = self._create_subscription(interval='slow', duration=30)
+        self.addCleanup(self._delete_subscription, sub['id'])
 
         r = requests.put(
             f'{self.BASE_URL}/apps/{self.app_id}/cyclic-subscriptions/{sub["id"]}',
@@ -266,8 +263,6 @@ class TestScenarioSubscriptions(GatewayTestCase):
             timeout=5,
         )
         self.assertEqual(r.status_code, 200)
-
-        self._delete_subscription(sub['id'])
 
     def test_06_delete_subscription_returns_204(self):
         """Cancel a subscription — returns 204 No Content and removes it.
@@ -315,6 +310,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
         @verifies REQ_INTEROP_090
         """
         sub = self._create_subscription(interval='slow', duration=30)
+        self.addCleanup(self._delete_subscription, sub['id'])
         events_url = f'http://localhost:{DEFAULT_PORT}{sub["event_source"]}'
 
         try:
@@ -323,9 +319,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
             self.assertEqual(r.headers.get('Cache-Control'), 'no-cache')
             r.close()
         except requests.exceptions.ReadTimeout:
-            pass  # Expected — SSE keeps connection open
-        finally:
-            self._delete_subscription(sub['id'])
+            pass  # Expected - SSE keeps connection open
 
     def test_11_sse_stream_delivers_periodic_data(self):
         """The SSE stream delivers EventEnvelope payloads at the requested interval.
@@ -336,6 +330,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
         @verifies REQ_INTEROP_090
         """
         sub = self._create_subscription(interval='slow', duration=30)
+        self.addCleanup(self._delete_subscription, sub['id'])
         events_url = f'http://localhost:{DEFAULT_PORT}{sub["event_source"]}'
 
         received_events = []
@@ -375,8 +370,6 @@ class TestScenarioSubscriptions(GatewayTestCase):
             payload = event['payload']
             self.assertIn('id', payload, 'ReadValue payload must have id')
             self.assertIn('data', payload, 'ReadValue payload must have data')
-
-        self._delete_subscription(sub['id'])
 
     def test_12_sse_stream_closes_on_subscription_delete(self):
         """When a subscription is deleted, the SSE stream closes gracefully.
@@ -591,6 +584,12 @@ class TestScenarioSubscriptions(GatewayTestCase):
         self.assertEqual(r.status_code, 201)
 
         sub_id = r.json()['id']
+        self.addCleanup(
+            lambda: requests.delete(
+                f'{self.BASE_URL}/components/{comp_id}/cyclic-subscriptions/{sub_id}',
+                timeout=5,
+            )
+        )
 
         # List should include it
         r = requests.get(
@@ -600,12 +599,6 @@ class TestScenarioSubscriptions(GatewayTestCase):
         self.assertEqual(r.status_code, 200)
         ids = [item['id'] for item in r.json().get('items', [])]
         self.assertIn(sub_id, ids)
-
-        # Cleanup
-        requests.delete(
-            f'{self.BASE_URL}/components/{comp_id}/cyclic-subscriptions/{sub_id}',
-            timeout=5,
-        )
 
 
 @launch_testing.post_shutdown_test()

@@ -54,7 +54,7 @@ class TestOperationsApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_035
         """
-        self.poll_endpoint('/apps/calibration', skip_on_timeout=True)
+        self.poll_endpoint('/apps/calibration')
 
         response = requests.post(
             f'{self.BASE_URL}/apps/calibration/operations/calibrate/executions',
@@ -79,7 +79,7 @@ class TestOperationsApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_035
         """
-        self.poll_endpoint('/apps/calibration', skip_on_timeout=True)
+        self.poll_endpoint('/apps/calibration')
 
         response = requests.post(
             f'{self.BASE_URL}/apps/calibration/operations/nonexistent_op/executions',
@@ -188,7 +188,7 @@ class TestOperationsApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_021
         """
-        self.poll_endpoint('/apps/calibration', skip_on_timeout=True)
+        self.poll_endpoint('/apps/calibration')
 
         data = self.get_json('/apps/calibration')
 

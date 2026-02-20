@@ -31,7 +31,6 @@ Tests verify:
 """
 
 import os
-import time
 import unittest
 
 from ament_index_python.packages import get_package_share_directory
@@ -39,7 +38,6 @@ from launch import LaunchDescription
 from launch.actions import TimerAction
 import launch_testing
 import launch_testing.actions
-import requests
 
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_demo_nodes, create_gateway_node
@@ -294,37 +292,29 @@ class TestScenarioDiscoveryHybrid(GatewayTestCase):
 
     def test_16_app_has_runtime_topics(self):
         """Online app has topics from runtime discovery."""
-        # Wait a bit for runtime linking
-        time.sleep(3)
-
-        response = requests.get(
-            f'{self.BASE_URL}/apps/engine-temp-sensor/data', timeout=5
+        data = self.poll_endpoint_until(
+            '/apps/engine-temp-sensor/data',
+            lambda d: d.get('items'),
+            timeout=15.0,
         )
-
-        if response.status_code == 200:
-            data = response.json()
-            if 'items' in data and data['items']:
-                topic_names = [t.get('name', '') for t in data['items']]
-                self.assertTrue(
-                    any('temperature' in name for name in topic_names),
-                    f'Expected temperature topic, got: {topic_names}'
-                )
+        topic_names = [t.get('name', '') for t in data]
+        self.assertTrue(
+            any('temperature' in name for name in topic_names),
+            f'Expected temperature topic, got: {topic_names}'
+        )
 
     def test_17_app_has_runtime_service(self):
         """App with service has it discovered at runtime."""
-        response = requests.get(
-            f'{self.BASE_URL}/apps/engine-calibration-service/operations',
-            timeout=5,
+        data = self.poll_endpoint_until(
+            '/apps/engine-calibration-service/operations',
+            lambda d: d.get('items'),
+            timeout=15.0,
         )
-
-        if response.status_code == 200:
-            data = response.json()
-            if 'items' in data and data['items']:
-                op_names = [o.get('name', '') for o in data['items']]
-                self.assertTrue(
-                    any('calibrate' in name for name in op_names),
-                    f'Expected calibrate service, got: {op_names}'
-                )
+        op_names = [o.get('name', '') for o in data]
+        self.assertTrue(
+            any('calibrate' in name for name in op_names),
+            f'Expected calibrate service, got: {op_names}'
+        )
 
     def test_18_app_component_relationship(self):
         """App is-located-on links to correct component via HATEOAS."""
@@ -377,28 +367,17 @@ class TestScenarioDiscoveryHybrid(GatewayTestCase):
 
     def test_22_function_aggregates_host_data(self):
         """Function /data aggregates topics from all hosts."""
-        response = requests.get(
-            f'{self.BASE_URL}/functions/engine-monitoring/data', timeout=5
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            if 'items' in data:
-                topic_names = [t.get('name', '') for t in data['items']]
-                self.assertIsInstance(topic_names, list)
+        data = self.get_json('/functions/engine-monitoring/data')
+        self.assertIn('items', data)
+        topic_names = [t.get('name', '') for t in data['items']]
+        self.assertIsInstance(topic_names, list)
 
     def test_23_function_aggregates_host_operations(self):
         """Function /operations aggregates services from all hosts."""
-        response = requests.get(
-            f'{self.BASE_URL}/functions/engine-calibration/operations',
-            timeout=5,
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            if 'items' in data:
-                op_names = [o.get('name', '') for o in data['items']]
-                self.assertIsInstance(op_names, list)
+        data = self.get_json('/functions/engine-calibration/operations')
+        self.assertIn('items', data)
+        op_names = [o.get('name', '') for o in data['items']]
+        self.assertIsInstance(op_names, list)
 
     def test_24_function_with_tags(self):
         """Function tags from manifest are preserved.

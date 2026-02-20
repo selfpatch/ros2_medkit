@@ -74,7 +74,7 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 
 ```bash
 # Terminal 1 - Demo Nodes (sensors, actuators, services, actions)
-ros2 launch ros2_medkit_gateway demo_nodes.launch.py
+ros2 launch ros2_medkit_integration_tests demo_nodes.launch.py
 
 # Terminal 2 - Fault Manager (required for Faults API and LIDAR Fault Workflow)
 ros2 run ros2_medkit_fault_manager fault_manager_node

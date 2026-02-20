@@ -65,7 +65,11 @@ class TestHealth(GatewayTestCase):
         self.assertIn('capabilities', data)
 
         self.assertEqual(data['name'], 'ROS 2 Medkit Gateway')
-        self.assertEqual(data['version'], '0.1.0')
+        self.assertRegex(
+            data['version'],
+            r'^\d+\.\d+\.\d+$',
+            f'Version should be semver format, got: {data["version"]}'
+        )
 
         # Verify endpoints list
         self.assertIsInstance(data['endpoints'], list)

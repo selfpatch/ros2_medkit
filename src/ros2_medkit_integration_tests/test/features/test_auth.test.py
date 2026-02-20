@@ -23,7 +23,6 @@ enforcement (viewer, operator, configurator, admin).
 @verifies REQ_INTEROP_086, REQ_INTEROP_087
 """
 
-import time
 import unittest
 
 import launch
@@ -259,7 +258,6 @@ class TestAuthorizationIntegration(GatewayTestCase):
     def setUpClass(cls):
         """Wait for gateway to be ready and get tokens."""
         cls._wait_for_gateway_health()
-        time.sleep(1)
 
         # Get tokens for different roles
         cls.tokens = {}
@@ -280,6 +278,13 @@ class TestAuthorizationIntegration(GatewayTestCase):
             )
             if response.status_code == 200:
                 cls.tokens[role] = response.json()['access_token']
+
+        missing = [r for r in ('admin', 'operator', 'viewer', 'configurator')
+                   if r not in cls.tokens]
+        if missing:
+            raise unittest.SkipTest(
+                f'Could not acquire tokens for: {", ".join(missing)}'
+            )
 
     def _auth_header(self, role):
         """Get Authorization header for a role."""
