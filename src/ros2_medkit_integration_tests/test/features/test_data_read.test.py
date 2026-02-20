@@ -523,11 +523,11 @@ class TestDataRead(GatewayTestCase):
         """
         funcs_response = requests.get(f'{self.BASE_URL}/functions', timeout=10)
         if funcs_response.status_code != 200:
-            self.skipTest('No functions available for testing')
+            self.fail('No functions available for testing')
 
         funcs = funcs_response.json().get('items', [])
         if len(funcs) == 0:
-            self.skipTest('No functions available for testing')
+            self.fail('No functions available for testing')
 
         func_id = funcs[0]['id']
 

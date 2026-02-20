@@ -54,7 +54,7 @@ class TestEntityRouting(GatewayTestCase):
 
         apps = apps_response.json().get('items', [])
         if len(apps) == 0:
-            self.skipTest('No apps available for testing')
+            self.fail('No apps available for testing')
 
         components_response = requests.get(f'{self.BASE_URL}/components', timeout=10)
         self.assertEqual(components_response.status_code, 200)
@@ -68,7 +68,7 @@ class TestEntityRouting(GatewayTestCase):
             if app['id'] not in component_ids:
                 return app['id']
 
-        self.skipTest('No app ID available that is distinct from component IDs')
+        self.fail('No app ID available that is distinct from component IDs')
 
     # ------------------------------------------------------------------
     # Component route rejects app IDs (test_116-119)
@@ -175,7 +175,7 @@ class TestEntityRouting(GatewayTestCase):
 
         apps = apps_response.json().get('items', [])
         if len(apps) == 0:
-            self.skipTest('No apps available for testing')
+            self.fail('No apps available for testing')
 
         app_id = apps[0]['id']
 

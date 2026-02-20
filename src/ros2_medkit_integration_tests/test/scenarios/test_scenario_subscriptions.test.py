@@ -95,7 +95,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
             pass
 
         if not cls.app_id:
-            raise unittest.SkipTest('Demo temp sensor app not discovered')
+            raise AssertionError('Demo temp sensor app not discovered')
 
         # Wait for data availability on the discovered app
         # Skip ROS 2 system topics that don't have continuous data flow
@@ -122,7 +122,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
             time.sleep(1.0)
 
         if not cls.topic_id:
-            raise unittest.SkipTest(
+            raise AssertionError(
                 f'No data items available for app {cls.app_id}'
             )
 
@@ -558,7 +558,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
         r = requests.get(f'{self.BASE_URL}/components', timeout=5)
         components = r.json().get('items', [])
         if not components:
-            self.skipTest('No components discovered')
+            self.fail('No components discovered')
 
         comp_id = components[0]['id']
 
@@ -566,7 +566,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
         r = requests.get(f'{self.BASE_URL}/components/{comp_id}/data', timeout=5)
         data_items = r.json().get('items', [])
         if not data_items:
-            self.skipTest(f'No data items for component {comp_id}')
+            self.fail(f'No data items for component {comp_id}')
 
         topic = data_items[0]['id']
         resource = f'/api/v1/components/{comp_id}/data{topic}'

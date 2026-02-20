@@ -80,7 +80,7 @@ class TestScenarioConfigManagement(GatewayTestCase):
         configs_data = self.get_json(f'{self.ENTITY_ENDPOINT}/configurations')
         configs = configs_data.get('items', [])
         if not configs:
-            self.skipTest('No configurations found on temp_sensor')
+            self.fail('No configurations found on temp_sensor')
 
         config_id = configs[0]['id']
 
@@ -155,7 +155,7 @@ class TestScenarioConfigManagement(GatewayTestCase):
             break
 
         if not config_found:
-            self.skipTest('No writable app configurations found')
+            self.fail('No writable app configurations found')
 
     def test_04_reset_all_configurations(self):
         """DELETE /apps/temp_sensor/configurations resets all configs.

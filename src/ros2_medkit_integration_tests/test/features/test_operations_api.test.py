@@ -292,7 +292,7 @@ class TestOperationsApi(GatewayTestCase):
                 break
 
         if service_op is None:
-            self.skipTest('No service operations found')
+            self.fail('No service operations found')
             return
 
         operation_id = service_op['id']
@@ -356,7 +356,7 @@ class TestOperationsApi(GatewayTestCase):
                 break
 
         if not operation_found:
-            self.skipTest('No app operations found')
+            self.fail('No app operations found')
 
     # ------------------------------------------------------------------
     # Operation errors (test_86)
@@ -405,7 +405,7 @@ class TestOperationsApi(GatewayTestCase):
                 break
 
         if action_op is None:
-            self.skipTest('No action operations found')
+            self.fail('No action operations found')
             return
 
         operation_id = action_op['id']
@@ -436,7 +436,7 @@ class TestOperationsApi(GatewayTestCase):
                 break
 
         if service_op is None:
-            self.skipTest('No service operations found')
+            self.fail('No service operations found')
             return
 
         operation_id = service_op['id']

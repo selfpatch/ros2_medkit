@@ -102,7 +102,7 @@ class TestScenarioDataPublishVerify(GatewayTestCase):
                 break
 
         if subscribe_topic is None:
-            self.skipTest('Actuator has no subscribe topics')
+            self.fail('Actuator has no subscribe topics')
 
         topic_id = subscribe_topic['id']
 

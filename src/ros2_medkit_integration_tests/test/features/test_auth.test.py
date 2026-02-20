@@ -282,7 +282,7 @@ class TestAuthorizationIntegration(GatewayTestCase):
         missing = [r for r in ('admin', 'operator', 'viewer', 'configurator')
                    if r not in cls.tokens]
         if missing:
-            raise unittest.SkipTest(
+            raise AssertionError(
                 f'Could not acquire tokens for: {", ".join(missing)}'
             )
 

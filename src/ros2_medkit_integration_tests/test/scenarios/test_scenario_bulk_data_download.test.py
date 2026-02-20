@@ -66,7 +66,7 @@ class TestScenarioBulkDataDownload(GatewayTestCase):
             self.LIDAR_ENDPOINT, max_wait=30.0,
         )
         if rosbag_id is None:
-            self.skipTest('No rosbag available for download test')
+            self.fail('No rosbag available for download test')
 
         # Download the rosbag
         response = self.get_raw(
@@ -108,7 +108,7 @@ class TestScenarioBulkDataDownload(GatewayTestCase):
             self.LIDAR_ENDPOINT, max_wait=15.0,
         )
         if rosbag_id is None:
-            self.skipTest('No rosbag available for cross-entity test')
+            self.fail('No rosbag available for cross-entity test')
 
         # Try to access it via a nonexistent entity (temp_sensor not launched)
         response = requests.get(
@@ -126,7 +126,7 @@ class TestScenarioBulkDataDownload(GatewayTestCase):
             self.LIDAR_ENDPOINT, max_wait=30.0,
         )
         if rosbag_id is None:
-            self.skipTest('No rosbag available for complete download test')
+            self.fail('No rosbag available for complete download test')
 
         response = self.get_raw(
             f'{self.LIDAR_ENDPOINT}/bulk-data/rosbags/{rosbag_id}',

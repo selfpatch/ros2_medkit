@@ -144,7 +144,7 @@ class TestScenarioFaultInspection(GatewayTestCase):
                 break
 
         if freeze_frame is None:
-            self.skipTest('No freeze_frame snapshot in fault response')
+            self.fail('No freeze_frame snapshot in fault response')
 
         self.assertIn('type', freeze_frame)
         self.assertIn('name', freeze_frame)
@@ -167,7 +167,7 @@ class TestScenarioFaultInspection(GatewayTestCase):
                 break
 
         if rosbag is None:
-            self.skipTest('No rosbag snapshot in fault response')
+            self.fail('No rosbag snapshot in fault response')
 
         self.assertIn('type', rosbag)
         self.assertIn('name', rosbag)

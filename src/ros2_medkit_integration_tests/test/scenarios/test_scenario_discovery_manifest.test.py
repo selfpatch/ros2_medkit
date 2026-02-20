@@ -291,7 +291,7 @@ class TestScenarioDiscoveryManifest(GatewayTestCase):
         """
         data = self.get_json('/apps/engine-temp-sensor/data')
         if not data.get('items'):
-            self.skipTest('No data items for app')
+            self.fail('No data items for app')
 
         data_id = data['items'][0]['id']
         item = self.get_json(f'/apps/engine-temp-sensor/data/{data_id}')

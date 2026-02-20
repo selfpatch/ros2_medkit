@@ -163,7 +163,7 @@ class TestScenarioActionLifecycle(GatewayTestCase):
                 break
 
         if service_op is None:
-            self.skipTest('No service operations found on powertrain component')
+            self.fail('No service operations found on powertrain component')
 
         operation_id = service_op['id']
 
@@ -281,7 +281,7 @@ class TestScenarioActionLifecycle(GatewayTestCase):
                 break
 
         if action_op is None:
-            self.skipTest('No action operations found')
+            self.fail('No action operations found')
 
         operation_id = action_op['id']
 

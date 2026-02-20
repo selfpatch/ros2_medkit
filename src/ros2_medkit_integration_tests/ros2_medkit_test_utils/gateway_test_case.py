@@ -90,7 +90,7 @@ class GatewayTestCase(unittest.TestCase):
 
         Raises
         ------
-        unittest.SkipTest
+        AssertionError
             If the gateway does not respond within
             ``GATEWAY_STARTUP_TIMEOUT`` seconds.
 
@@ -104,7 +104,7 @@ class GatewayTestCase(unittest.TestCase):
             except requests.exceptions.RequestException:
                 pass
             time.sleep(GATEWAY_STARTUP_INTERVAL)
-        raise unittest.SkipTest(
+        raise AssertionError(
             f'Gateway not responding after {GATEWAY_STARTUP_TIMEOUT}s'
         )
 
@@ -119,7 +119,7 @@ class GatewayTestCase(unittest.TestCase):
 
         Raises
         ------
-        unittest.SkipTest
+        AssertionError
             If the deadline is reached without satisfying all conditions.
 
         """
@@ -172,7 +172,7 @@ class GatewayTestCase(unittest.TestCase):
                 }
         except requests.exceptions.RequestException:
             pass
-        raise unittest.SkipTest(
+        raise AssertionError(
             f'Discovery incomplete after {DISCOVERY_TIMEOUT}s - '
             f'found {len(discovered_apps)} apps, need {cls.MIN_EXPECTED_APPS}. '
             f'Missing apps: {cls.REQUIRED_APPS - discovered_apps}, '
