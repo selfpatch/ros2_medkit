@@ -22,6 +22,9 @@
 
   <!-- Test dependencies (Python integration tests) -->
   <test_depend>launch_testing_ament_cmake</test_depend>
+  <test_depend>launch_testing</test_depend>
+  <test_depend>launch_ros</test_depend>
+  <test_depend>ament_index_python</test_depend>
   <test_depend>python3-requests</test_depend>
   <test_depend>ros2_medkit_gateway</test_depend>
   <test_depend>ros2_medkit_fault_manager</test_depend>

@@ -70,15 +70,14 @@ class TestScenarioFaultInspection(GatewayTestCase):
             f'{self.LIDAR_ENDPOINT}/faults',
             lambda d: next(
                 (
-                    item.get('faultCode')
+                    item.get('fault_code')
                     for item in d.get('items', [])
-                    if item.get('faultCode')
+                    if item.get('fault_code')
                 ),
                 None,
             ),
             timeout=30.0,
             interval=1.0,
-            skip_on_timeout=True,
         )
         return self.get_json(f'{self.LIDAR_ENDPOINT}/faults/{fault_code}')
 

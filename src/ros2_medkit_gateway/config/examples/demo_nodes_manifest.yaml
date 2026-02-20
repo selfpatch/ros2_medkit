@@ -3,7 +3,7 @@
 # This manifest describes the demo nodes used for ros2_medkit gateway
 # integration testing. It models an automotive system with subsystems.
 #
-# Use with: ros2 launch ros2_medkit_gateway demo_nodes.launch.py
+# Use with: ros2 launch ros2_medkit_integration_tests demo_nodes.launch.py
 
 manifest_version: "1.0"
 

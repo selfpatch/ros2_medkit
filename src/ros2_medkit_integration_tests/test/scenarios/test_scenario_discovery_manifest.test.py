@@ -32,7 +32,6 @@ bound ROS 2 nodes are running.
 """
 
 import os
-import time
 import unittest
 
 from ament_index_python.packages import get_package_share_directory
@@ -250,13 +249,14 @@ class TestScenarioDiscoveryManifest(GatewayTestCase):
         In manifest-only mode apps always exist from the manifest.
         Online status depends on runtime linking timing.
         """
-        # Wait a bit for runtime linking
-        time.sleep(5)
-
-        data = self.get_json('/apps')
+        data = self.poll_endpoint_until(
+            '/apps',
+            lambda d: d if any(
+                a['id'] == 'engine-temp-sensor' for a in d.get('items', [])
+            ) else None,
+            timeout=15.0,
+        )
         apps_by_id = {a['id']: a for a in data['items']}
-
-        # engine-temp-sensor should exist (manifest-defined)
         self.assertIn('engine-temp-sensor', apps_by_id)
 
     def test_15_app_data_endpoint(self):
@@ -360,11 +360,9 @@ class TestScenarioDiscoveryManifest(GatewayTestCase):
 
     def test_25_discovery_stats(self):
         """GET /discovery/stats reports manifest_only mode."""
-        response = requests.get(f'{self.BASE_URL}/discovery/stats', timeout=5)
-        if response.status_code == 200:
-            stats = response.json()
-            if 'mode' in stats:
-                self.assertEqual(stats['mode'], 'manifest_only')
+        stats = self.get_json('/discovery/stats')
+        self.assertIn('mode', stats)
+        self.assertEqual(stats['mode'], 'manifest_only')
 
     # =========================================================================
     # Error Cases

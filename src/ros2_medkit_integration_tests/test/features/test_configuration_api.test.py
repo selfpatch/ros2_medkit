@@ -113,6 +113,15 @@ class TestConfigurationApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_050
         """
+        # Register cleanup to reset value even if assertions fail
+        self.addCleanup(
+            lambda: requests.put(
+                f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
+                json={'data': 85.0},
+                timeout=10
+            )
+        )
+
         # Set a new value using SOVD "data" field
         response = requests.put(
             f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
@@ -148,13 +157,6 @@ class TestConfigurationApi(GatewayTestCase):
         self.assertEqual(verify_response.status_code, 200)
         verify_data = verify_response.json()
         self.assertEqual(verify_data['x-medkit']['parameter']['value'], 80.0)
-
-        # Reset the value back to default using SOVD "data" field
-        requests.put(
-            f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
-            json={'data': 85.0},
-            timeout=10
-        )
 
     def test_delete_configuration_resets_to_default(self):
         """DELETE /apps/{app_id}/configurations/{param_name} resets to default.

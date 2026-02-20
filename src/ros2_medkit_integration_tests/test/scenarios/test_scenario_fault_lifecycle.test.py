@@ -75,7 +75,6 @@ class TestScenarioFaultLifecycle(GatewayTestCase):
             lambda d: next(iter(d.get('items', [])), None),
             timeout=30.0,
             interval=1.0,
-            skip_on_timeout=True,
         )
 
         # Basic fault structure verification

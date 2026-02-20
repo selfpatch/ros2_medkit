@@ -35,7 +35,6 @@ import requests
 from ros2_medkit_test_utils.constants import (
     ACTION_TIMEOUT,
     DEFAULT_BASE_URL,
-    DEFAULT_PORT,
     DISCOVERY_INTERVAL,
     DISCOVERY_TIMEOUT,
     FAULT_TIMEOUT,
@@ -64,7 +63,6 @@ class GatewayTestCase(unittest.TestCase):
 
     """
 
-    PORT = DEFAULT_PORT
     BASE_URL = DEFAULT_BASE_URL
 
     # Override in subclass for discovery waiting.
@@ -119,8 +117,10 @@ class GatewayTestCase(unittest.TestCase):
         2. All ``REQUIRED_APPS`` IDs are present
         3. All ``REQUIRED_AREAS`` IDs are present
 
-        If the deadline is reached without satisfying all conditions, a warning
-        is printed but tests continue (some may fail due to missing entities).
+        Raises
+        ------
+        unittest.SkipTest
+            If the deadline is reached without satisfying all conditions.
 
         """
         deadline = time.monotonic() + DISCOVERY_TIMEOUT
@@ -157,8 +157,27 @@ class GatewayTestCase(unittest.TestCase):
                 pass
             time.sleep(DISCOVERY_INTERVAL)
 
-        # Deadline reached -- warn but continue; individual tests may fail.
-        print('Warning: Discovery timeout, some tests may fail')
+        discovered_apps = set()
+        discovered_areas = set()
+        try:
+            r = requests.get(f'{cls.BASE_URL}/apps', timeout=5)
+            if r.status_code == 200:
+                discovered_apps = {
+                    a.get('id', '') for a in r.json().get('items', [])
+                }
+            r = requests.get(f'{cls.BASE_URL}/areas', timeout=5)
+            if r.status_code == 200:
+                discovered_areas = {
+                    a.get('id', '') for a in r.json().get('items', [])
+                }
+        except requests.exceptions.RequestException:
+            pass
+        raise unittest.SkipTest(
+            f'Discovery incomplete after {DISCOVERY_TIMEOUT}s - '
+            f'found {len(discovered_apps)} apps, need {cls.MIN_EXPECTED_APPS}. '
+            f'Missing apps: {cls.REQUIRED_APPS - discovered_apps}, '
+            f'Missing areas: {cls.REQUIRED_AREAS - discovered_areas}'
+        )
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -315,9 +334,7 @@ class GatewayTestCase(unittest.TestCase):
     # Waiters
     # ------------------------------------------------------------------
 
-    def poll_endpoint(
-        self, endpoint, *, timeout=10.0, interval=0.2, skip_on_timeout=False
-    ):
+    def poll_endpoint(self, endpoint, *, timeout=10.0, interval=0.2):
         """Poll GET endpoint until it returns 200 and return parsed JSON.
 
         Useful for waiting on entities or resources that may take time to
@@ -332,10 +349,6 @@ class GatewayTestCase(unittest.TestCase):
             Maximum time to wait in seconds.
         interval : float
             Sleep between retries in seconds.
-        skip_on_timeout : bool
-            If ``True``, raise ``unittest.SkipTest`` on timeout instead of
-            failing the test. Use for optional entities that may not be
-            available in all environments.
 
         Returns
         -------
@@ -344,10 +357,8 @@ class GatewayTestCase(unittest.TestCase):
 
         Raises
         ------
-        unittest.SkipTest
-            If *skip_on_timeout* is ``True`` and the deadline is reached.
         AssertionError
-            If *skip_on_timeout* is ``False`` and the deadline is reached.
+            If the deadline is reached without a 200 response.
 
         """
         return self.poll_endpoint_until(
@@ -355,7 +366,6 @@ class GatewayTestCase(unittest.TestCase):
             condition=None,
             timeout=timeout,
             interval=interval,
-            skip_on_timeout=skip_on_timeout,
         )
 
     def poll_endpoint_until(
@@ -365,7 +375,6 @@ class GatewayTestCase(unittest.TestCase):
         *,
         timeout=10.0,
         interval=0.2,
-        skip_on_timeout=False,
     ):
         """Poll GET endpoint until it returns 200 and a condition is met.
 
@@ -401,9 +410,6 @@ class GatewayTestCase(unittest.TestCase):
             Maximum time to wait in seconds.
         interval : float
             Sleep between retries in seconds.
-        skip_on_timeout : bool
-            If ``True``, raise ``unittest.SkipTest`` on timeout instead of
-            failing the test.
 
         Returns
         -------
@@ -413,10 +419,8 @@ class GatewayTestCase(unittest.TestCase):
 
         Raises
         ------
-        unittest.SkipTest
-            If *skip_on_timeout* is ``True`` and the deadline is reached.
         AssertionError
-            If *skip_on_timeout* is ``False`` and the deadline is reached.
+            If the deadline is reached without satisfying the condition.
 
         """
         start_time = time.monotonic()
@@ -439,13 +443,10 @@ class GatewayTestCase(unittest.TestCase):
             except requests.exceptions.RequestException as e:
                 last_error = str(e)
             time.sleep(interval)
-        msg = (
+        self.fail(
             f'GET {endpoint} not available after {timeout}s. '
             f'Last error: {last_error}'
         )
-        if skip_on_timeout:
-            raise unittest.SkipTest(msg)
-        self.fail(msg)
 
     def wait_for_fault(self, entity_endpoint, fault_code, *, max_wait=FAULT_TIMEOUT):
         """Poll until a specific fault appears on an entity.
