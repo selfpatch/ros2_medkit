@@ -100,8 +100,8 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to retrieve entity data", {{"details", e.what()}, {"entity_id", entity_id}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to retrieve entity data",
+                               {{"details", e.what()}, {"entity_id", entity_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_data for entity '%s': %s", entity_id.c_str(),
                  e.what());
   }
@@ -182,8 +182,7 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
     RCLCPP_DEBUG(HandlerContext::logger(), "Topic not available for entity '%s', topic '%s': %s", entity_id.c_str(),
                  topic_name.c_str(), e.what());
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to retrieve topic data",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to retrieve topic data",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_data_item for entity '%s', topic '%s': %s",
                  entity_id.c_str(), topic_name.c_str(), e.what());
@@ -220,8 +219,7 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
 
     // Validate required fields: type and data
     if (!body.contains("type") || !body["type"].is_string()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                 "Missing or invalid 'type' field",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'type' field",
                                  {{"details", "Request body must contain 'type' string field"}});
       return;
     }
@@ -275,8 +273,7 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to publish to topic",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to publish to topic",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_put_data_item for entity '%s', topic '%s': %s",
                  entity_id.c_str(), topic_name.c_str(), e.what());
@@ -285,14 +282,14 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
 
 void DataHandlers::handle_data_categories(const httplib::Request & req, httplib::Response & res) {
   (void)req;
-  HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED,
-                             "Data categories are not implemented for ROS 2", {{"feature", "data-categories"}});
+  HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Data categories are not implemented for ROS 2",
+                             {{"feature", "data-categories"}});
 }
 
 void DataHandlers::handle_data_groups(const httplib::Request & req, httplib::Response & res) {
   (void)req;
-  HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED,
-                             "Data groups are not implemented for ROS 2", {{"feature", "data-groups"}});
+  HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Data groups are not implemented for ROS 2",
+                             {{"feature", "data-groups"}});
 }
 
 }  // namespace handlers

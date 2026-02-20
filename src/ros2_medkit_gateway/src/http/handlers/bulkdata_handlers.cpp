@@ -155,8 +155,7 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
     // === Non-rosbag categories: served via BulkDataStore ===
     auto * store = ctx_.bulk_data_store();
     if (!store || !store->is_known_category(category)) {
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                                 "Unknown category: " + category);
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Unknown category: " + category);
       return;
     }
 
@@ -221,22 +220,19 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
   // Check BulkDataStore is available
   auto * store = ctx_.bulk_data_store();
   if (store == nullptr) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Bulk data storage not configured");
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Bulk data storage not configured");
     return;
   }
 
   // Validate category is known
   if (!store->is_known_category(category)) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                               "Unknown bulk-data category: " + category);
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unknown bulk-data category: " + category);
     return;
   }
 
   // Extract multipart file
   if (!req.has_file("file")) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST,
-                               "Missing 'file' field in multipart/form-data request");
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing 'file' field in multipart/form-data request");
     return;
   }
 
@@ -246,8 +242,7 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
 
   // Check file size against limit
   if (store->max_upload_bytes() > 0 && file.content.size() > store->max_upload_bytes()) {
-    HandlerContext::send_error(res, 413, ERR_PAYLOAD_TOO_LARGE,
-                               "File size exceeds maximum upload limit");
+    HandlerContext::send_error(res, 413, ERR_PAYLOAD_TOO_LARGE, "File size exceeds maximum upload limit");
     return;
   }
 
@@ -263,13 +258,11 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
     if (!meta_str.empty()) {
       auto parsed = nlohmann::json::parse(meta_str, nullptr, false);
       if (parsed.is_discarded()) {
-        HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                   "Invalid JSON in 'metadata' field");
+        HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid JSON in 'metadata' field");
         return;
       }
       if (!parsed.is_object()) {
-        HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                   "metadata must be a JSON object");
+        HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "metadata must be a JSON object");
         return;
       }
       metadata = std::move(parsed);
@@ -349,23 +342,20 @@ void BulkDataHandlers::handle_delete(const httplib::Request & req, httplib::Resp
   // Check BulkDataStore is available
   auto * store = ctx_.bulk_data_store();
   if (store == nullptr) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Bulk data storage not configured");
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Bulk data storage not configured");
     return;
   }
 
   // Validate category is known
   if (!store->is_known_category(category)) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                               "Unknown bulk-data category: " + category);
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unknown bulk-data category: " + category);
     return;
   }
 
   // Delete the item
   auto result = store->remove(entity_info->entity_id, category, item_id);
   if (!result) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                               "Bulk-data item not found");
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Bulk-data item not found");
     return;
   }
 
@@ -425,8 +415,8 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
     auto fault_result = fault_mgr->get_fault(fault_code, source_filter);
 
     if (!fault_result.success) {
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                                 "Bulk-data not found for this entity", {{"entity_id", entity_info->entity_id}});
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found for this entity",
+                                 {{"entity_id", entity_info->entity_id}});
       return;
     }
 
@@ -444,15 +434,13 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
     res.set_header("Content-Disposition", "attachment; filename=\"" + safe_name + "\"");
 
     if (!stream_file_to_response(res, file_path, mimetype)) {
-      HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                                 "Failed to read rosbag file");
+      HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to read rosbag file");
     }
   } else {
     // === Non-rosbag categories: served via BulkDataStore ===
     auto * store = ctx_.bulk_data_store();
     if (!store || !store->is_known_category(category)) {
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                                 "Unknown category: " + category);
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Unknown category: " + category);
       return;
     }
 
@@ -477,8 +465,7 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
 
     // Use generic stream utility (from subtask 1)
     if (!ros2_medkit_gateway::stream_file_to_response(res, *file_path, mimetype)) {
-      HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                                 "Failed to read file");
+      HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to read file");
     }
   }
 }

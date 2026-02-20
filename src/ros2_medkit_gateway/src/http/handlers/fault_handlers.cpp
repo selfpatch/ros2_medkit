@@ -230,8 +230,7 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
   try {
     auto filter = parse_fault_status_param(req);
     if (!filter.is_valid) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                 "Invalid status parameter value",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid status parameter value",
                                  {{"allowed_values", "pending, confirmed, cleared, healed, all"},
                                   {"parameter", "status"},
                                   {"value", req.get_param_value("status")}});
@@ -272,12 +271,11 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
       res.status = 200;
       HandlerContext::send_json(res, response);
     } else {
-      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE,
-                                 "Failed to get faults", {{"details", result.error_message}});
+      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults",
+                                 {{"details", result.error_message}});
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to list faults",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to list faults", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_all_faults: %s", e.what());
   }
 }
@@ -301,8 +299,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
 
     auto filter = parse_fault_status_param(req);
     if (!filter.is_valid) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                 "Invalid status parameter value",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid status parameter value",
                                  {{"allowed_values", "pending, confirmed, cleared, healed, all"},
                                   {"parameter", "status"},
                                   {"value", req.get_param_value("status")},
@@ -324,8 +321,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
                                            filter.include_healed, include_muted, include_clusters);
 
       if (!result.success) {
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE,
-                                   "Failed to get faults",
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults",
                                    {{"details", result.error_message}, {entity_info.id_field, entity_id}});
         return;
       }
@@ -365,8 +361,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
                                            filter.include_healed, include_muted, include_clusters);
 
       if (!result.success) {
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE,
-                                   "Failed to get faults",
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults",
                                    {{"details", result.error_message}, {entity_info.id_field, entity_id}});
         return;
       }
@@ -428,8 +423,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
     } else {
-      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE,
-                                 "Failed to get faults",
+      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults",
                                  {{"details", result.error_message}, {entity_info.id_field, entity_id}});
     }
   } catch (const std::exception & e) {
@@ -581,8 +575,7 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
     auto faults_result = fault_mgr->list_faults(entity_info.namespace_path);
 
     if (!faults_result.success) {
-      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE,
-                                 "Failed to retrieve faults",
+      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
                                  {{"details", faults_result.error_message}, {entity_info.id_field, entity_id}});
       return;
     }
@@ -616,8 +609,7 @@ void FaultHandlers::handle_clear_all_faults_global(const httplib::Request & req,
   try {
     auto filter = parse_fault_status_param(req);
     if (!filter.is_valid) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                 "Invalid status parameter value",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid status parameter value",
                                  {{"allowed_values", "pending, confirmed, cleared, healed, all"},
                                   {"parameter", "status"},
                                   {"value", req.get_param_value("status")}});
@@ -631,8 +623,8 @@ void FaultHandlers::handle_clear_all_faults_global(const httplib::Request & req,
                                                 filter.include_cleared, filter.include_healed, true);
 
     if (!faults_result.success) {
-      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE,
-                                 "Failed to retrieve faults", {{"details", faults_result.error_message}});
+      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
+                                 {{"details", faults_result.error_message}});
       return;
     }
 
@@ -654,8 +646,7 @@ void FaultHandlers::handle_clear_all_faults_global(const httplib::Request & req,
     res.status = 204;
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to clear faults",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to clear faults", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_clear_all_faults_global: %s", e.what());
   }
 }

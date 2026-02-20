@@ -97,8 +97,7 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
     auto area_opt = discovery->get_area(area_id);
 
     if (!area_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found",
-                                 {{"area_id", area_id}});
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
       return;
     }
 
@@ -145,8 +144,7 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_area: %s", e.what());
   }
 }
@@ -170,8 +168,7 @@ void DiscoveryHandlers::handle_area_components(const httplib::Request & req, htt
     const auto & cache = ctx_.node()->get_thread_safe_cache();
 
     if (!cache.has_area(area_id)) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found",
-                                 {{"area_id", area_id}});
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
       return;
     }
 
@@ -233,8 +230,7 @@ void DiscoveryHandlers::handle_get_subareas(const httplib::Request & req, httpli
     auto area_opt = discovery->get_area(area_id);
 
     if (!area_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found",
-                                 {{"area_id", area_id}});
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
       return;
     }
 
@@ -268,8 +264,7 @@ void DiscoveryHandlers::handle_get_subareas(const httplib::Request & req, httpli
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_subareas: %s", e.what());
   }
 }
@@ -295,8 +290,7 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
     auto area_opt = discovery->get_area(area_id);
 
     if (!area_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found",
-                                 {{"area_id", area_id}});
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
       return;
     }
 
@@ -333,8 +327,7 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_contains: %s", e.what());
   }
 }
@@ -478,8 +471,7 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_component: %s", e.what());
   }
 }
@@ -542,8 +534,7 @@ void DiscoveryHandlers::handle_get_subcomponents(const httplib::Request & req, h
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_subcomponents: %s", e.what());
   }
 }
@@ -607,8 +598,7 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_hosts: %s", e.what());
   }
 }
@@ -679,8 +669,7 @@ void DiscoveryHandlers::handle_component_depends_on(const httplib::Request & req
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_component_depends_on: %s", e.what());
   }
 }
@@ -733,8 +722,7 @@ void DiscoveryHandlers::handle_list_apps(const httplib::Request & req, httplib::
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_apps: %s", e.what());
   }
 }
@@ -759,8 +747,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     auto app_opt = discovery->get_app(app_id);
 
     if (!app_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found",
-                                 {{"app_id", app_id}});
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
       return;
     }
 
@@ -825,8 +812,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_app: %s", e.what());
   }
 }
@@ -851,8 +837,7 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
     auto app_opt = discovery->get_app(app_id);
 
     if (!app_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found",
-                                 {{"app_id", app_id}});
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
       return;
     }
 
@@ -897,8 +882,7 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_app_depends_on: %s", e.what());
   }
 }
@@ -945,8 +929,7 @@ void DiscoveryHandlers::handle_list_functions(const httplib::Request & req, http
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_functions: %s", e.what());
   }
 }
@@ -971,8 +954,7 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
     auto func_opt = discovery->get_function(function_id);
 
     if (!func_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found",
-                                 {{"function_id", function_id}});
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found", {{"function_id", function_id}});
       return;
     }
 
@@ -1021,8 +1003,7 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_function: %s", e.what());
   }
 }
@@ -1047,8 +1028,7 @@ void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, http
     auto func_opt = discovery->get_function(function_id);
 
     if (!func_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found",
-                                 {{"function_id", function_id}});
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found", {{"function_id", function_id}});
       return;
     }
 
@@ -1088,8 +1068,7 @@ void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, http
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error",
-                               {{"details", e.what()}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_function_hosts: %s", e.what());
   }
 }

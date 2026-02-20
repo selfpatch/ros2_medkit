@@ -78,8 +78,7 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   if (body.contains("protocol")) {
     protocol = body["protocol"].get<std::string>();
     if (protocol != "sse") {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                 "Unsupported protocol. Only 'sse' is supported.",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unsupported protocol. Only 'sse' is supported.",
                                  {{"parameter", "protocol"}, {"value", protocol}});
       return;
     }
@@ -99,8 +98,7 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   // Validate duration
   int duration = body["duration"].get<int>();
   if (duration <= 0) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                               "Duration must be a positive integer (seconds).",
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Duration must be a positive integer (seconds).",
                                {{"parameter", "duration"}, {"value", duration}});
     return;
   }
@@ -109,8 +107,7 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   std::string resource = body["resource"].get<std::string>();
   auto topic_result = parse_resource_uri(resource);
   if (!topic_result) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                               "Invalid resource URI: " + topic_result.error(),
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid resource URI: " + topic_result.error(),
                                {{"parameter", "resource"}, {"value", resource}});
     return;
   }
@@ -221,8 +218,7 @@ void CyclicSubscriptionHandlers::handle_update(const httplib::Request & req, htt
   if (body.contains("duration") && body["duration"].is_number_integer()) {
     new_duration = body["duration"].get<int>();
     if (*new_duration <= 0) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                 "Duration must be a positive integer (seconds).",
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Duration must be a positive integer (seconds).",
                                  {{"parameter", "duration"}, {"value", *new_duration}});
       return;
     }
@@ -302,8 +298,8 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
 
   // Reject SSE connections for expired or inactive subscriptions
   if (!sub_mgr_.is_active(sub_id)) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                               "Subscription expired or inactive", {{"subscription_id", sub_id}});
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription expired or inactive",
+                               {{"subscription_id", sub_id}});
     return;
   }
 

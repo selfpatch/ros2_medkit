@@ -322,8 +322,7 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
     // If no successful queries, return error
     if (!any_success) {
       HandlerContext::send_error(
-          res, 503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE,
-          "Failed to list parameters from any node",
+          res, 503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE, "Failed to list parameters from any node",
           {{"details", first_error}, {"entity_id", entity_id}, {"failed_node", first_error_node}});
       return;
     }
@@ -343,8 +342,8 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
     HandlerContext::send_json(res, response);
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to list configurations", {{"details", e.what()}, {"entity_id", entity_id}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to list configurations",
+                               {{"details", e.what()}, {"entity_id", entity_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_configurations for entity '%s': %s", entity_id.c_str(),
                  e.what());
   }
@@ -394,8 +393,7 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
     if (parsed.has_prefix) {
       const auto * node_info = find_node_for_app(agg_configs.nodes, parsed.app_id);
       if (!node_info) {
-        HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                                   "Source app not found in entity",
+        HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Source app not found in entity",
                                    json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", parsed.app_id}});
         return;
       }
@@ -417,8 +415,7 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
       } else {
         auto err = classify_parameter_error(result);
         HandlerContext::send_error(res, err.status_code, err.error_code,
-                                   err.status_code == 404 ? "Parameter not found"
-                                                                               : "Failed to get parameter",
+                                   err.status_code == 404 ? "Parameter not found" : "Failed to get parameter",
                                    json{{"details", result.error_message}, {"entity_id", entity_id}, {"id", param_id}});
       }
       return;
@@ -470,8 +467,7 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
     }
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to get configuration",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to get configuration",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"param_id", param_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_configuration for entity '%s', param '%s': %s",
                  entity_id.c_str(), param_id.c_str(), e.what());
@@ -574,8 +570,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     if (parsed.has_prefix) {
       const auto * node_info = find_node_for_app(agg_configs.nodes, parsed.app_id);
       if (!node_info) {
-        HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                                   "Source app not found in entity",
+        HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Source app not found in entity",
                                    json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", parsed.app_id}});
         return;
       }
@@ -594,15 +589,13 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     }
 
     // For aggregated configs without prefix, we don't know which node to target
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST,
-                               "Aggregated configuration requires app_id prefix",
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Aggregated configuration requires app_id prefix",
                                {{"details", "Use format 'app_id:param_name' for aggregated configurations"},
                                 {"entity_id", entity_id},
                                 {"id", param_id}});
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to set configuration",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to set configuration",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"param_id", param_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_set_configuration for entity '%s', param '%s': %s",
                  entity_id.c_str(), param_id.c_str(), e.what());
@@ -657,8 +650,7 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
     if (parsed.has_prefix) {
       const auto * node_info = find_node_for_app(agg_configs.nodes, parsed.app_id);
       if (!node_info) {
-        HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                                   "Source app not found in entity",
+        HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Source app not found in entity",
                                    json{{"entity_id", entity_id}, {"id", param_id}, {"source_app", parsed.app_id}});
         return;
       }
@@ -677,15 +669,13 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
     }
 
     // For aggregated configs without prefix, we don't know which node to target
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST,
-                               "Aggregated configuration requires app_id prefix",
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Aggregated configuration requires app_id prefix",
                                json{{"details", "Use format 'app_id:param_name' for aggregated configurations"},
                                     {"entity_id", entity_id},
                                     {"id", param_id}});
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to reset configuration",
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to reset configuration",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"param_id", param_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_delete_configuration: %s", e.what());
   }
@@ -757,8 +747,8 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
       res.set_content(response.dump(2), "application/json");
     }
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR,
-                               "Failed to reset configurations", {{"details", e.what()}, {"entity_id", entity_id}});
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to reset configurations",
+                               {{"details", e.what()}, {"entity_id", entity_id}});
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_delete_all_configurations: %s", e.what());
   }
 }
