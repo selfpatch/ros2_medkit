@@ -20,12 +20,10 @@ item, status, environment_data, freeze_frame snapshot, rosbag snapshot,
 and x-medkit extensions.
 """
 
-import time
 import unittest
 
 import launch_testing
 import launch_testing.actions
-import requests
 
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
@@ -63,43 +61,26 @@ class TestScenarioFaultInspection(GatewayTestCase):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _wait_for_lidar_fault(self, max_wait=30.0):
-        """Wait for any lidar_sensor fault, return (fault_code, entity_id).
-
-        Returns (None, None) on timeout.
-        """
-        start_time = time.monotonic()
-        while time.monotonic() - start_time < max_wait:
-            try:
-                response = requests.get(
-                    f'{self.BASE_URL}{self.LIDAR_ENDPOINT}/faults',
-                    timeout=5,
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    items = data.get('items', [])
-                    if items:
-                        fault_code = items[0].get('faultCode')
-                        if fault_code:
-                            return fault_code, 'lidar_sensor'
-            except requests.exceptions.RequestException:
-                pass
-            time.sleep(1)
-        return None, None
-
     def _get_fault_detail(self):
         """Wait for a lidar fault, then GET the full detail response.
 
         Returns the parsed JSON body, or skips the test on timeout.
         """
-        fault_code, entity_id = self._wait_for_lidar_fault(max_wait=30.0)
-        if fault_code is None:
-            self.skipTest('No lidar fault available for inspection')
-
-        data = self.get_json(
-            f'/apps/{entity_id}/faults/{fault_code}',
+        fault_code = self.poll_endpoint_until(
+            f'{self.LIDAR_ENDPOINT}/faults',
+            lambda d: next(
+                (
+                    item.get('faultCode')
+                    for item in d.get('items', [])
+                    if item.get('faultCode')
+                ),
+                None,
+            ),
+            timeout=30.0,
+            interval=1.0,
+            skip_on_timeout=True,
         )
-        return data
+        return self.get_json(f'{self.LIDAR_ENDPOINT}/faults/{fault_code}')
 
     # ------------------------------------------------------------------
     # Tests

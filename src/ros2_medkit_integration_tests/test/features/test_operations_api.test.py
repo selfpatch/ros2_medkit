@@ -20,7 +20,6 @@ error handling, and execution listing.
 
 """
 
-import time
 import unittest
 
 import launch_testing
@@ -45,30 +44,6 @@ class TestOperationsApi(GatewayTestCase):
     REQUIRED_APPS = {'calibration', 'long_calibration'}
 
     # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _ensure_calibration_app_ready(self, timeout=10.0, interval=0.2):
-        """Wait for the calibration app REST resource to become available."""
-        start_time = time.monotonic()
-        last_error = None
-        while time.monotonic() - start_time < timeout:
-            try:
-                response = requests.get(
-                    f'{self.BASE_URL}/apps/calibration', timeout=2
-                )
-                if response.status_code == 200:
-                    return
-                last_error = f'Status {response.status_code}'
-            except requests.exceptions.RequestException as e:
-                last_error = str(e)
-            time.sleep(interval)
-        raise unittest.SkipTest(
-            f'Calibration app not available after {timeout}s. '
-            f'Last error: {last_error}'
-        )
-
-    # ------------------------------------------------------------------
     # Service calls (test_31-36)
     # ------------------------------------------------------------------
 
@@ -79,7 +54,7 @@ class TestOperationsApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_035
         """
-        self._ensure_calibration_app_ready()
+        self.poll_endpoint('/apps/calibration', skip_on_timeout=True)
 
         response = requests.post(
             f'{self.BASE_URL}/apps/calibration/operations/calibrate/executions',
@@ -104,7 +79,7 @@ class TestOperationsApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_035
         """
-        self._ensure_calibration_app_ready()
+        self.poll_endpoint('/apps/calibration', skip_on_timeout=True)
 
         response = requests.post(
             f'{self.BASE_URL}/apps/calibration/operations/nonexistent_op/executions',
@@ -213,7 +188,7 @@ class TestOperationsApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_021
         """
-        self._ensure_calibration_app_ready()
+        self.poll_endpoint('/apps/calibration', skip_on_timeout=True)
 
         data = self.get_json('/apps/calibration')
 

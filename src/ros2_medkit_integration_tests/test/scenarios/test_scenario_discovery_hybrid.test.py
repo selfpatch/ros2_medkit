@@ -277,20 +277,15 @@ class TestScenarioDiscoveryHybrid(GatewayTestCase):
 
         @verifies REQ_INTEROP_003
         """
-        deadline = time.monotonic() + 30.0
-        online_apps = []
-        while time.monotonic() < deadline:
-            data = self.get_json('/apps')
-            apps_by_id = {a['id']: a for a in data['items']}
-
-            online_apps = [
-                app_id for app_id, app in apps_by_id.items()
-                if app.get('x-medkit', {}).get('is_online', False)
-            ]
-
-            if online_apps:
-                break
-            time.sleep(1.0)
+        online_apps = self.poll_endpoint_until(
+            '/apps',
+            lambda d: [
+                a['id'] for a in d.get('items', [])
+                if a.get('x-medkit', {}).get('is_online', False)
+            ],
+            timeout=30.0,
+            interval=1.0,
+        )
 
         self.assertGreater(
             len(online_apps), 0,

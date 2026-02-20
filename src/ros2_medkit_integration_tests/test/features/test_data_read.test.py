@@ -20,7 +20,6 @@ error handling, data categories/groups, and area/function data.
 
 """
 
-import time
 import unittest
 
 import launch_testing
@@ -51,50 +50,6 @@ class TestDataRead(GatewayTestCase):
     REQUIRED_AREAS = {'powertrain', 'chassis', 'body'}
 
     # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _ensure_app_data_ready(self, app_id, timeout=10.0, interval=0.2):
-        """Wait for an app's /data endpoint to become available."""
-        start_time = time.monotonic()
-        last_error = None
-        while time.monotonic() - start_time < timeout:
-            try:
-                response = requests.get(
-                    f'{self.BASE_URL}/apps/{app_id}/data', timeout=2
-                )
-                if response.status_code == 200:
-                    return
-                last_error = f'Status {response.status_code}'
-            except requests.exceptions.RequestException as e:
-                last_error = str(e)
-            time.sleep(interval)
-        self.fail(
-            f'App {app_id} data not available after {timeout}s. '
-            f'Last error: {last_error}'
-        )
-
-    def _ensure_calibration_app_ready(self, timeout=10.0, interval=0.2):
-        """Wait for the calibration app REST resource to become available."""
-        start_time = time.monotonic()
-        last_error = None
-        while time.monotonic() - start_time < timeout:
-            try:
-                response = requests.get(
-                    f'{self.BASE_URL}/apps/calibration', timeout=2
-                )
-                if response.status_code == 200:
-                    return
-                last_error = f'Status {response.status_code}'
-            except requests.exceptions.RequestException as e:
-                last_error = str(e)
-            time.sleep(interval)
-        raise unittest.SkipTest(
-            f'Calibration app not available after {timeout}s. '
-            f'Last error: {last_error}'
-        )
-
-    # ------------------------------------------------------------------
     # App data (test_07-12)
     # ------------------------------------------------------------------
 
@@ -105,8 +60,7 @@ class TestDataRead(GatewayTestCase):
 
         @verifies REQ_INTEROP_018
         """
-        self._ensure_app_data_ready('temp_sensor')
-        data = self.get_json('/apps/temp_sensor/data')
+        data = self.poll_endpoint('/apps/temp_sensor/data')
         self.assertIn('items', data)
         items = data['items']
         self.assertIsInstance(items, list)
@@ -128,8 +82,7 @@ class TestDataRead(GatewayTestCase):
 
         @verifies REQ_INTEROP_018
         """
-        self._ensure_app_data_ready('pressure_sensor')
-        data = self.get_json('/apps/pressure_sensor/data')
+        data = self.poll_endpoint('/apps/pressure_sensor/data')
         self.assertIn('items', data)
         items = data['items']
         self.assertIsInstance(items, list)
@@ -148,8 +101,7 @@ class TestDataRead(GatewayTestCase):
 
         @verifies REQ_INTEROP_018
         """
-        self._ensure_app_data_ready('status_sensor')
-        data = self.get_json('/apps/status_sensor/data')
+        data = self.poll_endpoint('/apps/status_sensor/data')
         self.assertIn('items', data)
         items = data['items']
         self.assertIsInstance(items, list)
@@ -168,8 +120,7 @@ class TestDataRead(GatewayTestCase):
 
         @verifies REQ_INTEROP_018
         """
-        self._ensure_app_data_ready('temp_sensor')
-        data = self.get_json('/apps/temp_sensor/data')
+        data = self.poll_endpoint('/apps/temp_sensor/data')
         self.assertIn('items', data)
         items = data['items']
         self.assertIsInstance(items, list, 'Response should have items array')
@@ -205,12 +156,13 @@ class TestDataRead(GatewayTestCase):
         """GET /apps/{app_id}/data returns empty array for app with no topics.
 
         The calibration app typically has only services, no topics.
+        Uses poll_endpoint to avoid race conditions with service-only nodes
+        that can transiently disappear from the ROS 2 graph between
+        discovery cycles (observed on Jazzy).
 
         @verifies REQ_INTEROP_018
         """
-        self._ensure_calibration_app_ready()
-
-        data = self.get_json('/apps/calibration/data')
+        data = self.poll_endpoint('/apps/calibration/data', skip_on_timeout=True)
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list, 'Response should have items array')
 

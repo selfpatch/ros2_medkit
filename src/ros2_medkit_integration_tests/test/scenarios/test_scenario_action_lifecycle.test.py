@@ -20,7 +20,6 @@ concurrent-goal race condition that caused test_101 to fail in the original
 monolithic test file.
 """
 
-import time
 import unittest
 
 import launch_testing
@@ -314,22 +313,9 @@ class TestScenarioActionLifecycle(GatewayTestCase):
         execution_id = data['id']
 
         # Poll for execution to be registered
-        response = None
-        for _ in range(10):
-            response = requests.get(
-                f'{self.BASE_URL}{self._exec_endpoint(execution_id)}',
-                timeout=10,
-            )
-            if response.status_code == 200:
-                break
-            time.sleep(0.2)
-
-        self.assertEqual(
-            response.status_code, 200,
-            f'Expected 200 for execution status, got {response.status_code}',
+        status_data = self.poll_endpoint(
+            self._exec_endpoint(execution_id), timeout=2.0, interval=0.2
         )
-
-        status_data = response.json()
         self.assertIn('status', status_data)
         self.assertIn(status_data['status'], ['running', 'completed', 'failed'])
         self.assertIn('x-medkit', status_data)

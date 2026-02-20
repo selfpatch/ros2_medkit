@@ -61,33 +61,6 @@ class TestScenarioFaultLifecycle(GatewayTestCase):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _wait_for_any_lidar_fault(self, max_wait=30.0):
-        """Wait for any fault to appear on lidar_sensor.
-
-        Returns
-        -------
-        dict or None
-            The first fault item, or None on timeout.
-
-        """
-        import time
-        start_time = time.monotonic()
-        while time.monotonic() - start_time < max_wait:
-            try:
-                response = requests.get(
-                    f'{self.BASE_URL}{self.LIDAR_ENDPOINT}/faults',
-                    timeout=5,
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    items = data.get('items', [])
-                    if items:
-                        return items[0]
-            except requests.exceptions.RequestException:
-                pass
-            time.sleep(1)
-        return None
-
     # ------------------------------------------------------------------
     # Tests
     # ------------------------------------------------------------------
@@ -97,9 +70,13 @@ class TestScenarioFaultLifecycle(GatewayTestCase):
 
         @verifies REQ_INTEROP_012
         """
-        fault = self._wait_for_any_lidar_fault(max_wait=30.0)
-        if fault is None:
-            self.skipTest('No lidar fault appeared within timeout')
+        fault = self.poll_endpoint_until(
+            f'{self.LIDAR_ENDPOINT}/faults',
+            lambda d: next(iter(d.get('items', [])), None),
+            timeout=30.0,
+            interval=1.0,
+            skip_on_timeout=True,
+        )
 
         # Basic fault structure verification
         self.assertIn('fault_code', fault)

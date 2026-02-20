@@ -315,6 +315,138 @@ class GatewayTestCase(unittest.TestCase):
     # Waiters
     # ------------------------------------------------------------------
 
+    def poll_endpoint(
+        self, endpoint, *, timeout=10.0, interval=0.2, skip_on_timeout=False
+    ):
+        """Poll GET endpoint until it returns 200 and return parsed JSON.
+
+        Useful for waiting on entities or resources that may take time to
+        become available (e.g. after discovery, service-only nodes that
+        can transiently disappear from the ROS 2 graph between cycles).
+
+        Parameters
+        ----------
+        endpoint : str
+            Path relative to ``BASE_URL`` (e.g. ``'/apps/calibration/data'``).
+        timeout : float
+            Maximum time to wait in seconds.
+        interval : float
+            Sleep between retries in seconds.
+        skip_on_timeout : bool
+            If ``True``, raise ``unittest.SkipTest`` on timeout instead of
+            failing the test. Use for optional entities that may not be
+            available in all environments.
+
+        Returns
+        -------
+        dict
+            Parsed JSON response body.
+
+        Raises
+        ------
+        unittest.SkipTest
+            If *skip_on_timeout* is ``True`` and the deadline is reached.
+        AssertionError
+            If *skip_on_timeout* is ``False`` and the deadline is reached.
+
+        """
+        return self.poll_endpoint_until(
+            endpoint,
+            condition=None,
+            timeout=timeout,
+            interval=interval,
+            skip_on_timeout=skip_on_timeout,
+        )
+
+    def poll_endpoint_until(
+        self,
+        endpoint,
+        condition=None,
+        *,
+        timeout=10.0,
+        interval=0.2,
+        skip_on_timeout=False,
+    ):
+        """Poll GET endpoint until it returns 200 and a condition is met.
+
+        When *condition* is ``None`` (the default), any 200 response succeeds
+        and the full parsed JSON is returned -- equivalent to
+        :meth:`poll_endpoint`.
+
+        When *condition* is a callable, it receives the parsed JSON on each
+        200 response.  If it returns a truthy value, that value is returned
+        to the caller.  If it returns a falsy value, polling continues.
+        This allows both boolean checks and value extraction::
+
+            # Boolean -- wait for non-empty items list
+            data = self.poll_endpoint_until(
+                '/apps/lidar_sensor/faults',
+                lambda d: d.get('items'),
+            )
+
+            # Extraction -- return the first fault item directly
+            fault = self.poll_endpoint_until(
+                '/apps/lidar_sensor/faults',
+                lambda d: next(iter(d.get('items', [])), None),
+            )
+
+        Parameters
+        ----------
+        endpoint : str
+            Path relative to ``BASE_URL``.
+        condition : callable or None
+            ``condition(response_json) -> truthy_value``.  When ``None``,
+            any 200 response is accepted.
+        timeout : float
+            Maximum time to wait in seconds.
+        interval : float
+            Sleep between retries in seconds.
+        skip_on_timeout : bool
+            If ``True``, raise ``unittest.SkipTest`` on timeout instead of
+            failing the test.
+
+        Returns
+        -------
+        object
+            Parsed JSON (when *condition* is ``None``) or whatever
+            *condition* returned.
+
+        Raises
+        ------
+        unittest.SkipTest
+            If *skip_on_timeout* is ``True`` and the deadline is reached.
+        AssertionError
+            If *skip_on_timeout* is ``False`` and the deadline is reached.
+
+        """
+        start_time = time.monotonic()
+        last_error = None
+        while time.monotonic() - start_time < timeout:
+            try:
+                response = requests.get(
+                    f'{self.BASE_URL}{endpoint}', timeout=2
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    if condition is None:
+                        return data
+                    result = condition(data)
+                    if result:
+                        return result
+                    last_error = 'Condition not met'
+                else:
+                    last_error = f'Status {response.status_code}'
+            except requests.exceptions.RequestException as e:
+                last_error = str(e)
+            time.sleep(interval)
+        msg = (
+            f'GET {endpoint} not available after {timeout}s. '
+            f'Last error: {last_error}'
+        )
+        if skip_on_timeout:
+            raise unittest.SkipTest(msg)
+        self.fail(msg)
+
     def wait_for_fault(self, entity_endpoint, fault_code, *, max_wait=FAULT_TIMEOUT):
         """Poll until a specific fault appears on an entity.
 

@@ -20,12 +20,10 @@ brake actuator, then read data back from the actuator to confirm the
 publish round-trip.
 """
 
-import time
 import unittest
 
 import launch_testing
 import launch_testing.actions
-import requests
 
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
@@ -58,30 +56,6 @@ class TestScenarioDataPublishVerify(GatewayTestCase):
     ACTUATOR_ENDPOINT = '/apps/actuator'
 
     # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _ensure_app_data_ready(self, entity_endpoint, timeout=10.0):
-        """Wait for an app's /data endpoint to become available."""
-        start_time = time.monotonic()
-        last_error = None
-        while time.monotonic() - start_time < timeout:
-            try:
-                response = requests.get(
-                    f'{self.BASE_URL}{entity_endpoint}/data', timeout=2,
-                )
-                if response.status_code == 200:
-                    return
-                last_error = f'Status {response.status_code}'
-            except requests.exceptions.RequestException as e:
-                last_error = str(e)
-            time.sleep(0.2)
-        self.fail(
-            f'App data at {entity_endpoint} not available after {timeout}s. '
-            f'Last error: {last_error}',
-        )
-
-    # ------------------------------------------------------------------
     # Tests
     # ------------------------------------------------------------------
 
@@ -90,9 +64,7 @@ class TestScenarioDataPublishVerify(GatewayTestCase):
 
         @verifies REQ_INTEROP_018
         """
-        self._ensure_app_data_ready(self.TEMP_ENDPOINT)
-
-        data = self.get_json(f'{self.TEMP_ENDPOINT}/data')
+        data = self.poll_endpoint(f'{self.TEMP_ENDPOINT}/data')
         self.assertIn('items', data)
         items = data['items']
         self.assertIsInstance(items, list)
@@ -116,10 +88,8 @@ class TestScenarioDataPublishVerify(GatewayTestCase):
 
         @verifies REQ_INTEROP_020
         """
-        self._ensure_app_data_ready(self.ACTUATOR_ENDPOINT)
-
         # Get the actuator's data to find the command topic
-        app_data = self.get_json(f'{self.ACTUATOR_ENDPOINT}/data')
+        app_data = self.poll_endpoint(f'{self.ACTUATOR_ENDPOINT}/data')
         self.assertIn('items', app_data)
 
         # Find a topic with subscribe direction (actuator listens to commands)
@@ -153,9 +123,7 @@ class TestScenarioDataPublishVerify(GatewayTestCase):
 
         @verifies REQ_INTEROP_018
         """
-        self._ensure_app_data_ready(self.ACTUATOR_ENDPOINT)
-
-        data = self.get_json(f'{self.ACTUATOR_ENDPOINT}/data')
+        data = self.poll_endpoint(f'{self.ACTUATOR_ENDPOINT}/data')
         self.assertIn('items', data)
         items = data['items']
         self.assertIsInstance(items, list)
