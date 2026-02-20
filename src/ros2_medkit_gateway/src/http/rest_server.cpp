@@ -14,16 +14,60 @@
 
 #include "ros2_medkit_gateway/http/rest_server.hpp"
 
+#include <exception>
 #include <rclcpp/rclcpp.hpp>
 #include <stdexcept>
+#include <type_traits>
 
 #include "ros2_medkit_gateway/auth/auth_middleware.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 
-
 namespace ros2_medkit_gateway {
+
+namespace {
+
+void set_internal_server_error(httplib::Response & res, const std::string & details) {
+  nlohmann::json error;
+  error["error_code"] = ERR_INTERNAL_ERROR;
+  error["message"] = "Internal server error";
+  error["parameters"] = nlohmann::json::object();
+  error["parameters"]["details"] = details;
+
+  res.status = 500;
+  res.set_content(error.dump(2), "application/json");
+}
+
+struct HttplibExceptionHandlerAdapter {
+  // Newer cpp-httplib versions pass std::exception_ptr.
+  void operator()(const httplib::Request & /*req*/, httplib::Response & res, const std::exception_ptr & ep) const {
+    try {
+      if (ep) {
+        std::rethrow_exception(ep);
+      }
+      RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled empty exception_ptr");
+      set_internal_server_error(res, "Unknown exception");
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
+      set_internal_server_error(res, e.what());
+    } catch (...) {
+      RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unknown exception caught");
+      set_internal_server_error(res, "Unknown exception");
+    }
+  }
+
+  // Older cpp-httplib versions pass std::exception directly.
+  void operator()(const httplib::Request & /*req*/, httplib::Response & res, const std::exception & e) const {
+    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
+    set_internal_server_error(res, e.what());
+  }
+};
+
+static_assert(std::is_constructible_v<httplib::Server::ExceptionHandler, HttplibExceptionHandlerAdapter>,
+              "cpp-httplib exception handler signature changed; update HttplibExceptionHandlerAdapter");
+
+}  // namespace
 
 RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
                        const AuthConfig & auth_config, const RateLimitConfig & rate_limit_config,
@@ -179,18 +223,7 @@ void RESTServer::setup_global_error_handlers() {
   });
 
   // Global exception handler - catches unhandled exceptions in route handlers
-  srv->set_exception_handler(
-      [](const httplib::Request & /*req*/, httplib::Response & res, std::exception & e) {
-        nlohmann::json error;
-        error["error_code"] = ERR_INTERNAL_ERROR;
-        error["message"] = "Internal server error";
-        error["parameters"] = nlohmann::json::object();
-        error["parameters"]["details"] = e.what();
-        RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
-
-        res.status = 500;
-        res.set_content(error.dump(2), "application/json");
-      });
+  srv->set_exception_handler(HttplibExceptionHandlerAdapter{});
 }
 
 RESTServer::~RESTServer() {
