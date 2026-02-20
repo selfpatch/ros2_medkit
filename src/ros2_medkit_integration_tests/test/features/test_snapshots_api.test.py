@@ -19,14 +19,6 @@ Validates that legacy snapshot endpoints have been removed and return 404.
 The new snapshot data is available inline in fault responses and via
 bulk-data endpoints.
 
-Migrated from:
-- test_65_root_endpoint_includes_snapshots
-- test_66_get_snapshots_nonexistent_fault
-- test_67_get_component_snapshots_nonexistent_fault
-- test_68_get_snapshots_nonexistent_component
-- test_69_get_snapshots_invalid_component_id
-- test_107_get_rosbag_nonexistent_fault
-- test_108_get_rosbag_invalid_fault_code
 """
 
 import unittest

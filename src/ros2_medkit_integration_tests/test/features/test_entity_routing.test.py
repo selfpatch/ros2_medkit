@@ -18,12 +18,6 @@
 Validates that component routes reject app IDs and vice versa,
 ensuring proper entity type enforcement across all resource endpoints.
 
-Migrated from:
-- test_116_component_route_rejects_app_id
-- test_117_component_route_rejects_app_id_operations
-- test_118_component_route_rejects_app_id_configurations
-- test_119_component_route_rejects_app_id_faults
-- test_120_app_routes_work_with_app_id
 """
 
 import unittest

@@ -19,11 +19,6 @@ Validates the gateway's informational endpoints that do not depend on
 discovered entities. Only a single lightweight demo node (temp_sensor)
 is launched so the test starts quickly.
 
-Migrated from:
-- test_01_root_endpoint
-- test_01b_version_info_endpoint
-- test_82_root_endpoint_has_apps_endpoints
-- test_94_docs_endpoint
 """
 
 import unittest

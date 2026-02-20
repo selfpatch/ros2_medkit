@@ -28,7 +28,6 @@ Tests verify:
 5. Credentials header behavior (enabled vs disabled)
 6. Multiple allowed origins work correctly
 
-Migrated from: ros2_medkit_gateway/test/test_cors.test.py
 """
 
 import time

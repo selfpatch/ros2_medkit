@@ -18,11 +18,6 @@
 Validates reading topic data from apps and components, data structure,
 error handling, data categories/groups, and area/function data.
 
-Migrated from:
-- test_07 through test_12 (app data)
-- test_17 through test_24 (component topic data)
-- test_96, test_97 (data categories/groups)
-- test_109 through test_115 (area/function data)
 """
 
 import time

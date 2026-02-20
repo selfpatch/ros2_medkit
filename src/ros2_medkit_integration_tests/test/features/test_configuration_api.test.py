@@ -18,15 +18,6 @@
 Validates listing, reading, writing, and resetting ROS 2 node parameters
 via the SOVD-compliant configurations endpoint.
 
-Migrated from:
-- test_45_list_configurations
-- test_46_get_configuration
-- test_47_set_configuration
-- test_48_delete_configuration_resets_to_default
-- test_49_configurations_nonexistent_app
-- test_50_configuration_nonexistent_parameter
-- test_51_set_configuration_missing_value
-- test_52_root_endpoint_includes_configurations
 """
 
 import unittest

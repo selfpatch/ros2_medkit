@@ -17,16 +17,6 @@
 
 Validates discovery of entities, area components, and entity ID validation.
 
-Migrated from:
-- test_02_list_areas
-- test_03_list_components
-- test_04_automotive_areas_discovery
-- test_05_area_components_success
-- test_06_area_components_nonexistent_error
-- test_13_invalid_app_id_special_chars
-- test_14_invalid_area_id_special_chars
-- test_15_valid_ids_with_underscores
-- test_16_invalid_ids_with_special_chars
 """
 
 import unittest

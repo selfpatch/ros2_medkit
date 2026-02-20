@@ -19,10 +19,6 @@ Validates that list responses include href fields, entity details include
 capability URIs, subareas/subcomponents/contains/hosts/depends-on endpoints
 return proper link structures, and x-medkit extensions are present.
 
-Migrated from:
-- test_70 through test_81 (hrefs, capability URIs, subareas, subcomponents,
-  contains, hosts, depends-on, functions)
-- test_83 (x-medkit extension in list responses)
 """
 
 import unittest

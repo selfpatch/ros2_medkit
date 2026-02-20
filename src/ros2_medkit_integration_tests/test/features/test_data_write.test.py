@@ -18,13 +18,6 @@
 Validates publishing data to topics, validation errors for missing fields
 and invalid formats, nonexistent components, and invalid JSON bodies.
 
-Migrated from:
-- test_25_publish_brake_command
-- test_26_publish_validation_missing_type
-- test_27_publish_validation_missing_data
-- test_28_publish_validation_invalid_type_format
-- test_29_publish_nonexistent_component
-- test_30_publish_invalid_json_body
 """
 
 import unittest

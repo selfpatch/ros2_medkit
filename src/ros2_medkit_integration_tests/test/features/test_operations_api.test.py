@@ -18,13 +18,6 @@
 Validates operation listing, service calls, action details, operation schema,
 error handling, and execution listing.
 
-Migrated from:
-- test_31 through test_38 (service/action calls)
-- test_53 (service operation schema)
-- test_84 (operation details for service)
-- test_86 through test_89 (operation not found, list executions, create execution, cancel)
-- test_93 (operation details for apps)
-- test_99 (list operations)
 """
 
 import time
