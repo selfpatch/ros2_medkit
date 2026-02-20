@@ -22,7 +22,6 @@ This test file:
 3. Tests HTTPS endpoints with SSL verification
 4. Cleans up certificates after tests
 
-Migrated from: ros2_medkit_gateway/test/test_tls.test.py
 """
 
 import os

@@ -19,7 +19,6 @@ A dashboard client monitors engine temperature via cyclic subscriptions.
 The client creates a subscription, receives periodic SSE updates, adjusts
 the interval, and eventually cancels.
 
-Migrated from: ros2_medkit_gateway/test/test_cyclic_subscriptions.test.py
 """
 
 import json

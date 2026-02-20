@@ -25,7 +25,6 @@ Tests verify:
 2. Exceeding client limit returns 429 with correct headers
 3. CORS headers are preserved on 429 responses
 
-Migrated from: ros2_medkit_gateway/test/test_rate_limiting.test.py
 """
 
 import unittest

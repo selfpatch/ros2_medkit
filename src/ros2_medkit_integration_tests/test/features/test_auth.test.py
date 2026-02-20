@@ -20,8 +20,6 @@ Launches the gateway on port 8085 with auth enabled (JWT HS256, four client
 roles). Tests authentication flows (authorize, refresh, revoke) and RBAC
 enforcement (viewer, operator, configurator, admin).
 
-Migrated from: ros2_medkit_gateway/test/test_auth.test.py
-
 @verifies REQ_INTEROP_086, REQ_INTEROP_087
 """
 

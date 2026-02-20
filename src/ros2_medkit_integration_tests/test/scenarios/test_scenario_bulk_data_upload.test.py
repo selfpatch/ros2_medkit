@@ -19,7 +19,6 @@ Launches the gateway with bulk_data categories configured (calibration,
 firmware) on a unique port, plus a single demo node for entity targets.
 Tests upload (POST), list, download, delete, and error handling.
 
-Migrated from: ros2_medkit_gateway/test/test_bulkdata_upload.test.py
 """
 
 import json

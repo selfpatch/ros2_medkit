@@ -17,9 +17,6 @@
 
 Validates SSE stream headers and keepalive connection handling.
 
-Migrated from:
-- test_63_sse_stream_endpoint_returns_correct_headers
-- test_64_sse_stream_sends_keepalive
 """
 
 import threading

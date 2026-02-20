@@ -18,15 +18,6 @@
 Validates fault listing, fault response structure, status filters,
 error handling for nonexistent entities and invalid parameters.
 
-Migrated from:
-- test_55_root_endpoint_includes_faults
-- test_56_list_faults_response_structure
-- test_57_faults_nonexistent_component
-- test_58_get_nonexistent_fault
-- test_59_list_all_faults_globally
-- test_60_list_all_faults_with_status_filter
-- test_61_list_faults_invalid_status_returns_400
-- test_62_component_faults_invalid_status_returns_400
 """
 
 import unittest

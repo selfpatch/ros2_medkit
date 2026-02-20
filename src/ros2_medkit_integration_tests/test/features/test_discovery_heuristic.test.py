@@ -28,7 +28,6 @@ Tests verify:
 - Topic-only policy IGNORE prevents component creation
 - min_topics_for_component threshold works
 
-Migrated from: ros2_medkit_gateway/test/test_discovery_heuristic_apps.test.py
 """
 
 import unittest

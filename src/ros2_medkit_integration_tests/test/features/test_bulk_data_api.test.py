@@ -21,15 +21,6 @@ unknown categories, download 404, and nested entity paths.
 NOTE: Tests that require rosbag downloads (test_127, test_129, test_137)
 are in scenario tests, not here.
 
-Migrated from:
-- test_121_bulk_data_list_categories_success
-- test_122_bulk_data_list_categories_all_entity_types
-- test_123_bulk_data_list_categories_entity_not_found
-- test_124_bulk_data_list_descriptors_structure
-- test_125_bulk_data_list_descriptors_empty_result
-- test_126_bulk_data_unknown_category_returns_404
-- test_128_bulk_data_download_not_found
-- test_130_bulk_data_nested_entity_path
 """
 
 import time
