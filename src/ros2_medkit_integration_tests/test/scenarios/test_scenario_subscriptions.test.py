@@ -378,6 +378,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
         @verifies REQ_INTEROP_028
         """
         sub = self._create_subscription(interval='slow', duration=60)
+        self.addCleanup(self._delete_subscription, sub['id'])
         events_url = f'http://localhost:{DEFAULT_PORT}{sub["event_source"]}'
 
         stream_ended = threading.Event()
