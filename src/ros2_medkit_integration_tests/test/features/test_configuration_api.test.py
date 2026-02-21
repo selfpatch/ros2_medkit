@@ -166,6 +166,14 @@ class TestConfigurationApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_052
         """
+        # Register cleanup to reset value even if assertions fail
+        self.addCleanup(
+            lambda: requests.delete(
+                f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
+                timeout=10
+            )
+        )
+
         # First, change the value from default using SOVD "data" field
         set_response = requests.put(
             f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',

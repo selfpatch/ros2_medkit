@@ -50,8 +50,6 @@ class GatewayTestCase(unittest.TestCase):
 
     Class Attributes
     ----------------
-    PORT : int
-        Gateway HTTP port. Override for tests that use a non-default port.
     BASE_URL : str
         Full base URL including API path prefix.
     MIN_EXPECTED_APPS : int
@@ -551,16 +549,36 @@ class GatewayTestCase(unittest.TestCase):
 
         required = set(snapshot_types)
 
-        def _has_required_snapshots(data):
-            snapshots = data.get('environment_data', {}).get('snapshots', [])
-            found = {s.get('type') for s in snapshots}
-            if required.issubset(found):
-                return data
+        def _find_fault_with_snapshots(listing_data):
+            """Check all faults for required snapshot types.
+
+            The rosbag ring buffer is shared across faults.  When multiple
+            faults confirm simultaneously, only one may get the buffer data.
+            Iterate over all faults to find the one that succeeded.
+            """
+            for item in listing_data.get('items', []):
+                code = item.get('fault_code')
+                if not code:
+                    continue
+                url = f'{self.BASE_URL}{entity_endpoint}/faults/{code}'
+                try:
+                    resp = requests.get(url, timeout=5)
+                    if resp.status_code != 200:
+                        continue
+                    detail = resp.json()
+                except (requests.RequestException, ValueError):
+                    continue
+                snapshots = detail.get('environment_data', {}).get(
+                    'snapshots', []
+                )
+                found = {s.get('type') for s in snapshots}
+                if required.issubset(found):
+                    return detail
             return None
 
         return self.poll_endpoint_until(
-            f'{entity_endpoint}/faults/{fault_code}',
-            _has_required_snapshots,
+            f'{entity_endpoint}/faults',
+            _find_fault_with_snapshots,
             timeout=max_wait,
             interval=1.0,
         )
