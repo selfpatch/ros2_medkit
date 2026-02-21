@@ -514,36 +514,8 @@ class TestDataRead(GatewayTestCase):
     # Function data endpoints (test_113-115)
     # ------------------------------------------------------------------
 
-    def test_list_function_data(self):
-        """GET /functions/{function_id}/data returns data items for function.
-
-        Functions are logical groupings and may aggregate data from multiple sources.
-
-        @verifies REQ_INTEROP_018
-        """
-        funcs_response = requests.get(f'{self.BASE_URL}/functions', timeout=10)
-        if funcs_response.status_code != 200:
-            self.fail('No functions available for testing')
-
-        funcs = funcs_response.json().get('items', [])
-        if len(funcs) == 0:
-            self.fail('No functions available for testing')
-
-        func_id = funcs[0]['id']
-
-        response = requests.get(
-            f'{self.BASE_URL}/functions/{func_id}/data',
-            timeout=10
-        )
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()
-        self.assertIn('items', data)
-        self.assertIsInstance(data['items'], list)
-
-        self.assertIn('x-medkit', data)
-        self.assertIn('aggregated_from', data['x-medkit'])
-        self.assertIn(func_id, data['x-medkit']['aggregated_from'])
+    # test_list_function_data requires manifest-mode functions and is covered
+    # by test_23_function_data in test_scenario_discovery_manifest.test.py.
 
     def test_list_function_data_nonexistent(self):
         """GET /functions/{function_id}/data returns 404 for nonexistent function.

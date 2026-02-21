@@ -41,6 +41,7 @@ from ros2_medkit_test_utils.constants import (
     GATEWAY_STARTUP_INTERVAL,
     GATEWAY_STARTUP_TIMEOUT,
     ROSBAG_TIMEOUT,
+    SNAPSHOT_TIMEOUT,
 )
 
 
@@ -488,6 +489,80 @@ class GatewayTestCase(unittest.TestCase):
         raise AssertionError(
             f'Fault {fault_code} not found at {entity_endpoint}/faults '
             f'within {max_wait}s'
+        )
+
+    def wait_for_fault_detail(
+        self,
+        entity_endpoint,
+        *,
+        snapshot_types=None,
+        max_wait=SNAPSHOT_TIMEOUT,
+    ):
+        """Wait for a fault to appear and return its full detail response.
+
+        Polls the faults list until a fault with a ``fault_code`` appears,
+        then retrieves the detail endpoint. If *snapshot_types* is given,
+        continues polling the detail endpoint until all requested snapshot
+        types are present in ``environment_data.snapshots`` (snapshots are
+        captured asynchronously by the fault manager).
+
+        Parameters
+        ----------
+        entity_endpoint : str
+            Entity path relative to ``BASE_URL``
+            (e.g. ``'/apps/lidar_sensor'``).
+        snapshot_types : set or list of str, optional
+            Snapshot ``type`` values that must be present before returning
+            (e.g. ``{'freeze_frame', 'rosbag'}``). When ``None``, no
+            snapshot check is performed.
+        max_wait : float
+            Maximum total time to wait in seconds (covers both fault
+            appearance and snapshot capture).
+
+        Returns
+        -------
+        dict
+            The full fault detail JSON from
+            ``GET {entity_endpoint}/faults/{fault_code}``.
+
+        Raises
+        ------
+        AssertionError
+            If the fault or required snapshots are not found within
+            *max_wait*.
+
+        """
+        fault_code = self.poll_endpoint_until(
+            f'{entity_endpoint}/faults',
+            lambda d: next(
+                (
+                    item.get('fault_code')
+                    for item in d.get('items', [])
+                    if item.get('fault_code')
+                ),
+                None,
+            ),
+            timeout=max_wait,
+            interval=1.0,
+        )
+
+        if not snapshot_types:
+            return self.get_json(f'{entity_endpoint}/faults/{fault_code}')
+
+        required = set(snapshot_types)
+
+        def _has_required_snapshots(data):
+            snapshots = data.get('environment_data', {}).get('snapshots', [])
+            found = {s.get('type') for s in snapshots}
+            if required.issubset(found):
+                return data
+            return None
+
+        return self.poll_endpoint_until(
+            f'{entity_endpoint}/faults/{fault_code}',
+            _has_required_snapshots,
+            timeout=max_wait,
+            interval=1.0,
         )
 
     def wait_for_fault_with_rosbag(self, entity_endpoint, *, max_wait=ROSBAG_TIMEOUT):

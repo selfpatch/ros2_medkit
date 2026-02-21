@@ -124,6 +124,8 @@ def create_fault_manager_node(
     storage_type='memory',
     rosbag_enabled=True,
     rosbag_topics=None,
+    snapshot_topics=None,
+    extra_params=None,
     coverage=True,
 ):
     """Create a ``fault_manager_node`` with test-friendly defaults.
@@ -138,6 +140,13 @@ def create_fault_manager_node(
     rosbag_topics : list of str or None
         Explicit topic list for rosbag capture. Defaults to
         ``['/perception/lidar/scan']``.
+    snapshot_topics : list of str or None
+        Default topics for freeze_frame snapshot capture. Defaults to
+        ``['/perception/lidar/scan']``.
+    extra_params : dict or None
+        Additional ROS parameters merged into the node config.
+        Useful for overriding fault manager settings like
+        ``confirmation_threshold``.
     coverage : bool
         If True, set GCOV_PREFIX env vars for code coverage collection.
 
@@ -149,15 +158,20 @@ def create_fault_manager_node(
     """
     if rosbag_topics is None:
         rosbag_topics = ['/perception/lidar/scan']
+    if snapshot_topics is None:
+        snapshot_topics = ['/perception/lidar/scan']
 
     params = {
         'storage_type': storage_type,
+        'snapshots.default_topics': snapshot_topics,
         'snapshots.rosbag.enabled': rosbag_enabled,
         'snapshots.rosbag.duration_sec': 2.0,
         'snapshots.rosbag.duration_after_sec': 0.5,
         'snapshots.rosbag.topics': 'explicit',
         'snapshots.rosbag.include_topics': rosbag_topics,
     }
+    if extra_params:
+        params.update(extra_params)
 
     return launch_ros.actions.Node(
         package='ros2_medkit_fault_manager',
@@ -235,6 +249,7 @@ def create_test_launch(
     demo_nodes=None,
     gateway_params=None,
     fault_manager=True,
+    fault_manager_params=None,
     lidar_faulty=True,
     demo_delay=2.0,
 ):
@@ -253,6 +268,9 @@ def create_test_launch(
         Extra ROS parameters for the gateway node.
     fault_manager : bool
         If True (default), include the fault manager node.
+    fault_manager_params : dict or None
+        Extra ROS parameters for the fault manager node (e.g.
+        ``{'confirmation_threshold': -2}`` for debounce tuning).
     lidar_faulty : bool
         If True (default), launch lidar_sensor with fault-triggering params.
     demo_delay : float
@@ -277,7 +295,9 @@ def create_test_launch(
     )
 
     if fault_manager:
-        delayed_actions.append(create_fault_manager_node())
+        delayed_actions.append(
+            create_fault_manager_node(extra_params=fault_manager_params)
+        )
 
     delayed = TimerAction(
         period=demo_delay,

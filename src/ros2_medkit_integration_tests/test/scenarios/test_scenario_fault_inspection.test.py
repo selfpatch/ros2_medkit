@@ -33,6 +33,10 @@ def generate_test_description():
     return create_test_launch(
         demo_nodes=['lidar_sensor'],
         fault_manager=True,
+        # Use threshold -2 so faults need 2 FAILED events before confirmation.
+        # This gives the rosbag ring buffer time to subscribe to topics and
+        # collect data before the first fault triggers rosbag capture.
+        fault_manager_params={'confirmation_threshold': -2},
     )
 
 
@@ -61,25 +65,21 @@ class TestScenarioFaultInspection(GatewayTestCase):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _get_fault_detail(self):
+    def _get_fault_detail(self, snapshot_types=None):
         """Wait for a lidar fault, then GET the full detail response.
 
-        Returns the parsed JSON body, or skips the test on timeout.
+        Parameters
+        ----------
+        snapshot_types : set or list of str, optional
+            Snapshot types to wait for (e.g. ``{'freeze_frame', 'rosbag'}``).
+            Delegates to :meth:`GatewayTestCase.wait_for_fault_detail`.
+
+        Returns the parsed JSON body.
         """
-        fault_code = self.poll_endpoint_until(
-            f'{self.LIDAR_ENDPOINT}/faults',
-            lambda d: next(
-                (
-                    item.get('fault_code')
-                    for item in d.get('items', [])
-                    if item.get('fault_code')
-                ),
-                None,
-            ),
-            timeout=30.0,
-            interval=1.0,
+        return self.wait_for_fault_detail(
+            self.LIDAR_ENDPOINT,
+            snapshot_types=snapshot_types,
         )
-        return self.get_json(f'{self.LIDAR_ENDPOINT}/faults/{fault_code}')
 
     # ------------------------------------------------------------------
     # Tests
@@ -102,17 +102,22 @@ class TestScenarioFaultInspection(GatewayTestCase):
     def test_02_fault_status_object_structure(self):
         """Validate status sub-object fields.
 
+        The gateway returns AUTOSAR DEM-style status fields:
+        - aggregatedStatus: "active", "passive", or "cleared"
+        - testFailed, confirmedDTC, pendingDTC: "0" or "1"
+
         @verifies REQ_INTEROP_013
         """
         data = self._get_fault_detail()
         status = data['item']['status']
 
+        self.assertIn('aggregatedStatus', status)
+        self.assertIn(status['aggregatedStatus'], ('active', 'passive', 'cleared'))
         self.assertIn('testFailed', status)
-        self.assertIn('presentStatus', status)
-        self.assertIn('confirmedStatus', status)
-        self.assertIsInstance(status['testFailed'], bool)
-        self.assertIsInstance(status['presentStatus'], bool)
-        self.assertIsInstance(status['confirmedStatus'], bool)
+        self.assertIn('confirmedDTC', status)
+        self.assertIn('pendingDTC', status)
+        for field in ('testFailed', 'confirmedDTC', 'pendingDTC'):
+            self.assertIn(status[field], ('0', '1'), f'{field} must be "0" or "1"')
 
     def test_03_fault_environment_data_structure(self):
         """Validate environment_data has extended_data_records and snapshots.
@@ -132,21 +137,17 @@ class TestScenarioFaultInspection(GatewayTestCase):
     def test_04_fault_snapshot_freeze_frame(self):
         """Validate freeze_frame snapshot structure.
 
+        Snapshots are captured asynchronously by the fault manager after
+        a fault is confirmed, so we poll until the freeze_frame is present.
+
         @verifies REQ_INTEROP_013
         """
-        data = self._get_fault_detail()
+        data = self._get_fault_detail(snapshot_types={'freeze_frame'})
         snapshots = data['environment_data']['snapshots']
 
-        freeze_frame = None
-        for snapshot in snapshots:
-            if snapshot.get('type') == 'freeze_frame':
-                freeze_frame = snapshot
-                break
-
-        if freeze_frame is None:
-            self.fail('No freeze_frame snapshot in fault response')
-
-        self.assertIn('type', freeze_frame)
+        freeze_frame = next(
+            s for s in snapshots if s.get('type') == 'freeze_frame'
+        )
         self.assertIn('name', freeze_frame)
         self.assertEqual(freeze_frame['type'], 'freeze_frame')
         # freeze_frame has inline data
@@ -155,21 +156,15 @@ class TestScenarioFaultInspection(GatewayTestCase):
     def test_05_fault_snapshot_rosbag_has_bulk_data_uri(self):
         """Validate rosbag snapshot has correct bulk_data_uri format.
 
+        Rosbag snapshots are flushed asynchronously after fault confirmation,
+        so we poll until the rosbag snapshot is present.
+
         @verifies REQ_INTEROP_013
         """
-        data = self._get_fault_detail()
+        data = self._get_fault_detail(snapshot_types={'rosbag'})
         snapshots = data['environment_data']['snapshots']
 
-        rosbag = None
-        for snapshot in snapshots:
-            if snapshot.get('type') == 'rosbag':
-                rosbag = snapshot
-                break
-
-        if rosbag is None:
-            self.fail('No rosbag snapshot in fault response')
-
-        self.assertIn('type', rosbag)
+        rosbag = next(s for s in snapshots if s.get('type') == 'rosbag')
         self.assertIn('name', rosbag)
         self.assertEqual(rosbag['type'], 'rosbag')
         self.assertIn('bulk_data_uri', rosbag)
