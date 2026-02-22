@@ -39,6 +39,7 @@ def parse_cpp_file(file_path):
     tests = []
 
     for match in test_pattern.finditer(content):
+        suite_name = match.group(1)
         test_name = match.group(2)
         start_index = match.end()
 
@@ -46,8 +47,8 @@ def parse_cpp_file(file_path):
         search_window = content[start_index:start_index + 2000]
         lines = search_window.split("\n")
 
-        # Auto-generate ID and Title
-        test_id = "TEST_" + test_name
+        # Auto-generate ID and Title, including suite to avoid collisions
+        test_id = f"TEST_{suite_name}_{test_name}"
         test_title = test_name
 
         verifies_reqs = []
@@ -106,6 +107,23 @@ def parse_py_file(file_path):
     # Matches: def test_something(self):
     test_pattern = re.compile(r"def\s+(test_\w+)\s*\(self\):")
 
+    # Build a list of (class_name, start_pos) so we can find which class
+    # a test method belongs to.
+    class_pattern = re.compile(r"^class\s+(\w+)\s*[\(:]", re.MULTILINE)
+    class_ranges = []
+    for cls_match in class_pattern.finditer(content):
+        class_ranges.append((cls_match.group(1), cls_match.start()))
+
+    def _find_class(pos):
+        """Return the class name that contains *pos*, or None."""
+        owner = None
+        for cls_name, cls_start in class_ranges:
+            if cls_start <= pos:
+                owner = cls_name
+            else:
+                break
+        return owner
+
     tests = []
 
     for match in test_pattern.finditer(content):
@@ -116,8 +134,12 @@ def parse_py_file(file_path):
         search_window = content[start_index:start_index + 2000]
         lines = search_window.split("\n")
 
-        # Auto-generate ID and Title
-        test_id = "TEST_" + test_name
+        # Auto-generate ID and Title, including class name to avoid collisions
+        cls_name = _find_class(match.start())
+        if cls_name:
+            test_id = f"TEST_{cls_name}_{test_name}"
+        else:
+            test_id = "TEST_" + test_name
         test_title = test_name
 
         verifies_reqs = []
