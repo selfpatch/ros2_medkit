@@ -69,6 +69,9 @@ class GatewayTestCase(unittest.TestCase):
     MIN_EXPECTED_APPS = 0
     REQUIRED_AREAS: set = set()
     REQUIRED_APPS: set = set()
+    # Map of entity endpoint -> operation ID that must be discovered.
+    # Example: {'/apps/calibration': 'calibrate'}
+    REQUIRED_OPERATIONS: dict = {}
 
     # ------------------------------------------------------------------
     # Setup
@@ -80,6 +83,8 @@ class GatewayTestCase(unittest.TestCase):
         cls._wait_for_gateway_health()
         if cls.MIN_EXPECTED_APPS > 0 or cls.REQUIRED_AREAS or cls.REQUIRED_APPS:
             cls._wait_for_discovery()
+        if cls.REQUIRED_OPERATIONS:
+            cls._wait_for_operations()
 
     @classmethod
     def _wait_for_gateway_health(cls):
@@ -177,6 +182,50 @@ class GatewayTestCase(unittest.TestCase):
             f'Missing apps: {cls.REQUIRED_APPS - discovered_apps}, '
             f'Missing areas: {cls.REQUIRED_AREAS - discovered_areas}'
         )
+
+    @classmethod
+    def _wait_for_operations(cls):
+        """Wait for all ``REQUIRED_OPERATIONS`` to be discovered.
+
+        Polls each entity's operations endpoint until the specified
+        operation ID appears. Runs after ``_wait_for_discovery()`` so
+        that apps/areas are already visible.
+
+        Raises
+        ------
+        AssertionError
+            If any required operation is not found within
+            ``DISCOVERY_TIMEOUT`` seconds.
+
+        """
+        deadline = time.monotonic() + DISCOVERY_TIMEOUT
+        pending = dict(cls.REQUIRED_OPERATIONS)  # copy
+
+        while pending and time.monotonic() < deadline:
+            still_missing = {}
+            for entity_endpoint, operation_id in pending.items():
+                try:
+                    response = requests.get(
+                        f'{cls.BASE_URL}{entity_endpoint}/operations',
+                        timeout=5,
+                    )
+                    if response.status_code == 200:
+                        ops = response.json().get('items', [])
+                        if any(op.get('id') == operation_id for op in ops):
+                            continue  # found
+                except requests.exceptions.RequestException:
+                    pass
+                still_missing[entity_endpoint] = operation_id
+            pending = still_missing
+            if pending:
+                time.sleep(DISCOVERY_INTERVAL)
+
+        if pending:
+            raise AssertionError(
+                f'Operations not discovered after {DISCOVERY_TIMEOUT}s: '
+                f'{pending}'
+            )
+        print(f'Operations ready: {dict(cls.REQUIRED_OPERATIONS)}')
 
     # ------------------------------------------------------------------
     # HTTP helpers

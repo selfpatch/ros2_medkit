@@ -25,6 +25,7 @@ import unittest
 import launch_testing
 import launch_testing.actions
 
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
@@ -135,8 +136,7 @@ class TestShutdown(unittest.TestCase):
     def test_exit_codes(self, proc_info):
         """Check all processes exited cleanly (SIGTERM allowed)."""
         for info in proc_info:
-            allowed = {0, -2, -15}  # OK, SIGINT, SIGTERM
             self.assertIn(
-                info.returncode, allowed,
+                info.returncode, ALLOWED_EXIT_CODES,
                 f'{info.process_name} exited with code {info.returncode}'
             )
