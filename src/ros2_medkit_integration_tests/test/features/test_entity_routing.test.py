@@ -47,8 +47,13 @@ class TestEntityRouting(GatewayTestCase):
     # Helpers
     # ------------------------------------------------------------------
 
+    _cached_app_only_id = None
+
     def _find_app_only_id(self):
-        """Find an app ID that is not also a component ID."""
+        """Find an app ID that is not also a component ID (cached)."""
+        if TestEntityRouting._cached_app_only_id is not None:
+            return TestEntityRouting._cached_app_only_id
+
         apps_response = requests.get(f'{self.BASE_URL}/apps', timeout=10)
         self.assertEqual(apps_response.status_code, 200)
 
@@ -66,6 +71,7 @@ class TestEntityRouting(GatewayTestCase):
             if not isinstance(app, dict) or 'id' not in app:
                 continue
             if app['id'] not in component_ids:
+                TestEntityRouting._cached_app_only_id = app['id']
                 return app['id']
 
         self.fail('No app ID available that is distinct from component IDs')

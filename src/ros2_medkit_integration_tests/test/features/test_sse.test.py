@@ -20,7 +20,6 @@ Validates SSE stream headers and keepalive connection handling.
 """
 
 import threading
-import time
 import unittest
 
 import launch_testing
@@ -46,7 +45,7 @@ class TestSse(GatewayTestCase):
 
     def test_sse_stream_endpoint_returns_correct_headers(self):
         """GET /faults/stream returns SSE headers."""
-        # Use stream=True and timeout to avoid blocking
+        headers_verified = False
         try:
             response = requests.get(
                 f'{self.BASE_URL}/faults/stream',
@@ -61,18 +60,23 @@ class TestSse(GatewayTestCase):
                 response.headers.get('Cache-Control'),
                 'no-cache'
             )
+            headers_verified = True
 
             # Close the connection (we just wanted to check headers)
             response.close()
         except requests.exceptions.ReadTimeout:
             # Timeout is expected since SSE keeps connection open
             pass
+        self.assertTrue(
+            headers_verified, 'Headers were not verified before timeout',
+        )
 
-    def test_sse_stream_sends_keepalive(self):
+    def test_sse_stream_connects_without_error(self):
         """SSE stream can be read and handles concurrent connections."""
         received_data = []
         connection_error = []
         stop_event = threading.Event()
+        connected = threading.Event()
 
         def read_stream():
             try:
@@ -81,6 +85,7 @@ class TestSse(GatewayTestCase):
                     stream=True,
                     timeout=35  # Slightly longer than keepalive interval
                 )
+                connected.set()
                 for line in response.iter_lines(decode_unicode=True):
                     if stop_event.is_set():
                         break
@@ -93,14 +98,19 @@ class TestSse(GatewayTestCase):
             except Exception as exc:
                 # Capture connection errors for assertion
                 connection_error.append(str(exc))
+            finally:
+                connected.set()  # Unblock waiter on error
 
         # Start reading in background thread
         thread = threading.Thread(target=read_stream)
         thread.daemon = True
         thread.start()
 
-        # Wait briefly to ensure connection is established
-        time.sleep(1)
+        # Wait for connection to be established
+        self.assertTrue(
+            connected.wait(timeout=5),
+            'SSE stream failed to connect within 5s',
+        )
         stop_event.set()
         thread.join(timeout=2)
 

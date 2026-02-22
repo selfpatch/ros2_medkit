@@ -88,21 +88,11 @@ class TestScenarioDataPublishVerify(GatewayTestCase):
 
         @verifies REQ_INTEROP_020
         """
-        # Get the actuator's data to find the command topic
-        app_data = self.poll_endpoint(f'{self.ACTUATOR_ENDPOINT}/data')
-        self.assertIn('items', app_data)
-
-        # Find a topic with subscribe direction (actuator listens to commands)
-        subscribe_topic = None
-        for item in app_data['items']:
-            x_medkit = item.get('x-medkit', {})
-            ros2 = x_medkit.get('ros2', {})
-            if ros2.get('direction') == 'subscribe':
-                subscribe_topic = item
-                break
-
-        if subscribe_topic is None:
-            self.fail('Actuator has no subscribe topics')
+        # Wait for the subscribe topic to be discovered (may take an extra
+        # discovery cycle on some RMW implementations like CycloneDDS).
+        subscribe_topic = self.wait_for_data_item(
+            self.ACTUATOR_ENDPOINT, 'subscribe',
+        )
 
         topic_id = subscribe_topic['id']
 

@@ -366,10 +366,10 @@ class TestAuthorizationIntegration(GatewayTestCase):
             headers=headers,
             timeout=5,
         )
-        # Auth should pass - verify no 401/403 errors
-        self.assertNotIn(
-            response.status_code, [401, 403],
-            f'Operator should be authorized, got {response.status_code}'
+        # Auth passes (not 401/403), entity doesn't exist -> 404
+        self.assertEqual(
+            response.status_code, 404,
+            f'Operator should be authorized (not 401/403), got {response.status_code}'
         )
 
     def test_06_operator_cannot_modify_configurations(self):
@@ -395,10 +395,10 @@ class TestAuthorizationIntegration(GatewayTestCase):
             headers=headers,
             timeout=5,
         )
-        # Auth should pass - verify no 401/403 errors
-        self.assertNotIn(
-            response.status_code, [401, 403],
-            f'Configurator should be authorized, got {response.status_code}'
+        # Auth passes (not 401/403), entity doesn't exist -> 404
+        self.assertEqual(
+            response.status_code, 404,
+            f'Configurator should be authorized (not 401/403), got {response.status_code}'
         )
 
     def test_08_admin_has_full_access(self):
@@ -434,10 +434,11 @@ class TestAuthorizationIntegration(GatewayTestCase):
                     timeout=5,
                 )
 
-            # Should not get 401 or 403
-            self.assertNotIn(
-                response.status_code, [401, 403],
-                f'{method} {endpoint} returned auth error: {response.status_code}'
+            # Auth passes (not 401/403), entity doesn't exist -> 404
+            self.assertEqual(
+                response.status_code, 404,
+                f'{method} {endpoint}: expected 404 (auth passed, entity not found), '
+                f'got {response.status_code}'
             )
 
     def test_09_www_authenticate_header_on_401(self):

@@ -448,15 +448,14 @@ class TestOperationsApi(GatewayTestCase):
             timeout=30
         )
 
-        # Should return 200 for sync or 400/500 if service is unavailable
-        self.assertIn(
-            response.status_code, [200, 400, 500, 503],
-            f'Expected 200/400/500/503, got {response.status_code}: {response.text}'
+        self.assertEqual(
+            response.status_code, 200,
+            f'Expected 200 for sync service execution, '
+            f'got {response.status_code}: {response.text}'
         )
 
         data = response.json()
-        if response.status_code == 200:
-            self.assertIn('parameters', data)
+        self.assertIn('parameters', data)
 
     def test_cancel_nonexistent_execution(self):
         """DELETE /{entity}/operations/{op-id}/executions/{exec-id} returns 404.

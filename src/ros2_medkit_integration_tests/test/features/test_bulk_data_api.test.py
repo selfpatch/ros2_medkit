@@ -23,7 +23,6 @@ are in scenario tests, not here.
 
 """
 
-import time
 import unittest
 
 import launch_testing
@@ -118,31 +117,28 @@ class TestBulkDataApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_072
         """
-        # Wait for fault to be generated (lidar sensor has invalid params)
-        time.sleep(3)
-
-        response = requests.get(
-            f'{self.BASE_URL}/apps/lidar_sensor/bulk-data/rosbags',
-            timeout=10
+        # Poll until rosbag descriptors appear (fault triggers capture)
+        data = self.poll_endpoint_until(
+            '/apps/lidar_sensor/bulk-data/rosbags',
+            lambda d: d if d.get('items') else None,
+            timeout=10.0,
+            interval=1.0,
         )
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()
-        self.assertIn('items', data)
         self.assertIsInstance(data['items'], list)
+        self.assertGreater(
+            len(data['items']), 0, 'Expected at least one rosbag descriptor',
+        )
 
-        # If there are rosbags, verify structure
-        if len(data['items']) > 0:
-            descriptor = data['items'][0]
-            self.assertIn('id', descriptor)
-            self.assertIn('name', descriptor)
-            self.assertIn('size', descriptor)
-            self.assertIn('mimetype', descriptor)  # SOVD uses 'mimetype'
-            self.assertIn('creation_date', descriptor)
-            # Verify x-medkit extension
-            self.assertIn('x-medkit', descriptor)
-            x_medkit = descriptor['x-medkit']
-            self.assertIn('fault_code', x_medkit)
+        descriptor = data['items'][0]
+        self.assertIn('id', descriptor)
+        self.assertIn('name', descriptor)
+        self.assertIn('size', descriptor)
+        self.assertIn('mimetype', descriptor)  # SOVD uses 'mimetype'
+        self.assertIn('creation_date', descriptor)
+        # Verify x-medkit extension
+        self.assertIn('x-medkit', descriptor)
+        x_medkit = descriptor['x-medkit']
+        self.assertIn('fault_code', x_medkit)
 
     def test_bulk_data_list_descriptors_empty_result(self):
         """Bulk-data returns empty array for entity without rosbags.

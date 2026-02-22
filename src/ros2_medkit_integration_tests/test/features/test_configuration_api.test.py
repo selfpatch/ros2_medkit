@@ -43,7 +43,7 @@ class TestConfigurationApi(GatewayTestCase):
     MIN_EXPECTED_APPS = 1
     REQUIRED_APPS = {'temp_sensor'}
 
-    def test_list_configurations(self):
+    def test_01_list_configurations(self):
         """GET /apps/{app_id}/configurations lists all parameters.
 
         @verifies REQ_INTEROP_048
@@ -76,7 +76,7 @@ class TestConfigurationApi(GatewayTestCase):
             self.assertIn('value', param)
             self.assertIn('type', param)
 
-    def test_get_configuration(self):
+    def test_02_get_configuration(self):
         """GET /apps/{app_id}/configurations/{param_name} gets parameter.
 
         @verifies REQ_INTEROP_049
@@ -106,7 +106,7 @@ class TestConfigurationApi(GatewayTestCase):
         # Default value is 2.0
         self.assertEqual(param['value'], 2.0)
 
-    def test_set_configuration(self):
+    def test_03_set_configuration(self):
         """PUT /apps/{app_id}/configurations/{param_name} sets parameter.
 
         This test modifies min_temp and resets it within the same test.
@@ -115,9 +115,8 @@ class TestConfigurationApi(GatewayTestCase):
         """
         # Register cleanup to reset value even if assertions fail
         self.addCleanup(
-            lambda: requests.put(
+            lambda: requests.delete(
                 f'{self.BASE_URL}/apps/temp_sensor/configurations/min_temp',
-                json={'data': 85.0},
                 timeout=10
             )
         )
@@ -158,7 +157,7 @@ class TestConfigurationApi(GatewayTestCase):
         verify_data = verify_response.json()
         self.assertEqual(verify_data['x-medkit']['parameter']['value'], 80.0)
 
-    def test_delete_configuration_resets_to_default(self):
+    def test_04_delete_configuration_resets_to_default(self):
         """DELETE /apps/{app_id}/configurations/{param_name} resets to default.
 
         The DELETE method resets the parameter to its default value.
@@ -197,9 +196,9 @@ class TestConfigurationApi(GatewayTestCase):
         self.assertEqual(get_response.status_code, 200)
         get_data = get_response.json()
         # The value should be reset to default (85.0)
-        _ = get_data['x-medkit']['parameter']['value']
+        self.assertEqual(get_data['x-medkit']['parameter']['value'], 85.0)
 
-    def test_configurations_nonexistent_app(self):
+    def test_05_configurations_nonexistent_app(self):
         """GET /apps/{app_id}/configurations returns 404 for unknown app.
 
         @verifies REQ_INTEROP_048
@@ -217,7 +216,7 @@ class TestConfigurationApi(GatewayTestCase):
         self.assertIn('entity_id', data['parameters'])
         self.assertEqual(data['parameters'].get('entity_id'), 'nonexistent_app')
 
-    def test_configuration_nonexistent_parameter(self):
+    def test_06_configuration_nonexistent_parameter(self):
         """GET configurations/{param_name} returns 404 for unknown param.
 
         @verifies REQ_INTEROP_049
@@ -233,7 +232,7 @@ class TestConfigurationApi(GatewayTestCase):
         self.assertIn('parameters', data)
         self.assertEqual(data['parameters'].get('id'), 'nonexistent_param')
 
-    def test_set_configuration_missing_value(self):
+    def test_07_set_configuration_missing_value(self):
         """PUT configurations/{param_name} returns 400 when value missing.
 
         @verifies REQ_INTEROP_050
@@ -250,7 +249,7 @@ class TestConfigurationApi(GatewayTestCase):
         # SOVD format expects "data" field
         self.assertIn('data', data['message'].lower())
 
-    def test_root_endpoint_includes_configurations(self):
+    def test_08_root_endpoint_includes_configurations(self):
         """Root endpoint lists configurations endpoints and capability.
 
         @verifies REQ_INTEROP_048
