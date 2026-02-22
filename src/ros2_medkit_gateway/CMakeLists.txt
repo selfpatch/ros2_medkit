@@ -128,6 +128,11 @@ add_library(gateway_lib STATIC
   src/auth/auth_manager.cpp
   src/auth/auth_middleware.cpp
   src/auth/auth_requirement_policy.cpp
+  # Updates module
+  src/updates/update_manager.cpp
+  src/updates/plugin_loader.cpp
+  # HTTP handlers - updates
+  src/http/handlers/update_handlers.cpp
 )
 
 ament_target_dependencies(gateway_lib
@@ -151,6 +156,7 @@ target_link_libraries(gateway_lib
   OpenSSL::Crypto
   tl::expected
   jwt-cpp::jwt-cpp
+  ${CMAKE_DL_LIBS}
 )
 
 # Gateway node executable
@@ -356,6 +362,25 @@ if(BUILD_TESTING)
   ament_add_gtest(test_cyclic_subscription_handlers test/test_cyclic_subscription_handlers.cpp)
   target_link_libraries(test_cyclic_subscription_handlers gateway_lib)
 
+  # Add update manager tests
+  ament_add_gtest(test_update_manager test/test_update_manager.cpp)
+  target_link_libraries(test_update_manager gateway_lib)
+
+  # Demo update backend plugin (.so for integration tests)
+  add_library(test_update_backend MODULE
+    test/demo_nodes/test_update_backend.cpp
+  )
+  target_include_directories(test_update_backend PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  target_link_libraries(test_update_backend
+    nlohmann_json::nlohmann_json
+    tl::expected
+  )
+  install(TARGETS test_update_backend
+    LIBRARY DESTINATION lib/${PROJECT_NAME}
+  )
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -382,6 +407,7 @@ if(BUILD_TESTING)
       test_bulkdata_handlers
       test_subscription_manager
       test_cyclic_subscription_handlers
+      test_update_manager
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
