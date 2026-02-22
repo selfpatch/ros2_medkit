@@ -60,10 +60,7 @@ json UpdateHandlers::status_to_json(const UpdateStatusInfo & status) {
     }
   }
   if (status.error_message.has_value()) {
-    json err;
-    err["error_code"] = ERR_INTERNAL_ERROR;
-    err["message"] = *status.error_message;
-    j["error"] = err;
+    j["error"] = *status.error_message;
   }
   return j;
 }
@@ -134,6 +131,20 @@ void UpdateHandlers::handle_register_update(const httplib::Request & req, httpli
       return;
     }
 
+    // Validate id field exists before calling backend
+    if (!body.contains("id") || !body["id"].is_string() || body["id"].get<std::string>().empty()) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing required field: id");
+      return;
+    }
+    auto id = body["id"].get<std::string>();
+
+    // Validate id format to prevent CRLF injection in Location header
+    auto id_validation = ctx_.validate_entity_id(id);
+    if (!id_validation) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, id_validation.error());
+      return;
+    }
+
     auto result = update_mgr_->register_update(body);
     if (!result) {
       switch (result.error().code) {
@@ -147,12 +158,6 @@ void UpdateHandlers::handle_register_update(const httplib::Request & req, httpli
       return;
     }
 
-    // Validate id field exists before using it for Location header
-    if (!body.contains("id") || !body["id"].is_string() || body["id"].get<std::string>().empty()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing required field: id");
-      return;
-    }
-    auto id = body["id"].get<std::string>();
     json response = {{"id", id}};
     HandlerContext::send_json(res, response);
     res.status = 201;

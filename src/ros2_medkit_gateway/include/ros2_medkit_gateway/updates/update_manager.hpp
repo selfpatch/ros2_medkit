@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -96,6 +97,7 @@ class UpdateManager {
   // map rehashes due to concurrent insertions.
   std::unordered_map<std::string, std::unique_ptr<PackageState>> states_;
   mutable std::mutex mutex_;
+  std::atomic<bool> stopped_{false};
 
   /// Check if a task is still running
   bool is_task_active(const std::string & id) const;

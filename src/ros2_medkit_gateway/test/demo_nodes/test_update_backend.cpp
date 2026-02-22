@@ -34,7 +34,7 @@ using namespace ros2_medkit_gateway;
  */
 class TestUpdateBackend : public UpdateBackend {
  public:
-  tl::expected<std::vector<std::string>, std::string> list_updates(const UpdateFilter & filter) override {
+  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter & filter) override {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> ids;
     for (const auto & [id, meta] : packages_) {
@@ -62,53 +62,62 @@ class TestUpdateBackend : public UpdateBackend {
     return ids;
   }
 
-  tl::expected<json, std::string> get_update(const std::string & id) override {
+  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & id) override {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = packages_.find(id);
     if (it == packages_.end()) {
-      return tl::make_unexpected("Update package '" + id + "' not found");
+      return tl::make_unexpected(
+          UpdateBackendErrorInfo{UpdateBackendError::NotFound, "Update package '" + id + "' not found"});
     }
     return it->second;
   }
 
-  tl::expected<void, std::string> register_update(const json & metadata) override {
+  tl::expected<void, UpdateBackendErrorInfo> register_update(const json & metadata) override {
     if (!metadata.contains("id") || !metadata["id"].is_string()) {
-      return tl::make_unexpected("Missing required field: id");
+      return tl::make_unexpected(
+          UpdateBackendErrorInfo{UpdateBackendError::InvalidInput, "Missing required field: id"});
     }
     if (!metadata.contains("update_name") || !metadata["update_name"].is_string()) {
-      return tl::make_unexpected("Missing required field: update_name");
+      return tl::make_unexpected(
+          UpdateBackendErrorInfo{UpdateBackendError::InvalidInput, "Missing required field: update_name"});
     }
     if (!metadata.contains("automated") || !metadata["automated"].is_boolean()) {
-      return tl::make_unexpected("Missing required field: automated");
+      return tl::make_unexpected(
+          UpdateBackendErrorInfo{UpdateBackendError::InvalidInput, "Missing required field: automated"});
     }
     if (!metadata.contains("origins") || !metadata["origins"].is_array()) {
-      return tl::make_unexpected("Missing required field: origins");
+      return tl::make_unexpected(
+          UpdateBackendErrorInfo{UpdateBackendError::InvalidInput, "Missing required field: origins"});
     }
 
     std::string id = metadata["id"].get<std::string>();
     std::lock_guard<std::mutex> lock(mutex_);
     if (packages_.count(id) > 0) {
-      return tl::make_unexpected("Update package '" + id + "' already exists");
+      return tl::make_unexpected(
+          UpdateBackendErrorInfo{UpdateBackendError::AlreadyExists, "Update package '" + id + "' already exists"});
     }
     packages_[id] = metadata;
     return {};
   }
 
-  tl::expected<void, std::string> delete_update(const std::string & id) override {
+  tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string & id) override {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = packages_.find(id);
     if (it == packages_.end()) {
-      return tl::make_unexpected("Update package '" + id + "' not found");
+      return tl::make_unexpected(
+          UpdateBackendErrorInfo{UpdateBackendError::NotFound, "Update package '" + id + "' not found"});
     }
     packages_.erase(it);
     return {};
   }
 
-  tl::expected<void, std::string> prepare(const std::string & id, UpdateProgressReporter & reporter) override {
+  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string & id,
+                                                     UpdateProgressReporter & reporter) override {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (packages_.find(id) == packages_.end()) {
-        return tl::make_unexpected("Update package '" + id + "' not found");
+        return tl::make_unexpected(
+            UpdateBackendErrorInfo{UpdateBackendError::NotFound, "Update package '" + id + "' not found"});
       }
     }
 
@@ -131,11 +140,13 @@ class TestUpdateBackend : public UpdateBackend {
     return {};
   }
 
-  tl::expected<void, std::string> execute(const std::string & id, UpdateProgressReporter & reporter) override {
+  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string & id,
+                                                     UpdateProgressReporter & reporter) override {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (packages_.find(id) == packages_.end()) {
-        return tl::make_unexpected("Update package '" + id + "' not found");
+        return tl::make_unexpected(
+            UpdateBackendErrorInfo{UpdateBackendError::NotFound, "Update package '" + id + "' not found"});
       }
     }
 
@@ -158,11 +169,12 @@ class TestUpdateBackend : public UpdateBackend {
     return {};
   }
 
-  tl::expected<bool, std::string> supports_automated(const std::string & id) override {
+  tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string & id) override {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = packages_.find(id);
     if (it == packages_.end()) {
-      return tl::make_unexpected("Update package '" + id + "' not found");
+      return tl::make_unexpected(
+          UpdateBackendErrorInfo{UpdateBackendError::NotFound, "Update package '" + id + "' not found"});
     }
     return it->second.value("automated", false);
   }

@@ -50,6 +50,20 @@ struct UpdateStatusInfo {
 /// Internal phase tracking for update lifecycle
 enum class UpdatePhase { None, Preparing, Prepared, Executing, Executed, Failed, Deleting };
 
+/// Error codes for backend return values
+enum class UpdateBackendError {
+  NotFound,       // Package does not exist
+  AlreadyExists,  // Duplicate ID on registration
+  InvalidInput,   // Malformed metadata
+  Internal        // Unexpected error
+};
+
+/// Typed error for backend return values
+struct UpdateBackendErrorInfo {
+  UpdateBackendError code;
+  std::string message;
+};
+
 /**
  * @brief Thread-safe reporter for update progress.
  *
@@ -92,10 +106,13 @@ class UpdateProgressReporter {
  *
  * @par Thread Safety
  * - CRUD methods (list_updates, get_update, register_update, delete_update)
- *   are called while UpdateManager holds its mutex. They will not be called
- *   concurrently with each other, but may overlap with prepare/execute running
- *   in a background thread. If the backend shares state between CRUD and
- *   async methods, it must provide its own synchronization.
+ *   are called WITHOUT holding UpdateManager's mutex. They may be called
+ *   concurrently with each other and with prepare/execute running in a
+ *   background thread. If the backend shares state, it must provide its own
+ *   synchronization.
+ *   Note: delete_update has a partial guard - UpdateManager checks/sets a
+ *   Deleting sentinel under lock before calling delete_update, but the
+ *   backend call itself runs outside the lock.
  * - prepare() and execute() run in a background std::async thread. They may
  *   run concurrently with CRUD calls from the HTTP thread.
  * - The UpdateProgressReporter passed to prepare/execute is already
@@ -111,28 +128,30 @@ class UpdateBackend {
   // ---- CRUD (plugin owns all metadata storage) ----
 
   /// List all registered update package IDs, optionally filtered
-  virtual tl::expected<std::vector<std::string>, std::string> list_updates(const UpdateFilter & filter) = 0;
+  virtual tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter & filter) = 0;
 
   /// Get full metadata for a specific update package as JSON
-  virtual tl::expected<nlohmann::json, std::string> get_update(const std::string & id) = 0;
+  virtual tl::expected<nlohmann::json, UpdateBackendErrorInfo> get_update(const std::string & id) = 0;
 
   /// Register a new update package from JSON metadata
-  virtual tl::expected<void, std::string> register_update(const nlohmann::json & metadata) = 0;
+  virtual tl::expected<void, UpdateBackendErrorInfo> register_update(const nlohmann::json & metadata) = 0;
 
   /// Delete an update package
-  virtual tl::expected<void, std::string> delete_update(const std::string & id) = 0;
+  virtual tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string & id) = 0;
 
   // ---- Async operations (called in background thread by UpdateManager) ----
 
   /// Prepare an update (download, verify, check dependencies).
   /// Reporter is optional - plugin may call reporter.set_progress() etc.
-  virtual tl::expected<void, std::string> prepare(const std::string & id, UpdateProgressReporter & reporter) = 0;
+  virtual tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string & id,
+                                                             UpdateProgressReporter & reporter) = 0;
 
   /// Execute an update (install). Only called after prepare succeeds.
-  virtual tl::expected<void, std::string> execute(const std::string & id, UpdateProgressReporter & reporter) = 0;
+  virtual tl::expected<void, UpdateBackendErrorInfo> execute(const std::string & id,
+                                                             UpdateProgressReporter & reporter) = 0;
 
   /// Check whether a package supports automated mode (prepare + execute)
-  virtual tl::expected<bool, std::string> supports_automated(const std::string & id) = 0;
+  virtual tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string & id) = 0;
 
   /// Optional: receive plugin-specific configuration from YAML
   virtual void configure(const nlohmann::json & /* config */) {

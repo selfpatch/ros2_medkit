@@ -25,7 +25,7 @@ using json = nlohmann::json;
 /// Mock backend for unit testing
 class MockUpdateBackend : public UpdateBackend {
  public:
-  tl::expected<std::vector<std::string>, std::string> list_updates(const UpdateFilter &) override {
+  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter &) override {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> ids;
     for (const auto & [id, _] : packages_) {
@@ -34,54 +34,54 @@ class MockUpdateBackend : public UpdateBackend {
     return ids;
   }
 
-  tl::expected<json, std::string> get_update(const std::string & id) override {
+  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & id) override {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = packages_.find(id);
     if (it == packages_.end()) {
-      return tl::make_unexpected("not found");
+      return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::NotFound, "not found"});
     }
     return it->second;
   }
 
-  tl::expected<void, std::string> register_update(const json & metadata) override {
+  tl::expected<void, UpdateBackendErrorInfo> register_update(const json & metadata) override {
     auto id = metadata.value("id", std::string{});
     if (id.empty()) {
-      return tl::make_unexpected("missing id");
+      return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::InvalidInput, "missing id"});
     }
     std::lock_guard<std::mutex> lock(mutex_);
     if (packages_.count(id)) {
-      return tl::make_unexpected("already exists");
+      return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::AlreadyExists, "already exists"});
     }
     packages_[id] = metadata;
     return {};
   }
 
-  tl::expected<void, std::string> delete_update(const std::string & id) override {
+  tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string & id) override {
     std::lock_guard<std::mutex> lock(mutex_);
     if (packages_.erase(id) == 0) {
-      return tl::make_unexpected("not found");
+      return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::NotFound, "not found"});
     }
     return {};
   }
 
-  tl::expected<void, std::string> prepare(const std::string &, UpdateProgressReporter & reporter) override {
+  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string &, UpdateProgressReporter & reporter) override {
     reporter.set_progress(50);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     reporter.set_progress(100);
     return {};
   }
 
-  tl::expected<void, std::string> execute(const std::string &, UpdateProgressReporter & reporter) override {
+  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string &, UpdateProgressReporter & reporter) override {
     reporter.set_progress(100);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     return {};
   }
 
-  tl::expected<bool, std::string> supports_automated(const std::string & id) override {
+  tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string & id) override {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = packages_.find(id);
     if (it == packages_.end()) {
-      return tl::make_unexpected("not found");
+      return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::NotFound, "not found"});
     }
     return it->second.value("automated", false);
   }
@@ -198,29 +198,41 @@ TEST_F(UpdateManagerTest, ExecuteAfterPrepare) {
 
   (void)manager_->start_prepare("test-pkg");
   // Wait for prepare to complete
-  for (int i = 0; i < 100; ++i) {
-    auto s = manager_->get_status("test-pkg");
-    if (s && s->status == UpdateStatus::Completed) {
-      break;
+  {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    bool found = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+      auto s = manager_->get_status("test-pkg");
+      if (s && s->status == UpdateStatus::Completed) {
+        found = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_TRUE(found) << "Timed out waiting for prepare to complete";
   }
 
   auto exec = manager_->start_execute("test-pkg");
   ASSERT_TRUE(exec.has_value());
 
   // Wait for execute to complete
-  UpdateStatusInfo status;
-  for (int i = 0; i < 100; ++i) {
-    auto s = manager_->get_status("test-pkg");
-    ASSERT_TRUE(s.has_value());
-    status = *s;
-    if (status.status == UpdateStatus::Completed) {
-      break;
+  {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    UpdateStatusInfo status;
+    bool found = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+      auto s = manager_->get_status("test-pkg");
+      ASSERT_TRUE(s.has_value());
+      status = *s;
+      if (status.status == UpdateStatus::Completed) {
+        found = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_TRUE(found) << "Timed out waiting for execute to complete";
+    EXPECT_EQ(status.status, UpdateStatus::Completed);
   }
-  EXPECT_EQ(status.status, UpdateStatus::Completed);
 }
 
 // @verifies REQ_INTEROP_093
@@ -231,16 +243,20 @@ TEST_F(UpdateManagerTest, AutomatedCompletes) {
   auto result = manager_->start_automated("test-pkg");
   ASSERT_TRUE(result.has_value());
 
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   UpdateStatusInfo status;
-  for (int i = 0; i < 200; ++i) {
+  bool found = false;
+  while (std::chrono::steady_clock::now() < deadline) {
     auto s = manager_->get_status("test-pkg");
     ASSERT_TRUE(s.has_value());
     status = *s;
     if (status.status == UpdateStatus::Completed) {
+      found = true;
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
+  ASSERT_TRUE(found) << "Timed out waiting for automated update to complete";
   EXPECT_EQ(status.status, UpdateStatus::Completed);
 }
 
@@ -300,29 +316,32 @@ TEST_F(UpdateManagerTest, ConcurrentPrepareOnSamePackageRejected) {
 /// Mock backend that returns errors from prepare/execute
 class MockFailingBackend : public UpdateBackend {
  public:
-  tl::expected<std::vector<std::string>, std::string> list_updates(const UpdateFilter & /*filter*/) override {
-    return tl::make_unexpected("backend error");
+  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
+  list_updates(const UpdateFilter & /*filter*/) override {
+    return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::Internal, "backend error"});
   }
-  tl::expected<json, std::string> get_update(const std::string & /*id*/) override {
+  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
     return json{{"id", "pkg"}};
   }
-  tl::expected<void, std::string> register_update(const json & metadata) override {
+  tl::expected<void, UpdateBackendErrorInfo> register_update(const json & metadata) override {
     auto id = metadata.value("id", std::string{});
     if (id.empty()) {
-      return tl::make_unexpected("missing id");
+      return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::InvalidInput, "missing id"});
     }
     return {};
   }
-  tl::expected<void, std::string> delete_update(const std::string & /*id*/) override {
+  tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string & /*id*/) override {
     return {};
   }
-  tl::expected<void, std::string> prepare(const std::string & /*id*/, UpdateProgressReporter & /*reporter*/) override {
-    return tl::make_unexpected("download failed");
+  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string & /*id*/,
+                                                     UpdateProgressReporter & /*reporter*/) override {
+    return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::Internal, "download failed"});
   }
-  tl::expected<void, std::string> execute(const std::string & /*id*/, UpdateProgressReporter & /*reporter*/) override {
-    return tl::make_unexpected("install failed");
+  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string & /*id*/,
+                                                     UpdateProgressReporter & /*reporter*/) override {
+    return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::Internal, "install failed"});
   }
-  tl::expected<bool, std::string> supports_automated(const std::string & /*id*/) override {
+  tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string & /*id*/) override {
     return true;
   }
 };
@@ -330,25 +349,28 @@ class MockFailingBackend : public UpdateBackend {
 /// Mock backend that throws exceptions from prepare/execute
 class MockThrowingBackend : public UpdateBackend {
  public:
-  tl::expected<std::vector<std::string>, std::string> list_updates(const UpdateFilter & /*filter*/) override {
+  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
+  list_updates(const UpdateFilter & /*filter*/) override {
     return std::vector<std::string>{};
   }
-  tl::expected<json, std::string> get_update(const std::string & /*id*/) override {
+  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
     return json{{"id", "pkg"}};
   }
-  tl::expected<void, std::string> register_update(const json & /*metadata*/) override {
+  tl::expected<void, UpdateBackendErrorInfo> register_update(const json & /*metadata*/) override {
     return {};
   }
-  tl::expected<void, std::string> delete_update(const std::string & /*id*/) override {
+  tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string & /*id*/) override {
     return {};
   }
-  tl::expected<void, std::string> prepare(const std::string & /*id*/, UpdateProgressReporter & /*reporter*/) override {
+  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string & /*id*/,
+                                                     UpdateProgressReporter & /*reporter*/) override {
     throw std::runtime_error("plugin crashed");
   }
-  tl::expected<void, std::string> execute(const std::string & /*id*/, UpdateProgressReporter & /*reporter*/) override {
+  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string & /*id*/,
+                                                     UpdateProgressReporter & /*reporter*/) override {
     throw std::runtime_error("plugin crashed");
   }
-  tl::expected<bool, std::string> supports_automated(const std::string & /*id*/) override {
+  tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string & /*id*/) override {
     return true;
   }
 };
@@ -379,6 +401,66 @@ TEST(UpdateManagerFailureTest, PrepareFailureSetsFailedStatus) {
   EXPECT_NE(status.error_message->find("download failed"), std::string::npos);
 }
 
+/// Mock backend with working prepare but failing execute
+class MockExecuteFailingBackend : public UpdateBackend {
+ public:
+  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
+  list_updates(const UpdateFilter & /*filter*/) override {
+    return std::vector<std::string>{};
+  }
+  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
+    return json{{"id", "pkg"}};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> register_update(const json & /*metadata*/) override {
+    return {};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string & /*id*/) override {
+    return {};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string & /*id*/,
+                                                     UpdateProgressReporter & reporter) override {
+    reporter.set_progress(100);
+    return {};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string & /*id*/,
+                                                     UpdateProgressReporter & /*reporter*/) override {
+    return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::Internal, "install failed"});
+  }
+  tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string & /*id*/) override {
+    return true;
+  }
+};
+
+/// Mock backend with working prepare but throwing execute
+class MockExecuteThrowingBackend : public UpdateBackend {
+ public:
+  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
+  list_updates(const UpdateFilter & /*filter*/) override {
+    return std::vector<std::string>{};
+  }
+  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
+    return json{{"id", "pkg"}};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> register_update(const json & /*metadata*/) override {
+    return {};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string & /*id*/) override {
+    return {};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string & /*id*/,
+                                                     UpdateProgressReporter & reporter) override {
+    reporter.set_progress(100);
+    return {};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string & /*id*/,
+                                                     UpdateProgressReporter & /*reporter*/) override {
+    throw std::runtime_error("plugin crashed during install");
+  }
+  tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string & /*id*/) override {
+    return true;
+  }
+};
+
 // @verifies REQ_INTEROP_091
 TEST(UpdateManagerFailureTest, PrepareExceptionSetsFailedStatus) {
   auto backend = std::make_unique<MockThrowingBackend>();
@@ -399,6 +481,83 @@ TEST(UpdateManagerFailureTest, PrepareExceptionSetsFailedStatus) {
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
+  EXPECT_EQ(status.status, UpdateStatus::Failed);
+  ASSERT_TRUE(status.error_message.has_value());
+  EXPECT_NE(status.error_message->find("Exception"), std::string::npos);
+}
+
+// Helper: prepare a package and wait for completion
+static bool prepare_and_wait(UpdateManager & manager, const std::string & id) {
+  auto prep = manager.start_prepare(id);
+  if (!prep) {
+    return false;
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto s = manager.get_status(id);
+    if (s && s->status == UpdateStatus::Completed) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return false;
+}
+
+// @verifies REQ_INTEROP_092
+TEST(UpdateManagerFailureTest, ExecuteFailureSetsFailedStatus) {
+  auto backend = std::make_unique<MockExecuteFailingBackend>();
+  auto manager = std::make_unique<UpdateManager>(std::move(backend));
+  json pkg = {{"id", "test-pkg"}};
+  (void)manager->register_update(pkg);
+
+  ASSERT_TRUE(prepare_and_wait(*manager, "test-pkg")) << "Timed out waiting for prepare to complete";
+
+  auto exec = manager->start_execute("test-pkg");
+  ASSERT_TRUE(exec.has_value());
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  UpdateStatusInfo status;
+  bool found = false;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto s = manager->get_status("test-pkg");
+    if (s && s->status == UpdateStatus::Failed) {
+      status = *s;
+      found = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(found) << "Timed out waiting for execute to fail";
+  EXPECT_EQ(status.status, UpdateStatus::Failed);
+  ASSERT_TRUE(status.error_message.has_value());
+  EXPECT_NE(status.error_message->find("install failed"), std::string::npos);
+}
+
+// @verifies REQ_INTEROP_092
+TEST(UpdateManagerFailureTest, ExecuteExceptionSetsFailedStatus) {
+  auto backend = std::make_unique<MockExecuteThrowingBackend>();
+  auto manager = std::make_unique<UpdateManager>(std::move(backend));
+  json pkg = {{"id", "test-pkg"}};
+  (void)manager->register_update(pkg);
+
+  ASSERT_TRUE(prepare_and_wait(*manager, "test-pkg")) << "Timed out waiting for prepare to complete";
+
+  auto exec = manager->start_execute("test-pkg");
+  ASSERT_TRUE(exec.has_value());
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  UpdateStatusInfo status;
+  bool found = false;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto s = manager->get_status("test-pkg");
+    if (s && s->status == UpdateStatus::Failed) {
+      status = *s;
+      found = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(found) << "Timed out waiting for execute exception to be caught";
   EXPECT_EQ(status.status, UpdateStatus::Failed);
   ASSERT_TRUE(status.error_message.has_value());
   EXPECT_NE(status.error_message->find("Exception"), std::string::npos);

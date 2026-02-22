@@ -23,6 +23,9 @@ UpdateManager::UpdateManager(std::unique_ptr<UpdateBackend> backend, void * plug
 }
 
 UpdateManager::~UpdateManager() {
+  // Signal background tasks to stop accepting new work
+  stopped_ = true;
+
   // Collect all valid futures, then wait OUTSIDE the lock to avoid
   // deadlock (async tasks also acquire mutex_ during execution).
   std::vector<std::future<void>> futures;
@@ -54,7 +57,7 @@ tl::expected<std::vector<std::string>, UpdateError> UpdateManager::list_updates(
   }
   auto result = backend_->list_updates(filter);
   if (!result) {
-    return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, result.error()});
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, result.error().message});
   }
   return *result;
 }
@@ -65,7 +68,7 @@ tl::expected<nlohmann::json, UpdateError> UpdateManager::get_update(const std::s
   }
   auto result = backend_->get_update(id);
   if (!result) {
-    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, result.error()});
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, result.error().message});
   }
   return *result;
 }
@@ -76,10 +79,15 @@ tl::expected<void, UpdateError> UpdateManager::register_update(const nlohmann::j
   }
   auto result = backend_->register_update(metadata);
   if (!result) {
-    if (result.error().find("already exists") != std::string::npos) {
-      return tl::make_unexpected(UpdateError{UpdateErrorCode::AlreadyExists, result.error()});
+    const auto & err = result.error();
+    switch (err.code) {
+      case UpdateBackendError::AlreadyExists:
+        return tl::make_unexpected(UpdateError{UpdateErrorCode::AlreadyExists, err.message});
+      case UpdateBackendError::InvalidInput:
+        return tl::make_unexpected(UpdateError{UpdateErrorCode::InvalidRequest, err.message});
+      default:
+        return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, err.message});
     }
-    return tl::make_unexpected(UpdateError{UpdateErrorCode::InvalidRequest, result.error()});
   }
   return {};
 }
@@ -89,10 +97,12 @@ tl::expected<void, UpdateError> UpdateManager::delete_update(const std::string &
     return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
 
+  bool had_state = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = states_.find(id);
     if (it != states_.end()) {
+      had_state = true;
       if (is_task_active(id)) {
         return tl::make_unexpected(
             UpdateError{UpdateErrorCode::InProgress, "Cannot delete update while operation is in progress"});
@@ -103,6 +113,10 @@ tl::expected<void, UpdateError> UpdateManager::delete_update(const std::string &
       }
       // Mark as deleting so no new operations can start on this package
       it->second->phase = UpdatePhase::Deleting;
+    } else {
+      // Create sentinel to prevent concurrent start_prepare
+      states_[id] = std::make_unique<PackageState>();
+      states_[id]->phase = UpdatePhase::Deleting;
     }
   }
 
@@ -113,14 +127,22 @@ tl::expected<void, UpdateError> UpdateManager::delete_update(const std::string &
   } else {
     // Rollback sentinel on failure
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = states_.find(id);
-    if (it != states_.end() && it->second) {
-      it->second->phase = UpdatePhase::Failed;
+    if (had_state) {
+      auto it = states_.find(id);
+      if (it != states_.end() && it->second) {
+        it->second->phase = UpdatePhase::Failed;
+      }
+    } else {
+      // Remove the sentinel we created - package never had state before
+      states_.erase(id);
     }
-    if (result.error().find("not found") != std::string::npos) {
-      return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, result.error()});
+    const auto & err = result.error();
+    switch (err.code) {
+      case UpdateBackendError::NotFound:
+        return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, err.message});
+      default:
+        return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, err.message});
     }
-    return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, result.error()});
   }
   return {};
 }
@@ -129,13 +151,16 @@ tl::expected<void, UpdateError> UpdateManager::start_prepare(const std::string &
   if (!backend_) {
     return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
+  if (stopped_) {
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, "UpdateManager is shutting down"});
+  }
 
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Verify package exists while holding lock to prevent concurrent deletion
   auto pkg = backend_->get_update(id);
   if (!pkg) {
-    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, pkg.error()});
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, pkg.error().message});
   }
 
   if (is_task_active(id)) {
@@ -162,20 +187,20 @@ tl::expected<void, UpdateError> UpdateManager::start_execute(const std::string &
   if (!backend_) {
     return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
+  if (stopped_) {
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, "UpdateManager is shutting down"});
+  }
 
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto pkg = backend_->get_update(id);
   if (!pkg) {
-    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, pkg.error()});
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, pkg.error().message});
   }
 
   auto it = states_.find(id);
   if (it == states_.end() || !it->second || it->second->phase != UpdatePhase::Prepared) {
     return tl::make_unexpected(UpdateError{UpdateErrorCode::NotPrepared, "Package must be prepared before execution"});
-  }
-  if (it->second->phase == UpdatePhase::Deleting) {
-    return tl::make_unexpected(UpdateError{UpdateErrorCode::Deleting, "Package is being deleted"});
   }
   if (is_task_active(id)) {
     return tl::make_unexpected(
@@ -193,12 +218,15 @@ tl::expected<void, UpdateError> UpdateManager::start_automated(const std::string
   if (!backend_) {
     return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
+  if (stopped_) {
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, "UpdateManager is shutting down"});
+  }
 
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto supported = backend_->supports_automated(id);
   if (!supported) {
-    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, supported.error()});
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, supported.error().message});
   }
   if (!*supported) {
     return tl::make_unexpected(
@@ -263,7 +291,7 @@ void UpdateManager::run_prepare(const std::string & id) {
       state->phase = UpdatePhase::Prepared;
     } else {
       state->status.status = UpdateStatus::Failed;
-      state->status.error_message = result.error();
+      state->status.error_message = result.error().message;
       state->phase = UpdatePhase::Failed;
     }
   } catch (const std::exception & e) {
@@ -303,7 +331,7 @@ void UpdateManager::run_execute(const std::string & id) {
       state->phase = UpdatePhase::Executed;
     } else {
       state->status.status = UpdateStatus::Failed;
-      state->status.error_message = result.error();
+      state->status.error_message = result.error().message;
       state->phase = UpdatePhase::Failed;
     }
   } catch (const std::exception & e) {
@@ -341,7 +369,7 @@ void UpdateManager::run_automated(const std::string & id) {
     if (!prep_result) {
       std::lock_guard<std::mutex> lock(mutex_);
       state->status.status = UpdateStatus::Failed;
-      state->status.error_message = prep_result.error();
+      state->status.error_message = prep_result.error().message;
       state->phase = UpdatePhase::Failed;
       return;
     }
@@ -362,7 +390,7 @@ void UpdateManager::run_automated(const std::string & id) {
       state->phase = UpdatePhase::Executed;
     } else {
       state->status.status = UpdateStatus::Failed;
-      state->status.error_message = exec_result.error();
+      state->status.error_message = exec_result.error().message;
       state->phase = UpdatePhase::Failed;
     }
   } catch (const std::exception & e) {
