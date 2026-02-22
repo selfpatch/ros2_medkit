@@ -127,6 +127,10 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   cyclic_sub_handlers_ = std::make_unique<handlers::CyclicSubscriptionHandlers>(
       *handler_ctx_, *node_->get_subscription_manager(), sse_client_tracker_);
 
+  if (node_->get_update_manager()) {
+    update_handlers_ = std::make_unique<handlers::UpdateHandlers>(*handler_ctx_, node_->get_update_manager());
+  }
+
   // Set up global error handlers for SOVD GenericError compliance
   setup_global_error_handlers();
   // Set up pre-routing handler for CORS and Authentication
@@ -982,6 +986,40 @@ void RESTServer::setup_routes() {
               [this](const httplib::Request & req, httplib::Response & res) {
                 cyclic_sub_handlers_->handle_delete(req, res);
               });
+
+  // === Software Updates (server-level endpoints, REQ_INTEROP_082-085, 091-094) ===
+  if (update_handlers_) {
+    srv->Get(api_path("/updates"), [this](const httplib::Request & req, httplib::Response & res) {
+      update_handlers_->handle_list_updates(req, res);
+    });
+    srv->Post(api_path("/updates"), [this](const httplib::Request & req, httplib::Response & res) {
+      update_handlers_->handle_register_update(req, res);
+    });
+    // Specific routes before generic /{id}
+    srv->Get((api_path("/updates") + R"(/([^/]+)/status$)"),
+             [this](const httplib::Request & req, httplib::Response & res) {
+               update_handlers_->handle_get_status(req, res);
+             });
+    srv->Put((api_path("/updates") + R"(/([^/]+)/prepare$)"),
+             [this](const httplib::Request & req, httplib::Response & res) {
+               update_handlers_->handle_prepare(req, res);
+             });
+    srv->Put((api_path("/updates") + R"(/([^/]+)/execute$)"),
+             [this](const httplib::Request & req, httplib::Response & res) {
+               update_handlers_->handle_execute(req, res);
+             });
+    srv->Put((api_path("/updates") + R"(/([^/]+)/automated$)"),
+             [this](const httplib::Request & req, httplib::Response & res) {
+               update_handlers_->handle_automated(req, res);
+             });
+    // Generic /{id} routes last
+    srv->Get((api_path("/updates") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
+      update_handlers_->handle_get_update(req, res);
+    });
+    srv->Delete((api_path("/updates") + R"(/([^/]+)$)"), [this](const httplib::Request & req, httplib::Response & res) {
+      update_handlers_->handle_delete_update(req, res);
+    });
+  }
 
   // Authentication endpoints (REQ_INTEROP_086, REQ_INTEROP_087)
   // POST /auth/authorize - Authenticate and get tokens (client_credentials grant)

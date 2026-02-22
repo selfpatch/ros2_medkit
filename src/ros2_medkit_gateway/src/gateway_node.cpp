@@ -16,6 +16,8 @@
 
 #include <chrono>
 
+#include "ros2_medkit_gateway/updates/plugin_loader.hpp"
+
 using namespace std::chrono_literals;
 
 namespace ros2_medkit_gateway {
@@ -69,6 +71,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("discovery_mode", "runtime_only");  // runtime_only, manifest_only, hybrid
   declare_parameter("manifest_path", "");
   declare_parameter("manifest_strict_validation", true);
+
+  // Software updates plugin parameters
+  declare_parameter("updates.enabled", false);
+  declare_parameter("updates.backend", std::string("none"));
+  declare_parameter("updates.plugin_path", std::string(""));
 
   // Bulk data storage parameters
   declare_parameter("bulk_data.storage_dir", "/tmp/ros2_medkit_bulk_data");
@@ -316,6 +323,26 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   subscription_mgr_ = std::make_unique<SubscriptionManager>(max_subscriptions);
   RCLCPP_INFO(get_logger(), "Subscription manager: max_subscriptions=%zu", max_subscriptions);
 
+  // Initialize update manager
+  auto updates_enabled = get_parameter("updates.enabled").as_bool();
+  if (updates_enabled) {
+    auto backend_type = get_parameter("updates.backend").as_string();
+    if (backend_type == "plugin") {
+      auto plugin_path = get_parameter("updates.plugin_path").as_string();
+      auto load_result = UpdatePluginLoader::load(plugin_path);
+      if (load_result) {
+        RCLCPP_INFO(get_logger(), "Loaded update plugin: %s", plugin_path.c_str());
+        update_mgr_ = std::make_unique<UpdateManager>(std::move(load_result->backend), load_result->handle);
+      } else {
+        RCLCPP_ERROR(get_logger(), "Failed to load update plugin: %s", load_result.error().c_str());
+        update_mgr_ = std::make_unique<UpdateManager>(nullptr);
+      }
+    } else {
+      // backend: "none" - endpoints exist but return 501
+      update_mgr_ = std::make_unique<UpdateManager>(nullptr);
+    }
+  }
+
   // Connect topic sampler to discovery manager for component-topic mapping
   discovery_mgr_->set_topic_sampler(data_access_mgr_->get_native_sampler());
 
@@ -388,6 +415,10 @@ BulkDataStore * GatewayNode::get_bulk_data_store() const {
 
 SubscriptionManager * GatewayNode::get_subscription_manager() const {
   return subscription_mgr_.get();
+}
+
+UpdateManager * GatewayNode::get_update_manager() const {
+  return update_mgr_.get();
 }
 
 void GatewayNode::refresh_cache() {
