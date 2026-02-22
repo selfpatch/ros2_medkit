@@ -25,6 +25,36 @@ WORKSPACE_DIR = SCRIPT_DIR.parent
 SRC_DIR = WORKSPACE_DIR / "src"
 OUTPUT_FILE = WORKSPACE_DIR / "docs/requirements/verification.rst"
 REQUIREMENTS_SPECS_DIR = WORKSPACE_DIR / "docs/requirements/specs"
+GITHUB_BASE_URL = "https://github.com/selfpatch/ros2_medkit/blob/main"
+
+
+def _extract_verifies_before(content, match_start, comment_prefix):
+    """Extract @verifies tags from comment lines immediately before a position.
+
+    Scans backwards from match_start through contiguous comment lines
+    that contain @verifies (or Links to: / Verifies:) tags.
+    """
+    before_text = content[:match_start]
+    before_lines = before_text.rstrip().split("\n")
+
+    verifies_reqs = []
+    for line in reversed(before_lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith(comment_prefix):
+            break
+        comment_content = stripped[len(comment_prefix):].strip()
+        tag_match = re.match(
+            r"(?:@verifies|Links to:|Verifies:)\s*(.*)", comment_content
+        )
+        if tag_match:
+            reqs_text = tag_match.group(1)
+            reqs = re.findall(r"(REQ_\w+)", reqs_text)
+            verifies_reqs.extend(reqs)
+        else:
+            break
+    return verifies_reqs
 
 
 def parse_cpp_file(file_path):
@@ -50,9 +80,15 @@ def parse_cpp_file(file_path):
         # Auto-generate ID and Title, including suite to avoid collisions
         test_id = f"TEST_{suite_name}_{test_name}"
         test_title = test_name
+        line_number = content[:match.start()].count('\n') + 1
 
         verifies_reqs = []
         description = []
+
+        # Check comments before the TEST macro
+        verifies_reqs.extend(
+            _extract_verifies_before(content, match.start(), "//")
+        )
 
         for line in lines:
             line = line.strip()
@@ -92,6 +128,7 @@ def parse_cpp_file(file_path):
                     "description": "\n   ".join(description),
                     "file": str(file_path.relative_to(WORKSPACE_DIR)),
                     "test_func": test_name,
+                    "line": line_number,
                 }
             )
 
@@ -141,9 +178,15 @@ def parse_py_file(file_path):
         else:
             test_id = "TEST_" + test_name
         test_title = test_name
+        line_number = content[:match.start()].count('\n') + 1
 
         verifies_reqs = []
         description = []
+
+        # Check comments before the def line
+        verifies_reqs.extend(
+            _extract_verifies_before(content, match.start(), "#")
+        )
 
         in_docstring = False
         docstring_lines = []
@@ -222,6 +265,7 @@ def parse_py_file(file_path):
                     "description": "\n   ".join(description),
                     "file": str(file_path.relative_to(WORKSPACE_DIR)),
                     "test_func": test_name,
+                    "line": line_number,
                 }
             )
 
@@ -250,9 +294,11 @@ def generate_rst(tests):
             lines.append("   " + test["description"])
             lines.append("")
 
+        github_url = f'{GITHUB_BASE_URL}/{test["file"]}#L{test["line"]}'
         lines.append(
-            "   **Implementation:** ``" + test["file"] + "`` "
-            "(Test: ``" + test["test_func"] + "``)"
+            f"   **Implementation:** `{test['file']}#L{test['line']}"
+            f" <{github_url}>`_"
+            f" (Test: ``{test['test_func']}``)"
         )
         lines.append("")
         lines.append("")
