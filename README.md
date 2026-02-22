@@ -49,14 +49,23 @@ For more examples, see our [Postman collection](postman/).
 
 ## ✨ Features
 
-- **🔍 Runtime Discovery** — Automatically discover what is actually running on your robot
-- **🏗️ Entity Tree Model** — Organize diagnostics as Area → Component → Function → App
-- **🔗 SOVD Compatible** — Align with Service-Oriented Vehicle Diagnostics standards
-- **🌐 REST API Gateway** — HTTP interface for integration with external tools and UIs
-- **📊 Health Modeling** — Track health state per entity for fleet-level observability
-- **🔧 Easy Integration** — Works with existing ROS 2 nodes out of the box (Jazzy, Humble & Rolling)
-- **📦 Bulk Data Management** — Upload, download, list, and delete bulk data files (calibration, firmware, etc.)
-- **🔄 Software Updates** — Manage update packages with async prepare/execute lifecycle and progress tracking via pluggable backends
+| Feature | Status | Description |
+|---------|--------|-------------|
+| 🔍 Discovery | **Available** | Automatically discover running nodes, topics, services, and actions |
+| 📊 Data | **Available** | Read and write topic data via REST |
+| ⚙️ Operations | **Available** | Call services and actions with execution tracking |
+| 🔧 Configurations | **Available** | Read, write, and reset node parameters |
+| 🚨 Faults | **Available** | Query, inspect, and clear faults with environment data and snapshots |
+| 📦 Bulk Data | **Available** | Upload, download, and manage files (calibration, firmware, rosbags) |
+| 📡 Subscriptions | **Available** | Stream live data and fault events via SSE |
+| 🔄 Software Updates | **Available** | Async prepare/execute lifecycle with pluggable backends |
+| 🔒 Authentication | **Available** | JWT-based RBAC (viewer, operator, configurator, admin) |
+| 📋 Logs | Planned | Log sources, entries, and configuration |
+| 🔁 Entity Lifecycle | Planned | Start, restart, shutdown control |
+| 🔐 Modes & Locking | Planned | Target mode control and resource locking |
+| 📝 Scripts | Planned | Diagnostic script upload and execution |
+| 🧹 Clear Data | Planned | Clear cached and learned diagnostic data |
+| 📞 Communication Logs | Planned | Protocol-level communication logging |
 
 ## 📖 Overview
 
