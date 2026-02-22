@@ -255,6 +255,43 @@ Example:
          max_clients: 10
          max_subscriptions: 100
 
+Software Updates
+----------------
+
+Configure the software updates plugin system. Updates are disabled by default.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 15 15 45
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``updates.enabled``
+     - bool
+     - ``false``
+     - Enable/disable software updates endpoints. When disabled, ``/updates`` routes are not registered.
+   * - ``updates.backend``
+     - string
+     - ``"none"``
+     - Backend type. ``"none"`` enables endpoints but returns 501. ``"plugin"`` loads a shared library.
+   * - ``updates.plugin_path``
+     - string
+     - ``""``
+     - Path to the ``.so`` plugin file. Required when ``backend`` is ``"plugin"``.
+
+Example:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       updates:
+         enabled: true
+         backend: "plugin"
+         plugin_path: "/opt/ros2_medkit/plugins/libmy_update_backend.so"
+
 Complete Example
 ----------------
 

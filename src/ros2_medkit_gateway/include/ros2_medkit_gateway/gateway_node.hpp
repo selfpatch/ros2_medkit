@@ -35,6 +35,7 @@
 #include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
 #include "ros2_medkit_gateway/subscription_manager.hpp"
+#include "ros2_medkit_gateway/updates/update_manager.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -93,6 +94,12 @@ class GatewayNode : public rclcpp::Node {
    */
   SubscriptionManager * get_subscription_manager() const;
 
+  /**
+   * @brief Get the UpdateManager instance
+   * @return Raw pointer to UpdateManager (valid for lifetime of GatewayNode), or nullptr if disabled
+   */
+  UpdateManager * get_update_manager() const;
+
  private:
   void refresh_cache();
   void start_rest_server();
@@ -115,6 +122,7 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<FaultManager> fault_mgr_;
   std::unique_ptr<BulkDataStore> bulk_data_store_;
   std::unique_ptr<SubscriptionManager> subscription_mgr_;
+  std::unique_ptr<UpdateManager> update_mgr_;
   std::unique_ptr<RESTServer> rest_server_;
 
   // Cache with thread safety

@@ -103,7 +103,7 @@ software updates, and authentication — completing the standard specification c
 - Bulk Data (5 endpoints) — large data transfers
 - Communication Logs (5 endpoints) — protocol-level logging
 - Clear Data (5 endpoints) — cache and learned data management
-- Updates (4 endpoints) — software update management
+- ✅ Updates (8 endpoints) — software update management
 - Auth (2 endpoints) — authorization and token management
 
 `MS5 on GitHub <https://github.com/selfpatch/ros2_medkit/milestone/5>`_

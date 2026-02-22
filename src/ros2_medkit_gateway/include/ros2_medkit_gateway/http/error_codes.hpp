@@ -99,6 +99,21 @@ constexpr const char * ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE = "x-medkit-ros2-topi
 /// ROS 2 action server not available
 constexpr const char * ERR_X_MEDKIT_ROS2_ACTION_UNAVAILABLE = "x-medkit-ros2-action-unavailable";
 
+/// Software update package not found
+constexpr const char * ERR_X_MEDKIT_UPDATE_NOT_FOUND = "x-medkit-update-not-found";
+
+/// Duplicate update package ID on registration
+constexpr const char * ERR_X_MEDKIT_UPDATE_ALREADY_EXISTS = "x-medkit-update-already-exists";
+
+/// Cannot modify/delete update while operation is in progress
+constexpr const char * ERR_X_MEDKIT_UPDATE_IN_PROGRESS = "x-medkit-update-in-progress";
+
+/// Execute called before prepare completed
+constexpr const char * ERR_X_MEDKIT_UPDATE_NOT_PREPARED = "x-medkit-update-not-prepared";
+
+/// Automated mode not supported for this package
+constexpr const char * ERR_X_MEDKIT_UPDATE_NOT_AUTOMATED = "x-medkit-update-not-automated";
+
 /**
  * @brief Check if an error code is a vendor-specific code
  * @param error_code Error code to check

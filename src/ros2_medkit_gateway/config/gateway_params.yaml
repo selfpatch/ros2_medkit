@@ -236,6 +236,27 @@ ros2_medkit_gateway:
       # Example: ["calibration", "firmware", "comlogs", "snapshots"]
       categories: []
 
+    # Software Updates Plugin System
+    # Enables /updates endpoints for SOVD-compliant software update management
+    updates:
+      # Enable/disable /updates endpoints
+      # When false, update routes are not registered
+      # Default: false
+      enabled: false
+
+      # Backend type
+      # Options:
+      #   - "none": Endpoints registered but return 501 Not Implemented
+      #   - "plugin": Load update backend from shared library (.so)
+      # Default: "none"
+      backend: "none"
+
+      # Path to update backend .so plugin
+      # Only used when backend: "plugin"
+      # The .so must export: extern "C" UpdateBackend* create_update_backend();
+      # Example: "/opt/ros2_medkit/lib/libmy_update_backend.so"
+      plugin_path: ""
+
     # Rate Limiting Configuration
     # Token-bucket-based rate limiting for API requests.
     # Disabled by default for backward compatibility.

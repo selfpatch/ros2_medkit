@@ -158,4 +158,8 @@ plantuml_output_format = "svg"
 linkcheck_ignore = [
     r"http://localhost:\d+",  # Ignore localhost URLs
     r"http://127\.0\.0\.1:\d+",
+    # Auto-generated line-number links in verification.rst; skipped to
+    # avoid 395+ GitHub requests (rate-limiting) and anchor mismatches
+    # on branches where files differ from main.
+    r"https://github\.com/selfpatch/ros2_medkit/blob/.+#L\d+",
 ]

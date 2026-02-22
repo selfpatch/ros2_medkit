@@ -12,6 +12,13 @@ and this project adheres to `Semantic Versioning <https://semver.org/spec/v2.0.0
 Added
 ~~~~~
 
+* Software update management with pluggable backend architecture:
+
+  - 8 SOVD-compliant ``/updates`` endpoints (CRUD + prepare/execute/automated/status)
+  - Plugin system via dlopen for runtime backend loading
+  - Async lifecycle with progress tracking and status polling
+  - Feature gating via ``updates.enabled`` parameter
+
 * SOVD bulk-data endpoints for all entity types:
 
   - ``GET /{entity}/bulk-data`` - list available bulk-data categories
@@ -151,7 +158,6 @@ specification adapted for ROS 2:
 
 Not yet implemented:
 
-- Software updates
 - Locks
 - Triggers
 - Communication logs
