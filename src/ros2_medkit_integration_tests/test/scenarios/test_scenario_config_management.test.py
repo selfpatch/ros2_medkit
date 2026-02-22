@@ -170,10 +170,11 @@ class TestScenarioConfigManagement(GatewayTestCase):
             timeout=10,
         )
 
-        # 204 = complete success, 207 = partial success
-        self.assertIn(
-            response.status_code, [204, 207],
-            f'Expected 204/207 for reset all configs, '
+        # 207 = partial success (some internal ROS 2 params like
+        # use_sim_time don't have registered defaults and can't be reset)
+        self.assertEqual(
+            response.status_code, 207,
+            f'Expected 207 for reset all configs, '
             f'got {response.status_code}',
         )
 

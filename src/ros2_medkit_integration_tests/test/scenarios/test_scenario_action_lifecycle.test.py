@@ -175,16 +175,14 @@ class TestScenarioActionLifecycle(GatewayTestCase):
             timeout=30,
         )
 
-        # Should return 200 for sync or 400/500/503 if service unavailable
-        self.assertIn(
-            response.status_code, [200, 400, 500, 503],
-            f'Expected 200/400/500/503, got {response.status_code}: '
-            f'{response.text}',
+        self.assertEqual(
+            response.status_code, 200,
+            f'Expected 200 for sync service execution, '
+            f'got {response.status_code}: {response.text}',
         )
 
         data = response.json()
-        if response.status_code == 200:
-            self.assertIn('parameters', data)
+        self.assertIn('parameters', data)
 
     def test_04_execution_appears_in_list(self):
         """Create execution, then GET list and verify it contains our ID.
@@ -342,10 +340,10 @@ class TestScenarioActionLifecycle(GatewayTestCase):
             timeout=10,
         )
 
-        # PUT for pause/resume returns 400 or 501
-        self.assertIn(
-            response.status_code, [400, 501],
-            f'Expected 400 or 501 for unsupported pause, '
+        # PUT for unsupported pause capability returns 400
+        self.assertEqual(
+            response.status_code, 400,
+            f'Expected 400 for unsupported pause, '
             f'got {response.status_code}',
         )
 

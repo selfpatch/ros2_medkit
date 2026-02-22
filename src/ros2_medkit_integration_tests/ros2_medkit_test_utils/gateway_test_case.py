@@ -595,8 +595,13 @@ class GatewayTestCase(unittest.TestCase):
 
         Returns
         -------
-        str or None
-            The rosbag ``id`` if found, ``None`` on timeout.
+        str
+            The rosbag ``id`` when found.
+
+        Raises
+        ------
+        AssertionError
+            If no rosbag is found within *max_wait*.
 
         """
         start_time = time.monotonic()
@@ -614,7 +619,10 @@ class GatewayTestCase(unittest.TestCase):
             except requests.exceptions.RequestException:
                 pass
             time.sleep(1)
-        return None
+        raise AssertionError(
+            f'No rosbag found at {entity_endpoint}/bulk-data/rosbags '
+            f'within {max_wait}s'
+        )
 
     def create_execution(self, entity_endpoint, operation_id, *, input_data=None):
         """POST to create an operation execution and return the response JSON.
@@ -640,6 +648,11 @@ class GatewayTestCase(unittest.TestCase):
             input_data = {}
         url = f'{self.BASE_URL}{entity_endpoint}/operations/{operation_id}/executions'
         response = requests.post(url, json={'parameters': input_data}, timeout=15)
+        self.assertIn(
+            response.status_code, (200, 201, 202),
+            f'POST {entity_endpoint}/operations/{operation_id}/executions '
+            f'returned {response.status_code}: {response.text}',
+        )
         data = response.json()
         return response, data
 
@@ -723,6 +736,50 @@ class GatewayTestCase(unittest.TestCase):
                 pass
             time.sleep(0.5)
         return False
+
+    def wait_for_data_item(self, entity_endpoint, direction, *, timeout=10.0):
+        """Poll entity data until an item with the given direction appears.
+
+        Subscriber-only topics may take an extra discovery cycle to become
+        visible (especially on CycloneDDS / Humble).  This helper retries
+        instead of failing on the first attempt.
+
+        Parameters
+        ----------
+        entity_endpoint : str
+            Entity path relative to ``BASE_URL``
+            (e.g. ``'/apps/actuator'``).
+        direction : str
+            Topic direction to search for (``'publish'``, ``'subscribe'``,
+            or ``'both'``).
+        timeout : float
+            Maximum time to wait in seconds.
+
+        Returns
+        -------
+        dict
+            The first data item matching the requested direction.
+
+        Raises
+        ------
+        AssertionError
+            If no matching item is found within *timeout*.
+
+        """
+
+        def _find_item(data):
+            for item in data.get('items', []):
+                x_medkit = item.get('x-medkit', {})
+                ros2 = x_medkit.get('ros2', {})
+                if ros2.get('direction') == direction:
+                    return item
+            return None
+
+        return self.poll_endpoint_until(
+            f'{entity_endpoint}/data',
+            condition=_find_item,
+            timeout=timeout,
+        )
 
     # ------------------------------------------------------------------
     # Discovery assertions

@@ -65,17 +65,17 @@ class TestDataRead(GatewayTestCase):
         items = data['items']
         self.assertIsInstance(items, list)
 
-        if len(items) > 0:
-            for topic_data in items:
-                self.assertIn('id', topic_data)
-                self.assertIn('name', topic_data)
-                # direction is now in x-medkit.ros2
-                self.assertIn('x-medkit', topic_data)
-                x_medkit = topic_data['x-medkit']
-                self.assertIn('ros2', x_medkit)
-                self.assertIn('direction', x_medkit['ros2'])
-                direction = x_medkit['ros2']['direction']
-                self.assertIn(direction, ['publish', 'subscribe', 'both'])
+        self.assertGreater(len(items), 0, 'App should have at least one data item')
+        for topic_data in items:
+            self.assertIn('id', topic_data)
+            self.assertIn('name', topic_data)
+            # direction is now in x-medkit.ros2
+            self.assertIn('x-medkit', topic_data)
+            x_medkit = topic_data['x-medkit']
+            self.assertIn('ros2', x_medkit)
+            self.assertIn('direction', x_medkit['ros2'])
+            direction = x_medkit['ros2']['direction']
+            self.assertIn(direction, ['publish', 'subscribe', 'both'])
 
     def test_app_data_chassis_brakes(self):
         """GET /apps/{app_id}/data for brakes pressure sensor app.
@@ -87,14 +87,14 @@ class TestDataRead(GatewayTestCase):
         items = data['items']
         self.assertIsInstance(items, list)
 
-        if len(items) > 0:
-            for topic_data in items:
-                self.assertIn('id', topic_data)
-                self.assertIn('name', topic_data)
-                self.assertIn('x-medkit', topic_data)
-                x_medkit = topic_data['x-medkit']
-                self.assertIn('ros2', x_medkit)
-                self.assertIn('direction', x_medkit['ros2'])
+        self.assertGreater(len(items), 0, 'App should have at least one data item')
+        for topic_data in items:
+            self.assertIn('id', topic_data)
+            self.assertIn('name', topic_data)
+            self.assertIn('x-medkit', topic_data)
+            x_medkit = topic_data['x-medkit']
+            self.assertIn('ros2', x_medkit)
+            self.assertIn('direction', x_medkit['ros2'])
 
     def test_app_data_body_door(self):
         """GET /apps/{app_id}/data for door status sensor app.
@@ -106,14 +106,14 @@ class TestDataRead(GatewayTestCase):
         items = data['items']
         self.assertIsInstance(items, list)
 
-        if len(items) > 0:
-            for topic_data in items:
-                self.assertIn('id', topic_data)
-                self.assertIn('name', topic_data)
-                self.assertIn('x-medkit', topic_data)
-                x_medkit = topic_data['x-medkit']
-                self.assertIn('ros2', x_medkit)
-                self.assertIn('direction', x_medkit['ros2'])
+        self.assertGreater(len(items), 0, 'App should have at least one data item')
+        for topic_data in items:
+            self.assertIn('id', topic_data)
+            self.assertIn('name', topic_data)
+            self.assertIn('x-medkit', topic_data)
+            x_medkit = topic_data['x-medkit']
+            self.assertIn('ros2', x_medkit)
+            self.assertIn('direction', x_medkit['ros2'])
 
     def test_app_data_structure(self):
         """GET /apps/{app_id}/data response structure.
@@ -125,18 +125,18 @@ class TestDataRead(GatewayTestCase):
         items = data['items']
         self.assertIsInstance(items, list, 'Response should have items array')
 
-        if len(items) > 0:
-            first_item = items[0]
-            self.assertIn('id', first_item, "Each item should have 'id' field")
-            self.assertIn('name', first_item, "Each item should have 'name' field")
-            self.assertIn('x-medkit', first_item, "Each item should have 'x-medkit' field")
-            x_medkit = first_item['x-medkit']
-            self.assertIn('ros2', x_medkit, 'x-medkit should have ros2 section')
-            self.assertIn('direction', x_medkit['ros2'], 'x-medkit.ros2 should have direction')
-            self.assertIsInstance(
-                first_item['name'], str, "'name' should be a string"
-            )
-            self.assertIn(x_medkit['ros2']['direction'], ['publish', 'subscribe', 'both'])
+        self.assertGreater(len(items), 0, 'App should have at least one data item')
+        first_item = items[0]
+        self.assertIn('id', first_item, "Each item should have 'id' field")
+        self.assertIn('name', first_item, "Each item should have 'name' field")
+        self.assertIn('x-medkit', first_item, "Each item should have 'x-medkit' field")
+        x_medkit = first_item['x-medkit']
+        self.assertIn('ros2', x_medkit, 'x-medkit should have ros2 section')
+        self.assertIn('direction', x_medkit['ros2'], 'x-medkit.ros2 should have direction')
+        self.assertIsInstance(
+            first_item['name'], str, "'name' should be a string"
+        )
+        self.assertIn(x_medkit['ros2']['direction'], ['publish', 'subscribe', 'both'])
 
     def test_app_nonexistent_error(self):
         """GET /apps/{app_id}/data returns 404 for nonexistent app.
@@ -362,10 +362,10 @@ class TestDataRead(GatewayTestCase):
             response = requests.get(
                 f'{self.BASE_URL}/components/powertrain/data/{valid_topic}', timeout=10
             )
-            self.assertIn(
+            self.assertEqual(
                 response.status_code,
-                [200, 404],
-                f'Expected 200 or 404 for valid topic name: {valid_topic}, '
+                200,
+                f'Expected 200 for valid topic name: {valid_topic}, '
                 f'got {response.status_code}',
             )
 
@@ -436,16 +436,16 @@ class TestDataRead(GatewayTestCase):
         items = data['items']
         self.assertIsInstance(items, list)
 
-        if len(items) > 0:
-            for topic_data in items:
-                self.assertIn('id', topic_data)
-                self.assertIn('name', topic_data)
-                self.assertIn('x-medkit', topic_data)
-                x_medkit = topic_data['x-medkit']
-                self.assertIn('ros2', x_medkit)
-                self.assertIn('direction', x_medkit['ros2'])
-                direction = x_medkit['ros2']['direction']
-                self.assertIn(direction, ['publish', 'subscribe', 'both'])
+        self.assertGreater(len(items), 0, 'Area should have at least one data item')
+        for topic_data in items:
+            self.assertIn('id', topic_data)
+            self.assertIn('name', topic_data)
+            self.assertIn('x-medkit', topic_data)
+            x_medkit = topic_data['x-medkit']
+            self.assertIn('ros2', x_medkit)
+            self.assertIn('direction', x_medkit['ros2'])
+            direction = x_medkit['ros2']['direction']
+            self.assertIn(direction, ['publish', 'subscribe', 'both'])
 
         # Should include aggregated_from in x-medkit
         self.assertIn('x-medkit', data)

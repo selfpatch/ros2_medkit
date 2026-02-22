@@ -30,7 +30,7 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import DEFAULT_PORT
+from ros2_medkit_test_utils.constants import API_BASE_PATH
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
@@ -91,7 +91,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
                        'engine' in app.get('id', '').lower():
                         cls.app_id = app['id']
                         break
-        except Exception:
+        except requests.exceptions.RequestException:
             pass
 
         if not cls.app_id:
@@ -117,7 +117,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
                             break
                     if cls.topic_id:
                         break
-            except Exception:
+            except requests.exceptions.RequestException:
                 pass
             time.sleep(1.0)
 
@@ -149,7 +149,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
                 f'{self.BASE_URL}/apps/{self.app_id}/cyclic-subscriptions/{sub_id}',
                 timeout=5,
             )
-        except Exception:
+        except requests.exceptions.RequestException:
             pass
 
     # ===================================================================
@@ -311,7 +311,9 @@ class TestScenarioSubscriptions(GatewayTestCase):
         """
         sub = self._create_subscription(interval='slow', duration=30)
         self.addCleanup(self._delete_subscription, sub['id'])
-        events_url = f'http://localhost:{DEFAULT_PORT}{sub["event_source"]}'
+        events_url = (
+            f'{self.BASE_URL}{sub["event_source"].removeprefix(API_BASE_PATH)}'
+        )
 
         try:
             r = requests.get(events_url, stream=True, timeout=3)
@@ -331,7 +333,9 @@ class TestScenarioSubscriptions(GatewayTestCase):
         """
         sub = self._create_subscription(interval='slow', duration=30)
         self.addCleanup(self._delete_subscription, sub['id'])
-        events_url = f'http://localhost:{DEFAULT_PORT}{sub["event_source"]}'
+        events_url = (
+            f'{self.BASE_URL}{sub["event_source"].removeprefix(API_BASE_PATH)}'
+        )
 
         received_events = []
         stop_event = threading.Event()
@@ -348,7 +352,7 @@ class TestScenarioSubscriptions(GatewayTestCase):
                             if len(received_events) >= 3:
                                 stop_event.set()
                                 break
-            except Exception:
+            except requests.exceptions.RequestException:
                 pass
 
         thread = threading.Thread(target=collect_events, daemon=True)
@@ -379,26 +383,34 @@ class TestScenarioSubscriptions(GatewayTestCase):
         """
         sub = self._create_subscription(interval='slow', duration=60)
         self.addCleanup(self._delete_subscription, sub['id'])
-        events_url = f'http://localhost:{DEFAULT_PORT}{sub["event_source"]}'
+        events_url = (
+            f'{self.BASE_URL}{sub["event_source"].removeprefix(API_BASE_PATH)}'
+        )
 
         stream_ended = threading.Event()
+        stream_connected = threading.Event()
 
         def read_stream():
             try:
                 with requests.get(events_url, stream=True, timeout=15) as resp:
+                    stream_connected.set()
                     for _line in resp.iter_lines(decode_unicode=True):
                         if stream_ended.is_set():
                             break
-            except Exception:
+            except requests.exceptions.RequestException:
                 pass
             finally:
+                stream_connected.set()  # Unblock waiter on error
                 stream_ended.set()
 
         thread = threading.Thread(target=read_stream, daemon=True)
         thread.start()
 
-        # Give stream time to start, then delete the subscription
-        time.sleep(2)
+        # Wait for stream to connect before deleting
+        self.assertTrue(
+            stream_connected.wait(timeout=5),
+            'SSE stream failed to connect within 5s',
+        )
         requests.delete(
             f'{self.BASE_URL}/apps/{self.app_id}/cyclic-subscriptions/{sub["id"]}',
             timeout=5,

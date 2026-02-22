@@ -95,10 +95,8 @@ class TestScenarioFaultLifecycle(GatewayTestCase):
 
         @verifies REQ_INTEROP_014
         """
-        # Get the perception component (lidar_sensor is under /perception)
-        data = self.get_json('/components')
-        self.assertGreater(len(data['items']), 0)
-        component_id = data['items'][0]['id']
+        # The lidar_sensor is under /perception namespace
+        component_id = 'perception'
 
         # Clear all faults (should succeed even if empty)
         response = self.delete_request(
@@ -112,10 +110,8 @@ class TestScenarioFaultLifecycle(GatewayTestCase):
 
         @verifies REQ_INTEROP_014
         """
-        # Get an app
-        data = self.get_json('/apps')
-        self.assertGreater(len(data['items']), 0)
-        app_id = data['items'][0]['id']
+        # Use lidar_sensor directly - only app with faults in this test
+        app_id = 'lidar_sensor'
 
         response = self.delete_request(
             f'/apps/{app_id}/faults',
@@ -167,14 +163,14 @@ class TestScenarioFaultLifecycle(GatewayTestCase):
             )
             return
 
-        # Delete the fault
+        # Delete the fault (confirmed present by wait_for_fault above)
         response = requests.delete(
             f'{self.BASE_URL}/apps/{app_id}/faults/{fault_code}',
             timeout=10,
         )
-        self.assertIn(
-            response.status_code, [204, 404],
-            f'Expected 204 or 404 for fault deletion, '
+        self.assertEqual(
+            response.status_code, 204,
+            f'Expected 204 for deletion of confirmed fault, '
             f'got {response.status_code}',
         )
 
