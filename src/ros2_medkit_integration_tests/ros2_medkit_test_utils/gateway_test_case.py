@@ -716,10 +716,10 @@ class GatewayTestCase(unittest.TestCase):
         max_wait : float
             Maximum time to wait in seconds.
 
-        Returns
-        -------
-        bool
-            True if the operation was found, False on timeout.
+        Raises
+        ------
+        AssertionError
+            If the operation is not found within *max_wait*.
 
         """
         start_time = time.monotonic()
@@ -731,11 +731,14 @@ class GatewayTestCase(unittest.TestCase):
                 if response.status_code == 200:
                     ops = response.json().get('items', [])
                     if any(op.get('id') == operation_id for op in ops):
-                        return True
+                        return
             except requests.exceptions.RequestException:
                 pass
             time.sleep(0.5)
-        return False
+        raise AssertionError(
+            f'Operation {operation_id} not discovered at '
+            f'{entity_endpoint}/operations within {max_wait}s'
+        )
 
     def wait_for_data_item(self, entity_endpoint, direction, *, timeout=10.0):
         """Poll entity data until an item with the given direction appears.

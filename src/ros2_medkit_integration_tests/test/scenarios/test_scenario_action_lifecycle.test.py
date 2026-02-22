@@ -68,13 +68,8 @@ class TestScenarioActionLifecycle(GatewayTestCase):
 
     def _ensure_operation_ready(self):
         """Wait for the long_calibration operation to be discovered."""
-        found = self.wait_for_operation(
+        self.wait_for_operation(
             self.ENTITY_ENDPOINT, self.OPERATION_ID, max_wait=15.0
-        )
-        self.assertTrue(
-            found,
-            f'Operation {self.OPERATION_ID} not discovered for '
-            f'{self.APP_ID} within timeout',
         )
 
     def _create_action_execution(self, order=5):
