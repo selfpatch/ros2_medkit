@@ -29,3 +29,30 @@ Updates
 
    The endpoint shall return the details of the addressed software update package.
 
+.. req:: PUT /updates/{id}/prepare
+   :id: REQ_INTEROP_091
+   :status: open
+   :tags: Updates
+
+   The endpoint shall trigger preparation of the addressed software update package (download, integrity check, dependency validation) and return 202 Accepted with a Location header pointing to the status resource.
+
+.. req:: PUT /updates/{id}/execute
+   :id: REQ_INTEROP_092
+   :status: open
+   :tags: Updates
+
+   The endpoint shall begin the actual installation of a previously prepared software update package and return 202 Accepted with a Location header pointing to the status resource.
+
+.. req:: PUT /updates/{id}/automated
+   :id: REQ_INTEROP_093
+   :status: open
+   :tags: Updates
+
+   The endpoint shall trigger a fully automated update (prepare + execute) for packages where automated mode is supported and return 202 Accepted with a Location header pointing to the status resource.
+
+.. req:: GET /updates/{id}/status
+   :id: REQ_INTEROP_094
+   :status: open
+   :tags: Updates
+
+   The endpoint shall return the current progress and status of an update operation, including status value, progress percentage, and optional sub-progress details.
