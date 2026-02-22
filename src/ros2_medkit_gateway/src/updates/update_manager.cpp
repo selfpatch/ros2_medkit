@@ -23,14 +23,19 @@ UpdateManager::UpdateManager(std::unique_ptr<UpdateBackend> backend, void * plug
 }
 
 UpdateManager::~UpdateManager() {
-  // Wait for all active tasks to finish
+  // Collect all valid futures, then wait OUTSIDE the lock to avoid
+  // deadlock (async tasks also acquire mutex_ during execution).
+  std::vector<std::future<void>> futures;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto & [id, state] : states_) {
-      if (state->active_task.valid()) {
-        state->active_task.wait();
+      if (state && state->active_task.valid()) {
+        futures.push_back(std::move(state->active_task));
       }
     }
+  }
+  for (auto & f : futures) {
+    f.wait();
   }
   // Destroy backend before closing plugin handle
   backend_.reset();
