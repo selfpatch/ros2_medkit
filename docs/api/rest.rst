@@ -672,6 +672,145 @@ fault manager and cannot be deleted via this endpoint.
 - **404 Not Found**: Entity, category, or bulk-data ID not found
 - **405 Method Not Allowed**: Delete attempted on areas or functions
 
+Software Updates
+----------------
+
+Manage software update packages with an async prepare/execute lifecycle.
+The updates feature requires a backend plugin to be loaded (see :doc:`/config/server`).
+Without a plugin, all endpoints return ``501 Not Implemented``.
+
+``GET /api/v1/updates``
+   List all registered update packages.
+
+   **Query Parameters:**
+
+   - ``origin`` (optional): Filter by origin (``remote`` or ``proximity``)
+   - ``target-version`` (optional): Filter by target version
+
+   **Example Response (200 OK):**
+
+   .. code-block:: json
+
+      {
+        "items": ["firmware-v2.1", "calibration-update-3"]
+      }
+
+``POST /api/v1/updates``
+   Register a new update package.
+
+   **Request Body:**
+
+   .. code-block:: json
+
+      {
+        "id": "firmware-v2.1",
+        "update_name": "Firmware Update v2.1",
+        "automated": true,
+        "origins": ["remote"],
+        "duration": 600,
+        "size": 52428800,
+        "updated_components": ["ecu_main"],
+        "affected_components": ["ecu_main", "ecu_secondary"]
+      }
+
+   **Response (201 Created):**
+
+   .. code-block:: json
+
+      {
+        "id": "firmware-v2.1"
+      }
+
+   **Response Headers:**
+
+   - ``Location``: ``/api/v1/updates/firmware-v2.1``
+
+``GET /api/v1/updates/{id}``
+   Get full metadata for a specific update package.
+
+   **Response (200 OK):**
+
+   Returns the JSON metadata as registered.
+
+   - **404 Not Found:** Package does not exist
+
+``DELETE /api/v1/updates/{id}``
+   Delete an update package.
+
+   - **204 No Content:** Package deleted
+   - **404 Not Found:** Package does not exist
+   - **409 Conflict:** Operation in progress for this package
+
+``PUT /api/v1/updates/{id}/prepare``
+   Trigger preparation of an update (download, verify, check dependencies).
+   Runs asynchronously - poll the status endpoint for progress.
+
+   - **202 Accepted:** Preparation started
+   - **404 Not Found:** Package does not exist
+   - **409 Conflict:** Operation already in progress
+
+   **Response Headers:**
+
+   - ``Location``: ``/api/v1/updates/{id}/status``
+
+``PUT /api/v1/updates/{id}/execute``
+   Trigger execution of a prepared update (install). Only succeeds after
+   prepare has completed.
+
+   - **202 Accepted:** Execution started
+   - **400 Bad Request:** Package not prepared
+   - **404 Not Found:** Package does not exist
+   - **409 Conflict:** Operation already in progress
+
+   **Response Headers:**
+
+   - ``Location``: ``/api/v1/updates/{id}/status``
+
+``PUT /api/v1/updates/{id}/automated``
+   Trigger automated update (prepare + execute in one step). Only works
+   for packages that support automated mode.
+
+   - **202 Accepted:** Automated update started
+   - **400 Bad Request:** Package does not support automated mode
+   - **404 Not Found:** Package does not exist
+   - **409 Conflict:** Operation already in progress
+
+   **Response Headers:**
+
+   - ``Location``: ``/api/v1/updates/{id}/status``
+
+``GET /api/v1/updates/{id}/status``
+   Get the current status and progress of an update operation.
+
+   **Example Response (200 OK):**
+
+   .. code-block:: json
+
+      {
+        "status": "inProgress",
+        "progress": 65,
+        "sub_progress": [
+          {"name": "download", "progress": 100},
+          {"name": "verify", "progress": 30}
+        ]
+      }
+
+   **Status values:** ``pending``, ``inProgress``, ``completed``, ``failed``
+
+   When ``status`` is ``failed``, an ``error`` object is included:
+
+   .. code-block:: json
+
+      {
+        "status": "failed",
+        "error": {
+          "error_code": "internal-error",
+          "message": "Download failed: connection timeout"
+        }
+      }
+
+   - **404 Not Found:** No status available (package not found or no operation started)
+
 Cyclic Subscriptions
 --------------------
 
@@ -940,6 +1079,7 @@ The gateway implements a subset of the SOVD (Service-Oriented Vehicle Diagnostic
 - Configurations (``/configurations``)
 - Faults (``/faults``) with ``environment_data`` and SOVD status object
 - Bulk Data (``/bulk-data``) for binary data downloads (rosbags, logs)
+- Software Updates (``/updates``) with async prepare/execute lifecycle
 - Cyclic Subscriptions (``/cyclic-subscriptions``) with SSE-based periodic data delivery
 
 **ros2_medkit Extensions:**

@@ -48,7 +48,7 @@ struct UpdateStatusInfo {
 };
 
 /// Internal phase tracking for update lifecycle
-enum class UpdatePhase { None, Preparing, Prepared, Executing, Executed, Failed };
+enum class UpdatePhase { None, Preparing, Prepared, Executing, Executed, Failed, Deleting };
 
 /**
  * @brief Thread-safe reporter for update progress.
@@ -89,6 +89,20 @@ class UpdateProgressReporter {
  *
  * For runtime loading, the .so must export:
  *   extern "C" UpdateBackend* create_update_backend();
+ *
+ * @par Thread Safety
+ * - CRUD methods (list_updates, get_update, register_update, delete_update)
+ *   are called while UpdateManager holds its mutex. They will not be called
+ *   concurrently with each other, but may overlap with prepare/execute running
+ *   in a background thread. If the backend shares state between CRUD and
+ *   async methods, it must provide its own synchronization.
+ * - prepare() and execute() run in a background std::async thread. They may
+ *   run concurrently with CRUD calls from the HTTP thread.
+ * - The UpdateProgressReporter passed to prepare/execute is already
+ *   thread-safe - plugins may call set_progress/set_sub_progress freely.
+ * - Exceptions thrown from prepare/execute are caught by UpdateManager and
+ *   mapped to Failed status. Plugins should prefer returning
+ *   tl::make_unexpected() for expected errors.
  */
 class UpdateBackend {
  public:

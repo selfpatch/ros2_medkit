@@ -48,42 +48,61 @@ bool UpdateManager::has_backend() const {
   return backend_ != nullptr;
 }
 
-tl::expected<std::vector<std::string>, std::string> UpdateManager::list_updates(const UpdateFilter & filter) {
+tl::expected<std::vector<std::string>, UpdateError> UpdateManager::list_updates(const UpdateFilter & filter) {
   if (!backend_) {
-    return tl::make_unexpected("No update backend loaded");
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
-  return backend_->list_updates(filter);
+  auto result = backend_->list_updates(filter);
+  if (!result) {
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, result.error()});
+  }
+  return *result;
 }
 
-tl::expected<nlohmann::json, std::string> UpdateManager::get_update(const std::string & id) {
+tl::expected<nlohmann::json, UpdateError> UpdateManager::get_update(const std::string & id) {
   if (!backend_) {
-    return tl::make_unexpected("No update backend loaded");
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
-  return backend_->get_update(id);
+  auto result = backend_->get_update(id);
+  if (!result) {
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, result.error()});
+  }
+  return *result;
 }
 
-tl::expected<void, std::string> UpdateManager::register_update(const nlohmann::json & metadata) {
+tl::expected<void, UpdateError> UpdateManager::register_update(const nlohmann::json & metadata) {
   if (!backend_) {
-    return tl::make_unexpected("No update backend loaded");
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
-  return backend_->register_update(metadata);
+  auto result = backend_->register_update(metadata);
+  if (!result) {
+    if (result.error().find("already exists") != std::string::npos) {
+      return tl::make_unexpected(UpdateError{UpdateErrorCode::AlreadyExists, result.error()});
+    }
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::InvalidRequest, result.error()});
+  }
+  return {};
 }
 
-tl::expected<void, std::string> UpdateManager::delete_update(const std::string & id) {
+tl::expected<void, UpdateError> UpdateManager::delete_update(const std::string & id) {
   if (!backend_) {
-    return tl::make_unexpected("No update backend loaded");
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
 
-  // Check if an operation is in progress
   {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = states_.find(id);
-    if (it != states_.end() && is_task_active(id)) {
-      return tl::make_unexpected("Cannot delete update while operation is in progress");
-    }
-    // Wait for completed task before erasing (clean up future)
-    if (it != states_.end() && it->second->active_task.valid()) {
-      it->second->active_task.wait();
+    if (it != states_.end()) {
+      if (is_task_active(id)) {
+        return tl::make_unexpected(
+            UpdateError{UpdateErrorCode::InProgress, "Cannot delete update while operation is in progress"});
+      }
+      // Wait for completed task before proceeding (clean up future)
+      if (it->second->active_task.valid()) {
+        it->second->active_task.wait();
+      }
+      // Mark as deleting so no new operations can start on this package
+      it->second->phase = UpdatePhase::Deleting;
     }
   }
 
@@ -91,54 +110,76 @@ tl::expected<void, std::string> UpdateManager::delete_update(const std::string &
   if (result) {
     std::lock_guard<std::mutex> lock(mutex_);
     states_.erase(id);
+  } else {
+    // Rollback sentinel on failure
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = states_.find(id);
+    if (it != states_.end() && it->second) {
+      it->second->phase = UpdatePhase::Failed;
+    }
+    if (result.error().find("not found") != std::string::npos) {
+      return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, result.error()});
+    }
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, result.error()});
   }
-  return result;
+  return {};
 }
 
-tl::expected<void, std::string> UpdateManager::start_prepare(const std::string & id) {
+tl::expected<void, UpdateError> UpdateManager::start_prepare(const std::string & id) {
   if (!backend_) {
-    return tl::make_unexpected("No update backend loaded");
-  }
-
-  // Verify package exists
-  auto pkg = backend_->get_update(id);
-  if (!pkg) {
-    return tl::make_unexpected(pkg.error());
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+
+  // Verify package exists while holding lock to prevent concurrent deletion
+  auto pkg = backend_->get_update(id);
+  if (!pkg) {
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, pkg.error()});
+  }
+
   if (is_task_active(id)) {
-    return tl::make_unexpected("An operation is already in progress for this package");
+    return tl::make_unexpected(
+        UpdateError{UpdateErrorCode::InProgress, "An operation is already in progress for this package"});
   }
 
   auto & state_ptr = states_[id];
   if (!state_ptr) {
     state_ptr = std::make_unique<PackageState>();
   }
+
+  if (state_ptr->phase == UpdatePhase::Deleting) {
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::Deleting, "Package is being deleted"});
+  }
+
   state_ptr->phase = UpdatePhase::Preparing;
   state_ptr->status = UpdateStatusInfo{UpdateStatus::Pending, std::nullopt, std::nullopt, std::nullopt};
   state_ptr->active_task = std::async(std::launch::async, &UpdateManager::run_prepare, this, id);
   return {};
 }
 
-tl::expected<void, std::string> UpdateManager::start_execute(const std::string & id) {
+tl::expected<void, UpdateError> UpdateManager::start_execute(const std::string & id) {
   if (!backend_) {
-    return tl::make_unexpected("No update backend loaded");
-  }
-
-  // Verify package exists
-  auto pkg = backend_->get_update(id);
-  if (!pkg) {
-    return tl::make_unexpected(pkg.error());
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+
+  auto pkg = backend_->get_update(id);
+  if (!pkg) {
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, pkg.error()});
+  }
+
   auto it = states_.find(id);
   if (it == states_.end() || !it->second || it->second->phase != UpdatePhase::Prepared) {
-    return tl::make_unexpected("Package must be prepared before execution");
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotPrepared, "Package must be prepared before execution"});
+  }
+  if (it->second->phase == UpdatePhase::Deleting) {
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::Deleting, "Package is being deleted"});
   }
   if (is_task_active(id)) {
-    return tl::make_unexpected("An operation is already in progress for this package");
+    return tl::make_unexpected(
+        UpdateError{UpdateErrorCode::InProgress, "An operation is already in progress for this package"});
   }
 
   auto & state = *it->second;
@@ -148,40 +189,47 @@ tl::expected<void, std::string> UpdateManager::start_execute(const std::string &
   return {};
 }
 
-tl::expected<void, std::string> UpdateManager::start_automated(const std::string & id) {
+tl::expected<void, UpdateError> UpdateManager::start_automated(const std::string & id) {
   if (!backend_) {
-    return tl::make_unexpected("No update backend loaded");
-  }
-
-  // Verify package exists and supports automated
-  auto supported = backend_->supports_automated(id);
-  if (!supported) {
-    return tl::make_unexpected(supported.error());
-  }
-  if (!*supported) {
-    return tl::make_unexpected("Package does not support automated updates");
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+
+  auto supported = backend_->supports_automated(id);
+  if (!supported) {
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, supported.error()});
+  }
+  if (!*supported) {
+    return tl::make_unexpected(
+        UpdateError{UpdateErrorCode::NotAutomated, "Package does not support automated updates"});
+  }
+
   if (is_task_active(id)) {
-    return tl::make_unexpected("An operation is already in progress for this package");
+    return tl::make_unexpected(
+        UpdateError{UpdateErrorCode::InProgress, "An operation is already in progress for this package"});
   }
 
   auto & state_ptr = states_[id];
   if (!state_ptr) {
     state_ptr = std::make_unique<PackageState>();
   }
+
+  if (state_ptr->phase == UpdatePhase::Deleting) {
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::Deleting, "Package is being deleted"});
+  }
+
   state_ptr->phase = UpdatePhase::Preparing;
   state_ptr->status = UpdateStatusInfo{UpdateStatus::Pending, std::nullopt, std::nullopt, std::nullopt};
   state_ptr->active_task = std::async(std::launch::async, &UpdateManager::run_automated, this, id);
   return {};
 }
 
-tl::expected<UpdateStatusInfo, std::string> UpdateManager::get_status(const std::string & id) {
+tl::expected<UpdateStatusInfo, UpdateError> UpdateManager::get_status(const std::string & id) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = states_.find(id);
   if (it == states_.end() || !it->second) {
-    return tl::make_unexpected("No status available for package '" + id + "'");
+    return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, "No status available for package '" + id + "'"});
   }
   return it->second->status;
 }
@@ -198,87 +246,141 @@ bool UpdateManager::is_task_active(const std::string & id) const {
 }
 
 void UpdateManager::run_prepare(const std::string & id) {
-  PackageState * state = nullptr;
-  {
+  try {
+    PackageState * state = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      state = states_[id].get();
+      state->status.status = UpdateStatus::InProgress;
+    }
+
+    UpdateProgressReporter reporter(state->status, mutex_);
+    auto result = backend_->prepare(id, reporter);
+
     std::lock_guard<std::mutex> lock(mutex_);
-    state = states_[id].get();  // stable pointer (unique_ptr)
-    state->status.status = UpdateStatus::InProgress;
-  }
-
-  UpdateProgressReporter reporter(state->status, mutex_);
-  auto result = backend_->prepare(id, reporter);
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (result) {
-    state->status.status = UpdateStatus::Completed;
-    state->phase = UpdatePhase::Prepared;
-  } else {
-    state->status.status = UpdateStatus::Failed;
-    state->status.error_message = result.error();
-    state->phase = UpdatePhase::Failed;
+    if (result) {
+      state->status.status = UpdateStatus::Completed;
+      state->phase = UpdatePhase::Prepared;
+    } else {
+      state->status.status = UpdateStatus::Failed;
+      state->status.error_message = result.error();
+      state->phase = UpdatePhase::Failed;
+    }
+  } catch (const std::exception & e) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = states_.find(id);
+    if (it != states_.end() && it->second) {
+      it->second->status.status = UpdateStatus::Failed;
+      it->second->status.error_message = std::string("Exception: ") + e.what();
+      it->second->phase = UpdatePhase::Failed;
+    }
+  } catch (...) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = states_.find(id);
+    if (it != states_.end() && it->second) {
+      it->second->status.status = UpdateStatus::Failed;
+      it->second->status.error_message = "Unknown exception during prepare";
+      it->second->phase = UpdatePhase::Failed;
+    }
   }
 }
 
 void UpdateManager::run_execute(const std::string & id) {
-  PackageState * state = nullptr;
-  {
+  try {
+    PackageState * state = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      state = states_[id].get();
+      state->status.status = UpdateStatus::InProgress;
+    }
+
+    UpdateProgressReporter reporter(state->status, mutex_);
+    auto result = backend_->execute(id, reporter);
+
     std::lock_guard<std::mutex> lock(mutex_);
-    state = states_[id].get();
-    state->status.status = UpdateStatus::InProgress;
-  }
-
-  UpdateProgressReporter reporter(state->status, mutex_);
-  auto result = backend_->execute(id, reporter);
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (result) {
-    state->status.status = UpdateStatus::Completed;
-    state->phase = UpdatePhase::Executed;
-  } else {
-    state->status.status = UpdateStatus::Failed;
-    state->status.error_message = result.error();
-    state->phase = UpdatePhase::Failed;
+    if (result) {
+      state->status.status = UpdateStatus::Completed;
+      state->phase = UpdatePhase::Executed;
+    } else {
+      state->status.status = UpdateStatus::Failed;
+      state->status.error_message = result.error();
+      state->phase = UpdatePhase::Failed;
+    }
+  } catch (const std::exception & e) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = states_.find(id);
+    if (it != states_.end() && it->second) {
+      it->second->status.status = UpdateStatus::Failed;
+      it->second->status.error_message = std::string("Exception: ") + e.what();
+      it->second->phase = UpdatePhase::Failed;
+    }
+  } catch (...) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = states_.find(id);
+    if (it != states_.end() && it->second) {
+      it->second->status.status = UpdateStatus::Failed;
+      it->second->status.error_message = "Unknown exception during execute";
+      it->second->phase = UpdatePhase::Failed;
+    }
   }
 }
 
 void UpdateManager::run_automated(const std::string & id) {
-  PackageState * state = nullptr;
-  {
+  try {
+    PackageState * state = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      state = states_[id].get();
+      state->status.status = UpdateStatus::InProgress;
+    }
+
+    // Phase 1: Prepare
+    UpdateProgressReporter reporter(state->status, mutex_);
+    auto prep_result = backend_->prepare(id, reporter);
+
+    if (!prep_result) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      state->status.status = UpdateStatus::Failed;
+      state->status.error_message = prep_result.error();
+      state->phase = UpdatePhase::Failed;
+      return;
+    }
+
+    // Phase 2: Execute (reset progress for execute phase)
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      state->phase = UpdatePhase::Executing;
+      state->status.progress = std::nullopt;
+      state->status.sub_progress = std::nullopt;
+    }
+
+    auto exec_result = backend_->execute(id, reporter);
+
     std::lock_guard<std::mutex> lock(mutex_);
-    state = states_[id].get();
-    state->status.status = UpdateStatus::InProgress;
-  }
-
-  // Phase 1: Prepare
-  UpdateProgressReporter reporter(state->status, mutex_);
-  auto prep_result = backend_->prepare(id, reporter);
-
-  if (!prep_result) {
+    if (exec_result) {
+      state->status.status = UpdateStatus::Completed;
+      state->phase = UpdatePhase::Executed;
+    } else {
+      state->status.status = UpdateStatus::Failed;
+      state->status.error_message = exec_result.error();
+      state->phase = UpdatePhase::Failed;
+    }
+  } catch (const std::exception & e) {
     std::lock_guard<std::mutex> lock(mutex_);
-    state->status.status = UpdateStatus::Failed;
-    state->status.error_message = prep_result.error();
-    state->phase = UpdatePhase::Failed;
-    return;
-  }
-
-  // Phase 2: Execute (reset progress for execute phase)
-  {
+    auto it = states_.find(id);
+    if (it != states_.end() && it->second) {
+      it->second->status.status = UpdateStatus::Failed;
+      it->second->status.error_message = std::string("Exception: ") + e.what();
+      it->second->phase = UpdatePhase::Failed;
+    }
+  } catch (...) {
     std::lock_guard<std::mutex> lock(mutex_);
-    state->phase = UpdatePhase::Executing;
-    state->status.progress = std::nullopt;
-    state->status.sub_progress = std::nullopt;
-  }
-
-  auto exec_result = backend_->execute(id, reporter);
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (exec_result) {
-    state->status.status = UpdateStatus::Completed;
-    state->phase = UpdatePhase::Executed;
-  } else {
-    state->status.status = UpdateStatus::Failed;
-    state->status.error_message = exec_result.error();
-    state->phase = UpdatePhase::Failed;
+    auto it = states_.find(id);
+    if (it != states_.end() && it->second) {
+      it->second->status.status = UpdateStatus::Failed;
+      it->second->status.error_message = "Unknown exception during automated update";
+      it->second->phase = UpdatePhase::Failed;
+    }
   }
 }
 

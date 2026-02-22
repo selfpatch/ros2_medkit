@@ -140,6 +140,7 @@ TEST_F(UpdateManagerTest, GetUpdate) {
 TEST_F(UpdateManagerTest, GetUpdateNotFound) {
   auto result = manager_->get_update("nonexistent");
   EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, UpdateErrorCode::NotFound);
 }
 
 // @verifies REQ_INTEROP_084
@@ -163,17 +164,21 @@ TEST_F(UpdateManagerTest, PrepareAndPollStatus) {
   ASSERT_TRUE(prep.has_value());
 
   // Poll until completed
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   UpdateStatusInfo status;
-  for (int i = 0; i < 100; ++i) {
+  bool found = false;
+  while (std::chrono::steady_clock::now() < deadline) {
     auto s = manager_->get_status("test-pkg");
-    ASSERT_TRUE(s.has_value());
-    status = *s;
-    if (status.status == UpdateStatus::Completed) {
-      break;
+    if (s) {
+      status = *s;
+      if (status.status == UpdateStatus::Completed) {
+        found = true;
+        break;
+      }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
-  EXPECT_EQ(status.status, UpdateStatus::Completed);
+  ASSERT_TRUE(found) << "Timed out waiting for status Completed";
 }
 
 // @verifies REQ_INTEROP_092
@@ -183,7 +188,7 @@ TEST_F(UpdateManagerTest, ExecuteRequiresPrepare) {
 
   auto exec = manager_->start_execute("test-pkg");
   EXPECT_FALSE(exec.has_value());
-  EXPECT_NE(exec.error().find("must be prepared"), std::string::npos);
+  EXPECT_EQ(exec.error().code, UpdateErrorCode::NotPrepared);
 }
 
 // @verifies REQ_INTEROP_092
@@ -246,7 +251,7 @@ TEST_F(UpdateManagerTest, AutomatedRejectsNonAutomated) {
 
   auto result = manager_->start_automated("test-pkg");
   EXPECT_FALSE(result.has_value());
-  EXPECT_NE(result.error().find("does not support"), std::string::npos);
+  EXPECT_EQ(result.error().code, UpdateErrorCode::NotAutomated);
 }
 
 // @verifies REQ_INTEROP_084
@@ -258,13 +263,14 @@ TEST_F(UpdateManagerTest, DeleteDuringOperationFails) {
 
   auto del = manager_->delete_update("test-pkg");
   EXPECT_FALSE(del.has_value());
-  EXPECT_NE(del.error().find("in progress"), std::string::npos);
+  EXPECT_EQ(del.error().code, UpdateErrorCode::InProgress);
 }
 
 // @verifies REQ_INTEROP_094
 TEST_F(UpdateManagerTest, StatusNotFoundForUnknown) {
   auto result = manager_->get_status("unknown");
   EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, UpdateErrorCode::NotFound);
 }
 
 // @verifies REQ_INTEROP_083
@@ -275,4 +281,125 @@ TEST_F(UpdateManagerTest, DuplicateRegistration) {
 
   auto second = manager_->register_update(pkg);
   EXPECT_FALSE(second.has_value());
+  EXPECT_EQ(second.error().code, UpdateErrorCode::AlreadyExists);
+}
+
+// @verifies REQ_INTEROP_091
+TEST_F(UpdateManagerTest, ConcurrentPrepareOnSamePackageRejected) {
+  json pkg = {{"id", "test-pkg"}};
+  (void)manager_->register_update(pkg);
+
+  auto result1 = manager_->start_prepare("test-pkg");
+  EXPECT_TRUE(result1.has_value());
+
+  auto result2 = manager_->start_prepare("test-pkg");
+  EXPECT_FALSE(result2.has_value());
+  EXPECT_EQ(result2.error().code, UpdateErrorCode::InProgress);
+}
+
+/// Mock backend that returns errors from prepare/execute
+class MockFailingBackend : public UpdateBackend {
+ public:
+  tl::expected<std::vector<std::string>, std::string> list_updates(const UpdateFilter & /*filter*/) override {
+    return tl::make_unexpected("backend error");
+  }
+  tl::expected<json, std::string> get_update(const std::string & /*id*/) override {
+    return json{{"id", "pkg"}};
+  }
+  tl::expected<void, std::string> register_update(const json & metadata) override {
+    auto id = metadata.value("id", std::string{});
+    if (id.empty()) {
+      return tl::make_unexpected("missing id");
+    }
+    return {};
+  }
+  tl::expected<void, std::string> delete_update(const std::string & /*id*/) override {
+    return {};
+  }
+  tl::expected<void, std::string> prepare(const std::string & /*id*/, UpdateProgressReporter & /*reporter*/) override {
+    return tl::make_unexpected("download failed");
+  }
+  tl::expected<void, std::string> execute(const std::string & /*id*/, UpdateProgressReporter & /*reporter*/) override {
+    return tl::make_unexpected("install failed");
+  }
+  tl::expected<bool, std::string> supports_automated(const std::string & /*id*/) override {
+    return true;
+  }
+};
+
+/// Mock backend that throws exceptions from prepare/execute
+class MockThrowingBackend : public UpdateBackend {
+ public:
+  tl::expected<std::vector<std::string>, std::string> list_updates(const UpdateFilter & /*filter*/) override {
+    return std::vector<std::string>{};
+  }
+  tl::expected<json, std::string> get_update(const std::string & /*id*/) override {
+    return json{{"id", "pkg"}};
+  }
+  tl::expected<void, std::string> register_update(const json & /*metadata*/) override {
+    return {};
+  }
+  tl::expected<void, std::string> delete_update(const std::string & /*id*/) override {
+    return {};
+  }
+  tl::expected<void, std::string> prepare(const std::string & /*id*/, UpdateProgressReporter & /*reporter*/) override {
+    throw std::runtime_error("plugin crashed");
+  }
+  tl::expected<void, std::string> execute(const std::string & /*id*/, UpdateProgressReporter & /*reporter*/) override {
+    throw std::runtime_error("plugin crashed");
+  }
+  tl::expected<bool, std::string> supports_automated(const std::string & /*id*/) override {
+    return true;
+  }
+};
+
+// @verifies REQ_INTEROP_091
+TEST(UpdateManagerFailureTest, PrepareFailureSetsFailedStatus) {
+  auto backend = std::make_unique<MockFailingBackend>();
+  auto manager = std::make_unique<UpdateManager>(std::move(backend));
+  json pkg = {{"id", "test-pkg"}};
+  (void)manager->register_update(pkg);
+
+  auto result = manager->start_prepare("test-pkg");
+  ASSERT_TRUE(result.has_value());
+
+  // Poll until status is no longer InProgress
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  UpdateStatusInfo status;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto s = manager->get_status("test-pkg");
+    if (s && s->status == UpdateStatus::Failed) {
+      status = *s;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(status.status, UpdateStatus::Failed);
+  ASSERT_TRUE(status.error_message.has_value());
+  EXPECT_NE(status.error_message->find("download failed"), std::string::npos);
+}
+
+// @verifies REQ_INTEROP_091
+TEST(UpdateManagerFailureTest, PrepareExceptionSetsFailedStatus) {
+  auto backend = std::make_unique<MockThrowingBackend>();
+  auto manager = std::make_unique<UpdateManager>(std::move(backend));
+  json pkg = {{"id", "test-pkg"}};
+  (void)manager->register_update(pkg);
+
+  auto result = manager->start_prepare("test-pkg");
+  ASSERT_TRUE(result.has_value());
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  UpdateStatusInfo status;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto s = manager->get_status("test-pkg");
+    if (s && s->status == UpdateStatus::Failed) {
+      status = *s;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(status.status, UpdateStatus::Failed);
+  ASSERT_TRUE(status.error_message.has_value());
+  EXPECT_NE(status.error_message->find("Exception"), std::string::npos);
 }

@@ -56,6 +56,7 @@ For more examples, see our [Postman collection](postman/).
 - **📊 Health Modeling** — Track health state per entity for fleet-level observability
 - **🔧 Easy Integration** — Works with existing ROS 2 nodes out of the box (Jazzy, Humble & Rolling)
 - **📦 Bulk Data Management** — Upload, download, list, and delete bulk data files (calibration, firmware, etc.)
+- **🔄 Software Updates** — Manage update packages with async prepare/execute lifecycle and progress tracking via pluggable backends
 
 ## 📖 Overview
 

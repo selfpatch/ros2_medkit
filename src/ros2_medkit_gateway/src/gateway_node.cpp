@@ -329,13 +329,18 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
     auto backend_type = get_parameter("updates.backend").as_string();
     if (backend_type == "plugin") {
       auto plugin_path = get_parameter("updates.plugin_path").as_string();
-      auto load_result = UpdatePluginLoader::load(plugin_path);
-      if (load_result) {
-        RCLCPP_INFO(get_logger(), "Loaded update plugin: %s", plugin_path.c_str());
-        update_mgr_ = std::make_unique<UpdateManager>(std::move(load_result->backend), load_result->handle);
-      } else {
-        RCLCPP_ERROR(get_logger(), "Failed to load update plugin: %s", load_result.error().c_str());
+      if (plugin_path.empty()) {
+        RCLCPP_ERROR(get_logger(), "updates.plugin_path is empty - cannot load plugin");
         update_mgr_ = std::make_unique<UpdateManager>(nullptr);
+      } else {
+        auto load_result = UpdatePluginLoader::load(plugin_path);
+        if (load_result) {
+          RCLCPP_INFO(get_logger(), "Loaded update plugin: %s", plugin_path.c_str());
+          update_mgr_ = std::make_unique<UpdateManager>(std::move(load_result->backend), load_result->handle);
+        } else {
+          RCLCPP_ERROR(get_logger(), "Failed to load update plugin: %s", load_result.error().c_str());
+          update_mgr_ = std::make_unique<UpdateManager>(nullptr);
+        }
       }
     } else {
       // backend: "none" - endpoints exist but return 501

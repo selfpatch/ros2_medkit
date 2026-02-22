@@ -37,7 +37,16 @@ tl::expected<PluginLoadResult, std::string> UpdatePluginLoader::load(const std::
                                "': " + std::string(error));
   }
 
-  UpdateBackend * raw_backend = factory();
+  UpdateBackend * raw_backend = nullptr;
+  try {
+    raw_backend = factory();
+  } catch (const std::exception & e) {
+    dlclose(handle);
+    return tl::make_unexpected("Factory 'create_update_backend' threw exception in '" + plugin_path + "': " + e.what());
+  } catch (...) {
+    dlclose(handle);
+    return tl::make_unexpected("Factory 'create_update_backend' threw unknown exception in '" + plugin_path + "'");
+  }
   if (!raw_backend) {
     dlclose(handle);
     return tl::make_unexpected("Factory 'create_update_backend' returned null in '" + plugin_path + "'");

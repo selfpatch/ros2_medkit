@@ -84,7 +84,7 @@ void UpdateHandlers::handle_list_updates(const httplib::Request & req, httplib::
 
     auto result = update_mgr_->list_updates(filter);
     if (!result) {
-      HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, result.error());
+      HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, result.error().message);
       return;
     }
 
@@ -103,9 +103,15 @@ void UpdateHandlers::handle_get_update(const httplib::Request & req, httplib::Re
 
   try {
     auto id = req.matches[1].str();
+    auto id_validation = ctx_.validate_entity_id(id);
+    if (!id_validation) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, id_validation.error());
+      return;
+    }
+
     auto result = update_mgr_->get_update(id);
     if (!result) {
-      HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error());
+      HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error().message);
       return;
     }
     HandlerContext::send_json(res, *result);
@@ -130,19 +136,27 @@ void UpdateHandlers::handle_register_update(const httplib::Request & req, httpli
 
     auto result = update_mgr_->register_update(body);
     if (!result) {
-      // Distinguish "already exists" from "missing fields"
-      if (result.error().find("already exists") != std::string::npos) {
-        HandlerContext::send_error(res, 400, ERR_X_MEDKIT_UPDATE_ALREADY_EXISTS, result.error());
-      } else {
-        HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error());
+      switch (result.error().code) {
+        case UpdateErrorCode::AlreadyExists:
+          HandlerContext::send_error(res, 400, ERR_X_MEDKIT_UPDATE_ALREADY_EXISTS, result.error().message);
+          break;
+        default:
+          HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error().message);
+          break;
       }
       return;
     }
 
-    auto id = body.value("id", std::string{});
+    // Validate id field exists before using it for Location header
+    if (!body.contains("id") || !body["id"].is_string() || body["id"].get<std::string>().empty()) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing required field: id");
+      return;
+    }
+    auto id = body["id"].get<std::string>();
+    json response = {{"id", id}};
+    HandlerContext::send_json(res, response);
     res.status = 201;
     res.set_header("Location", api_path("/updates/" + id));
-    res.set_header("Content-Type", "application/json");
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
   }
@@ -155,14 +169,24 @@ void UpdateHandlers::handle_delete_update(const httplib::Request & req, httplib:
 
   try {
     auto id = req.matches[1].str();
+    auto id_validation = ctx_.validate_entity_id(id);
+    if (!id_validation) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, id_validation.error());
+      return;
+    }
+
     auto result = update_mgr_->delete_update(id);
     if (!result) {
-      if (result.error().find("in progress") != std::string::npos) {
-        HandlerContext::send_error(res, 405, ERR_X_MEDKIT_UPDATE_IN_PROGRESS, result.error());
-      } else if (result.error().find("not found") != std::string::npos) {
-        HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error());
-      } else {
-        HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, result.error());
+      switch (result.error().code) {
+        case UpdateErrorCode::InProgress:
+          HandlerContext::send_error(res, 409, ERR_X_MEDKIT_UPDATE_IN_PROGRESS, result.error().message);
+          break;
+        case UpdateErrorCode::NotFound:
+          HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error().message);
+          break;
+        default:
+          HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, result.error().message);
+          break;
       }
       return;
     }
@@ -179,12 +203,25 @@ void UpdateHandlers::handle_prepare(const httplib::Request & req, httplib::Respo
 
   try {
     auto id = req.matches[1].str();
+    auto id_validation = ctx_.validate_entity_id(id);
+    if (!id_validation) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, id_validation.error());
+      return;
+    }
+
     auto result = update_mgr_->start_prepare(id);
     if (!result) {
-      if (result.error().find("not found") != std::string::npos) {
-        HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error());
-      } else {
-        HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error());
+      switch (result.error().code) {
+        case UpdateErrorCode::NotFound:
+          HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error().message);
+          break;
+        case UpdateErrorCode::InProgress:
+        case UpdateErrorCode::Deleting:
+          HandlerContext::send_error(res, 409, ERR_X_MEDKIT_UPDATE_IN_PROGRESS, result.error().message);
+          break;
+        default:
+          HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error().message);
+          break;
       }
       return;
     }
@@ -202,14 +239,28 @@ void UpdateHandlers::handle_execute(const httplib::Request & req, httplib::Respo
 
   try {
     auto id = req.matches[1].str();
+    auto id_validation = ctx_.validate_entity_id(id);
+    if (!id_validation) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, id_validation.error());
+      return;
+    }
+
     auto result = update_mgr_->start_execute(id);
     if (!result) {
-      if (result.error().find("not found") != std::string::npos) {
-        HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error());
-      } else if (result.error().find("must be prepared") != std::string::npos) {
-        HandlerContext::send_error(res, 400, ERR_X_MEDKIT_UPDATE_NOT_PREPARED, result.error());
-      } else {
-        HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error());
+      switch (result.error().code) {
+        case UpdateErrorCode::NotFound:
+          HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error().message);
+          break;
+        case UpdateErrorCode::NotPrepared:
+          HandlerContext::send_error(res, 400, ERR_X_MEDKIT_UPDATE_NOT_PREPARED, result.error().message);
+          break;
+        case UpdateErrorCode::InProgress:
+        case UpdateErrorCode::Deleting:
+          HandlerContext::send_error(res, 409, ERR_X_MEDKIT_UPDATE_IN_PROGRESS, result.error().message);
+          break;
+        default:
+          HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error().message);
+          break;
       }
       return;
     }
@@ -227,14 +278,28 @@ void UpdateHandlers::handle_automated(const httplib::Request & req, httplib::Res
 
   try {
     auto id = req.matches[1].str();
+    auto id_validation = ctx_.validate_entity_id(id);
+    if (!id_validation) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, id_validation.error());
+      return;
+    }
+
     auto result = update_mgr_->start_automated(id);
     if (!result) {
-      if (result.error().find("not found") != std::string::npos) {
-        HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error());
-      } else if (result.error().find("does not support") != std::string::npos) {
-        HandlerContext::send_error(res, 400, ERR_X_MEDKIT_UPDATE_NOT_AUTOMATED, result.error());
-      } else {
-        HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error());
+      switch (result.error().code) {
+        case UpdateErrorCode::NotFound:
+          HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error().message);
+          break;
+        case UpdateErrorCode::NotAutomated:
+          HandlerContext::send_error(res, 400, ERR_X_MEDKIT_UPDATE_NOT_AUTOMATED, result.error().message);
+          break;
+        case UpdateErrorCode::InProgress:
+        case UpdateErrorCode::Deleting:
+          HandlerContext::send_error(res, 409, ERR_X_MEDKIT_UPDATE_IN_PROGRESS, result.error().message);
+          break;
+        default:
+          HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error().message);
+          break;
       }
       return;
     }
@@ -252,9 +317,15 @@ void UpdateHandlers::handle_get_status(const httplib::Request & req, httplib::Re
 
   try {
     auto id = req.matches[1].str();
+    auto id_validation = ctx_.validate_entity_id(id);
+    if (!id_validation) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, id_validation.error());
+      return;
+    }
+
     auto result = update_mgr_->get_status(id);
     if (!result) {
-      HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error());
+      HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error().message);
       return;
     }
     HandlerContext::send_json(res, status_to_json(*result));

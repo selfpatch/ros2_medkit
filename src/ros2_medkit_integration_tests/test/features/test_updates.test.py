@@ -26,7 +26,7 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import API_BASE_PATH
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import get_coverage_env
 
@@ -135,7 +135,7 @@ class _UpdatesTestMixin:
         """Poll /updates/{id}/status until target_status reached."""
         return self.poll_endpoint_until(
             f'/updates/{pkg_id}/status',
-            lambda d: d.get('status') == target_status,
+            lambda d: d if d.get('status') == target_status else None,
             timeout=timeout,
         )
 
@@ -158,6 +158,7 @@ class TestUpdatesNoPlugin(GatewayTestCase):
         """GET /updates/{id} returns 501 when no plugin loaded."""
         r = requests.get(f'{self.BASE_URL}/updates/some-pkg', timeout=5)
         self.assertEqual(r.status_code, 501)
+        self.assertEqual(r.json()['error_code'], 'not-implemented')
 
     # @verifies REQ_INTEROP_083
     def test_03_register_update_returns_501(self):
@@ -173,6 +174,7 @@ class TestUpdatesNoPlugin(GatewayTestCase):
             timeout=5,
         )
         self.assertEqual(r.status_code, 501)
+        self.assertEqual(r.json()['error_code'], 'not-implemented')
 
     # @verifies REQ_INTEROP_091
     def test_04_prepare_returns_501(self):
@@ -181,6 +183,7 @@ class TestUpdatesNoPlugin(GatewayTestCase):
             f'{self.BASE_URL}/updates/some-pkg/prepare', timeout=5
         )
         self.assertEqual(r.status_code, 501)
+        self.assertEqual(r.json()['error_code'], 'not-implemented')
 
     # @verifies REQ_INTEROP_092
     def test_05_execute_returns_501(self):
@@ -189,6 +192,7 @@ class TestUpdatesNoPlugin(GatewayTestCase):
             f'{self.BASE_URL}/updates/some-pkg/execute', timeout=5
         )
         self.assertEqual(r.status_code, 501)
+        self.assertEqual(r.json()['error_code'], 'not-implemented')
 
     # @verifies REQ_INTEROP_093
     def test_06_automated_returns_501(self):
@@ -197,6 +201,7 @@ class TestUpdatesNoPlugin(GatewayTestCase):
             f'{self.BASE_URL}/updates/some-pkg/automated', timeout=5
         )
         self.assertEqual(r.status_code, 501)
+        self.assertEqual(r.json()['error_code'], 'not-implemented')
 
     # @verifies REQ_INTEROP_094
     def test_07_status_returns_501(self):
@@ -205,12 +210,14 @@ class TestUpdatesNoPlugin(GatewayTestCase):
             f'{self.BASE_URL}/updates/some-pkg/status', timeout=5
         )
         self.assertEqual(r.status_code, 501)
+        self.assertEqual(r.json()['error_code'], 'not-implemented')
 
     # @verifies REQ_INTEROP_084
     def test_08_delete_returns_501(self):
         """DELETE /updates/{id} returns 501 when no plugin loaded."""
         r = requests.delete(f'{self.BASE_URL}/updates/some-pkg', timeout=5)
         self.assertEqual(r.status_code, 501)
+        self.assertEqual(r.json()['error_code'], 'not-implemented')
 
 
 class TestUpdatesCRUD(_UpdatesTestMixin, GatewayTestCase):
@@ -327,6 +334,19 @@ class TestUpdatesCRUD(_UpdatesTestMixin, GatewayTestCase):
         self.assertIn('test-filter-remote', items)
         self.assertNotIn('test-filter-prox', items)
 
+    # @verifies REQ_INTEROP_082
+    def test_10_list_with_target_version_filter(self):
+        """GET /updates?target-version=X filters by target version."""
+        self.register_package('ver-pkg-1')
+        self.register_package('ver-pkg-2')
+        r = requests.get(
+            f'{self.BASE_URL}/updates?target-version=nonexistent',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertIsInstance(data['items'], list)
+
 
 class TestUpdatesPrepareExecute(_UpdatesTestMixin, GatewayTestCase):
     """Scenario 3: Prepare + execute async workflow with status polling."""
@@ -404,6 +424,14 @@ class TestUpdatesPrepareExecute(_UpdatesTestMixin, GatewayTestCase):
                         self.assertIsInstance(data['progress'], int)
                         self.assertGreaterEqual(data['progress'], 0)
                         self.assertLessEqual(data['progress'], 100)
+                    if 'sub_progress' in data:
+                        self.assertIsInstance(data['sub_progress'], list)
+                        for sp in data['sub_progress']:
+                            self.assertIn('name', sp)
+                            self.assertIn('progress', sp)
+                            self.assertIsInstance(sp['progress'], int)
+                            self.assertGreaterEqual(sp['progress'], 0)
+                            self.assertLessEqual(sp['progress'], 100)
                 if data.get('status') == 'completed':
                     break
             time.sleep(0.1)
@@ -458,7 +486,7 @@ class TestUpdatesErrorCases(_UpdatesTestMixin, GatewayTestCase):
     MIN_EXPECTED_APPS = 0
 
     # @verifies REQ_INTEROP_084
-    def test_01_delete_during_prepare_returns_405(self):
+    def test_01_delete_during_prepare_returns_409(self):
         """Cannot delete a package while prepare is in progress."""
         self.register_package('test-del-inprog')
         requests.put(
@@ -468,7 +496,10 @@ class TestUpdatesErrorCases(_UpdatesTestMixin, GatewayTestCase):
         r = requests.delete(
             f'{self.BASE_URL}/updates/test-del-inprog', timeout=5
         )
-        self.assertEqual(r.status_code, 405)
+        self.assertEqual(r.status_code, 409)
+        data = r.json()
+        self.assertEqual(data['error_code'], 'vendor-error')
+        self.assertEqual(data['vendor_code'], 'x-medkit-update-in-progress')
 
     # @verifies REQ_INTEROP_091
     def test_02_prepare_nonexistent_returns_404(self):
@@ -477,6 +508,9 @@ class TestUpdatesErrorCases(_UpdatesTestMixin, GatewayTestCase):
             f'{self.BASE_URL}/updates/ghost-pkg/prepare', timeout=5
         )
         self.assertEqual(r.status_code, 404)
+        data = r.json()
+        self.assertEqual(data['error_code'], 'vendor-error')
+        self.assertEqual(data['vendor_code'], 'x-medkit-update-not-found')
 
     # @verifies REQ_INTEROP_092
     def test_03_execute_nonexistent_returns_404(self):
@@ -485,6 +519,9 @@ class TestUpdatesErrorCases(_UpdatesTestMixin, GatewayTestCase):
             f'{self.BASE_URL}/updates/ghost-pkg/execute', timeout=5
         )
         self.assertEqual(r.status_code, 404)
+        data = r.json()
+        self.assertEqual(data['error_code'], 'vendor-error')
+        self.assertEqual(data['vendor_code'], 'x-medkit-update-not-found')
 
     # @verifies REQ_INTEROP_083
     def test_04_register_missing_required_fields(self):
@@ -495,6 +532,22 @@ class TestUpdatesErrorCases(_UpdatesTestMixin, GatewayTestCase):
             timeout=5,
         )
         self.assertEqual(r.status_code, 400)
+        data = r.json()
+        self.assertIn('error_code', data)
+        self.assertEqual(data['error_code'], 'invalid-request')
+
+    # @verifies REQ_INTEROP_083
+    def test_05_register_malformed_json(self):
+        """POST /updates with broken JSON returns 400."""
+        r = requests.post(
+            f'{self.BASE_URL}/updates',
+            data='not{valid json',
+            headers={'Content-Type': 'application/json'},
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 400)
+        data = r.json()
+        self.assertIn('error_code', data)
 
 
 @launch_testing.post_shutdown_test()
@@ -505,6 +558,6 @@ class TestShutdown(unittest.TestCase):
         for info in proc_info:
             self.assertIn(
                 info.returncode,
-                {0, -2, -15},
+                ALLOWED_EXIT_CODES,
                 f'Process {info.process_name} exited with {info.returncode}',
             )

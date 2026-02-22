@@ -28,6 +28,25 @@
 
 namespace ros2_medkit_gateway {
 
+/// Error codes for UpdateManager operations - replaces string matching
+enum class UpdateErrorCode {
+  NotFound,        // Package does not exist
+  AlreadyExists,   // Duplicate package ID on registration
+  InProgress,      // Operation already running for this package
+  NotPrepared,     // Execute called before prepare completed
+  NotAutomated,    // Package does not support automated mode
+  InvalidRequest,  // Missing fields or invalid input
+  Deleting,        // Package is being deleted
+  NoBackend,       // No update backend loaded
+  Internal         // Unexpected backend error
+};
+
+/// Typed error for UpdateManager operations
+struct UpdateError {
+  UpdateErrorCode code;
+  std::string message;
+};
+
 /**
  * @brief Manages software update lifecycle with pluggable backend.
  *
@@ -49,18 +68,18 @@ class UpdateManager {
   bool has_backend() const;
 
   // ---- CRUD (direct delegation to backend) ----
-  tl::expected<std::vector<std::string>, std::string> list_updates(const UpdateFilter & filter);
-  tl::expected<nlohmann::json, std::string> get_update(const std::string & id);
-  tl::expected<void, std::string> register_update(const nlohmann::json & metadata);
-  tl::expected<void, std::string> delete_update(const std::string & id);
+  tl::expected<std::vector<std::string>, UpdateError> list_updates(const UpdateFilter & filter);
+  tl::expected<nlohmann::json, UpdateError> get_update(const std::string & id);
+  tl::expected<void, UpdateError> register_update(const nlohmann::json & metadata);
+  tl::expected<void, UpdateError> delete_update(const std::string & id);
 
   // ---- Async operations ----
-  tl::expected<void, std::string> start_prepare(const std::string & id);
-  tl::expected<void, std::string> start_execute(const std::string & id);
-  tl::expected<void, std::string> start_automated(const std::string & id);
+  tl::expected<void, UpdateError> start_prepare(const std::string & id);
+  tl::expected<void, UpdateError> start_execute(const std::string & id);
+  tl::expected<void, UpdateError> start_automated(const std::string & id);
 
   // ---- Status ----
-  tl::expected<UpdateStatusInfo, std::string> get_status(const std::string & id);
+  tl::expected<UpdateStatusInfo, UpdateError> get_status(const std::string & id);
 
  private:
   std::unique_ptr<UpdateBackend> backend_;
