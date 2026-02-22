@@ -125,15 +125,14 @@ class TestScenarioActionLifecycle(GatewayTestCase):
         _, data = self._create_action_execution(order=20)
         execution_id = data['id']
 
-        # Wait until running (may already be running)
-        try:
-            self.wait_for_execution_status(
-                self._exec_endpoint(execution_id),
-                ['running'],
-                max_wait=10.0,
-            )
-        except AssertionError:
-            pass  # Already completed or still starting; try cancel anyway
+        # Verify execution is at least registered before cancelling
+        status_data = self.poll_endpoint(
+            self._exec_endpoint(execution_id), timeout=10.0, interval=0.3
+        )
+        self.assertIn(
+            status_data['status'], ['running', 'completed'],
+            f'Execution should be running or completed, got {status_data["status"]}',
+        )
 
         # Cancel the execution
         response = self.delete_request(

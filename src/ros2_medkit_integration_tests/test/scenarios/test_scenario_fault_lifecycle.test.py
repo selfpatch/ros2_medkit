@@ -33,14 +33,8 @@ def generate_test_description():
     return create_test_launch(
         demo_nodes=['lidar_sensor'],
         fault_manager=True,
-        # Use short rosbag durations so captures complete quickly and
-        # the fault manager is idle when SIGINT arrives at shutdown.
         # threshold=-2 spaces out confirmations (needs 2 FAILED events).
-        fault_manager_params={
-            'confirmation_threshold': -2,
-            'snapshots.rosbag.duration_sec': 0.1,
-            'snapshots.rosbag.duration_after_sec': 0.1,
-        },
+        fault_manager_params={'confirmation_threshold': -2},
     )
 
 

@@ -52,11 +52,7 @@ DEMO_NODE_REGISTRY = {
     'controller': ('demo_light_controller', 'controller', '/body/lights'),
     # Operations (services / actions)
     'calibration': ('demo_calibration_service', 'calibration', '/powertrain/engine'),
-    'calibration_service': ('demo_calibration_service', 'calibration', '/powertrain/engine'),
     'long_calibration': ('demo_long_calibration_action', 'long_calibration', '/powertrain/engine'),
-    'long_calibration_action': (
-        'demo_long_calibration_action', 'long_calibration', '/powertrain/engine',
-    ),
 }
 
 # Convenience groupings for callers that want subsets of demo nodes.
@@ -165,8 +161,8 @@ def create_fault_manager_node(
         'storage_type': storage_type,
         'snapshots.default_topics': snapshot_topics,
         'snapshots.rosbag.enabled': rosbag_enabled,
-        'snapshots.rosbag.duration_sec': 2.0,
-        'snapshots.rosbag.duration_after_sec': 0.5,
+        'snapshots.rosbag.duration_sec': 0.1,
+        'snapshots.rosbag.duration_after_sec': 0.1,
         'snapshots.rosbag.topics': 'explicit',
         'snapshots.rosbag.include_topics': rosbag_topics,
     }

@@ -131,7 +131,7 @@ class TestHealth(GatewayTestCase):
     def test_docs_endpoint(self):
         """GET /components/docs returns 404 (docs not yet implemented).
 
-        TODO: Change to 200 when docs endpoint is implemented.
+        TODO(#135): Change to 200 when docs endpoint is implemented.
         """
         response = requests.get(f'{self.BASE_URL}/components/docs', timeout=10)
 

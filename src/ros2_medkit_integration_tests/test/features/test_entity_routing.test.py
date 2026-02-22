@@ -32,7 +32,7 @@ from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
 def generate_test_description():
     return create_test_launch(
-        demo_nodes=['temp_sensor', 'calibration_service'],
+        demo_nodes=['temp_sensor', 'calibration'],
         fault_manager=False,
     )
 
