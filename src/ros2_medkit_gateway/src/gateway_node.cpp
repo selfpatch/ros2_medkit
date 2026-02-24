@@ -73,6 +73,9 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   // Software updates parameters
   declare_parameter("updates.enabled", false);
 
+  // Plugin framework parameters
+  declare_parameter("plugins", std::vector<std::string>{});
+
   // Bulk data storage parameters
   declare_parameter("bulk_data.storage_dir", "/tmp/ros2_medkit_bulk_data");
   declare_parameter("bulk_data.max_upload_size", 104857600);  // 100MB
@@ -319,10 +322,38 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   subscription_mgr_ = std::make_unique<SubscriptionManager>(max_subscriptions);
   RCLCPP_INFO(get_logger(), "Subscription manager: max_subscriptions=%zu", max_subscriptions);
 
-  // Initialize update manager (backend wired by PluginManager in Task 6)
+  // Initialize plugin manager
+  plugin_mgr_ = std::make_unique<PluginManager>();
+  auto plugin_names = get_parameter("plugins").as_string_array();
+  if (!plugin_names.empty()) {
+    std::vector<PluginConfig> configs;
+    for (const auto & pname : plugin_names) {
+      auto path_param = "plugins." + pname + ".path";
+      declare_parameter(path_param, std::string(""));
+      auto path = get_parameter(path_param).as_string();
+      if (path.empty()) {
+        RCLCPP_ERROR(get_logger(), "Plugin '%s' has no path configured", pname.c_str());
+        continue;
+      }
+      configs.push_back({pname, path, nlohmann::json::object()});
+    }
+    auto loaded = plugin_mgr_->load_plugins(configs);
+    plugin_mgr_->configure_plugins();
+    plugin_mgr_->set_node(this);
+    RCLCPP_INFO(get_logger(), "Loaded %zu plugin(s)", loaded);
+  }
+
+  // Initialize update manager
   auto updates_enabled = get_parameter("updates.enabled").as_bool();
   if (updates_enabled) {
     update_mgr_ = std::make_unique<UpdateManager>();
+    auto * update_provider = plugin_mgr_->get_update_provider();
+    if (update_provider) {
+      update_mgr_->set_backend(update_provider);
+      RCLCPP_INFO(get_logger(), "Update backend provided by plugin");
+    } else {
+      RCLCPP_WARN(get_logger(), "Updates enabled but no UpdateProvider plugin loaded");
+    }
   }
 
   // Connect topic sampler to discovery manager for component-topic mapping
@@ -365,6 +396,9 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
 GatewayNode::~GatewayNode() {
   RCLCPP_INFO(get_logger(), "Shutting down ROS 2 Medkit Gateway...");
   stop_rest_server();
+  if (plugin_mgr_) {
+    plugin_mgr_->shutdown_all();
+  }
 }
 
 const ThreadSafeEntityCache & GatewayNode::get_thread_safe_cache() const {
@@ -401,6 +435,10 @@ SubscriptionManager * GatewayNode::get_subscription_manager() const {
 
 UpdateManager * GatewayNode::get_update_manager() const {
   return update_mgr_.get();
+}
+
+PluginManager * GatewayNode::get_plugin_manager() const {
+  return plugin_mgr_.get();
 }
 
 void GatewayNode::refresh_cache() {

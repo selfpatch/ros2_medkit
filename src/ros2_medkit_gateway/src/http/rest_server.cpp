@@ -136,6 +136,14 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // Set up pre-routing handler for CORS and Authentication
   setup_pre_routing_handler();
   setup_routes();
+
+  // Register plugin custom routes
+  if (node_->get_plugin_manager()) {
+    auto * plugin_srv = http_server_->get_server();
+    if (plugin_srv) {
+      node_->get_plugin_manager()->register_routes(*plugin_srv, "/api/v1");
+    }
+  }
 }
 
 void RESTServer::setup_pre_routing_handler() {
