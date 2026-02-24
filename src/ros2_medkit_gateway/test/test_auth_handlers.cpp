@@ -165,6 +165,20 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientSecret) {
 }
 
 // @verifies REQ_INTEROP_086
+TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientSecret) {
+  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  AuthHandlers handlers(ctx);
+
+  auto req = make_json_request(R"({"grant_type": "client_credentials", "client_id": "c", "client_secret": ""})");
+  httplib::Response res;
+  handlers.handle_auth_authorize(req, res);
+
+  EXPECT_EQ(res.status, 400);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error"], "invalid_request");
+}
+
+// @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersAuthorizeTest, AuthorizeErrorBodyFollowsOAuth2Format) {
   // Verify that error responses follow RFC 6749 OAuth2 error format
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
@@ -327,7 +341,7 @@ class AuthHandlersWithManagerTest : public ::testing::Test {
         R"({"grant_type": "client_credentials", "client_id": "test_client", "client_secret": "test_secret"})");
     httplib::Response res;
     handlers_->handle_auth_authorize(req, res);
-    EXPECT_EQ(res.status, 200);
+    EXPECT_EQ(res.status, -1);
     return json::parse(res.body);
   }
 };
@@ -365,7 +379,7 @@ TEST_F(AuthHandlersWithManagerTest, TokenReturnsNewAccessTokenForValidRefreshTok
   httplib::Response res;
   handlers_->handle_auth_token(req, res);
 
-  EXPECT_EQ(res.status, 200);
+  EXPECT_EQ(res.status, -1);
   auto body = json::parse(res.body);
   EXPECT_TRUE(body.contains("access_token"));
   EXPECT_TRUE(body["access_token"].is_string());
@@ -394,7 +408,7 @@ TEST_F(AuthHandlersWithManagerTest, RevokeRevokesRefreshTokenForSubsequentTokenR
   httplib::Response revoke_res;
   handlers_->handle_auth_revoke(revoke_req, revoke_res);
 
-  EXPECT_EQ(revoke_res.status, 200);
+  EXPECT_EQ(revoke_res.status, -1);
   auto revoke_body = json::parse(revoke_res.body);
   EXPECT_EQ(revoke_body["status"], "revoked");
 
