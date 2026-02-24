@@ -14,8 +14,7 @@
 
 #pragma once
 
-// TODO(Task 5): rename this include to update_types.hpp when UpdateBackend is removed
-#include "ros2_medkit_gateway/updates/update_backend.hpp"
+#include "ros2_medkit_gateway/updates/update_types.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -25,7 +24,7 @@ namespace ros2_medkit_gateway {
  * Typed provider interface that plugins implement alongside GatewayPlugin
  * via multiple inheritance. Replaces the old UpdateBackend abstract class.
  *
- * Reuses all types from update_backend.hpp (UpdateFilter, UpdateBackendErrorInfo,
+ * Reuses all types from update_types.hpp (UpdateFilter, UpdateBackendErrorInfo,
  * UpdateProgressReporter, etc.).
  *
  * @see GatewayPlugin for the base class

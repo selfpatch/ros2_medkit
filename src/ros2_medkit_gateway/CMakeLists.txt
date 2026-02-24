@@ -130,7 +130,6 @@ add_library(gateway_lib STATIC
   src/auth/auth_requirement_policy.cpp
   # Updates module
   src/updates/update_manager.cpp
-  src/updates/plugin_loader.cpp
   # HTTP handlers - updates
   src/http/handlers/update_handlers.cpp
   # Plugin framework
@@ -391,6 +390,9 @@ if(BUILD_TESTING)
   target_link_libraries(test_update_backend
     nlohmann_json::nlohmann_json
     tl::expected
+    cpp_httplib_target
+    OpenSSL::SSL
+    OpenSSL::Crypto
   )
   install(TARGETS test_update_backend
     LIBRARY DESTINATION lib/${PROJECT_NAME}

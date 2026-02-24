@@ -25,7 +25,7 @@
 #include <nlohmann/json.hpp>
 #include <tl/expected.hpp>
 
-#include "ros2_medkit_gateway/updates/update_backend.hpp"
+#include "ros2_medkit_gateway/providers/update_provider.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -49,21 +49,24 @@ struct UpdateError {
 };
 
 /**
- * @brief Manages software update lifecycle with pluggable backend.
+ * @brief Manages software update lifecycle with pluggable UpdateProvider backend.
  *
  * Handles async operations (prepare/execute) in background threads,
- * tracks status automatically, and delegates to UpdateBackend for
+ * tracks status automatically, and delegates to UpdateProvider for
  * actual work. Without a backend, all operations return errors.
  */
 class UpdateManager {
  public:
-  /// Construct with optional backend. Pass nullptr for 501 mode.
-  explicit UpdateManager(std::unique_ptr<UpdateBackend> backend, void * plugin_handle = nullptr);
+  /// Construct without a backend. Use set_backend() to wire one in.
+  UpdateManager();
   ~UpdateManager();
 
   // Prevent copy/move (owns async tasks)
   UpdateManager(const UpdateManager &) = delete;
   UpdateManager & operator=(const UpdateManager &) = delete;
+
+  /// Set the backend provider (non-owning pointer, caller manages lifetime)
+  void set_backend(UpdateProvider * backend);
 
   /// Check if a backend is loaded
   bool has_backend() const;
@@ -83,8 +86,7 @@ class UpdateManager {
   tl::expected<UpdateStatusInfo, UpdateError> get_status(const std::string & id);
 
  private:
-  std::unique_ptr<UpdateBackend> backend_;
-  void * plugin_handle_ = nullptr;  // dlopen handle, closed in destructor
+  UpdateProvider * backend_ = nullptr;
 
   struct PackageState {
     UpdatePhase phase = UpdatePhase::None;

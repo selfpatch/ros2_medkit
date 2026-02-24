@@ -23,7 +23,7 @@ using namespace ros2_medkit_gateway;
 using json = nlohmann::json;
 
 /// Mock backend for unit testing
-class MockUpdateBackend : public UpdateBackend {
+class MockUpdateBackend : public UpdateProvider {
  public:
   tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter &) override {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -94,10 +94,19 @@ class MockUpdateBackend : public UpdateBackend {
 class UpdateManagerTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    auto backend = std::make_unique<MockUpdateBackend>();
-    manager_ = std::make_unique<UpdateManager>(std::move(backend));
+    backend_ = std::make_unique<MockUpdateBackend>();
+    backend_ptr_ = backend_.get();
+    manager_ = std::make_unique<UpdateManager>();
+    manager_->set_backend(backend_ptr_);
   }
 
+  void TearDown() override {
+    manager_.reset();
+    backend_.reset();
+  }
+
+  std::unique_ptr<MockUpdateBackend> backend_;
+  MockUpdateBackend * backend_ptr_ = nullptr;
   std::unique_ptr<UpdateManager> manager_;
 };
 
@@ -108,7 +117,7 @@ TEST_F(UpdateManagerTest, HasBackend) {
 
 // @verifies REQ_INTEROP_082
 TEST_F(UpdateManagerTest, NoBackendMode) {
-  UpdateManager no_backend(nullptr);
+  UpdateManager no_backend;
   EXPECT_FALSE(no_backend.has_backend());
   auto result = no_backend.list_updates({});
   EXPECT_FALSE(result.has_value());
@@ -314,7 +323,7 @@ TEST_F(UpdateManagerTest, ConcurrentPrepareOnSamePackageRejected) {
 }
 
 /// Mock backend that returns errors from prepare/execute
-class MockFailingBackend : public UpdateBackend {
+class MockFailingBackend : public UpdateProvider {
  public:
   tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
   list_updates(const UpdateFilter & /*filter*/) override {
@@ -347,7 +356,7 @@ class MockFailingBackend : public UpdateBackend {
 };
 
 /// Mock backend that throws exceptions from prepare/execute
-class MockThrowingBackend : public UpdateBackend {
+class MockThrowingBackend : public UpdateProvider {
  public:
   tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
   list_updates(const UpdateFilter & /*filter*/) override {
@@ -378,7 +387,8 @@ class MockThrowingBackend : public UpdateBackend {
 // @verifies REQ_INTEROP_091
 TEST(UpdateManagerFailureTest, PrepareFailureSetsFailedStatus) {
   auto backend = std::make_unique<MockFailingBackend>();
-  auto manager = std::make_unique<UpdateManager>(std::move(backend));
+  auto manager = std::make_unique<UpdateManager>();
+  manager->set_backend(backend.get());
   json pkg = {{"id", "test-pkg"}};
   (void)manager->register_update(pkg);
 
@@ -399,10 +409,12 @@ TEST(UpdateManagerFailureTest, PrepareFailureSetsFailedStatus) {
   EXPECT_EQ(status.status, UpdateStatus::Failed);
   ASSERT_TRUE(status.error_message.has_value());
   EXPECT_NE(status.error_message->find("download failed"), std::string::npos);
+  manager.reset();
+  backend.reset();
 }
 
 /// Mock backend with working prepare but failing execute
-class MockExecuteFailingBackend : public UpdateBackend {
+class MockExecuteFailingBackend : public UpdateProvider {
  public:
   tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
   list_updates(const UpdateFilter & /*filter*/) override {
@@ -432,7 +444,7 @@ class MockExecuteFailingBackend : public UpdateBackend {
 };
 
 /// Mock backend with working prepare but throwing execute
-class MockExecuteThrowingBackend : public UpdateBackend {
+class MockExecuteThrowingBackend : public UpdateProvider {
  public:
   tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
   list_updates(const UpdateFilter & /*filter*/) override {
@@ -464,7 +476,8 @@ class MockExecuteThrowingBackend : public UpdateBackend {
 // @verifies REQ_INTEROP_091
 TEST(UpdateManagerFailureTest, PrepareExceptionSetsFailedStatus) {
   auto backend = std::make_unique<MockThrowingBackend>();
-  auto manager = std::make_unique<UpdateManager>(std::move(backend));
+  auto manager = std::make_unique<UpdateManager>();
+  manager->set_backend(backend.get());
   json pkg = {{"id", "test-pkg"}};
   (void)manager->register_update(pkg);
 
@@ -484,6 +497,8 @@ TEST(UpdateManagerFailureTest, PrepareExceptionSetsFailedStatus) {
   EXPECT_EQ(status.status, UpdateStatus::Failed);
   ASSERT_TRUE(status.error_message.has_value());
   EXPECT_NE(status.error_message->find("Exception"), std::string::npos);
+  manager.reset();
+  backend.reset();
 }
 
 // Helper: prepare a package and wait for completion
@@ -506,7 +521,8 @@ static bool prepare_and_wait(UpdateManager & manager, const std::string & id) {
 // @verifies REQ_INTEROP_092
 TEST(UpdateManagerFailureTest, ExecuteFailureSetsFailedStatus) {
   auto backend = std::make_unique<MockExecuteFailingBackend>();
-  auto manager = std::make_unique<UpdateManager>(std::move(backend));
+  auto manager = std::make_unique<UpdateManager>();
+  manager->set_backend(backend.get());
   json pkg = {{"id", "test-pkg"}};
   (void)manager->register_update(pkg);
 
@@ -531,12 +547,15 @@ TEST(UpdateManagerFailureTest, ExecuteFailureSetsFailedStatus) {
   EXPECT_EQ(status.status, UpdateStatus::Failed);
   ASSERT_TRUE(status.error_message.has_value());
   EXPECT_NE(status.error_message->find("install failed"), std::string::npos);
+  manager.reset();
+  backend.reset();
 }
 
 // @verifies REQ_INTEROP_092
 TEST(UpdateManagerFailureTest, ExecuteExceptionSetsFailedStatus) {
   auto backend = std::make_unique<MockExecuteThrowingBackend>();
-  auto manager = std::make_unique<UpdateManager>(std::move(backend));
+  auto manager = std::make_unique<UpdateManager>();
+  manager->set_backend(backend.get());
   json pkg = {{"id", "test-pkg"}};
   (void)manager->register_update(pkg);
 
@@ -561,4 +580,6 @@ TEST(UpdateManagerFailureTest, ExecuteExceptionSetsFailedStatus) {
   EXPECT_EQ(status.status, UpdateStatus::Failed);
   ASSERT_TRUE(status.error_message.has_value());
   EXPECT_NE(status.error_message->find("Exception"), std::string::npos);
+  manager.reset();
+  backend.reset();
 }
