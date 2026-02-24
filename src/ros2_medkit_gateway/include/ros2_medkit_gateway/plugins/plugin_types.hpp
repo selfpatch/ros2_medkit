@@ -17,6 +17,14 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+/// Visibility macro for plugin extern "C" exports.
+/// Ensures symbols are exported even with -fvisibility=hidden builds.
+#ifdef _WIN32
+#define GATEWAY_PLUGIN_EXPORT __declspec(dllexport)
+#else
+#define GATEWAY_PLUGIN_EXPORT __attribute__((visibility("default")))
+#endif
+
 namespace ros2_medkit_gateway {
 
 /// Current plugin API version. Plugins must export this value from plugin_api_version().
