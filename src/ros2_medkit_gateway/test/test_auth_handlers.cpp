@@ -14,43 +14,32 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "ros2_medkit_gateway/auth/auth.hpp"
 #include "ros2_medkit_gateway/http/handlers/auth_handlers.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::AuthConfig;
+using ros2_medkit_gateway::AuthConfigBuilder;
+using ros2_medkit_gateway::AuthManager;
 using ros2_medkit_gateway::CorsConfig;
+using ros2_medkit_gateway::JwtAlgorithm;
 using ros2_medkit_gateway::TlsConfig;
+using ros2_medkit_gateway::UserRole;
 using ros2_medkit_gateway::handlers::AuthHandlers;
 using ros2_medkit_gateway::handlers::HandlerContext;
 
 namespace {
 
 // Helper: build a request with a JSON body and Content-Type header
-httplib::Request make_json_request(const std::string & body)
-{
+httplib::Request make_json_request(const std::string & body) {
   httplib::Request req;
   req.body = body;
   req.headers.emplace("Content-Type", "application/json");
   return req;
-}
-
-// Helper: build HandlerContext with auth disabled (default)
-HandlerContext make_ctx_auth_disabled(CorsConfig & cors, AuthConfig & auth, TlsConfig & tls)
-{
-  auth.enabled = false;
-  return HandlerContext(nullptr, cors, auth, tls, nullptr);
-}
-
-// Helper: build HandlerContext with auth enabled, no live auth_manager.
-// Safe for tests that exercise input-validation paths which return before
-// calling ctx_.auth_manager()->authenticate().
-HandlerContext make_ctx_auth_enabled(CorsConfig & cors, AuthConfig & auth, TlsConfig & tls)
-{
-  auth.enabled = true;
-  return HandlerContext(nullptr, cors, auth, tls, nullptr);
 }
 
 }  // namespace
@@ -60,19 +49,17 @@ HandlerContext make_ctx_auth_enabled(CorsConfig & cors, AuthConfig & auth, TlsCo
 // All three endpoints return 404 when authentication is not enabled.
 // ============================================================================
 
-class AuthHandlersDisabledTest : public ::testing::Test
-{
-protected:
+class AuthHandlersDisabledTest : public ::testing::Test {
+ protected:
   CorsConfig cors_{};
-  AuthConfig auth_{};   // enabled = false by default
+  AuthConfig auth_{};  // enabled = false by default
   TlsConfig tls_{};
   HandlerContext ctx_{nullptr, cors_, auth_, tls_, nullptr};
   AuthHandlers handlers_{ctx_};
 };
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersDisabledTest, AuthorizeReturns404WhenAuthDisabled)
-{
+TEST_F(AuthHandlersDisabledTest, AuthorizeReturns404WhenAuthDisabled) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_auth_authorize(req, res);
@@ -80,8 +67,7 @@ TEST_F(AuthHandlersDisabledTest, AuthorizeReturns404WhenAuthDisabled)
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersDisabledTest, AuthorizeErrorBodyContainsErrorCode)
-{
+TEST_F(AuthHandlersDisabledTest, AuthorizeErrorBodyContainsErrorCode) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_auth_authorize(req, res);
@@ -91,8 +77,7 @@ TEST_F(AuthHandlersDisabledTest, AuthorizeErrorBodyContainsErrorCode)
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersDisabledTest, TokenReturns404WhenAuthDisabled)
-{
+TEST_F(AuthHandlersDisabledTest, TokenReturns404WhenAuthDisabled) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_auth_token(req, res);
@@ -100,8 +85,7 @@ TEST_F(AuthHandlersDisabledTest, TokenReturns404WhenAuthDisabled)
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersDisabledTest, RevokeReturns404WhenAuthDisabled)
-{
+TEST_F(AuthHandlersDisabledTest, RevokeReturns404WhenAuthDisabled) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_auth_revoke(req, res);
@@ -113,22 +97,19 @@ TEST_F(AuthHandlersDisabledTest, RevokeReturns404WhenAuthDisabled)
 // All assertions below exercise paths that return before auth_manager is used.
 // ============================================================================
 
-class AuthHandlersAuthorizeTest : public ::testing::Test
-{
-protected:
+class AuthHandlersAuthorizeTest : public ::testing::Test {
+ protected:
   CorsConfig cors_{};
   AuthConfig auth_{};
   TlsConfig tls_{};
 
-  void SetUp() override
-  {
+  void SetUp() override {
     auth_.enabled = true;
   }
 };
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForWrongGrantType)
-{
+TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForWrongGrantType) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -142,8 +123,7 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForWrongGrantType)
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientId)
-{
+TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientId) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -157,8 +137,7 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientId)
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientId)
-{
+TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientId) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -172,8 +151,7 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientId)
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientSecret)
-{
+TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientSecret) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -187,8 +165,7 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientSecret)
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersAuthorizeTest, AuthorizeErrorBodyFollowsOAuth2Format)
-{
+TEST_F(AuthHandlersAuthorizeTest, AuthorizeErrorBodyFollowsOAuth2Format) {
   // Verify that error responses follow RFC 6749 OAuth2 error format
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
@@ -206,22 +183,19 @@ TEST_F(AuthHandlersAuthorizeTest, AuthorizeErrorBodyFollowsOAuth2Format)
 // handle_auth_token — input validation (auth enabled, null auth_manager)
 // ============================================================================
 
-class AuthHandlersTokenTest : public ::testing::Test
-{
-protected:
+class AuthHandlersTokenTest : public ::testing::Test {
+ protected:
   CorsConfig cors_{};
   AuthConfig auth_{};
   TlsConfig tls_{};
 
-  void SetUp() override
-  {
+  void SetUp() override {
     auth_.enabled = true;
   }
 };
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForWrongGrantType)
-{
+TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForWrongGrantType) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -235,8 +209,7 @@ TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForWrongGrantType)
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForMissingRefreshToken)
-{
+TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForMissingRefreshToken) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -250,8 +223,7 @@ TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForMissingRefreshToken)
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForEmptyRefreshToken)
-{
+TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForEmptyRefreshToken) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -268,22 +240,19 @@ TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForEmptyRefreshToken)
 // handle_auth_revoke — input validation (auth enabled, null auth_manager)
 // ============================================================================
 
-class AuthHandlersRevokeTest : public ::testing::Test
-{
-protected:
+class AuthHandlersRevokeTest : public ::testing::Test {
+ protected:
   CorsConfig cors_{};
   AuthConfig auth_{};
   TlsConfig tls_{};
 
-  void SetUp() override
-  {
+  void SetUp() override {
     auth_.enabled = true;
   }
 };
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForInvalidJson)
-{
+TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForInvalidJson) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -298,8 +267,7 @@ TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForInvalidJson)
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForMissingTokenField)
-{
+TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForMissingTokenField) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -313,8 +281,7 @@ TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForMissingTokenField)
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForNonStringToken)
-{
+TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForNonStringToken) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -325,4 +292,117 @@ TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForNonStringToken)
   EXPECT_EQ(res.status, 400);
   auto body = json::parse(res.body);
   EXPECT_EQ(body["error"], "invalid_request");
+}
+
+// ============================================================================
+// AuthManager integration tests (auth enabled with live manager)
+// ============================================================================
+
+class AuthHandlersWithManagerTest : public ::testing::Test {
+ protected:
+  CorsConfig cors_{};
+  AuthConfig auth_config_{};
+  TlsConfig tls_{};
+  std::unique_ptr<AuthManager> auth_manager_;
+  std::unique_ptr<HandlerContext> ctx_;
+  std::unique_ptr<AuthHandlers> handlers_;
+
+  void SetUp() override {
+    auth_config_ = AuthConfigBuilder()
+                       .with_enabled(true)
+                       .with_jwt_secret("test_secret_key_for_jwt_signing_12345")
+                       .with_algorithm(JwtAlgorithm::HS256)
+                       .with_token_expiry(3600)
+                       .with_refresh_token_expiry(86400)
+                       .add_client("test_client", "test_secret", UserRole::ADMIN)
+                       .build();
+
+    auth_manager_ = std::make_unique<AuthManager>(auth_config_);
+    ctx_ = std::make_unique<HandlerContext>(nullptr, cors_, auth_config_, tls_, auth_manager_.get());
+    handlers_ = std::make_unique<AuthHandlers>(*ctx_);
+  }
+
+  json authorize_and_get_body() {
+    auto req = make_json_request(
+        R"({"grant_type": "client_credentials", "client_id": "test_client", "client_secret": "test_secret"})");
+    httplib::Response res;
+    handlers_->handle_auth_authorize(req, res);
+    EXPECT_EQ(res.status, 200);
+    return json::parse(res.body);
+  }
+};
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthHandlersWithManagerTest, AuthorizeReturnsTokensForValidCredentials) {
+  auto body = authorize_and_get_body();
+  EXPECT_TRUE(body.contains("access_token"));
+  EXPECT_TRUE(body["access_token"].is_string());
+  EXPECT_FALSE(body["access_token"].get<std::string>().empty());
+  EXPECT_TRUE(body.contains("refresh_token"));
+  EXPECT_TRUE(body["refresh_token"].is_string());
+  EXPECT_FALSE(body["refresh_token"].get<std::string>().empty());
+  EXPECT_EQ(body["token_type"], "Bearer");
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthHandlersWithManagerTest, AuthorizeReturnsUnauthorizedForInvalidCredentials) {
+  auto req = make_json_request(
+      R"({"grant_type": "client_credentials", "client_id": "test_client", "client_secret": "wrong_secret"})");
+  httplib::Response res;
+  handlers_->handle_auth_authorize(req, res);
+
+  EXPECT_EQ(res.status, 401);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error"], "invalid_client");
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthHandlersWithManagerTest, TokenReturnsNewAccessTokenForValidRefreshToken) {
+  auto auth_body = authorize_and_get_body();
+  std::string refresh_token = auth_body["refresh_token"].get<std::string>();
+
+  auto req = make_json_request(json({{"grant_type", "refresh_token"}, {"refresh_token", refresh_token}}).dump());
+  httplib::Response res;
+  handlers_->handle_auth_token(req, res);
+
+  EXPECT_EQ(res.status, 200);
+  auto body = json::parse(res.body);
+  EXPECT_TRUE(body.contains("access_token"));
+  EXPECT_TRUE(body["access_token"].is_string());
+  EXPECT_FALSE(body["access_token"].get<std::string>().empty());
+  EXPECT_EQ(body["token_type"], "Bearer");
+  EXPECT_EQ(body["refresh_token"], refresh_token);
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthHandlersWithManagerTest, TokenReturnsUnauthorizedForInvalidRefreshToken) {
+  auto req = make_json_request(R"({"grant_type": "refresh_token", "refresh_token": "not.a.valid.refresh.token"})");
+  httplib::Response res;
+  handlers_->handle_auth_token(req, res);
+
+  EXPECT_EQ(res.status, 401);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error"], "invalid_grant");
+}
+
+// @verifies REQ_INTEROP_086
+TEST_F(AuthHandlersWithManagerTest, RevokeRevokesRefreshTokenForSubsequentTokenRequest) {
+  auto auth_body = authorize_and_get_body();
+  std::string refresh_token = auth_body["refresh_token"].get<std::string>();
+
+  auto revoke_req = make_json_request(json({{"token", refresh_token}}).dump());
+  httplib::Response revoke_res;
+  handlers_->handle_auth_revoke(revoke_req, revoke_res);
+
+  EXPECT_EQ(revoke_res.status, 200);
+  auto revoke_body = json::parse(revoke_res.body);
+  EXPECT_EQ(revoke_body["status"], "revoked");
+
+  auto token_req = make_json_request(json({{"grant_type", "refresh_token"}, {"refresh_token", refresh_token}}).dump());
+  httplib::Response token_res;
+  handlers_->handle_auth_token(token_req, token_res);
+
+  EXPECT_EQ(token_res.status, 401);
+  auto token_body = json::parse(token_res.body);
+  EXPECT_EQ(token_body["error"], "invalid_grant");
 }
