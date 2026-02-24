@@ -14,9 +14,9 @@
 
 #include <gtest/gtest.h>
 
+#include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <string>
-#include <httplib.h>
 
 #include "ros2_medkit_gateway/http/handlers/health_handlers.hpp"
 
