@@ -32,9 +32,8 @@ using ros2_medkit_gateway::handlers::HealthHandlers;
 // - handle_root reads ctx_.auth_config() and ctx_.tls_config() (both disabled by default)
 // All tests use a null GatewayNode and null AuthManager which is safe for these handlers.
 
-class HealthHandlersTest : public ::testing::Test
-{
-protected:
+class HealthHandlersTest : public ::testing::Test {
+ protected:
   CorsConfig cors_config_{};
   AuthConfig auth_config_{};  // enabled = false by default
   TlsConfig tls_config_{};    // enabled = false by default
@@ -45,8 +44,7 @@ protected:
 // --- handle_health ---
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleHealthResponseContainsStatusHealthy)
-{
+TEST_F(HealthHandlersTest, HandleHealthResponseContainsStatusHealthy) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_health(req, res);
@@ -55,8 +53,7 @@ TEST_F(HealthHandlersTest, HandleHealthResponseContainsStatusHealthy)
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleHealthResponseContainsTimestamp)
-{
+TEST_F(HealthHandlersTest, HandleHealthResponseContainsTimestamp) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_health(req, res);
@@ -66,8 +63,7 @@ TEST_F(HealthHandlersTest, HandleHealthResponseContainsTimestamp)
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleHealthResponseIsValidJson)
-{
+TEST_F(HealthHandlersTest, HandleHealthResponseIsValidJson) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_health(req, res);
@@ -77,8 +73,7 @@ TEST_F(HealthHandlersTest, HandleHealthResponseIsValidJson)
 // --- handle_version_info ---
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleVersionInfoContainsSovdInfoArray)
-{
+TEST_F(HealthHandlersTest, HandleVersionInfoContainsSovdInfoArray) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_version_info(req, res);
@@ -89,8 +84,7 @@ TEST_F(HealthHandlersTest, HandleVersionInfoContainsSovdInfoArray)
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVersionField)
-{
+TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVersionField) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_version_info(req, res);
@@ -101,8 +95,7 @@ TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVersionField)
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasBaseUri)
-{
+TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasBaseUri) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_version_info(req, res);
@@ -112,8 +105,7 @@ TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasBaseUri)
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVendorInfo)
-{
+TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVendorInfo) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_version_info(req, res);
@@ -127,8 +119,7 @@ TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVendorInfo)
 // --- handle_root ---
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleRootResponseContainsRequiredTopLevelFields)
-{
+TEST_F(HealthHandlersTest, HandleRootResponseContainsRequiredTopLevelFields) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_root(req, res);
@@ -141,8 +132,7 @@ TEST_F(HealthHandlersTest, HandleRootResponseContainsRequiredTopLevelFields)
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleRootEndpointsIsNonEmptyArray)
-{
+TEST_F(HealthHandlersTest, HandleRootEndpointsIsNonEmptyArray) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_root(req, res);
@@ -152,8 +142,7 @@ TEST_F(HealthHandlersTest, HandleRootEndpointsIsNonEmptyArray)
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleRootCapabilitiesContainsDiscovery)
-{
+TEST_F(HealthHandlersTest, HandleRootCapabilitiesContainsDiscovery) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_root(req, res);
@@ -164,8 +153,7 @@ TEST_F(HealthHandlersTest, HandleRootCapabilitiesContainsDiscovery)
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleRootAuthDisabledNoAuthEndpoints)
-{
+TEST_F(HealthHandlersTest, HandleRootAuthDisabledNoAuthEndpoints) {
   // With auth disabled (default), auth endpoints must not appear in the list
   httplib::Request req;
   httplib::Response res;
@@ -178,8 +166,7 @@ TEST_F(HealthHandlersTest, HandleRootAuthDisabledNoAuthEndpoints)
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleRootCapabilitiesAuthDisabled)
-{
+TEST_F(HealthHandlersTest, HandleRootCapabilitiesAuthDisabled) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_root(req, res);
@@ -188,18 +175,17 @@ TEST_F(HealthHandlersTest, HandleRootCapabilitiesAuthDisabled)
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleRootCapabilitiesTlsDisabled)
-{
+TEST_F(HealthHandlersTest, HandleRootCapabilitiesTlsDisabled) {
   httplib::Request req;
   httplib::Response res;
   handlers_.handle_root(req, res);
   auto body = json::parse(res.body);
   EXPECT_FALSE(body["capabilities"]["tls"].get<bool>());
+  EXPECT_FALSE(body.contains("tls"));
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleRootAuthEnabledAddsAuthEndpoints)
-{
+TEST_F(HealthHandlersTest, HandleRootAuthEnabledAddsAuthEndpoints) {
   AuthConfig auth_enabled{};
   auth_enabled.enabled = true;
   TlsConfig tls{};
@@ -221,4 +207,47 @@ TEST_F(HealthHandlersTest, HandleRootAuthEnabledAddsAuthEndpoints)
   }
   EXPECT_TRUE(has_auth_endpoint);
   EXPECT_TRUE(body["capabilities"]["authentication"].get<bool>());
+}
+
+// @verifies REQ_INTEROP_001
+TEST_F(HealthHandlersTest, HandleRootAuthEnabledIncludesAuthMetadataBlock) {
+  AuthConfig auth_enabled{};
+  auth_enabled.enabled = true;
+  auth_enabled.require_auth_for = ros2_medkit_gateway::AuthRequirement::ALL;
+  auth_enabled.jwt_algorithm = ros2_medkit_gateway::JwtAlgorithm::HS256;
+  TlsConfig tls{};
+  CorsConfig cors{};
+  HandlerContext ctx_auth(nullptr, cors, auth_enabled, tls, nullptr);
+  HealthHandlers handlers_auth(ctx_auth);
+
+  httplib::Request req;
+  httplib::Response res;
+  handlers_auth.handle_root(req, res);
+  auto body = json::parse(res.body);
+
+  ASSERT_TRUE(body.contains("auth"));
+  EXPECT_TRUE(body["auth"]["enabled"].get<bool>());
+  EXPECT_EQ(body["auth"]["algorithm"], "HS256");
+  EXPECT_EQ(body["auth"]["require_auth_for"], "all");
+}
+
+// @verifies REQ_INTEROP_001
+TEST_F(HealthHandlersTest, HandleRootTlsEnabledIncludesTlsMetadataBlock) {
+  AuthConfig auth{};
+  TlsConfig tls_enabled{};
+  tls_enabled.enabled = true;
+  tls_enabled.min_version = "1.3";
+  CorsConfig cors{};
+  HandlerContext ctx_tls(nullptr, cors, auth, tls_enabled, nullptr);
+  HealthHandlers handlers_tls(ctx_tls);
+
+  httplib::Request req;
+  httplib::Response res;
+  handlers_tls.handle_root(req, res);
+  auto body = json::parse(res.body);
+
+  ASSERT_TRUE(body.contains("tls"));
+  EXPECT_TRUE(body["tls"]["enabled"].get<bool>());
+  EXPECT_EQ(body["tls"]["min_version"], "1.3");
+  EXPECT_TRUE(body["capabilities"]["tls"].get<bool>());
 }
