@@ -34,6 +34,7 @@
 #include "ros2_medkit_gateway/http/rest_server.hpp"
 #include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/subscription_manager.hpp"
 #include "ros2_medkit_gateway/updates/update_manager.hpp"
 
@@ -99,6 +100,7 @@ class GatewayNode : public rclcpp::Node {
    * @return Raw pointer to UpdateManager (valid for lifetime of GatewayNode), or nullptr if disabled
    */
   UpdateManager * get_update_manager() const;
+  PluginManager * get_plugin_manager() const;
 
  private:
   void refresh_cache();
@@ -122,6 +124,9 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<FaultManager> fault_mgr_;
   std::unique_ptr<BulkDataStore> bulk_data_store_;
   std::unique_ptr<SubscriptionManager> subscription_mgr_;
+  // IMPORTANT: plugin_mgr_ BEFORE update_mgr_ - C++ destroys in reverse order,
+  // so update_mgr_ waits for async tasks before plugin_mgr_ destroys the plugin.
+  std::unique_ptr<PluginManager> plugin_mgr_;
   std::unique_ptr<UpdateManager> update_mgr_;
   std::unique_ptr<RESTServer> rest_server_;
 
