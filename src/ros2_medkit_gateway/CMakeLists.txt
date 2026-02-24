@@ -366,6 +366,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_update_manager test/test_update_manager.cpp)
   target_link_libraries(test_update_manager gateway_lib)
 
+  # Add health handler tests
+  ament_add_gtest(test_health_handlers test/test_health_handlers.cpp)
+  target_link_libraries(test_health_handlers gateway_lib)
+
   # Demo update backend plugin (.so for integration tests)
   add_library(test_update_backend MODULE
     test/demo_nodes/test_update_backend.cpp
@@ -408,6 +412,7 @@ if(BUILD_TESTING)
       test_subscription_manager
       test_cyclic_subscription_handlers
       test_update_manager
+      test_health_handlers
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
