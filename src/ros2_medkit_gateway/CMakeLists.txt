@@ -133,6 +133,8 @@ add_library(gateway_lib STATIC
   src/updates/plugin_loader.cpp
   # HTTP handlers - updates
   src/http/handlers/update_handlers.cpp
+  # Plugin framework
+  src/plugins/plugin_loader.cpp
 )
 
 ament_target_dependencies(gateway_lib
@@ -393,6 +395,20 @@ if(BUILD_TESTING)
     LIBRARY DESTINATION lib/${PROJECT_NAME}
   )
 
+  # Test gateway plugin (.so for plugin loader tests)
+  add_library(test_gateway_plugin MODULE
+    test/demo_nodes/test_gateway_plugin.cpp
+  )
+  target_link_libraries(test_gateway_plugin gateway_lib)
+  install(TARGETS test_gateway_plugin
+    LIBRARY DESTINATION lib/${PROJECT_NAME}
+  )
+
+  # Add plugin loader tests
+  ament_add_gtest(test_plugin_loader test/test_plugin_loader.cpp)
+  target_link_libraries(test_plugin_loader gateway_lib)
+  ament_target_dependencies(test_plugin_loader ament_index_cpp)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -423,6 +439,7 @@ if(BUILD_TESTING)
       test_data_handlers
       test_auth_handlers
       test_health_handlers
+      test_plugin_loader
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
