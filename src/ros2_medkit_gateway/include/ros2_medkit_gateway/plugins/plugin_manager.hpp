@@ -1,0 +1,133 @@
+// Copyright 2026 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+#include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_loader.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_types.hpp"
+#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+#include "ros2_medkit_gateway/providers/update_provider.hpp"
+
+#include <httplib.h>
+#include <memory>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <vector>
+
+namespace rclcpp {
+class Node;
+}
+
+namespace ros2_medkit_gateway {
+
+/**
+ * @brief Orchestrates loading, lifecycle, and dispatch of gateway plugins
+ *
+ * Owns all plugin instances and dlopen handles. Subsystem managers receive
+ * non-owning pointers via get_update_provider() / get_introspection_providers().
+ *
+ * Provider discovery uses extern "C" query functions from loaded .so files
+ * (avoiding RTTI across dlopen boundary). For compile-time plugins added
+ * via add_plugin(), dynamic_cast is used (safe within the same binary).
+ *
+ * Error isolation: every call to plugin code is wrapped in try/catch.
+ * A failing plugin is disabled but does not crash the gateway.
+ *
+ * IMPORTANT: PluginManager must outlive all subsystem managers that hold
+ * non-owning provider pointers (e.g. UpdateManager). In GatewayNode, declare
+ * plugin_mgr_ BEFORE update_mgr_ so that destruction order is safe.
+ */
+class PluginManager {
+ public:
+  PluginManager() = default;
+  ~PluginManager();
+
+  // Non-copyable, non-movable (owns dlopen handles)
+  PluginManager(const PluginManager &) = delete;
+  PluginManager & operator=(const PluginManager &) = delete;
+
+  /**
+   * @brief Add a plugin directly (for testing with compile-time plugins)
+   *
+   * Uses dynamic_cast for provider discovery (safe within same binary).
+   *
+   * @param plugin Plugin instance
+   */
+  void add_plugin(std::unique_ptr<GatewayPlugin> plugin);
+
+  /**
+   * @brief Load plugins from shared library paths
+   * @param configs Plugin configurations with paths and per-plugin config
+   * @return Number of successfully loaded plugins
+   */
+  size_t load_plugins(const std::vector<PluginConfig> & configs);
+
+  /**
+   * @brief Configure all loaded plugins
+   *
+   * Calls configure() on each plugin with its per-plugin config.
+   * Plugins that throw are disabled.
+   */
+  void configure_plugins();
+
+  /**
+   * @brief Set ROS 2 node on all plugins
+   * @param node ROS 2 node pointer (must outlive all plugins)
+   */
+  void set_node(rclcpp::Node * node);
+
+  /**
+   * @brief Register custom REST routes from all plugins
+   * @param server httplib server instance
+   * @param api_prefix API path prefix (e.g., "/api/v1")
+   */
+  void register_routes(httplib::Server & server, const std::string & api_prefix);
+
+  /**
+   * @brief Shutdown all plugins
+   */
+  void shutdown_all();
+
+  // ---- Dispatch to subsystem managers ----
+
+  /**
+   * @brief Get the update provider (first plugin implementing UpdateProvider)
+   * @return Non-owning pointer, or nullptr if no UpdateProvider plugin loaded
+   */
+  UpdateProvider * get_update_provider() const;
+
+  /**
+   * @brief Get all introspection providers
+   * @return Non-owning pointers to all IntrospectionProvider plugins
+   */
+  std::vector<IntrospectionProvider *> get_introspection_providers() const;
+
+  // ---- Info ----
+  bool has_plugins() const;
+  std::vector<std::string> plugin_names() const;
+
+ private:
+  static void setup_plugin_logging(GatewayPlugin & plugin);
+
+  struct LoadedPlugin {
+    GatewayPluginLoadResult load_result;
+    nlohmann::json config;
+    UpdateProvider * update_provider = nullptr;
+    IntrospectionProvider * introspection_provider = nullptr;
+  };
+  std::vector<LoadedPlugin> plugins_;
+};
+
+}  // namespace ros2_medkit_gateway
