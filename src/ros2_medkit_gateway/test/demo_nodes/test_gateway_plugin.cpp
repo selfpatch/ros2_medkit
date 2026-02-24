@@ -28,7 +28,7 @@ using namespace ros2_medkit_gateway;
  * @brief Test gateway plugin implementing all provider interfaces.
  *
  * Used by test_plugin_loader to verify dlopen/dlsym-based loading,
- * API version checking, and dynamic_cast to provider interfaces.
+ * API version checking, and extern "C" provider query functions.
  */
 class TestGatewayPlugin : public GatewayPlugin, public UpdateProvider, public IntrospectionProvider {
  public:
@@ -81,10 +81,20 @@ class TestGatewayPlugin : public GatewayPlugin, public UpdateProvider, public In
   }
 };
 
-extern "C" int plugin_api_version() {
+// --- Plugin exports (with visibility macros) ---
+
+extern "C" GATEWAY_PLUGIN_EXPORT int plugin_api_version() {
   return PLUGIN_API_VERSION;
 }
 
-extern "C" GatewayPlugin * create_plugin() {
+extern "C" GATEWAY_PLUGIN_EXPORT GatewayPlugin * create_plugin() {
   return new TestGatewayPlugin();
+}
+
+extern "C" GATEWAY_PLUGIN_EXPORT UpdateProvider * get_update_provider(GatewayPlugin * plugin) {
+  return static_cast<TestGatewayPlugin *>(plugin);
+}
+
+extern "C" GATEWAY_PLUGIN_EXPORT IntrospectionProvider * get_introspection_provider(GatewayPlugin * plugin) {
+  return static_cast<TestGatewayPlugin *>(plugin);
 }

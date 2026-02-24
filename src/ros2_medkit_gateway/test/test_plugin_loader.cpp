@@ -22,15 +22,19 @@
 #include <string>
 
 using namespace ros2_medkit_gateway;
-
 namespace {
 
+std::string plugin_lib_dir() {
+  return ament_index_cpp::get_package_prefix("ros2_medkit_gateway") + "/lib/ros2_medkit_gateway/";
+}
+
 std::string test_plugin_path() {
-  auto prefix = ament_index_cpp::get_package_prefix("ros2_medkit_gateway");
-  return prefix + "/lib/ros2_medkit_gateway/libtest_gateway_plugin.so";
+  return plugin_lib_dir() + "libtest_gateway_plugin.so";
 }
 
 }  // namespace
+
+// --- Happy path ---
 
 // @verifies REQ_INTEROP_012
 TEST(TestPluginLoader, LoadsValidPlugin) {
@@ -38,36 +42,72 @@ TEST(TestPluginLoader, LoadsValidPlugin) {
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_NE(result->plugin, nullptr);
   EXPECT_EQ(result->plugin->name(), "test_plugin");
-  EXPECT_NE(result->handle, nullptr);
 }
 
 // @verifies REQ_INTEROP_012
-TEST(TestPluginLoader, LoadedPluginImplementsUpdateProvider) {
+TEST(TestPluginLoader, DiscoverUpdateProviderViaExternC) {
   auto result = PluginLoader::load(test_plugin_path());
   ASSERT_TRUE(result.has_value()) << result.error();
-  auto * update = dynamic_cast<UpdateProvider *>(result->plugin.get());
-  EXPECT_NE(update, nullptr);
+  EXPECT_NE(result->update_provider, nullptr);
 }
 
 // @verifies REQ_INTEROP_012
-TEST(TestPluginLoader, LoadedPluginImplementsIntrospectionProvider) {
+TEST(TestPluginLoader, DiscoverIntrospectionProviderViaExternC) {
   auto result = PluginLoader::load(test_plugin_path());
   ASSERT_TRUE(result.has_value()) << result.error();
-  auto * introspection = dynamic_cast<IntrospectionProvider *>(result->plugin.get());
-  EXPECT_NE(introspection, nullptr);
+  EXPECT_NE(result->introspection_provider, nullptr);
 }
+
+// --- Path validation ---
 
 // @verifies REQ_INTEROP_012
 TEST(TestPluginLoader, RejectsNonexistentFile) {
   auto result = PluginLoader::load("/nonexistent/path/to/plugin.so");
   ASSERT_FALSE(result.has_value());
-  EXPECT_NE(result.error().find("Failed to load plugin"), std::string::npos);
+  EXPECT_NE(result.error().find("does not exist"), std::string::npos);
 }
 
 // @verifies REQ_INTEROP_012
-TEST(TestPluginLoader, RejectsMissingFactory) {
-  // libc.so.6 is a valid .so but has no plugin_api_version symbol
-  auto result = PluginLoader::load("libc.so.6");
+TEST(TestPluginLoader, RejectsRelativePath) {
+  auto result = PluginLoader::load("relative/path/plugin.so");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("must be absolute"), std::string::npos);
+}
+
+// @verifies REQ_INTEROP_012
+TEST(TestPluginLoader, RejectsNonSoExtension) {
+  auto result = PluginLoader::load("/tmp/plugin.dll");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find(".so extension"), std::string::npos);
+}
+
+// --- Symbol validation ---
+
+// @verifies REQ_INTEROP_012
+TEST(TestPluginLoader, RejectsMissingVersionSymbol) {
+  auto result = PluginLoader::load(plugin_lib_dir() + "libtest_no_symbols_plugin.so");
   ASSERT_FALSE(result.has_value());
   EXPECT_NE(result.error().find("plugin_api_version"), std::string::npos);
+}
+
+// @verifies REQ_INTEROP_012
+TEST(TestPluginLoader, RejectsVersionMismatch) {
+  auto result = PluginLoader::load(plugin_lib_dir() + "libtest_bad_version_plugin.so");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("version mismatch"), std::string::npos);
+  EXPECT_NE(result.error().find("Rebuild"), std::string::npos);
+}
+
+// @verifies REQ_INTEROP_012
+TEST(TestPluginLoader, RejectsMissingFactorySymbol) {
+  auto result = PluginLoader::load(plugin_lib_dir() + "libtest_version_only_plugin.so");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("create_plugin"), std::string::npos);
+}
+
+// @verifies REQ_INTEROP_012
+TEST(TestPluginLoader, RejectsNullFactory) {
+  auto result = PluginLoader::load(plugin_lib_dir() + "libtest_null_factory_plugin.so");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("returned null"), std::string::npos);
 }

@@ -404,6 +404,14 @@ if(BUILD_TESTING)
     LIBRARY DESTINATION lib/${PROJECT_NAME}
   )
 
+  # Minimal test plugins for error-path coverage
+  foreach(_plugin test_bad_version_plugin test_no_symbols_plugin test_null_factory_plugin test_version_only_plugin)
+    add_library(${_plugin} MODULE test/demo_nodes/${_plugin}.cpp)
+    target_include_directories(${_plugin} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(${_plugin} nlohmann_json::nlohmann_json)
+    install(TARGETS ${_plugin} LIBRARY DESTINATION lib/${PROJECT_NAME})
+  endforeach()
+
   # Add plugin loader tests
   ament_add_gtest(test_plugin_loader test/test_plugin_loader.cpp)
   target_link_libraries(test_plugin_loader gateway_lib)

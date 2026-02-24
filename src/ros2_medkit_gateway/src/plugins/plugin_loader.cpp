@@ -15,16 +15,87 @@
 #include "ros2_medkit_gateway/plugins/plugin_loader.hpp"
 
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
+#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+#include "ros2_medkit_gateway/providers/update_provider.hpp"
 
 #include <dlfcn.h>
 
+#include <filesystem>
+
 namespace ros2_medkit_gateway {
 
-tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std::string & plugin_path) {
-  void * handle = dlopen(plugin_path.c_str(), RTLD_LAZY);
-  if (!handle) {
-    return tl::make_unexpected("Failed to load plugin '" + plugin_path + "': " + std::string(dlerror()));
+// --- GatewayPluginLoadResult RAII ---
+
+GatewayPluginLoadResult::~GatewayPluginLoadResult() {
+  update_provider = nullptr;
+  introspection_provider = nullptr;
+  plugin.reset();
+  if (handle_) {
+    dlclose(handle_);
   }
+}
+
+GatewayPluginLoadResult::GatewayPluginLoadResult(GatewayPluginLoadResult && other) noexcept
+  : plugin(std::move(other.plugin))
+  , update_provider(other.update_provider)
+  , introspection_provider(other.introspection_provider)
+  , handle_(other.handle_) {
+  other.update_provider = nullptr;
+  other.introspection_provider = nullptr;
+  other.handle_ = nullptr;
+}
+
+GatewayPluginLoadResult & GatewayPluginLoadResult::operator=(GatewayPluginLoadResult && other) noexcept {
+  if (this != &other) {
+    // Destroy current state in correct order
+    update_provider = nullptr;
+    introspection_provider = nullptr;
+    plugin.reset();
+    if (handle_) {
+      dlclose(handle_);
+    }
+
+    // Move from other
+    plugin = std::move(other.plugin);
+    update_provider = other.update_provider;
+    introspection_provider = other.introspection_provider;
+    handle_ = other.handle_;
+
+    other.update_provider = nullptr;
+    other.introspection_provider = nullptr;
+    other.handle_ = nullptr;
+  }
+  return *this;
+}
+
+// --- PluginLoader ---
+
+tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std::string & plugin_path) {
+  // --- Validate path ---
+  std::filesystem::path fs_path(plugin_path);
+
+  if (!fs_path.is_absolute()) {
+    return tl::make_unexpected("Plugin path must be absolute: " + plugin_path);
+  }
+
+  if (fs_path.extension() != ".so") {
+    return tl::make_unexpected("Plugin path must have .so extension: " + plugin_path);
+  }
+
+  std::error_code ec;
+  auto canonical_path = std::filesystem::canonical(fs_path, ec);
+  if (ec) {
+    return tl::make_unexpected("Plugin path does not exist or is not accessible: " + plugin_path);
+  }
+
+  // --- dlopen ---
+  void * handle = dlopen(canonical_path.c_str(), RTLD_NOW);
+  if (!handle) {
+    return tl::make_unexpected("Failed to load plugin: " + std::string(dlerror()));
+  }
+
+  // Scope guard: dlclose on any error path. Released on success.
+  auto handle_guard = std::unique_ptr<void, int (*)(void *)>(handle, dlclose);
 
   // Clear any existing error
   dlerror();
@@ -35,22 +106,20 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
 
   const char * error = dlerror();
   if (error) {
-    dlclose(handle);
-    return tl::make_unexpected("Failed to find 'plugin_api_version' in '" + plugin_path + "': " + std::string(error));
+    return tl::make_unexpected(std::string("Failed to find 'plugin_api_version': ") + std::string(error));
   }
 
   int version = 0;
   try {
     version = version_fn();
   } catch (...) {
-    dlclose(handle);
-    return tl::make_unexpected("'plugin_api_version' threw exception in '" + plugin_path + "'");
+    return tl::make_unexpected("'plugin_api_version' threw exception in plugin");
   }
 
   if (version != PLUGIN_API_VERSION) {
-    dlclose(handle);
-    return tl::make_unexpected("API version mismatch in '" + plugin_path + "': plugin=" + std::to_string(version) +
-                               " expected=" + std::to_string(PLUGIN_API_VERSION));
+    return tl::make_unexpected("API version mismatch: plugin=" + std::to_string(version) +
+                               " expected=" + std::to_string(PLUGIN_API_VERSION) +
+                               ". Rebuild the plugin against matching gateway headers.");
   }
 
   // --- Call factory ---
@@ -61,29 +130,40 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
 
   error = dlerror();
   if (error) {
-    dlclose(handle);
-    return tl::make_unexpected("Failed to find 'create_plugin' in '" + plugin_path + "': " + std::string(error));
+    return tl::make_unexpected(std::string("Failed to find 'create_plugin': ") + std::string(error));
   }
 
   GatewayPlugin * raw_plugin = nullptr;
   try {
     raw_plugin = factory();
   } catch (const std::exception & e) {
-    dlclose(handle);
-    return tl::make_unexpected("Factory 'create_plugin' threw exception in '" + plugin_path + "': " + e.what());
+    return tl::make_unexpected(std::string("Factory 'create_plugin' threw exception: ") + e.what());
   } catch (...) {
-    dlclose(handle);
-    return tl::make_unexpected("Factory 'create_plugin' threw unknown exception in '" + plugin_path + "'");
+    return tl::make_unexpected("Factory 'create_plugin' threw unknown exception");
   }
 
   if (!raw_plugin) {
-    dlclose(handle);
-    return tl::make_unexpected("Factory 'create_plugin' returned null in '" + plugin_path + "'");
+    return tl::make_unexpected("Factory 'create_plugin' returned null");
   }
 
+  // --- Query provider interfaces via extern "C" (no RTTI across dlopen boundary) ---
   GatewayPluginLoadResult result;
   result.plugin = std::unique_ptr<GatewayPlugin>(raw_plugin);
-  result.handle = handle;
+
+  using UpdateProviderFn = UpdateProvider * (*)(GatewayPlugin *);
+  auto update_fn = reinterpret_cast<UpdateProviderFn>(dlsym(handle, "get_update_provider"));
+  if (update_fn) {
+    result.update_provider = update_fn(raw_plugin);
+  }
+
+  using IntrospectionProviderFn = IntrospectionProvider * (*)(GatewayPlugin *);
+  auto introspection_fn = reinterpret_cast<IntrospectionProviderFn>(dlsym(handle, "get_introspection_provider"));
+  if (introspection_fn) {
+    result.introspection_provider = introspection_fn(raw_plugin);
+  }
+
+  // Transfer handle ownership to result (disarm scope guard)
+  result.handle_ = handle_guard.release();
   return result;
 }
 

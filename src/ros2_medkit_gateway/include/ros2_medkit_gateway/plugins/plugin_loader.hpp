@@ -23,18 +23,53 @@
 
 namespace ros2_medkit_gateway {
 
-/// Result of loading a gateway plugin: plugin instance + dlopen handle (for cleanup)
+class UpdateProvider;
+class IntrospectionProvider;
+
+/**
+ * @brief Result of loading a gateway plugin.
+ *
+ * RAII wrapper guaranteeing correct destruction order: provider pointers
+ * are invalidated first, then the plugin is destroyed, then dlclose is called.
+ * Move-only (no copy).
+ */
 struct GatewayPluginLoadResult {
+  GatewayPluginLoadResult() = default;
+  ~GatewayPluginLoadResult();
+
+  GatewayPluginLoadResult(GatewayPluginLoadResult && other) noexcept;
+  GatewayPluginLoadResult & operator=(GatewayPluginLoadResult && other) noexcept;
+
+  GatewayPluginLoadResult(const GatewayPluginLoadResult &) = delete;
+  GatewayPluginLoadResult & operator=(const GatewayPluginLoadResult &) = delete;
+
   std::unique_ptr<GatewayPlugin> plugin;
-  void * handle = nullptr;  // dlopen handle, caller owns dlclose
+
+  /// Non-owning pointer to UpdateProvider interface (null if plugin doesn't provide updates).
+  /// Lifetime tied to plugin - do not use after plugin is destroyed.
+  UpdateProvider * update_provider = nullptr;
+
+  /// Non-owning pointer to IntrospectionProvider interface (null if not provided).
+  /// Lifetime tied to plugin - do not use after plugin is destroyed.
+  IntrospectionProvider * introspection_provider = nullptr;
+
+ private:
+  friend class PluginLoader;
+  void * handle_ = nullptr;  // dlopen handle, destroyed after plugin
 };
 
 /**
  * @brief Loads a GatewayPlugin from a shared library (.so).
  *
- * The .so must export:
+ * The .so must export (with GATEWAY_PLUGIN_EXPORT visibility):
  *   extern "C" int plugin_api_version();       // must return PLUGIN_API_VERSION
  *   extern "C" GatewayPlugin* create_plugin(); // factory
+ *
+ * Optionally, for provider interface discovery (avoids RTTI across dlopen boundary):
+ *   extern "C" UpdateProvider* get_update_provider(GatewayPlugin* plugin);
+ *   extern "C" IntrospectionProvider* get_introspection_provider(GatewayPlugin* plugin);
+ *
+ * Path requirements: must be absolute, have .so extension, and resolve to a real file.
  */
 class PluginLoader {
  public:
