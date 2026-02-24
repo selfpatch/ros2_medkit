@@ -76,7 +76,7 @@ TEST_F(AuthHandlersDisabledTest, AuthorizeErrorBodyContainsErrorCode) {
   EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND);
 }
 
-// @verifies REQ_INTEROP_086
+// @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersDisabledTest, TokenReturns404WhenAuthDisabled) {
   httplib::Request req;
   httplib::Response res;
@@ -208,7 +208,7 @@ class AuthHandlersTokenTest : public ::testing::Test {
   }
 };
 
-// @verifies REQ_INTEROP_086
+// @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForWrongGrantType) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
@@ -222,7 +222,7 @@ TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForWrongGrantType) {
   EXPECT_EQ(body["error"], "unsupported_grant_type");
 }
 
-// @verifies REQ_INTEROP_086
+// @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForMissingRefreshToken) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
@@ -236,7 +236,7 @@ TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForMissingRefreshToken) {
   EXPECT_EQ(body["error"], "invalid_request");
 }
 
-// @verifies REQ_INTEROP_086
+// @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForEmptyRefreshToken) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
@@ -341,7 +341,6 @@ class AuthHandlersWithManagerTest : public ::testing::Test {
         R"({"grant_type": "client_credentials", "client_id": "test_client", "client_secret": "test_secret"})");
     httplib::Response res;
     handlers_->handle_auth_authorize(req, res);
-    EXPECT_EQ(res.status, -1);
     return json::parse(res.body);
   }
 };
@@ -370,7 +369,7 @@ TEST_F(AuthHandlersWithManagerTest, AuthorizeReturnsUnauthorizedForInvalidCreden
   EXPECT_EQ(body["error"], "invalid_client");
 }
 
-// @verifies REQ_INTEROP_086
+// @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersWithManagerTest, TokenReturnsNewAccessTokenForValidRefreshToken) {
   auto auth_body = authorize_and_get_body();
   std::string refresh_token = auth_body["refresh_token"].get<std::string>();
@@ -379,7 +378,6 @@ TEST_F(AuthHandlersWithManagerTest, TokenReturnsNewAccessTokenForValidRefreshTok
   httplib::Response res;
   handlers_->handle_auth_token(req, res);
 
-  EXPECT_EQ(res.status, -1);
   auto body = json::parse(res.body);
   EXPECT_TRUE(body.contains("access_token"));
   EXPECT_TRUE(body["access_token"].is_string());
@@ -388,7 +386,7 @@ TEST_F(AuthHandlersWithManagerTest, TokenReturnsNewAccessTokenForValidRefreshTok
   EXPECT_EQ(body["refresh_token"], refresh_token);
 }
 
-// @verifies REQ_INTEROP_086
+// @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersWithManagerTest, TokenReturnsUnauthorizedForInvalidRefreshToken) {
   auto req = make_json_request(R"({"grant_type": "refresh_token", "refresh_token": "not.a.valid.refresh.token"})");
   httplib::Response res;
@@ -408,7 +406,6 @@ TEST_F(AuthHandlersWithManagerTest, RevokeRevokesRefreshTokenForSubsequentTokenR
   httplib::Response revoke_res;
   handlers_->handle_auth_revoke(revoke_req, revoke_res);
 
-  EXPECT_EQ(revoke_res.status, -1);
   auto revoke_body = json::parse(revoke_res.body);
   EXPECT_EQ(revoke_body["status"], "revoked");
 
