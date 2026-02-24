@@ -14,13 +14,9 @@
 
 #include "ros2_medkit_gateway/updates/update_manager.hpp"
 
-#include <dlfcn.h>
-
 namespace ros2_medkit_gateway {
 
-UpdateManager::UpdateManager(std::unique_ptr<UpdateBackend> backend, void * plugin_handle)
-  : backend_(std::move(backend)), plugin_handle_(plugin_handle) {
-}
+UpdateManager::UpdateManager() = default;
 
 UpdateManager::~UpdateManager() {
   // Signal background tasks to stop accepting new work
@@ -40,11 +36,10 @@ UpdateManager::~UpdateManager() {
   for (auto & f : futures) {
     f.wait();
   }
-  // Destroy backend before closing plugin handle
-  backend_.reset();
-  if (plugin_handle_) {
-    dlclose(plugin_handle_);
-  }
+}
+
+void UpdateManager::set_backend(UpdateProvider * backend) {
+  backend_ = backend;
 }
 
 bool UpdateManager::has_backend() const {

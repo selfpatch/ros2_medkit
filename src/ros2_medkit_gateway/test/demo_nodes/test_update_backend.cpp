@@ -21,7 +21,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ros2_medkit_gateway/updates/update_backend.hpp"
+#include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_types.hpp"
+#include "ros2_medkit_gateway/providers/update_provider.hpp"
 
 using json = nlohmann::json;
 using namespace ros2_medkit_gateway;
@@ -29,11 +31,22 @@ using namespace ros2_medkit_gateway;
 /**
  * @brief In-memory update backend for integration testing.
  *
- * Stores package metadata in a map. Simulates prepare/execute with
- * short delays (100ms per step, 4 steps) and progress reporting.
+ * Implements both GatewayPlugin (for plugin framework loading) and
+ * UpdateProvider (for update functionality). Stores package metadata
+ * in a map. Simulates prepare/execute with short delays (100ms per
+ * step, 4 steps) and progress reporting.
  */
-class TestUpdateBackend : public UpdateBackend {
+class TestUpdateBackend : public GatewayPlugin, public UpdateProvider {
  public:
+  // ---- GatewayPlugin interface ----
+  std::string name() const override {
+    return "test_update_backend";
+  }
+
+  void configure(const nlohmann::json & /*config*/) override {
+  }
+
+  // ---- UpdateProvider interface ----
   tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter & filter) override {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> ids;
@@ -184,7 +197,15 @@ class TestUpdateBackend : public UpdateBackend {
   std::unordered_map<std::string, json> packages_;
 };
 
-// Plugin factory function - exported for dlopen/dlsym loading
-extern "C" UpdateBackend * create_update_backend() {
+// Plugin framework exports
+extern "C" GATEWAY_PLUGIN_EXPORT int plugin_api_version() {
+  return PLUGIN_API_VERSION;
+}
+
+extern "C" GATEWAY_PLUGIN_EXPORT GatewayPlugin * create_plugin() {
   return new TestUpdateBackend();
+}
+
+extern "C" GATEWAY_PLUGIN_EXPORT UpdateProvider * get_update_provider(GatewayPlugin * plugin) {
+  return static_cast<TestUpdateBackend *>(plugin);
 }
