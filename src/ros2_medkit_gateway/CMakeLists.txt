@@ -163,6 +163,25 @@ target_link_libraries(gateway_lib
   ${CMAKE_DL_LIBS}
 )
 
+# Precompiled headers - heavy headers used across most translation units.
+# Speeds up full builds by ~30-40%. Disable with -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON.
+target_precompile_headers(gateway_lib PRIVATE
+  <string>
+  <vector>
+  <memory>
+  <optional>
+  <functional>
+  <unordered_map>
+  <algorithm>
+  <sstream>
+  <chrono>
+  <mutex>
+  <rclcpp/rclcpp.hpp>
+  <nlohmann/json.hpp>
+  <httplib.h>
+  <tl/expected.hpp>
+)
+
 # Gateway node executable
 add_executable(gateway_node src/main.cpp)
 target_link_libraries(gateway_node gateway_lib)
