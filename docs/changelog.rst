@@ -16,6 +16,8 @@ Added
 
   - Load plugins from shared libraries (``.so``) via ``plugins`` parameter
   - Provider interfaces: ``UpdateProvider``, ``IntrospectionProvider`` (preview)
+  - ``PluginContext`` gives plugins access to entity cache, fault data, and HTTP utilities
+  - Custom capability registration (per-type and per-entity) with discovery integration
   - Error isolation: failing plugins are disabled without crashing the gateway
   - RAII lifecycle with API version checking and path validation
 

@@ -131,6 +131,8 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<SubscriptionManager> subscription_mgr_;
   // IMPORTANT: plugin_mgr_ BEFORE update_mgr_ - C++ destroys in reverse order,
   // so update_mgr_ waits for async tasks before plugin_mgr_ destroys the plugin.
+  // plugin_ctx_ is owned here (outlives plugins); plugin_mgr_ holds a non-owning ref.
+  std::unique_ptr<PluginContext> plugin_ctx_;
   std::unique_ptr<PluginManager> plugin_mgr_;
   std::unique_ptr<UpdateManager> update_mgr_;
   std::unique_ptr<RESTServer> rest_server_;

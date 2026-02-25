@@ -133,6 +133,7 @@ add_library(gateway_lib STATIC
   # HTTP handlers - updates
   src/http/handlers/update_handlers.cpp
   # Plugin framework
+  src/plugins/plugin_context.cpp
   src/plugins/plugin_loader.cpp
   src/plugins/plugin_manager.cpp
 )

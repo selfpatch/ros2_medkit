@@ -15,6 +15,7 @@
 #pragma once
 
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_loader.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
@@ -25,10 +26,6 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
-
-namespace rclcpp {
-class Node;
-}
 
 namespace ros2_medkit_gateway {
 
@@ -83,10 +80,14 @@ class PluginManager {
   void configure_plugins();
 
   /**
-   * @brief Set ROS 2 node on all plugins
-   * @param node ROS 2 node pointer (must outlive all plugins)
+   * @brief Set plugin context on all plugins
+   *
+   * Passes the gateway context (entity cache, faults, ROS 2 node, HTTP utils)
+   * to each plugin via set_context(). Replaces the old set_node() method.
+   *
+   * @param context Plugin context (must outlive all plugins)
    */
-  void set_node(rclcpp::Node * node);
+  void set_context(PluginContext & context);
 
   /**
    * @brief Register custom REST routes from all plugins
@@ -114,6 +115,13 @@ class PluginManager {
    */
   std::vector<IntrospectionProvider *> get_introspection_providers() const;
 
+  // ---- Capability queries (used by discovery handlers) ----
+
+  /// Get plugin context (for capability queries from discovery handlers)
+  PluginContext * get_context() const {
+    return context_;
+  }
+
   // ---- Info ----
   bool has_plugins() const;
   std::vector<std::string> plugin_names() const;
@@ -133,6 +141,7 @@ class PluginManager {
   void disable_plugin(LoadedPlugin & lp);
 
   std::vector<LoadedPlugin> plugins_;
+  PluginContext * context_ = nullptr;
   bool shutdown_called_ = false;
 };
 

@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 #include <httplib.h>
 
+#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
@@ -92,16 +93,16 @@ class MockThrowingPlugin : public GatewayPlugin {
   }
 };
 
-/// Plugin that throws during set_node
-class MockThrowOnSetNode : public GatewayPlugin, public UpdateProvider {
+/// Plugin that throws during set_context
+class MockThrowOnSetContext : public GatewayPlugin, public UpdateProvider {
  public:
   std::string name() const override {
-    return "throw_set_node";
+    return "throw_set_context";
   }
   void configure(const json &) override {
   }
-  void set_node(rclcpp::Node *) override {
-    throw std::runtime_error("set_node failed");
+  void set_context(PluginContext &) override {
+    throw std::runtime_error("set_context failed");
   }
 
   tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter &) override {
@@ -268,15 +269,18 @@ TEST(PluginManagerTest, LoadNonexistentPluginReturnsZero) {
 }
 
 // @verifies REQ_INTEROP_012
-TEST(PluginManagerTest, ThrowOnSetNodeDisablesPlugin) {
+TEST(PluginManagerTest, ThrowOnSetContextDisablesPlugin) {
   PluginManager mgr;
-  mgr.add_plugin(std::make_unique<MockThrowOnSetNode>());
+  mgr.add_plugin(std::make_unique<MockThrowOnSetContext>());
   auto good = std::make_unique<MockPlugin>();
   auto * good_raw = good.get();
   mgr.add_plugin(std::move(good));
 
   mgr.configure_plugins();
-  mgr.set_node(nullptr);
+
+  // Create a minimal PluginContext for the test
+  auto ctx = make_gateway_plugin_context(nullptr, nullptr);
+  mgr.set_context(*ctx);
 
   // Throwing plugin disabled, good plugin's UpdateProvider still works
   EXPECT_EQ(mgr.get_update_provider(), static_cast<UpdateProvider *>(good_raw));

@@ -356,7 +356,8 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
     }
     auto loaded = plugin_mgr_->load_plugins(configs);
     plugin_mgr_->configure_plugins();
-    plugin_mgr_->set_node(this);
+    plugin_ctx_ = make_gateway_plugin_context(this, fault_mgr_.get());
+    plugin_mgr_->set_context(*plugin_ctx_);
     RCLCPP_INFO(get_logger(), "Loaded %zu plugin(s)", loaded);
   }
 
