@@ -113,19 +113,20 @@ void PluginManager::configure_plugins() {
   }
 }
 
-void PluginManager::set_node(rclcpp::Node * node) {
+void PluginManager::set_context(PluginContext & context) {
+  context_ = &context;
   for (auto & lp : plugins_) {
     if (!lp.load_result.plugin) {
       continue;
     }
     try {
-      lp.load_result.plugin->set_node(node);
+      lp.load_result.plugin->set_context(context);
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw during set_node(): %s - disabling",
+      RCLCPP_ERROR(logger(), "Plugin '%s' threw during set_context(): %s - disabling",
                    lp.load_result.plugin->name().c_str(), e.what());
       disable_plugin(lp);
     } catch (...) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during set_node() - disabling",
+      RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during set_context() - disabling",
                    lp.load_result.plugin->name().c_str());
       disable_plugin(lp);
     }

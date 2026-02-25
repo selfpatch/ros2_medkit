@@ -209,26 +209,75 @@ Plugin Lifecycle
 3. ``create_plugin()`` factory function creates the plugin instance
 4. Provider interfaces are queried via ``get_update_provider()`` / ``get_introspection_provider()``
 5. ``configure()`` is called with per-plugin JSON config
-6. ``set_node()`` provides optional ROS 2 node access
+6. ``set_context()`` provides ``PluginContext`` with ROS 2 node, entity cache, faults, and HTTP utilities
 7. ``register_routes()`` allows registering custom REST endpoints
 8. Runtime: subsystem managers call provider methods as needed
 9. ``shutdown()`` is called before the plugin is destroyed
 
+PluginContext
+-------------
+
+After ``configure()``, the gateway calls ``set_context()`` with a ``PluginContext`` reference
+providing access to gateway data and utilities:
+
+- ``node()`` - ROS 2 node pointer for subscriptions, service clients, timers, etc.
+- ``get_entity(id)`` - look up any entity (area, component, app, function) from the discovery cache
+- ``list_entity_faults(entity_id)`` - query faults for an entity
+- ``validate_entity_for_route(req, res, entity_id)`` - validate entity exists and matches the route type, auto-sending SOVD errors on failure
+- ``send_error()`` / ``send_json()`` - SOVD-compliant HTTP response helpers (static methods)
+- ``register_capability()`` / ``register_entity_capability()`` - register custom capabilities on entities
+
+.. code-block:: cpp
+
+   void set_context(PluginContext& ctx) override {
+     ctx_ = &ctx;
+
+     // Register a custom capability for all apps
+     ctx.register_capability(SovdEntityType::APP, "x-medkit-traces");
+
+     // Register a capability for a specific entity
+     ctx.register_entity_capability("sensor1", "x-medkit-calibration");
+   }
+
+   PluginContext* ctx_ = nullptr;
+
+.. note::
+
+   The ``PluginContext`` interface is versioned alongside ``PLUGIN_API_VERSION``.
+   Additional methods (entity data access, configuration queries, etc.) may be added
+   in future versions.
+
 Custom REST Endpoints
 ---------------------
 
-Any plugin can register vendor-specific endpoints via ``register_routes()``:
+Any plugin can register vendor-specific endpoints via ``register_routes()``.
+Use ``PluginContext`` utilities for entity validation and SOVD-compliant responses:
 
 .. code-block:: cpp
 
    void register_routes(httplib::Server& server, const std::string& api_prefix) override {
+     // Global vendor endpoint
      server.Get(api_prefix + "/x-myvendor/status",
        [this](const httplib::Request&, httplib::Response& res) {
-         res.set_content(get_status_json(), "application/json");
+         PluginContext::send_json(res, get_status_json());
+       });
+
+     // Entity-scoped endpoint (matches a registered capability)
+     server.Get((api_prefix + R"(/apps/([^/]+)/x-medkit-traces)").c_str(),
+       [this](const httplib::Request& req, httplib::Response& res) {
+         auto entity = ctx_->validate_entity_for_route(req, res, req.matches[1]);
+         if (!entity) return;  // Error already sent
+
+         auto faults = ctx_->list_entity_faults(entity->id);
+         PluginContext::send_json(res, {{"entity", entity->id}, {"faults", faults}});
        });
    }
 
 Use the ``x-`` prefix for vendor-specific endpoints per SOVD convention.
+
+For entity-scoped endpoints, register a matching capability via ``register_capability()``
+or ``register_entity_capability()`` in ``set_context()`` so the endpoint appears in the
+entity's capabilities array in discovery responses.
 
 Multiple Plugins
 ----------------
@@ -242,7 +291,7 @@ Multiple plugins can be loaded simultaneously:
 Error Handling
 --------------
 
-If a plugin throws during any lifecycle method (``configure``, ``set_node``, ``register_routes``,
+If a plugin throws during any lifecycle method (``configure``, ``set_context``, ``register_routes``,
 ``shutdown``), the exception is caught and logged. The plugin is disabled but the gateway continues
 operating. A failing plugin never crashes the gateway.
 

@@ -28,6 +28,33 @@ using json = nlohmann::json;
 namespace ros2_medkit_gateway {
 namespace handlers {
 
+namespace {
+
+/// Append plugin-registered capabilities to a capabilities JSON array
+void append_plugin_capabilities(json & capabilities, const std::string & entity_type_path,
+                                const std::string & entity_id, SovdEntityType entity_type, const GatewayNode * node) {
+  auto * pmgr = node->get_plugin_manager();
+  if (!pmgr || !pmgr->get_context()) {
+    return;
+  }
+  auto * ctx = pmgr->get_context();
+  std::string href_prefix;
+  href_prefix.reserve(64);
+  href_prefix.append("/api/v1/").append(entity_type_path).append("/").append(entity_id).append("/");
+
+  // Type-level capabilities (registered for all entities of this type)
+  for (const auto & cap_name : ctx->get_type_capabilities(entity_type)) {
+    capabilities.push_back({{"name", cap_name}, {"href", href_prefix + cap_name}});
+  }
+
+  // Entity-specific capabilities
+  for (const auto & cap_name : ctx->get_entity_capabilities(entity_id)) {
+    capabilities.push_back({{"name", cap_name}, {"href", href_prefix + cap_name}});
+  }
+}
+
+}  // namespace
+
 // =============================================================================
 // Area handlers
 // =============================================================================
@@ -127,6 +154,7 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
     std::vector<Cap> caps = {Cap::SUBAREAS,   Cap::CONTAINS,       Cap::DATA,
                              Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("areas", area.id, caps);
+    append_plugin_capabilities(response["capabilities"], "areas", area.id, SovdEntityType::AREA, ctx_.node());
 
     LinksBuilder links;
     links.self("/api/v1/areas/" + area.id).collection("/api/v1/areas");
@@ -466,7 +494,9 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     if (!comp.depends_on.empty()) {
       caps.push_back(Cap::DEPENDS_ON);
     }
-    ext.add("capabilities", CapabilityBuilder::build_capabilities("components", comp.id, caps));
+    auto comp_caps = CapabilityBuilder::build_capabilities("components", comp.id, caps);
+    append_plugin_capabilities(comp_caps, "components", comp.id, SovdEntityType::COMPONENT, ctx_.node());
+    ext.add("capabilities", comp_caps);
     response["x-medkit"] = ext.build();
 
     HandlerContext::send_json(res, response);
@@ -784,6 +814,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("apps", app.id, caps);
+    append_plugin_capabilities(response["capabilities"], "apps", app.id, SovdEntityType::APP, ctx_.node());
 
     LinksBuilder links;
     links.self("/api/v1/apps/" + app.id).collection("/api/v1/apps");
@@ -984,6 +1015,7 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::HOSTS, Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("functions", func.id, caps);
+    append_plugin_capabilities(response["capabilities"], "functions", func.id, SovdEntityType::FUNCTION, ctx_.node());
 
     LinksBuilder links;
     links.self("/api/v1/functions/" + func.id).collection("/api/v1/functions");

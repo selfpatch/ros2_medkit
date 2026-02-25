@@ -21,11 +21,9 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
-namespace rclcpp {
-class Node;
-}
-
 namespace ros2_medkit_gateway {
+
+class PluginContext;
 
 /**
  * @brief Base class for all gateway plugins
@@ -61,15 +59,15 @@ class GatewayPlugin {
   virtual void configure(const nlohmann::json & config) = 0;
 
   /**
-   * @brief Optionally receive a ROS 2 node
+   * @brief Receive gateway context
    *
-   * Called after configure(). Plugins that need ROS 2 access
-   * (subscriptions, service clients) can use this node.
-   * Platform-only plugins can ignore this.
+   * Called after configure(). Provides access to the ROS 2 node,
+   * entity cache, fault data, and HTTP handler utilities.
+   * Store the reference if needed during runtime.
    *
-   * @param node ROS 2 node pointer (must outlive this plugin)
+   * @param context Gateway plugin context (outlives this plugin)
    */
-  virtual void set_node(rclcpp::Node * /*node*/) {
+  virtual void set_context(PluginContext & /*context*/) {
   }
 
   /**
