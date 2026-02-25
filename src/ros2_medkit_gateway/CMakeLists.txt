@@ -188,6 +188,10 @@ install(PROGRAMS scripts/get_type_schema.py scripts/generate_dev_certs.sh
   DESTINATION share/${PROJECT_NAME}/scripts
 )
 
+# clang-tidy: opt-in locally (slow, ~8-10 min), mandatory in CI.
+# Enable with: colcon build --cmake-args -DENABLE_CLANG_TIDY=ON
+option(ENABLE_CLANG_TIDY "Register clang-tidy as a CTest target" OFF)
+
 # Testing
 if(BUILD_TESTING)
   # Linting and code quality checks
@@ -244,14 +248,16 @@ if(BUILD_TESTING)
     CONFIG_FILE "${ament_cmake_clang_format_CONFIG_FILE}"
   )
 
-  # Configure clang-tidy manually with increased timeout (1500s instead of default 300s)
-  # This is needed because the project has many files and clang-tidy analysis takes time
-  ament_clang_tidy(
-    "${CMAKE_CURRENT_BINARY_DIR}"
-    CONFIG_FILE "${ament_cmake_clang_tidy_CONFIG_FILE}"
-    HEADER_FILTER "${ament_cmake_clang_tidy_HEADER_FILTER}"
-    TIMEOUT 1500
-  )
+  # clang-tidy: gated behind ENABLE_CLANG_TIDY (default OFF).
+  # CI sets -DENABLE_CLANG_TIDY=ON on Jazzy. Timeout 1500s for 142-file package.
+  if(ENABLE_CLANG_TIDY)
+    ament_clang_tidy(
+      "${CMAKE_CURRENT_BINARY_DIR}"
+      CONFIG_FILE "${ament_cmake_clang_tidy_CONFIG_FILE}"
+      HEADER_FILTER "${ament_cmake_clang_tidy_HEADER_FILTER}"
+      TIMEOUT 1500
+    )
+  endif()
 
   # Add GTest
   find_package(ament_cmake_gtest REQUIRED)
