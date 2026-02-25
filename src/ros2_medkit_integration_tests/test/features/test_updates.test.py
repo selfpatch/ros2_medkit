@@ -64,7 +64,6 @@ def generate_test_description():
             'server.port': PORT_NO_PLUGIN,
             'refresh_interval_ms': 1000,
             'updates.enabled': True,
-            'updates.backend': 'none',
         }],
         additional_env=coverage_env,
     )
@@ -79,8 +78,8 @@ def generate_test_description():
             'server.port': PORT_WITH_PLUGIN,
             'refresh_interval_ms': 1000,
             'updates.enabled': True,
-            'updates.backend': 'plugin',
-            'updates.plugin_path': plugin_path,
+            'plugins': ['test_update_backend'],
+            'plugins.test_update_backend.path': plugin_path,
         }],
         additional_env=coverage_env,
     )

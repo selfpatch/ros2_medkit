@@ -236,15 +236,30 @@ ros2_medkit_gateway:
       # Example: ["calibration", "firmware", "comlogs", "snapshots"]
       categories: []
 
-    # Software Updates Plugin System
-    # Enables /updates endpoints for SOVD-compliant software update management
+    # Plugin Framework
+    # Extend gateway with custom plugins loaded from shared libraries (.so).
+    # Plugins can implement provider interfaces (UpdateProvider, IntrospectionProvider)
+    # that are automatically detected and wired into subsystem managers.
+    #
+    # List plugin names, then configure each with a plugins.<name>.path parameter.
+    # Example:
+    #   plugins: ["my_ota_plugin"]
+    #   plugins.my_ota_plugin.path: "/opt/ros2_medkit/lib/libmy_ota_plugin.so"
+    #
+    # Plugin lifecycle: load -> configure -> set_node -> register_routes
+    # Plugins that throw during any lifecycle call are disabled (not crashed).
+    # Default: [] (no plugins)
+    plugins: []
+
+    # Software Updates
+    # Enables /updates endpoints for SOVD-compliant software update management.
+    # When enabled, a plugin implementing UpdateProvider is required to provide
+    # the backend functionality. Without such a plugin, endpoints return 501.
     updates:
       # Enable/disable /updates endpoints
       # When false, update routes are not registered
       # Default: false
       enabled: false
-      # Update backend is wired via the plugin framework.
-      # A plugin implementing UpdateProvider will be detected automatically.
 
     # Rate Limiting Configuration
     # Token-bucket-based rate limiting for API requests.

@@ -117,11 +117,17 @@ void PluginManager::set_node(rclcpp::Node * node) {
     try {
       lp.load_result.plugin->set_node(node);
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw during set_node(): %s", lp.load_result.plugin->name().c_str(),
-                   e.what());
+      RCLCPP_ERROR(logger(), "Plugin '%s' threw during set_node(): %s - disabling",
+                   lp.load_result.plugin->name().c_str(), e.what());
+      lp.update_provider = nullptr;
+      lp.introspection_provider = nullptr;
+      lp.load_result.plugin.reset();
     } catch (...) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during set_node()",
+      RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during set_node() - disabling",
                    lp.load_result.plugin->name().c_str());
+      lp.update_provider = nullptr;
+      lp.introspection_provider = nullptr;
+      lp.load_result.plugin.reset();
     }
   }
 }
@@ -134,11 +140,17 @@ void PluginManager::register_routes(httplib::Server & server, const std::string 
     try {
       lp.load_result.plugin->register_routes(server, api_prefix);
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw during register_routes(): %s", lp.load_result.plugin->name().c_str(),
-                   e.what());
+      RCLCPP_ERROR(logger(), "Plugin '%s' threw during register_routes(): %s - disabling",
+                   lp.load_result.plugin->name().c_str(), e.what());
+      lp.update_provider = nullptr;
+      lp.introspection_provider = nullptr;
+      lp.load_result.plugin.reset();
     } catch (...) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during register_routes()",
+      RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during register_routes() - disabling",
                    lp.load_result.plugin->name().c_str());
+      lp.update_provider = nullptr;
+      lp.introspection_provider = nullptr;
+      lp.load_result.plugin.reset();
     }
   }
 }
@@ -150,8 +162,11 @@ void PluginManager::shutdown_all() {
     }
     try {
       lp.load_result.plugin->shutdown();
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(logger(), "Plugin '%s' threw during shutdown(): %s", lp.load_result.plugin->name().c_str(), e.what());
     } catch (...) {
-      // Best effort shutdown
+      RCLCPP_WARN(logger(), "Plugin '%s' threw unknown exception during shutdown()",
+                  lp.load_result.plugin->name().c_str());
     }
   }
 }

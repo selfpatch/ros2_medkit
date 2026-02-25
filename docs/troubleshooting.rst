@@ -253,8 +253,10 @@ ros2_medkit is currently suitable for development and testing. For production:
 
 **Q: Can I extend ros2_medkit with custom endpoints?**
 
-Not directly at this time. Future versions may support plugins.
-For now, you can fork the gateway and add custom routes in ``rest_server.cpp``.
+Yes. The gateway plugin framework allows you to add custom REST endpoints via
+``GatewayPlugin::register_routes()``. Create a shared library (``.so``) that
+implements the ``GatewayPlugin`` base class and configure it in ``gateway_params.yaml``.
+See :doc:`/config/server` for plugin configuration details.
 
 **Q: How do I report a bug or request a feature?**
 

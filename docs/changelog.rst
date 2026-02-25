@@ -12,10 +12,16 @@ and this project adheres to `Semantic Versioning <https://semver.org/spec/v2.0.0
 Added
 ~~~~~
 
-* Software update management with pluggable backend architecture:
+* Gateway plugin framework for extending the gateway with custom functionality:
+
+  - Load plugins from shared libraries (``.so``) via ``plugins`` parameter
+  - Provider interfaces: ``UpdateProvider``, ``IntrospectionProvider``
+  - Error isolation: failing plugins are disabled without crashing the gateway
+  - RAII lifecycle with API version checking and path validation
+
+* Software update management via plugin framework:
 
   - 8 SOVD-compliant ``/updates`` endpoints (CRUD + prepare/execute/automated/status)
-  - Plugin system via dlopen for runtime backend loading
   - Async lifecycle with progress tracking and status polling
   - Feature gating via ``updates.enabled`` parameter
 

@@ -255,10 +255,58 @@ Example:
          max_clients: 10
          max_subscriptions: 100
 
+Plugin Framework
+----------------
+
+Extend the gateway with custom plugins loaded from shared libraries (``.so``).
+Plugins can implement provider interfaces (e.g., ``UpdateProvider``, ``IntrospectionProvider``)
+that are automatically detected and wired into the gateway's subsystem managers.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 15 15 45
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``plugins``
+     - string[]
+     - ``[]``
+     - List of plugin names to load. Each plugin requires a corresponding ``plugins.<name>.path`` parameter.
+   * - ``plugins.<name>.path``
+     - string
+     - (required)
+     - Absolute path to the plugin ``.so`` file. Must exist and have ``.so`` extension.
+
+Plugin loading lifecycle:
+
+1. Shared library is loaded via ``dlopen`` with ``RTLD_NOW | RTLD_LOCAL``
+2. API version is checked (must match gateway headers)
+3. ``create_plugin()`` factory is called to instantiate the plugin
+4. Provider interfaces are queried via ``extern "C"`` functions
+5. ``configure()`` is called with per-plugin config
+6. ``set_node()`` provides access to the ROS 2 node
+7. ``register_routes()`` allows the plugin to add custom REST endpoints
+
+Error isolation: if a plugin throws during any lifecycle call, it is disabled
+without crashing the gateway. Other plugins continue to operate normally.
+
+Example:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       plugins: ["my_ota_plugin"]
+       plugins.my_ota_plugin.path: "/opt/ros2_medkit/lib/libmy_ota_plugin.so"
+
 Software Updates
 ----------------
 
-Configure the software updates plugin system. Updates are disabled by default.
+Configure the software updates system. Updates are disabled by default.
+When enabled, a plugin implementing ``UpdateProvider`` is required to provide
+the backend functionality (see `Plugin Framework`_ above).
 
 .. list-table::
    :header-rows: 1
@@ -272,14 +320,6 @@ Configure the software updates plugin system. Updates are disabled by default.
      - bool
      - ``false``
      - Enable/disable software updates endpoints. When disabled, ``/updates`` routes are not registered.
-   * - ``updates.backend``
-     - string
-     - ``"none"``
-     - Backend type. ``"none"`` enables endpoints but returns 501. ``"plugin"`` loads a shared library.
-   * - ``updates.plugin_path``
-     - string
-     - ``""``
-     - Path to the ``.so`` plugin file. Required when ``backend`` is ``"plugin"``.
 
 Example:
 
@@ -287,10 +327,10 @@ Example:
 
    ros2_medkit_gateway:
      ros__parameters:
+       plugins: ["my_update_plugin"]
+       plugins.my_update_plugin.path: "/opt/ros2_medkit/lib/libmy_update_plugin.so"
        updates:
          enabled: true
-         backend: "plugin"
-         plugin_path: "/opt/ros2_medkit/plugins/libmy_update_backend.so"
 
 Complete Example
 ----------------
