@@ -65,7 +65,8 @@ class UpdateManager {
   UpdateManager(const UpdateManager &) = delete;
   UpdateManager & operator=(const UpdateManager &) = delete;
 
-  /// Set the backend provider (non-owning pointer, caller manages lifetime)
+  /// Set the backend provider (non-owning pointer, caller manages lifetime).
+  /// Must be called before any update operations; operations return NoBackend error until set.
   void set_backend(UpdateProvider * backend);
 
   /// Check if a backend is loaded

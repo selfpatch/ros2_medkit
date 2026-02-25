@@ -56,6 +56,15 @@ void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
   lp.update_provider = dynamic_cast<UpdateProvider *>(plugin.get());
   lp.introspection_provider = dynamic_cast<IntrospectionProvider *>(plugin.get());
 
+  // Cache first UpdateProvider, warn on duplicates
+  if (lp.update_provider) {
+    if (!first_update_provider_) {
+      first_update_provider_ = lp.update_provider;
+    } else {
+      RCLCPP_WARN(logger(), "Multiple UpdateProvider plugins loaded - ignoring '%s'", plugin->name().c_str());
+    }
+  }
+
   setup_plugin_logging(*plugin);
   lp.load_result.plugin = std::move(plugin);
   plugins_.push_back(std::move(lp));
@@ -75,6 +84,16 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
       lp.update_provider = result->update_provider;
       lp.introspection_provider = result->introspection_provider;
 
+      // Cache first UpdateProvider, warn on duplicates
+      if (lp.update_provider) {
+        if (!first_update_provider_) {
+          first_update_provider_ = lp.update_provider;
+        } else {
+          RCLCPP_WARN(logger(), "Multiple UpdateProvider plugins loaded - ignoring '%s'",
+                      result->plugin->name().c_str());
+        }
+      }
+
       setup_plugin_logging(*result->plugin);
       lp.load_result = std::move(*result);
       plugins_.push_back(std::move(lp));
@@ -87,6 +106,26 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
 }
 
 void PluginManager::disable_plugin(LoadedPlugin & lp) {
+  if (lp.load_result.plugin) {
+    try {
+      lp.load_result.plugin->shutdown();
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(logger(), "Plugin '%s' threw during shutdown(): %s", lp.load_result.plugin->name().c_str(), e.what());
+    } catch (...) {
+      RCLCPP_WARN(logger(), "Plugin '%s' threw unknown exception during shutdown()",
+                  lp.load_result.plugin->name().c_str());
+    }
+  }
+  // Invalidate cached provider if this plugin was the source, re-scan for next
+  if (first_update_provider_ && lp.update_provider == first_update_provider_) {
+    first_update_provider_ = nullptr;
+    for (const auto & other : plugins_) {
+      if (&other != &lp && other.load_result.plugin && other.update_provider) {
+        first_update_provider_ = other.update_provider;
+        break;
+      }
+    }
+  }
   lp.update_provider = nullptr;
   lp.introspection_provider = nullptr;
   lp.load_result.update_provider = nullptr;
@@ -173,21 +212,7 @@ void PluginManager::shutdown_all() {
 }
 
 UpdateProvider * PluginManager::get_update_provider() const {
-  UpdateProvider * first = nullptr;
-  for (const auto & lp : plugins_) {
-    if (!lp.load_result.plugin) {
-      continue;
-    }
-    if (lp.update_provider) {
-      if (!first) {
-        first = lp.update_provider;
-      } else {
-        RCLCPP_WARN(logger(), "Multiple UpdateProvider plugins loaded - ignoring '%s'",
-                    lp.load_result.plugin->name().c_str());
-      }
-    }
-  }
-  return first;
+  return first_update_provider_;
 }
 
 std::vector<IntrospectionProvider *> PluginManager::get_introspection_providers() const {

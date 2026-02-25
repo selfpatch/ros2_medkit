@@ -19,6 +19,7 @@
 #include "ros2_medkit_gateway/providers/update_provider.hpp"
 
 #include <dlfcn.h>
+#include <rclcpp/rclcpp.hpp>
 
 #include <filesystem>
 
@@ -78,6 +79,8 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
     return tl::make_unexpected("Plugin path must be absolute: " + plugin_path);
   }
 
+  // Gateway plugins are always unversioned .so files loaded by explicit path.
+  // Versioned sonames (libfoo.so.1) are a system packaging concern and not supported.
   if (fs_path.extension() != ".so") {
     return tl::make_unexpected("Plugin path must have .so extension: " + plugin_path);
   }
@@ -158,13 +161,29 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
   using UpdateProviderFn = UpdateProvider * (*)(GatewayPlugin *);
   auto update_fn = reinterpret_cast<UpdateProviderFn>(dlsym(handle, "get_update_provider"));
   if (update_fn) {
-    result.update_provider = update_fn(raw_plugin);
+    try {
+      result.update_provider = update_fn(raw_plugin);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_update_provider threw in %s: %s", plugin_path.c_str(),
+                  e.what());
+    } catch (...) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_update_provider threw unknown exception in %s",
+                  plugin_path.c_str());
+    }
   }
 
   using IntrospectionProviderFn = IntrospectionProvider * (*)(GatewayPlugin *);
   auto introspection_fn = reinterpret_cast<IntrospectionProviderFn>(dlsym(handle, "get_introspection_provider"));
   if (introspection_fn) {
-    result.introspection_provider = introspection_fn(raw_plugin);
+    try {
+      result.introspection_provider = introspection_fn(raw_plugin);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_introspection_provider threw in %s: %s",
+                  plugin_path.c_str(), e.what());
+    } catch (...) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_introspection_provider threw unknown exception in %s",
+                  plugin_path.c_str());
+    }
   }
 
   // Transfer handle ownership to result (disarm scope guard)
