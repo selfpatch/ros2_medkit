@@ -41,6 +41,17 @@ jobs:
         with:
           required-ros-distributions: ${{ matrix.ros_distro }}
 
+      - name: Install ccache
+        run: apt-get install -y ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-${{ matrix.ros_distro }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.ros_distro }}-
+
       - name: Install cpp-httplib from source (Humble)
         if: matrix.ros_distro == 'humble'
         run: |
@@ -73,6 +84,10 @@ jobs:
           fi
 
       - name: Build packages
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           CMAKE_EXTRA_ARGS=""
@@ -82,6 +97,7 @@ jobs:
           colcon build --symlink-install \
             --cmake-args -DCMAKE_BUILD_TYPE=Release ${CMAKE_EXTRA_ARGS} \
             --event-handlers console_direct+
+          ccache -s
 
       - name: Run linters (clang-format, clang-tidy, etc.)
         if: matrix.ros_distro == 'jazzy'
