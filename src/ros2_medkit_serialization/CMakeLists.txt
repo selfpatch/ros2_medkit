@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake")
 include(ROS2MedkitCompat)
 include(ROS2MedkitCcache)
+include(ROS2MedkitLinting)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -103,12 +104,9 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
-option(ENABLE_CLANG_TIDY "Register clang-tidy as a CTest target" OFF)
-
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
-  find_package(ament_cmake_clang_tidy REQUIRED)
   find_package(std_msgs REQUIRED)
   find_package(std_srvs REQUIRED)
   find_package(geometry_msgs REQUIRED)
@@ -143,16 +141,10 @@ if(BUILD_TESTING)
     "test/test_type_cache.cpp"
   )
 
-  # clang-tidy: gated behind ENABLE_CLANG_TIDY (default OFF).
-  if(ENABLE_CLANG_TIDY)
-    set(_clang_tidy_config "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-tidy")
-    ament_clang_tidy(
-      "${CMAKE_CURRENT_BINARY_DIR}"
-      CONFIG_FILE "${_clang_tidy_config}"
-      HEADER_FILTER "^${CMAKE_CURRENT_SOURCE_DIR}/include/ros2_medkit_serialization/[^v].*"
-      TIMEOUT 300
-    )
-  endif()
+  ros2_medkit_clang_tidy(
+    HEADER_FILTER "^${CMAKE_CURRENT_SOURCE_DIR}/include/ros2_medkit_serialization/[^v].*"
+    TIMEOUT 300
+  )
 
   # Unit tests
   ament_add_gtest(test_type_cache test/test_type_cache.cpp)
