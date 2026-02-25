@@ -40,45 +40,41 @@ class HealthHandlersTest : public ::testing::Test {
   TlsConfig tls_config_{};    // enabled = false by default
   HandlerContext ctx_{nullptr, cors_config_, auth_config_, tls_config_, nullptr};
   HealthHandlers handlers_{ctx_};
+
+  httplib::Request req_;
+  httplib::Response res_;
+
+  HandlerContext make_context(const AuthConfig & auth, const TlsConfig & tls) {
+    return HandlerContext(nullptr, cors_config_, auth, tls, nullptr);
+  }
 };
 
 // --- handle_health ---
 
-// @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleHealthResponseContainsStatusHealthy) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_health(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_health(req_, res_);
+  auto body = json::parse(res_.body);
   EXPECT_EQ(body["status"], "healthy");
 }
 
-// @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleHealthResponseContainsTimestamp) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_health(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_health(req_, res_);
+  auto body = json::parse(res_.body);
   EXPECT_TRUE(body.contains("timestamp"));
   EXPECT_TRUE(body["timestamp"].is_number());
 }
 
-// @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleHealthResponseIsValidJson) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_health(req, res);
-  EXPECT_NO_THROW(json::parse(res.body));
+  handlers_.handle_health(req_, res_);
+  EXPECT_NO_THROW(json::parse(res_.body));
 }
 
 // --- handle_version_info ---
 
 // @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleVersionInfoContainsSovdInfoArray) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_version_info(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_version_info(req_, res_);
+  auto body = json::parse(res_.body);
   ASSERT_TRUE(body.contains("sovd_info"));
   ASSERT_TRUE(body["sovd_info"].is_array());
   EXPECT_FALSE(body["sovd_info"].empty());
@@ -86,31 +82,26 @@ TEST_F(HealthHandlersTest, HandleVersionInfoContainsSovdInfoArray) {
 
 // @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVersionField) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_version_info(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_version_info(req_, res_);
+  auto body = json::parse(res_.body);
   auto & entry = body["sovd_info"][0];
   EXPECT_TRUE(entry.contains("version"));
   EXPECT_TRUE(entry["version"].is_string());
+  EXPECT_FALSE(entry["version"].get<std::string>().empty());
 }
 
 // @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasBaseUri) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_version_info(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_version_info(req_, res_);
+  auto body = json::parse(res_.body);
   auto & entry = body["sovd_info"][0];
   EXPECT_TRUE(entry.contains("base_uri"));
 }
 
 // @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVendorInfo) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_version_info(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_version_info(req_, res_);
+  auto body = json::parse(res_.body);
   auto & entry = body["sovd_info"][0];
   EXPECT_TRUE(entry.contains("vendor_info"));
   EXPECT_TRUE(entry["vendor_info"].contains("name"));
@@ -119,85 +110,72 @@ TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVendorInfo) {
 
 // --- handle_root ---
 
-// @verifies REQ_INTEROP_001
+// @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootResponseContainsRequiredTopLevelFields) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_root(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_root(req_, res_);
+  auto body = json::parse(res_.body);
   EXPECT_TRUE(body.contains("name"));
+  EXPECT_FALSE(body["name"].get<std::string>().empty());
   EXPECT_TRUE(body.contains("version"));
+  EXPECT_FALSE(body["version"].get<std::string>().empty());
   EXPECT_TRUE(body.contains("api_base"));
+  EXPECT_FALSE(body["api_base"].get<std::string>().empty());
   EXPECT_TRUE(body.contains("endpoints"));
   EXPECT_TRUE(body.contains("capabilities"));
 }
 
-// @verifies REQ_INTEROP_001
+// @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootEndpointsIsNonEmptyArray) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_root(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_root(req_, res_);
+  auto body = json::parse(res_.body);
   ASSERT_TRUE(body["endpoints"].is_array());
   EXPECT_FALSE(body["endpoints"].empty());
 }
 
-// @verifies REQ_INTEROP_001
+// @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootCapabilitiesContainsDiscovery) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_root(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_root(req_, res_);
+  auto body = json::parse(res_.body);
   auto & caps = body["capabilities"];
   EXPECT_TRUE(caps.contains("discovery"));
   EXPECT_TRUE(caps["discovery"].get<bool>());
 }
 
-// @verifies REQ_INTEROP_001
+// @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootAuthDisabledNoAuthEndpoints) {
   // With auth disabled (default), auth endpoints must not appear in the list
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_root(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_root(req_, res_);
+  auto body = json::parse(res_.body);
   for (const auto & ep : body["endpoints"]) {
     EXPECT_EQ(ep.get<std::string>().find("/auth/"), std::string::npos)
         << "Unexpected auth endpoint when auth is disabled: " << ep;
   }
 }
 
-// @verifies REQ_INTEROP_001
+// @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootCapabilitiesAuthDisabled) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_root(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_root(req_, res_);
+  auto body = json::parse(res_.body);
   EXPECT_FALSE(body["capabilities"]["authentication"].get<bool>());
 }
 
-// @verifies REQ_INTEROP_001
+// @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootCapabilitiesTlsDisabled) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_root(req, res);
-  auto body = json::parse(res.body);
+  handlers_.handle_root(req_, res_);
+  auto body = json::parse(res_.body);
   EXPECT_FALSE(body["capabilities"]["tls"].get<bool>());
   EXPECT_FALSE(body.contains("tls"));
 }
 
-// @verifies REQ_INTEROP_001
+// @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootAuthEnabledAddsAuthEndpoints) {
   AuthConfig auth_enabled{};
   auth_enabled.enabled = true;
-  TlsConfig tls{};
-  CorsConfig cors{};
-  HandlerContext ctx_auth(nullptr, cors, auth_enabled, tls, nullptr);
+  auto ctx_auth = make_context(auth_enabled, tls_config_);
   HealthHandlers handlers_auth(ctx_auth);
 
-  httplib::Request req;
-  httplib::Response res;
-  handlers_auth.handle_root(req, res);
-  auto body = json::parse(res.body);
+  handlers_auth.handle_root(req_, res_);
+  auto body = json::parse(res_.body);
 
   bool has_auth_endpoint = false;
   for (const auto & ep : body["endpoints"]) {
@@ -210,21 +188,17 @@ TEST_F(HealthHandlersTest, HandleRootAuthEnabledAddsAuthEndpoints) {
   EXPECT_TRUE(body["capabilities"]["authentication"].get<bool>());
 }
 
-// @verifies REQ_INTEROP_001
+// @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootAuthEnabledIncludesAuthMetadataBlock) {
   AuthConfig auth_enabled{};
   auth_enabled.enabled = true;
   auth_enabled.require_auth_for = ros2_medkit_gateway::AuthRequirement::ALL;
   auth_enabled.jwt_algorithm = ros2_medkit_gateway::JwtAlgorithm::HS256;
-  TlsConfig tls{};
-  CorsConfig cors{};
-  HandlerContext ctx_auth(nullptr, cors, auth_enabled, tls, nullptr);
+  auto ctx_auth = make_context(auth_enabled, tls_config_);
   HealthHandlers handlers_auth(ctx_auth);
 
-  httplib::Request req;
-  httplib::Response res;
-  handlers_auth.handle_root(req, res);
-  auto body = json::parse(res.body);
+  handlers_auth.handle_root(req_, res_);
+  auto body = json::parse(res_.body);
 
   ASSERT_TRUE(body.contains("auth"));
   EXPECT_TRUE(body["auth"]["enabled"].get<bool>());
@@ -232,20 +206,16 @@ TEST_F(HealthHandlersTest, HandleRootAuthEnabledIncludesAuthMetadataBlock) {
   EXPECT_EQ(body["auth"]["require_auth_for"], "all");
 }
 
-// @verifies REQ_INTEROP_001
+// @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootTlsEnabledIncludesTlsMetadataBlock) {
-  AuthConfig auth{};
   TlsConfig tls_enabled{};
   tls_enabled.enabled = true;
   tls_enabled.min_version = "1.3";
-  CorsConfig cors{};
-  HandlerContext ctx_tls(nullptr, cors, auth, tls_enabled, nullptr);
+  auto ctx_tls = make_context(auth_config_, tls_enabled);
   HealthHandlers handlers_tls(ctx_tls);
 
-  httplib::Request req;
-  httplib::Response res;
-  handlers_tls.handle_root(req, res);
-  auto body = json::parse(res.body);
+  handlers_tls.handle_root(req_, res_);
+  auto body = json::parse(res_.body);
 
   ASSERT_TRUE(body.contains("tls"));
   EXPECT_TRUE(body["tls"]["enabled"].get<bool>());
