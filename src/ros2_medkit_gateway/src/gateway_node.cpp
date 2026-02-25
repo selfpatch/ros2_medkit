@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <unordered_set>
 
 using namespace std::chrono_literals;
 
@@ -384,10 +385,15 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
         return false;
       }
       return std::all_of(name.begin(), name.end(), [](char c) {
-        return std::isalnum(c) || c == '_' || c == '-';
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-';
       });
     };
+    std::unordered_set<std::string> seen_names;
     for (const auto & pname : plugin_names) {
+      if (!seen_names.insert(pname).second) {
+        RCLCPP_WARN(get_logger(), "Duplicate plugin name '%s' - skipping", pname.c_str());
+        continue;
+      }
       if (!is_valid_plugin_name(pname)) {
         RCLCPP_ERROR(get_logger(),
                      "Invalid plugin name '%s': must be alphanumeric, underscore, or hyphen (max 256 chars)",

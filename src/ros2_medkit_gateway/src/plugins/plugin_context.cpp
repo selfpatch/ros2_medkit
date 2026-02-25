@@ -18,6 +18,7 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
 
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
@@ -97,18 +98,8 @@ class GatewayPluginContext : public PluginContext {
       return std::nullopt;
     }
 
-    // Determine expected type from route path
-    auto expected_type = SovdEntityType::UNKNOWN;
-    auto path = req.path;
-    if (path.find("/components/") != std::string::npos) {
-      expected_type = SovdEntityType::COMPONENT;
-    } else if (path.find("/apps/") != std::string::npos) {
-      expected_type = SovdEntityType::APP;
-    } else if (path.find("/areas/") != std::string::npos) {
-      expected_type = SovdEntityType::AREA;
-    } else if (path.find("/functions/") != std::string::npos) {
-      expected_type = SovdEntityType::FUNCTION;
-    }
+    // Determine expected type from route path (segment-boundary-aware matching)
+    auto expected_type = extract_entity_type_from_path(req.path);
 
     auto entity = get_entity(entity_id);
     if (!entity) {

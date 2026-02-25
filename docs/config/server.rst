@@ -286,7 +286,7 @@ Plugin loading lifecycle:
 3. ``create_plugin()`` factory is called to instantiate the plugin
 4. Provider interfaces are queried via ``extern "C"`` functions
 5. ``configure()`` is called with per-plugin config
-6. ``set_node()`` provides access to the ROS 2 node
+6. ``set_context()`` passes the gateway context to the plugin
 7. ``register_routes()`` allows the plugin to add custom REST endpoints
 
 Error isolation: if a plugin throws during any lifecycle call, it is disabled

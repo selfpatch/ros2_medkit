@@ -142,6 +142,7 @@ class PluginManager {
 
   std::vector<LoadedPlugin> plugins_;
   PluginContext * context_ = nullptr;
+  UpdateProvider * first_update_provider_ = nullptr;
   bool shutdown_called_ = false;
 };
 

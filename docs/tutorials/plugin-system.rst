@@ -324,5 +324,7 @@ Build Requirements
 ------------------
 
 - **Same compiler and ABI** as the gateway executable
-- **RTTI must be enabled** - do NOT compile plugins with ``-fno-rtti``
+- **RTTI must be enabled for in-process plugins** - the ``add_plugin()`` path uses ``dynamic_cast``
+  to query provider interfaces, so ``-fno-rtti`` will break it. Shared-library plugins loaded via
+  ``PluginLoader::load()`` use ``extern "C"`` query functions and do not require RTTI.
 - The ``GATEWAY_PLUGIN_EXPORT`` macro ensures correct symbol visibility
