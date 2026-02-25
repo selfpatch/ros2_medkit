@@ -20,6 +20,7 @@ Step-by-step guides for common use cases with ros2_medkit.
    custom_areas
    web-ui
    mcp-server
+   plugin-system
 
 Demos
 -----
@@ -84,3 +85,6 @@ Advanced Tutorials
 
 :doc:`custom_areas`
    Customize the entity hierarchy for your robot architecture.
+
+:doc:`plugin-system`
+   Extend the gateway with custom plugins for update backends, introspection, and REST endpoints.
