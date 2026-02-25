@@ -111,7 +111,7 @@ needs_types = [
     ),
 ]
 
-needs_extra_links = [
+needs_links = [
     {
         "option": "links",
         "incoming": "is linked by",
