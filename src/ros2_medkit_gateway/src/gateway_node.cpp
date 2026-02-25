@@ -22,6 +22,55 @@ using namespace std::chrono_literals;
 
 namespace ros2_medkit_gateway {
 
+namespace {
+
+/// Convert an rclcpp::Parameter to a nlohmann::json value
+nlohmann::json parameter_to_json(const rclcpp::Parameter & param) {
+  switch (param.get_type()) {
+    case rclcpp::ParameterType::PARAMETER_BOOL:
+      return param.as_bool();
+    case rclcpp::ParameterType::PARAMETER_INTEGER:
+      return param.as_int();
+    case rclcpp::ParameterType::PARAMETER_DOUBLE:
+      return param.as_double();
+    case rclcpp::ParameterType::PARAMETER_STRING:
+      return param.as_string();
+    case rclcpp::ParameterType::PARAMETER_BYTE_ARRAY:
+      return param.as_byte_array();
+    case rclcpp::ParameterType::PARAMETER_BOOL_ARRAY:
+      return param.as_bool_array();
+    case rclcpp::ParameterType::PARAMETER_INTEGER_ARRAY:
+      return param.as_integer_array();
+    case rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY:
+      return param.as_double_array();
+    case rclcpp::ParameterType::PARAMETER_STRING_ARRAY:
+      return param.as_string_array();
+    default:
+      return nullptr;
+  }
+}
+
+/// Extract per-plugin config from YAML parameter overrides.
+/// Scans for keys matching "plugins.<name>.<key>" (excluding ".path")
+/// and builds a flat JSON object: {"<key>": value, ...}
+nlohmann::json extract_plugin_config(const std::vector<rclcpp::Parameter> & overrides,
+                                     const std::string & plugin_name) {
+  auto config = nlohmann::json::object();
+  std::string prefix = "plugins." + plugin_name + ".";
+  std::string path_key = prefix + "path";
+
+  for (const auto & param : overrides) {
+    const auto & name = param.get_name();
+    if (name.rfind(prefix, 0) == 0 && name != path_key) {
+      auto key = name.substr(prefix.size());
+      config[key] = parameter_to_json(param);
+    }
+  }
+  return config;
+}
+
+}  // namespace
+
 GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   RCLCPP_INFO(get_logger(), "Initializing ROS 2 Medkit Gateway...");
 
@@ -352,7 +401,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
         RCLCPP_ERROR(get_logger(), "Plugin '%s' has no path configured", pname.c_str());
         continue;
       }
-      configs.push_back({pname, path, nlohmann::json::object()});
+      auto plugin_config = extract_plugin_config(get_node_options().parameter_overrides(), pname);
+      if (!plugin_config.empty()) {
+        RCLCPP_INFO(get_logger(), "Plugin '%s' config: %zu key(s)", pname.c_str(), plugin_config.size());
+      }
+      configs.push_back({pname, path, std::move(plugin_config)});
     }
     auto loaded = plugin_mgr_->load_plugins(configs);
     plugin_mgr_->configure_plugins();
