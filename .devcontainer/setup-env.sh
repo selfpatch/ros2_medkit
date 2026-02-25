@@ -22,6 +22,12 @@ if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
 fi
 rosdep update
 
+# Install pre-commit hooks (pre-commit for local, pre-push for clang-tidy)
+if command -v pre-commit &>/dev/null; then
+  pre-commit install
+  pre-commit install --hook-type pre-push
+fi
+
 # Test installations
 echo "Testing installations..."
 echo "ROS2 Jazzy: $(test -f /opt/ros/jazzy/setup.bash && echo 'Installed' || echo 'Not found')"

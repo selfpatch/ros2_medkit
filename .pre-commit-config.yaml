@@ -60,3 +60,15 @@ repos:
         language: system
         types_or: [c, c++, python, cmake]
         exclude: /vendored/
+
+  # ── Incremental clang-tidy (pre-push only) ────────────────────────
+  # Requires: pre-commit install --hook-type pre-push
+  - repo: local
+    hooks:
+      - id: clang-tidy-diff
+        name: clang-tidy (changed files only)
+        entry: ./scripts/clang-tidy-diff.sh
+        language: system
+        types: [c++]
+        exclude: /vendored/
+        stages: [pre-push]
