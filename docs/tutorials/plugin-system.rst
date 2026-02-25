@@ -27,16 +27,31 @@ Add plugins to ``gateway_params.yaml``:
      ros__parameters:
        plugins: ["my_ota_plugin"]
        plugins.my_ota_plugin.path: "/opt/ros2_medkit/lib/libmy_ota_plugin.so"
+       plugins.my_ota_plugin.server_url: "https://updates.example.com"
+       plugins.my_ota_plugin.api_key: "secret123"
+       plugins.my_ota_plugin.timeout_ms: 5000
 
        # Enable updates if your plugin implements UpdateProvider
        updates:
          enabled: true
 
 Each plugin name in the ``plugins`` array requires a corresponding ``plugins.<name>.path``
-parameter with the absolute path to the ``.so`` file. Plugins are loaded in the order listed.
-An empty list (default) means no plugins are loaded, with zero overhead.
+parameter with the absolute path to the ``.so`` file. Any additional ``plugins.<name>.<key>``
+parameters are collected into a JSON object and passed to the plugin's ``configure()`` method.
+
+For the example above, ``configure()`` receives:
+
+.. code-block:: json
+
+   {"server_url": "https://updates.example.com", "api_key": "secret123", "timeout_ms": 5000}
+
+Plugins are loaded in the order listed. An empty list (default) means no plugins are loaded,
+with zero overhead.
 
 Plugin names must contain only alphanumeric characters, underscores, and hyphens (max 256 chars).
+
+All standard ROS 2 parameter types are supported: strings, integers, doubles, booleans,
+and their array variants. They are automatically converted to their JSON equivalents.
 
 Writing a Plugin
 ----------------

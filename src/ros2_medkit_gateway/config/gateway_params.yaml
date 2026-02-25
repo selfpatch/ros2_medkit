@@ -241,12 +241,15 @@ ros2_medkit_gateway:
     # Plugins can implement provider interfaces (UpdateProvider, IntrospectionProvider)
     # that are automatically detected and wired into subsystem managers.
     #
-    # List plugin names, then configure each with a plugins.<name>.path parameter.
+    # List plugin names, then configure each with plugins.<name>.path and
+    # any additional plugins.<name>.<key> parameters (passed as JSON config).
     # Example:
     #   plugins: ["my_ota_plugin"]
     #   plugins.my_ota_plugin.path: "/opt/ros2_medkit/lib/libmy_ota_plugin.so"
+    #   plugins.my_ota_plugin.server_url: "https://updates.example.com"
+    #   plugins.my_ota_plugin.timeout_ms: 5000
     #
-    # Plugin lifecycle: load -> configure -> set_node -> register_routes
+    # Plugin lifecycle: load -> configure -> set_context -> register_routes
     # Plugins that throw during any lifecycle call are disabled (not crashed).
     # Default: [] (no plugins)
     plugins: []
