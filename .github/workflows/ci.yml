@@ -75,8 +75,12 @@ jobs:
       - name: Build packages
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          CMAKE_EXTRA_ARGS=""
+          if [ "${{ matrix.ros_distro }}" = "jazzy" ]; then
+            CMAKE_EXTRA_ARGS="-DENABLE_CLANG_TIDY=ON"
+          fi
           colcon build --symlink-install \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release ${CMAKE_EXTRA_ARGS} \
             --event-handlers console_direct+
 
       - name: Run linters (clang-format, clang-tidy, etc.)

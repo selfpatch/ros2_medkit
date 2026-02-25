@@ -102,6 +102,8 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
+option(ENABLE_CLANG_TIDY "Register clang-tidy as a CTest target" OFF)
+
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
@@ -140,14 +142,16 @@ if(BUILD_TESTING)
     "test/test_type_cache.cpp"
   )
 
-  # Configure clang-tidy manually for non-vendored files only
-  set(_clang_tidy_config "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-tidy")
-  ament_clang_tidy(
-    "${CMAKE_CURRENT_BINARY_DIR}"
-    CONFIG_FILE "${_clang_tidy_config}"
-    HEADER_FILTER "^${CMAKE_CURRENT_SOURCE_DIR}/include/ros2_medkit_serialization/[^v].*"
-    TIMEOUT 300
-  )
+  # clang-tidy: gated behind ENABLE_CLANG_TIDY (default OFF).
+  if(ENABLE_CLANG_TIDY)
+    set(_clang_tidy_config "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-tidy")
+    ament_clang_tidy(
+      "${CMAKE_CURRENT_BINARY_DIR}"
+      CONFIG_FILE "${_clang_tidy_config}"
+      HEADER_FILTER "^${CMAKE_CURRENT_SOURCE_DIR}/include/ros2_medkit_serialization/[^v].*"
+      TIMEOUT 300
+    )
+  endif()
 
   # Unit tests
   ament_add_gtest(test_type_cache test/test_type_cache.cpp)

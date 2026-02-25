@@ -111,6 +111,8 @@ install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 
+option(ENABLE_CLANG_TIDY "Register clang-tidy as a CTest target" OFF)
+
 # Testing
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -119,8 +121,17 @@ if(BUILD_TESTING)
 
   set(ament_cmake_clang_format_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-format")
   set(ament_cmake_clang_tidy_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-tidy")
-  list(APPEND AMENT_LINT_AUTO_EXCLUDE ament_cmake_uncrustify ament_cmake_cpplint)
+  list(APPEND AMENT_LINT_AUTO_EXCLUDE ament_cmake_uncrustify ament_cmake_cpplint ament_cmake_clang_tidy)
   ament_lint_auto_find_test_dependencies()
+
+  if(ENABLE_CLANG_TIDY)
+    find_package(ament_cmake_clang_tidy REQUIRED)
+    set(_clang_tidy_config "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-tidy")
+    ament_clang_tidy(
+      "${CMAKE_CURRENT_BINARY_DIR}"
+      CONFIG_FILE "${_clang_tidy_config}"
+    )
+  endif()
 
   # Unit tests
   ament_add_gtest(test_fault_manager test/test_fault_manager.cpp)
