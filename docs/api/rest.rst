@@ -676,8 +676,9 @@ Software Updates
 ----------------
 
 Manage software update packages with an async prepare/execute lifecycle.
-The updates feature requires a backend plugin to be loaded (see :doc:`/config/server`).
-Without a plugin, all endpoints return ``501 Not Implemented``.
+The updates feature requires a plugin implementing ``UpdateProvider`` to be loaded
+via the plugin framework (see :doc:`/config/server`).
+Without such a plugin, all endpoints return ``501 Not Implemented``.
 
 ``GET /api/v1/updates``
    List all registered update packages.

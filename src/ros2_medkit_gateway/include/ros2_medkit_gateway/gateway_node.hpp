@@ -100,6 +100,11 @@ class GatewayNode : public rclcpp::Node {
    * @return Raw pointer to UpdateManager (valid for lifetime of GatewayNode), or nullptr if disabled
    */
   UpdateManager * get_update_manager() const;
+
+  /**
+   * @brief Get the PluginManager instance
+   * @return Raw pointer to PluginManager (valid for lifetime of GatewayNode)
+   */
   PluginManager * get_plugin_manager() const;
 
  private:

@@ -89,7 +89,7 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
   }
 
   // --- dlopen ---
-  void * handle = dlopen(canonical_path.c_str(), RTLD_NOW);
+  void * handle = dlopen(canonical_path.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (!handle) {
     return tl::make_unexpected("Failed to load plugin: " + std::string(dlerror()));
   }
