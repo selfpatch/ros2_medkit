@@ -13,8 +13,10 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <httplib.h>
 
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
 using namespace ros2_medkit_gateway;
 using json = nlohmann::json;
@@ -87,6 +89,71 @@ class MockThrowingPlugin : public GatewayPlugin {
   }
   void configure(const json &) override {
     throw std::runtime_error("configure failed");
+  }
+};
+
+/// Plugin that throws during set_node
+class MockThrowOnSetNode : public GatewayPlugin, public UpdateProvider {
+ public:
+  std::string name() const override {
+    return "throw_set_node";
+  }
+  void configure(const json &) override {
+  }
+  void set_node(rclcpp::Node *) override {
+    throw std::runtime_error("set_node failed");
+  }
+
+  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter &) override {
+    return std::vector<std::string>{};
+  }
+  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string &) override {
+    return json::object();
+  }
+  tl::expected<void, UpdateBackendErrorInfo> register_update(const json &) override {
+    return {};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string &) override {
+    return {};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string &, UpdateProgressReporter &) override {
+    return {};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string &, UpdateProgressReporter &) override {
+    return {};
+  }
+  tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string &) override {
+    return false;
+  }
+};
+
+/// Plugin that throws during register_routes
+class MockThrowOnRegisterRoutes : public GatewayPlugin, public IntrospectionProvider {
+ public:
+  std::string name() const override {
+    return "throw_register_routes";
+  }
+  void configure(const json &) override {
+  }
+  void register_routes(httplib::Server &, const std::string &) override {
+    throw std::runtime_error("register_routes failed");
+  }
+
+  IntrospectionResult introspect(const IntrospectionInput &) override {
+    return {};
+  }
+};
+
+/// Plugin that throws during shutdown
+class MockThrowOnShutdown : public GatewayPlugin {
+ public:
+  std::string name() const override {
+    return "throw_shutdown";
+  }
+  void configure(const json &) override {
+  }
+  void shutdown() override {
+    throw std::runtime_error("shutdown failed");
   }
 };
 
@@ -198,4 +265,68 @@ TEST(PluginManagerTest, LoadNonexistentPluginReturnsZero) {
   auto loaded = mgr.load_plugins(configs);
   EXPECT_EQ(loaded, 0u);
   EXPECT_FALSE(mgr.has_plugins());
+}
+
+// @verifies REQ_INTEROP_012
+TEST(PluginManagerTest, ThrowOnSetNodeDisablesPlugin) {
+  PluginManager mgr;
+  mgr.add_plugin(std::make_unique<MockThrowOnSetNode>());
+  auto good = std::make_unique<MockPlugin>();
+  auto * good_raw = good.get();
+  mgr.add_plugin(std::move(good));
+
+  mgr.configure_plugins();
+  mgr.set_node(nullptr);
+
+  // Throwing plugin disabled, good plugin's UpdateProvider still works
+  EXPECT_EQ(mgr.get_update_provider(), static_cast<UpdateProvider *>(good_raw));
+  // Only good plugin remains active
+  EXPECT_EQ(mgr.plugin_names().size(), 1u);
+  EXPECT_EQ(mgr.plugin_names()[0], "mock");
+}
+
+// @verifies REQ_INTEROP_012
+TEST(PluginManagerTest, ThrowOnRegisterRoutesDisablesPlugin) {
+  PluginManager mgr;
+  mgr.add_plugin(std::make_unique<MockThrowOnRegisterRoutes>());
+  auto good = std::make_unique<MockIntrospectionOnly>();
+  mgr.add_plugin(std::move(good));
+
+  mgr.configure_plugins();
+  httplib::Server srv;
+  mgr.register_routes(srv, "/api/v1");
+
+  // Throwing plugin disabled, good plugin's IntrospectionProvider still works
+  EXPECT_EQ(mgr.get_introspection_providers().size(), 1u);
+  EXPECT_EQ(mgr.plugin_names().size(), 1u);
+  EXPECT_EQ(mgr.plugin_names()[0], "introspection_only");
+}
+
+// @verifies REQ_INTEROP_012
+TEST(PluginManagerTest, ShutdownAllIdempotent) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<MockPlugin>();
+  auto * raw = plugin.get();
+  mgr.add_plugin(std::move(plugin));
+
+  mgr.shutdown_all();
+  EXPECT_TRUE(raw->shutdown_called_);
+
+  // Reset flag, call again - should be a no-op
+  raw->shutdown_called_ = false;
+  mgr.shutdown_all();
+  EXPECT_FALSE(raw->shutdown_called_);
+}
+
+// @verifies REQ_INTEROP_012
+TEST(PluginManagerTest, ShutdownSwallowsExceptions) {
+  PluginManager mgr;
+  mgr.add_plugin(std::make_unique<MockThrowOnShutdown>());
+  auto good = std::make_unique<MockPlugin>();
+  auto * good_raw = good.get();
+  mgr.add_plugin(std::move(good));
+
+  // Should not throw, even though first plugin throws during shutdown
+  EXPECT_NO_THROW(mgr.shutdown_all());
+  EXPECT_TRUE(good_raw->shutdown_called_);
 }

@@ -27,6 +27,23 @@ namespace ros2_medkit_gateway {
  * Reuses all types from update_types.hpp (UpdateFilter, UpdateBackendErrorInfo,
  * UpdateProgressReporter, etc.).
  *
+ * @par Thread Safety
+ * - CRUD methods (list_updates, get_update, register_update, delete_update)
+ *   are called WITHOUT holding UpdateManager's mutex. They may be called
+ *   concurrently with each other and with prepare/execute running in a
+ *   background thread. If the plugin shares state, it must provide its own
+ *   synchronization.
+ *   Note: delete_update has a partial guard - UpdateManager checks/sets a
+ *   Deleting sentinel under lock before calling delete_update, but the
+ *   plugin call itself runs outside the lock.
+ * - prepare() and execute() run in a background std::async thread. They may
+ *   run concurrently with CRUD calls from the HTTP thread.
+ * - The UpdateProgressReporter passed to prepare/execute is already
+ *   thread-safe - plugins may call set_progress/set_sub_progress freely.
+ * - Exceptions thrown from prepare/execute are caught by UpdateManager and
+ *   mapped to Failed status. Plugins should prefer returning
+ *   tl::make_unexpected() for expected errors.
+ *
  * @see GatewayPlugin for the base class
  * @see UpdateManager for the subsystem that uses this
  */
@@ -35,18 +52,33 @@ class UpdateProvider {
   virtual ~UpdateProvider() = default;
 
   // ---- CRUD (metadata storage owned by plugin) ----
+
+  /// List all registered update package IDs, optionally filtered
   virtual tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter & filter) = 0;
+
+  /// Get full metadata for a specific update package as JSON
   virtual tl::expected<nlohmann::json, UpdateBackendErrorInfo> get_update(const std::string & id) = 0;
+
+  /// Register a new update package from JSON metadata
   virtual tl::expected<void, UpdateBackendErrorInfo> register_update(const nlohmann::json & metadata) = 0;
+
+  /// Delete an update package
   virtual tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string & id) = 0;
 
-  // ---- Async operations (called in background threads) ----
+  // ---- Async operations (called in background thread by UpdateManager) ----
+
+  /// Prepare an update (download, verify, check dependencies).
+  /// Reporter is optional - plugin may call reporter.set_progress() etc.
   virtual tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string & id,
                                                              UpdateProgressReporter & reporter) = 0;
+
+  /// Execute an update (install). Only called after prepare succeeds.
   virtual tl::expected<void, UpdateBackendErrorInfo> execute(const std::string & id,
                                                              UpdateProgressReporter & reporter) = 0;
 
   // ---- Capability queries ----
+
+  /// Check whether a package supports automated mode (prepare + execute)
   virtual tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string & id) = 0;
 };
 

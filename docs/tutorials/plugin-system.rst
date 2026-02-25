@@ -10,7 +10,8 @@ Overview
 Plugins implement the ``GatewayPlugin`` C++ base class plus one or more typed provider interfaces:
 
 - **UpdateProvider** - software update backend (CRUD, prepare/execute, automated, status)
-- **IntrospectionProvider** - enriches discovered entities with platform-specific metadata
+- **IntrospectionProvider** *(preview)* - enriches discovered entities with platform-specific metadata.
+  This interface is defined and can be implemented, but is not yet wired into the discovery cycle.
 
 A single plugin can implement multiple provider interfaces. For example, a "systemd" plugin
 could provide both introspection (discover systemd units) and updates (manage service restarts).
@@ -34,6 +35,8 @@ Add plugins to ``gateway_params.yaml``:
 Each plugin name in the ``plugins`` array requires a corresponding ``plugins.<name>.path``
 parameter with the absolute path to the ``.so`` file. Plugins are loaded in the order listed.
 An empty list (default) means no plugins are loaded, with zero overhead.
+
+Plugin names must contain only alphanumeric characters, underscores, and hyphens (max 256 chars).
 
 Writing a Plugin
 ----------------
@@ -60,10 +63,28 @@ Writing a Plugin
        // Clean up resources
      }
 
-     // UpdateProvider methods
+     // UpdateProvider methods - all 7 must be implemented:
+
      tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
        list_updates(const UpdateFilter& filter) override { /* ... */ }
-     // ... remaining CRUD and async methods
+
+     tl::expected<nlohmann::json, UpdateBackendErrorInfo>
+       get_update(const std::string& id) override { /* ... */ }
+
+     tl::expected<void, UpdateBackendErrorInfo>
+       register_update(const nlohmann::json& metadata) override { /* ... */ }
+
+     tl::expected<void, UpdateBackendErrorInfo>
+       delete_update(const std::string& id) override { /* ... */ }
+
+     tl::expected<void, UpdateBackendErrorInfo>
+       prepare(const std::string& id, UpdateProgressReporter& reporter) override { /* ... */ }
+
+     tl::expected<void, UpdateBackendErrorInfo>
+       execute(const std::string& id, UpdateProgressReporter& reporter) override { /* ... */ }
+
+     tl::expected<bool, UpdateBackendErrorInfo>
+       supports_automated(const std::string& id) override { /* ... */ }
    };
 
 2. Export the required ``extern "C"`` symbols:
@@ -80,12 +101,12 @@ Writing a Plugin
      return new MyPlugin();
    }
 
-   // Optional: provider query (needed for UpdateProvider)
+   // Required if your plugin implements UpdateProvider:
    extern "C" GATEWAY_PLUGIN_EXPORT UpdateProvider* get_update_provider(GatewayPlugin* p) {
      return static_cast<MyPlugin*>(p);
    }
 
-   // Optional: provider query (needed for IntrospectionProvider)
+   // Required if your plugin implements IntrospectionProvider:
    extern "C" GATEWAY_PLUGIN_EXPORT IntrospectionProvider* get_introspection_provider(GatewayPlugin* p) {
      return static_cast<MyPlugin*>(p);
    }
@@ -93,6 +114,9 @@ Writing a Plugin
 The ``get_update_provider`` and ``get_introspection_provider`` functions use ``extern "C"``
 to avoid RTTI issues across shared library boundaries. The ``static_cast`` is safe because
 these functions execute inside the plugin's own ``.so`` where the type hierarchy is known.
+
+Without the corresponding ``get_*_provider`` export, the gateway cannot detect that your plugin
+implements the provider interface, even if the class inherits from it.
 
 3. Build as a MODULE library:
 
@@ -102,6 +126,80 @@ these functions execute inside the plugin's own ``.so`` where the type hierarchy
    target_link_libraries(my_plugin gateway_lib)
 
 4. Install the ``.so`` and add its path to ``gateway_params.yaml``.
+
+Complete Minimal Plugin
+-----------------------
+
+A self-contained plugin implementing UpdateProvider (copy-paste starting point):
+
+.. code-block:: cpp
+
+   // my_ota_plugin.cpp
+   #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+   #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
+   #include "ros2_medkit_gateway/providers/update_provider.hpp"
+
+   #include <httplib.h>
+   #include <nlohmann/json.hpp>
+
+   using namespace ros2_medkit_gateway;
+
+   class MyOtaPlugin : public GatewayPlugin, public UpdateProvider {
+    public:
+     std::string name() const override { return "my_ota"; }
+
+     void configure(const nlohmann::json& /*config*/) override {}
+
+     void shutdown() override {}
+
+     // UpdateProvider CRUD
+     tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
+     list_updates(const UpdateFilter& /*filter*/) override {
+       return std::vector<std::string>{};
+     }
+
+     tl::expected<nlohmann::json, UpdateBackendErrorInfo>
+     get_update(const std::string& id) override {
+       return tl::make_unexpected(
+         UpdateBackendErrorInfo{UpdateBackendError::NotFound, "not found: " + id});
+     }
+
+     tl::expected<void, UpdateBackendErrorInfo>
+     register_update(const nlohmann::json& /*metadata*/) override { return {}; }
+
+     tl::expected<void, UpdateBackendErrorInfo>
+     delete_update(const std::string& /*id*/) override { return {}; }
+
+     // UpdateProvider async operations
+     tl::expected<void, UpdateBackendErrorInfo>
+     prepare(const std::string& /*id*/, UpdateProgressReporter& reporter) override {
+       reporter.set_progress(100);
+       return {};
+     }
+
+     tl::expected<void, UpdateBackendErrorInfo>
+     execute(const std::string& /*id*/, UpdateProgressReporter& reporter) override {
+       reporter.set_progress(100);
+       return {};
+     }
+
+     tl::expected<bool, UpdateBackendErrorInfo>
+     supports_automated(const std::string& /*id*/) override { return false; }
+   };
+
+   // Required exports
+   extern "C" GATEWAY_PLUGIN_EXPORT int plugin_api_version() {
+     return PLUGIN_API_VERSION;
+   }
+
+   extern "C" GATEWAY_PLUGIN_EXPORT GatewayPlugin* create_plugin() {
+     return new MyOtaPlugin();
+   }
+
+   // Required for UpdateProvider detection
+   extern "C" GATEWAY_PLUGIN_EXPORT UpdateProvider* get_update_provider(GatewayPlugin* p) {
+     return static_cast<MyOtaPlugin*>(p);
+   }
 
 Plugin Lifecycle
 ----------------
@@ -138,7 +236,7 @@ Multiple Plugins
 Multiple plugins can be loaded simultaneously:
 
 - **UpdateProvider**: Only one plugin's UpdateProvider is used (first in config order)
-- **IntrospectionProvider**: All plugins' results are merged
+- **IntrospectionProvider**: All plugins' results are merged *(preview - not yet wired)*
 - **Custom routes**: All plugins can register endpoints (use unique path prefixes)
 
 Error Handling

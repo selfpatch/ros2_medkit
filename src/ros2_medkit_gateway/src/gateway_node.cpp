@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 
 using namespace std::chrono_literals;
@@ -327,7 +329,22 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   auto plugin_names = get_parameter("plugins").as_string_array();
   if (!plugin_names.empty()) {
     std::vector<PluginConfig> configs;
+    // Plugin name validation: alphanumeric, underscore, hyphen only (max 256 chars)
+    auto is_valid_plugin_name = [](const std::string & name) -> bool {
+      if (name.empty() || name.size() > 256) {
+        return false;
+      }
+      return std::all_of(name.begin(), name.end(), [](char c) {
+        return std::isalnum(c) || c == '_' || c == '-';
+      });
+    };
     for (const auto & pname : plugin_names) {
+      if (!is_valid_plugin_name(pname)) {
+        RCLCPP_ERROR(get_logger(),
+                     "Invalid plugin name '%s': must be alphanumeric, underscore, or hyphen (max 256 chars)",
+                     pname.c_str());
+        continue;
+      }
       auto path_param = "plugins." + pname + ".path";
       declare_parameter(path_param, std::string(""));
       auto path = get_parameter(path_param).as_string();
