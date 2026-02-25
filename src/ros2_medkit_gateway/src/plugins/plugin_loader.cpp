@@ -88,6 +88,11 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
     return tl::make_unexpected("Plugin path does not exist or is not accessible: " + plugin_path);
   }
 
+  // Re-check extension after symlink resolution
+  if (canonical_path.extension() != ".so") {
+    return tl::make_unexpected("Plugin path must have .so extension after resolving symlinks: " + plugin_path);
+  }
+
   // --- dlopen ---
   void * handle = dlopen(canonical_path.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (!handle) {

@@ -15,7 +15,7 @@ Added
 * Gateway plugin framework for extending the gateway with custom functionality:
 
   - Load plugins from shared libraries (``.so``) via ``plugins`` parameter
-  - Provider interfaces: ``UpdateProvider``, ``IntrospectionProvider``
+  - Provider interfaces: ``UpdateProvider``, ``IntrospectionProvider`` (preview)
   - Error isolation: failing plugins are disabled without crashing the gateway
   - RAII lifecycle with API version checking and path validation
 
@@ -47,6 +47,9 @@ Changed
 * Fault response structure now SOVD-compliant with ``item`` wrapper
 * Rosbag downloads use SOVD bulk-data pattern instead of legacy endpoints
 * Rosbag IDs changed from timestamps to UUIDs
+* Software update backends now load via the plugin framework instead of
+  dedicated ``updates.backend`` / ``updates.plugin_path`` parameters.
+  Migrate to ``plugins`` array with ``plugins.<name>.path`` entries.
 
 Removed
 ~~~~~~~
@@ -62,6 +65,8 @@ Removed
   and ``environment_data`` structure
 * Legacy snapshot endpoints removed - migrate to inline snapshots and bulk-data
 * Rosbag identifiers changed from timestamps to UUIDs
+* ``updates.backend`` and ``updates.plugin_path`` parameters removed - use the
+  ``plugins`` array to load update backend plugins
 
 [0.1.0] - 2026-02-01
 --------------------

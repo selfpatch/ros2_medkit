@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/plugins/plugin_loader.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/providers/update_provider.hpp"
 
@@ -110,4 +111,69 @@ TEST(TestPluginLoader, RejectsNullFactory) {
   auto result = PluginLoader::load(plugin_lib_dir() + "libtest_null_factory_plugin.so");
   ASSERT_FALSE(result.has_value());
   EXPECT_NE(result.error().find("returned null"), std::string::npos);
+}
+
+// --- Minimal plugin (no provider query functions) ---
+
+// @verifies REQ_INTEROP_012
+TEST(TestPluginLoader, LoadsMinimalPluginWithNoProviders) {
+  auto result = PluginLoader::load(plugin_lib_dir() + "libtest_minimal_plugin.so");
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_NE(result->plugin, nullptr);
+  EXPECT_EQ(result->plugin->name(), "minimal_plugin");
+  EXPECT_EQ(result->update_provider, nullptr);
+  EXPECT_EQ(result->introspection_provider, nullptr);
+}
+
+// --- GatewayPluginLoadResult move semantics ---
+
+// @verifies REQ_INTEROP_012
+TEST(TestPluginLoader, MoveConstructorTransfersOwnership) {
+  auto result = PluginLoader::load(test_plugin_path());
+  ASSERT_TRUE(result.has_value()) << result.error();
+
+  auto * orig_plugin = result->plugin.get();
+  auto * orig_update = result->update_provider;
+
+  GatewayPluginLoadResult moved(std::move(*result));
+
+  // Moved-to object has the resources
+  EXPECT_EQ(moved.plugin.get(), orig_plugin);
+  EXPECT_EQ(moved.update_provider, orig_update);
+
+  // Moved-from object is empty
+  EXPECT_EQ(result->plugin, nullptr);
+  EXPECT_EQ(result->update_provider, nullptr);
+  EXPECT_EQ(result->introspection_provider, nullptr);
+}
+
+// @verifies REQ_INTEROP_012
+TEST(TestPluginLoader, MoveAssignmentTransfersOwnership) {
+  auto result = PluginLoader::load(test_plugin_path());
+  ASSERT_TRUE(result.has_value()) << result.error();
+
+  auto * orig_plugin = result->plugin.get();
+
+  GatewayPluginLoadResult assigned;
+  assigned = std::move(*result);
+
+  EXPECT_EQ(assigned.plugin.get(), orig_plugin);
+  EXPECT_NE(assigned.plugin, nullptr);
+
+  // Moved-from is empty
+  EXPECT_EQ(result->plugin, nullptr);
+  EXPECT_EQ(result->update_provider, nullptr);
+}
+
+// @verifies REQ_INTEROP_012
+TEST(TestPluginLoader, LoadPluginsSuccessPath) {
+  // Test load_plugins() through PluginManager with real .so file
+  PluginManager mgr;
+  std::vector<PluginConfig> configs = {{"test", test_plugin_path(), nlohmann::json::object()}};
+  auto loaded = mgr.load_plugins(configs);
+  EXPECT_EQ(loaded, 1u);
+  EXPECT_TRUE(mgr.has_plugins());
+  EXPECT_EQ(mgr.plugin_names()[0], "test_plugin");
+  EXPECT_NE(mgr.get_update_provider(), nullptr);
+  EXPECT_EQ(mgr.get_introspection_providers().size(), 1u);
 }

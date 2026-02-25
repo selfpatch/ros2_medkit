@@ -415,6 +415,12 @@ if(BUILD_TESTING)
     install(TARGETS ${_plugin} LIBRARY DESTINATION lib/${PROJECT_NAME})
   endforeach()
 
+  # Minimal plugin with no provider query functions (only required exports)
+  add_library(test_minimal_plugin MODULE test/demo_nodes/test_minimal_plugin.cpp)
+  target_include_directories(test_minimal_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_minimal_plugin nlohmann_json::nlohmann_json cpp_httplib_target OpenSSL::SSL OpenSSL::Crypto)
+  install(TARGETS test_minimal_plugin LIBRARY DESTINATION lib/${PROJECT_NAME})
+
   # Add plugin loader tests
   ament_add_gtest(test_plugin_loader test/test_plugin_loader.cpp)
   target_link_libraries(test_plugin_loader gateway_lib)

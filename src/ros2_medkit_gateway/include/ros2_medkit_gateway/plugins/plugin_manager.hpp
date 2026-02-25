@@ -127,7 +127,13 @@ class PluginManager {
     UpdateProvider * update_provider = nullptr;
     IntrospectionProvider * introspection_provider = nullptr;
   };
+
+  /// Disable a plugin after a lifecycle error (nulls providers, resets plugin).
+  /// Also clears provider pointers in load_result to prevent dangling references.
+  void disable_plugin(LoadedPlugin & lp);
+
   std::vector<LoadedPlugin> plugins_;
+  bool shutdown_called_ = false;
 };
 
 }  // namespace ros2_medkit_gateway
