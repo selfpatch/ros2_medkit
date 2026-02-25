@@ -1,4 +1,4 @@
-# Copyright 2025 mfaferek93
+# Copyright 2025-2026 mfaferek93, bburda
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Multi-distro compatibility (Humble / Jazzy / Rolling)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake")
 include(ROS2MedkitCompat)
+include(ROS2MedkitCcache)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic -Wshadow -Wconversion)
