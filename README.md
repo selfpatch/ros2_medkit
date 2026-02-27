@@ -137,36 +137,43 @@ colcon build --symlink-install
 
 ### Testing
 
-Run all tests:
+Use the `scripts/test.sh` convenience script:
 
 ```bash
 source install/setup.bash
-colcon test
-colcon test-result --verbose
+./scripts/test.sh              # unit tests only (default)
+./scripts/test.sh integ        # integration tests only
+./scripts/test.sh lint         # linters (excluding clang-tidy)
+./scripts/test.sh tidy         # clang-tidy only (slow, ~8-10 min)
+./scripts/test.sh all          # everything
+./scripts/test.sh <test_name>  # single test by CTest name regex
 ```
 
-Run linters:
+You can pass extra colcon arguments after the preset:
 
 ```bash
-source install/setup.bash
-colcon test --ctest-args -L linters
-colcon test-result --verbose
+./scripts/test.sh unit --packages-select ros2_medkit_gateway
 ```
 
-Run only unit tests (everything except integration):
+### Pre-push Hook (clang-tidy)
+
+An incremental clang-tidy check runs automatically on `git push`, analyzing only changed `.cpp` files. Typical run takes 5-30s vs 8-10 min for a full analysis.
+
+Setup:
 
 ```bash
-source install/setup.bash
-colcon test --ctest-args -E test_integration
-colcon test-result --verbose
+# Build the merged compile_commands.json (required once after build)
+./scripts/merge-compile-commands.sh
+
+# Install the pre-push hook
+cp scripts/clang-tidy-diff.sh .git/hooks/pre-push
+chmod +x .git/hooks/pre-push
 ```
 
-Run only integration tests:
+To run manually without pushing:
 
 ```bash
-source install/setup.bash
-colcon test --ctest-args -R test_integration
-colcon test-result --verbose
+./scripts/clang-tidy-diff.sh
 ```
 
 ### Code Coverage
@@ -205,18 +212,23 @@ Then open `coverage_html/index.html` in your browser.
 ### CI/CD
 
 All pull requests and pushes to main are automatically built and tested using GitHub Actions.
-The CI workflow runs a build matrix across **ROS 2 Jazzy** (Ubuntu 24.04), **ROS 2 Humble** (Ubuntu 22.04), and **ROS 2 Rolling** (Ubuntu 24.04, allow-failure) and consists of the following jobs:
+The CI workflow tests across **ROS 2 Jazzy** (Ubuntu 24.04), **ROS 2 Humble** (Ubuntu 22.04), and **ROS 2 Rolling** (Ubuntu 24.04, allow-failure):
 
-**build-and-test** (matrix: Jazzy + Humble + Rolling):
+**build-and-test** (matrix: Humble + Rolling):
 
-- Full build and unit/integration tests on all distros
+- Full build with ccache and unit/integration tests
 - Rolling jobs are allowed to fail (best-effort forward-compatibility)
-- Code linting and formatting checks (clang-format, clang-tidy) — Jazzy only
+
+**jazzy-build** / **jazzy-lint** / **jazzy-test**:
+
+- `jazzy-build` compiles all packages with ccache and clang-tidy enabled
+- `jazzy-lint` and `jazzy-test` run in parallel after the build completes
+- Linting includes clang-format, clang-tidy, copyright, cmake-lint, and more
 
 **coverage** (Jazzy only):
 
-- Builds with coverage instrumentation (Debug mode)
-- Runs unit tests only (for stable coverage metrics)
+- Builds with coverage instrumentation (Debug mode, ccache-enabled)
+- Runs unit and integration tests (excluding linters)
 - Generates lcov coverage report (available as artifact)
 - Uploads coverage to Codecov (only on push to main)
 
