@@ -153,6 +153,17 @@ jobs:
         with:
           required-ros-distributions: jazzy
 
+      - name: Install ccache
+        run: apt-get install -y ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-coverage-${{ github.sha }}
+          restore-keys: |
+            ccache-coverage-
+
       - name: Install dependencies
         run: |
           apt-get update
@@ -162,11 +173,16 @@ jobs:
           rosdep install --from-paths src --ignore-src -r -y
 
       - name: Build packages with coverage
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
         run: |
           source /opt/ros/jazzy/setup.bash
           colcon build --symlink-install \
             --cmake-args -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON \
             --event-handlers console_direct+
+          ccache -s
 
       - name: Run unit and integration tests for coverage
         run: |
