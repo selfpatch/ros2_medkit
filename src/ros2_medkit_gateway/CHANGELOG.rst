@@ -2,6 +2,26 @@
 Changelog for package ros2_medkit_gateway
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.3.0 (2026-02-27)
+------------------
+* Gateway plugin framework with dynamic C++ plugin loading (`#237 <https://github.com/selfpatch/ros2_medkit/pull/237>`_)
+* Software updates plugin with 8 SOVD-compliant endpoints (`#237 <https://github.com/selfpatch/ros2_medkit/pull/237>`_, `#231 <https://github.com/selfpatch/ros2_medkit/pull/231>`_)
+* SSE-based periodic data subscriptions for real-time streaming without polling (`#223 <https://github.com/selfpatch/ros2_medkit/pull/223>`_)
+* Global ``DELETE /api/v1/faults`` endpoint (`#228 <https://github.com/selfpatch/ros2_medkit/pull/228>`_)
+* Return HEALED/PREPASSED faults via status filter (`#218 <https://github.com/selfpatch/ros2_medkit/pull/218>`_)
+* Bulk data upload and delete endpoints (`#216 <https://github.com/selfpatch/ros2_medkit/pull/216>`_)
+* Token-bucket rate limiting middleware, configurable per-endpoint (`#220 <https://github.com/selfpatch/ros2_medkit/pull/220>`_)
+* Reduce lock contention in ConfigurationManager (`#194 <https://github.com/selfpatch/ros2_medkit/pull/194>`_)
+* Cache component topic map to avoid per-request graph rebuild (`#212 <https://github.com/selfpatch/ros2_medkit/pull/212>`_)
+* Require cpp-httplib >= 0.14 in pkg-config check (`#230 <https://github.com/selfpatch/ros2_medkit/pull/230>`_)
+* Add missing ``ament_index_cpp`` dependency to ``package.xml`` (`#191 <https://github.com/selfpatch/ros2_medkit/pull/191>`_)
+* Unit tests for HealthHandlers, DataHandlers, and AuthHandlers (`#232 <https://github.com/selfpatch/ros2_medkit/pull/232>`_, `#234 <https://github.com/selfpatch/ros2_medkit/pull/234>`_, `#233 <https://github.com/selfpatch/ros2_medkit/pull/233>`_)
+* Standardize include guards to ``#pragma once`` (`#192 <https://github.com/selfpatch/ros2_medkit/pull/192>`_)
+* Use ``foreach`` loop for CMake coverage flags (`#193 <https://github.com/selfpatch/ros2_medkit/pull/193>`_)
+* Migrate ``ament_target_dependencies`` to compat shim for Rolling (`#242 <https://github.com/selfpatch/ros2_medkit/pull/242>`_)
+* Multi-distro CI support for ROS 2 Humble, Jazzy, and Rolling (`#219 <https://github.com/selfpatch/ros2_medkit/pull/219>`_, `#242 <https://github.com/selfpatch/ros2_medkit/pull/242>`_)
+* Contributors: @bburda, @eclipse0922, @mfaferek93
+
 0.2.0 (2026-02-07)
 ------------------
 * Initial rosdistro release

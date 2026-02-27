@@ -2,6 +2,13 @@
 Changelog for package ros2_medkit_fault_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.3.0 (2026-02-27)
+------------------
+* Accurate HIGHEST_SEVERITY reassignment and stale ``fault_to_cluster_`` cleanup (`#221 <https://github.com/selfpatch/ros2_medkit/pull/221>`_)
+* Clean up ``pending_clusters_`` when fault cleared before ``min_count`` (`#211 <https://github.com/selfpatch/ros2_medkit/pull/211>`_)
+* Multi-distro CI support for ROS 2 Humble, Jazzy, and Rolling (`#219 <https://github.com/selfpatch/ros2_medkit/pull/219>`_, `#242 <https://github.com/selfpatch/ros2_medkit/pull/242>`_)
+* Contributors: @bburda, @eclipse0922
+
 0.2.0 (2026-02-07)
 ------------------
 * Initial rosdistro release
