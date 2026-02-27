@@ -13,8 +13,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - ros_distro: jazzy
-            os_image: ubuntu:noble
           - ros_distro: humble
             os_image: ubuntu:jammy
           - ros_distro: rolling
@@ -69,13 +67,9 @@ jobs:
         run: |
           apt-get update
           apt-get install -y ros-${{ matrix.ros_distro }}-test-msgs
-          # Linter tools only needed on Jazzy (clang versions differ across Ubuntu releases)
-          if [ "${{ matrix.ros_distro }}" = "jazzy" ]; then
-            apt-get install -y clang-format clang-tidy
-          fi
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           rosdep update
-          # On Humble, skip the libcpp-httplib-dev rosdep key — the apt version (0.10.3)
+          # On Humble, skip the libcpp-httplib-dev rosdep key - the apt version (0.10.3)
           # is too old; cpp-httplib v0.14.3 is built from source in an earlier step.
           if [ "${{ matrix.ros_distro }}" = "humble" ]; then
             rosdep install --from-paths src --ignore-src -r -y --skip-keys="libcpp-httplib-dev"
@@ -90,23 +84,10 @@ jobs:
           CCACHE_SLOPPINESS: pch_defines,time_macros
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-          CMAKE_EXTRA_ARGS=""
-          if [ "${{ matrix.ros_distro }}" = "jazzy" ]; then
-            CMAKE_EXTRA_ARGS="-DENABLE_CLANG_TIDY=ON"
-          fi
           colcon build --symlink-install \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release ${CMAKE_EXTRA_ARGS} \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release \
             --event-handlers console_direct+
           ccache -s
-
-      - name: Run linters (clang-format, clang-tidy, etc.)
-        if: matrix.ros_distro == 'jazzy'
-        run: |
-          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-          source install/setup.bash
-          colcon test --return-code-on-test-failure \
-            --ctest-args -L linter \
-            --event-handlers console_direct+
 
       - name: Run unit and integration tests
         timeout-minutes: 15
@@ -126,6 +107,192 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ matrix.ros_distro }}
+          path: |
+            log/
+            build/*/test_results/
+
+  jazzy-build:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install ccache
+        run: apt-get install -y ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-${{ github.sha }}
+          restore-keys: |
+            ccache-jazzy-
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y ros-jazzy-test-msgs clang-format clang-tidy
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Build packages
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DENABLE_CLANG_TIDY=ON \
+            --event-handlers console_direct+
+          ccache -s
+
+      - name: Package build artifacts
+        run: tar cf /tmp/jazzy-build.tar build/ install/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jazzy-build
+          path: /tmp/jazzy-build.tar
+          retention-days: 1
+
+  jazzy-lint:
+    needs: jazzy-build
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y clang-format clang-tidy
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: jazzy-build
+
+      - name: Extract build artifacts
+        run: tar xf jazzy-build.tar && rm jazzy-build.tar
+
+      - name: Run linters
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          colcon test --return-code-on-test-failure \
+            --ctest-args -L linter \
+            --event-handlers console_direct+
+
+      - name: Show test results
+        if: always()
+        run: colcon test-result --verbose
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-jazzy-lint
+          path: |
+            log/
+            build/*/test_results/
+
+  jazzy-test:
+    needs: jazzy-build
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y ros-jazzy-test-msgs
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: jazzy-build
+
+      - name: Extract build artifacts
+        run: tar xf jazzy-build.tar && rm jazzy-build.tar
+
+      - name: Run unit and integration tests
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          colcon test --return-code-on-test-failure \
+            --ctest-args -LE linter \
+            --event-handlers console_direct+
+
+      - name: Show test results
+        if: always()
+        run: colcon test-result --verbose
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-jazzy-test
           path: |
             log/
             build/*/test_results/
