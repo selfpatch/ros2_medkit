@@ -110,11 +110,13 @@ This section is for contributors and developers who want to build and test ros2_
 ### Pre-commit Hooks
 
 This project uses [pre-commit](https://pre-commit.com/) to automatically run
-`clang-format`, `flake8`, and other checks on staged files before each commit.
+`clang-format`, `flake8`, and other checks on staged files before each commit,
+plus an incremental clang-tidy check on `git push`.
 
 ```bash
 pip install pre-commit
 pre-commit install
+pre-commit install --hook-type pre-push
 ```
 
 To run all hooks against every file (useful after first setup):
@@ -157,17 +159,16 @@ You can pass extra colcon arguments after the preset:
 
 ### Pre-push Hook (clang-tidy)
 
-An incremental clang-tidy check runs automatically on `git push`, analyzing only changed `.cpp` files. Typical run takes 5-30s vs 8-10 min for a full analysis.
+An incremental clang-tidy check runs automatically on `git push` via pre-commit, analyzing only changed `.cpp` files. Typical run takes 5-30s vs 8-10 min for a full analysis.
 
 Setup:
 
 ```bash
+# Install the pre-push hook (if not already done above)
+pre-commit install --hook-type pre-push
+
 # Build the merged compile_commands.json (required once after build)
 ./scripts/merge-compile-commands.sh
-
-# Install the pre-push hook
-cp scripts/clang-tidy-diff.sh .git/hooks/pre-push
-chmod +x .git/hooks/pre-push
 ```
 
 To run manually without pushing:
