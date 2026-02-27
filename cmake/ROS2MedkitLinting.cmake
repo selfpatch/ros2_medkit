@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+include_guard(GLOBAL)
+
 # Shared linting configuration for ros2_medkit packages.
 # Include this in CMakeLists.txt BEFORE the if(BUILD_TESTING) block
 # (alongside include(ROS2MedkitCcache) - CMAKE_MODULE_PATH is already set).

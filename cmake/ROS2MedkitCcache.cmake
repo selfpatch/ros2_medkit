@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+include_guard(GLOBAL)
+
 # Auto-detect and enable ccache if available.
 # Include this module early in CMakeLists.txt (before add_library/add_executable).
 #
