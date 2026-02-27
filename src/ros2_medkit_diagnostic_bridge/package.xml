@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ros2_medkit_diagnostic_bridge</name>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
   <description>Bridge node converting ROS2 /diagnostics to FaultManager faults</description>
 
   <maintainer email="michal.faferek.coe@gmail.com">mfaferek93</maintainer>
