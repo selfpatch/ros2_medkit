@@ -170,6 +170,11 @@ endfunction()
 # On Humble/Jazzy: delegates to ament_target_dependencies (available).
 # On Rolling:      uses target_link_libraries with ${dep_TARGETS}.
 #
+# When no visibility keyword (PUBLIC/PRIVATE/INTERFACE) is passed, the macro
+# uses the plain target_link_libraries signature. This avoids conflicts with
+# ament_add_gtest_executable, which also uses the plain signature internally.
+# When an explicit visibility keyword IS passed, the keyword signature is used.
+#
 # Special cases:
 #   yaml_cpp_vendor  - vendor package, no _TARGETS; links yaml-cpp::yaml-cpp
 #                      (must call medkit_find_yaml_cpp() first)
@@ -178,13 +183,22 @@ macro(medkit_target_dependencies target)
   if(COMMAND ament_target_dependencies)
     ament_target_dependencies(${target} ${ARGN})
   else()
-    # Rolling fallback: resolve dependency targets explicitly and buffer per-visibility
+    # Rolling fallback: resolve dependency targets explicitly.
+    #
+    # CMake forbids mixing the "plain" and "keyword" (PUBLIC/PRIVATE/INTERFACE)
+    # signatures of target_link_libraries on the same target.
+    # ament_add_gtest_executable uses the plain signature internally, so we must
+    # also use the plain signature when no explicit visibility is requested.
+    # When the caller passes PUBLIC/PRIVATE/INTERFACE, we honour it (keyword form).
+    set(_mtd_has_visibility FALSE)
     set(_mtd_visibility "")
+    set(_mtd_plain_deps)
     set(_mtd_public_deps)
     set(_mtd_private_deps)
     set(_mtd_interface_deps)
     foreach(_mtd_arg ${ARGN})
       if(_mtd_arg STREQUAL "PUBLIC" OR _mtd_arg STREQUAL "PRIVATE" OR _mtd_arg STREQUAL "INTERFACE")
+        set(_mtd_has_visibility TRUE)
         set(_mtd_visibility ${_mtd_arg})
       else()
         # Resolve dependency to concrete CMake targets
@@ -207,18 +221,26 @@ macro(medkit_target_dependencies target)
           endif()
           unset(_mtd_targets_var)
         endif()
-        # Buffer resolved targets per visibility to avoid mixing target_link_libraries signatures
+        # Buffer resolved targets per visibility bucket
         if(_mtd_visibility STREQUAL "PRIVATE")
           list(APPEND _mtd_private_deps ${_mtd_dep_targets})
         elseif(_mtd_visibility STREQUAL "INTERFACE")
           list(APPEND _mtd_interface_deps ${_mtd_dep_targets})
-        else()
-          # Default to PUBLIC when no explicit visibility has been set
+        elseif(_mtd_visibility STREQUAL "PUBLIC")
           list(APPEND _mtd_public_deps ${_mtd_dep_targets})
+        else()
+          # No visibility keyword seen yet - use plain signature
+          list(APPEND _mtd_plain_deps ${_mtd_dep_targets})
         endif()
         unset(_mtd_dep_targets)
       endif()
     endforeach()
+    # Plain deps (no visibility keyword) - use plain signature to stay compatible
+    # with ament_add_gtest_executable and other plain target_link_libraries calls
+    if(_mtd_plain_deps)
+      target_link_libraries(${target} ${_mtd_plain_deps})
+    endif()
+    # Keyword deps - only emitted when caller explicitly specified visibility
     if(_mtd_public_deps)
       target_link_libraries(${target} PUBLIC ${_mtd_public_deps})
     endif()
@@ -228,7 +250,9 @@ macro(medkit_target_dependencies target)
     if(_mtd_interface_deps)
       target_link_libraries(${target} INTERFACE ${_mtd_interface_deps})
     endif()
+    unset(_mtd_has_visibility)
     unset(_mtd_visibility)
+    unset(_mtd_plain_deps)
     unset(_mtd_public_deps)
     unset(_mtd_private_deps)
     unset(_mtd_interface_deps)
