@@ -32,6 +32,11 @@ if(ENABLE_COVERAGE)
 endif()
 
 find_package(ament_cmake REQUIRED)
+
+# Multi-distro compatibility (Humble / Jazzy / Rolling)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake")
+include(ROS2MedkitCompat)
+
 find_package(rclcpp REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 
@@ -46,7 +51,7 @@ target_include_directories(fault_reporter_lib PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(fault_reporter_lib
+medkit_target_dependencies(fault_reporter_lib
   rclcpp
   ros2_medkit_msgs
 )
@@ -87,7 +92,7 @@ if(BUILD_TESTING)
   # Unit tests
   ament_add_gtest(test_local_filter test/test_local_filter.cpp)
   target_link_libraries(test_local_filter fault_reporter_lib)
-  ament_target_dependencies(test_local_filter rclcpp ros2_medkit_msgs)
+  medkit_target_dependencies(test_local_filter rclcpp ros2_medkit_msgs)
 
   if(ENABLE_COVERAGE)
     target_compile_options(test_local_filter PRIVATE --coverage -O0 -g)

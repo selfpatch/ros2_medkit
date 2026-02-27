@@ -54,7 +54,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(${PROJECT_NAME}
+medkit_target_dependencies(${PROJECT_NAME}
   rclcpp
   rcutils
   rosidl_runtime_c
@@ -152,15 +152,15 @@ if(BUILD_TESTING)
   # Unit tests
   ament_add_gtest(test_type_cache test/test_type_cache.cpp)
   target_link_libraries(test_type_cache ${PROJECT_NAME})
-  ament_target_dependencies(test_type_cache std_msgs std_srvs)
+  medkit_target_dependencies(test_type_cache std_msgs std_srvs)
 
   ament_add_gtest(test_json_serializer test/test_json_serializer.cpp)
   target_link_libraries(test_json_serializer ${PROJECT_NAME})
-  ament_target_dependencies(test_json_serializer std_msgs std_srvs geometry_msgs sensor_msgs test_msgs)
+  medkit_target_dependencies(test_json_serializer std_msgs std_srvs geometry_msgs sensor_msgs test_msgs)
 
   ament_add_gtest(test_service_action_types test/test_service_action_types.cpp)
   target_link_libraries(test_service_action_types ${PROJECT_NAME})
-  ament_target_dependencies(test_service_action_types std_srvs)
+  medkit_target_dependencies(test_service_action_types std_srvs)
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
