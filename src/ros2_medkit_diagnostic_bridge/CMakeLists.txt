@@ -32,6 +32,11 @@ if(ENABLE_COVERAGE)
 endif()
 
 find_package(ament_cmake REQUIRED)
+
+# Multi-distro compatibility (Humble / Jazzy / Rolling)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake")
+include(ROS2MedkitCompat)
+
 find_package(rclcpp REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
@@ -47,7 +52,7 @@ target_include_directories(diagnostic_bridge_lib PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(diagnostic_bridge_lib
+medkit_target_dependencies(diagnostic_bridge_lib
   rclcpp
   diagnostic_msgs
   ros2_medkit_msgs
@@ -57,7 +62,7 @@ ament_target_dependencies(diagnostic_bridge_lib
 # Executable
 add_executable(diagnostic_bridge_node src/main.cpp)
 target_link_libraries(diagnostic_bridge_node diagnostic_bridge_lib)
-ament_target_dependencies(diagnostic_bridge_node rclcpp)
+medkit_target_dependencies(diagnostic_bridge_node rclcpp)
 
 # Install executable
 install(TARGETS diagnostic_bridge_node
@@ -100,7 +105,7 @@ if(BUILD_TESTING)
   # Unit tests
   ament_add_gtest(test_diagnostic_bridge test/test_diagnostic_bridge.cpp)
   target_link_libraries(test_diagnostic_bridge diagnostic_bridge_lib)
-  ament_target_dependencies(test_diagnostic_bridge rclcpp diagnostic_msgs ros2_medkit_msgs)
+  medkit_target_dependencies(test_diagnostic_bridge rclcpp diagnostic_msgs ros2_medkit_msgs)
 
   if(ENABLE_COVERAGE)
     target_compile_options(test_diagnostic_bridge PRIVATE --coverage -O0 -g)

@@ -138,7 +138,7 @@ add_library(gateway_lib STATIC
   src/plugins/plugin_manager.cpp
 )
 
-ament_target_dependencies(gateway_lib
+medkit_target_dependencies(gateway_lib
   rclcpp
   std_msgs
   std_srvs
@@ -264,7 +264,7 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_generic_client_compat test/test_generic_client_compat.cpp)
   target_link_libraries(test_generic_client_compat gateway_lib)
-  ament_target_dependencies(test_generic_client_compat rclcpp std_srvs)
+  medkit_target_dependencies(test_generic_client_compat rclcpp std_srvs)
 
   ament_add_gtest(test_operation_manager test/test_operation_manager.cpp)
   target_link_libraries(test_operation_manager gateway_lib)
@@ -276,12 +276,12 @@ if(BUILD_TESTING)
   find_package(std_msgs REQUIRED)
   ament_add_gtest(test_native_topic_sampler test/test_native_topic_sampler.cpp)
   target_link_libraries(test_native_topic_sampler gateway_lib)
-  ament_target_dependencies(test_native_topic_sampler std_msgs)
+  medkit_target_dependencies(test_native_topic_sampler std_msgs)
 
   # Add DiscoveryManager tests
   ament_add_gtest(test_discovery_manager test/test_discovery_manager.cpp)
   target_link_libraries(test_discovery_manager gateway_lib)
-  ament_target_dependencies(test_discovery_manager std_msgs)
+  medkit_target_dependencies(test_discovery_manager std_msgs)
 
   # Add TLS configuration tests
   ament_add_gtest(test_tls_config test/test_tls_config.cpp)
@@ -290,7 +290,7 @@ if(BUILD_TESTING)
   # Add FaultManager tests
   ament_add_gtest(test_fault_manager test/test_fault_manager.cpp)
   target_link_libraries(test_fault_manager gateway_lib)
-  ament_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
+  medkit_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
 
   # Add discovery models tests
   ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
@@ -335,7 +335,7 @@ if(BUILD_TESTING)
   # Add data access manager tests
   ament_add_gtest(test_data_access_manager test/test_data_access_manager.cpp)
   target_link_libraries(test_data_access_manager gateway_lib)
-  ament_target_dependencies(test_data_access_manager rclcpp std_msgs)
+  medkit_target_dependencies(test_data_access_manager rclcpp std_msgs)
 
   # Add entity resource model tests
   ament_add_gtest(test_entity_resource_model test/test_entity_resource_model.cpp)
@@ -425,7 +425,7 @@ if(BUILD_TESTING)
   # Add plugin loader tests
   ament_add_gtest(test_plugin_loader test/test_plugin_loader.cpp)
   target_link_libraries(test_plugin_loader gateway_lib)
-  ament_target_dependencies(test_plugin_loader ament_index_cpp)
+  medkit_target_dependencies(test_plugin_loader ament_index_cpp)
 
   # Plugin manager tests
   ament_add_gtest(test_plugin_manager test/test_plugin_manager.cpp)

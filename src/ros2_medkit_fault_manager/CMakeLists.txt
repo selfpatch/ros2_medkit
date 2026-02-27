@@ -67,7 +67,7 @@ target_include_directories(fault_manager_lib PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(fault_manager_lib PUBLIC
+medkit_target_dependencies(fault_manager_lib PUBLIC
   rclcpp
   ros2_medkit_msgs
   ros2_medkit_serialization
@@ -125,22 +125,22 @@ if(BUILD_TESTING)
   # Unit tests
   ament_add_gtest(test_fault_manager test/test_fault_manager.cpp)
   target_link_libraries(test_fault_manager fault_manager_lib)
-  ament_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
+  medkit_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
 
   # SQLite storage tests
   ament_add_gtest(test_sqlite_storage test/test_sqlite_storage.cpp)
   target_link_libraries(test_sqlite_storage fault_manager_lib)
-  ament_target_dependencies(test_sqlite_storage rclcpp ros2_medkit_msgs)
+  medkit_target_dependencies(test_sqlite_storage rclcpp ros2_medkit_msgs)
 
   # Snapshot capture tests
   ament_add_gtest(test_snapshot_capture test/test_snapshot_capture.cpp)
   target_link_libraries(test_snapshot_capture fault_manager_lib)
-  ament_target_dependencies(test_snapshot_capture rclcpp ros2_medkit_msgs)
+  medkit_target_dependencies(test_snapshot_capture rclcpp ros2_medkit_msgs)
 
   # Rosbag capture tests
   ament_add_gtest(test_rosbag_capture test/test_rosbag_capture.cpp)
   target_link_libraries(test_rosbag_capture fault_manager_lib)
-  ament_target_dependencies(test_rosbag_capture rclcpp ros2_medkit_msgs)
+  medkit_target_dependencies(test_rosbag_capture rclcpp ros2_medkit_msgs)
 
   # Correlation config parser tests
   ament_add_gtest(test_correlation_config_parser test/test_correlation_config_parser.cpp)
