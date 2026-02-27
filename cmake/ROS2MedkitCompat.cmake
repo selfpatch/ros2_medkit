@@ -28,6 +28,7 @@
 #   medkit_find_cpp_httplib()           — Find cpp-httplib, create cpp_httplib_target alias
 #   medkit_detect_compat_defs()         — Detect rclcpp/rosbag2 versions, set compat variables
 #   medkit_apply_compat_defs(target)    — Apply compile definitions to a target
+#   medkit_target_dependencies(target ...) - Drop-in ament_target_dependencies replacement
 #
 # Variables set by medkit_detect_compat_defs():
 #   MEDKIT_RCLCPP_VERSION_MAJOR     — integer (e.g., 16 for Humble, 28 for Jazzy)
@@ -159,3 +160,37 @@ function(medkit_apply_compat_defs target)
     target_compile_definitions(${target} PRIVATE ROSBAG2_USE_OLD_TIMESTAMP_FIELD)
   endif()
 endfunction()
+
+# ---------------------------------------------------------------------------
+# medkit_target_dependencies(target [PUBLIC|PRIVATE|INTERFACE] dep1 dep2 ...)
+# ---------------------------------------------------------------------------
+# Drop-in replacement for ament_target_dependencies that works on Rolling
+# (where ament_target_dependencies was removed from ament_cmake).
+#
+# On Humble/Jazzy: delegates to ament_target_dependencies (available).
+# On Rolling:      uses target_link_libraries with ${dep_TARGETS}.
+#
+# Special cases:
+#   yaml_cpp_vendor  - vendor package, no _TARGETS; links yaml-cpp::yaml-cpp
+#                      (must call medkit_find_yaml_cpp() first)
+# ---------------------------------------------------------------------------
+macro(medkit_target_dependencies target)
+  if(COMMAND ament_target_dependencies)
+    ament_target_dependencies(${target} ${ARGN})
+  else()
+    set(_mtd_visibility "")
+    foreach(_mtd_arg ${ARGN})
+      if(_mtd_arg STREQUAL "PUBLIC" OR _mtd_arg STREQUAL "PRIVATE" OR _mtd_arg STREQUAL "INTERFACE")
+        set(_mtd_visibility ${_mtd_arg})
+      elseif(_mtd_arg STREQUAL "yaml_cpp_vendor")
+        # yaml_cpp_vendor is a wrapper package - link the real target
+        target_link_libraries(${target} ${_mtd_visibility} yaml-cpp::yaml-cpp)
+      else()
+        # Standard ament package - use exported targets
+        target_link_libraries(${target} ${_mtd_visibility} ${${_mtd_arg}_TARGETS})
+      endif()
+    endforeach()
+    unset(_mtd_visibility)
+    unset(_mtd_arg)
+  endif()
+endmacro()
