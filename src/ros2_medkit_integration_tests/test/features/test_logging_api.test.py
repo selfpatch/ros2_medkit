@@ -54,7 +54,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_get_logs_returns_200(self):
         """GET /apps/{app_id}/logs returns 200 with items array.
 
-        # @verifies REQ_INTEROP_062
+        # @verifies REQ_INTEROP_061
         """
         data = self.get_json('/apps/temp_sensor/logs')
         self.assertIn('items', data)
@@ -66,7 +66,7 @@ class TestLoggingApi(GatewayTestCase):
         /rosout messages from demo node startup populate the ring buffer.
         Poll until at least one entry is present.
 
-        # @verifies REQ_INTEROP_062
+        # @verifies REQ_INTEROP_061
         """
         data = self.poll_endpoint_until(
             '/apps/temp_sensor/logs',
@@ -79,7 +79,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_log_entry_has_required_fields(self):
         """Each log entry has id, timestamp, severity, message, context fields.
 
-        # @verifies REQ_INTEROP_062
+        # @verifies REQ_INTEROP_061
         """
         data = self.poll_endpoint_until(
             '/apps/temp_sensor/logs',
@@ -115,7 +115,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_get_logs_severity_filter(self):
         """GET /apps/{id}/logs?severity=error returns only entries at error level or above.
 
-        # @verifies REQ_INTEROP_062
+        # @verifies REQ_INTEROP_061
         """
         data = self.get_json('/apps/temp_sensor/logs?severity=error')
         self.assertIn('items', data)
@@ -129,7 +129,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_get_logs_invalid_entity_returns_404(self):
         """GET /apps/{id}/logs returns 404 for unknown entity.
 
-        # @verifies REQ_INTEROP_062
+        # @verifies REQ_INTEROP_061
         """
         self.get_json('/apps/nonexistent_app_xyz/logs', expected_status=404)
 
@@ -214,7 +214,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_component_get_logs_returns_200(self):
         """GET /components/{id}/logs returns 200 with items array.
 
-        # @verifies REQ_INTEROP_062
+        # @verifies REQ_INTEROP_061
         """
         components = self.get_json('/components')['items']
         self.assertGreater(len(components), 0, 'At least one component required')

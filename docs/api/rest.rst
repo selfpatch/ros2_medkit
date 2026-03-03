@@ -496,8 +496,9 @@ Query and configure the /rosout ring buffer for an entity. Supported entity type
 .. note::
 
    Log entries are sourced from the ``/rosout`` ROS 2 topic. By default ros2_medkit
-   retains up to 10 000 entries per node in an in-memory ring buffer. A ``LogProvider``
-   plugin can replace this backend with a persistent store (SQLite, OpenTelemetry, etc.)
+   retains the 200 most recent entries per node in an in-memory ring buffer (configurable
+   via ``logs.buffer_size`` in ``gateway_params.yaml``). A ``LogProvider`` plugin can
+   replace this backend with a persistent store (SQLite, OpenTelemetry, etc.)
 
 ``GET /api/v1/components/{id}/logs``
    Query log entries for all nodes in the component namespace (prefix match).
@@ -577,7 +578,7 @@ The ``context.function``, ``context.file``, and ``context.line`` fields are omit
 
       {
         "severity_filter": "debug",
-        "max_entries": 10000
+        "max_entries": 100
       }
 
 ``PUT /api/v1/components/{id}/logs/configuration`` / ``PUT /api/v1/apps/{id}/logs/configuration``
@@ -595,9 +596,12 @@ The ``context.function``, ``context.file``, and ``context.line`` fields are omit
    ``severity_filter`` — minimum severity to retain/return (``debug`` | ``info`` | ``warning`` |
    ``error`` | ``fatal``). Entries below this level are excluded from queries. Default: ``debug``.
 
-   ``max_entries`` — maximum number of entries returned per query. Must be > 0. Default: 10000.
+   ``max_entries`` — maximum number of entries returned per query. Must be > 0. Default: ``100``.
 
    **Response 200:** Updated configuration (same schema as GET).
+
+   .. note:: The SOVD spec (ISO 17978-3 §7.21) specifies ``204 No Content`` for this endpoint.
+      ros2_medkit returns ``200`` with the updated configuration body as a convenience for clients.
 
    - **400:** Invalid ``severity_filter`` or ``max_entries`` value
 
