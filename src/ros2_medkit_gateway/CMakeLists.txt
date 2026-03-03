@@ -116,6 +116,7 @@ add_library(gateway_lib STATIC
   src/http/handlers/operation_handlers.cpp
   src/http/handlers/config_handlers.cpp
   src/http/handlers/fault_handlers.cpp
+  src/http/handlers/log_handlers.cpp
   src/http/handlers/bulkdata_handlers.cpp
   src/http/handlers/sse_fault_handler.cpp
   src/http/handlers/cyclic_subscription_handlers.cpp
@@ -447,6 +448,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_log_manager test/test_log_manager.cpp)
   target_link_libraries(test_log_manager gateway_lib)
 
+  # Log handlers tests
+  ament_add_gtest(test_log_handlers test/test_log_handlers.cpp)
+  target_link_libraries(test_log_handlers gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -480,6 +485,7 @@ if(BUILD_TESTING)
       test_plugin_loader
       test_plugin_manager
       test_log_manager
+      test_log_handlers
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
