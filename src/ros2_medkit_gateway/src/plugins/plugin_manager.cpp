@@ -55,6 +55,7 @@ void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
   // For in-process plugins, use dynamic_cast (safe within same binary)
   lp.update_provider = dynamic_cast<UpdateProvider *>(plugin.get());
   lp.introspection_provider = dynamic_cast<IntrospectionProvider *>(plugin.get());
+  lp.log_provider = dynamic_cast<LogProvider *>(plugin.get());
 
   // Cache first UpdateProvider, warn on duplicates
   if (lp.update_provider) {
@@ -62,6 +63,15 @@ void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
       first_update_provider_ = lp.update_provider;
     } else {
       RCLCPP_WARN(logger(), "Multiple UpdateProvider plugins loaded - ignoring '%s'", plugin->name().c_str());
+    }
+  }
+
+  // Cache first LogProvider; additional LogProvider plugins are observers only
+  if (lp.log_provider) {
+    if (!first_log_provider_) {
+      first_log_provider_ = lp.log_provider;
+    } else {
+      RCLCPP_DEBUG(logger(), "LogProvider plugin '%s' registered as observer only", plugin->name().c_str());
     }
   }
 
@@ -83,6 +93,8 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
       // Provider pointers from extern "C" query functions (safe across dlopen boundary)
       lp.update_provider = result->update_provider;
       lp.introspection_provider = result->introspection_provider;
+      // LogProvider: discovered via dynamic_cast (no extern "C" query function yet)
+      lp.log_provider = dynamic_cast<LogProvider *>(result->plugin.get());
 
       // Cache first UpdateProvider, warn on duplicates
       if (lp.update_provider) {
@@ -91,6 +103,15 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
         } else {
           RCLCPP_WARN(logger(), "Multiple UpdateProvider plugins loaded - ignoring '%s'",
                       result->plugin->name().c_str());
+        }
+      }
+
+      // Cache first LogProvider; additional LogProvider plugins are observers only
+      if (lp.log_provider) {
+        if (!first_log_provider_) {
+          first_log_provider_ = lp.log_provider;
+        } else {
+          RCLCPP_DEBUG(logger(), "LogProvider plugin '%s' registered as observer only", result->plugin->name().c_str());
         }
       }
 
@@ -126,8 +147,18 @@ void PluginManager::disable_plugin(LoadedPlugin & lp) {
       }
     }
   }
+  if (first_log_provider_ && lp.log_provider == first_log_provider_) {
+    first_log_provider_ = nullptr;
+    for (const auto & other : plugins_) {
+      if (&other != &lp && other.load_result.plugin && other.log_provider) {
+        first_log_provider_ = other.log_provider;
+        break;
+      }
+    }
+  }
   lp.update_provider = nullptr;
   lp.introspection_provider = nullptr;
+  lp.log_provider = nullptr;
   lp.load_result.update_provider = nullptr;
   lp.load_result.introspection_provider = nullptr;
   lp.load_result.plugin.reset();
@@ -223,6 +254,20 @@ std::vector<IntrospectionProvider *> PluginManager::get_introspection_providers(
     }
     if (lp.introspection_provider) {
       result.push_back(lp.introspection_provider);
+    }
+  }
+  return result;
+}
+
+LogProvider * PluginManager::get_log_provider() const {
+  return first_log_provider_;
+}
+
+std::vector<LogProvider *> PluginManager::get_log_observers() const {
+  std::vector<LogProvider *> result;
+  for (const auto & lp : plugins_) {
+    if (lp.log_provider) {
+      result.push_back(lp.log_provider);
     }
   }
   return result;
