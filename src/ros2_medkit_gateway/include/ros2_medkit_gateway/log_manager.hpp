@@ -117,7 +117,7 @@ class LogManager {
   void inject_entry_for_testing(LogEntry entry);
 
  private:
-  void on_rosout(rcl_interfaces::msg::Log::ConstSharedPtr msg);
+  void on_rosout(const rcl_interfaces::msg::Log::ConstSharedPtr & msg);
 
   /// Get the effective LogProvider: plugin if registered, else nullptr (use local buffer)
   LogProvider * effective_provider() const;
