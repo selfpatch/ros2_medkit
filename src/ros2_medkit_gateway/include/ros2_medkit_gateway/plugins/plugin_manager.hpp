@@ -19,6 +19,7 @@
 #include "ros2_medkit_gateway/plugins/plugin_loader.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+#include "ros2_medkit_gateway/providers/log_provider.hpp"
 #include "ros2_medkit_gateway/providers/update_provider.hpp"
 
 #include <httplib.h>
@@ -115,6 +116,16 @@ class PluginManager {
    */
   std::vector<IntrospectionProvider *> get_introspection_providers() const;
 
+  /**
+   * @brief Get the first plugin implementing LogProvider, or nullptr if none loaded
+   */
+  LogProvider * get_log_provider() const;
+
+  /**
+   * @brief Get all plugins implementing LogProvider (for observer notifications)
+   */
+  std::vector<LogProvider *> get_log_observers() const;
+
   // ---- Capability queries (used by discovery handlers) ----
 
   /// Get plugin context (for capability queries from discovery handlers)
@@ -134,6 +145,7 @@ class PluginManager {
     nlohmann::json config;
     UpdateProvider * update_provider = nullptr;
     IntrospectionProvider * introspection_provider = nullptr;
+    LogProvider * log_provider = nullptr;
   };
 
   /// Disable a plugin after a lifecycle error (nulls providers, resets plugin).
@@ -143,6 +155,7 @@ class PluginManager {
   std::vector<LoadedPlugin> plugins_;
   PluginContext * context_ = nullptr;
   UpdateProvider * first_update_provider_ = nullptr;
+  LogProvider * first_log_provider_ = nullptr;
   bool shutdown_called_ = false;
 };
 
