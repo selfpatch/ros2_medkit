@@ -43,7 +43,7 @@ class LogHandlersTest : public ::testing::Test {
 // handle_get_logs — returns 400 when route matches are missing
 // ============================================================================
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST_F(LogHandlersTest, GetLogsReturnsBadRequestWhenMatchesMissing) {
   // Default-constructed req has empty matches (size 0 < 2)
   httplib::Request req;
@@ -52,7 +52,7 @@ TEST_F(LogHandlersTest, GetLogsReturnsBadRequestWhenMatchesMissing) {
   EXPECT_EQ(res.status, 400);
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST_F(LogHandlersTest, GetLogsBadRequestBodyIsValidJson) {
   httplib::Request req;
   httplib::Response res;
@@ -60,7 +60,7 @@ TEST_F(LogHandlersTest, GetLogsBadRequestBodyIsValidJson) {
   EXPECT_NO_THROW(json::parse(res.body));
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST_F(LogHandlersTest, GetLogsBadRequestBodyContainsInvalidRequestErrorCode) {
   httplib::Request req;
   httplib::Response res;
@@ -74,7 +74,7 @@ TEST_F(LogHandlersTest, GetLogsBadRequestBodyContainsInvalidRequestErrorCode) {
 // handle_get_logs_configuration — returns 400 when route matches are missing
 // ============================================================================
 
-// @issue 208
+// @verifies REQ_INTEROP_063
 TEST_F(LogHandlersTest, GetLogsConfigurationReturnsBadRequestWhenMatchesMissing) {
   httplib::Request req;
   httplib::Response res;
@@ -82,7 +82,7 @@ TEST_F(LogHandlersTest, GetLogsConfigurationReturnsBadRequestWhenMatchesMissing)
   EXPECT_EQ(res.status, 400);
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_063
 TEST_F(LogHandlersTest, GetLogsConfigurationBadRequestBodyIsValidJson) {
   httplib::Request req;
   httplib::Response res;
@@ -90,7 +90,7 @@ TEST_F(LogHandlersTest, GetLogsConfigurationBadRequestBodyIsValidJson) {
   EXPECT_NO_THROW(json::parse(res.body));
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_063
 TEST_F(LogHandlersTest, GetLogsConfigurationBadRequestBodyContainsInvalidRequestErrorCode) {
   httplib::Request req;
   httplib::Response res;
@@ -104,7 +104,7 @@ TEST_F(LogHandlersTest, GetLogsConfigurationBadRequestBodyContainsInvalidRequest
 // handle_put_logs_configuration — returns 400 when route matches are missing
 // ============================================================================
 
-// @issue 208
+// @verifies REQ_INTEROP_064
 TEST_F(LogHandlersTest, PutLogsConfigurationReturnsBadRequestWhenMatchesMissing) {
   httplib::Request req;
   httplib::Response res;
@@ -112,7 +112,7 @@ TEST_F(LogHandlersTest, PutLogsConfigurationReturnsBadRequestWhenMatchesMissing)
   EXPECT_EQ(res.status, 400);
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_064
 TEST_F(LogHandlersTest, PutLogsConfigurationBadRequestBodyIsValidJson) {
   httplib::Request req;
   httplib::Response res;
@@ -120,7 +120,7 @@ TEST_F(LogHandlersTest, PutLogsConfigurationBadRequestBodyIsValidJson) {
   EXPECT_NO_THROW(json::parse(res.body));
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_064
 TEST_F(LogHandlersTest, PutLogsConfigurationBadRequestBodyContainsInvalidRequestErrorCode) {
   httplib::Request req;
   httplib::Response res;

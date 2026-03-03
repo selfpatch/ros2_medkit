@@ -27,7 +27,7 @@ using ros2_medkit_gateway::LogManager;
 // Static utility tests — no ROS 2 node required
 // ============================================================
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST(LogManagerSeverityTest, LevelToSeverityMapping) {
   EXPECT_EQ(LogManager::level_to_severity(10), "debug");
   EXPECT_EQ(LogManager::level_to_severity(20), "info");
@@ -39,7 +39,7 @@ TEST(LogManagerSeverityTest, LevelToSeverityMapping) {
   EXPECT_EQ(LogManager::level_to_severity(99), "debug");
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST(LogManagerSeverityTest, SeverityToLevelMapping) {
   EXPECT_EQ(LogManager::severity_to_level("debug"), 10);
   EXPECT_EQ(LogManager::severity_to_level("info"), 20);
@@ -53,7 +53,7 @@ TEST(LogManagerSeverityTest, SeverityToLevelMapping) {
   EXPECT_EQ(LogManager::severity_to_level("warn"), 0);  // ROS 2 name, not SOVD name
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST(LogManagerSeverityTest, IsValidSeverity) {
   EXPECT_TRUE(LogManager::is_valid_severity("debug"));
   EXPECT_TRUE(LogManager::is_valid_severity("info"));
@@ -67,24 +67,24 @@ TEST(LogManagerSeverityTest, IsValidSeverity) {
   EXPECT_FALSE(LogManager::is_valid_severity("verbose"));
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST(LogManagerFqnTest, NormalizeStripsLeadingSlash) {
   EXPECT_EQ(LogManager::normalize_fqn("/powertrain/engine/temp_sensor"), "powertrain/engine/temp_sensor");
   EXPECT_EQ(LogManager::normalize_fqn("/perception/lidar/lidar_sensor"), "perception/lidar/lidar_sensor");
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST(LogManagerFqnTest, NormalizeNoLeadingSlashUnchanged) {
   EXPECT_EQ(LogManager::normalize_fqn("powertrain/engine/temp_sensor"), "powertrain/engine/temp_sensor");
   EXPECT_EQ(LogManager::normalize_fqn("temp_sensor"), "temp_sensor");
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST(LogManagerFqnTest, NormalizeEmptyStringUnchanged) {
   EXPECT_EQ(LogManager::normalize_fqn(""), "");
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST(LogManagerEntryToJsonTest, BasicFields) {
   LogEntry entry;
   entry.id = 42;
@@ -114,7 +114,7 @@ TEST(LogManagerEntryToJsonTest, BasicFields) {
   EXPECT_EQ(j["context"]["line"], 99);
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST(LogManagerEntryToJsonTest, EmptyOptionalFieldsOmitted) {
   LogEntry entry;
   entry.id = 1;
@@ -135,7 +135,7 @@ TEST(LogManagerEntryToJsonTest, EmptyOptionalFieldsOmitted) {
   EXPECT_FALSE(j["context"].contains("line"));
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST(LogManagerEntryToJsonTest, AllSeverityLevels) {
   for (const auto & [level, expected] : std::vector<std::pair<uint8_t, std::string>>{
            {10, "debug"}, {20, "info"}, {30, "warning"}, {40, "error"}, {50, "fatal"}}) {
@@ -183,7 +183,7 @@ class LogManagerBufferTest : public ::testing::Test {
   std::unique_ptr<LogManager> mgr_;
 };
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST_F(LogManagerBufferTest, RingBufferEvictsOldestEntryWhenFull) {
   // Buffer size is 3; inject 4 entries for the same node
   mgr_->inject_entry_for_testing(make_entry(1, "my_node"));
@@ -199,7 +199,7 @@ TEST_F(LogManagerBufferTest, RingBufferEvictsOldestEntryWhenFull) {
   EXPECT_EQ(result[2]["id"], "log_4");
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST_F(LogManagerBufferTest, FqnWithLeadingSlashMatchesBuffer) {
   // Buffer stores entries under "my_ns/my_node" (no leading slash)
   // Entity FQN from entity cache is "/my_ns/my_node" (with leading slash)
@@ -211,7 +211,7 @@ TEST_F(LogManagerBufferTest, FqnWithLeadingSlashMatchesBuffer) {
   EXPECT_EQ(result[0]["id"], "log_10");
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST_F(LogManagerBufferTest, SeverityFilterExcludesLowerLevels) {
   // inject debug(10), info(20), warning(30)
   mgr_->inject_entry_for_testing(make_entry(1, "n", 10));
@@ -224,7 +224,7 @@ TEST_F(LogManagerBufferTest, SeverityFilterExcludesLowerLevels) {
   EXPECT_EQ(result[0]["severity"], "warning");
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST_F(LogManagerBufferTest, PrefixMatchIncludesChildNamespaces) {
   // Component "engine" prefix-matches "engine/temp_sensor" and "engine/pressure"
   // but NOT "engine_control/sensor" (different namespace)
@@ -238,7 +238,7 @@ TEST_F(LogManagerBufferTest, PrefixMatchIncludesChildNamespaces) {
   EXPECT_EQ(result[1]["id"], "log_2");
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST_F(LogManagerBufferTest, PrefixMatchDoesNotFalsePositiveOnSubstring) {
   // "engine" must NOT match "engine_control" (only full namespace segments)
   mgr_->inject_entry_for_testing(make_entry(1, "engine_control/sensor"));
@@ -247,7 +247,7 @@ TEST_F(LogManagerBufferTest, PrefixMatchDoesNotFalsePositiveOnSubstring) {
   EXPECT_EQ(result.size(), 0u);
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST_F(LogManagerBufferTest, MaxEntriesCapsMostRecentEntries) {
   // Inject 5 entries, set max_entries=2 via config
   for (int i = 1; i <= 5; ++i) {
@@ -262,7 +262,7 @@ TEST_F(LogManagerBufferTest, MaxEntriesCapsMostRecentEntries) {
   EXPECT_EQ(result[1]["id"], "log_5");
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_062
 TEST_F(LogManagerBufferTest, ContextFilterMatchesSubstring) {
   mgr_->inject_entry_for_testing(make_entry(1, "powertrain/engine/temp_sensor"));
   mgr_->inject_entry_for_testing(make_entry(2, "powertrain/engine/pressure"));
@@ -274,26 +274,26 @@ TEST_F(LogManagerBufferTest, ContextFilterMatchesSubstring) {
   EXPECT_EQ(result[0]["context"]["node"], "powertrain/engine/temp_sensor");
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_064
 TEST_F(LogManagerBufferTest, UpdateConfigRejectsInvalidSeverity) {
   auto err = mgr_->update_config("e", std::string("verbose"), std::nullopt);
   EXPECT_FALSE(err.empty());
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_064
 TEST_F(LogManagerBufferTest, UpdateConfigRejectsZeroMaxEntries) {
   auto err = mgr_->update_config("e", std::nullopt, size_t{0});
   EXPECT_FALSE(err.empty());
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_063
 TEST_F(LogManagerBufferTest, GetConfigReturnsDefaultsForUnknownEntity) {
   auto cfg = mgr_->get_config("unknown_entity");
   EXPECT_EQ(cfg.severity_filter, "debug");
   EXPECT_EQ(cfg.max_entries, 10000u);
 }
 
-// @issue 208
+// @verifies REQ_INTEROP_064
 TEST_F(LogManagerBufferTest, PartialConfigUpdatePreservesOtherField) {
   mgr_->update_config("e", std::string("warning"), std::nullopt);
   mgr_->update_config("e", std::nullopt, size_t{500});
