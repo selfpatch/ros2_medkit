@@ -568,8 +568,7 @@ The ``context.function``, ``context.file``, and ``context.line`` fields are omit
      - FATAL (50)
      - Critical failures
 
-``GET /api/v1/components/{id}/logs/configuration``
-``GET /api/v1/apps/{id}/logs/configuration``
+``GET /api/v1/components/{id}/logs/configuration`` / ``GET /api/v1/apps/{id}/logs/configuration``
    Return the current log configuration for the entity.
 
    **Response 200:**
@@ -581,8 +580,7 @@ The ``context.function``, ``context.file``, and ``context.line`` fields are omit
         "max_entries": 10000
       }
 
-``PUT /api/v1/components/{id}/logs/configuration``
-``PUT /api/v1/apps/{id}/logs/configuration``
+``PUT /api/v1/components/{id}/logs/configuration`` / ``PUT /api/v1/apps/{id}/logs/configuration``
    Update the log configuration for the entity. All body fields are optional.
 
    **Request body:**
