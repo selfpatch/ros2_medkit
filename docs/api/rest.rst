@@ -487,6 +487,122 @@ Query and manage faults.
    - **400:** Invalid status parameter
    - **503:** Fault manager unavailable
 
+Communication Logs Endpoints
+----------------------------
+
+Query and configure the /rosout ring buffer for an entity. Supported entity types:
+**components** and **apps**.
+
+.. note::
+
+   Log entries are sourced from the ``/rosout`` ROS 2 topic. By default ros2_medkit
+   retains up to 10 000 entries per node in an in-memory ring buffer. A ``LogProvider``
+   plugin can replace this backend with a persistent store (SQLite, OpenTelemetry, etc.)
+
+``GET /api/v1/components/{id}/logs``
+   Query log entries for all nodes in the component namespace (prefix match).
+
+``GET /api/v1/apps/{id}/logs``
+   Query log entries for the specific app node (exact match).
+
+**Query parameters:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Parameter
+     - Description
+   * - ``severity``
+     - Minimum severity filter (``debug`` | ``info`` | ``warning`` | ``error`` | ``fatal``).
+       The stricter of this parameter and the entity's configured ``severity_filter`` is applied.
+       Empty or absent = use entity config only.
+   * - ``context``
+     - Substring filter applied to the log entry's logger name. Empty or absent = no filter.
+
+**Response 200:**
+
+.. code-block:: json
+
+   {
+     "items": [
+       {
+         "id": "log_42",
+         "timestamp": "2026-01-15T10:30:00.123456789Z",
+         "severity": "warning",
+         "message": "Calibration drift detected",
+         "context": {
+           "node": "powertrain/engine/temp_sensor",
+           "function": "read_sensor",
+           "file": "temp_sensor.cpp",
+           "line": 99
+         }
+       }
+     ]
+   }
+
+The ``context.function``, ``context.file``, and ``context.line`` fields are omitted when empty/zero.
+
+**Severity values** map directly to the ROS 2 log levels:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 15 15 70
+
+   * - Value
+     - ROS 2 level
+     - Meaning
+   * - ``debug``
+     - DEBUG (10)
+     - Fine-grained diagnostic information
+   * - ``info``
+     - INFO (20)
+     - Normal operational messages
+   * - ``warning``
+     - WARN (30)
+     - Non-fatal anomalies
+   * - ``error``
+     - ERROR (40)
+     - Errors that may require attention
+   * - ``fatal``
+     - FATAL (50)
+     - Critical failures
+
+``GET /api/v1/components/{id}/logs/configuration``
+``GET /api/v1/apps/{id}/logs/configuration``
+   Return the current log configuration for the entity.
+
+   **Response 200:**
+
+   .. code-block:: json
+
+      {
+        "severity_filter": "debug",
+        "max_entries": 10000
+      }
+
+``PUT /api/v1/components/{id}/logs/configuration``
+``PUT /api/v1/apps/{id}/logs/configuration``
+   Update the log configuration for the entity. All body fields are optional.
+
+   **Request body:**
+
+   .. code-block:: json
+
+      {
+        "severity_filter": "warning",
+        "max_entries": 500
+      }
+
+   ``severity_filter`` — minimum severity to retain/return (``debug`` | ``info`` | ``warning`` |
+   ``error`` | ``fatal``). Entries below this level are excluded from queries. Default: ``debug``.
+
+   ``max_entries`` — maximum number of entries returned per query. Must be > 0. Default: 10000.
+
+   **Response 200:** Updated configuration (same schema as GET).
+
+   - **400:** Invalid ``severity_filter`` or ``max_entries`` value
+
 Bulk Data Endpoints
 -------------------
 
