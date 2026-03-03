@@ -93,15 +93,9 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
       // Provider pointers from extern "C" query functions (safe across dlopen boundary)
       lp.update_provider = result->update_provider;
       lp.introspection_provider = result->introspection_provider;
-      // LogProvider: discovered via dynamic_cast across the dlopen boundary.
-      // Limitation: with -fvisibility=hidden the RTTI symbol for LogProvider may exist in
-      // both the gateway binary and the .so, causing dynamic_cast to silently return nullptr
-      // even when the plugin does implement LogProvider. The safe fix is an extern "C" query
-      // function (like get_update_provider_ptr()), but that requires an ABI change deferred
-      // to a future release. For now, LogProvider plugins must be built with matching visibility
-      // settings (e.g. -fvisibility=default or explicit attribute((visibility("default"))) on
-      // the LogProvider vtable).
-      lp.log_provider = dynamic_cast<LogProvider *>(result->plugin.get());
+      // LogProvider: discovered via extern "C" query function (mirrors UpdateProvider /
+      // IntrospectionProvider mechanism — safe across the dlopen boundary).
+      lp.log_provider = result->log_provider;
 
       // Cache first UpdateProvider, warn on duplicates
       if (lp.update_provider) {

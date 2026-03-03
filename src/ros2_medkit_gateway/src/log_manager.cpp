@@ -141,11 +141,19 @@ void LogManager::on_rosout(const rcl_interfaces::msg::Log::ConstSharedPtr & msg)
   entry.line = msg->line;
 
   // Notify all LogProvider observers — they may forward to OTel, DB, etc.
+  // Exceptions from plugins are caught to prevent a misbehaving plugin from
+  // crashing the gateway's ROS 2 subscription callback.
   bool suppress_buffer = false;
   if (plugin_mgr_) {
     for (auto * observer : plugin_mgr_->get_log_observers()) {
-      if (observer->on_log_entry(entry)) {
-        suppress_buffer = true;
+      try {
+        if (observer->on_log_entry(entry)) {
+          suppress_buffer = true;
+        }
+      } catch (const std::exception & e) {
+        RCLCPP_WARN(node_->get_logger(), "LogProvider::on_log_entry threw: %s", e.what());
+      } catch (...) {
+        RCLCPP_WARN(node_->get_logger(), "LogProvider::on_log_entry threw unknown exception");
       }
     }
   }

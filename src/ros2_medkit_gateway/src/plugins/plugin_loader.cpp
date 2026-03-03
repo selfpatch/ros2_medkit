@@ -186,6 +186,20 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
     }
   }
 
+  using LogProviderFn = LogProvider * (*)(GatewayPlugin *);
+  auto log_fn = reinterpret_cast<LogProviderFn>(dlsym(handle, "get_log_provider"));
+  if (log_fn) {
+    try {
+      result.log_provider = log_fn(raw_plugin);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_log_provider threw in %s: %s", plugin_path.c_str(),
+                  e.what());
+    } catch (...) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_log_provider threw unknown exception in %s",
+                  plugin_path.c_str());
+    }
+  }
+
   // Transfer handle ownership to result (disarm scope guard)
   result.handle_ = handle_guard.release();
   return result;
