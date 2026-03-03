@@ -230,12 +230,19 @@ json LogManager::get_logs(const std::vector<std::string> & node_fqns, bool prefi
       bool matches = false;
       for (const auto & fqn : node_fqns) {
         const std::string norm = normalize_fqn(fqn);
+        // ROS 2 logger names use '.' as separator (e.g. "powertrain.engine.temp_sensor")
+        // while entity FQNs use '/' (e.g. "powertrain/engine/temp_sensor").
+        // Try both slash-format and dot-format so the default ring buffer matches either.
+        std::string norm_dot = norm;
+        std::replace(norm_dot.begin(), norm_dot.end(), '/', '.');
         if (prefix_match) {
-          // Match exactly OR as a namespace prefix (must be followed by '/')
-          // e.g. norm="powertrain/engine" must NOT match "powertrain/engine_control"
-          matches = (buf_name == norm) || (buf_name.rfind(norm + "/", 0) == 0);
+          // Match exactly OR as a namespace prefix.
+          // Slash-format: prefix must be followed by '/'
+          // Dot-format:   prefix must be followed by '.'
+          matches = (buf_name == norm) || (buf_name.rfind(norm + "/", 0) == 0) || (buf_name == norm_dot) ||
+                    (buf_name.rfind(norm_dot + ".", 0) == 0);
         } else {
-          matches = (buf_name == norm);
+          matches = (buf_name == norm) || (buf_name == norm_dot);
         }
         if (matches) {
           break;

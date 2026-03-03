@@ -47,7 +47,7 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
 
   auto * log_mgr = ctx_.node()->get_log_manager();
   if (!log_mgr) {
-    HandlerContext::send_error(res, 503, ERR_INTERNAL_ERROR, "LogManager not available");
+    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "LogManager not available");
     return;
   }
 
@@ -96,7 +96,7 @@ void LogHandlers::handle_get_logs_configuration(const httplib::Request & req, ht
 
   auto * log_mgr = ctx_.node()->get_log_manager();
   if (!log_mgr) {
-    HandlerContext::send_error(res, 503, ERR_INTERNAL_ERROR, "LogManager not available");
+    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "LogManager not available");
     return;
   }
 
@@ -126,7 +126,7 @@ void LogHandlers::handle_put_logs_configuration(const httplib::Request & req, ht
 
   auto * log_mgr = ctx_.node()->get_log_manager();
   if (!log_mgr) {
-    HandlerContext::send_error(res, 503, ERR_INTERNAL_ERROR, "LogManager not available");
+    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "LogManager not available");
     return;
   }
 

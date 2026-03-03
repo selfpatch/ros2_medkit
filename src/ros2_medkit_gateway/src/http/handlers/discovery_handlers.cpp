@@ -496,6 +496,7 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     }
     auto comp_caps = CapabilityBuilder::build_capabilities("components", comp.id, caps);
     append_plugin_capabilities(comp_caps, "components", comp.id, SovdEntityType::COMPONENT, ctx_.node());
+    response["capabilities"] = comp_caps;
     ext.add("capabilities", comp_caps);
     response["x-medkit"] = ext.build();
 

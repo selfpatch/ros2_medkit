@@ -593,7 +593,7 @@ The ``context.function``, ``context.file``, and ``context.line`` fields are omit
         "max_entries": 500
       }
 
-   ``severity_filter`` — minimum severity to retain/return (``debug`` | ``info`` | ``warning`` |
+   ``severity_filter`` — minimum severity to return in query results (``debug`` | ``info`` | ``warning`` |
    ``error`` | ``fatal``). Entries below this level are excluded from queries. Default: ``debug``.
 
    ``max_entries`` — maximum number of entries returned per query. Must be > 0. Default: ``100``.
