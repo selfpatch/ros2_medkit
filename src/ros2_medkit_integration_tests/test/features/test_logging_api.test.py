@@ -160,25 +160,29 @@ class TestLoggingApi(GatewayTestCase):
     # ------------------------------------------------------------------
 
     def test_app_put_logs_configuration_updates_severity_filter(self):
-        """PUT /apps/{id}/logs/configuration updates severity_filter.
+        """PUT /apps/{id}/logs/configuration returns 204 and update is visible via GET.
 
         # @verifies REQ_INTEROP_064
         """
-        data = self.put_json(
+        self.put_raw(
             '/apps/temp_sensor/logs/configuration',
             {'severity_filter': 'warning'},
+            expected_status=204,
         )
+        data = self.get_json('/apps/temp_sensor/logs/configuration')
         self.assertEqual(data['severity_filter'], 'warning')
 
     def test_app_put_logs_configuration_updates_max_entries(self):
-        """PUT /apps/{id}/logs/configuration updates max_entries.
+        """PUT /apps/{id}/logs/configuration returns 204 and update is visible via GET.
 
         # @verifies REQ_INTEROP_064
         """
-        data = self.put_json(
+        self.put_raw(
             '/apps/temp_sensor/logs/configuration',
             {'max_entries': 500},
+            expected_status=204,
         )
+        data = self.get_json('/apps/temp_sensor/logs/configuration')
         self.assertEqual(data['max_entries'], 500)
 
     def test_app_put_logs_configuration_invalid_severity_returns_400(self):

@@ -163,11 +163,7 @@ void LogHandlers::handle_put_logs_configuration(const httplib::Request & req, ht
     return;
   }
 
-  const auto cfg = log_mgr->get_config(entity_id);
-  json result;
-  result["severity_filter"] = cfg.severity_filter;
-  result["max_entries"] = cfg.max_entries;
-  HandlerContext::send_json(res, result);
+  res.status = 204;
 }
 
 }  // namespace handlers
