@@ -51,7 +51,8 @@ class CapabilityBuilder {
     CONTAINS,            ///< Entity contains other entities (areas->components)
     RELATED_APPS,        ///< Entity has related apps (components only)
     HOSTS,               ///< Entity has host apps (functions/components)
-    DEPENDS_ON           ///< Entity has dependencies (components only)
+    DEPENDS_ON,          ///< Entity has dependencies (components only)
+    LOGS                 ///< Entity has communication logs (components and apps)
   };
 
   /**
