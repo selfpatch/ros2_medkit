@@ -70,7 +70,7 @@ class TestLoggingApi(GatewayTestCase):
         """
         data = self.poll_endpoint_until(
             '/apps/temp_sensor/logs',
-            condition=lambda d: len(d.get('items', [])) > 0,
+            condition=lambda d: d if d.get('items') else None,
             timeout=15.0,
         )
         items = data['items']
@@ -83,7 +83,7 @@ class TestLoggingApi(GatewayTestCase):
         """
         data = self.poll_endpoint_until(
             '/apps/temp_sensor/logs',
-            condition=lambda d: len(d.get('items', [])) > 0,
+            condition=lambda d: d if d.get('items') else None,
             timeout=15.0,
         )
         entry = data['items'][0]
