@@ -80,6 +80,7 @@ add_library(gateway_lib STATIC
   src/operation_manager.cpp
   src/configuration_manager.cpp
   src/fault_manager.cpp
+  src/log_manager.cpp
   src/subscription_manager.cpp
   # Entity resource model
   src/models/entity_types.cpp
@@ -442,6 +443,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_plugin_manager test/test_plugin_manager.cpp)
   target_link_libraries(test_plugin_manager gateway_lib)
 
+  # Log manager tests
+  ament_add_gtest(test_log_manager test/test_log_manager.cpp)
+  target_link_libraries(test_log_manager gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -474,6 +479,7 @@ if(BUILD_TESTING)
       test_health_handlers
       test_plugin_loader
       test_plugin_manager
+      test_log_manager
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
