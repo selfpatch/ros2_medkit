@@ -598,10 +598,7 @@ The ``context.function``, ``context.file``, and ``context.line`` fields are omit
 
    ``max_entries`` — maximum number of entries returned per query. Must be > 0. Default: ``100``.
 
-   **Response 200:** Updated configuration (same schema as GET).
-
-   .. note:: The SOVD spec (ISO 17978-3 §7.21) specifies ``204 No Content`` for this endpoint.
-      ros2_medkit returns ``200`` with the updated configuration body as a convenience for clients.
+   **Response 204:** No content.
 
    - **400:** Invalid ``severity_filter`` or ``max_entries`` value
 

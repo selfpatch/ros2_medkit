@@ -1059,7 +1059,7 @@ curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/logs/configurati
 | `severity_filter` | string | Minimum severity stored/returned: `debug`, `info`, `warning`, `error`, `fatal` |
 | `max_entries` | integer > 0 | Maximum entries returned by GET /logs for this entity |
 
-**Response:** updated configuration (same schema as GET /logs/configuration).
+**Response:** `204 No Content`.
 
 ## Quick Start
 
