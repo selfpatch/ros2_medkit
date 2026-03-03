@@ -407,8 +407,14 @@ jobs:
 
   notify-demos:
     needs: [jazzy-lint, jazzy-test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.jazzy-lint.result == 'success' &&
+      needs.jazzy-test.result == 'success'
     runs-on: ubuntu-latest
+    # Only Jazzy gates the dispatch. Humble failures do not block demos CI - intentional tradeoff.
+    permissions: {}
     steps:
       - name: Trigger selfpatch_demos CI
         uses: peter-evans/repository-dispatch@v4
@@ -416,6 +422,4 @@ jobs:
           token: ${{ secrets.DEMOS_DISPATCH_TOKEN }}
           repository: selfpatch/selfpatch_demos
           event-type: ros2_medkit_updated
-          client-payload: >-
-            {"sha": "${{ github.sha }}",
-             "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
+          client-payload: '{"sha":"${{ github.sha }}","run_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
