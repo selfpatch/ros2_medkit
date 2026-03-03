@@ -59,6 +59,12 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
   const std::string min_severity = req.get_param_value("severity");
   const std::string context_filter = req.get_param_value("context");
 
+  if (!min_severity.empty() && !LogManager::is_valid_severity(min_severity)) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
+                               "Invalid severity value: must be one of debug, info, warning, error, fatal");
+    return;
+  }
+
   auto logs = log_mgr->get_logs({entity.fqn}, prefix_match, min_severity, context_filter, entity_id);
 
   json result;
@@ -129,11 +135,26 @@ void LogHandlers::handle_put_logs_configuration(const httplib::Request & req, ht
   std::optional<std::string> severity_filter;
   std::optional<size_t> max_entries;
 
-  if (body.contains("severity_filter") && body["severity_filter"].is_string()) {
+  if (body.contains("severity_filter")) {
+    if (!body["severity_filter"].is_string()) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "severity_filter must be a string");
+      return;
+    }
     severity_filter = body["severity_filter"].get<std::string>();
   }
-  if (body.contains("max_entries") && body["max_entries"].is_number_unsigned()) {
-    max_entries = body["max_entries"].get<size_t>();
+
+  if (body.contains("max_entries")) {
+    const auto & me = body["max_entries"];
+    if (!me.is_number_integer() && !me.is_number_unsigned()) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries must be a positive integer");
+      return;
+    }
+    const auto val = me.get<long long>();
+    if (val <= 0) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries must be greater than 0");
+      return;
+    }
+    max_entries = static_cast<size_t>(val);
   }
 
   const auto err = log_mgr->update_config(entity_id, severity_filter, max_entries);
