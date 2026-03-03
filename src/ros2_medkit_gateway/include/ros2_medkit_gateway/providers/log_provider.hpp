@@ -90,6 +90,9 @@ class LogProvider {
    * @param entry The log entry (name field is WITHOUT leading slash)
    * @return true to suppress default ring buffer storage; false to allow it (default)
    *
+   * OR-aggregation: if ANY observer returns true, ring buffer storage is suppressed.
+   * All observers are always called regardless of earlier return values.
+   *
    * Example: An OpenTelemetry plugin forwards to OTLP and returns false (keeps ring buffer).
    *          A database plugin stores in SQLite, returns true (replaces ring buffer for that entry).
    */
