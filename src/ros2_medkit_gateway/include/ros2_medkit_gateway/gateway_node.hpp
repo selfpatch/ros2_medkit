@@ -32,6 +32,7 @@
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/http/rate_limiter.hpp"
 #include "ros2_medkit_gateway/http/rest_server.hpp"
+#include "ros2_medkit_gateway/log_manager.hpp"
 #include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
@@ -90,6 +91,12 @@ class GatewayNode : public rclcpp::Node {
   BulkDataStore * get_bulk_data_store() const;
 
   /**
+   * @brief Get the LogManager instance
+   * @return Raw pointer to LogManager (valid for lifetime of GatewayNode)
+   */
+  LogManager * get_log_manager() const;
+
+  /**
    * @brief Get the SubscriptionManager instance
    * @return Raw pointer to SubscriptionManager (valid for lifetime of GatewayNode)
    */
@@ -127,6 +134,7 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<OperationManager> operation_mgr_;
   std::unique_ptr<ConfigurationManager> config_mgr_;
   std::unique_ptr<FaultManager> fault_mgr_;
+  std::unique_ptr<LogManager> log_mgr_;
   std::unique_ptr<BulkDataStore> bulk_data_store_;
   std::unique_ptr<SubscriptionManager> subscription_mgr_;
   // IMPORTANT: plugin_mgr_ BEFORE update_mgr_ - C++ destroys in reverse order,

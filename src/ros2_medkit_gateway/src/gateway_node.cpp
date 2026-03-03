@@ -420,6 +420,9 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
     RCLCPP_INFO(get_logger(), "Loaded %zu plugin(s)", loaded);
   }
 
+  // Initialize log manager (subscribes to /rosout, delegates to plugin if available)
+  log_mgr_ = std::make_unique<LogManager>(this, plugin_mgr_.get());
+
   // Initialize update manager
   auto updates_enabled = get_parameter("updates.enabled").as_bool();
   if (updates_enabled) {
@@ -500,6 +503,10 @@ ConfigurationManager * GatewayNode::get_configuration_manager() const {
 
 FaultManager * GatewayNode::get_fault_manager() const {
   return fault_mgr_.get();
+}
+
+LogManager * GatewayNode::get_log_manager() const {
+  return log_mgr_.get();
 }
 
 BulkDataStore * GatewayNode::get_bulk_data_store() const {
