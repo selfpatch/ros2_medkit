@@ -89,6 +89,10 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("sse.max_clients", 10);         // Limit concurrent SSE connections to prevent resource exhaustion
   declare_parameter("sse.max_subscriptions", 100);  // Maximum active cyclic subscriptions across all entities
 
+  // Log management parameters
+  declare_parameter("logs.buffer_size",
+                    200);  // Ring buffer capacity per node; entries exceed this are dropped (oldest first)
+
   // TLS/HTTPS parameters
   declare_parameter("server.tls.enabled", false);
   declare_parameter("server.tls.cert_file", "");
@@ -421,7 +425,8 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   }
 
   // Initialize log manager (subscribes to /rosout, delegates to plugin if available)
-  log_mgr_ = std::make_unique<LogManager>(this, plugin_mgr_.get());
+  auto log_buffer_size = static_cast<size_t>(get_parameter("logs.buffer_size").as_int());
+  log_mgr_ = std::make_unique<LogManager>(this, plugin_mgr_.get(), log_buffer_size);
 
   // Initialize update manager
   auto updates_enabled = get_parameter("updates.enabled").as_bool();

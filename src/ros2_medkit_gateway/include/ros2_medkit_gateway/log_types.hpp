@@ -27,7 +27,7 @@ namespace ros2_medkit_gateway {
 /// returned). A LogProvider plugin can implement true storage-limit semantics.
 struct LogConfig {
   std::string severity_filter = "debug";  ///< Minimum severity to include in query results
-  size_t max_entries = 10000;             ///< Maximum entries returned per GET /logs request
+  size_t max_entries = 100;               ///< Maximum entries returned per GET /logs request
 };
 
 /// A single log entry stored in the ring buffer

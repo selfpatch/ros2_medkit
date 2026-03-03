@@ -290,7 +290,7 @@ TEST_F(LogManagerBufferTest, UpdateConfigRejectsZeroMaxEntries) {
 TEST_F(LogManagerBufferTest, GetConfigReturnsDefaultsForUnknownEntity) {
   auto cfg = mgr_->get_config("unknown_entity");
   EXPECT_EQ(cfg.severity_filter, "debug");
-  EXPECT_EQ(cfg.max_entries, 10000u);
+  EXPECT_EQ(cfg.max_entries, 100u);
 }
 
 // @verifies REQ_INTEROP_064

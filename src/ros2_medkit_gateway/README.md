@@ -64,6 +64,15 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `POST /api/v1/{entity}/{id}/bulk-data/{category}` - Upload bulk data (components/apps only)
 - `DELETE /api/v1/{entity}/{id}/bulk-data/{category}/{item_id}` - Delete bulk data (components/apps only)
 
+### Logging Endpoints
+
+- `GET /api/v1/components/{component_id}/logs` - Query recent log entries for a component (all its nodes, prefix match)
+- `GET /api/v1/apps/{app_id}/logs` - Query recent log entries for a specific app node (exact match)
+- `GET /api/v1/components/{component_id}/logs/configuration` - Get log configuration for a component
+- `GET /api/v1/apps/{app_id}/logs/configuration` - Get log configuration for an app
+- `PUT /api/v1/components/{component_id}/logs/configuration` - Update log configuration for a component
+- `PUT /api/v1/apps/{app_id}/logs/configuration` - Update log configuration for an app
+
 ### API Reference
 
 #### GET /api/v1/areas
@@ -965,6 +974,92 @@ ros2 bag info fault_MOTOR_OVERHEAT_1735830000/
 | Playback | N/A | `ros2 bag play` |
 | Query via REST | Yes (structured JSON) | Download only |
 | Default | Enabled | Disabled |
+
+### Logging Endpoints
+
+The gateway collects `/rosout` messages and exposes them via REST. Each node's log entries are stored in a per-node ring buffer (default: 200 entries, configurable via `logs.buffer_size` in `gateway_params.yaml`).
+
+**Query parameters for GET /logs:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `severity` | string | Minimum severity filter: `debug`, `info`, `warning`, `error`, `fatal` |
+| `context`  | string | Substring filter applied to the logger name |
+
+#### GET /api/v1/components/{component_id}/logs
+
+Returns recent log entries for all nodes under the component's namespace (prefix match). Results are capped at `max_entries` (default: 100, configurable per entity via `PUT /logs/configuration`).
+
+```bash
+curl http://localhost:8080/api/v1/components/temp_sensor/logs
+curl "http://localhost:8080/api/v1/components/temp_sensor/logs?severity=warning"
+```
+
+**Response:**
+
+```json
+{
+  "items": [
+    {
+      "id": "log_42",
+      "timestamp": "2026-03-03T12:00:00.000000000Z",
+      "severity": "warning",
+      "message": "Temperature exceeded threshold",
+      "context": {
+        "node": "powertrain/engine/temp_sensor",
+        "function": "publish_temperature",
+        "file": "temp_sensor_node.cpp",
+        "line": 87
+      }
+    }
+  ]
+}
+```
+
+#### GET /api/v1/apps/{app_id}/logs
+
+Same as above but for a single app node (exact logger name match).
+
+```bash
+curl http://localhost:8080/api/v1/apps/temp_sensor/logs
+curl "http://localhost:8080/api/v1/apps/temp_sensor/logs?severity=error&context=engine"
+```
+
+#### GET /api/v1/{entity}/{id}/logs/configuration
+
+Returns the current log configuration for the entity.
+
+```bash
+curl http://localhost:8080/api/v1/components/temp_sensor/logs/configuration
+```
+
+**Response:**
+
+```json
+{
+  "severity_filter": "debug",
+  "max_entries": 100
+}
+```
+
+#### PUT /api/v1/{entity}/{id}/logs/configuration
+
+Updates the log configuration. Both fields are optional; omitted fields are unchanged.
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/logs/configuration \
+  -H "Content-Type: application/json" \
+  -d '{"severity_filter": "warning", "max_entries": 50}'
+```
+
+**Request body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `severity_filter` | string | Minimum severity stored/returned: `debug`, `info`, `warning`, `error`, `fatal` |
+| `max_entries` | integer > 0 | Maximum entries returned by GET /logs for this entity |
+
+**Response:** updated configuration (same schema as GET /logs/configuration).
 
 ## Quick Start
 

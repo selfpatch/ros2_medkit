@@ -112,6 +112,14 @@ ros2_medkit_gateway:
       # Default: 100
       max_subscriptions: 100
 
+    # Logging Configuration
+    logs:
+      # Ring buffer capacity per node name.
+      # The gateway retains at most this many /rosout entries per node in memory.
+      # Oldest entries are dropped when the buffer is full.
+      # Default: 200
+      buffer_size: 200
+
     # Discovery Configuration
     # Controls how ROS 2 graph entities are mapped to SOVD entities
     discovery:
