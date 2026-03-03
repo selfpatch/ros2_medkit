@@ -54,7 +54,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_get_logs_returns_200(self):
         """GET /apps/{app_id}/logs returns 200 with items array.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_062
         """
         data = self.get_json('/apps/temp_sensor/logs')
         self.assertIn('items', data)
@@ -66,7 +66,7 @@ class TestLoggingApi(GatewayTestCase):
         /rosout messages from demo node startup populate the ring buffer.
         Poll until at least one entry is present.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_062
         """
         data = self.poll_endpoint_until(
             '/apps/temp_sensor/logs',
@@ -79,7 +79,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_log_entry_has_required_fields(self):
         """Each log entry has id, timestamp, severity, message, context fields.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_062
         """
         data = self.poll_endpoint_until(
             '/apps/temp_sensor/logs',
@@ -115,7 +115,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_get_logs_severity_filter(self):
         """GET /apps/{id}/logs?severity=error returns only entries at error level or above.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_062
         """
         data = self.get_json('/apps/temp_sensor/logs?severity=error')
         self.assertIn('items', data)
@@ -129,7 +129,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_get_logs_invalid_entity_returns_404(self):
         """GET /apps/{id}/logs returns 404 for unknown entity.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_062
         """
         self.get_json('/apps/nonexistent_app_xyz/logs', expected_status=404)
 
@@ -140,7 +140,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_get_logs_configuration_returns_200(self):
         """GET /apps/{id}/logs/configuration returns 200 with config fields.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_063
         """
         data = self.get_json('/apps/temp_sensor/logs/configuration')
         self.assertIn('severity_filter', data)
@@ -149,7 +149,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_get_logs_configuration_defaults(self):
         """GET /apps/{id}/logs/configuration returns default values for unconfigured entity.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_063
         """
         data = self.get_json('/apps/temp_sensor/logs/configuration')
         self.assertEqual(data['severity_filter'], 'debug')
@@ -162,7 +162,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_put_logs_configuration_updates_severity_filter(self):
         """PUT /apps/{id}/logs/configuration updates severity_filter.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_064
         """
         data = self.put_json(
             '/apps/temp_sensor/logs/configuration',
@@ -173,7 +173,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_put_logs_configuration_updates_max_entries(self):
         """PUT /apps/{id}/logs/configuration updates max_entries.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_064
         """
         data = self.put_json(
             '/apps/temp_sensor/logs/configuration',
@@ -184,7 +184,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_put_logs_configuration_invalid_severity_returns_400(self):
         """PUT /apps/{id}/logs/configuration returns 400 for invalid severity.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_064
         """
         resp = self.put_raw(
             '/apps/temp_sensor/logs/configuration',
@@ -197,7 +197,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_put_logs_configuration_zero_max_entries_returns_400(self):
         """PUT /apps/{id}/logs/configuration returns 400 for max_entries=0.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_064
         """
         resp = self.put_raw(
             '/apps/temp_sensor/logs/configuration',
@@ -214,7 +214,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_component_get_logs_returns_200(self):
         """GET /components/{id}/logs returns 200 with items array.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_062
         """
         components = self.get_json('/components')['items']
         self.assertGreater(len(components), 0, 'At least one component required')
@@ -227,7 +227,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_component_get_logs_configuration_returns_200(self):
         """GET /components/{id}/logs/configuration returns 200 with config.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_063
         """
         components = self.get_json('/components')['items']
         self.assertGreater(len(components), 0, 'At least one component required')
@@ -244,7 +244,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_detail_includes_logs_capability(self):
         """GET /apps/{id} response includes 'logs' in capabilities list.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_061
         """
         data = self.get_json('/apps/temp_sensor')
         self.assertIn('capabilities', data)
@@ -254,7 +254,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_component_detail_includes_logs_capability(self):
         """GET /components/{id} response includes 'logs' in capabilities list.
 
-        # @issue 208
+        # @verifies REQ_INTEROP_061
         """
         components = self.get_json('/components')['items']
         self.assertGreater(len(components), 0, 'At least one component required')
