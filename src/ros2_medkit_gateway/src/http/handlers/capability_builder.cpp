@@ -41,6 +41,8 @@ std::string CapabilityBuilder::capability_to_name(Capability cap) {
       return "hosts";
     case Capability::DEPENDS_ON:
       return "depends-on";
+    case Capability::LOGS:
+      return "logs";
     default:
       return "unknown";
   }

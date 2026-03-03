@@ -489,8 +489,8 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     }
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::DATA,   Cap::OPERATIONS,    Cap::CONFIGURATIONS,
-                             Cap::FAULTS, Cap::SUBCOMPONENTS, Cap::HOSTS};
+    std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS,    Cap::CONFIGURATIONS, Cap::FAULTS,
+                             Cap::LOGS, Cap::SUBCOMPONENTS, Cap::HOSTS};
     if (!comp.depends_on.empty()) {
       caps.push_back(Cap::DEPENDS_ON);
     }
@@ -812,7 +812,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     }
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS};
+    std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS, Cap::LOGS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("apps", app.id, caps);
     append_plugin_capabilities(response["capabilities"], "apps", app.id, SovdEntityType::APP, ctx_.node());
 
