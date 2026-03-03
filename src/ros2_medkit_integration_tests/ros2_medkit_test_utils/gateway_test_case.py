@@ -378,6 +378,41 @@ class GatewayTestCase(unittest.TestCase):
         )
         return response
 
+    def put_raw(self, endpoint, data, *, timeout=10, expected_status=200, **kwargs):
+        """Send PUT with JSON body and return the raw ``Response`` (no JSON parsing).
+
+        Useful when the caller needs to inspect headers or the response body
+        without asserting it is valid JSON (e.g. testing error responses).
+
+        Parameters
+        ----------
+        endpoint : str
+            Path relative to ``BASE_URL``.
+        data : dict
+            JSON-serializable request body.
+        timeout : int
+            Request timeout in seconds.
+        expected_status : int
+            Expected HTTP status code.
+        **kwargs
+            Extra keyword arguments forwarded to ``requests.put()``.
+
+        Returns
+        -------
+        requests.Response
+            The raw response object.
+
+        """
+        response = requests.put(
+            f'{self.BASE_URL}{endpoint}', json=data, timeout=timeout, **kwargs
+        )
+        self.assertEqual(
+            response.status_code,
+            expected_status,
+            f'PUT {endpoint} returned {response.status_code}: {response.text}',
+        )
+        return response
+
     # ------------------------------------------------------------------
     # Waiters
     # ------------------------------------------------------------------
