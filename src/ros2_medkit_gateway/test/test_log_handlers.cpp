@@ -43,7 +43,7 @@ class LogHandlersTest : public ::testing::Test {
 // handle_get_logs — returns 400 when route matches are missing
 // ============================================================================
 
-// @verifies REQ_INTEROP_062
+// @verifies REQ_INTEROP_061
 TEST_F(LogHandlersTest, GetLogsReturnsBadRequestWhenMatchesMissing) {
   // Default-constructed req has empty matches (size 0 < 2)
   httplib::Request req;
@@ -52,7 +52,7 @@ TEST_F(LogHandlersTest, GetLogsReturnsBadRequestWhenMatchesMissing) {
   EXPECT_EQ(res.status, 400);
 }
 
-// @verifies REQ_INTEROP_062
+// @verifies REQ_INTEROP_061
 TEST_F(LogHandlersTest, GetLogsBadRequestBodyIsValidJson) {
   httplib::Request req;
   httplib::Response res;
@@ -60,7 +60,7 @@ TEST_F(LogHandlersTest, GetLogsBadRequestBodyIsValidJson) {
   EXPECT_NO_THROW(json::parse(res.body));
 }
 
-// @verifies REQ_INTEROP_062
+// @verifies REQ_INTEROP_061
 TEST_F(LogHandlersTest, GetLogsBadRequestBodyContainsInvalidRequestErrorCode) {
   httplib::Request req;
   httplib::Response res;
