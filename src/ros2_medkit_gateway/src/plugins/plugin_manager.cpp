@@ -162,6 +162,7 @@ void PluginManager::disable_plugin(LoadedPlugin & lp) {
   lp.log_provider = nullptr;
   lp.load_result.update_provider = nullptr;
   lp.load_result.introspection_provider = nullptr;
+  lp.load_result.log_provider = nullptr;
   lp.load_result.plugin.reset();
 }
 

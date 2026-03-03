@@ -425,7 +425,15 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   }
 
   // Initialize log manager (subscribes to /rosout, delegates to plugin if available)
-  auto log_buffer_size = static_cast<size_t>(get_parameter("logs.buffer_size").as_int());
+  static constexpr int kMinBufferSize = 1;
+  static constexpr int kMaxBufferSize = 100000;
+  auto raw_buffer_size = get_parameter("logs.buffer_size").as_int();
+  auto clamped =
+      std::clamp(raw_buffer_size, static_cast<int64_t>(kMinBufferSize), static_cast<int64_t>(kMaxBufferSize));
+  if (clamped != raw_buffer_size) {
+    RCLCPP_WARN(get_logger(), "logs.buffer_size %ld clamped to %ld", raw_buffer_size, clamped);
+  }
+  auto log_buffer_size = static_cast<size_t>(clamped);
   log_mgr_ = std::make_unique<LogManager>(this, plugin_mgr_.get(), log_buffer_size);
 
   // Initialize update manager

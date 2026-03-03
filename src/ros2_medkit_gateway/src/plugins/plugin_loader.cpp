@@ -40,9 +40,11 @@ GatewayPluginLoadResult::GatewayPluginLoadResult(GatewayPluginLoadResult && othe
   : plugin(std::move(other.plugin))
   , update_provider(other.update_provider)
   , introspection_provider(other.introspection_provider)
+  , log_provider(other.log_provider)
   , handle_(other.handle_) {
   other.update_provider = nullptr;
   other.introspection_provider = nullptr;
+  other.log_provider = nullptr;
   other.handle_ = nullptr;
 }
 
@@ -51,6 +53,7 @@ GatewayPluginLoadResult & GatewayPluginLoadResult::operator=(GatewayPluginLoadRe
     // Destroy current state in correct order
     update_provider = nullptr;
     introspection_provider = nullptr;
+    log_provider = nullptr;
     plugin.reset();
     if (handle_) {
       dlclose(handle_);
@@ -60,10 +63,12 @@ GatewayPluginLoadResult & GatewayPluginLoadResult::operator=(GatewayPluginLoadRe
     plugin = std::move(other.plugin);
     update_provider = other.update_provider;
     introspection_provider = other.introspection_provider;
+    log_provider = other.log_provider;
     handle_ = other.handle_;
 
     other.update_provider = nullptr;
     other.introspection_provider = nullptr;
+    other.log_provider = nullptr;
     other.handle_ = nullptr;
   }
   return *this;
