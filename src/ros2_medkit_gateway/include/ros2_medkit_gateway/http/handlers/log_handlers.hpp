@@ -64,7 +64,7 @@ class LogHandlers {
    * @brief Handle PUT /{entity-path}/logs/configuration - update log configuration.
    *
    * Body (JSON, all fields optional):
-   *   severity_filter  - Minimum severity to store/return (debug/info/warning/error/fatal)
+   *   severity_filter  - Minimum severity to return in query results (debug/info/warning/error/fatal)
    *   max_entries      - Maximum number of log entries to return per query (> 0)
    */
   void handle_put_logs_configuration(const httplib::Request & req, httplib::Response & res);

@@ -274,6 +274,32 @@ TEST_F(LogManagerBufferTest, ContextFilterMatchesSubstring) {
   EXPECT_EQ(result[0]["context"]["node"], "powertrain/engine/temp_sensor");
 }
 
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerBufferTest, GetLogsMatchesDotNotationLoggerNames) {
+  // ROS 2 rosout messages carry logger names using '.' as separator
+  // (e.g. "powertrain.engine.temp_sensor") while entity FQNs use '/'.
+  // get_logs() must match entries stored under dot-format keys.
+  mgr_->inject_entry_for_testing(make_entry(1, "powertrain.engine.temp_sensor"));
+  mgr_->inject_entry_for_testing(make_entry(2, "powertrain.gearbox.speed_sensor"));
+
+  // Exact match: app FQN "/powertrain/engine/temp_sensor" must resolve dot-format entry
+  auto result = mgr_->get_logs({"/powertrain/engine/temp_sensor"}, false, "", "", "temp_sensor");
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0]["context"]["node"], "powertrain.engine.temp_sensor");
+}
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerBufferTest, GetLogsPrefixMatchesDotNotationLoggerNames) {
+  // Component namespace prefix matching must also work against dot-format logger names.
+  mgr_->inject_entry_for_testing(make_entry(1, "powertrain.engine.temp_sensor"));
+  mgr_->inject_entry_for_testing(make_entry(2, "powertrain.engine.rpm_sensor"));
+  mgr_->inject_entry_for_testing(make_entry(3, "chassis.brakes.pressure_sensor"));
+
+  // Prefix match: component FQN "/powertrain/engine" should cover both powertrain nodes
+  auto result = mgr_->get_logs({"/powertrain/engine"}, true, "", "", "comp");
+  ASSERT_EQ(result.size(), 2u);
+}
+
 // @verifies REQ_INTEROP_064
 TEST_F(LogManagerBufferTest, UpdateConfigRejectsInvalidSeverity) {
   auto err = mgr_->update_config("e", std::string("verbose"), std::nullopt);
