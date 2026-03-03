@@ -404,3 +404,18 @@ jobs:
           name: ros2_medkit-coverage
           fail_ci_if_error: true
           verbose: true
+
+  notify-demos:
+    needs: [jazzy-lint, jazzy-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger selfpatch_demos CI
+        uses: peter-evans/repository-dispatch@v4
+        with:
+          token: ${{ secrets.DEMOS_DISPATCH_TOKEN }}
+          repository: selfpatch/selfpatch_demos
+          event-type: ros2_medkit_updated
+          client-payload: >-
+            {"sha": "${{ github.sha }}",
+             "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
