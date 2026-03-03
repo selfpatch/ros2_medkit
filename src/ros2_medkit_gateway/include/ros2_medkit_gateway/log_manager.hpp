@@ -51,7 +51,7 @@ class PluginManager;  // forward declaration — full include in .cpp
 class LogManager {
  public:
   /// Default maximum number of entries retained per node in the ring buffer
-  static constexpr size_t kDefaultBufferSize = 10000;
+  static constexpr size_t kDefaultBufferSize = 200;
 
   /**
    * @brief Construct LogManager and subscribe to /rosout
