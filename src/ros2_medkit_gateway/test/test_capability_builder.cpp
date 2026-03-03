@@ -63,6 +63,7 @@ TEST(CapabilityBuilderTest, CapabilityToNameReturnsCorrectStrings) {
   EXPECT_EQ(CapabilityBuilder::capability_to_name(Cap::RELATED_COMPONENTS), "related-components");
   EXPECT_EQ(CapabilityBuilder::capability_to_name(Cap::RELATED_APPS), "related-apps");
   EXPECT_EQ(CapabilityBuilder::capability_to_name(Cap::HOSTS), "hosts");
+  EXPECT_EQ(CapabilityBuilder::capability_to_name(Cap::LOGS), "logs");
 }
 
 TEST(CapabilityBuilderTest, CapabilityToPathMatchesName) {
@@ -70,6 +71,7 @@ TEST(CapabilityBuilderTest, CapabilityToPathMatchesName) {
   EXPECT_EQ(CapabilityBuilder::capability_to_path(Cap::DATA), CapabilityBuilder::capability_to_name(Cap::DATA));
   EXPECT_EQ(CapabilityBuilder::capability_to_path(Cap::RELATED_COMPONENTS),
             CapabilityBuilder::capability_to_name(Cap::RELATED_COMPONENTS));
+  EXPECT_EQ(CapabilityBuilder::capability_to_path(Cap::LOGS), CapabilityBuilder::capability_to_name(Cap::LOGS));
 }
 
 TEST(CapabilityBuilderTest, BuildsForDifferentEntityTypes) {
