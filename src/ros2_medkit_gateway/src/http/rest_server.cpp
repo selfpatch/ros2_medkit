@@ -119,6 +119,7 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   operation_handlers_ = std::make_unique<handlers::OperationHandlers>(*handler_ctx_);
   config_handlers_ = std::make_unique<handlers::ConfigHandlers>(*handler_ctx_);
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
+  log_handlers_ = std::make_unique<handlers::LogHandlers>(*handler_ctx_);
   auth_handlers_ = std::make_unique<handlers::AuthHandlers>(*handler_ctx_);
   auto max_sse_clients = static_cast<size_t>(node_->get_parameter("sse.max_clients").as_int());
   sse_client_tracker_ = std::make_shared<SSEClientTracker>(max_sse_clients);
@@ -816,6 +817,43 @@ void RESTServer::setup_routes() {
               [this](const httplib::Request & req, httplib::Response & res) {
                 fault_handlers_->handle_clear_all_faults(req, res);
               });
+
+  // === Communication Log Routes (issue 208) ===
+
+  // GET /components/{id}/logs - query log entries for a component (prefix match)
+  srv->Get((api_path("/components") + R"(/([^/]+)/logs$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             log_handlers_->handle_get_logs(req, res);
+           });
+
+  // GET /apps/{id}/logs - query log entries for an app (exact match)
+  srv->Get((api_path("/apps") + R"(/([^/]+)/logs$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    log_handlers_->handle_get_logs(req, res);
+  });
+
+  // GET /components/{id}/logs/configuration - get log configuration for a component
+  srv->Get((api_path("/components") + R"(/([^/]+)/logs/configuration$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             log_handlers_->handle_get_logs_configuration(req, res);
+           });
+
+  // GET /apps/{id}/logs/configuration - get log configuration for an app
+  srv->Get((api_path("/apps") + R"(/([^/]+)/logs/configuration$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             log_handlers_->handle_get_logs_configuration(req, res);
+           });
+
+  // PUT /components/{id}/logs/configuration - update log configuration for a component
+  srv->Put((api_path("/components") + R"(/([^/]+)/logs/configuration$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             log_handlers_->handle_put_logs_configuration(req, res);
+           });
+
+  // PUT /apps/{id}/logs/configuration - update log configuration for an app
+  srv->Put((api_path("/apps") + R"(/([^/]+)/logs/configuration$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             log_handlers_->handle_put_logs_configuration(req, res);
+           });
 
   // === Bulk Data Routes (REQ_INTEROP_071-073) ===
   // List bulk-data categories
