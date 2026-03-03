@@ -93,7 +93,14 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
       // Provider pointers from extern "C" query functions (safe across dlopen boundary)
       lp.update_provider = result->update_provider;
       lp.introspection_provider = result->introspection_provider;
-      // LogProvider: discovered via dynamic_cast (no extern "C" query function yet)
+      // LogProvider: discovered via dynamic_cast across the dlopen boundary.
+      // Limitation: with -fvisibility=hidden the RTTI symbol for LogProvider may exist in
+      // both the gateway binary and the .so, causing dynamic_cast to silently return nullptr
+      // even when the plugin does implement LogProvider. The safe fix is an extern "C" query
+      // function (like get_update_provider_ptr()), but that requires an ABI change deferred
+      // to a future release. For now, LogProvider plugins must be built with matching visibility
+      // settings (e.g. -fvisibility=default or explicit attribute((visibility("default"))) on
+      // the LogProvider vtable).
       lp.log_provider = dynamic_cast<LogProvider *>(result->plugin.get());
 
       // Cache first UpdateProvider, warn on duplicates
@@ -264,6 +271,12 @@ LogProvider * PluginManager::get_log_provider() const {
 }
 
 std::vector<LogProvider *> PluginManager::get_log_observers() const {
+  // NOTE: plugins_ is read here (called from the ROS 2 executor thread via LogManager::on_rosout)
+  // while disable_plugin() can write plugins_ from the HTTP handler thread. This is the same
+  // pre-existing race as get_introspection_providers() and get_update_provider(). In practice
+  // disable_plugin() only nulls pointers/resets unique_ptrs and does not resize plugins_, so the
+  // race is benign on all current platforms. A proper fix would require a shared_mutex or
+  // copying the observer list at subscription time.
   std::vector<LogProvider *> result;
   for (const auto & lp : plugins_) {
     if (lp.log_provider) {

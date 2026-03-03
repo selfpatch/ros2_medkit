@@ -23,21 +23,26 @@
 
 namespace ros2_medkit_gateway {
 
+namespace {
+// Log level aliases matching rcl_interfaces::msg::Log constants
+using Log = rcl_interfaces::msg::Log;
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // Static helpers
 // ---------------------------------------------------------------------------
 
 std::string LogManager::level_to_severity(uint8_t level) {
   switch (level) {
-    case 10:
+    case Log::DEBUG:
       return "debug";
-    case 20:
+    case Log::INFO:
       return "info";
-    case 30:
+    case Log::WARN:
       return "warning";
-    case 40:
+    case Log::ERROR:
       return "error";
-    case 50:
+    case Log::FATAL:
       return "fatal";
     default:
       return "debug";
@@ -46,19 +51,19 @@ std::string LogManager::level_to_severity(uint8_t level) {
 
 uint8_t LogManager::severity_to_level(const std::string & severity) {
   if (severity == "debug") {
-    return 10;
+    return Log::DEBUG;
   }
   if (severity == "info") {
-    return 20;
+    return Log::INFO;
   }
   if (severity == "warning") {
-    return 30;
+    return Log::WARN;
   }
   if (severity == "error") {
-    return 40;
+    return Log::ERROR;
   }
   if (severity == "fatal") {
-    return 50;
+    return Log::FATAL;
   }
   return 0;
 }
@@ -148,7 +153,7 @@ void LogManager::on_rosout(const rcl_interfaces::msg::Log::ConstSharedPtr & msg)
   if (!suppress_buffer) {
     std::lock_guard<std::mutex> lock(buffers_mutex_);
     auto & buf = buffers_[entry.name];
-    buf.push_back(entry);
+    buf.push_back(std::move(entry));
     if (buf.size() > max_buffer_size_) {
       buf.pop_front();
     }
@@ -162,7 +167,7 @@ void LogManager::on_rosout(const rcl_interfaces::msg::Log::ConstSharedPtr & msg)
 void LogManager::inject_entry_for_testing(LogEntry entry) {
   std::lock_guard<std::mutex> lock(buffers_mutex_);
   auto & buf = buffers_[entry.name];
-  buf.push_back(entry);
+  buf.push_back(std::move(entry));
   if (buf.size() > max_buffer_size_) {
     buf.pop_front();
   }
