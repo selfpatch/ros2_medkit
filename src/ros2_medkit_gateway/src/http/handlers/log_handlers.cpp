@@ -65,6 +65,12 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
     return;
   }
 
+  static constexpr size_t kMaxContextFilterLen = 256;
+  if (context_filter.size() > kMaxContextFilterLen) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "context filter exceeds maximum length of 256");
+    return;
+  }
+
   auto logs = log_mgr->get_logs({entity.fqn}, prefix_match, min_severity, context_filter, entity_id);
 
   json result;
@@ -143,6 +149,7 @@ void LogHandlers::handle_put_logs_configuration(const httplib::Request & req, ht
     severity_filter = body["severity_filter"].get<std::string>();
   }
 
+  static constexpr long long kMaxEntriesCap = 10000;
   if (body.contains("max_entries")) {
     const auto & me = body["max_entries"];
     if (!me.is_number_integer() && !me.is_number_unsigned()) {
@@ -152,6 +159,10 @@ void LogHandlers::handle_put_logs_configuration(const httplib::Request & req, ht
     const auto val = me.get<long long>();
     if (val <= 0) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries must be greater than 0");
+      return;
+    }
+    if (val > kMaxEntriesCap) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries exceeds maximum allowed value of 10000");
       return;
     }
     max_entries = static_cast<size_t>(val);

@@ -269,6 +269,95 @@ class TestLoggingApi(GatewayTestCase):
         cap_names = [cap['name'] for cap in data['capabilities']]
         self.assertIn('logs', cap_names, f'Expected "logs" in capabilities, got: {cap_names}')
 
+    # ------------------------------------------------------------------
+    # PUT /components/{id}/logs/configuration
+    # ------------------------------------------------------------------
+
+    def test_component_put_logs_configuration_returns_204(self):
+        """PUT /components/{id}/logs/configuration returns 204 and update is visible via GET.
+
+        # @verifies REQ_INTEROP_064
+        """
+        components = self.get_json('/components')['items']
+        self.assertGreater(len(components), 0, 'At least one component required')
+        comp_id = components[0]['id']
+
+        self.put_raw(
+            f'/components/{comp_id}/logs/configuration',
+            {'severity_filter': 'info'},
+            expected_status=204,
+        )
+        data = self.get_json(f'/components/{comp_id}/logs/configuration')
+        self.assertEqual(data['severity_filter'], 'info')
+
+    # ------------------------------------------------------------------
+    # GET /apps/{id}/logs?context=  (context filter)
+    # ------------------------------------------------------------------
+
+    def test_app_get_logs_context_filter_nonexistent_returns_empty(self):
+        """GET /apps/{id}/logs?context=<nonexistent> returns empty items list.
+
+        # @verifies REQ_INTEROP_061
+        """
+        data = self.get_json('/apps/temp_sensor/logs?context=no_such_node_xyzzy_12345')
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+        self.assertEqual(
+            len(data['items']), 0,
+            'Expected empty items for nonexistent context filter'
+        )
+
+    # ------------------------------------------------------------------
+    # PUT /apps/{id}/logs/configuration — invalid JSON body
+    # ------------------------------------------------------------------
+
+    def test_app_put_logs_configuration_invalid_json_returns_400(self):
+        """PUT /apps/{id}/logs/configuration returns 400 when body is not valid JSON.
+
+        # @verifies REQ_INTEROP_064
+        """
+        import requests as _requests
+        response = _requests.put(
+            f'{self.BASE_URL}/apps/temp_sensor/logs/configuration',
+            data='not valid json {{{',
+            headers={'Content-Type': 'application/json'},
+            timeout=10,
+        )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertIn('error_code', body)
+
+    # ------------------------------------------------------------------
+    # Configured severity_filter acts as a floor
+    # ------------------------------------------------------------------
+
+    def test_app_severity_configured_filter_applies_to_get(self):
+        """After PUT severity_filter=fatal, GET /logs returns only fatal entries.
+
+        The entity-level severity_filter acts as a server-side floor — even
+        without a query param, entries below the configured threshold are excluded.
+
+        # @verifies REQ_INTEROP_061
+        # @verifies REQ_INTEROP_064
+        """
+        self.put_raw(
+            '/apps/temp_sensor/logs/configuration',
+            {'severity_filter': 'fatal'},
+            expected_status=204,
+        )
+        data = self.get_json('/apps/temp_sensor/logs')
+        for entry in data.get('items', []):
+            self.assertEqual(
+                entry['severity'], 'fatal',
+                f'Expected only fatal entries after setting filter, got: {entry["severity"]}'
+            )
+        # Restore default so later tests are not affected
+        self.put_raw(
+            '/apps/temp_sensor/logs/configuration',
+            {'severity_filter': 'debug'},
+            expected_status=204,
+        )
+
 
 @launch_testing.post_shutdown_test()
 class TestShutdown(unittest.TestCase):
