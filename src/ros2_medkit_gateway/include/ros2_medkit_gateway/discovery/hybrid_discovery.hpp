@@ -60,14 +60,14 @@ class HybridDiscoveryStrategy : public DiscoveryStrategy {
   void refresh();
 
   /**
-   * @brief Get the last merge report
+   * @brief Get the last merge report (returned by value for thread safety)
    */
-  const MergeReport & get_merge_report() const;
+  MergeReport get_merge_report() const;
 
   /**
-   * @brief Get the last linking result
+   * @brief Get the last linking result (returned by value for thread safety)
    */
-  const LinkingResult & get_linking_result() const;
+  LinkingResult get_linking_result() const;
 
   /**
    * @brief Get orphan nodes from last linking

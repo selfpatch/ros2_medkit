@@ -107,10 +107,12 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
    * @brief Discover synthetic components (grouped by namespace)
    *
    * Groups runtime apps by namespace into aggregated Component entities.
+   * Uses provided apps to avoid re-querying the ROS 2 graph.
    *
+   * @param apps Pre-discovered apps (from discover_apps())
    * @return Vector of synthetic components
    */
-  std::vector<Component> discover_synthetic_components();
+  std::vector<Component> discover_synthetic_components(const std::vector<App> & apps);
 
   /**
    * @brief Discover components from topic namespaces (topic-based discovery)

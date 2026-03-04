@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <utility>
 
 namespace ros2_medkit_gateway {
@@ -43,14 +44,16 @@ bool is_namespace_allowed(const std::string & ns, const GapFillConfig & config) 
   return true;
 }
 
-// Filter entities with namespace_path by gap-fill config
+// Filter entities with namespace_path by gap-fill config, returns count of removed entities
 template <typename Entity>
-void filter_by_namespace(std::vector<Entity> & entities, const GapFillConfig & config) {
+size_t filter_by_namespace(std::vector<Entity> & entities, const GapFillConfig & config) {
+  size_t before = entities.size();
   entities.erase(std::remove_if(entities.begin(), entities.end(),
                                 [&config](const Entity & e) {
                                   return !is_namespace_allowed(e.namespace_path, config);
                                 }),
                  entities.end());
+  return before - entities.size();
 }
 
 }  // namespace
@@ -65,13 +68,14 @@ RuntimeLayer::RuntimeLayer(RuntimeDiscoveryStrategy * runtime_strategy) : runtim
 
 LayerOutput RuntimeLayer::discover() {
   LayerOutput output;
+  last_filtered_count_ = 0;
   if (!runtime_strategy_) {
     return output;
   }
 
   if (gap_fill_config_.allow_heuristic_areas) {
     output.areas = runtime_strategy_->discover_areas();
-    filter_by_namespace(output.areas, gap_fill_config_);
+    last_filtered_count_ += filter_by_namespace(output.areas, gap_fill_config_);
   }
 
   if (gap_fill_config_.allow_heuristic_components) {
@@ -82,7 +86,7 @@ LayerOutput RuntimeLayer::discover() {
     output.components.insert(output.components.end(), std::make_move_iterator(topic_components.begin()),
                              std::make_move_iterator(topic_components.end()));
 
-    filter_by_namespace(output.components, gap_fill_config_);
+    last_filtered_count_ += filter_by_namespace(output.components, gap_fill_config_);
   }
 
   if (gap_fill_config_.allow_heuristic_apps) {

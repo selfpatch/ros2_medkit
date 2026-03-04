@@ -578,8 +578,8 @@ TEST_F(AuthManagerTest, CleanupExpiredTokens) {
   auto result = manager.authenticate("test", "test");
   ASSERT_TRUE(result.has_value());
 
-  // Wait for tokens to expire
-  std::this_thread::sleep_for(std::chrono::seconds(2));
+  // Wait for tokens to expire (3s margin for loaded systems)
+  std::this_thread::sleep_for(std::chrono::seconds(3));
 
   // Cleanup should remove expired tokens
   size_t cleaned = manager.cleanup_expired_tokens();

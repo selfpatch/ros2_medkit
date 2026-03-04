@@ -42,6 +42,11 @@ class RuntimeLayer : public DiscoveryLayer {
   void set_policy(FieldGroup group, MergePolicy policy);
   void set_gap_fill_config(GapFillConfig config);
 
+  /// Number of entities filtered by gap-fill config in last discover()
+  size_t last_filtered_count() const {
+    return last_filtered_count_;
+  }
+
   /// Direct access to runtime services (for operation/data endpoints, not part of pipeline)
   std::vector<ServiceInfo> discover_services();
   std::vector<ActionInfo> discover_actions();
@@ -50,6 +55,7 @@ class RuntimeLayer : public DiscoveryLayer {
   RuntimeDiscoveryStrategy * runtime_strategy_;
   std::unordered_map<FieldGroup, MergePolicy> policies_;
   GapFillConfig gap_fill_config_;
+  size_t last_filtered_count_{0};
 };
 
 }  // namespace discovery

@@ -57,6 +57,14 @@ TEST_F(HealthHandlersTest, HandleHealthResponseContainsStatusHealthy) {
   EXPECT_EQ(body["status"], "healthy");
 }
 
+TEST_F(HealthHandlersTest, HandleHealthNullNodeOmitsDiscovery) {
+  // ctx_ uses nullptr for GatewayNode, so discovery info should not be present
+  handlers_.handle_health(req_, res_);
+  auto body = json::parse(res_.body);
+  EXPECT_EQ(body["status"], "healthy");
+  EXPECT_FALSE(body.contains("discovery"));
+}
+
 TEST_F(HealthHandlersTest, HandleHealthResponseContainsTimestamp) {
   handlers_.handle_health(req_, res_);
   auto body = json::parse(res_.body);

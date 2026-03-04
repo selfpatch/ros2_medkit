@@ -146,6 +146,14 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("discovery.runtime.topic_only_policy", "create_component");
   declare_parameter("discovery.runtime.min_topics_for_component", 1);
 
+  // Merge pipeline configuration (hybrid mode only)
+  declare_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_areas", true);
+  declare_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_components", true);
+  declare_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_apps", true);
+  declare_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_functions", false);
+  declare_parameter("discovery.merge_pipeline.gap_fill.namespace_whitelist", std::vector<std::string>{});
+  declare_parameter("discovery.merge_pipeline.gap_fill.namespace_blacklist", std::vector<std::string>{});
+
   // Get parameter values
   server_host_ = get_parameter("server.host").as_string();
   server_port_ = static_cast<int>(get_parameter("server.port").as_int());
@@ -356,6 +364,20 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   discovery_config.runtime.min_topics_for_component =
       static_cast<int>(get_parameter("discovery.runtime.min_topics_for_component").as_int());
 
+  // Merge pipeline gap-fill configuration (hybrid mode)
+  discovery_config.merge_pipeline.gap_fill.allow_heuristic_areas =
+      get_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_areas").as_bool();
+  discovery_config.merge_pipeline.gap_fill.allow_heuristic_components =
+      get_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_components").as_bool();
+  discovery_config.merge_pipeline.gap_fill.allow_heuristic_apps =
+      get_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_apps").as_bool();
+  discovery_config.merge_pipeline.gap_fill.allow_heuristic_functions =
+      get_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_functions").as_bool();
+  discovery_config.merge_pipeline.gap_fill.namespace_whitelist =
+      get_parameter("discovery.merge_pipeline.gap_fill.namespace_whitelist").as_string_array();
+  discovery_config.merge_pipeline.gap_fill.namespace_blacklist =
+      get_parameter("discovery.merge_pipeline.gap_fill.namespace_blacklist").as_string_array();
+
   if (!discovery_mgr_->initialize(discovery_config)) {
     RCLCPP_ERROR(get_logger(), "Failed to initialize discovery manager");
     throw std::runtime_error("Discovery initialization failed");
@@ -423,6 +445,17 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
     plugin_ctx_ = make_gateway_plugin_context(this, fault_mgr_.get());
     plugin_mgr_->set_context(*plugin_ctx_);
     RCLCPP_INFO(get_logger(), "Loaded %zu plugin(s)", loaded);
+
+    // Register IntrospectionProvider plugins as pipeline layers (hybrid mode only)
+    if (discovery_mgr_->get_mode() == DiscoveryMode::HYBRID) {
+      auto providers = plugin_mgr_->get_named_introspection_providers();
+      for (auto & [name, provider] : providers) {
+        discovery_mgr_->add_plugin_layer(name, provider);
+      }
+      if (!providers.empty()) {
+        discovery_mgr_->refresh_pipeline();
+      }
+    }
   }
 
   // Initialize log manager (subscribes to /rosout, delegates to plugin if available)

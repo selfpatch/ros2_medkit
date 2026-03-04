@@ -46,19 +46,23 @@ std::vector<Function> HybridDiscoveryStrategy::discover_functions() {
 }
 
 void HybridDiscoveryStrategy::refresh() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  cached_result_ = pipeline_.execute();
+  auto new_result = pipeline_.execute();
+  size_t total = new_result.report.total_entities;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    cached_result_ = std::move(new_result);
+  }
   if (node_) {
-    RCLCPP_INFO(node_->get_logger(), "Hybrid discovery refreshed: %zu entities", cached_result_.report.total_entities);
+    RCLCPP_INFO(node_->get_logger(), "Hybrid discovery refreshed: %zu entities", total);
   }
 }
 
-const MergeReport & HybridDiscoveryStrategy::get_merge_report() const {
+MergeReport HybridDiscoveryStrategy::get_merge_report() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return cached_result_.report;
 }
 
-const LinkingResult & HybridDiscoveryStrategy::get_linking_result() const {
+LinkingResult HybridDiscoveryStrategy::get_linking_result() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return pipeline_.get_linking_result();
 }

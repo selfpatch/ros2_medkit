@@ -49,8 +49,9 @@ struct NewEntities {
  * @brief Result returned by IntrospectionProvider::introspect()
  */
 struct IntrospectionResult {
-  /// Per-entity metadata enrichment. Key = entity_id.
-  /// Values are deep-merged into the entity's x-medkit vendor extension.
+  /// Per-entity metadata for plugin-internal use. Key = entity_id.
+  /// Plugins serve this data as SOVD vendor extension resources
+  /// via register_routes() and register_capability().
   std::unordered_map<std::string, nlohmann::json> metadata;
 
   /// New entities discovered by this provider

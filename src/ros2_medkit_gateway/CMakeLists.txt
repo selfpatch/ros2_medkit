@@ -188,6 +188,7 @@ target_precompile_headers(gateway_lib PRIVATE
   <httplib.h>
   <tl/expected.hpp>
 )
+set_target_properties(gateway_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # Gateway node executable
 add_executable(gateway_node src/main.cpp)
@@ -497,6 +498,7 @@ if(BUILD_TESTING)
       test_log_manager
       test_log_handlers
       test_merge_pipeline
+      test_runtime_linker
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)

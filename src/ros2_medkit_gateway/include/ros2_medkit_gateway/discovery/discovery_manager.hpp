@@ -17,7 +17,6 @@
 #include "ros2_medkit_gateway/discovery/discovery_enums.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
 #include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
-#include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
 #include "ros2_medkit_gateway/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
@@ -38,6 +37,7 @@ namespace ros2_medkit_gateway {
 // Forward declarations
 class NativeTopicSampler;
 class TypeIntrospection;
+class IntrospectionProvider;
 
 /**
  * @brief Configuration for discovery
@@ -99,6 +99,13 @@ struct DiscoveryConfig {
      */
     int min_topics_for_component{1};
   } runtime;
+
+  /**
+   * @brief Merge pipeline configuration (hybrid mode only)
+   */
+  struct MergePipelineConfig {
+    discovery::GapFillConfig gap_fill;
+  } merge_pipeline;
 };
 
 /**
@@ -305,19 +312,28 @@ class DiscoveryManager {
   // =========================================================================
 
   /**
+   * @brief Add a plugin layer to the merge pipeline
+   *
+   * Wraps an IntrospectionProvider as a PluginLayer and adds it to
+   * the pipeline. Only works in HYBRID mode.
+   *
+   * @param plugin_name Name of the plugin
+   * @param provider Non-owning pointer to IntrospectionProvider
+   */
+  void add_plugin_layer(const std::string & plugin_name, IntrospectionProvider * provider);
+
+  /**
+   * @brief Re-execute the merge pipeline (hybrid mode only)
+   *
+   * Call after adding plugin layers to trigger a single pipeline refresh.
+   */
+  void refresh_pipeline();
+
+  /**
    * @brief Get the manifest manager
    * @return Pointer to manifest manager (nullptr if not using manifest)
    */
   discovery::ManifestManager * get_manifest_manager();
-
-  /**
-   * @brief Reload manifest from file
-   *
-   * Only works if a manifest was loaded during initialize().
-   *
-   * @return true if reload succeeded
-   */
-  bool reload_manifest();
 
   // =========================================================================
   // Status
@@ -337,6 +353,18 @@ class DiscoveryManager {
    */
   std::string get_strategy_name() const;
 
+  /**
+   * @brief Get the last merge pipeline report (hybrid mode only)
+   * @return MergeReport if in hybrid mode, nullopt otherwise
+   */
+  std::optional<discovery::MergeReport> get_merge_report() const;
+
+  /**
+   * @brief Get the last linking result (hybrid mode only)
+   * @return LinkingResult if in hybrid mode, nullopt otherwise
+   */
+  std::optional<discovery::LinkingResult> get_linking_result() const;
+
  private:
   /**
    * @brief Create and activate the appropriate strategy
@@ -350,9 +378,6 @@ class DiscoveryManager {
   std::unique_ptr<discovery::RuntimeDiscoveryStrategy> runtime_strategy_;
   std::unique_ptr<discovery::ManifestManager> manifest_manager_;
   std::unique_ptr<discovery::HybridDiscoveryStrategy> hybrid_strategy_;
-
-  // Non-owning pointer to RuntimeLayer within the pipeline (for gap-fill config)
-  discovery::RuntimeLayer * runtime_layer_{nullptr};
 
   // Active strategy pointer (points to one of the above)
   discovery::DiscoveryStrategy * active_strategy_{nullptr};

@@ -10,8 +10,9 @@ Overview
 Plugins implement the ``GatewayPlugin`` C++ base class plus one or more typed provider interfaces:
 
 - **UpdateProvider** - software update backend (CRUD, prepare/execute, automated, status)
-- **IntrospectionProvider** *(preview)* - enriches discovered entities with platform-specific metadata.
-  This interface is defined and can be implemented, but is not yet wired into the discovery cycle.
+- **IntrospectionProvider** - enriches discovered entities with platform-specific metadata
+  via the merge pipeline. In hybrid mode, each IntrospectionProvider is wrapped as a
+  ``PluginLayer`` and added to the pipeline with ENRICHMENT merge policy.
 
 A single plugin can implement multiple provider interfaces. For example, a "systemd" plugin
 could provide both introspection (discover systemd units) and updates (manage service restarts).
@@ -300,7 +301,10 @@ Multiple Plugins
 Multiple plugins can be loaded simultaneously:
 
 - **UpdateProvider**: Only one plugin's UpdateProvider is used (first in config order)
-- **IntrospectionProvider**: All plugins' results are merged *(preview - not yet wired)*
+- **IntrospectionProvider**: All plugins are added as PluginLayers to the merge pipeline.
+  Each plugin's entities are merged with ENRICHMENT policy - they fill empty fields but
+  never override manifest or runtime values. Plugins are added after all built-in layers,
+  and the pipeline is refreshed once after all plugins are registered (batch registration).
 - **Custom routes**: All plugins can register endpoints (use unique path prefixes)
 
 Error Handling

@@ -66,8 +66,41 @@ The following diagram shows the relationships between the main components of the
        }
 
        class HybridDiscoveryStrategy {
-           - primary_: ManifestDiscoveryStrategy
-           - runtime_: RuntimeDiscoveryStrategy
+           - pipeline_: MergePipeline
+           + refresh(): void
+           + add_layer(): void
+           + get_merge_report(): MergeReport
+       }
+
+       class MergePipeline {
+           + add_layer(): void
+           + execute(): MergeResult
+           + set_linker(): void
+           + get_last_report(): MergeReport
+           - merge_entities<T>(): vector<T>
+       }
+
+       interface DiscoveryLayer <<interface>> {
+           + name(): string
+           + discover(): LayerOutput
+           + policy_for(FieldGroup): MergePolicy
+       }
+
+       class ManifestLayer {
+           - manifest_mgr_: ManifestManager*
+       }
+
+       class RuntimeLayer {
+           - strategy_: RuntimeDiscoveryStrategy*
+           - gap_fill_config_: GapFillConfig
+       }
+
+       class PluginLayer {
+           - provider_: IntrospectionProvider*
+       }
+
+       class RuntimeLinker {
+           + link(): LinkingResult
        }
 
        class OperationManager {
@@ -228,8 +261,15 @@ The following diagram shows the relationships between the main components of the
    RuntimeDiscoveryStrategy .up.|> DiscoveryStrategy : implements
    ManifestDiscoveryStrategy .up.|> DiscoveryStrategy : implements
    HybridDiscoveryStrategy .up.|> DiscoveryStrategy : implements
-   HybridDiscoveryStrategy --> ManifestDiscoveryStrategy : delegates
-   HybridDiscoveryStrategy --> RuntimeDiscoveryStrategy : delegates
+   HybridDiscoveryStrategy *--> MergePipeline : owns
+
+   ' MergePipeline layer architecture
+   MergePipeline o--> DiscoveryLayer : ordered layers
+   MergePipeline --> RuntimeLinker : post-merge linking
+   ManifestLayer .up.|> DiscoveryLayer : implements
+   RuntimeLayer .up.|> DiscoveryLayer : implements
+   PluginLayer .up.|> DiscoveryLayer : implements
+   RuntimeLayer --> RuntimeDiscoveryStrategy : delegates
 
    ' REST Server uses HTTP library
    RESTServer *--> HTTPLibServer : owns
@@ -269,9 +309,29 @@ Main Components
    - **ManifestDiscoveryStrategy** - Static discovery from YAML manifest
      - Provides stable, semantic entity IDs
      - Supports offline detection of failed components
-   - **HybridDiscoveryStrategy** - Combines manifest + runtime
-     - Manifest defines structure, runtime links to live nodes
-     - Best for production systems requiring stability + live status
+   - **HybridDiscoveryStrategy** - Combines manifest + runtime via MergePipeline
+     - Delegates to ``MergePipeline`` which orchestrates ordered discovery layers
+     - Supports dynamic plugin layers added at runtime
+     - Thread-safe: mutex protects cached results, returns by value
+
+   **Merge Pipeline:**
+
+   The ``MergePipeline`` is the core engine for hybrid discovery. It:
+
+   - Maintains an ordered list of ``DiscoveryLayer`` instances (first = highest priority)
+   - Executes all layers, collects entities by ID, and merges them per-field-group
+   - Each layer declares a ``MergePolicy`` per ``FieldGroup``: AUTHORITATIVE (wins), ENRICHMENT (fills empty), FALLBACK (last resort)
+   - Runs ``RuntimeLinker`` post-merge to bind manifest apps to live ROS 2 nodes
+   - Produces a ``MergeReport`` with conflict diagnostics, enrichment counts, and ID collision detection
+
+   **Built-in Layers:**
+
+   - ``ManifestLayer`` - Wraps ManifestManager; IDENTITY/HIERARCHY/METADATA are AUTHORITATIVE,
+     LIVE_DATA is ENRICHMENT (runtime wins for topics/services), STATUS is FALLBACK
+   - ``RuntimeLayer`` - Wraps RuntimeDiscoveryStrategy; LIVE_DATA/STATUS are AUTHORITATIVE,
+     METADATA is ENRICHMENT, IDENTITY/HIERARCHY are FALLBACK.
+     Supports ``GapFillConfig`` to control which heuristic entities are allowed when manifest is present
+   - ``PluginLayer`` - Wraps IntrospectionProvider; all fields ENRICHMENT (plugins enrich, they don't override)
 
 3. **OperationManager** - Executes ROS 2 operations (services and actions) using native APIs
    - Calls ROS 2 services via ``rclcpp::GenericClient`` with native serialization

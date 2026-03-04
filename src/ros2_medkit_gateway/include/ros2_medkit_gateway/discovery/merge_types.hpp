@@ -44,6 +44,22 @@ enum class FieldGroup {
   METADATA    ///< source, x-medkit extensions, custom fields
 };
 
+inline const char * field_group_to_string(FieldGroup fg) {
+  switch (fg) {
+    case FieldGroup::IDENTITY:
+      return "IDENTITY";
+    case FieldGroup::HIERARCHY:
+      return "HIERARCHY";
+    case FieldGroup::LIVE_DATA:
+      return "LIVE_DATA";
+    case FieldGroup::STATUS:
+      return "STATUS";
+    case FieldGroup::METADATA:
+      return "METADATA";
+  }
+  return "UNKNOWN";
+}
+
 /**
  * @brief Record of a merge conflict between two layers
  */
@@ -65,13 +81,23 @@ struct MergeReport {
   size_t enriched_count{0};
   size_t conflict_count{0};
   size_t id_collision_count{0};
+  size_t filtered_by_gap_fill{0};
 
   nlohmann::json to_json() const {
+    nlohmann::json conflict_list = nlohmann::json::array();
+    for (const auto & c : conflicts) {
+      conflict_list.push_back({{"entity_id", c.entity_id},
+                               {"field_group", field_group_to_string(c.field_group)},
+                               {"winning_layer", c.winning_layer},
+                               {"losing_layer", c.losing_layer}});
+    }
     return {{"layers", layers},
             {"total_entities", total_entities},
             {"enriched_count", enriched_count},
             {"conflict_count", conflict_count},
-            {"id_collisions", id_collision_count}};
+            {"conflicts", conflict_list},
+            {"id_collisions", id_collision_count},
+            {"filtered_by_gap_fill", filtered_by_gap_fill}};
   }
 };
 
@@ -92,11 +118,3 @@ struct GapFillConfig {
 
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway
-
-// Required: C++17 does not provide std::hash for enum class types
-template <>
-struct std::hash<ros2_medkit_gateway::discovery::FieldGroup> {
-  size_t operator()(ros2_medkit_gateway::discovery::FieldGroup fg) const noexcept {
-    return std::hash<int>{}(static_cast<int>(fg));
-  }
-};

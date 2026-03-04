@@ -192,12 +192,14 @@ if(BUILD_TESTING)
     TARGET test_integration
     TIMEOUT 60
   )
+  set_tests_properties(test_integration PROPERTIES LABELS "integration")
 
   add_launch_test(
     test/test_rosbag_integration.test.py
     TARGET test_rosbag_integration
     TIMEOUT 90
   )
+  set_tests_properties(test_rosbag_integration PROPERTIES LABELS "integration")
 endif()
 
 ament_package()

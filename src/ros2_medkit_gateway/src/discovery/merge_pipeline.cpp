@@ -14,6 +14,9 @@
 
 #include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
 
+#include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
+#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -59,7 +62,7 @@ MergeResolution resolve_policies(MergePolicy target_policy, MergePolicy source_p
     } else if (target_policy == MergePolicy::ENRICHMENT) {
       return {MergeWinner::BOTH, MergeWinner::BOTH, false};  // mutual enrichment
     } else {
-      return {MergeWinner::TARGET, MergeWinner::TARGET, false};  // FALLBACK vs FALLBACK
+      return {MergeWinner::BOTH, MergeWinner::BOTH, false};  // FALLBACK vs FALLBACK: fill gaps
     }
   }
 }
@@ -292,9 +295,8 @@ void MergePipeline::set_linker(std::unique_ptr<RuntimeLinker> linker, const Mani
 }
 
 template <typename Entity>
-std::vector<Entity>
-MergePipeline::merge_entities(const std::vector<std::pair<size_t, std::vector<Entity>>> & layer_entities,
-                              MergeReport & report) {
+std::vector<Entity> MergePipeline::merge_entities(std::vector<std::pair<size_t, std::vector<Entity>>> & layer_entities,
+                                                  MergeReport & report) {
   // Collect all entities by ID with their layer index
   struct LayerEntity {
     size_t layer_idx;
@@ -303,12 +305,13 @@ MergePipeline::merge_entities(const std::vector<std::pair<size_t, std::vector<En
   std::unordered_map<std::string, std::vector<LayerEntity>> by_id;
   std::vector<std::string> insertion_order;
 
-  for (const auto & [layer_idx, entities] : layer_entities) {
-    for (const auto & entity : entities) {
+  for (auto & [layer_idx, entities] : layer_entities) {
+    for (auto & entity : entities) {
       if (by_id.find(entity.id) == by_id.end()) {
         insertion_order.push_back(entity.id);
       }
-      by_id[entity.id].push_back({layer_idx, entity});
+      auto id = entity.id;  // copy id before move
+      by_id[id].push_back({layer_idx, std::move(entity)});
     }
   }
 
@@ -365,17 +368,42 @@ MergeResult MergePipeline::execute() {
   std::vector<App> runtime_apps;
 
   for (size_t i = 0; i < layers_.size(); ++i) {
-    auto output = layers_[i]->discover();
+    // Build discovery context from entities collected so far (for plugin layers)
+    IntrospectionInput context;
+    for (const auto & [idx, entities] : area_layers) {
+      context.areas.insert(context.areas.end(), entities.begin(), entities.end());
+    }
+    for (const auto & [idx, entities] : component_layers) {
+      context.components.insert(context.components.end(), entities.begin(), entities.end());
+    }
+    for (const auto & [idx, entities] : app_layers) {
+      context.apps.insert(context.apps.end(), entities.begin(), entities.end());
+    }
+    for (const auto & [idx, entities] : function_layers) {
+      context.functions.insert(context.functions.end(), entities.begin(), entities.end());
+    }
+    layers_[i]->set_discovery_context(context);
 
-    // Collect gap-fill filtering stats and runtime apps from RuntimeLayer
+    LayerOutput output;
+    try {
+      output = layers_[i]->discover();
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(logger_, "Layer '%s' threw exception during discover(): %s", layers_[i]->name().c_str(), e.what());
+      continue;
+    } catch (...) {
+      RCLCPP_ERROR(logger_, "Layer '%s' threw unknown exception during discover()", layers_[i]->name().c_str());
+      continue;
+    }
+
+    // Collect gap-fill filtering stats from RuntimeLayer
     auto * runtime_layer = dynamic_cast<RuntimeLayer *>(layers_[i].get());
     if (runtime_layer) {
       report.filtered_by_gap_fill += runtime_layer->last_filtered_count();
     }
-    // Save runtime apps for the linker (before they get moved into merge).
-    // Check both dynamic type and layer name for testability.
+    // Save runtime apps for the linker BEFORE they are moved into app_layers below.
+    // Check both dynamic type and layer name for testability with TestLayer.
     if (runtime_layer || layers_[i]->name() == "runtime") {
-      runtime_apps = output.apps;  // copy before move
+      runtime_apps = output.apps;
     }
 
     if (!output.areas.empty()) {
@@ -390,6 +418,8 @@ MergeResult MergePipeline::execute() {
     if (!output.functions.empty()) {
       function_layers.emplace_back(i, std::move(output.functions));
     }
+    // entity_metadata is not consumed here - plugins serve their metadata
+    // as SOVD vendor extension resources via register_routes() and register_capability().
   }
 
   MergeResult result;
@@ -433,25 +463,32 @@ MergeResult MergePipeline::execute() {
 
   RCLCPP_INFO(logger_, "MergePipeline: %zu entities from %zu layers, %zu enriched, %zu conflicts",
               report.total_entities, report.layers.size(), report.enriched_count, report.conflict_count);
+  if (report.conflict_count > 0) {
+    RCLCPP_WARN(logger_,
+                "MergePipeline: %zu merge conflicts (higher-priority layer wins in all cases). "
+                "Details available via GET /health.",
+                report.conflict_count);
+  }
   for (const auto & conflict : report.conflicts) {
-    RCLCPP_WARN(logger_, "Merge conflict: entity '%s' field_group %d - '%s' wins over '%s'", conflict.entity_id.c_str(),
-                static_cast<int>(conflict.field_group), conflict.winning_layer.c_str(), conflict.losing_layer.c_str());
+    RCLCPP_DEBUG(logger_, "Merge conflict: entity '%s' field_group %s - '%s' wins over '%s'",
+                 conflict.entity_id.c_str(), field_group_to_string(conflict.field_group),
+                 conflict.winning_layer.c_str(), conflict.losing_layer.c_str());
   }
 
+  last_report_ = report;
   result.report = std::move(report);
-  last_report_ = result.report;
   return result;
 }
 
 // Explicit template instantiations
-template std::vector<Area>
-MergePipeline::merge_entities<Area>(const std::vector<std::pair<size_t, std::vector<Area>>> &, MergeReport &);
+template std::vector<Area> MergePipeline::merge_entities<Area>(std::vector<std::pair<size_t, std::vector<Area>>> &,
+                                                               MergeReport &);
 template std::vector<Component>
-MergePipeline::merge_entities<Component>(const std::vector<std::pair<size_t, std::vector<Component>>> &, MergeReport &);
-template std::vector<App> MergePipeline::merge_entities<App>(const std::vector<std::pair<size_t, std::vector<App>>> &,
+MergePipeline::merge_entities<Component>(std::vector<std::pair<size_t, std::vector<Component>>> &, MergeReport &);
+template std::vector<App> MergePipeline::merge_entities<App>(std::vector<std::pair<size_t, std::vector<App>>> &,
                                                              MergeReport &);
 template std::vector<Function>
-MergePipeline::merge_entities<Function>(const std::vector<std::pair<size_t, std::vector<Function>>> &, MergeReport &);
+MergePipeline::merge_entities<Function>(std::vector<std::pair<size_t, std::vector<Function>>> &, MergeReport &);
 
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway

@@ -207,16 +207,67 @@ List functions:
 
    curl http://localhost:8080/api/v1/functions
 
-Understanding Runtime Linking
------------------------------
+Understanding Hybrid Mode
+-------------------------
 
-In hybrid mode, manifest apps are automatically linked to running ROS 2 nodes.
-The linking process:
+In hybrid mode, discovery uses a **merge pipeline** that combines entities from
+multiple discovery layers:
 
-1. **Discovery**: Gateway discovers running ROS 2 nodes
-2. **Matching**: For each manifest app, checks ``ros_binding`` configuration
-3. **Linking**: If match found, copies runtime resources (topics, services, actions)
-4. **Status**: Apps with matched nodes are marked ``is_online: true``
+1. **ManifestLayer** (highest priority) - entities from the YAML manifest
+2. **RuntimeLayer** - entities discovered via ROS 2 graph introspection
+3. **PluginLayers** (optional) - entities from gateway plugins
+
+The pipeline merges entities by ID. When the same entity appears in multiple layers,
+per-field-group merge policies determine which values win. See
+:doc:`/config/discovery-options` for details on merge policies and gap-fill configuration.
+
+After merging, the **RuntimeLinker** binds manifest apps to running ROS 2 nodes:
+
+1. **Discovery**: All layers produce entities
+2. **Merging**: Pipeline merges entities by ID, applying field-group policies
+3. **Linking**: For each manifest app, checks ``ros_binding`` configuration
+4. **Binding**: If match found, copies runtime resources (topics, services, actions)
+5. **Status**: Apps with matched nodes are marked ``is_online: true``
+
+Merge Report
+~~~~~~~~~~~~
+
+After each pipeline execution, the gateway produces a ``MergeReport`` available
+via the health endpoint (``GET /health``). The report includes:
+
+- Layer names and ordering
+- Total entity count, enrichment count
+- Conflict details (which layers disagreed on which field groups)
+- Cross-type ID collision warnings
+- Gap-fill filtering statistics
+
+In hybrid mode, the ``GET /health`` response includes full discovery diagnostics:
+
+.. code-block:: json
+
+   {
+     "discovery": {
+       "mode": "hybrid",
+       "strategy": "hybrid",
+       "pipeline": {
+         "layers": ["manifest", "runtime"],
+         "total_entities": 12,
+         "enriched_count": 8,
+         "conflict_count": 0,
+         "id_collisions": 0
+       },
+       "linking": {
+         "linked_count": 5,
+         "orphan_count": 1,
+         "binding_conflicts": 0,
+         "warnings": ["Orphan node: /unmanifested_node"]
+       }
+     }
+   }
+
+
+Runtime Linking
+~~~~~~~~~~~~~~~
 
 ROS Binding Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -359,6 +410,12 @@ in the manifest. The ``config.unmanifested_nodes`` setting controls this:
 - ``warn`` (default): Log warning, include nodes as orphans
 - ``error``: Fail startup if orphan nodes detected
 - ``include_as_orphan``: Include with ``source: "orphan"``
+
+.. note::
+   In hybrid mode with gap-fill configuration (see :doc:`/config/discovery-options`),
+   namespace filtering controls which runtime entities enter the pipeline.
+   ``unmanifested_nodes`` controls how runtime nodes that passed gap-fill
+   but did not match any manifest app are handled by the RuntimeLinker.
 
 Hot Reloading
 -------------

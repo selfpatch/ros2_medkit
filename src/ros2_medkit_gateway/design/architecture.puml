@@ -73,7 +73,28 @@ package "ros2_medkit_gateway" {
     class EntityCache {
         + areas: vector<Area>
         + components: vector<Component>
+        + apps: vector<App>
         + last_update: time_point
+    }
+
+    class MergePipeline {
+        + add_layer(): void
+        + execute(): MergeResult
+        + set_linker(): void
+    }
+
+    interface DiscoveryLayer <<interface>> {
+        + name(): string
+        + discover(): LayerOutput
+        + policy_for(FieldGroup): MergePolicy
+    }
+
+    class ManifestLayer
+    class RuntimeLayer
+    class PluginLayer
+
+    class RuntimeLinker {
+        + link(): LinkingResult
     }
 }
 
@@ -115,6 +136,13 @@ EntityCache o-right-> Component : contains many
 DiscoveryManager ..> Area : creates
 DiscoveryManager ..> Component : creates
 
+' MergePipeline layer architecture
+MergePipeline o--> DiscoveryLayer : ordered layers
+MergePipeline --> RuntimeLinker : post-merge linking
+ManifestLayer .up.|> DiscoveryLayer : implements
+RuntimeLayer .up.|> DiscoveryLayer : implements
+PluginLayer .up.|> DiscoveryLayer : implements
+
 ' REST Server uses HTTP library
 RESTServer *--> HTTPLibServer : owns
 
@@ -123,4 +151,3 @@ Area ..> JSON : serializes to
 Component ..> JSON : serializes to
 
 @enduml
-
