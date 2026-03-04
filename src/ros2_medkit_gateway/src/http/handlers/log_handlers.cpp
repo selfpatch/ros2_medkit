@@ -164,7 +164,13 @@ void LogHandlers::handle_put_logs_configuration(const httplib::Request & req, ht
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries must be a positive integer");
       return;
     }
-    const auto val = me.get<long long>();
+    long long val = 0;
+    try {
+      val = me.get<long long>();
+    } catch (const nlohmann::json::exception &) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries value out of range");
+      return;
+    }
     if (val <= 0) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries must be greater than 0");
       return;
