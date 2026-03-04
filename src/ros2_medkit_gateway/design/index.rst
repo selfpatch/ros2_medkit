@@ -55,7 +55,6 @@ The following diagram shows the relationships between the main components of the
        }
 
        class RuntimeDiscoveryStrategy {
-           + discover_node_components(): vector<Component>
            + discover_synthetic_components(): vector<Component>
            + discover_topic_components(): vector<Component>
            - config_: RuntimeConfig

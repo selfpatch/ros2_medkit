@@ -14,10 +14,9 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/discovery/discovery_layer.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
-#include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
-#include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
-#include "ros2_medkit_gateway/discovery/runtime_discovery.hpp"
+#include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -30,103 +29,60 @@ namespace ros2_medkit_gateway {
 namespace discovery {
 
 /**
- * @brief Hybrid discovery combining manifest and runtime discovery
+ * @brief Hybrid discovery using a MergePipeline
  *
- * Uses manifest as source of truth for entity IDs and hierarchy while
- * linking to runtime ROS 2 nodes for live data (topics, services, actions).
- *
- * Behavior:
- * - Areas: From manifest (runtime areas not exposed unless orphan policy allows)
- * - Components: From manifest, enriched with runtime data if linked
- * - Apps: From manifest, bound to runtime nodes via RuntimeLinker
- * - Functions: From manifest only
- *
- * The hybrid strategy maintains a RuntimeLinker that binds manifest Apps
- * to actual ROS 2 nodes discovered at runtime.
+ * Thin wrapper around MergePipeline that caches the merged result
+ * and exposes it through the DiscoveryStrategy interface.
+ * The pipeline orchestrates ManifestLayer, RuntimeLayer, and any
+ * PluginLayers with per-field-group merge policies.
  */
 class HybridDiscoveryStrategy : public DiscoveryStrategy {
  public:
   /**
    * @brief Construct hybrid discovery strategy
    * @param node ROS 2 node for logging
-   * @param manifest_manager Manifest manager (must be loaded before use)
-   * @param runtime_strategy Runtime discovery strategy for ROS graph introspection
+   * @param pipeline Pre-configured merge pipeline
    */
-  HybridDiscoveryStrategy(rclcpp::Node * node, ManifestManager * manifest_manager,
-                          RuntimeDiscoveryStrategy * runtime_strategy);
+  HybridDiscoveryStrategy(rclcpp::Node * node, MergePipeline pipeline);
 
-  /**
-   * @brief Discover areas from manifest
-   * @return Areas defined in manifest
-   */
   std::vector<Area> discover_areas() override;
-
-  /**
-   * @brief Discover components from manifest, linked to runtime
-   * @return Components with runtime data if linked
-   */
   std::vector<Component> discover_components() override;
-
-  /**
-   * @brief Discover apps from manifest, linked to runtime nodes
-   * @return Apps with is_online and bound_fqn set
-   */
   std::vector<App> discover_apps() override;
-
-  /**
-   * @brief Discover functions from manifest
-   * @return Functions defined in manifest
-   */
   std::vector<Function> discover_functions() override;
 
-  /**
-   * @brief Get strategy name
-   * @return "hybrid"
-   */
   std::string get_name() const override {
     return "hybrid";
   }
 
   /**
-   * @brief Refresh runtime linking
-   *
-   * Call this after runtime discovery refresh to update app-node bindings.
-   * This will re-run the RuntimeLinker with fresh runtime component data.
+   * @brief Re-execute the pipeline and cache the result
    */
-  void refresh_linking();
+  void refresh();
+
+  /**
+   * @brief Get the last merge report
+   */
+  const MergeReport & get_merge_report() const;
 
   /**
    * @brief Get the last linking result
-   * @return Reference to last linking result
    */
-  const LinkingResult & get_linking_result() const {
-    return linking_result_;
-  }
+  const LinkingResult & get_linking_result() const;
 
   /**
    * @brief Get orphan nodes from last linking
-   * @return Vector of node FQNs not bound to any manifest app
    */
-  const std::vector<std::string> & get_orphan_nodes() const {
-    return linking_result_.orphan_nodes;
-  }
+  std::vector<std::string> get_orphan_nodes() const;
+
+  /**
+   * @brief Add a discovery layer to the pipeline (e.g., plugin layers)
+   */
+  void add_layer(std::unique_ptr<DiscoveryLayer> layer);
 
  private:
-  /**
-   * @brief Perform initial linking on construction
-   */
-  void perform_linking();
-
-  /**
-   * @brief Log message at info level
-   */
-  void log_info(const std::string & msg) const;
-
   rclcpp::Node * node_;
-  ManifestManager * manifest_manager_;
-  RuntimeDiscoveryStrategy * runtime_strategy_;
-  RuntimeLinker linker_;
-  LinkingResult linking_result_;
+  MergePipeline pipeline_;
+  MergeResult cached_result_;
   mutable std::mutex mutex_;
 };
 

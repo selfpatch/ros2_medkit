@@ -286,6 +286,11 @@ void MergePipeline::add_layer(std::unique_ptr<DiscoveryLayer> layer) {
   layers_.push_back(std::move(layer));
 }
 
+void MergePipeline::set_linker(std::unique_ptr<RuntimeLinker> linker, const ManifestConfig & config) {
+  linker_ = std::move(linker);
+  manifest_config_ = config;
+}
+
 template <typename Entity>
 std::vector<Entity>
 MergePipeline::merge_entities(const std::vector<std::pair<size_t, std::vector<Entity>>> & layer_entities,
@@ -355,8 +360,24 @@ MergeResult MergePipeline::execute() {
   std::vector<std::pair<size_t, std::vector<App>>> app_layers;
   std::vector<std::pair<size_t, std::vector<Function>>> function_layers;
 
+  // RuntimeLinker needs runtime-only apps (nodes as Apps, not merged with
+  // manifest apps). Manifest apps lack bound_fqn until linked.
+  std::vector<App> runtime_apps;
+
   for (size_t i = 0; i < layers_.size(); ++i) {
     auto output = layers_[i]->discover();
+
+    // Collect gap-fill filtering stats and runtime apps from RuntimeLayer
+    auto * runtime_layer = dynamic_cast<RuntimeLayer *>(layers_[i].get());
+    if (runtime_layer) {
+      report.filtered_by_gap_fill += runtime_layer->last_filtered_count();
+    }
+    // Save runtime apps for the linker (before they get moved into merge).
+    // Check both dynamic type and layer name for testability.
+    if (runtime_layer || layers_[i]->name() == "runtime") {
+      runtime_apps = output.apps;  // copy before move
+    }
+
     if (!output.areas.empty()) {
       area_layers.emplace_back(i, std::move(output.areas));
     }
@@ -395,6 +416,20 @@ MergeResult MergePipeline::execute() {
   check_ids(result.components, "Component");
   check_ids(result.apps, "App");
   check_ids(result.functions, "Function");
+
+  // Post-merge linking: bind manifest apps to runtime nodes (Apps, not Components)
+  if (linker_) {
+    auto linking = linker_->link(result.apps, runtime_apps, manifest_config_);
+
+    // Replace apps with linked versions (have is_online, bound_fqn set)
+    result.apps = std::move(linking.linked_apps);
+
+    // Record linking stats in report
+    report.total_entities =
+        result.areas.size() + result.components.size() + result.apps.size() + result.functions.size();
+
+    linking_result_ = linker_->get_last_result();
+  }
 
   RCLCPP_INFO(logger_, "MergePipeline: %zu entities from %zu layers, %zu enriched, %zu conflicts",
               report.total_entities, report.layers.size(), report.enriched_count, report.conflict_count);

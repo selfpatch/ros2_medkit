@@ -543,45 +543,35 @@ void GatewayNode::refresh_cache() {
   RCLCPP_DEBUG(get_logger(), "Refreshing entity cache...");
 
   try {
-    // Refresh topic map first (rebuilds the cached map)
+    // Refresh topic map first (rebuilds the cached map, triggers pipeline in hybrid mode)
     discovery_mgr_->refresh_topic_map();
 
-    // Discover data outside the lock to minimize lock time
+    // Discover entities - in HYBRID mode the pipeline merges all sources,
+    // in RUNTIME_ONLY mode we manually merge node + topic components
     auto areas = discovery_mgr_->discover_areas();
-
-    // Discover node-based components (standard ROS 2 nodes)
-    auto node_components = discovery_mgr_->discover_components();
-
-    // Discover topic-based components (for systems like Isaac Sim that
-    // publish topics without creating proper ROS 2 nodes)
-    auto topic_components = discovery_mgr_->discover_topic_components();
-
-    // Discover apps (nodes as Apps when heuristic discovery is enabled)
     auto apps = discovery_mgr_->discover_apps();
-
-    // Discover functions (from manifest in manifest_only/hybrid mode)
     auto functions = discovery_mgr_->discover_functions();
 
-    // Merge both component lists
     std::vector<Component> all_components;
-    all_components.reserve(node_components.size() + topic_components.size());
-    all_components.insert(all_components.end(), node_components.begin(), node_components.end());
-    all_components.insert(all_components.end(), topic_components.begin(), topic_components.end());
+    if (discovery_mgr_->get_mode() == DiscoveryMode::HYBRID) {
+      // Pipeline already merges node and topic components
+      all_components = discovery_mgr_->discover_components();
+    } else {
+      auto node_components = discovery_mgr_->discover_components();
+      auto topic_components = discovery_mgr_->discover_topic_components();
+      all_components.reserve(node_components.size() + topic_components.size());
+      all_components.insert(all_components.end(), node_components.begin(), node_components.end());
+      all_components.insert(all_components.end(), topic_components.begin(), topic_components.end());
+    }
 
-    // Capture sizes before move for logging
+    // Capture sizes for logging
     const size_t area_count = areas.size();
-    const size_t node_component_count = node_components.size();
-    const size_t topic_component_count = topic_components.size();
+    const size_t component_count = all_components.size();
     const size_t app_count = apps.size();
     const size_t function_count = functions.size();
 
-    // Update ThreadSafeEntityCache (primary) with copies
-    // This provides O(1) lookups and proper thread safety
-    thread_safe_cache_.update_all(areas,           // copy
-                                  all_components,  // copy
-                                  apps,            // copy
-                                  functions        // copy
-    );
+    // Update ThreadSafeEntityCache with copies
+    thread_safe_cache_.update_all(areas, all_components, apps, functions);
 
     // Update topic type cache (avoids expensive ROS graph queries on /data requests)
     if (data_access_mgr_) {
@@ -597,11 +587,8 @@ void GatewayNode::refresh_cache() {
       thread_safe_cache_.update_topic_types(std::move(topic_types));
     }
 
-    RCLCPP_DEBUG(
-        get_logger(),
-        "Cache refreshed: %zu areas, %zu components (%zu node-based, %zu topic-based), %zu apps, %zu functions",
-        area_count, node_component_count + topic_component_count, node_component_count, topic_component_count,
-        app_count, function_count);
+    RCLCPP_DEBUG(get_logger(), "Cache refreshed: %zu areas, %zu components, %zu apps, %zu functions", area_count,
+                 component_count, app_count, function_count);
   } catch (const std::exception & e) {
     RCLCPP_ERROR(get_logger(), "Failed to refresh cache: %s", e.what());
   } catch (...) {
