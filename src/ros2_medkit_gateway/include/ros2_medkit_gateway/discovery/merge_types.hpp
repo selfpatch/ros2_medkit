@@ -75,6 +75,21 @@ struct MergeReport {
   }
 };
 
+/**
+ * @brief Controls what heuristic (runtime) discovery is allowed to create
+ *
+ * When manifest is present, runtime entities fill gaps. This struct
+ * controls which entity types and namespaces are eligible for gap-fill.
+ */
+struct GapFillConfig {
+  bool allow_heuristic_areas{true};
+  bool allow_heuristic_components{true};
+  bool allow_heuristic_apps{true};
+  bool allow_heuristic_functions{false};
+  std::vector<std::string> namespace_whitelist;
+  std::vector<std::string> namespace_blacklist;
+};
+
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway
 

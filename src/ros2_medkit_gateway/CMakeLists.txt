@@ -93,6 +93,9 @@ add_library(gateway_lib STATIC
   src/discovery/runtime_discovery.cpp
   src/discovery/hybrid_discovery.cpp
   src/discovery/merge_pipeline.cpp
+  src/discovery/layers/manifest_layer.cpp
+  src/discovery/layers/runtime_layer.cpp
+  src/discovery/layers/plugin_layer.cpp
   # Discovery models (with .cpp serialization)
   src/discovery/models/app.cpp
   src/discovery/models/function.cpp
