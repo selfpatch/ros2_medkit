@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cinttypes>
 #include <unordered_set>
 
 using namespace std::chrono_literals;
@@ -91,7 +92,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
 
   // Log management parameters
   declare_parameter("logs.buffer_size",
-                    200);  // Ring buffer capacity per node; entries exceed this are dropped (oldest first)
+                    200);  // Ring buffer capacity per node; entries exceeding this are dropped (oldest first)
 
   // TLS/HTTPS parameters
   declare_parameter("server.tls.enabled", false);
@@ -431,7 +432,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   auto clamped =
       std::clamp(raw_buffer_size, static_cast<int64_t>(kMinBufferSize), static_cast<int64_t>(kMaxBufferSize));
   if (clamped != raw_buffer_size) {
-    RCLCPP_WARN(get_logger(), "logs.buffer_size %ld clamped to %ld", raw_buffer_size, clamped);
+    RCLCPP_WARN(get_logger(), "logs.buffer_size %" PRId64 " clamped to %" PRId64, raw_buffer_size, clamped);
   }
   auto log_buffer_size = static_cast<size_t>(clamped);
   log_mgr_ = std::make_unique<LogManager>(this, plugin_mgr_.get(), log_buffer_size);
