@@ -182,6 +182,13 @@ void LogHandlers::handle_put_logs_configuration(const httplib::Request & req, ht
     max_entries = static_cast<size_t>(val);
   }
 
+  // Warn about unrecognized fields (helps debug camelCase typos like "severityFilter")
+  for (const auto & [key, _] : body.items()) {
+    if (key != "severity_filter" && key != "max_entries") {
+      RCLCPP_DEBUG(HandlerContext::logger(), "PUT /logs/configuration: ignoring unrecognized field '%s'", key.c_str());
+    }
+  }
+
   const auto err = log_mgr->update_config(entity_id, severity_filter, max_entries);
   if (!err.empty()) {
     HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, err);
