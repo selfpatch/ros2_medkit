@@ -92,6 +92,7 @@ add_library(gateway_lib STATIC
   src/discovery/discovery_manager.cpp
   src/discovery/runtime_discovery.cpp
   src/discovery/hybrid_discovery.cpp
+  src/discovery/merge_pipeline.cpp
   # Discovery models (with .cpp serialization)
   src/discovery/models/app.cpp
   src/discovery/models/function.cpp
@@ -325,6 +326,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_runtime_linker test/test_runtime_linker.cpp)
   target_link_libraries(test_runtime_linker gateway_lib)
 
+  # Add merge pipeline tests
+  ament_add_gtest(test_merge_pipeline test/test_merge_pipeline.cpp)
+  target_link_libraries(test_merge_pipeline gateway_lib)
+
   # Add capability builder tests
   ament_add_gtest(test_capability_builder test/test_capability_builder.cpp)
   target_link_libraries(test_capability_builder gateway_lib)
@@ -488,6 +493,7 @@ if(BUILD_TESTING)
       test_plugin_manager
       test_log_manager
       test_log_handlers
+      test_merge_pipeline
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
