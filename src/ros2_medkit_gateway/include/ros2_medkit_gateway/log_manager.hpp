@@ -22,6 +22,7 @@
 #include <rcl_interfaces/msg/log.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
+#include <tl/expected.hpp>
 #include <unordered_map>
 #include <vector>
 
@@ -87,11 +88,12 @@ class LogManager {
    * @param entity_id    Entity ID for config lookup. Empty = use defaults.
    * @return JSON array of LogEntry objects sorted by id ascending, capped at entity config max_entries.
    */
-  json get_logs(const std::vector<std::string> & node_fqns, bool prefix_match, const std::string & min_severity,
-                const std::string & context_filter, const std::string & entity_id);
+  tl::expected<json, std::string> get_logs(const std::vector<std::string> & node_fqns, bool prefix_match,
+                                           const std::string & min_severity, const std::string & context_filter,
+                                           const std::string & entity_id);
 
   /// Get current log configuration for entity (returns defaults if unconfigured)
-  LogConfig get_config(const std::string & entity_id) const;
+  tl::expected<LogConfig, std::string> get_config(const std::string & entity_id) const;
 
   /**
    * @brief Update log configuration for an entity

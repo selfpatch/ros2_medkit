@@ -195,11 +195,12 @@ TEST_F(LogManagerBufferTest, RingBufferEvictsOldestEntryWhenFull) {
   mgr_->inject_entry_for_testing(make_entry(4, "my_node"));  // evicts id=1
 
   auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
-  ASSERT_EQ(result.size(), 3u);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 3u);
   // Oldest (id=1) must be gone; newest 3 remain
-  EXPECT_EQ(result[0]["id"], "log_2");
-  EXPECT_EQ(result[1]["id"], "log_3");
-  EXPECT_EQ(result[2]["id"], "log_4");
+  EXPECT_EQ((*result)[0]["id"], "log_2");
+  EXPECT_EQ((*result)[1]["id"], "log_3");
+  EXPECT_EQ((*result)[2]["id"], "log_4");
 }
 
 // @verifies REQ_INTEROP_061
@@ -210,8 +211,9 @@ TEST_F(LogManagerBufferTest, FqnWithLeadingSlashMatchesBuffer) {
   mgr_->inject_entry_for_testing(make_entry(10, "my_ns/my_node"));
 
   auto result = mgr_->get_logs({"/my_ns/my_node"}, false, "", "", "");
-  ASSERT_EQ(result.size(), 1u);
-  EXPECT_EQ(result[0]["id"], "log_10");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 1u);
+  EXPECT_EQ((*result)[0]["id"], "log_10");
 }
 
 // @verifies REQ_INTEROP_061
@@ -223,8 +225,9 @@ TEST_F(LogManagerBufferTest, SeverityFilterExcludesLowerLevels) {
 
   // min_severity=warning -> only warning (30) should appear
   auto result = mgr_->get_logs({"/n"}, false, "warning", "", "");
-  ASSERT_EQ(result.size(), 1u);
-  EXPECT_EQ(result[0]["severity"], "warning");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 1u);
+  EXPECT_EQ((*result)[0]["severity"], "warning");
 }
 
 // @verifies REQ_INTEROP_061
@@ -236,9 +239,10 @@ TEST_F(LogManagerBufferTest, PrefixMatchIncludesChildNamespaces) {
   mgr_->inject_entry_for_testing(make_entry(3, "engine_control/sensor"));
 
   auto result = mgr_->get_logs({"/engine"}, true, "", "", "");
-  ASSERT_EQ(result.size(), 2u);
-  EXPECT_EQ(result[0]["id"], "log_1");
-  EXPECT_EQ(result[1]["id"], "log_2");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 2u);
+  EXPECT_EQ((*result)[0]["id"], "log_1");
+  EXPECT_EQ((*result)[1]["id"], "log_2");
 }
 
 // @verifies REQ_INTEROP_061
@@ -247,7 +251,8 @@ TEST_F(LogManagerBufferTest, PrefixMatchDoesNotFalsePositiveOnSubstring) {
   mgr_->inject_entry_for_testing(make_entry(1, "engine_control/sensor"));
 
   auto result = mgr_->get_logs({"/engine"}, true, "", "", "");
-  EXPECT_EQ(result.size(), 0u);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->size(), 0u);
 }
 
 // @verifies REQ_INTEROP_061
@@ -259,10 +264,11 @@ TEST_F(LogManagerBufferTest, MaxEntriesCapsMostRecentEntries) {
   mgr_->update_config("my_entity", std::nullopt, 2u);
 
   auto result = mgr_->get_logs({"/n"}, false, "", "", "my_entity");
-  ASSERT_EQ(result.size(), 2u);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 2u);
   // Most recent 2: ids 4 and 5
-  EXPECT_EQ(result[0]["id"], "log_4");
-  EXPECT_EQ(result[1]["id"], "log_5");
+  EXPECT_EQ((*result)[0]["id"], "log_4");
+  EXPECT_EQ((*result)[1]["id"], "log_5");
 }
 
 // @verifies REQ_INTEROP_061
@@ -273,8 +279,9 @@ TEST_F(LogManagerBufferTest, ContextFilterMatchesSubstring) {
 
   // context_filter="temp" -> only temp_sensor
   auto result = mgr_->get_logs({"/powertrain"}, true, "", "temp", "");
-  ASSERT_EQ(result.size(), 1u);
-  EXPECT_EQ(result[0]["context"]["node"], "powertrain/engine/temp_sensor");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 1u);
+  EXPECT_EQ((*result)[0]["context"]["node"], "powertrain/engine/temp_sensor");
 }
 
 // @verifies REQ_INTEROP_061
@@ -287,8 +294,9 @@ TEST_F(LogManagerBufferTest, GetLogsMatchesDotNotationLoggerNames) {
 
   // Exact match: app FQN "/powertrain/engine/temp_sensor" must resolve dot-format entry
   auto result = mgr_->get_logs({"/powertrain/engine/temp_sensor"}, false, "", "", "temp_sensor");
-  ASSERT_EQ(result.size(), 1u);
-  EXPECT_EQ(result[0]["context"]["node"], "powertrain.engine.temp_sensor");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 1u);
+  EXPECT_EQ((*result)[0]["context"]["node"], "powertrain.engine.temp_sensor");
 }
 
 // @verifies REQ_INTEROP_061
@@ -300,7 +308,8 @@ TEST_F(LogManagerBufferTest, GetLogsPrefixMatchesDotNotationLoggerNames) {
 
   // Prefix match: component FQN "/powertrain/engine" should cover both powertrain nodes
   auto result = mgr_->get_logs({"/powertrain/engine"}, true, "", "", "comp");
-  ASSERT_EQ(result.size(), 2u);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 2u);
 }
 
 // @verifies REQ_INTEROP_064
@@ -318,8 +327,9 @@ TEST_F(LogManagerBufferTest, UpdateConfigRejectsZeroMaxEntries) {
 // @verifies REQ_INTEROP_063
 TEST_F(LogManagerBufferTest, GetConfigReturnsDefaultsForUnknownEntity) {
   auto cfg = mgr_->get_config("unknown_entity");
-  EXPECT_EQ(cfg.severity_filter, "debug");
-  EXPECT_EQ(cfg.max_entries, 100u);
+  ASSERT_TRUE(cfg.has_value());
+  EXPECT_EQ(cfg->severity_filter, "debug");
+  EXPECT_EQ(cfg->max_entries, 100u);
 }
 
 // @verifies REQ_INTEROP_064
@@ -327,8 +337,9 @@ TEST_F(LogManagerBufferTest, PartialConfigUpdatePreservesOtherField) {
   mgr_->update_config("e", std::string("warning"), std::nullopt);
   mgr_->update_config("e", std::nullopt, size_t{500});
   auto cfg = mgr_->get_config("e");
-  EXPECT_EQ(cfg.severity_filter, "warning");
-  EXPECT_EQ(cfg.max_entries, 500u);
+  ASSERT_TRUE(cfg.has_value());
+  EXPECT_EQ(cfg->severity_filter, "warning");
+  EXPECT_EQ(cfg->max_entries, 500u);
 }
 
 // ============================================================
@@ -456,6 +467,31 @@ class MockPassivePlugin : public GatewayPlugin, public LogProvider {
   std::unordered_map<std::string, LogConfig> configs;
 };
 
+/// Plugin that throws on get_logs() and get_config()
+class MockThrowingLogPlugin : public GatewayPlugin, public LogProvider {
+ public:
+  std::string name() const override {
+    return "mock_throwing_log";
+  }
+  void configure(const json & /*config*/) override {
+  }
+
+  std::vector<LogEntry> get_logs(const std::vector<std::string> & /*node_fqns*/, bool /*prefix_match*/,
+                                 const std::string & /*min_severity*/, const std::string & /*context_filter*/,
+                                 const std::string & /*entity_id*/) override {
+    throw std::runtime_error("plugin get_logs failed");
+  }
+
+  LogConfig get_config(const std::string & /*entity_id*/) const override {
+    throw std::runtime_error("plugin get_config failed");
+  }
+
+  std::string update_config(const std::string & /*entity_id*/, const std::optional<std::string> & /*severity_filter*/,
+                            const std::optional<size_t> & /*max_entries*/) override {
+    return "";
+  }
+};
+
 }  // namespace
 
 // ============================================================
@@ -503,9 +539,10 @@ TEST_F(LogManagerIngestionTest, ManagesIngestionDelegatesToPlugin) {
 
   auto result = mgr_->get_logs({"/my_node"}, false, "", "", "entity1");
   EXPECT_TRUE(raw->get_logs_called);
-  ASSERT_EQ(result.size(), 1u);
-  EXPECT_EQ(result[0]["id"], "log_1");
-  EXPECT_EQ(result[0]["message"], "from plugin");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 1u);
+  EXPECT_EQ((*result)[0]["id"], "log_1");
+  EXPECT_EQ((*result)[0]["message"], "from plugin");
 }
 
 // @verifies REQ_INTEROP_064
@@ -536,8 +573,9 @@ TEST_F(LogManagerIngestionTest, ManagesIngestionGetConfigDelegatesToPlugin) {
 
   auto cfg = mgr_->get_config("entity1");
   EXPECT_TRUE(raw->get_config_called);
-  EXPECT_EQ(cfg.severity_filter, "warning");
-  EXPECT_EQ(cfg.max_entries, 50u);
+  ASSERT_TRUE(cfg.has_value());
+  EXPECT_EQ(cfg->severity_filter, "warning");
+  EXPECT_EQ(cfg->max_entries, 50u);
 }
 
 // @verifies REQ_INTEROP_061
@@ -555,8 +593,9 @@ TEST_F(LogManagerIngestionTest, ManagesIngestionLocalBufferBypassed) {
   mgr_->inject_entry_for_testing(make_entry(2, "my_node"));
 
   auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
+  ASSERT_TRUE(result.has_value());
   // Plugin returns empty - local buffer entries are not visible
-  EXPECT_EQ(result.size(), 0u);
+  EXPECT_EQ(result->size(), 0u);
 }
 
 // @verifies REQ_INTEROP_061
@@ -571,9 +610,10 @@ TEST_F(LogManagerIngestionTest, DefaultManagesIngestionPreservesCurrentBehavior)
   auto result = mgr_->get_logs({"/node1"}, false, "", "", "");
   // Passive plugin still receives get_logs() delegation
   EXPECT_TRUE(raw->get_logs_called);
-  ASSERT_EQ(result.size(), 1u);
-  EXPECT_EQ(result[0]["id"], "log_1");
-  EXPECT_EQ(result[0]["message"], "from passive");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 1u);
+  EXPECT_EQ((*result)[0]["id"], "log_1");
+  EXPECT_EQ((*result)[0]["message"], "from passive");
 }
 
 // @verifies REQ_INTEROP_061
@@ -585,9 +625,10 @@ TEST_F(LogManagerIngestionTest, NoPluginPreservesDefaultBehavior) {
   mgr_->inject_entry_for_testing(make_entry(2, "my_node"));
 
   auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
-  ASSERT_EQ(result.size(), 2u);
-  EXPECT_EQ(result[0]["id"], "log_1");
-  EXPECT_EQ(result[1]["id"], "log_2");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 2u);
+  EXPECT_EQ((*result)[0]["id"], "log_1");
+  EXPECT_EQ((*result)[1]["id"], "log_2");
 }
 
 // @verifies REQ_INTEROP_064
@@ -608,4 +649,26 @@ TEST_F(LogManagerIngestionTest, ManagesIngestionStillValidatesBeforeDelegation) 
   auto err2 = mgr_->update_config("e", std::nullopt, size_t{0});
   EXPECT_FALSE(err2.empty());
   EXPECT_FALSE(raw->update_config_called);
+}
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerIngestionTest, PluginGetLogsThrowReturnsError) {
+  plugin_mgr_ = std::make_unique<PluginManager>();
+  plugin_mgr_->add_plugin(std::make_unique<MockThrowingLogPlugin>());
+  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+
+  auto result = mgr_->get_logs({"/node"}, false, "", "", "");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("plugin get_logs failed"), std::string::npos);
+}
+
+// @verifies REQ_INTEROP_063
+TEST_F(LogManagerIngestionTest, PluginGetConfigThrowReturnsError) {
+  plugin_mgr_ = std::make_unique<PluginManager>();
+  plugin_mgr_->add_plugin(std::make_unique<MockThrowingLogPlugin>());
+  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+
+  auto result = mgr_->get_config("entity1");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("plugin get_config failed"), std::string::npos);
 }
