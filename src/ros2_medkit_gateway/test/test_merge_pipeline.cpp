@@ -13,6 +13,9 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/discovery/discovery_layer.hpp"
+#include "ros2_medkit_gateway/discovery/layers/manifest_layer.hpp"
+#include "ros2_medkit_gateway/discovery/layers/plugin_layer.hpp"
+#include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
 #include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
 #include "ros2_medkit_gateway/discovery/merge_types.hpp"
 
@@ -318,4 +321,131 @@ TEST_F(MergePipelineTest, CollectionFieldsUnionOnEnrichment) {
   ASSERT_EQ(result.components.size(), 1u);
   // Union: calibrate (deduped) + reset = 2 services
   EXPECT_EQ(result.components[0].services.size(), 2u);
+}
+
+// --- ManifestLayer and RuntimeLayer tests ---
+
+TEST(ManifestLayerTest, DefaultPolicies) {
+  ManifestLayer layer(nullptr);
+  EXPECT_EQ(layer.name(), "manifest");
+  EXPECT_EQ(layer.policy_for(FieldGroup::IDENTITY), MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::HIERARCHY), MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::LIVE_DATA), MergePolicy::ENRICHMENT);
+  EXPECT_EQ(layer.policy_for(FieldGroup::STATUS), MergePolicy::FALLBACK);
+  EXPECT_EQ(layer.policy_for(FieldGroup::METADATA), MergePolicy::AUTHORITATIVE);
+}
+
+TEST(ManifestLayerTest, PolicyOverride) {
+  ManifestLayer layer(nullptr);
+  layer.set_policy(FieldGroup::LIVE_DATA, MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::LIVE_DATA), MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::IDENTITY), MergePolicy::AUTHORITATIVE);
+}
+
+TEST(ManifestLayerTest, DiscoverReturnsEmptyWhenNoManifest) {
+  ManifestLayer layer(nullptr);
+  auto output = layer.discover();
+  EXPECT_TRUE(output.areas.empty());
+  EXPECT_TRUE(output.components.empty());
+  EXPECT_TRUE(output.apps.empty());
+  EXPECT_TRUE(output.functions.empty());
+}
+
+TEST(RuntimeLayerTest, DefaultPolicies) {
+  RuntimeLayer layer(nullptr);
+  EXPECT_EQ(layer.name(), "runtime");
+  EXPECT_EQ(layer.policy_for(FieldGroup::IDENTITY), MergePolicy::FALLBACK);
+  EXPECT_EQ(layer.policy_for(FieldGroup::HIERARCHY), MergePolicy::FALLBACK);
+  EXPECT_EQ(layer.policy_for(FieldGroup::LIVE_DATA), MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::STATUS), MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::METADATA), MergePolicy::ENRICHMENT);
+}
+
+TEST(RuntimeLayerTest, DiscoverReturnsEmptyWhenNoStrategy) {
+  RuntimeLayer layer(nullptr);
+  auto output = layer.discover();
+  EXPECT_TRUE(output.areas.empty());
+  EXPECT_TRUE(output.components.empty());
+}
+
+// --- PluginLayer tests ---
+
+class MockIntrospectionProvider : public IntrospectionProvider {
+ public:
+  IntrospectionResult introspect(const IntrospectionInput & input) override {
+    (void)input;
+    return result_;
+  }
+
+  IntrospectionResult result_;
+};
+
+TEST(PluginLayerTest, DefaultPolicies) {
+  auto provider = std::make_shared<MockIntrospectionProvider>();
+  PluginLayer layer("lidar_mapper", provider.get());
+  EXPECT_EQ(layer.name(), "lidar_mapper");
+  EXPECT_EQ(layer.policy_for(FieldGroup::IDENTITY), MergePolicy::ENRICHMENT);
+  EXPECT_EQ(layer.policy_for(FieldGroup::METADATA), MergePolicy::AUTHORITATIVE);
+}
+
+TEST(PluginLayerTest, MapsNewEntitiesToLayerOutput) {
+  auto provider = std::make_shared<MockIntrospectionProvider>();
+
+  Component new_comp;
+  new_comp.id = "lidar_unit";
+  new_comp.name = "LiDAR Processing Unit";
+  new_comp.source = "plugin";
+  provider->result_.new_entities.components.push_back(new_comp);
+
+  PluginLayer layer("lidar_mapper", provider.get());
+  auto output = layer.discover();
+  ASSERT_EQ(output.components.size(), 1u);
+  EXPECT_EQ(output.components[0].id, "lidar_unit");
+}
+
+TEST(PluginLayerTest, MetadataPassedThrough) {
+  auto provider = std::make_shared<MockIntrospectionProvider>();
+  provider->result_.metadata["engine"] = {{"x-medkit-temperature", 85}};
+
+  PluginLayer layer("sensor_plugin", provider.get());
+  auto output = layer.discover();
+  ASSERT_EQ(output.entity_metadata.size(), 1u);
+  EXPECT_TRUE(output.entity_metadata.count("engine"));
+  EXPECT_EQ(layer.get_metadata().at("engine")["x-medkit-temperature"], 85);
+}
+
+TEST(PluginLayerTest, DiscoverReturnsEmptyWhenNoProvider) {
+  PluginLayer layer("broken_plugin", nullptr);
+  auto output = layer.discover();
+  EXPECT_TRUE(output.areas.empty());
+  EXPECT_TRUE(output.components.empty());
+  EXPECT_TRUE(output.apps.empty());
+  EXPECT_TRUE(output.entity_metadata.empty());
+}
+
+// --- GapFillConfig tests ---
+
+TEST(GapFillConfigTest, DefaultAllowsAll) {
+  GapFillConfig config;
+  EXPECT_TRUE(config.allow_heuristic_areas);
+  EXPECT_TRUE(config.allow_heuristic_components);
+  EXPECT_TRUE(config.allow_heuristic_apps);
+  EXPECT_FALSE(config.allow_heuristic_functions);
+}
+
+TEST(GapFillConfigTest, NamespaceBlacklist) {
+  GapFillConfig config;
+  config.namespace_blacklist = {"/rosout", "/parameter_events"};
+  EXPECT_EQ(config.namespace_blacklist.size(), 2u);
+  EXPECT_EQ(config.namespace_blacklist[0], "/rosout");
+}
+
+TEST(RuntimeLayerTest, GapFillFilterBlocksApps) {
+  GapFillConfig gap_fill;
+  gap_fill.allow_heuristic_apps = false;
+
+  RuntimeLayer layer(nullptr);
+  layer.set_gap_fill_config(gap_fill);
+  auto output = layer.discover();
+  EXPECT_TRUE(output.apps.empty());
 }
