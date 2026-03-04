@@ -72,9 +72,13 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
   }
 
   auto logs = log_mgr->get_logs({entity.fqn}, prefix_match, min_severity, context_filter, entity_id);
+  if (!logs) {
+    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
+    return;
+  }
 
   json result;
-  result["items"] = std::move(logs);
+  result["items"] = std::move(*logs);
   HandlerContext::send_json(res, result);
 }
 
@@ -100,11 +104,15 @@ void LogHandlers::handle_get_logs_configuration(const httplib::Request & req, ht
     return;
   }
 
-  const auto cfg = log_mgr->get_config(entity_id);
+  auto cfg = log_mgr->get_config(entity_id);
+  if (!cfg) {
+    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, cfg.error());
+    return;
+  }
 
   json result;
-  result["severity_filter"] = cfg.severity_filter;
-  result["max_entries"] = cfg.max_entries;
+  result["severity_filter"] = cfg->severity_filter;
+  result["max_entries"] = cfg->max_entries;
   HandlerContext::send_json(res, result);
 }
 

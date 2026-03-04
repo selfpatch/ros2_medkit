@@ -203,9 +203,10 @@ LogProvider * LogManager::effective_provider() const {
 // get_logs
 // ---------------------------------------------------------------------------
 
-json LogManager::get_logs(const std::vector<std::string> & node_fqns, bool prefix_match,
-                          const std::string & min_severity, const std::string & context_filter,
-                          const std::string & entity_id) {
+tl::expected<json, std::string> LogManager::get_logs(const std::vector<std::string> & node_fqns, bool prefix_match,
+                                                     const std::string & min_severity,
+                                                     const std::string & context_filter,
+                                                     const std::string & entity_id) {
   // Delegate to plugin if one is registered
   if (auto * provider = effective_provider()) {
     // Normalize FQNs before passing to plugin (strip leading '/')
@@ -223,15 +224,20 @@ json LogManager::get_logs(const std::vector<std::string> & node_fqns, bool prefi
       return items;
     } catch (const std::exception & e) {
       RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_logs threw: %s", e.what());
-      return json::array();
+      return tl::make_unexpected(std::string("LogProvider plugin error: ") + e.what());
     } catch (...) {
       RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_logs threw unknown exception");
-      return json::array();
+      return tl::make_unexpected(std::string("LogProvider plugin error: unknown exception"));
     }
   }
 
   // Default: query local ring buffer
-  LogConfig cfg = get_config(entity_id);
+  // get_config() only fails on plugin errors; without a plugin (local path) it always succeeds.
+  auto cfg_result = get_config(entity_id);
+  if (!cfg_result) {
+    return tl::make_unexpected(cfg_result.error());
+  }
+  LogConfig cfg = *cfg_result;
 
   // Effective minimum severity: stricter of entity config and query-param override
   uint8_t min_level = severity_to_level(cfg.severity_filter);
@@ -305,14 +311,16 @@ json LogManager::get_logs(const std::vector<std::string> & node_fqns, bool prefi
 // Config management
 // ---------------------------------------------------------------------------
 
-LogConfig LogManager::get_config(const std::string & entity_id) const {
+tl::expected<LogConfig, std::string> LogManager::get_config(const std::string & entity_id) const {
   if (auto * provider = effective_provider()) {
     try {
       return provider->get_config(entity_id);
     } catch (const std::exception & e) {
       RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_config threw: %s", e.what());
+      return tl::make_unexpected(std::string("LogProvider plugin error: ") + e.what());
     } catch (...) {
       RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_config threw unknown exception");
+      return tl::make_unexpected(std::string("LogProvider plugin error: unknown exception"));
     }
   }
 
