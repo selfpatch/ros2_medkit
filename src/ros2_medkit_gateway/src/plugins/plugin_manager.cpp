@@ -167,6 +167,7 @@ void PluginManager::disable_plugin(LoadedPlugin & lp) {
 }
 
 void PluginManager::configure_plugins() {
+  std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
   for (auto & lp : plugins_) {
     if (!lp.load_result.plugin) {
       continue;
@@ -187,6 +188,7 @@ void PluginManager::configure_plugins() {
 
 void PluginManager::set_context(PluginContext & context) {
   context_ = &context;
+  std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
   for (auto & lp : plugins_) {
     if (!lp.load_result.plugin) {
       continue;
@@ -206,6 +208,7 @@ void PluginManager::set_context(PluginContext & context) {
 }
 
 void PluginManager::register_routes(httplib::Server & server, const std::string & api_prefix) {
+  std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
   for (auto & lp : plugins_) {
     if (!lp.load_result.plugin) {
       continue;
@@ -229,6 +232,7 @@ void PluginManager::shutdown_all() {
     return;
   }
   shutdown_called_ = true;
+  std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
   for (auto & lp : plugins_) {
     if (!lp.load_result.plugin) {
       continue;
@@ -245,10 +249,12 @@ void PluginManager::shutdown_all() {
 }
 
 UpdateProvider * PluginManager::get_update_provider() const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
   return first_update_provider_;
 }
 
 std::vector<IntrospectionProvider *> PluginManager::get_introspection_providers() const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
   std::vector<IntrospectionProvider *> result;
   for (const auto & lp : plugins_) {
     if (!lp.load_result.plugin) {
@@ -262,16 +268,12 @@ std::vector<IntrospectionProvider *> PluginManager::get_introspection_providers(
 }
 
 LogProvider * PluginManager::get_log_provider() const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
   return first_log_provider_;
 }
 
 std::vector<LogProvider *> PluginManager::get_log_observers() const {
-  // NOTE: plugins_ is read here (called from the ROS 2 executor thread via LogManager::on_rosout)
-  // while disable_plugin() can write plugins_ from the HTTP handler thread. This is the same
-  // pre-existing race as get_introspection_providers() and get_update_provider(). In practice
-  // disable_plugin() only nulls pointers/resets unique_ptrs and does not resize plugins_, so the
-  // race is benign on all current platforms. A proper fix would require a shared_mutex or
-  // copying the observer list at subscription time.
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
   std::vector<LogProvider *> result;
   for (const auto & lp : plugins_) {
     if (lp.log_provider) {
@@ -282,6 +284,7 @@ std::vector<LogProvider *> PluginManager::get_log_observers() const {
 }
 
 bool PluginManager::has_plugins() const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
   for (const auto & lp : plugins_) {
     if (lp.load_result.plugin) {
       return true;
@@ -291,6 +294,7 @@ bool PluginManager::has_plugins() const {
 }
 
 std::vector<std::string> PluginManager::plugin_names() const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
   std::vector<std::string> names;
   for (const auto & lp : plugins_) {
     if (lp.load_result.plugin) {
