@@ -60,7 +60,7 @@ For more examples, see our [Postman collection](postman/).
 | 📡 Subscriptions | **Available** | Stream live data and fault events via SSE |
 | 🔄 Software Updates | **Available** | Async prepare/execute lifecycle with pluggable backends |
 | 🔒 Authentication | **Available** | JWT-based RBAC (viewer, operator, configurator, admin) |
-| 📋 Logs | Planned | Log sources, entries, and configuration |
+| 📋 Logs | **Available** | Log sources, entries, and configuration |
 | 🔁 Entity Lifecycle | Planned | Start, restart, shutdown control |
 | 🔐 Modes & Locking | Planned | Target mode control and resource locking |
 | 📝 Scripts | Planned | Diagnostic script upload and execution |

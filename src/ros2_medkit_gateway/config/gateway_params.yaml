@@ -117,6 +117,7 @@ ros2_medkit_gateway:
       # Ring buffer capacity per node name.
       # The gateway retains at most this many /rosout entries per node in memory.
       # Oldest entries are dropped when the buffer is full.
+      # Valid range: 1-100000 (values outside this range are clamped with a warning).
       # Default: 200
       buffer_size: 200
 

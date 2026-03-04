@@ -116,6 +116,13 @@ json LogManager::entry_to_json(const LogEntry & e) {
 
 LogManager::LogManager(rclcpp::Node * node, PluginManager * plugin_mgr, size_t max_buffer_size)
   : node_(node), plugin_mgr_(plugin_mgr), max_buffer_size_(max_buffer_size) {
+  auto * provider = effective_provider();
+  if (provider && provider->manages_ingestion()) {
+    RCLCPP_INFO(node_->get_logger(),
+                "LogManager: primary LogProvider manages ingestion - skipping /rosout subscription");
+    return;
+  }
+
   rosout_sub_ = node_->create_subscription<rcl_interfaces::msg::Log>(
       "/rosout", rclcpp::QoS(100), [this](const rcl_interfaces::msg::Log::ConstSharedPtr & msg) {
         on_rosout(msg);
@@ -207,7 +214,20 @@ json LogManager::get_logs(const std::vector<std::string> & node_fqns, bool prefi
     for (const auto & fqn : node_fqns) {
       normalized.push_back(normalize_fqn(fqn));
     }
-    return provider->get_logs(normalized, prefix_match, min_severity, context_filter, entity_id);
+    try {
+      auto entries = provider->get_logs(normalized, prefix_match, min_severity, context_filter, entity_id);
+      json items = json::array();
+      for (const auto & e : entries) {
+        items.push_back(entry_to_json(e));
+      }
+      return items;
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_logs threw: %s", e.what());
+      return json::array();
+    } catch (...) {
+      RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_logs threw unknown exception");
+      return json::array();
+    }
   }
 
   // Default: query local ring buffer
@@ -286,6 +306,16 @@ json LogManager::get_logs(const std::vector<std::string> & node_fqns, bool prefi
 // ---------------------------------------------------------------------------
 
 LogConfig LogManager::get_config(const std::string & entity_id) const {
+  if (auto * provider = effective_provider()) {
+    try {
+      return provider->get_config(entity_id);
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_config threw: %s", e.what());
+    } catch (...) {
+      RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_config threw unknown exception");
+    }
+  }
+
   std::lock_guard<std::mutex> lock(configs_mutex_);
   auto it = configs_.find(entity_id);
   if (it != configs_.end()) {
@@ -305,7 +335,15 @@ std::string LogManager::update_config(const std::string & entity_id, const std::
 
   // If a plugin provider is registered, delegate config to it
   if (auto * provider = effective_provider()) {
-    return provider->update_config(entity_id, severity_filter, max_entries);
+    try {
+      return provider->update_config(entity_id, severity_filter, max_entries);
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(node_->get_logger(), "LogProvider::update_config threw: %s", e.what());
+      return std::string("LogProvider plugin error: ") + e.what();
+    } catch (...) {
+      RCLCPP_ERROR(node_->get_logger(), "LogProvider::update_config threw unknown exception");
+      return "LogProvider plugin error: unknown exception";
+    }
   }
 
   std::lock_guard<std::mutex> lock(configs_mutex_);

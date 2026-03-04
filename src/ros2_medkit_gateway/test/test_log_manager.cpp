@@ -17,6 +17,9 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "ros2_medkit_gateway/log_manager.hpp"
+#include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/providers/log_provider.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::LogConfig;
@@ -326,4 +329,283 @@ TEST_F(LogManagerBufferTest, PartialConfigUpdatePreservesOtherField) {
   auto cfg = mgr_->get_config("e");
   EXPECT_EQ(cfg.severity_filter, "warning");
   EXPECT_EQ(cfg.max_entries, 500u);
+}
+
+// ============================================================
+// Mock LogProvider plugins for manages_ingestion() tests
+// ============================================================
+
+namespace {
+
+using ros2_medkit_gateway::GatewayPlugin;
+using ros2_medkit_gateway::LogProvider;
+using ros2_medkit_gateway::PluginManager;
+
+/// LogProvider that manages its own ingestion (manages_ingestion() == true).
+/// Tracks calls and returns canned responses.
+class MockIngestionPlugin : public GatewayPlugin, public LogProvider {
+ public:
+  std::string name() const override {
+    return "mock_ingestion";
+  }
+  void configure(const json & /*config*/) override {
+  }
+
+  bool manages_ingestion() const override {
+    return true;
+  }
+
+  std::vector<LogEntry> get_logs(const std::vector<std::string> & /*node_fqns*/, bool /*prefix_match*/,
+                                 const std::string & /*min_severity*/, const std::string & /*context_filter*/,
+                                 const std::string & /*entity_id*/) override {
+    get_logs_called = true;
+    return canned_entries;
+  }
+
+  LogConfig get_config(const std::string & entity_id) const override {
+    get_config_called = true;
+    auto it = configs.find(entity_id);
+    if (it != configs.end()) {
+      return it->second;
+    }
+    return LogConfig{};
+  }
+
+  std::string update_config(const std::string & entity_id, const std::optional<std::string> & severity_filter,
+                            const std::optional<size_t> & max_entries) override {
+    update_config_called = true;
+    auto & cfg = configs[entity_id];
+    if (severity_filter.has_value()) {
+      cfg.severity_filter = *severity_filter;
+    }
+    if (max_entries.has_value()) {
+      cfg.max_entries = *max_entries;
+    }
+    return "";
+  }
+
+  std::vector<LogEntry> canned_entries = [] {
+    LogEntry e{};
+    e.id = 1;
+    e.stamp_sec = 1000;
+    e.stamp_nanosec = 0;
+    e.level = 20;
+    e.name = "plugin_node";
+    e.msg = "from plugin";
+    return std::vector<LogEntry>{e};
+  }();
+
+  mutable bool get_logs_called = false;
+  mutable bool get_config_called = false;
+  mutable bool update_config_called = false;
+  std::unordered_map<std::string, LogConfig> configs;
+};
+
+/// LogProvider with default manages_ingestion() == false (observer/passive mode).
+class MockPassivePlugin : public GatewayPlugin, public LogProvider {
+ public:
+  std::string name() const override {
+    return "mock_passive";
+  }
+  void configure(const json & /*config*/) override {
+  }
+
+  std::vector<LogEntry> get_logs(const std::vector<std::string> & /*node_fqns*/, bool /*prefix_match*/,
+                                 const std::string & /*min_severity*/, const std::string & /*context_filter*/,
+                                 const std::string & /*entity_id*/) override {
+    get_logs_called = true;
+    return canned_entries;
+  }
+
+  LogConfig get_config(const std::string & entity_id) const override {
+    get_config_called = true;
+    auto it = configs.find(entity_id);
+    if (it != configs.end()) {
+      return it->second;
+    }
+    return LogConfig{};
+  }
+
+  std::string update_config(const std::string & entity_id, const std::optional<std::string> & severity_filter,
+                            const std::optional<size_t> & max_entries) override {
+    update_config_called = true;
+    auto & cfg = configs[entity_id];
+    if (severity_filter.has_value()) {
+      cfg.severity_filter = *severity_filter;
+    }
+    if (max_entries.has_value()) {
+      cfg.max_entries = *max_entries;
+    }
+    return "";
+  }
+
+  std::vector<LogEntry> canned_entries = [] {
+    LogEntry e{};
+    e.id = 1;
+    e.stamp_sec = 1000;
+    e.stamp_nanosec = 0;
+    e.level = 30;
+    e.name = "passive_node";
+    e.msg = "from passive";
+    return std::vector<LogEntry>{e};
+  }();
+
+  mutable bool get_logs_called = false;
+  mutable bool get_config_called = false;
+  mutable bool update_config_called = false;
+  std::unordered_map<std::string, LogConfig> configs;
+};
+
+}  // namespace
+
+// ============================================================
+// LogManagerIngestionTest fixture
+// ============================================================
+
+class LogManagerIngestionTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    rclcpp::init(0, nullptr);
+    node_ = std::make_shared<rclcpp::Node>("test_log_ingestion");
+  }
+
+  void TearDown() override {
+    mgr_.reset();
+    plugin_mgr_.reset();
+    node_.reset();
+    rclcpp::shutdown();
+  }
+
+  LogEntry make_entry(int64_t id, const std::string & name, uint8_t level = 20) {
+    LogEntry e{};
+    e.id = id;
+    e.stamp_sec = id;
+    e.stamp_nanosec = 0;
+    e.level = level;
+    e.name = name;
+    e.msg = "msg " + std::to_string(id);
+    return e;
+  }
+
+  std::shared_ptr<rclcpp::Node> node_;
+  std::unique_ptr<PluginManager> plugin_mgr_;
+  std::unique_ptr<LogManager> mgr_;
+};
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerIngestionTest, ManagesIngestionDelegatesToPlugin) {
+  plugin_mgr_ = std::make_unique<PluginManager>();
+  auto plugin = std::make_unique<MockIngestionPlugin>();
+  auto * raw = plugin.get();
+  plugin_mgr_->add_plugin(std::move(plugin));
+
+  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+
+  auto result = mgr_->get_logs({"/my_node"}, false, "", "", "entity1");
+  EXPECT_TRUE(raw->get_logs_called);
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0]["id"], "log_1");
+  EXPECT_EQ(result[0]["message"], "from plugin");
+}
+
+// @verifies REQ_INTEROP_064
+TEST_F(LogManagerIngestionTest, ManagesIngestionUpdateConfigDelegatesToPlugin) {
+  plugin_mgr_ = std::make_unique<PluginManager>();
+  auto plugin = std::make_unique<MockIngestionPlugin>();
+  auto * raw = plugin.get();
+  plugin_mgr_->add_plugin(std::move(plugin));
+
+  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+
+  auto err = mgr_->update_config("entity1", std::string("error"), std::nullopt);
+  EXPECT_TRUE(err.empty());
+  EXPECT_TRUE(raw->update_config_called);
+  EXPECT_EQ(raw->configs["entity1"].severity_filter, "error");
+}
+
+// @verifies REQ_INTEROP_063
+TEST_F(LogManagerIngestionTest, ManagesIngestionGetConfigDelegatesToPlugin) {
+  plugin_mgr_ = std::make_unique<PluginManager>();
+  auto plugin = std::make_unique<MockIngestionPlugin>();
+  auto * raw = plugin.get();
+  // Pre-populate plugin config
+  raw->configs["entity1"] = LogConfig{"warning", 50};
+  plugin_mgr_->add_plugin(std::move(plugin));
+
+  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+
+  auto cfg = mgr_->get_config("entity1");
+  EXPECT_TRUE(raw->get_config_called);
+  EXPECT_EQ(cfg.severity_filter, "warning");
+  EXPECT_EQ(cfg.max_entries, 50u);
+}
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerIngestionTest, ManagesIngestionLocalBufferBypassed) {
+  plugin_mgr_ = std::make_unique<PluginManager>();
+  auto plugin = std::make_unique<MockIngestionPlugin>();
+  // Plugin returns empty vector for get_logs
+  plugin->canned_entries.clear();
+  plugin_mgr_->add_plugin(std::move(plugin));
+
+  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+
+  // Inject entries into local buffer - these should be invisible because plugin owns queries
+  mgr_->inject_entry_for_testing(make_entry(1, "my_node"));
+  mgr_->inject_entry_for_testing(make_entry(2, "my_node"));
+
+  auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
+  // Plugin returns empty - local buffer entries are not visible
+  EXPECT_EQ(result.size(), 0u);
+}
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerIngestionTest, DefaultManagesIngestionPreservesCurrentBehavior) {
+  plugin_mgr_ = std::make_unique<PluginManager>();
+  auto plugin = std::make_unique<MockPassivePlugin>();
+  auto * raw = plugin.get();
+  plugin_mgr_->add_plugin(std::move(plugin));
+
+  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+
+  auto result = mgr_->get_logs({"/node1"}, false, "", "", "");
+  // Passive plugin still receives get_logs() delegation
+  EXPECT_TRUE(raw->get_logs_called);
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0]["id"], "log_1");
+  EXPECT_EQ(result[0]["message"], "from passive");
+}
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerIngestionTest, NoPluginPreservesDefaultBehavior) {
+  // No plugin manager at all - ring buffer works as before
+  mgr_ = std::make_unique<LogManager>(node_.get(), nullptr, 10);
+
+  mgr_->inject_entry_for_testing(make_entry(1, "my_node"));
+  mgr_->inject_entry_for_testing(make_entry(2, "my_node"));
+
+  auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
+  ASSERT_EQ(result.size(), 2u);
+  EXPECT_EQ(result[0]["id"], "log_1");
+  EXPECT_EQ(result[1]["id"], "log_2");
+}
+
+// @verifies REQ_INTEROP_064
+TEST_F(LogManagerIngestionTest, ManagesIngestionStillValidatesBeforeDelegation) {
+  plugin_mgr_ = std::make_unique<PluginManager>();
+  auto plugin = std::make_unique<MockIngestionPlugin>();
+  auto * raw = plugin.get();
+  plugin_mgr_->add_plugin(std::move(plugin));
+
+  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+
+  // LogManager validates severity before delegating - "verbose" is invalid
+  auto err = mgr_->update_config("e", std::string("verbose"), std::nullopt);
+  EXPECT_FALSE(err.empty());
+  EXPECT_FALSE(raw->update_config_called);
+
+  // Also validate max_entries=0
+  auto err2 = mgr_->update_config("e", std::nullopt, size_t{0});
+  EXPECT_FALSE(err2.empty());
+  EXPECT_FALSE(raw->update_config_called);
 }
