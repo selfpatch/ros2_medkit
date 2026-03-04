@@ -27,6 +27,10 @@
 #include <vector>
 
 namespace ros2_medkit_gateway {
+
+// Forward declaration
+struct IntrospectionInput;
+
 namespace discovery {
 
 /**
@@ -58,6 +62,11 @@ class DiscoveryLayer {
 
   /// Merge policy this layer uses for the given field group
   virtual MergePolicy policy_for(FieldGroup group) const = 0;
+
+  /// Provide the current discovery context (entities from previous layers).
+  /// Called by MergePipeline before discover(). Default no-op.
+  virtual void set_discovery_context(const IntrospectionInput & /*context*/) {
+  }
 };
 
 }  // namespace discovery

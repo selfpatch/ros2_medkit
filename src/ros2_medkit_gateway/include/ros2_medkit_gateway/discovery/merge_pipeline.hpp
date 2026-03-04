@@ -63,9 +63,9 @@ class MergePipeline {
   MergeResult execute();
 
   /**
-   * @brief Get the last merge report
+   * @brief Get the last merge report (returned by value for thread safety)
    */
-  const MergeReport & get_last_report() const {
+  MergeReport get_last_report() const {
     return last_report_;
   }
 
@@ -77,16 +77,16 @@ class MergePipeline {
   void set_linker(std::unique_ptr<RuntimeLinker> linker, const ManifestConfig & config);
 
   /**
-   * @brief Get the last linking result
+   * @brief Get the last linking result (returned by value for thread safety)
    */
-  const LinkingResult & get_linking_result() const {
+  LinkingResult get_linking_result() const {
     return linking_result_;
   }
 
  private:
   /// Merge a vector of entities from multiple layers by ID
   template <typename Entity>
-  std::vector<Entity> merge_entities(const std::vector<std::pair<size_t, std::vector<Entity>>> & layer_entities,
+  std::vector<Entity> merge_entities(std::vector<std::pair<size_t, std::vector<Entity>>> & layer_entities,
                                      MergeReport & report);
 
   rclcpp::Logger logger_;

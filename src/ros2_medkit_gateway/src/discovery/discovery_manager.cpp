@@ -16,6 +16,7 @@
 
 #include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
 #include "ros2_medkit_gateway/discovery/layers/manifest_layer.hpp"
+#include "ros2_medkit_gateway/discovery/layers/plugin_layer.hpp"
 #include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
 #include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
@@ -84,7 +85,7 @@ void DiscoveryManager::create_strategy() {
       pipeline.add_layer(std::make_unique<discovery::ManifestLayer>(manifest_manager_.get()));
 
       auto runtime_layer = std::make_unique<discovery::RuntimeLayer>(runtime_strategy_.get());
-      runtime_layer_ = runtime_layer.get();
+      runtime_layer->set_gap_fill_config(config_.merge_pipeline.gap_fill);
       pipeline.add_layer(std::move(runtime_layer));
 
       // Set up RuntimeLinker for post-merge app-to-node binding
@@ -279,20 +280,23 @@ bool DiscoveryManager::is_topic_map_ready() const {
   return runtime_strategy_->is_topic_map_ready();
 }
 
-discovery::ManifestManager * DiscoveryManager::get_manifest_manager() {
-  return manifest_manager_.get();
+void DiscoveryManager::add_plugin_layer(const std::string & plugin_name, IntrospectionProvider * provider) {
+  if (!hybrid_strategy_) {
+    RCLCPP_WARN(node_->get_logger(), "Cannot add plugin layer '%s': not in hybrid mode", plugin_name.c_str());
+    return;
+  }
+  hybrid_strategy_->add_layer(std::make_unique<discovery::PluginLayer>(plugin_name, provider));
+  RCLCPP_INFO(node_->get_logger(), "Added plugin layer '%s' to merge pipeline", plugin_name.c_str());
 }
 
-bool DiscoveryManager::reload_manifest() {
-  if (!manifest_manager_) {
-    RCLCPP_WARN(node_->get_logger(), "No manifest manager to reload");
-    return false;
-  }
-  bool result = manifest_manager_->reload_manifest();
-  if (result && hybrid_strategy_) {
+void DiscoveryManager::refresh_pipeline() {
+  if (hybrid_strategy_) {
     hybrid_strategy_->refresh();
   }
-  return result;
+}
+
+discovery::ManifestManager * DiscoveryManager::get_manifest_manager() {
+  return manifest_manager_.get();
 }
 
 std::string DiscoveryManager::get_strategy_name() const {
@@ -300,6 +304,20 @@ std::string DiscoveryManager::get_strategy_name() const {
     return active_strategy_->get_name();
   }
   return "unknown";
+}
+
+std::optional<discovery::MergeReport> DiscoveryManager::get_merge_report() const {
+  if (hybrid_strategy_) {
+    return hybrid_strategy_->get_merge_report();
+  }
+  return std::nullopt;
+}
+
+std::optional<discovery::LinkingResult> DiscoveryManager::get_linking_result() const {
+  if (hybrid_strategy_) {
+    return hybrid_strategy_->get_linking_result();
+  }
+  return std::nullopt;
 }
 
 }  // namespace ros2_medkit_gateway

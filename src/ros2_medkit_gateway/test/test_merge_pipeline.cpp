@@ -55,6 +55,7 @@ class TestLayer : public DiscoveryLayer {
   std::unordered_map<FieldGroup, MergePolicy> policies_;
 };
 
+// @verifies REQ_INTEROP_003
 TEST(MergeTypesTest, MergePolicyValues) {
   // Verify enum values exist and are distinct
   EXPECT_NE(static_cast<int>(MergePolicy::AUTHORITATIVE), static_cast<int>(MergePolicy::ENRICHMENT));
@@ -150,8 +151,16 @@ App make_app(const std::string & id, const std::string & component_id = "") {
   return a;
 }
 
+Function make_function(const std::string & id, const std::string & name = "") {
+  Function f;
+  f.id = id;
+  f.name = name.empty() ? id : name;
+  return f;
+}
+
 }  // namespace
 
+// @verifies REQ_INTEROP_003
 class MergePipelineTest : public ::testing::Test {
  protected:
   MergePipeline pipeline_;
@@ -328,6 +337,7 @@ TEST_F(MergePipelineTest, CollectionFieldsUnionOnEnrichment) {
 
 // --- ManifestLayer and RuntimeLayer tests ---
 
+// @verifies REQ_INTEROP_003
 TEST(ManifestLayerTest, DefaultPolicies) {
   ManifestLayer layer(nullptr);
   EXPECT_EQ(layer.name(), "manifest");
@@ -354,6 +364,7 @@ TEST(ManifestLayerTest, DiscoverReturnsEmptyWhenNoManifest) {
   EXPECT_TRUE(output.functions.empty());
 }
 
+// @verifies REQ_INTEROP_003
 TEST(RuntimeLayerTest, DefaultPolicies) {
   RuntimeLayer layer(nullptr);
   EXPECT_EQ(layer.name(), "runtime");
@@ -376,19 +387,23 @@ TEST(RuntimeLayerTest, DiscoverReturnsEmptyWhenNoStrategy) {
 class MockIntrospectionProvider : public IntrospectionProvider {
  public:
   IntrospectionResult introspect(const IntrospectionInput & input) override {
-    (void)input;
+    last_input_ = input;
+    introspect_called_ = true;
     return result_;
   }
 
   IntrospectionResult result_;
+  IntrospectionInput last_input_;
+  bool introspect_called_{false};
 };
 
+// @verifies REQ_INTEROP_003
 TEST(PluginLayerTest, DefaultPolicies) {
   auto provider = std::make_shared<MockIntrospectionProvider>();
   PluginLayer layer("lidar_mapper", provider.get());
   EXPECT_EQ(layer.name(), "lidar_mapper");
   EXPECT_EQ(layer.policy_for(FieldGroup::IDENTITY), MergePolicy::ENRICHMENT);
-  EXPECT_EQ(layer.policy_for(FieldGroup::METADATA), MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::METADATA), MergePolicy::ENRICHMENT);
 }
 
 TEST(PluginLayerTest, MapsNewEntitiesToLayerOutput) {
@@ -426,8 +441,39 @@ TEST(PluginLayerTest, DiscoverReturnsEmptyWhenNoProvider) {
   EXPECT_TRUE(output.entity_metadata.empty());
 }
 
+// @verifies REQ_INTEROP_003
+TEST_F(MergePipelineTest, PluginReceivesDiscoveryContext) {
+  // Manifest layer provides a component
+  LayerOutput manifest_out;
+  manifest_out.components.push_back(make_component("engine", "powertrain", "/powertrain"));
+  manifest_out.apps.push_back(make_app("engine_ecu", "engine"));
+  pipeline_.add_layer(std::make_unique<TestLayer>("manifest", manifest_out));
+
+  // Runtime layer provides an area
+  LayerOutput runtime_out;
+  runtime_out.areas.push_back(make_area("powertrain"));
+  pipeline_.add_layer(std::make_unique<TestLayer>("runtime", runtime_out));
+
+  // Plugin layer should see entities from manifest + runtime
+  auto provider = std::make_shared<MockIntrospectionProvider>();
+  auto plugin = std::make_unique<PluginLayer>("test_plugin", provider.get());
+  pipeline_.add_layer(std::move(plugin));
+
+  pipeline_.execute();
+
+  // Plugin's introspect() should have received the context from previous layers
+  ASSERT_TRUE(provider->introspect_called_);
+  EXPECT_EQ(provider->last_input_.components.size(), 1u);
+  EXPECT_EQ(provider->last_input_.components[0].id, "engine");
+  EXPECT_EQ(provider->last_input_.apps.size(), 1u);
+  EXPECT_EQ(provider->last_input_.apps[0].id, "engine_ecu");
+  EXPECT_EQ(provider->last_input_.areas.size(), 1u);
+  EXPECT_EQ(provider->last_input_.areas[0].id, "powertrain");
+}
+
 // --- GapFillConfig tests ---
 
+// @verifies REQ_INTEROP_003
 TEST(GapFillConfigTest, DefaultAllowsAll) {
   GapFillConfig config;
   EXPECT_TRUE(config.allow_heuristic_areas);
@@ -451,6 +497,23 @@ TEST(RuntimeLayerTest, GapFillFilterBlocksApps) {
   layer.set_gap_fill_config(gap_fill);
   auto output = layer.discover();
   EXPECT_TRUE(output.apps.empty());
+}
+
+TEST(MergeReportTest, FilteredByGapFillInJson) {
+  MergeReport report;
+  report.layers = {"manifest", "runtime"};
+  report.total_entities = 5;
+  report.filtered_by_gap_fill = 3;
+
+  auto j = report.to_json();
+  EXPECT_EQ(j["filtered_by_gap_fill"], 3);
+}
+
+TEST(RuntimeLayerTest, FilteredCountTracked) {
+  // RuntimeLayer with no strategy returns 0 filtered
+  RuntimeLayer layer(nullptr);
+  auto output = layer.discover();
+  EXPECT_EQ(layer.last_filtered_count(), 0u);
 }
 
 // --- Post-merge linking tests ---
@@ -519,6 +582,366 @@ TEST_F(MergePipelineTest, PostMergeLinkingReportsOrphanNodes) {
   pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
 
   auto result = pipeline_.execute();
-  auto & linking = pipeline_.get_linking_result();
+  auto linking = pipeline_.get_linking_result();
   EXPECT_FALSE(linking.orphan_nodes.empty());
+}
+
+// --- M4: Cross-type entity ID collision detection ---
+
+TEST_F(MergePipelineTest, CrossTypeIdCollisionDetected) {
+  // Same ID used for both an Area and a Component - should detect collision
+  LayerOutput output;
+  output.areas.push_back(make_area("shared_id"));
+  output.components.push_back(make_component("shared_id"));
+
+  pipeline_.add_layer(std::make_unique<TestLayer>("layer1", output));
+
+  auto result = pipeline_.execute();
+  EXPECT_EQ(result.report.id_collision_count, 1u);
+}
+
+TEST_F(MergePipelineTest, SameTypeIdIsNotCollision) {
+  // Same ID in two layers of the same type - normal merge, not a collision
+  LayerOutput out1;
+  out1.areas.push_back(make_area("powertrain"));
+  LayerOutput out2;
+  out2.areas.push_back(make_area("powertrain"));
+
+  pipeline_.add_layer(std::make_unique<TestLayer>("layer1", out1));
+  pipeline_.add_layer(std::make_unique<TestLayer>("layer2", out2));
+
+  auto result = pipeline_.execute();
+  EXPECT_EQ(result.report.id_collision_count, 0u);
+  EXPECT_EQ(result.areas.size(), 1u);  // merged, not duplicated
+}
+
+// --- M5: FALLBACK policy behavior ---
+
+TEST_F(MergePipelineTest, FallbackVsFallbackKeepsTargetWhenBothHaveData) {
+  // Both layers declare FALLBACK for IDENTITY, both have name set
+  // Higher priority target keeps its value (first non-empty)
+  Component comp1 = make_component("engine", "powertrain", "/powertrain");
+  comp1.name = "First Layer Engine";
+
+  Component comp2 = make_component("engine", "powertrain", "/powertrain");
+  comp2.name = "Second Layer Engine";
+
+  LayerOutput out1, out2;
+  out1.components.push_back(comp1);
+  out2.components.push_back(comp2);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "layer1", out1, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::FALLBACK}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "layer2", out2, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::FALLBACK}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.components.size(), 1u);
+  EXPECT_EQ(result.components[0].name, "First Layer Engine");
+  EXPECT_EQ(result.report.conflict_count, 0u);
+}
+
+TEST_F(MergePipelineTest, FallbackVsFallbackFillsEmptyFields) {
+  // Target has empty description, source has it - FALLBACK should fill the gap
+  Component comp1 = make_component("engine", "powertrain", "/powertrain");
+  comp1.description = "";
+
+  Component comp2 = make_component("engine", "powertrain", "/powertrain");
+  comp2.description = "Engine control unit";
+
+  LayerOutput out1, out2;
+  out1.components.push_back(comp1);
+  out2.components.push_back(comp2);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "layer1", out1, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::FALLBACK}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "layer2", out2, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::FALLBACK}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.components.size(), 1u);
+  EXPECT_EQ(result.components[0].description, "Engine control unit");
+}
+
+TEST_F(MergePipelineTest, FallbackVsEnrichmentEnrichmentWins) {
+  // ENRICHMENT > FALLBACK
+  Component comp1 = make_component("engine", "powertrain", "/powertrain");
+  comp1.name = "Fallback Name";
+
+  Component comp2 = make_component("engine", "powertrain", "/powertrain");
+  comp2.name = "Enrichment Name";
+
+  LayerOutput out1, out2;
+  out1.components.push_back(comp1);
+  out2.components.push_back(comp2);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "fallback", out1, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::FALLBACK}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "enrich", out2, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.components.size(), 1u);
+  EXPECT_EQ(result.components[0].name, "Enrichment Name");  // ENRICHMENT wins over FALLBACK
+}
+
+// --- M6: MergeConflict struct fields ---
+
+TEST_F(MergePipelineTest, MergeConflictStructPopulated) {
+  // AUTH vs AUTH on same entity - verify conflict fields
+  Component comp1 = make_component("engine", "powertrain", "/powertrain");
+  comp1.name = "Manifest Engine";
+
+  Component comp2 = make_component("engine", "powertrain", "/powertrain");
+  comp2.name = "Runtime Engine";
+
+  LayerOutput out1, out2;
+  out1.components.push_back(comp1);
+  out2.components.push_back(comp2);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", out1,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", out2,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_GE(result.report.conflicts.size(), 1u);
+
+  // Find the IDENTITY conflict for "engine"
+  bool found = false;
+  for (const auto & c : result.report.conflicts) {
+    if (c.entity_id == "engine" && c.field_group == FieldGroup::IDENTITY) {
+      EXPECT_EQ(c.winning_layer, "manifest");
+      EXPECT_EQ(c.losing_layer, "runtime");
+      found = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found) << "Expected IDENTITY conflict for entity 'engine'";
+}
+
+// --- m9: MergeReport::to_json() includes conflicts ---
+
+TEST(MergeTypesTest, MergeReportToJsonIncludesConflicts) {
+  MergeReport report;
+  report.layers = {"manifest", "runtime"};
+  report.conflict_count = 1;
+  report.conflicts.push_back({"engine", FieldGroup::IDENTITY, "manifest", "runtime"});
+
+  auto j = report.to_json();
+  ASSERT_TRUE(j.contains("conflicts"));
+  ASSERT_EQ(j["conflicts"].size(), 1u);
+  EXPECT_EQ(j["conflicts"][0]["entity_id"], "engine");
+  EXPECT_EQ(j["conflicts"][0]["field_group"], "IDENTITY");
+  EXPECT_EQ(j["conflicts"][0]["winning_layer"], "manifest");
+  EXPECT_EQ(j["conflicts"][0]["losing_layer"], "runtime");
+}
+
+// --- Three-layer merge (manifest + runtime + plugin) ---
+
+// @verifies REQ_INTEROP_003
+TEST_F(MergePipelineTest, ThreeLayerMerge_PluginEnrichesManifestEntity) {
+  // Manifest: component "engine" with AUTHORITATIVE identity
+  Component manifest_comp = make_component("engine", "powertrain", "/powertrain");
+  manifest_comp.name = "Engine ECU";
+  manifest_comp.description = "Main engine controller";
+
+  // Runtime: component "engine" with FALLBACK identity, AUTHORITATIVE live_data (topics)
+  Component runtime_comp = make_component("engine", "powertrain", "/powertrain");
+  runtime_comp.name = "engine";  // heuristic name, should not override manifest
+  ServiceInfo svc;
+  svc.name = "get_status";
+  svc.full_path = "/powertrain/get_status";
+  svc.type = "std_srvs/srv/Trigger";
+  runtime_comp.services.push_back(svc);
+
+  // Plugin: component "engine" with ENRICHMENT metadata - adds vendor extension
+  Component plugin_comp = make_component("engine", "powertrain", "/powertrain");
+  plugin_comp.description = "Plugin-enriched description";  // IDENTITY: won't override manifest AUTH
+  plugin_comp.source = "vendor-plugin";                     // METADATA: will fill empty field
+
+  LayerOutput manifest_out, runtime_out, plugin_out;
+  manifest_out.components.push_back(manifest_comp);
+  runtime_out.components.push_back(runtime_comp);
+  plugin_out.components.push_back(plugin_comp);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::LIVE_DATA, MergePolicy::ENRICHMENT},
+                                                  {FieldGroup::METADATA, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::FALLBACK},
+                                                  {FieldGroup::LIVE_DATA, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "plugin", plugin_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::ENRICHMENT},
+                                                  {FieldGroup::LIVE_DATA, MergePolicy::ENRICHMENT},
+                                                  {FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.components.size(), 1u);
+
+  const auto & merged = result.components[0];
+  // Name from manifest (AUTHORITATIVE IDENTITY wins over plugin ENRICHMENT)
+  EXPECT_EQ(merged.name, "Engine ECU");
+  // Description from manifest (AUTHORITATIVE beats ENRICHMENT)
+  EXPECT_EQ(merged.description, "Main engine controller");
+  // Services from runtime (AUTHORITATIVE LIVE_DATA)
+  EXPECT_EQ(merged.services.size(), 1u);
+  // entity_source tracks the first layer that introduced this entity
+  EXPECT_EQ(result.report.entity_source["engine"], "manifest");
+}
+
+// --- App STATUS field group merge ---
+
+// @verifies REQ_INTEROP_003
+TEST_F(MergePipelineTest, AppStatusMerge_BoolOrSemantics) {
+  // Two layers provide the same App with different is_online values
+  App app1 = make_app("controller", "nav_comp");
+  app1.is_online = false;
+
+  App app2 = make_app("controller", "nav_comp");
+  app2.is_online = true;
+  app2.bound_fqn = "/nav/controller";
+
+  LayerOutput out1, out2;
+  out1.apps.push_back(app1);
+  out2.apps.push_back(app2);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", out1, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::FALLBACK}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", out2, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.apps.size(), 1u);
+  // Runtime STATUS is AUTHORITATIVE, so is_online=true and bound_fqn set
+  EXPECT_TRUE(result.apps[0].is_online);
+  EXPECT_EQ(result.apps[0].bound_fqn, "/nav/controller");
+}
+
+// --- GapFillConfig namespace filtering ---
+// These tests verify the namespace matching semantics used by RuntimeLayer.
+// Since filter_by_namespace is internal to runtime_layer.cpp, we replicate the
+// matching logic here to test the *semantics* of GapFillConfig lists.
+
+namespace {
+// Mirrors the is_namespace_allowed() semantics in runtime_layer.cpp:
+// path-segment boundary matching (ns == w || ns starts with w + "/").
+bool is_namespace_allowed(const std::string & ns, const GapFillConfig & config) {
+  if (!config.namespace_whitelist.empty()) {
+    bool found =
+        std::any_of(config.namespace_whitelist.begin(), config.namespace_whitelist.end(), [&ns](const std::string & w) {
+          return ns == w || ns.find(w + "/") == 0;
+        });
+    if (!found) {
+      return false;
+    }
+  }
+  for (const auto & b : config.namespace_blacklist) {
+    if (ns == b || ns.find(b + "/") == 0) {
+      return false;
+    }
+  }
+  return true;
+}
+}  // namespace
+
+// @verifies REQ_INTEROP_003
+TEST(GapFillConfigTest, NamespaceWhitelistFiltersAreas) {
+  GapFillConfig config;
+  config.namespace_whitelist = {"/robot"};
+
+  // Exact match passes
+  EXPECT_TRUE(is_namespace_allowed("/robot", config));
+  // Child namespace passes (path-segment boundary)
+  EXPECT_TRUE(is_namespace_allowed("/robot/nav", config));
+  // Different namespace blocked
+  EXPECT_FALSE(is_namespace_allowed("/sensor", config));
+  // Prefix that is NOT a path segment boundary should be blocked
+  EXPECT_FALSE(is_namespace_allowed("/robotics", config));
+}
+
+// @verifies REQ_INTEROP_003
+TEST(GapFillConfigTest, NamespaceBlacklistFiltersAreas) {
+  GapFillConfig config;
+  config.namespace_blacklist = {"/rosout"};
+
+  // Not blacklisted
+  EXPECT_TRUE(is_namespace_allowed("/robot", config));
+  // Exact match blocked
+  EXPECT_FALSE(is_namespace_allowed("/rosout", config));
+  // Child namespace blocked (path-segment boundary)
+  EXPECT_FALSE(is_namespace_allowed("/rosout/sub", config));
+  // Prefix that is NOT a path segment boundary should pass
+  EXPECT_TRUE(is_namespace_allowed("/rosoutput", config));
+}
+
+// --- Pipeline exception safety ---
+
+namespace {
+class ThrowingLayer : public DiscoveryLayer {
+ public:
+  std::string name() const override {
+    return "throwing";
+  }
+  LayerOutput discover() override {
+    throw std::runtime_error("plugin crash");
+  }
+  MergePolicy policy_for(FieldGroup /*group*/) const override {
+    return MergePolicy::ENRICHMENT;
+  }
+};
+}  // namespace
+
+// @verifies REQ_INTEROP_003
+TEST_F(MergePipelineTest, LayerExceptionDoesNotCrashPipeline) {
+  // A good layer followed by a throwing layer - good layer's data should survive
+  LayerOutput good_output;
+  good_output.areas.push_back(make_area("powertrain"));
+  pipeline_.add_layer(std::make_unique<TestLayer>("good", good_output));
+  pipeline_.add_layer(std::make_unique<ThrowingLayer>());
+
+  auto result = pipeline_.execute();
+  // Good layer's data should be present despite the throwing layer
+  ASSERT_EQ(result.areas.size(), 1u);
+  EXPECT_EQ(result.areas[0].id, "powertrain");
+}
+
+// @verifies REQ_DISC_MERGE_FUNCTION
+TEST_F(MergePipelineTest, FunctionMerge_HostsAndIdentity) {
+  // Layer 1 (AUTH for IDENTITY): function with name, no hosts
+  Function auth_func = make_function("diagnostics", "Diagnostics Suite");
+  auth_func.source = "manifest";
+
+  LayerOutput auth_output;
+  auth_output.functions.push_back(auth_func);
+
+  // Layer 2 (ENRICHMENT): function with hosts, different name
+  Function enrich_func = make_function("diagnostics", "diag_runtime");
+  enrich_func.hosts = {"engine_ecu", "brake_controller"};
+  enrich_func.source = "runtime";
+
+  LayerOutput enrich_output;
+  enrich_output.functions.push_back(enrich_func);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", auth_output,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::HIERARCHY, MergePolicy::ENRICHMENT}}));
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", enrich_output,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::FALLBACK},
+                                                  {FieldGroup::HIERARCHY, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.functions.size(), 1u);
+  EXPECT_EQ(result.functions[0].name, "Diagnostics Suite");  // AUTH identity wins
+  EXPECT_EQ(result.functions[0].hosts.size(), 2u);           // ENRICHMENT fills hosts
+  EXPECT_EQ(result.functions[0].source, "manifest");         // higher priority source
 }

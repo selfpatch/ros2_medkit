@@ -127,6 +127,12 @@ class PluginManager {
    */
   std::vector<LogProvider *> get_log_observers() const;
 
+  /**
+   * @brief Get all introspection providers with their plugin names
+   * @return (plugin_name, provider) pairs for all IntrospectionProvider plugins
+   */
+  std::vector<std::pair<std::string, IntrospectionProvider *>> get_named_introspection_providers() const;
+
   // ---- Capability queries (used by discovery handlers) ----
 
   /// Get plugin context (for capability queries from discovery handlers)

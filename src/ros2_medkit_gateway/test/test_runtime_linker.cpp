@@ -73,6 +73,7 @@ class RuntimeLinkerTest : public ::testing::Test {
 // Exact Match Tests
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST_F(RuntimeLinkerTest, ExactMatch_NodeNameAndNamespace) {
   std::vector<App> apps = {create_app("controller_app", "controller", "/nav")};
   std::vector<App> runtime_apps = {create_runtime_app("controller", "/nav")};
@@ -286,6 +287,34 @@ TEST_F(RuntimeLinkerTest, OrphanPolicy_Ignore_NoError) {
   auto result = linker_->link(apps, runtime_apps, config_);
 
   EXPECT_FALSE(result.has_errors(config_.unmanifested_nodes));
+}
+
+// @verifies REQ_INTEROP_003
+TEST_F(RuntimeLinkerTest, OrphanPolicy_Warn_NoError) {
+  config_.unmanifested_nodes = ManifestConfig::UnmanifestedNodePolicy::WARN;
+
+  std::vector<App> apps = {};
+  std::vector<App> runtime_apps = {create_runtime_app("orphan_node", "/")};
+
+  auto result = linker_->link(apps, runtime_apps, config_);
+
+  // WARN logs warnings but does not fail
+  EXPECT_FALSE(result.has_errors(config_.unmanifested_nodes));
+  EXPECT_EQ(result.orphan_nodes.size(), 1u);
+}
+
+// @verifies REQ_INTEROP_003
+TEST_F(RuntimeLinkerTest, OrphanPolicy_IncludeAsOrphan_NoError) {
+  config_.unmanifested_nodes = ManifestConfig::UnmanifestedNodePolicy::INCLUDE_AS_ORPHAN;
+
+  std::vector<App> apps = {};
+  std::vector<App> runtime_apps = {create_runtime_app("orphan_node", "/")};
+
+  auto result = linker_->link(apps, runtime_apps, config_);
+
+  // INCLUDE_AS_ORPHAN includes orphans but does not fail
+  EXPECT_FALSE(result.has_errors(config_.unmanifested_nodes));
+  EXPECT_EQ(result.orphan_nodes.size(), 1u);
 }
 
 // =============================================================================

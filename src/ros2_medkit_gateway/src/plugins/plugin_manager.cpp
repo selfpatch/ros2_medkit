@@ -283,6 +283,20 @@ std::vector<LogProvider *> PluginManager::get_log_observers() const {
   return result;
 }
 
+std::vector<std::pair<std::string, IntrospectionProvider *>> PluginManager::get_named_introspection_providers() const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
+  std::vector<std::pair<std::string, IntrospectionProvider *>> result;
+  for (const auto & lp : plugins_) {
+    if (!lp.load_result.plugin) {
+      continue;
+    }
+    if (lp.introspection_provider) {
+      result.emplace_back(lp.load_result.plugin->name(), lp.introspection_provider);
+    }
+  }
+  return result;
+}
+
 bool PluginManager::has_plugins() const {
   std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
   for (const auto & lp : plugins_) {

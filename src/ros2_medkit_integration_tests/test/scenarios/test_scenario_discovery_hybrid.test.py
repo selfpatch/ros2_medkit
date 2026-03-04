@@ -435,6 +435,17 @@ class TestScenarioDiscoveryHybrid(GatewayTestCase):
         """404 for non-existent function."""
         self.assert_entity_not_found('functions', 'nonexistent')
 
+    def test_31_health_includes_discovery_diagnostics(self):
+        """GET /health in hybrid mode includes discovery pipeline info."""
+        data = self.get_json('/health')
+        self.assertIn('discovery', data)
+        self.assertEqual(data['discovery']['mode'], 'hybrid')
+        self.assertIn('pipeline', data['discovery'])
+        pipeline = data['discovery']['pipeline']
+        self.assertIn('layers', pipeline)
+        self.assertIn('total_entities', pipeline)
+        self.assertGreater(pipeline['total_entities'], 0)
+
 
 @launch_testing.post_shutdown_test()
 class TestShutdown(unittest.TestCase):

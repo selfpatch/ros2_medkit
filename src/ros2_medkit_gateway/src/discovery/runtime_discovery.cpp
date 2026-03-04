@@ -101,7 +101,8 @@ std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
 }
 
 std::vector<Component> RuntimeDiscoveryStrategy::discover_components() {
-  return discover_synthetic_components();
+  auto apps = discover_apps();
+  return discover_synthetic_components(apps);
 }
 
 std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
@@ -546,9 +547,8 @@ bool RuntimeDiscoveryStrategy::path_belongs_to_namespace(const std::string & pat
   return remainder.find('/') == std::string::npos;
 }
 
-std::vector<Component> RuntimeDiscoveryStrategy::discover_synthetic_components() {
+std::vector<Component> RuntimeDiscoveryStrategy::discover_synthetic_components(const std::vector<App> & apps) {
   // Group runtime apps by their component_id (already derived during discover_apps)
-  auto apps = discover_apps();
   std::map<std::string, std::vector<const App *>> groups;
 
   for (const auto & app : apps) {

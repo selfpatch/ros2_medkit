@@ -1,4 +1,4 @@
-// Copyright 2025 bburda
+// Copyright 2025-2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,9 @@
 #include <chrono>
 
 #include "ros2_medkit_gateway/auth/auth_models.hpp"
+#include "ros2_medkit_gateway/discovery/discovery_enums.hpp"
+#include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
+#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 
@@ -30,6 +33,31 @@ void HealthHandlers::handle_health(const httplib::Request & req, httplib::Respon
 
   try {
     json response = {{"status", "healthy"}, {"timestamp", std::chrono::system_clock::now().time_since_epoch().count()}};
+
+    // Add discovery info
+    auto * dm = ctx_.node() ? ctx_.node()->get_discovery_manager() : nullptr;
+    if (dm) {
+      json discovery_info = {{"mode", discovery_mode_to_string(dm->get_mode())}, {"strategy", dm->get_strategy_name()}};
+
+      auto report = dm->get_merge_report();
+      if (report) {
+        discovery_info["pipeline"] = report->to_json();
+      }
+
+      auto linking = dm->get_linking_result();
+      if (linking) {
+        json linking_info;
+        linking_info["linked_count"] = linking->node_to_app.size();
+        linking_info["orphan_count"] = linking->orphan_nodes.size();
+        linking_info["binding_conflicts"] = linking->binding_conflicts;
+        if (!linking->warnings.empty()) {
+          linking_info["warnings"] = linking->warnings;
+        }
+        discovery_info["linking"] = linking_info;
+      }
+
+      response["discovery"] = std::move(discovery_info);
+    }
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {

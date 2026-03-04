@@ -87,6 +87,98 @@ The ``min_topics_for_component`` parameter (default: 1) sets the minimum number
 of topics required before creating a component. This can filter out namespaces
 with only a few stray topics.
 
+Merge Pipeline Options (Hybrid Mode)
+-------------------------------------
+
+When using ``hybrid`` mode, the merge pipeline controls how entities from
+different discovery layers are combined. The ``merge_pipeline`` section
+configures gap-fill behavior for runtime-discovered entities.
+
+Gap-Fill Configuration
+^^^^^^^^^^^^^^^^^^^^^^
+
+In hybrid mode, the manifest is the source of truth. Runtime (heuristic) discovery
+fills gaps - entities that exist at runtime but aren't in the manifest. Gap-fill
+controls restrict what the runtime layer is allowed to create:
+
+.. code-block:: yaml
+
+   discovery:
+     merge_pipeline:
+       gap_fill:
+         allow_heuristic_areas: true
+         allow_heuristic_components: true
+         allow_heuristic_apps: true
+         allow_heuristic_functions: false
+         namespace_whitelist: []
+         namespace_blacklist: []
+
+.. list-table:: Gap-Fill Options
+   :header-rows: 1
+   :widths: 35 15 50
+
+   * - Parameter
+     - Default
+     - Description
+   * - ``allow_heuristic_areas``
+     - ``true``
+     - Allow runtime layer to create Area entities not in the manifest
+   * - ``allow_heuristic_components``
+     - ``true``
+     - Allow runtime layer to create Component entities not in the manifest
+   * - ``allow_heuristic_apps``
+     - ``true``
+     - Allow runtime layer to create App entities not in the manifest
+   * - ``allow_heuristic_functions``
+     - ``false``
+     - Allow runtime layer to create Function entities (rarely useful at runtime)
+   * - ``namespace_whitelist``
+     - ``[]``
+     - If non-empty, only allow gap-fill from these ROS 2 namespaces (Areas and Components only)
+   * - ``namespace_blacklist``
+     - ``[]``
+     - Exclude gap-fill from these ROS 2 namespaces (Areas and Components only)
+
+When both whitelist and blacklist are empty, all namespaces are eligible for gap-fill.
+If whitelist is non-empty, only listed namespaces pass. Blacklist is always applied.
+
+Namespace matching uses path-segment boundaries: ``/nav`` matches ``/nav`` and ``/nav/sub``
+but NOT ``/navigation``. Both lists only filter Areas and Components (which carry
+``namespace_path``). Apps and Functions are not namespace-filtered.
+
+
+Merge Policies
+^^^^^^^^^^^^^^
+
+Each discovery layer declares a ``MergePolicy`` per field group. When two layers
+provide the same entity (matched by ID), policies determine which values win:
+
+.. list-table:: Merge Policies
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Policy
+     - Description
+   * - ``AUTHORITATIVE``
+     - This layer's value wins over lower-priority layers.
+       If two AUTHORITATIVE layers conflict, a warning is logged and the
+       higher-priority (earlier) layer wins.
+   * - ``ENRICHMENT``
+     - Fill empty fields from this layer. Non-empty target values are preserved.
+       Two ENRICHMENT layers merge additively (collections are unioned).
+   * - ``FALLBACK``
+     - Use only if no other layer provides the value. Two FALLBACK layers
+       merge additively (first non-empty fills gaps).
+
+**Built-in layer policies:**
+
+- **ManifestLayer** (priority 1): IDENTITY, HIERARCHY, METADATA are AUTHORITATIVE.
+  LIVE_DATA is ENRICHMENT (runtime topics/services take precedence).
+  STATUS is FALLBACK (manifest cannot know online state).
+- **RuntimeLayer** (priority 2): LIVE_DATA and STATUS are AUTHORITATIVE.
+  METADATA is ENRICHMENT. IDENTITY and HIERARCHY are FALLBACK.
+- **PluginLayer** (priority 3+): All field groups ENRICHMENT
+
 Configuration Example
 ---------------------
 
@@ -112,6 +204,16 @@ Complete YAML configuration for runtime discovery:
            topic_only_policy: "create_component"
            min_topics_for_component: 2  # Require at least 2 topics
 
+         # Note: merge_pipeline settings only apply when mode is "hybrid"
+         merge_pipeline:
+           gap_fill:
+             allow_heuristic_areas: true
+             allow_heuristic_components: true
+             allow_heuristic_apps: true
+             allow_heuristic_functions: false
+             namespace_whitelist: []
+             namespace_blacklist: ["/rosout", "/parameter_events"]
+
 Command Line Override
 ---------------------
 
@@ -128,3 +230,5 @@ See Also
 
 - :doc:`manifest-schema` - Manifest-based configuration
 - :doc:`/tutorials/heuristic-apps` - Tutorial on runtime discovery
+- :doc:`/tutorials/manifest-discovery` - Hybrid mode tutorial
+- :doc:`/tutorials/plugin-system` - Plugin layer integration

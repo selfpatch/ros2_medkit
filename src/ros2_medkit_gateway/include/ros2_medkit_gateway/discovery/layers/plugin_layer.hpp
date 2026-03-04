@@ -18,6 +18,7 @@
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
 #include <nlohmann/json.hpp>
+#include <rclcpp/logging.hpp>
 
 #include <string>
 #include <unordered_map>
@@ -28,7 +29,7 @@ namespace discovery {
 /**
  * @brief Discovery layer wrapping an IntrospectionProvider plugin
  *
- * Default policies: all ENRICHMENT except METADATA=AUTHORITATIVE
+ * Default policies: all ENRICHMENT (plugins enrich, they don't override)
  */
 class PluginLayer : public DiscoveryLayer {
  public:
@@ -39,6 +40,7 @@ class PluginLayer : public DiscoveryLayer {
   }
   LayerOutput discover() override;
   MergePolicy policy_for(FieldGroup group) const override;
+  void set_discovery_context(const IntrospectionInput & context) override;
 
   void set_policy(FieldGroup group, MergePolicy policy);
 
@@ -50,8 +52,10 @@ class PluginLayer : public DiscoveryLayer {
  private:
   std::string name_;
   IntrospectionProvider * provider_;
+  rclcpp::Logger logger_;
   std::unordered_map<FieldGroup, MergePolicy> policies_;
   std::unordered_map<std::string, nlohmann::json> last_metadata_;
+  IntrospectionInput discovery_context_;
 };
 
 }  // namespace discovery
