@@ -15,6 +15,10 @@
 #include <gtest/gtest.h>
 #include <httplib.h>
 
+#include <atomic>
+#include <chrono>
+#include <thread>
+
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
@@ -348,4 +352,123 @@ TEST(PluginManagerTest, ShutdownSwallowsExceptions) {
   // Should not throw, even though first plugin throws during shutdown
   EXPECT_NO_THROW(mgr.shutdown_all());
   EXPECT_TRUE(good_raw->shutdown_called_);
+}
+
+using namespace std::chrono_literals;
+
+// Test 1: Concurrent readers don't block each other
+TEST(PluginManagerConcurrencyTest, ConcurrentReadsDoNotBlock) {
+  PluginManager mgr;
+  mgr.add_plugin(std::make_unique<MockPlugin>());
+  mgr.add_plugin(std::make_unique<MockIntrospectionOnly>());
+
+  std::atomic<int> completed{0};
+  std::vector<std::thread> readers;
+
+  for (int i = 0; i < 8; ++i) {
+    readers.emplace_back([&mgr, &completed] {
+      for (int j = 0; j < 200; ++j) {
+        auto up = mgr.get_update_provider();
+        auto ips = mgr.get_introspection_providers();
+        auto lp = mgr.get_log_provider();
+        auto obs = mgr.get_log_observers();
+        auto has = mgr.has_plugins();
+        auto names = mgr.plugin_names();
+        (void)up;
+        (void)ips;
+        (void)lp;
+        (void)obs;
+        (void)has;
+        (void)names;
+      }
+      completed++;
+    });
+  }
+
+  auto start = std::chrono::high_resolution_clock::now();
+  for (auto & t : readers) {
+    t.join();
+  }
+  auto duration = std::chrono::high_resolution_clock::now() - start;
+
+  EXPECT_EQ(completed.load(), 8);
+  EXPECT_LT(duration, 2s) << "Concurrent reads took too long - possible blocking";
+}
+
+// Test 2: Concurrent reads and writes (lifecycle/disable) don't deadlock
+TEST(PluginManagerConcurrencyTest, ConcurrentReadsAndLifecycleDoNotDeadlock) {
+  PluginManager mgr;
+  mgr.add_plugin(std::make_unique<MockPlugin>());
+  mgr.add_plugin(std::make_unique<MockIntrospectionOnly>());
+
+  std::atomic<bool> keep_running{true};
+  std::atomic<int> read_count{0};
+  std::atomic<int> write_count{0};
+
+  // Multiple reader threads (simulating ROS 2 executor calling get_log_observers)
+  std::vector<std::thread> readers;
+  for (int i = 0; i < 4; ++i) {
+    readers.emplace_back([&mgr, &keep_running, &read_count] {
+      while (keep_running) {
+        auto obs = mgr.get_log_observers();
+        auto ips = mgr.get_introspection_providers();
+        auto up = mgr.get_update_provider();
+        (void)obs;
+        (void)ips;
+        (void)up;
+        read_count++;
+      }
+    });
+  }
+
+  // Writer thread (simulating lifecycle operations that take unique_lock)
+  std::thread writer([&mgr, &keep_running, &write_count] {
+    while (keep_running) {
+      mgr.configure_plugins();
+      write_count++;
+    }
+  });
+
+  std::this_thread::sleep_for(50ms);
+  keep_running = false;
+
+  for (auto & t : readers) {
+    t.join();
+  }
+  writer.join();
+
+  EXPECT_GT(read_count.load(), 0) << "Readers made no progress - possible deadlock";
+  EXPECT_GT(write_count.load(), 0) << "Writer made no progress - possible deadlock";
+}
+
+// Test 3: Shutdown while readers are active doesn't deadlock
+TEST(PluginManagerConcurrencyTest, ShutdownWhileReadersActiveDoesNotDeadlock) {
+  auto mgr = std::make_unique<PluginManager>();
+  mgr->add_plugin(std::make_unique<MockPlugin>());
+
+  std::atomic<bool> keep_running{true};
+  std::atomic<int> read_count{0};
+
+  std::vector<std::thread> readers;
+  for (int i = 0; i < 4; ++i) {
+    readers.emplace_back([&mgr, &keep_running, &read_count] {
+      while (keep_running) {
+        if (mgr) {
+          auto obs = mgr->get_log_observers();
+          (void)obs;
+        }
+        read_count++;
+      }
+    });
+  }
+
+  std::this_thread::sleep_for(10ms);
+  mgr->shutdown_all();
+
+  keep_running = false;
+  for (auto & t : readers) {
+    t.join();
+  }
+
+  EXPECT_GT(read_count.load(), 0) << "Readers made no progress before shutdown";
 }
