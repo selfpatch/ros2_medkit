@@ -25,6 +25,7 @@
 #include <httplib.h>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -157,6 +158,7 @@ class PluginManager {
   UpdateProvider * first_update_provider_ = nullptr;
   LogProvider * first_log_provider_ = nullptr;
   bool shutdown_called_ = false;
+  mutable std::shared_mutex plugins_mutex_;
 };
 
 }  // namespace ros2_medkit_gateway
