@@ -445,8 +445,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_plugin_manager gateway_lib)
 
   # Log manager tests
+  # Dedicated ROS_DOMAIN_ID to prevent cross-talk with concurrent integration tests
   ament_add_gtest(test_log_manager test/test_log_manager.cpp)
   target_link_libraries(test_log_manager gateway_lib)
+  set_tests_properties(test_log_manager PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=66")
 
   # Log handlers tests
   ament_add_gtest(test_log_handlers test/test_log_handlers.cpp)

@@ -334,7 +334,7 @@ class TestLoggingApi(GatewayTestCase):
     def test_app_severity_configured_filter_applies_to_get(self):
         """After PUT severity_filter=fatal, GET /logs returns only fatal entries.
 
-        The entity-level severity_filter acts as a server-side floor — even
+        The entity-level severity_filter acts as a server-side floor - even
         without a query param, entries below the configured threshold are excluded.
 
         # @verifies REQ_INTEROP_061
@@ -345,18 +345,19 @@ class TestLoggingApi(GatewayTestCase):
             {'severity_filter': 'fatal'},
             expected_status=204,
         )
+        # Ensure config is restored even if assertions below fail
+        self.addCleanup(
+            self.put_raw,
+            '/apps/temp_sensor/logs/configuration',
+            {'severity_filter': 'debug'},
+            expected_status=204,
+        )
         data = self.get_json('/apps/temp_sensor/logs')
         for entry in data.get('items', []):
             self.assertEqual(
                 entry['severity'], 'fatal',
                 f'Expected only fatal entries after setting filter, got: {entry["severity"]}'
             )
-        # Restore default so later tests are not affected
-        self.put_raw(
-            '/apps/temp_sensor/logs/configuration',
-            {'severity_filter': 'debug'},
-            expected_status=204,
-        )
 
 
 @launch_testing.post_shutdown_test()

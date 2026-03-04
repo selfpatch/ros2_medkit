@@ -3,14 +3,14 @@ Data
 
 .. req:: GET /{entity}/data-categories
    :id: REQ_INTEROP_016
-   :status: open
+   :status: verified
    :tags: Data
 
    The endpoint shall provide metadata about available data categories on the addressed entity.
 
 .. req:: GET /{entity}/data-groups
    :id: REQ_INTEROP_017
-   :status: open
+   :status: verified
    :tags: Data
 
    The endpoint shall provide metadata about defined data or signal groups on the addressed entity.
@@ -35,4 +35,3 @@ Data
    :tags: Data
 
    The endpoint shall write a new value to the addressed data item on the entity, if it is writable.
-

@@ -30,6 +30,8 @@
 
 namespace ros2_medkit_gateway {
 
+using json = nlohmann::json;
+
 class PluginManager;  // forward declaration — full include in .cpp
 
 /**
@@ -38,10 +40,14 @@ class PluginManager;  // forward declaration — full include in .cpp
  * Subscribes to /rosout, normalizes logger names (strips leading '/'),
  * and stores entries per node-name in fixed-size deque ring buffers.
  *
- * Plugin integration:
- * - If a LogProvider plugin is registered, get_logs() delegates to it.
- * - on_log_entry() is called on ALL LogProvider observers for every /rosout message,
- *   regardless of the primary provider. Observers returning true suppress ring-buffer storage.
+ * Plugin integration (two modes):
+ * - **Observer mode** (default): If a LogProvider plugin is registered, get_logs()
+ *   and get_config() delegate to it. on_log_entry() is called on ALL LogProvider
+ *   observers for every /rosout message. Observers returning true suppress ring-buffer
+ *   storage.
+ * - **Full ingestion** (manages_ingestion() == true): The primary LogProvider owns
+ *   the entire log pipeline. LogManager skips the /rosout subscription and ring buffer
+ *   entirely. All queries and config operations delegate to the plugin.
  *
  * FQN normalization:
  * - entity.fqn from the entity cache has a leading '/' (e.g. "/powertrain/engine/temp_sensor")
@@ -54,7 +60,12 @@ class LogManager {
   static constexpr size_t kDefaultBufferSize = 200;
 
   /**
-   * @brief Construct LogManager and subscribe to /rosout
+   * @brief Construct LogManager
+   *
+   * If the primary LogProvider's manages_ingestion() returns true, the /rosout
+   * subscription and ring buffer are skipped entirely. Otherwise subscribes to
+   * /rosout as usual.
+   *
    * @param node             ROS 2 node (used for subscription and logging)
    * @param plugin_mgr       PluginManager for LogProvider lookup (may be nullptr)
    * @param max_buffer_size  Ring buffer size per node (override for unit testing)
