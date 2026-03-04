@@ -16,10 +16,13 @@
 #include "ros2_medkit_gateway/discovery/layers/manifest_layer.hpp"
 #include "ros2_medkit_gateway/discovery/layers/plugin_layer.hpp"
 #include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
+#include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
 #include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
 #include "ros2_medkit_gateway/discovery/merge_types.hpp"
 
 #include <gtest/gtest.h>
+
+#include <algorithm>
 
 using namespace ros2_medkit_gateway::discovery;
 using namespace ros2_medkit_gateway;
@@ -448,4 +451,74 @@ TEST(RuntimeLayerTest, GapFillFilterBlocksApps) {
   layer.set_gap_fill_config(gap_fill);
   auto output = layer.discover();
   EXPECT_TRUE(output.apps.empty());
+}
+
+// --- Post-merge linking tests ---
+
+TEST_F(MergePipelineTest, PostMergeLinkingSetsAppOnlineStatus) {
+  // Manifest provides app with ros_binding
+  App manifest_app = make_app("controller_app", "nav_comp");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "controller";
+  binding.namespace_pattern = "/nav";
+  manifest_app.ros_binding = binding;
+
+  // Runtime provides matching app (node)
+  App runtime_node;
+  runtime_node.id = "controller";
+  runtime_node.name = "controller";
+  runtime_node.source = "heuristic";
+  runtime_node.is_online = true;
+  runtime_node.bound_fqn = "/nav/controller";
+
+  LayerOutput manifest_out;
+  manifest_out.apps.push_back(manifest_app);
+
+  LayerOutput runtime_out;
+  runtime_out.apps.push_back(runtime_node);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::STATUS, MergePolicy::FALLBACK}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  // Enable linking
+  ManifestConfig manifest_config;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
+
+  auto result = pipeline_.execute();
+  // Both apps in result (different IDs). Linker matches controller_app's binding
+  // to runtime controller's bound_fqn.
+  auto it = std::find_if(result.apps.begin(), result.apps.end(), [](const App & a) {
+    return a.id == "controller_app";
+  });
+  ASSERT_NE(it, result.apps.end());
+  EXPECT_TRUE(it->is_online);
+  EXPECT_EQ(it->bound_fqn, "/nav/controller");
+}
+
+TEST_F(MergePipelineTest, PostMergeLinkingReportsOrphanNodes) {
+  // Runtime provides an app (node) with no matching manifest app
+  App orphan_node;
+  orphan_node.id = "orphan_node";
+  orphan_node.name = "orphan_node";
+  orphan_node.source = "heuristic";
+  orphan_node.is_online = true;
+  orphan_node.bound_fqn = "/test/orphan_node";
+
+  LayerOutput runtime_out;
+  runtime_out.apps.push_back(orphan_node);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>("runtime", runtime_out));
+
+  ManifestConfig manifest_config;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
+
+  auto result = pipeline_.execute();
+  auto & linking = pipeline_.get_linking_result();
+  EXPECT_FALSE(linking.orphan_nodes.empty());
 }

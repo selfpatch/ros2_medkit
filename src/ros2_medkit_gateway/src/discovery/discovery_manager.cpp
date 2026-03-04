@@ -15,6 +15,10 @@
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 
 #include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
+#include "ros2_medkit_gateway/discovery/layers/manifest_layer.hpp"
+#include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
+#include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
+#include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -75,12 +79,23 @@ void DiscoveryManager::create_strategy() {
       RCLCPP_INFO(node_->get_logger(), "Discovery mode: manifest_only");
       break;
 
-    case DiscoveryMode::HYBRID:
-      hybrid_strategy_ =
-          std::make_unique<discovery::HybridDiscoveryStrategy>(node_, manifest_manager_.get(), runtime_strategy_.get());
+    case DiscoveryMode::HYBRID: {
+      discovery::MergePipeline pipeline(node_->get_logger());
+      pipeline.add_layer(std::make_unique<discovery::ManifestLayer>(manifest_manager_.get()));
+
+      auto runtime_layer = std::make_unique<discovery::RuntimeLayer>(runtime_strategy_.get());
+      runtime_layer_ = runtime_layer.get();
+      pipeline.add_layer(std::move(runtime_layer));
+
+      // Set up RuntimeLinker for post-merge app-to-node binding
+      auto manifest_config = manifest_manager_ ? manifest_manager_->get_config() : discovery::ManifestConfig{};
+      pipeline.set_linker(std::make_unique<discovery::RuntimeLinker>(node_), manifest_config);
+
+      hybrid_strategy_ = std::make_unique<discovery::HybridDiscoveryStrategy>(node_, std::move(pipeline));
       active_strategy_ = hybrid_strategy_.get();
-      RCLCPP_INFO(node_->get_logger(), "Discovery mode: hybrid");
+      RCLCPP_INFO(node_->get_logger(), "Discovery mode: hybrid (merge pipeline)");
       break;
+    }
 
     default:
       active_strategy_ = runtime_strategy_.get();
@@ -119,10 +134,11 @@ std::vector<Function> DiscoveryManager::discover_functions() {
 }
 
 std::optional<Area> DiscoveryManager::get_area(const std::string & id) {
-  if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
+  // In MANIFEST_ONLY mode, use direct manifest lookup (O(1))
+  if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_area(id);
   }
-  // Fallback to runtime lookup
+  // For HYBRID and RUNTIME modes, scan the strategy's output (cached for HYBRID)
   auto areas = discover_areas();
   for (const auto & a : areas) {
     if (a.id == id) {
@@ -133,7 +149,7 @@ std::optional<Area> DiscoveryManager::get_area(const std::string & id) {
 }
 
 std::optional<Component> DiscoveryManager::get_component(const std::string & id) {
-  if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
+  if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_component(id);
   }
   auto components = discover_components();
@@ -146,10 +162,9 @@ std::optional<Component> DiscoveryManager::get_component(const std::string & id)
 }
 
 std::optional<App> DiscoveryManager::get_app(const std::string & id) {
-  if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
+  if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_app(id);
   }
-  // Check runtime apps
   auto apps = discover_apps();
   for (const auto & app : apps) {
     if (app.id == id) {
@@ -160,10 +175,16 @@ std::optional<App> DiscoveryManager::get_app(const std::string & id) {
 }
 
 std::optional<Function> DiscoveryManager::get_function(const std::string & id) {
-  if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
+  if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_function(id);
   }
-  return std::nullopt;  // No functions in runtime-only mode
+  auto functions = discover_functions();
+  for (const auto & f : functions) {
+    if (f.id == id) {
+      return f;
+    }
+  }
+  return std::nullopt;
 }
 
 std::vector<Area> DiscoveryManager::get_subareas(const std::string & area_id) {
@@ -250,7 +271,7 @@ void DiscoveryManager::set_type_introspection(TypeIntrospection * introspection)
 void DiscoveryManager::refresh_topic_map() {
   runtime_strategy_->refresh_topic_map();
   if (hybrid_strategy_) {
-    hybrid_strategy_->refresh_linking();
+    hybrid_strategy_->refresh();
   }
 }
 
@@ -269,7 +290,7 @@ bool DiscoveryManager::reload_manifest() {
   }
   bool result = manifest_manager_->reload_manifest();
   if (result && hybrid_strategy_) {
-    hybrid_strategy_->refresh_linking();
+    hybrid_strategy_->refresh();
   }
   return result;
 }

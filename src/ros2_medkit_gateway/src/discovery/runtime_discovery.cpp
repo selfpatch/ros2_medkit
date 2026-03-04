@@ -101,19 +101,13 @@ std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
 }
 
 std::vector<Component> RuntimeDiscoveryStrategy::discover_components() {
-  // If synthetic components are enabled, use grouping logic
-  if (config_.create_synthetic_components) {
-    return discover_synthetic_components();
-  }
-  // Default: each node = 1 component (backward compatible)
-  return discover_node_components();
+  return discover_synthetic_components();
 }
 
-std::vector<Component> RuntimeDiscoveryStrategy::discover_node_components() {
-  std::vector<Component> components;
+std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
+  std::vector<App> apps;
 
   // Pre-build service info map for schema lookups
-  // Key: service full path, Value: ServiceInfo with type info
   std::unordered_map<std::string, ServiceInfo> service_info_map;
   auto all_services = discover_services();
   for (const auto & svc : all_services) {
@@ -121,7 +115,6 @@ std::vector<Component> RuntimeDiscoveryStrategy::discover_node_components() {
   }
 
   // Pre-build action info map for schema lookups
-  // Key: action full path, Value: ActionInfo with type info
   std::unordered_map<std::string, ActionInfo> action_info_map;
   auto all_actions = discover_actions();
   for (const auto & act : all_actions) {
@@ -145,62 +138,57 @@ std::vector<Component> RuntimeDiscoveryStrategy::discover_node_components() {
 
     std::string fqn = (ns == "/") ? std::string("/").append(name) : std::string(ns).append("/").append(name);
 
-    // Skip duplicate nodes - ROS 2 RMW may report same node multiple times
+    // Skip duplicate nodes
     if (seen_fqns.count(fqn) > 0) {
       RCLCPP_DEBUG(node_->get_logger(), "Skipping duplicate node: %s", fqn.c_str());
       continue;
     }
     seen_fqns.insert(fqn);
 
-    Component comp;
-    comp.id = name;
-    comp.namespace_path = ns;
-    comp.fqn = fqn;
-    comp.area = extract_area_from_namespace(ns);
+    App app;
+    app.id = name;
+    app.name = name;
+    app.source = "heuristic";
+    app.is_online = true;
+    app.bound_fqn = fqn;
 
-    // Use ROS 2 introspection API to get services for this specific node
-    // This is more accurate than grouping by parent namespace
+    std::string area = extract_area_from_namespace(ns);
+    app.component_id = derive_component_id(name, area);
+
+    // Introspect services and actions for this node
     try {
       auto node_services = node_->get_service_names_and_types_by_node(name, ns);
       for (const auto & [service_path, types] : node_services) {
-        // Skip internal ROS2 services (parameter services, action internals, etc.)
         if (is_internal_service(service_path)) {
           continue;
         }
-
-        // Use pre-built service info map to get enriched info (with schema)
         auto it = service_info_map.find(service_path);
         if (it != service_info_map.end()) {
-          comp.services.push_back(it->second);
+          app.services.push_back(it->second);
         } else {
-          // Fallback: create basic ServiceInfo
           ServiceInfo info;
           info.full_path = service_path;
           info.name = extract_name_from_path(service_path);
           info.type = types.empty() ? "" : types[0];
-          comp.services.push_back(info);
+          app.services.push_back(info);
         }
       }
 
-      // Detect actions owned by this node by checking for /_action/send_goal services
+      // Detect actions by checking for /_action/send_goal services
       for (const auto & [service_path, types] : node_services) {
         const std::string action_suffix = "/_action/send_goal";
         if (service_path.length() > action_suffix.length() &&
             service_path.compare(service_path.length() - action_suffix.length(), action_suffix.length(),
                                  action_suffix) == 0) {
-          // Extract action path by removing /_action/send_goal suffix
           std::string action_path = service_path.substr(0, service_path.length() - action_suffix.length());
-
-          // Use pre-built action info map to get enriched info (with schema)
           auto it = action_info_map.find(action_path);
           if (it != action_info_map.end()) {
-            comp.actions.push_back(it->second);
+            app.actions.push_back(it->second);
           } else {
-            // Fallback: create basic ActionInfo
             ActionInfo info;
             info.full_path = action_path;
             info.name = extract_name_from_path(action_path);
-            comp.actions.push_back(info);
+            app.actions.push_back(info);
           }
         }
       }
@@ -211,40 +199,11 @@ std::vector<Component> RuntimeDiscoveryStrategy::discover_node_components() {
 
     // Populate topics from cached map
     if (topic_sampler_) {
-      auto it = cached_topic_map_.find(comp.fqn);
+      auto it = cached_topic_map_.find(fqn);
       if (it != cached_topic_map_.end()) {
-        comp.topics = it->second;
+        app.topics = it->second;
       }
     }
-
-    components.push_back(comp);
-  }
-
-  return components;
-}
-
-std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
-  std::vector<App> apps;
-  auto node_components = discover_node_components();
-
-  for (const auto & comp : node_components) {
-    // Skip topic-based components (source="topic")
-    if (comp.source == "topic") {
-      continue;
-    }
-
-    App app;
-    app.id = comp.id;
-    app.name = comp.id;
-    app.component_id = derive_component_id(comp);
-    app.source = "heuristic";
-    app.is_online = true;
-    app.bound_fqn = comp.fqn;
-
-    // Copy resources from component
-    app.topics = comp.topics;
-    app.services = comp.services;
-    app.actions = comp.actions;
 
     apps.push_back(app);
   }
@@ -588,51 +547,49 @@ bool RuntimeDiscoveryStrategy::path_belongs_to_namespace(const std::string & pat
 }
 
 std::vector<Component> RuntimeDiscoveryStrategy::discover_synthetic_components() {
-  // Group nodes by their derived component ID (based on grouping strategy)
-  std::map<std::string, std::vector<Component>> groups;
-  auto node_components = discover_node_components();
+  // Group runtime apps by their component_id (already derived during discover_apps)
+  auto apps = discover_apps();
+  std::map<std::string, std::vector<const App *>> groups;
 
-  for (const auto & node : node_components) {
-    std::string group_id = derive_component_id(node);
-    groups[group_id].push_back(node);
+  for (const auto & app : apps) {
+    groups[app.component_id].push_back(&app);
   }
 
   // Create synthetic components from groups
   std::vector<Component> result;
-  for (const auto & [group_id, nodes] : groups) {
+  for (const auto & [group_id, group_apps] : groups) {
     Component comp;
     comp.id = group_id;
     comp.source = "synthetic";
     comp.type = "ComponentGroup";
 
-    // Use first node's namespace and area as representative
-    if (!nodes.empty()) {
-      comp.namespace_path = nodes[0].namespace_path;
-      comp.area = nodes[0].area;
+    // Use first app's FQN to derive namespace and area
+    if (!group_apps.empty() && group_apps[0]->bound_fqn.has_value()) {
+      const auto & fqn = group_apps[0]->bound_fqn.value();
+      auto pos = fqn.rfind('/');
+      comp.namespace_path = (pos == std::string::npos || pos == 0) ? "/" : fqn.substr(0, pos);
+      comp.area = extract_area_from_namespace(comp.namespace_path);
       comp.fqn = "/" + group_id;
     }
 
-    // Note: Topics/services are NOT aggregated here - they stay with Apps
-    // This is intentional: synthetic components are just groupings
+    // Topics/services stay with Apps - synthetic components are just groupings
 
-    RCLCPP_DEBUG(node_->get_logger(), "Created synthetic component '%s' with %zu apps", group_id.c_str(), nodes.size());
+    RCLCPP_DEBUG(node_->get_logger(), "Created synthetic component '%s' with %zu apps", group_id.c_str(),
+                 group_apps.size());
     result.push_back(comp);
   }
 
-  RCLCPP_DEBUG(node_->get_logger(), "Discovered %zu synthetic components from %zu nodes", result.size(),
-               node_components.size());
+  RCLCPP_DEBUG(node_->get_logger(), "Discovered %zu synthetic components from %zu nodes", result.size(), apps.size());
   return result;
 }
 
-std::string RuntimeDiscoveryStrategy::derive_component_id(const Component & node) {
+std::string RuntimeDiscoveryStrategy::derive_component_id(const std::string & node_id, const std::string & area) {
   switch (config_.grouping) {
     case ComponentGroupingStrategy::NAMESPACE:
-      // Group by area (first namespace segment)
-      return apply_component_name_pattern(node.area);
+      return apply_component_name_pattern(area);
     case ComponentGroupingStrategy::NONE:
     default:
-      // 1:1 mapping - each node is its own component
-      return node.id;
+      return node_id;
   }
 }
 

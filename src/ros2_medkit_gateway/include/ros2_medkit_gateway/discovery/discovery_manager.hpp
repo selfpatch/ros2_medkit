@@ -17,7 +17,9 @@
 #include "ros2_medkit_gateway/discovery/discovery_enums.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
 #include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
+#include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
+#include "ros2_medkit_gateway/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/discovery/models/common.hpp"
@@ -348,6 +350,9 @@ class DiscoveryManager {
   std::unique_ptr<discovery::RuntimeDiscoveryStrategy> runtime_strategy_;
   std::unique_ptr<discovery::ManifestManager> manifest_manager_;
   std::unique_ptr<discovery::HybridDiscoveryStrategy> hybrid_strategy_;
+
+  // Non-owning pointer to RuntimeLayer within the pipeline (for gap-fill config)
+  discovery::RuntimeLayer * runtime_layer_{nullptr};
 
   // Active strategy pointer (points to one of the above)
   discovery::DiscoveryStrategy * active_strategy_{nullptr};

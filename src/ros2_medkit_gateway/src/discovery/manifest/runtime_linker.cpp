@@ -19,24 +19,64 @@
 namespace ros2_medkit_gateway {
 namespace discovery {
 
+namespace {
+
+/// Path-segment-boundary namespace match: "/nav" matches "/nav" and "/nav/sub" but NOT "/navigation"
+bool namespace_matches(const std::string & actual_ns, const std::string & expected_ns) {
+  if (actual_ns == expected_ns) {
+    return true;
+  }
+  if (actual_ns.size() > expected_ns.size() && actual_ns.compare(0, expected_ns.size(), expected_ns) == 0 &&
+      actual_ns[expected_ns.size()] == '/') {
+    return true;
+  }
+  return false;
+}
+
+/// Extract the last path segment from a FQN (e.g., "/ns/node_name" -> "node_name")
+std::string extract_node_name(const std::string & fqn) {
+  auto pos = fqn.rfind('/');
+  if (pos == std::string::npos) {
+    return fqn;
+  }
+  return fqn.substr(pos + 1);
+}
+
+/// Extract namespace from a FQN (e.g., "/ns/sub/node" -> "/ns/sub", "/node" -> "/")
+std::string extract_namespace(const std::string & fqn) {
+  auto pos = fqn.rfind('/');
+  if (pos == std::string::npos || pos == 0) {
+    return "/";
+  }
+  return fqn.substr(0, pos);
+}
+
+/// Path-segment-boundary topic match: "/state" matches "/state/x" but NOT "/statement/x"
+bool topic_path_matches(const std::string & topic, const std::string & topic_namespace) {
+  if (topic == topic_namespace) {
+    return true;
+  }
+  if (topic.size() > topic_namespace.size() && topic.compare(0, topic_namespace.size(), topic_namespace) == 0 &&
+      topic[topic_namespace.size()] == '/') {
+    return true;
+  }
+  return false;
+}
+
+}  // namespace
+
 RuntimeLinker::RuntimeLinker(rclcpp::Node * node) : node_(node) {
 }
 
-LinkingResult RuntimeLinker::link(const std::vector<App> & apps, const std::vector<Component> & runtime_components,
+LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const std::vector<App> & runtime_apps,
                                   const ManifestConfig & config) {
   LinkingResult result;
-
-  // Build a map of node FQN -> Component for quick lookup
-  std::unordered_map<std::string, const Component *> fqn_to_component;
-  for (const auto & comp : runtime_components) {
-    fqn_to_component[comp.fqn] = &comp;
-  }
 
   // Track which runtime nodes have been matched
   std::set<std::string> matched_nodes;
 
   // Process each manifest app
-  for (const auto & manifest_app : apps) {
+  for (const auto & manifest_app : manifest_apps) {
     App linked_app = manifest_app;  // Copy
     linked_app.is_online = false;
 
@@ -56,41 +96,73 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & apps, const std::vect
     const auto & binding = manifest_app.ros_binding.value();
     bool found = false;
 
-    // Try to find matching runtime node
-    for (const auto & comp : runtime_components) {
-      // Extract node name and namespace from component
-      std::string node_name = comp.id;
-      std::string node_ns = comp.namespace_path;
+    // Collect candidates, excluding already-bound nodes
+    std::vector<const App *> candidates;
 
-      if (matches_binding(binding, comp.fqn, node_name, node_ns)) {
-        // Match found!
-        linked_app.bound_fqn = comp.fqn;
-        linked_app.is_online = true;
-        enrich_app(linked_app, comp);
+    for (const auto & rt_app : runtime_apps) {
+      if (!rt_app.bound_fqn.has_value()) {
+        continue;
+      }
+      const auto & fqn = rt_app.bound_fqn.value();
+      if (matched_nodes.count(fqn)) {
+        continue;  // Node already bound to another app
+      }
+      auto node_name = extract_node_name(fqn);
+      auto node_ns = extract_namespace(fqn);
+      if (matches_binding(binding, fqn, node_name, node_ns)) {
+        candidates.push_back(&rt_app);
+      } else if (!binding.topic_namespace.empty() && matches_topic_namespace(binding.topic_namespace, rt_app)) {
+        candidates.push_back(&rt_app);
+      }
+    }
 
-        result.app_to_node[manifest_app.id] = comp.fqn;
-        result.node_to_app[comp.fqn] = manifest_app.id;
-        matched_nodes.insert(comp.fqn);
-        found = true;
+    // Check if any candidates were excluded due to binding conflicts
+    if (candidates.empty()) {
+      // Check if there WOULD have been a match without exclusivity
+      for (const auto & rt_app : runtime_apps) {
+        if (!rt_app.bound_fqn.has_value()) {
+          continue;
+        }
+        const auto & fqn = rt_app.bound_fqn.value();
+        if (matched_nodes.count(fqn)) {
+          auto node_name = extract_node_name(fqn);
+          auto node_ns = extract_namespace(fqn);
+          if (matches_binding(binding, fqn, node_name, node_ns) ||
+              (!binding.topic_namespace.empty() && matches_topic_namespace(binding.topic_namespace, rt_app))) {
+            result.binding_conflicts++;
+            result.warnings.push_back("App '" + manifest_app.id + "' cannot bind to '" + fqn +
+                                      "' - already bound to app '" + result.node_to_app[fqn] + "'");
+            log_warn(result.warnings.back());
+            break;
+          }
+        }
+      }
+    }
 
-        log_debug("Linked app '" + manifest_app.id + "' to node '" + comp.fqn + "'");
-        break;
+    // Sort candidates by FQN for deterministic selection
+    std::sort(candidates.begin(), candidates.end(), [](const App * a, const App * b) {
+      return a->bound_fqn.value() < b->bound_fqn.value();
+    });
+
+    if (!candidates.empty()) {
+      if (candidates.size() > 1 && binding.namespace_pattern == "*") {
+        result.wildcard_multi_match++;
+        log_warn("App '" + manifest_app.id + "' wildcard matched " + std::to_string(candidates.size()) +
+                 " nodes, selecting '" + candidates[0]->bound_fqn.value() + "'");
       }
 
-      // Try topic namespace matching
-      if (!binding.topic_namespace.empty() && matches_topic_namespace(binding.topic_namespace, comp)) {
-        linked_app.bound_fqn = comp.fqn;
-        linked_app.is_online = true;
-        enrich_app(linked_app, comp);
+      const auto & match = *candidates[0];
+      const auto & match_fqn = match.bound_fqn.value();
+      linked_app.bound_fqn = match_fqn;
+      linked_app.is_online = true;
+      enrich_app(linked_app, match);
 
-        result.app_to_node[manifest_app.id] = comp.fqn;
-        result.node_to_app[comp.fqn] = manifest_app.id;
-        matched_nodes.insert(comp.fqn);
-        found = true;
+      result.app_to_node[manifest_app.id] = match_fqn;
+      result.node_to_app[match_fqn] = manifest_app.id;
+      matched_nodes.insert(match_fqn);
+      found = true;
 
-        log_debug("Linked app '" + manifest_app.id + "' to node '" + comp.fqn + "' (topic namespace)");
-        break;
-      }
+      log_debug("Linked app '" + manifest_app.id + "' to node '" + match_fqn + "'");
     }
 
     if (!found) {
@@ -101,10 +173,10 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & apps, const std::vect
     result.linked_apps.push_back(linked_app);
   }
 
-  // Find orphan nodes (runtime nodes not matching any manifest app)
-  for (const auto & comp : runtime_components) {
-    if (matched_nodes.find(comp.fqn) == matched_nodes.end()) {
-      result.orphan_nodes.push_back(comp.fqn);
+  // Find orphan nodes (runtime apps not matching any manifest app)
+  for (const auto & rt_app : runtime_apps) {
+    if (rt_app.bound_fqn.has_value() && matched_nodes.find(rt_app.bound_fqn.value()) == matched_nodes.end()) {
+      result.orphan_nodes.push_back(rt_app.bound_fqn.value());
     }
   }
 
@@ -139,17 +211,14 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & apps, const std::vect
 }
 
 bool RuntimeLinker::matches_binding(const App::RosBinding & binding, const std::string & node_fqn,
-                                    const std::string & node_name, const std::string & node_namespace) const {
-  // Check node name match
+                                    const std::string & /*node_name*/, const std::string & node_namespace) const {
+  // Check node name match using last FQN segment (exact match only)
   if (binding.node_name.empty()) {
     return false;
   }
 
-  // Node name can be simple or with subpath (e.g., "local_costmap/local_costmap")
-  // Check if binding.node_name matches node_name or is contained in fqn
-  bool name_matches = (node_name == binding.node_name) || (node_fqn.find("/" + binding.node_name) != std::string::npos);
-
-  if (!name_matches) {
+  std::string actual_name = extract_node_name(node_fqn);
+  if (actual_name != binding.node_name) {
     return false;
   }
 
@@ -159,45 +228,33 @@ bool RuntimeLinker::matches_binding(const App::RosBinding & binding, const std::
     return true;
   }
 
-  // Exact namespace match
-  std::string expected_ns = binding.namespace_pattern;
-  if (expected_ns.empty()) {
-    expected_ns = "/";
-  }
-
   // Normalize namespaces for comparison
-  std::string actual_ns = node_namespace;
-  if (actual_ns.empty()) {
-    actual_ns = "/";
-  }
+  std::string expected_ns = binding.namespace_pattern.empty() ? "/" : binding.namespace_pattern;
+  std::string actual_ns = node_namespace.empty() ? "/" : node_namespace;
 
-  return actual_ns == expected_ns || actual_ns.find(expected_ns) == 0;  // Prefix match
+  // Path-segment-boundary match
+  return namespace_matches(actual_ns, expected_ns);
 }
 
-bool RuntimeLinker::matches_topic_namespace(const std::string & topic_namespace, const Component & component) const {
-  // Check if any topic starts with the given namespace
-  for (const auto & topic : component.topics.publishes) {
-    if (topic.find(topic_namespace) == 0) {
+bool RuntimeLinker::matches_topic_namespace(const std::string & topic_ns, const App & runtime_app) const {
+  // Check if any topic matches with path-segment boundary
+  for (const auto & topic : runtime_app.topics.publishes) {
+    if (topic_path_matches(topic, topic_ns)) {
       return true;
     }
   }
-  for (const auto & topic : component.topics.subscribes) {
-    if (topic.find(topic_namespace) == 0) {
+  for (const auto & topic : runtime_app.topics.subscribes) {
+    if (topic_path_matches(topic, topic_ns)) {
       return true;
     }
   }
   return false;
 }
 
-void RuntimeLinker::enrich_app(App & app, const Component & component) {
-  // Copy topics
-  app.topics = component.topics;
-
-  // Copy services
-  app.services = component.services;
-
-  // Copy actions
-  app.actions = component.actions;
+void RuntimeLinker::enrich_app(App & app, const App & runtime_app) {
+  app.topics = runtime_app.topics;
+  app.services = runtime_app.services;
+  app.actions = runtime_app.actions;
 }
 
 bool RuntimeLinker::is_app_online(const std::string & app_id) const {

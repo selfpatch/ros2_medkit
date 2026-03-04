@@ -104,21 +104,9 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   // =========================================================================
 
   /**
-   * @brief Discover node-based components (individual ROS 2 nodes)
-   *
-   * This returns the traditional component discovery where each node
-   * becomes a Component. Used internally when synthetic components
-   * are not enabled or for building Apps.
-   *
-   * @return Vector of node-based components
-   */
-  std::vector<Component> discover_node_components();
-
-  /**
    * @brief Discover synthetic components (grouped by namespace)
    *
-   * Creates aggregated Components that group multiple nodes by namespace.
-   * Only used when create_synthetic_components is enabled.
+   * Groups runtime apps by namespace into aggregated Component entities.
    *
    * @return Vector of synthetic components
    */
@@ -203,7 +191,7 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   static bool is_internal_service(const std::string & service_path);
 
   /// Derive component ID for a node based on grouping strategy
-  std::string derive_component_id(const Component & node);
+  std::string derive_component_id(const std::string & node_id, const std::string & area);
 
   /// Apply naming pattern for synthetic component ID
   std::string apply_component_name_pattern(const std::string & area);

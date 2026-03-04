@@ -16,7 +16,6 @@
 
 #include "ros2_medkit_gateway/discovery/manifest/manifest.hpp"
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
-#include "ros2_medkit_gateway/discovery/models/component.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -51,6 +50,15 @@ struct LinkingResult {
   /// Mapping from node FQN to App ID (reverse lookup)
   std::unordered_map<std::string, std::string> node_to_app;
 
+  /// Number of times two apps competed for the same node
+  size_t binding_conflicts{0};
+
+  /// Number of wildcard bindings that matched >1 node
+  size_t wildcard_multi_match{0};
+
+  /// Human-readable diagnostic warnings
+  std::vector<std::string> warnings;
+
   /// Check if linking produced any errors based on policy
   bool has_errors(ManifestConfig::UnmanifestedNodePolicy policy) const {
     return policy == ManifestConfig::UnmanifestedNodePolicy::ERROR && !orphan_nodes.empty();
@@ -58,8 +66,12 @@ struct LinkingResult {
 
   /// Get statistics summary
   std::string summary() const {
-    return std::to_string(app_to_node.size()) + " linked, " + std::to_string(unlinked_app_ids.size()) + " unlinked, " +
-           std::to_string(orphan_nodes.size()) + " orphan nodes";
+    std::string s = std::to_string(app_to_node.size()) + " linked, " + std::to_string(unlinked_app_ids.size()) +
+                    " unlinked, " + std::to_string(orphan_nodes.size()) + " orphan nodes";
+    if (binding_conflicts > 0) {
+      s += ", " + std::to_string(binding_conflicts) + " binding conflict(s)";
+    }
+    return s;
   }
 };
 
@@ -86,14 +98,14 @@ class RuntimeLinker {
   explicit RuntimeLinker(rclcpp::Node * node = nullptr);
 
   /**
-   * @brief Link manifest apps to runtime nodes
+   * @brief Link manifest apps to runtime apps (nodes)
    *
-   * @param apps Apps from manifest
-   * @param runtime_components Components discovered from ROS graph
+   * @param manifest_apps Apps from manifest
+   * @param runtime_apps Apps discovered from ROS graph (each node is an App)
    * @param config Manifest config with orphan policy
    * @return LinkingResult with linked apps and orphan info
    */
-  LinkingResult link(const std::vector<App> & apps, const std::vector<Component> & runtime_components,
+  LinkingResult link(const std::vector<App> & manifest_apps, const std::vector<App> & runtime_apps,
                      const ManifestConfig & config);
 
   /**
@@ -139,17 +151,17 @@ class RuntimeLinker {
   /**
    * @brief Try to match by topic namespace
    * @param topic_namespace Topic namespace pattern from binding
-   * @param component Component with topic info
+   * @param runtime_app Runtime app with topic info
    * @return true if any topic matches the prefix
    */
-  bool matches_topic_namespace(const std::string & topic_namespace, const Component & component) const;
+  bool matches_topic_namespace(const std::string & topic_namespace, const App & runtime_app) const;
 
   /**
-   * @brief Enrich app with runtime data from matched component
+   * @brief Enrich manifest app with runtime data from matched node
    * @param app App to enrich (modified in place)
-   * @param component Component with runtime data
+   * @param runtime_app Runtime app with live data
    */
-  void enrich_app(App & app, const Component & component);
+  void enrich_app(App & app, const App & runtime_app);
 
   /**
    * @brief Log message at info level

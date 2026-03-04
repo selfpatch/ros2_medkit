@@ -15,6 +15,8 @@
 #pragma once
 
 #include "ros2_medkit_gateway/discovery/discovery_layer.hpp"
+#include "ros2_medkit_gateway/discovery/manifest/manifest.hpp"
+#include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
 #include "ros2_medkit_gateway/discovery/merge_types.hpp"
 
 #include <rclcpp/logger.hpp>
@@ -67,6 +69,20 @@ class MergePipeline {
     return last_report_;
   }
 
+  /**
+   * @brief Set RuntimeLinker for post-merge app-to-node binding
+   * @param linker RuntimeLinker instance
+   * @param config ManifestConfig needed by RuntimeLinker::link() for unmanifested node policy
+   */
+  void set_linker(std::unique_ptr<RuntimeLinker> linker, const ManifestConfig & config);
+
+  /**
+   * @brief Get the last linking result
+   */
+  const LinkingResult & get_linking_result() const {
+    return linking_result_;
+  }
+
  private:
   /// Merge a vector of entities from multiple layers by ID
   template <typename Entity>
@@ -76,6 +92,9 @@ class MergePipeline {
   rclcpp::Logger logger_;
   std::vector<std::unique_ptr<DiscoveryLayer>> layers_;
   MergeReport last_report_;
+  std::unique_ptr<RuntimeLinker> linker_;
+  ManifestConfig manifest_config_;
+  LinkingResult linking_result_;
 };
 
 }  // namespace discovery
