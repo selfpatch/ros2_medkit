@@ -82,6 +82,8 @@ add_library(gateway_lib STATIC
   src/fault_manager.cpp
   src/log_manager.cpp
   src/subscription_manager.cpp
+  src/resource_sampler.cpp
+  src/subscription_transport.cpp
   # Entity resource model
   src/models/entity_types.cpp
   src/models/entity_capabilities.cpp
@@ -124,6 +126,7 @@ add_library(gateway_lib STATIC
   src/http/handlers/bulkdata_handlers.cpp
   src/http/handlers/sse_fault_handler.cpp
   src/http/handlers/cyclic_subscription_handlers.cpp
+  src/http/handlers/sse_transport_provider.cpp
   src/http/handlers/auth_handlers.cpp
   # Bulk data storage
   src/bulk_data_store.cpp
@@ -383,6 +386,14 @@ if(BUILD_TESTING)
   ament_add_gtest(test_subscription_manager test/test_subscription_manager.cpp)
   target_link_libraries(test_subscription_manager gateway_lib)
 
+  # Add resource sampler registry tests
+  ament_add_gtest(test_resource_sampler_registry test/test_resource_sampler_registry.cpp)
+  target_link_libraries(test_resource_sampler_registry gateway_lib)
+
+  # Add transport registry tests
+  ament_add_gtest(test_transport_registry test/test_transport_registry.cpp)
+  target_link_libraries(test_transport_registry gateway_lib)
+
   # Add cyclic subscription handler tests
   ament_add_gtest(test_cyclic_subscription_handlers test/test_cyclic_subscription_handlers.cpp)
   target_link_libraries(test_cyclic_subscription_handlers gateway_lib)
@@ -488,6 +499,8 @@ if(BUILD_TESTING)
       test_bulk_data_store
       test_bulkdata_handlers
       test_subscription_manager
+      test_resource_sampler_registry
+      test_transport_registry
       test_cyclic_subscription_handlers
       test_update_manager
       test_data_handlers

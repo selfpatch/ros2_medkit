@@ -121,12 +121,12 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
   log_handlers_ = std::make_unique<handlers::LogHandlers>(*handler_ctx_);
   auth_handlers_ = std::make_unique<handlers::AuthHandlers>(*handler_ctx_);
-  auto max_sse_clients = static_cast<size_t>(node_->get_parameter("sse.max_clients").as_int());
-  sse_client_tracker_ = std::make_shared<SSEClientTracker>(max_sse_clients);
+  sse_client_tracker_ = node_->get_sse_client_tracker();
   sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_, sse_client_tracker_);
   bulkdata_handlers_ = std::make_unique<handlers::BulkDataHandlers>(*handler_ctx_);
   cyclic_sub_handlers_ = std::make_unique<handlers::CyclicSubscriptionHandlers>(
-      *handler_ctx_, *node_->get_subscription_manager(), sse_client_tracker_);
+      *handler_ctx_, *node_->get_subscription_manager(), sse_client_tracker_, *node_->get_sampler_registry(),
+      *node_->get_transport_registry());
 
   if (node_->get_update_manager()) {
     update_handlers_ = std::make_unique<handlers::UpdateHandlers>(*handler_ctx_, node_->get_update_manager());

@@ -20,6 +20,8 @@
 #include <cinttypes>
 #include <unordered_set>
 
+#include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
+
 using namespace std::chrono_literals;
 
 namespace ros2_medkit_gateway {
@@ -441,8 +443,17 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   subscription_mgr_ = std::make_unique<SubscriptionManager>(max_subscriptions);
   RCLCPP_INFO(get_logger(), "Subscription manager: max_subscriptions=%zu", max_subscriptions);
 
+  // Create SSE client tracker (shared between SseTransportProvider and SSEFaultHandler)
+  auto max_sse_clients = static_cast<size_t>(get_parameter("sse.max_clients").as_int());
+  sse_client_tracker_ = std::make_shared<SSEClientTracker>(max_sse_clients);
+
+  // Initialize resource sampler and transport registries
+  sampler_registry_ = std::make_unique<ResourceSamplerRegistry>();
+  transport_registry_ = std::make_unique<TransportRegistry>();
+
   // Initialize plugin manager
   plugin_mgr_ = std::make_unique<PluginManager>();
+  plugin_mgr_->set_registries(*sampler_registry_, *transport_registry_);
   auto plugin_names = get_parameter("plugins").as_string_array();
   plugin_names.erase(std::remove_if(plugin_names.begin(), plugin_names.end(),
                                     [](const auto & item) {
@@ -528,6 +539,124 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
     }
   }
 
+  // Register built-in resource samplers
+  sampler_registry_->register_sampler(
+      "data",
+      [this](const std::string & /*entity_id*/,
+             const std::string & resource_path) -> tl::expected<nlohmann::json, std::string> {
+        auto * dam = get_data_access_manager();
+        if (!dam) {
+          return tl::make_unexpected(std::string("DataAccessManager not available"));
+        }
+        auto * native_sampler = dam->get_native_sampler();
+        auto sample = native_sampler->sample_topic(resource_path, dam->get_topic_sample_timeout());
+        if (sample.has_data && sample.data.has_value()) {
+          nlohmann::json payload;
+          payload["id"] = resource_path;
+          payload["data"] = *sample.data;
+          return payload;
+        }
+        return tl::make_unexpected(std::string("Topic data not available: " + resource_path));
+      },
+      true);
+
+  sampler_registry_->register_sampler(
+      "faults",
+      [this](const std::string & entity_id,
+             const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
+        auto * fault_mgr = get_fault_manager();
+        if (!fault_mgr) {
+          return tl::make_unexpected(std::string("FaultManager not available"));
+        }
+        // Determine source_id for fault filtering based on entity type
+        const auto & cache = get_thread_safe_cache();
+        auto entity_ref = cache.find_entity(entity_id);
+        std::string source_id;
+        if (entity_ref) {
+          if (entity_ref->type == SovdEntityType::APP) {
+            auto app = cache.get_app(entity_id);
+            if (app) {
+              source_id = app->bound_fqn.value_or("");
+            }
+          } else if (entity_ref->type == SovdEntityType::COMPONENT) {
+            auto comp = cache.get_component(entity_id);
+            if (comp) {
+              source_id = comp->namespace_path;
+            }
+          }
+          // AREA and FUNCTION: leave source_id empty (returns all faults)
+        }
+        auto result = fault_mgr->list_faults(source_id);
+        if (!result.success) {
+          return tl::make_unexpected(result.error_message);
+        }
+        return result.data;
+      },
+      true);
+
+  sampler_registry_->register_sampler(
+      "configurations",
+      [this](const std::string & entity_id,
+             const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
+        auto * config_mgr = get_configuration_manager();
+        if (!config_mgr) {
+          return tl::make_unexpected(std::string("ConfigurationManager not available"));
+        }
+        const auto & cache = get_thread_safe_cache();
+        auto configs = cache.get_entity_configurations(entity_id);
+        nlohmann::json items = nlohmann::json::array();
+        for (const auto & node : configs.nodes) {
+          auto result = config_mgr->list_parameters(node.node_fqn);
+          if (result.success && result.data.is_array()) {
+            for (auto & param : result.data) {
+              items.push_back(std::move(param));
+            }
+          }
+        }
+        nlohmann::json payload;
+        payload["items"] = std::move(items);
+        return payload;
+      },
+      true);
+
+  sampler_registry_->register_sampler(
+      "communication-logs",
+      [this](const std::string & entity_id,
+             const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
+        auto * log_mgr = get_log_manager();
+        if (!log_mgr) {
+          return tl::make_unexpected(std::string("LogManager not available"));
+        }
+        const auto & cache = get_thread_safe_cache();
+        auto configs = cache.get_entity_configurations(entity_id);
+        std::vector<std::string> node_fqns;
+        node_fqns.reserve(configs.nodes.size());
+        for (const auto & node : configs.nodes) {
+          node_fqns.push_back(node.node_fqn);
+        }
+        auto result = log_mgr->get_logs(node_fqns, false, "", "", entity_id);
+        if (!result.has_value()) {
+          return tl::make_unexpected(result.error());
+        }
+        nlohmann::json payload;
+        payload["items"] = std::move(*result);
+        return payload;
+      },
+      true);
+
+  RCLCPP_INFO(get_logger(), "Registered built-in resource samplers: data, faults, configurations, communication-logs");
+
+  // Register built-in SSE transport
+  transport_registry_->register_transport(
+      std::make_unique<SseTransportProvider>(*subscription_mgr_, sse_client_tracker_));
+
+  // Wire subscription lifecycle -> transport cleanup
+  subscription_mgr_->set_on_removed([this](const CyclicSubscriptionInfo & info) {
+    if (auto * transport = transport_registry_->get_transport(info.protocol)) {
+      transport->stop(info.id);
+    }
+  });
+
   // Connect topic sampler to discovery manager for component-topic mapping
   discovery_mgr_->set_topic_sampler(data_access_mgr_->get_native_sampler());
 
@@ -567,10 +696,21 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
 
 GatewayNode::~GatewayNode() {
   RCLCPP_INFO(get_logger(), "Shutting down ROS 2 Medkit Gateway...");
+  // 1. Stop REST server (kills HTTP connections, SSE streams exit)
   stop_rest_server();
+  // 2. Stop all transport providers for active subscriptions
+  if (transport_registry_) {
+    transport_registry_->shutdown_all(*subscription_mgr_);
+  }
+  // 3. Shutdown subscription manager (marks all inactive, triggers on_removed for stragglers)
+  if (subscription_mgr_) {
+    subscription_mgr_->shutdown();
+  }
+  // 4. Shutdown plugins
   if (plugin_mgr_) {
     plugin_mgr_->shutdown_all();
   }
+  // 5. Normal member destruction (managers safe - all transports stopped)
 }
 
 const ThreadSafeEntityCache & GatewayNode::get_thread_safe_cache() const {
@@ -615,6 +755,18 @@ UpdateManager * GatewayNode::get_update_manager() const {
 
 PluginManager * GatewayNode::get_plugin_manager() const {
   return plugin_mgr_.get();
+}
+
+ResourceSamplerRegistry * GatewayNode::get_sampler_registry() const {
+  return sampler_registry_.get();
+}
+
+TransportRegistry * GatewayNode::get_transport_registry() const {
+  return transport_registry_.get();
+}
+
+std::shared_ptr<SSEClientTracker> GatewayNode::get_sse_client_tracker() const {
+  return sse_client_tracker_;
 }
 
 void GatewayNode::refresh_cache() {

@@ -74,8 +74,9 @@ std::string SubscriptionManager::generate_id() {
 
 tl::expected<CyclicSubscriptionInfo, std::string>
 SubscriptionManager::create(const std::string & entity_id, const std::string & entity_type,
-                            const std::string & resource_uri, const std::string & topic_name,
-                            const std::string & protocol, CyclicInterval interval, int duration_sec) {
+                            const std::string & resource_uri, const std::string & collection,
+                            const std::string & resource_path, const std::string & protocol, CyclicInterval interval,
+                            int duration_sec) {
   std::lock_guard<std::mutex> lock(map_mutex_);
 
   if (subscriptions_.size() >= max_subscriptions_) {
@@ -88,7 +89,8 @@ SubscriptionManager::create(const std::string & entity_id, const std::string & e
   state->info.entity_id = entity_id;
   state->info.entity_type = entity_type;
   state->info.resource_uri = resource_uri;
-  state->info.topic_name = topic_name;
+  state->info.collection = collection;
+  state->info.resource_path = resource_path;
   state->info.protocol = protocol;
   state->info.interval = interval;
   state->info.duration_sec = duration_sec;
@@ -160,6 +162,7 @@ SubscriptionManager::update(const std::string & sub_id, std::optional<CyclicInte
 
 bool SubscriptionManager::remove(const std::string & sub_id) {
   std::shared_ptr<SubscriptionState> state;
+  CyclicSubscriptionInfo info_copy;
   {
     std::lock_guard<std::mutex> lock(map_mutex_);
     auto it = subscriptions_.find(sub_id);
@@ -167,25 +170,32 @@ bool SubscriptionManager::remove(const std::string & sub_id) {
       return false;
     }
     state = it->second;
+    {
+      std::lock_guard<std::mutex> sub_lock(state->mtx);
+      info_copy = state->info;
+    }
     subscriptions_.erase(it);
   }
 
   // Mark inactive and wake up any waiting SSE stream
   state->active.store(false);
   state->cv.notify_all();
+  if (on_removed_) {
+    on_removed_(info_copy);
+  }
   return true;
 }
 
 size_t SubscriptionManager::cleanup_expired() {
   auto now = std::chrono::steady_clock::now();
-  std::vector<std::shared_ptr<SubscriptionState>> expired_states;
+  std::vector<std::pair<std::shared_ptr<SubscriptionState>, CyclicSubscriptionInfo>> expired;
 
   {
     std::lock_guard<std::mutex> lock(map_mutex_);
     for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
       std::lock_guard<std::mutex> sub_lock(it->second->mtx);
       if (it->second->info.expires_at <= now) {
-        expired_states.push_back(it->second);
+        expired.emplace_back(it->second, it->second->info);
         it = subscriptions_.erase(it);
       } else {
         ++it;
@@ -194,12 +204,15 @@ size_t SubscriptionManager::cleanup_expired() {
   }
 
   // Notify expired streams outside the map lock
-  for (auto & state : expired_states) {
+  for (auto & [state, info] : expired) {
     state->active.store(false);
     state->cv.notify_all();
+    if (on_removed_) {
+      on_removed_(info);
+    }
   }
 
-  return expired_states.size();
+  return expired.size();
 }
 
 size_t SubscriptionManager::active_count() const {
@@ -213,11 +226,21 @@ size_t SubscriptionManager::max_subscriptions() const {
 
 void SubscriptionManager::shutdown() {
   shutdown_flag_.store(true);
-
-  std::lock_guard<std::mutex> lock(map_mutex_);
-  for (auto & [id, state] : subscriptions_) {
-    state->active.store(false);
-    state->cv.notify_all();
+  std::vector<CyclicSubscriptionInfo> all_infos;
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
+      it->second->active.store(false);
+      it->second->cv.notify_all();
+      if (on_removed_) {
+        std::lock_guard<std::mutex> sub_lock(it->second->mtx);
+        all_infos.push_back(it->second->info);
+      }
+      it = subscriptions_.erase(it);
+    }
+  }
+  for (const auto & info : all_infos) {
+    on_removed_(info);
   }
 }
 
@@ -271,6 +294,10 @@ void SubscriptionManager::notify(const std::string & sub_id) {
     state->notified = true;
   }
   state->cv.notify_all();
+}
+
+void SubscriptionManager::set_on_removed(std::function<void(const CyclicSubscriptionInfo &)> callback) {
+  on_removed_ = std::move(callback);
 }
 
 }  // namespace ros2_medkit_gateway

@@ -32,11 +32,14 @@
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/http/rate_limiter.hpp"
 #include "ros2_medkit_gateway/http/rest_server.hpp"
+#include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/log_manager.hpp"
 #include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/resource_sampler.hpp"
 #include "ros2_medkit_gateway/subscription_manager.hpp"
+#include "ros2_medkit_gateway/subscription_transport.hpp"
 #include "ros2_medkit_gateway/updates/update_manager.hpp"
 
 namespace ros2_medkit_gateway {
@@ -114,6 +117,24 @@ class GatewayNode : public rclcpp::Node {
    */
   PluginManager * get_plugin_manager() const;
 
+  /**
+   * @brief Get the ResourceSamplerRegistry instance
+   * @return Raw pointer to ResourceSamplerRegistry (valid for lifetime of GatewayNode)
+   */
+  ResourceSamplerRegistry * get_sampler_registry() const;
+
+  /**
+   * @brief Get the TransportRegistry instance
+   * @return Raw pointer to TransportRegistry (valid for lifetime of GatewayNode)
+   */
+  TransportRegistry * get_transport_registry() const;
+
+  /**
+   * @brief Get the SSEClientTracker instance
+   * @return Shared pointer to SSEClientTracker
+   */
+  std::shared_ptr<SSEClientTracker> get_sse_client_tracker() const;
+
  private:
   void refresh_cache();
   void start_rest_server();
@@ -137,6 +158,9 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<LogManager> log_mgr_;
   std::unique_ptr<BulkDataStore> bulk_data_store_;
   std::unique_ptr<SubscriptionManager> subscription_mgr_;
+  std::unique_ptr<ResourceSamplerRegistry> sampler_registry_;
+  std::unique_ptr<TransportRegistry> transport_registry_;
+  std::shared_ptr<SSEClientTracker> sse_client_tracker_;
   // IMPORTANT: plugin_mgr_ BEFORE update_mgr_ - C++ destroys in reverse order,
   // so update_mgr_ waits for async tasks before plugin_mgr_ destroys the plugin.
   // plugin_ctx_ is owned here (outlives plugins); plugin_mgr_ holds a non-owning ref.

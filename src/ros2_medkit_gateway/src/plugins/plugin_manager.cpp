@@ -207,6 +207,25 @@ void PluginManager::set_context(PluginContext & context) {
   }
 }
 
+void PluginManager::set_registries(ResourceSamplerRegistry & samplers, TransportRegistry & transports) {
+  sampler_registry_ = &samplers;
+  transport_registry_ = &transports;
+}
+
+void PluginManager::register_resource_sampler(const std::string & collection, ResourceSamplerFn fn) {
+  if (!sampler_registry_) {
+    throw std::runtime_error("Sampler registry not initialized");
+  }
+  sampler_registry_->register_sampler(collection, std::move(fn));
+}
+
+void PluginManager::register_transport(std::unique_ptr<SubscriptionTransportProvider> provider) {
+  if (!transport_registry_) {
+    throw std::runtime_error("Transport registry not initialized");
+  }
+  transport_registry_->register_transport(std::move(provider));
+}
+
 void PluginManager::register_routes(httplib::Server & server, const std::string & api_prefix) {
   std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
   for (auto & lp : plugins_) {

@@ -22,10 +22,20 @@
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
+#include "ros2_medkit_gateway/resource_sampler.hpp"
 #include "ros2_medkit_gateway/subscription_manager.hpp"
+#include "ros2_medkit_gateway/subscription_transport.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
+
+/// Result of parsing a SOVD resource URI for subscription
+struct ParsedResourceUri {
+  std::string entity_type;  // "apps" or "components"
+  std::string entity_id;
+  std::string collection;     // "data", "faults", "x-medkit-metrics", etc.
+  std::string resource_path;  // path within collection (may be empty)
+};
 
 /**
  * @brief HTTP handlers for cyclic subscription CRUD and SSE streaming.
@@ -41,7 +51,8 @@ namespace handlers {
 class CyclicSubscriptionHandlers {
  public:
   CyclicSubscriptionHandlers(HandlerContext & ctx, SubscriptionManager & sub_mgr,
-                             std::shared_ptr<SSEClientTracker> client_tracker);
+                             std::shared_ptr<SSEClientTracker> client_tracker,
+                             ResourceSamplerRegistry & sampler_registry, TransportRegistry & transport_registry);
 
   /// POST /{entity}/cyclic-subscriptions — create subscription
   void handle_create(const httplib::Request & req, httplib::Response & res);
@@ -64,6 +75,9 @@ class CyclicSubscriptionHandlers {
   /// Convert subscription info to JSON response
   static nlohmann::json subscription_to_json(const CyclicSubscriptionInfo & info, const std::string & event_source);
 
+  /// Parse resource URI to extract entity type, entity id, collection, and resource path.
+  static tl::expected<ParsedResourceUri, std::string> parse_resource_uri(const std::string & resource);
+
  private:
   /// Build event_source URI from subscription info
   static std::string build_event_source(const CyclicSubscriptionInfo & info);
@@ -71,12 +85,11 @@ class CyclicSubscriptionHandlers {
   /// Extract entity type string ("apps" or "components") from request path
   static std::string extract_entity_type(const httplib::Request & req);
 
-  /// Parse resource URI to extract topic name. Returns topic or error.
-  static tl::expected<std::string, std::string> parse_resource_uri(const std::string & resource);
-
   HandlerContext & ctx_;
   SubscriptionManager & sub_mgr_;
   std::shared_ptr<SSEClientTracker> client_tracker_;
+  ResourceSamplerRegistry & sampler_registry_;
+  TransportRegistry & transport_registry_;
 
   /// Keepalive interval for SSE streams
   static constexpr int kKeepaliveIntervalSec = 15;
