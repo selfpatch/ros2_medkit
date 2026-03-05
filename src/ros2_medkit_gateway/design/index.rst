@@ -331,7 +331,9 @@ Main Components
    - ``RuntimeLayer`` - Wraps RuntimeDiscoveryStrategy; LIVE_DATA/STATUS are AUTHORITATIVE,
      METADATA is ENRICHMENT, IDENTITY/HIERARCHY are FALLBACK.
      Supports ``GapFillConfig`` to control which heuristic entities are allowed when manifest is present
-   - ``PluginLayer`` - Wraps IntrospectionProvider; all fields ENRICHMENT (plugins enrich, they don't override)
+   - ``PluginLayer`` - Wraps IntrospectionProvider; all fields ENRICHMENT (plugins enrich, they don't override).
+     Before each layer's ``discover()`` call, the pipeline populates ``IntrospectionInput`` with entities
+     from all previous layers, so plugins see the current manifest + runtime entity set
 
 3. **OperationManager** - Executes ROS 2 operations (services and actions) using native APIs
    - Calls ROS 2 services via ``rclcpp::GenericClient`` with native serialization

@@ -74,9 +74,10 @@ class IntrospectionProvider {
   /**
    * @brief Core introspection method
    *
-   * Called after each discovery cycle, before EntityCache update.
+   * Called during each discovery cycle by the merge pipeline.
+   * Input contains entities from all higher-priority layers (manifest + runtime).
    *
-   * @param input Snapshot of currently discovered entities
+   * @param input Snapshot of entities discovered by previous layers
    * @return Metadata enrichments and new entities
    */
   virtual IntrospectionResult introspect(const IntrospectionInput & input) = 0;
