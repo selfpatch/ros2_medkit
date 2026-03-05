@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -31,13 +32,13 @@ class MockTransport : public SubscriptionTransportProvider {
     return proto_;
   }
 
-  tl::expected<std::string, std::string> start(const CyclicSubscriptionInfo &, ResourceSamplerFn,
-                                               GatewayNode *) override {
+  tl::expected<std::string, std::string> start(const CyclicSubscriptionInfo & /*info*/, ResourceSamplerFn /*sampler*/,
+                                               GatewayNode * /*node*/) override {
     started_ids_.push_back("started");
     return "mock://event-source";
   }
 
-  void notify_update(const std::string &) override {
+  void notify_update(const std::string & /*sub_id*/) override {
   }
 
   void stop(const std::string & sub_id) override {
@@ -51,6 +52,7 @@ class MockTransport : public SubscriptionTransportProvider {
   std::string proto_;
 };
 
+// @verifies REQ_INTEROP_089
 TEST(TransportRegistryTest, RegisterAndLookup) {
   TransportRegistry registry;
   auto mock = std::make_unique<MockTransport>("mqtt");
@@ -65,6 +67,12 @@ TEST(TransportRegistryTest, HasTransportReturnsFalseForUnregistered) {
   TransportRegistry registry;
   EXPECT_FALSE(registry.has_transport("nonexistent"));
   EXPECT_EQ(registry.get_transport("nonexistent"), nullptr);
+}
+
+TEST(TransportRegistryTest, RejectDuplicateRegistration) {
+  TransportRegistry registry;
+  registry.register_transport(std::make_unique<MockTransport>("mqtt"));
+  EXPECT_THROW(registry.register_transport(std::make_unique<MockTransport>("mqtt")), std::runtime_error);
 }
 
 TEST(TransportRegistryTest, ShutdownAllCallsStopForActiveSubscriptions) {

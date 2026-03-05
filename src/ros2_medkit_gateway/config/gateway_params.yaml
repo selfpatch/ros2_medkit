@@ -112,6 +112,11 @@ ros2_medkit_gateway:
       # Default: 100
       max_subscriptions: 100
 
+      # Maximum allowed subscription duration in seconds
+      # Subscriptions requesting a longer duration are rejected with HTTP 400
+      # Default: 3600 (1 hour)
+      max_duration_sec: 3600
+
     # Logging Configuration
     logs:
       # Ring buffer capacity per node name.

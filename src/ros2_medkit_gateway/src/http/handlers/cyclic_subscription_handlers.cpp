@@ -16,6 +16,8 @@
 
 #include <regex>
 
+#include <rclcpp/rclcpp.hpp>
+
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
@@ -29,12 +31,13 @@ namespace handlers {
 CyclicSubscriptionHandlers::CyclicSubscriptionHandlers(HandlerContext & ctx, SubscriptionManager & sub_mgr,
                                                        std::shared_ptr<SSEClientTracker> client_tracker,
                                                        ResourceSamplerRegistry & sampler_registry,
-                                                       TransportRegistry & transport_registry)
+                                                       TransportRegistry & transport_registry, int max_duration_sec)
   : ctx_(ctx)
   , sub_mgr_(sub_mgr)
   , client_tracker_(std::move(client_tracker))
   , sampler_registry_(sampler_registry)
-  , transport_registry_(transport_registry) {
+  , transport_registry_(transport_registry)
+  , max_duration_sec_(max_duration_sec) {
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +110,12 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
                                {{"parameter", "duration"}, {"value", duration}});
     return;
   }
+  if (duration > max_duration_sec_) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
+                               "Duration must not exceed " + std::to_string(max_duration_sec_) + " seconds.",
+                               {{"parameter", "duration"}, {"max_value", max_duration_sec_}});
+    return;
+  }
 
   // Parse resource URI to extract collection and resource path
   std::string resource = body["resource"].get<std::string>();
@@ -137,12 +146,20 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
                                  {{"collection", parsed->collection}, {"entity_type", entity_type}});
       return;
     }
-  } else if (parsed->collection.substr(0, 2) != "x-") {
+  } else if (parsed->collection.size() < 2 || parsed->collection.substr(0, 2) != "x-") {
     // Not a known collection and not a vendor extension
     HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI,
                                "Unknown collection '" + parsed->collection +
                                    "'. Use a known SOVD collection or 'x-' vendor extension.",
                                {{"collection", parsed->collection}});
+    return;
+  }
+
+  // Data collection requires a resource path (topic name)
+  if (parsed->collection == "data" && parsed->resource_path.empty()) {
+    HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI,
+                               "Data collection requires a resource path (e.g. /api/v1/apps/{id}/data/{topic})",
+                               {{"parameter", "resource"}, {"value", resource}});
     return;
   }
 
@@ -262,6 +279,12 @@ void CyclicSubscriptionHandlers::handle_update(const httplib::Request & req, htt
                                  {{"parameter", "duration"}, {"value", *new_duration}});
       return;
     }
+    if (*new_duration > max_duration_sec_) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
+                                 "Duration must not exceed " + std::to_string(max_duration_sec_) + " seconds.",
+                                 {{"parameter", "duration"}, {"max_value", max_duration_sec_}});
+      return;
+    }
   }
 
   // Verify subscription exists and belongs to this entity before updating
@@ -364,7 +387,6 @@ json CyclicSubscriptionHandlers::subscription_to_json(const CyclicSubscriptionIn
   json j;
   j["id"] = info.id;
   j["observed_resource"] = info.resource_uri;
-  j["collection"] = info.collection;
   j["event_source"] = event_source;
   j["protocol"] = info.protocol;
   j["interval"] = interval_to_string(info.interval);
@@ -377,14 +399,16 @@ std::string CyclicSubscriptionHandlers::build_event_source(const CyclicSubscript
 }
 
 std::string CyclicSubscriptionHandlers::extract_entity_type(const httplib::Request & req) {
-  // Path is like /api/v1/apps/{id}/cyclic-subscriptions or /api/v1/components/{id}/cyclic-subscriptions
-  if (req.path.find("/apps/") != std::string::npos) {
-    return "apps";
+  auto type = extract_entity_type_from_path(req.path);
+  switch (type) {
+    case SovdEntityType::APP:
+      return "apps";
+    case SovdEntityType::COMPONENT:
+      return "components";
+    default:
+      RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in cyclic subscription path: %s", req.path.c_str());
+      return "apps";
   }
-  if (req.path.find("/components/") != std::string::npos) {
-    return "components";
-  }
-  return "apps";  // Default fallback
 }
 
 tl::expected<ParsedResourceUri, std::string>
@@ -402,9 +426,18 @@ CyclicSubscriptionHandlers::parse_resource_uri(const std::string & resource) {
   parsed.collection = match[3].str();
   parsed.resource_path = match[4].matched ? match[4].str() : "";
 
-  // Security: reject path traversal in resource_path
-  if (parsed.resource_path.find("/..") != std::string::npos || parsed.resource_path.find("../") != std::string::npos) {
-    return tl::make_unexpected("Resource path must not contain '..'");
+  // Security: reject '..' as a path segment (not as substring of e.g. '/..foo')
+  if (!parsed.resource_path.empty()) {
+    std::string path = parsed.resource_path;
+    size_t pos = 0;
+    while (pos < path.size()) {
+      size_t next = path.find('/', pos + 1);
+      std::string segment = (next == std::string::npos) ? path.substr(pos) : path.substr(pos, next - pos);
+      if (segment == "/.." || segment == "..") {
+        return tl::make_unexpected("Resource path must not contain '..' as a path segment");
+      }
+      pos = (next == std::string::npos) ? path.size() : next;
+    }
   }
 
   return parsed;

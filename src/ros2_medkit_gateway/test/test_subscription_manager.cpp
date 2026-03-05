@@ -24,6 +24,7 @@ using namespace ros2_medkit_gateway;
 
 // --- Interval parsing edge cases ---
 
+// @verifies REQ_INTEROP_089
 TEST(IntervalParsingTest, ParsesValidIntervals) {
   EXPECT_EQ(parse_interval("fast"), CyclicInterval::FAST);
   EXPECT_EQ(parse_interval("normal"), CyclicInterval::NORMAL);
@@ -49,6 +50,38 @@ TEST(IntervalParsingTest, DurationsArePositive) {
   // fast < normal < slow
   EXPECT_LT(interval_to_duration(CyclicInterval::FAST), interval_to_duration(CyclicInterval::NORMAL));
   EXPECT_LT(interval_to_duration(CyclicInterval::NORMAL), interval_to_duration(CyclicInterval::SLOW));
+}
+
+// --- Get/list ---
+
+TEST(SubscriptionManagerGetTest, GetReturnsCreatedSubscription) {
+  SubscriptionManager mgr(10);
+  auto created = mgr.create("e1", "apps", "/api/v1/apps/e1/data/t", "data", "/t", "sse", CyclicInterval::NORMAL, 300);
+  ASSERT_TRUE(created.has_value());
+
+  auto fetched = mgr.get(created->id);
+  ASSERT_TRUE(fetched.has_value());
+  EXPECT_EQ(fetched->id, created->id);
+  EXPECT_EQ(fetched->entity_id, "e1");
+  EXPECT_EQ(fetched->entity_type, "apps");
+  EXPECT_EQ(fetched->collection, "data");
+  EXPECT_EQ(fetched->resource_path, "/t");
+  EXPECT_EQ(fetched->protocol, "sse");
+  EXPECT_EQ(fetched->interval, CyclicInterval::NORMAL);
+  EXPECT_EQ(fetched->duration_sec, 300);
+}
+
+TEST(SubscriptionManagerGetTest, GetReturnsNulloptForNonexistent) {
+  SubscriptionManager mgr(10);
+  EXPECT_FALSE(mgr.get("nonexistent").has_value());
+}
+
+TEST(SubscriptionManagerGetTest, GetReturnsNulloptAfterRemove) {
+  SubscriptionManager mgr(10);
+  auto created = mgr.create("e1", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 60);
+  ASSERT_TRUE(created.has_value());
+  mgr.remove(created->id);
+  EXPECT_FALSE(mgr.get(created->id).has_value());
 }
 
 // --- Capacity enforcement ---

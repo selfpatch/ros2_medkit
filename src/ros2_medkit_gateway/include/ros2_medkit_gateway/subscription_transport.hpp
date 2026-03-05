@@ -17,6 +17,7 @@
 #include <httplib.h>
 
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 
@@ -68,10 +69,13 @@ class TransportRegistry {
   SubscriptionTransportProvider * get_transport(const std::string & protocol) const;
   bool has_transport(const std::string & protocol) const;
 
-  /// Stop all active subscriptions across all transports.
+  /// Shutdown all subscriptions by delegating to SubscriptionManager::shutdown().
+  /// Transport cleanup happens via the manager's on_removed callback, which
+  /// calls SubscriptionTransportProvider::stop() for each active subscription.
   void shutdown_all(SubscriptionManager & sub_mgr);
 
  private:
+  mutable std::shared_mutex mutex_;
   std::unordered_map<std::string, std::unique_ptr<SubscriptionTransportProvider>> transports_;
 };
 

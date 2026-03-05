@@ -25,6 +25,9 @@
 namespace ros2_medkit_gateway {
 
 /// Built-in SSE transport provider. Refactored from handle_events() logic.
+///
+/// Lifetime: must outlive all HTTP connections. GatewayNode ensures this by
+/// stopping the REST server (joining HTTP threads) before destroying transports.
 class SseTransportProvider : public SubscriptionTransportProvider {
  public:
   SseTransportProvider(SubscriptionManager & sub_mgr, std::shared_ptr<SSEClientTracker> client_tracker);

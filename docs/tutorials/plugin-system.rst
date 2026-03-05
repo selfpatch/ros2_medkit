@@ -295,6 +295,41 @@ For entity-scoped endpoints, register a matching capability via ``register_capab
 or ``register_entity_capability()`` in ``set_context()`` so the endpoint appears in the
 entity's capabilities array in discovery responses.
 
+Cyclic Subscription Extensions
+-------------------------------
+
+Plugins can extend cyclic subscriptions by registering custom resource samplers
+and transport providers during ``set_context()``.
+
+**Resource Samplers** provide the data for a collection when sampled by a subscription.
+Register a sampler via ``ResourceSamplerRegistry``:
+
+.. code-block:: cpp
+
+   // In set_context():
+   auto& sampler_registry = ctx_->get_sampler_registry();
+   sampler_registry.register_sampler("x-medkit-metrics",
+     [this](const std::string& entity_id, const std::string& resource_path)
+       -> tl::expected<nlohmann::json, std::string> {
+       return get_metrics(entity_id, resource_path);
+     });
+
+Once registered, clients can create cyclic subscriptions on the ``x-medkit-metrics``
+collection for any entity.
+
+**Transport Providers** deliver subscription data via alternative protocols (beyond
+the built-in SSE transport). Register via ``TransportRegistry``:
+
+.. code-block:: cpp
+
+   auto& transport_registry = ctx_->get_transport_registry();
+   transport_registry.register_transport(
+     std::make_unique<MqttTransportProvider>(mqtt_client_));
+
+The transport must implement ``SubscriptionTransportProvider`` (``start``, ``stop``,
+``notify_update``, ``protocol()``). Clients specify the protocol in the subscription
+creation request.
+
 Multiple Plugins
 ----------------
 

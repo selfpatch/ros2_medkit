@@ -14,14 +14,21 @@
 
 #include "ros2_medkit_gateway/subscription_transport.hpp"
 
+#include <stdexcept>
+
 namespace ros2_medkit_gateway {
 
 void TransportRegistry::register_transport(std::unique_ptr<SubscriptionTransportProvider> provider) {
+  std::unique_lock<std::shared_mutex> lock(mutex_);
   auto proto = provider->protocol();
+  if (transports_.count(proto) > 0) {
+    throw std::runtime_error("Transport already registered for protocol: " + proto);
+  }
   transports_[proto] = std::move(provider);
 }
 
 SubscriptionTransportProvider * TransportRegistry::get_transport(const std::string & protocol) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   auto it = transports_.find(protocol);
   if (it == transports_.end()) {
     return nullptr;
@@ -30,6 +37,7 @@ SubscriptionTransportProvider * TransportRegistry::get_transport(const std::stri
 }
 
 bool TransportRegistry::has_transport(const std::string & protocol) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   return transports_.count(protocol) > 0;
 }
 

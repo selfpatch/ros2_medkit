@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/subscription_manager.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -297,6 +298,7 @@ void SubscriptionManager::notify(const std::string & sub_id) {
 }
 
 void SubscriptionManager::set_on_removed(std::function<void(const CyclicSubscriptionInfo &)> callback) {
+  assert(subscriptions_.empty() && "set_on_removed must be called before any subscriptions are created");
   on_removed_ = std::move(callback);
 }
 
