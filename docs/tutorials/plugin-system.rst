@@ -305,6 +305,8 @@ Multiple plugins can be loaded simultaneously:
   Each plugin's entities are merged with ENRICHMENT policy - they fill empty fields but
   never override manifest or runtime values. Plugins are added after all built-in layers,
   and the pipeline is refreshed once after all plugins are registered (batch registration).
+  The ``introspect()`` method receives an ``IntrospectionInput`` populated with all entities
+  from previous layers (manifest + runtime), enabling context-aware metadata and discovery.
 - **Custom routes**: All plugins can register endpoints (use unique path prefixes)
 
 Error Handling

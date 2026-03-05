@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/providers/update_provider.hpp"
@@ -29,6 +30,10 @@ using namespace ros2_medkit_gateway;
  *
  * Used by test_plugin_loader to verify dlopen/dlsym-based loading,
  * API version checking, and extern "C" provider query functions.
+ *
+ * Also demonstrates vendor extension endpoints via register_capability()
+ * and entity-scoped routes. The plugin registers an "x-medkit-diagnostics"
+ * capability on all Components and serves diagnostic data per entity.
  */
 class TestGatewayPlugin : public GatewayPlugin, public UpdateProvider, public IntrospectionProvider {
  public:
@@ -40,11 +45,37 @@ class TestGatewayPlugin : public GatewayPlugin, public UpdateProvider, public In
   void configure(const nlohmann::json & /*config*/) override {
   }
 
+  void set_context(PluginContext & context) override {
+    ctx_ = &context;
+    // Register vendor extension capability for all Components
+    ctx_->register_capability(SovdEntityType::COMPONENT, "x-medkit-diagnostics");
+  }
+
   void register_routes(httplib::Server & server, const std::string & api_prefix) override {
+    // Global vendor extension endpoint
     server.Get((api_prefix + "/x-test/ping").c_str(), [](const httplib::Request &, httplib::Response & res) {
       res.set_content("pong", "text/plain");
     });
+
+    // Entity-scoped vendor extension: GET /components/{id}/x-medkit-diagnostics
+    server.Get((api_prefix + R"(/components/([^/]+)/x-medkit-diagnostics)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 auto entity_id = req.matches[1].str();
+                 auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
+                 if (!entity) {
+                   return;
+                 }
+                 nlohmann::json data = {{"entity_id", entity->id},
+                                        {"plugin", "test_plugin"},
+                                        {"cpu_usage", 42.5},
+                                        {"memory_mb", 128},
+                                        {"uptime_seconds", 3600}};
+                 PluginContext::send_json(res, data);
+               });
   }
+
+ private:
+  PluginContext * ctx_{nullptr};
 
   // --- UpdateProvider ---
   tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter &) override {
