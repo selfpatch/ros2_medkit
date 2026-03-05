@@ -35,7 +35,8 @@ SseTransportProvider::SseTransportProvider(SubscriptionManager & sub_mgr,
 }
 
 tl::expected<std::string, std::string> SseTransportProvider::start(const CyclicSubscriptionInfo & info,
-                                                                   ResourceSamplerFn json_sampler, GatewayNode *) {
+                                                                   ResourceSamplerFn json_sampler,
+                                                                   GatewayNode * /*node*/) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     streams_[info.id] = StreamState{std::move(json_sampler)};
@@ -54,7 +55,10 @@ void SseTransportProvider::notify_update(const std::string & sub_id) {
 void SseTransportProvider::stop(const std::string & sub_id) {
   std::lock_guard<std::mutex> lock(mutex_);
   streams_.erase(sub_id);
-  // The SSE loop detects inactive via sub_mgr_.is_active() and exits.
+  // The in-flight SSE streaming loop exits naturally because:
+  // 1. stop() is called from on_removed callback, after state->active is set to false
+  // 2. The loop checks sub_mgr_.is_active() each iteration, which returns false
+  // 3. Erasing from streams_ prevents new client connections for this subscription
 }
 
 bool SseTransportProvider::handle_client_connect(const std::string & sub_id, const httplib::Request & req,
@@ -87,7 +91,7 @@ bool SseTransportProvider::handle_client_connect(const std::string & sub_id, con
   res.set_header("Connection", "keep-alive");
   res.set_header("X-Accel-Buffering", "no");
 
-  auto captured_sub_id = sub_id;
+  const auto & captured_sub_id = sub_id;
   auto captured_sampler = std::move(sampler);
 
   res.set_chunked_content_provider(
@@ -145,9 +149,11 @@ bool SseTransportProvider::handle_client_connect(const std::string & sub_id, con
               envelope["error"] = error;
             }
           } catch (const std::exception & e) {
+            RCLCPP_WARN(rclcpp::get_logger("sse_transport"), "Sampler exception for sub %s: %s",
+                        captured_sub_id.c_str(), e.what());
             json error;
             error["error_code"] = ERR_INTERNAL_ERROR;
-            error["message"] = std::string("Sampler exception: ") + e.what();
+            error["message"] = "Internal error during resource sampling";
             envelope["error"] = error;
           }
 

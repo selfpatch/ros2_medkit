@@ -91,6 +91,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   // SSE (Server-Sent Events) parameters
   declare_parameter("sse.max_clients", 10);         // Limit concurrent SSE connections to prevent resource exhaustion
   declare_parameter("sse.max_subscriptions", 100);  // Maximum active cyclic subscriptions across all entities
+  declare_parameter("sse.max_duration_sec", 3600);  // Maximum subscription duration in seconds (1 hour default)
 
   // Log management parameters
   declare_parameter("logs.buffer_size",
@@ -687,15 +688,12 @@ GatewayNode::~GatewayNode() {
   RCLCPP_INFO(get_logger(), "Shutting down ROS 2 Medkit Gateway...");
   // 1. Stop REST server (kills HTTP connections, SSE streams exit)
   stop_rest_server();
-  // 2. Stop all transport providers for active subscriptions
+  // 2. Shutdown subscriptions via transport registry (calls sub_mgr.shutdown(),
+  //    which triggers on_removed -> transport->stop() for each active subscription)
   if (transport_registry_) {
     transport_registry_->shutdown_all(*subscription_mgr_);
   }
-  // 3. Shutdown subscription manager (marks all inactive, triggers on_removed for stragglers)
-  if (subscription_mgr_) {
-    subscription_mgr_->shutdown();
-  }
-  // 4. Shutdown plugins
+  // 3. Shutdown plugins
   if (plugin_mgr_) {
     plugin_mgr_->shutdown_all();
   }

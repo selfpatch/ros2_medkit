@@ -104,6 +104,7 @@ TEST(ResourceSamplerRegistryTest, RejectPluginRegistrationWithoutXPrefix) {
 TEST(ResourceSamplerRegistryTest, ConcurrentRegisterAndLookup) {
   ResourceSamplerRegistry registry;
   std::vector<std::thread> threads;
+  threads.reserve(10);
 
   for (int i = 0; i < 10; ++i) {
     threads.emplace_back([&registry, i]() {

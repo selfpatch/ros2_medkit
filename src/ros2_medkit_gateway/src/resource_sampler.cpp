@@ -22,7 +22,7 @@ void ResourceSamplerRegistry::register_sampler(const std::string & collection, R
   std::unique_lock lock(mutex_);
 
   if (!is_builtin) {
-    if (collection.substr(0, 2) != "x-") {
+    if (collection.size() < 2 || collection.substr(0, 2) != "x-") {
       throw std::runtime_error("Plugin sampler collection must use 'x-' prefix: " + collection);
     }
     if (samplers_.count(collection) > 0) {

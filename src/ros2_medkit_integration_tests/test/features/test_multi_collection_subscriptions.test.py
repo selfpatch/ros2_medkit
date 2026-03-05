@@ -151,7 +151,8 @@ class TestMultiCollectionSubscriptions(GatewayTestCase):
         self.assertIn('id', data)
         self.assertTrue(data['id'].startswith('sub_'))
         self.assertEqual(data['protocol'], 'sse')
-        self.assertEqual(data['collection'], 'data')
+        self.assertEqual(data['interval'], 'normal')
+        self.assertIn('observed_resource', data)
         self.assertIn('event_source', data)
         self.assertTrue(data['event_source'].endswith('/events'))
 
@@ -167,8 +168,9 @@ class TestMultiCollectionSubscriptions(GatewayTestCase):
         data = r.json()
         self.addCleanup(self._delete_subscription, data['id'])
 
-        self.assertEqual(data['collection'], 'faults')
         self.assertEqual(data['protocol'], 'sse')
+        self.assertEqual(data['interval'], 'fast')
+        self.assertIn('observed_resource', data)
         self.assertIn('event_source', data)
 
     def test_configurations_subscription_create(self):
@@ -183,9 +185,113 @@ class TestMultiCollectionSubscriptions(GatewayTestCase):
         data = r.json()
         self.addCleanup(self._delete_subscription, data['id'])
 
-        self.assertEqual(data['collection'], 'configurations')
         self.assertEqual(data['protocol'], 'sse')
+        self.assertEqual(data['interval'], 'slow')
+        self.assertIn('observed_resource', data)
         self.assertIn('event_source', data)
+
+    # ===================================================================
+    # CRUD operations: list, get, update, delete
+    # ===================================================================
+
+    def test_list_subscriptions(self):
+        """List subscriptions returns items array.
+
+        @verifies REQ_INTEROP_025
+        """
+        # Create a subscription first
+        r = self._create_subscription(self.data_resource_uri, duration=60)
+        self.assertEqual(r.status_code, 201)
+        sub_id = r.json()['id']
+        self.addCleanup(self._delete_subscription, sub_id)
+
+        # List
+        r = requests.get(
+            f'{self.BASE_URL}/apps/{self.app_id}/cyclic-subscriptions',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertIn('items', data)
+        ids = [s['id'] for s in data['items']]
+        self.assertIn(sub_id, ids)
+
+    def test_get_subscription(self):
+        """Get single subscription returns SOVD fields.
+
+        @verifies REQ_INTEROP_026
+        """
+        r = self._create_subscription(self.data_resource_uri, duration=60)
+        self.assertEqual(r.status_code, 201)
+        sub_id = r.json()['id']
+        self.addCleanup(self._delete_subscription, sub_id)
+
+        r = requests.get(
+            f'{self.BASE_URL}/apps/{self.app_id}'
+            f'/cyclic-subscriptions/{sub_id}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data['id'], sub_id)
+        self.assertIn('observed_resource', data)
+        self.assertIn('event_source', data)
+        self.assertIn('protocol', data)
+        self.assertIn('interval', data)
+
+    def test_update_subscription_interval(self):
+        """Update subscription interval.
+
+        @verifies REQ_INTEROP_027
+        """
+        r = self._create_subscription(
+            self.data_resource_uri, interval='normal', duration=60,
+        )
+        self.assertEqual(r.status_code, 201)
+        sub_id = r.json()['id']
+        self.addCleanup(self._delete_subscription, sub_id)
+
+        r = requests.put(
+            f'{self.BASE_URL}/apps/{self.app_id}'
+            f'/cyclic-subscriptions/{sub_id}',
+            json={'interval': 'fast'},
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['interval'], 'fast')
+
+    def test_delete_subscription(self):
+        """Delete subscription returns 204.
+
+        @verifies REQ_INTEROP_028
+        """
+        r = self._create_subscription(self.data_resource_uri, duration=60)
+        self.assertEqual(r.status_code, 201)
+        sub_id = r.json()['id']
+
+        r = requests.delete(
+            f'{self.BASE_URL}/apps/{self.app_id}'
+            f'/cyclic-subscriptions/{sub_id}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 204)
+
+        # Verify it's gone
+        r = requests.get(
+            f'{self.BASE_URL}/apps/{self.app_id}'
+            f'/cyclic-subscriptions/{sub_id}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_get_nonexistent_subscription_returns_404(self):
+        """Get nonexistent subscription returns 404."""
+        r = requests.get(
+            f'{self.BASE_URL}/apps/{self.app_id}'
+            f'/cyclic-subscriptions/nonexistent_sub',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 404)
 
     # ===================================================================
     # Error cases

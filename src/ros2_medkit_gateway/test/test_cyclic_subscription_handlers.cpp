@@ -27,6 +27,7 @@ using json = nlohmann::json;
 
 // --- parse_resource_uri tests ---
 
+// @verifies REQ_INTEROP_089
 TEST(ParseResourceUriTest, DataCollectionWithTopic) {
   auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1/data/temperature");
   ASSERT_TRUE(result.has_value());
@@ -97,8 +98,29 @@ TEST(ParseResourceUriTest, PathTraversalInMiddleRejected) {
   EXPECT_FALSE(result.has_value());
 }
 
+TEST(ParseResourceUriTest, BenignDoubleDotInSegmentAllowed) {
+  // "/..foo" is not a traversal - '..' is part of a larger segment name
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1/data/..foo");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->resource_path, "/..foo");
+}
+
+TEST(ParseResourceUriTest, PathTraversalAtEndRejected) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1/data/a/..");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(ParseResourceUriTest, DataCollectionEmptyResourcePath) {
+  // data collection without a topic path - still parses, but handler rejects it
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1/data");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->collection, "data");
+  EXPECT_EQ(result->resource_path, "");
+}
+
 // --- subscription_to_json ---
 
+// @verifies REQ_INTEROP_089
 TEST(CyclicSubscriptionJsonTest, ContainsAllRequiredFields) {
   CyclicSubscriptionInfo info;
   info.id = "sub_001";

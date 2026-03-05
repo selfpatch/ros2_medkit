@@ -244,6 +244,10 @@ Configure limits for SSE-based streaming (fault events and cyclic subscriptions)
      - int
      - ``100``
      - Maximum number of active cyclic subscriptions across all entities. Returns HTTP 503 when this limit is reached.
+   * - ``sse.max_duration_sec``
+     - int
+     - ``3600``
+     - Maximum allowed subscription duration in seconds. Requests exceeding this are rejected with HTTP 400.
 
 Example:
 
@@ -254,6 +258,7 @@ Example:
        sse:
          max_clients: 10
          max_subscriptions: 100
+         max_duration_sec: 3600
 
 Plugin Framework
 ----------------
@@ -364,6 +369,7 @@ Complete Example
        sse:
          max_clients: 10
          max_subscriptions: 100
+         max_duration_sec: 3600
 
 See Also
 --------

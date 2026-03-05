@@ -398,6 +398,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_cyclic_subscription_handlers test/test_cyclic_subscription_handlers.cpp)
   target_link_libraries(test_cyclic_subscription_handlers gateway_lib)
 
+  # Add SSE transport provider tests
+  ament_add_gtest(test_sse_transport_provider test/test_sse_transport_provider.cpp)
+  target_link_libraries(test_sse_transport_provider gateway_lib)
+
   # Add update manager tests
   ament_add_gtest(test_update_manager test/test_update_manager.cpp)
   target_link_libraries(test_update_manager gateway_lib)
@@ -502,6 +506,7 @@ if(BUILD_TESTING)
       test_resource_sampler_registry
       test_transport_registry
       test_cyclic_subscription_handlers
+      test_sse_transport_provider
       test_update_manager
       test_data_handlers
       test_auth_handlers

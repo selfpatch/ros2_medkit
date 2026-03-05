@@ -115,7 +115,8 @@ class SubscriptionManager {
   /// Signal shutdown — wakes all waiting streams
   void shutdown();
 
-  /// Set callback invoked when a subscription is removed (remove, cleanup_expired, shutdown)
+  /// Set callback invoked when a subscription is removed (remove, cleanup_expired, shutdown).
+  /// MUST be called during initialization only, before any concurrent access.
   void set_on_removed(std::function<void(const CyclicSubscriptionInfo &)> callback);
 
   /**

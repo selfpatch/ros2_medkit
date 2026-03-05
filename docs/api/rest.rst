@@ -933,11 +933,32 @@ Without such a plugin, all endpoints return ``501 Not Implemented``.
 Cyclic Subscriptions
 --------------------
 
-Cyclic subscriptions provide periodic push-based data delivery via Server-Sent Events (SSE).
-A client creates a subscription specifying which data resource to observe and at what interval.
-The server then pushes the latest value of that resource at the requested frequency.
+Cyclic subscriptions provide periodic push-based delivery of any SOVD resource collection
+via Server-Sent Events (SSE). A client creates a subscription specifying the resource URI
+(data, faults, configurations, communication-logs, or ``x-`` vendor extensions) and a
+delivery interval. The server then pushes the latest value at the requested frequency.
 
-Subscriptions are temporary — they do not survive server restart.
+Subscriptions are temporary - they do not survive server restart.
+
+**Supported collections:**
+
+- ``data`` - Topic data (requires a resource path, e.g. ``/data/temperature``)
+- ``faults`` - Fault list (resource path optional, e.g. ``/faults`` or ``/faults/fault_001``)
+- ``configurations`` - Parameter values (resource path optional)
+- ``communication-logs`` - Network protocol logs (SOVD "comlogs", not ``/logs``)
+- ``x-*`` - Vendor extensions (e.g. ``x-medkit-metrics``)
+
+.. note::
+
+   SOVD "Communication Logs" (``communication-logs``) are network protocol logs per
+   ISO 17978-3, **not** the gateway's ``/logs`` endpoints which serve application-level
+   log entries from ``/rosout``.
+
+**Interval values:**
+
+- ``fast`` - 50ms sampling period
+- ``normal`` - 200ms sampling period (default)
+- ``slow`` - 500ms sampling period
 
 ``POST /api/v1/{entity_type}/{entity_id}/cyclic-subscriptions``
    Create a new cyclic subscription.
@@ -957,10 +978,22 @@ Subscriptions are temporary — they do not survive server restart.
 
    **Fields:**
 
-   - ``resource`` (string, required): Full URI of the data resource to observe
+   - ``resource`` (string, required): Full SOVD resource URI to observe
+     (e.g. ``/api/v1/apps/{id}/data/{topic}``, ``/api/v1/apps/{id}/faults``)
    - ``protocol`` (string, optional): Transport protocol. Only ``"sse"`` supported. Default: ``"sse"``
-   - ``interval`` (string, required): One of ``fast`` (<100ms), ``normal`` (100-250ms), ``slow`` (250-500ms)
-   - ``duration`` (integer, required): Subscription lifetime in seconds (must be > 0)
+   - ``interval`` (string, required): One of ``fast``, ``normal``, ``slow``
+   - ``duration`` (integer, required): Subscription lifetime in seconds.
+     Must be > 0 and <= ``sse.max_duration_sec`` (default: 3600)
+
+   **Error responses:**
+
+   - **400** ``invalid-parameter`` - Invalid interval, duration <= 0, or duration exceeds max
+   - **400** ``x-medkit-invalid-resource-uri`` - Malformed resource URI or path traversal
+   - **400** ``x-medkit-entity-mismatch`` - Resource URI references different entity than route
+   - **400** ``x-medkit-collection-not-supported`` - Entity doesn't support the collection
+   - **400** ``x-medkit-collection-not-available`` - No data provider registered for collection
+   - **400** ``x-medkit-unsupported-protocol`` - Requested protocol not available
+   - **503** ``service-unavailable`` - Max subscription capacity reached
 
    **Response 201 Created:**
 
@@ -982,7 +1015,8 @@ Subscriptions are temporary — they do not survive server restart.
 
 ``PUT /api/v1/{entity_type}/{entity_id}/cyclic-subscriptions/{id}``
    Update ``interval`` and/or ``duration`` of an existing subscription.
-   Only provided fields are updated.
+   Only provided fields are updated. Updating ``duration`` resets the
+   expiry timer from the current time (not from the original creation time).
 
    **Request Body:**
 
@@ -1015,6 +1049,28 @@ Subscriptions are temporary — they do not survive server restart.
 
    The stream auto-closes when the duration expires, the client disconnects,
    or the subscription is deleted.
+
+**Multi-collection examples:**
+
+Subscribe to faults on a component:
+
+.. code-block:: json
+
+   {
+     "resource": "/api/v1/components/ecu1/faults",
+     "interval": "slow",
+     "duration": 600
+   }
+
+Subscribe to a specific configuration parameter:
+
+.. code-block:: json
+
+   {
+     "resource": "/api/v1/apps/temp_sensor/configurations/calibration_offset",
+     "interval": "normal",
+     "duration": 120
+   }
 
 Rate Limiting
 -------------
