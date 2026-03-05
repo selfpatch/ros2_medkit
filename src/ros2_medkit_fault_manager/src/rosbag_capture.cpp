@@ -679,42 +679,35 @@ void RosbagCapture::validate_storage_format() const {
                              "Valid options: 'sqlite3', 'mcap'");
   }
 
-  // sqlite3 is always available (built into rosbag2)
-  if (config_.format == "sqlite3") {
-    return;
-  }
+  // Verify the selected storage plugin is available by trying to create a test bag
+  std::string test_path =
+      std::filesystem::temp_directory_path().string() + "/.rosbag_format_test_" + std::to_string(getpid());
 
-  // For MCAP, verify the plugin is available by trying to create a test bag
-  if (config_.format == "mcap") {
-    std::string test_path =
-        std::filesystem::temp_directory_path().string() + "/.rosbag_mcap_test_" + std::to_string(getpid());
-
-    try {
-      rosbag2_cpp::Writer writer;
-      rosbag2_storage::StorageOptions opts;
-      opts.uri = test_path;
-      opts.storage_id = "mcap";
-      writer.open(opts);
-      // Success - plugin is available, clean up test file
-    } catch (const std::exception & e) {
-      // Clean up any partial test files
-      std::error_code ec;
-      std::filesystem::remove_all(test_path, ec);
-
-      throw std::runtime_error(
-          "MCAP storage format requested but rosbag2_storage_mcap plugin is not available. "
-          "Install with: sudo apt install ros-${ROS_DISTRO}-rosbag2-storage-mcap "
-          "Or use format: 'sqlite3' (default). "
-          "Error: " +
-          std::string(e.what()));
-    }
-
-    // Clean up test file
+  try {
+    rosbag2_cpp::Writer writer;
+    rosbag2_storage::StorageOptions opts;
+    opts.uri = test_path;
+    opts.storage_id = config_.format;
+    writer.open(opts);
+    // Success - plugin is available
+  } catch (const std::exception & e) {
+    // Clean up any partial test files
     std::error_code ec;
     std::filesystem::remove_all(test_path, ec);
 
-    RCLCPP_INFO(node_->get_logger(), "MCAP storage format validated successfully");
+    throw std::runtime_error(
+        "Rosbag storage format '" + config_.format +
+        "' is not available. "
+        "Install the plugin or use a different format. "
+        "Error: " +
+        std::string(e.what()));
   }
+
+  // Clean up test file
+  std::error_code ec;
+  std::filesystem::remove_all(test_path, ec);
+
+  RCLCPP_INFO(node_->get_logger(), "%s storage format validated successfully", config_.format.c_str());
 }
 
 }  // namespace ros2_medkit_fault_manager
