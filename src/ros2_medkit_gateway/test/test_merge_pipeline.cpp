@@ -912,7 +912,6 @@ TEST_F(MergePipelineTest, LayerExceptionDoesNotCrashPipeline) {
   EXPECT_EQ(result.areas[0].id, "powertrain");
 }
 
-// @verifies REQ_DISC_MERGE_FUNCTION
 TEST_F(MergePipelineTest, FunctionMerge_HostsAndIdentity) {
   // Layer 1 (AUTH for IDENTITY): function with name, no hosts
   Function auth_func = make_function("diagnostics", "Diagnostics Suite");
