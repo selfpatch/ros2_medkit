@@ -695,12 +695,11 @@ void RosbagCapture::validate_storage_format() const {
     std::error_code ec;
     std::filesystem::remove_all(test_path, ec);
 
-    throw std::runtime_error(
-        "Rosbag storage format '" + config_.format +
-        "' is not available. "
-        "Install the plugin or use a different format. "
-        "Error: " +
-        std::string(e.what()));
+    throw std::runtime_error("Rosbag storage format '" + config_.format +
+                             "' is not available. "
+                             "Install the plugin or use a different format. "
+                             "Error: " +
+                             std::string(e.what()));
   }
 
   // Clean up test file
