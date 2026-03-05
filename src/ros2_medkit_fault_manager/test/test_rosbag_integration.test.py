@@ -160,7 +160,7 @@ if __name__ == '__main__':
             'snapshots.rosbag.duration_after_sec': 0.5,  # 0.5 second after confirm
             # Use explicit topics - faster than discovery, more reliable for tests
             'snapshots.rosbag.topics': '/test/temperature,/test/status',
-            'snapshots.rosbag.format': 'sqlite3',
+            'snapshots.rosbag.format': 'mcap',
             'snapshots.rosbag.storage_path': ROSBAG_STORAGE_PATH,
             'snapshots.rosbag.max_bag_size_mb': 10,
             'snapshots.rosbag.max_total_storage_mb': 50,
@@ -271,7 +271,7 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         self.assertTrue(rosbag_response.success,
                         f'GetRosbag failed: {rosbag_response.error_message}')
         self.assertGreater(len(rosbag_response.file_path), 0)
-        self.assertEqual(rosbag_response.format, 'sqlite3')
+        self.assertEqual(rosbag_response.format, 'mcap')
         self.assertGreater(rosbag_response.duration_sec, 0)
         self.assertGreater(rosbag_response.size_bytes, 0)
 

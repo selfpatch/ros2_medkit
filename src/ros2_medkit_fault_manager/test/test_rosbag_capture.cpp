@@ -58,7 +58,7 @@ class RosbagCaptureTest : public ::testing::Test {
     config.duration_sec = 2.0;
     config.duration_after_sec = 0.5;
     config.topics = "all";
-    config.format = "sqlite3";
+    config.format = "mcap";
     config.storage_path = temp_dir_.string();
     config.max_bag_size_mb = 10;
     config.max_total_storage_mb = 50;
@@ -117,9 +117,9 @@ TEST_F(RosbagCaptureTest, ConstructorThrowsOnInvalidFormat) {
 }
 
 // @verifies REQ_INTEROP_088
-TEST_F(RosbagCaptureTest, ConstructorAcceptsSqlite3Format) {
+TEST_F(RosbagCaptureTest, ConstructorAcceptsMcapFormat) {
   auto rosbag_config = create_rosbag_config();
-  rosbag_config.format = "sqlite3";
+  rosbag_config.format = "mcap";
   auto snapshot_config = create_snapshot_config();
   EXPECT_NO_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config));
 }
@@ -293,19 +293,10 @@ TEST_F(RosbagCaptureTest, CustomStoragePathAccepted) {
 
 // Format tests
 
-TEST_F(RosbagCaptureTest, Sqlite3FormatAccepted) {
-  auto rosbag_config = create_rosbag_config();
-  rosbag_config.format = "sqlite3";
-  auto snapshot_config = create_snapshot_config();
-  EXPECT_NO_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config));
-}
-
 TEST_F(RosbagCaptureTest, McapFormatAccepted) {
   auto rosbag_config = create_rosbag_config();
   rosbag_config.format = "mcap";
   auto snapshot_config = create_snapshot_config();
-  // Note: mcap might not be available in all ROS installations
-  // The constructor should not throw, but actual writing might fail
   EXPECT_NO_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config));
 }
 
