@@ -25,6 +25,78 @@ using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::handlers;
 using json = nlohmann::json;
 
+// --- parse_resource_uri tests ---
+
+TEST(ParseResourceUriTest, DataCollectionWithTopic) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1/data/temperature");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->entity_type, "apps");
+  EXPECT_EQ(result->entity_id, "node1");
+  EXPECT_EQ(result->collection, "data");
+  EXPECT_EQ(result->resource_path, "/temperature");
+}
+
+TEST(ParseResourceUriTest, FaultsCollectionNoPath) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/components/ecu1/faults");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->entity_type, "components");
+  EXPECT_EQ(result->entity_id, "ecu1");
+  EXPECT_EQ(result->collection, "faults");
+  EXPECT_EQ(result->resource_path, "");
+}
+
+TEST(ParseResourceUriTest, FaultsCollectionWithId) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1/faults/fault_001");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->collection, "faults");
+  EXPECT_EQ(result->resource_path, "/fault_001");
+}
+
+TEST(ParseResourceUriTest, ConfigurationsCollection) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/components/ecu1/configurations/param1");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->collection, "configurations");
+  EXPECT_EQ(result->resource_path, "/param1");
+}
+
+TEST(ParseResourceUriTest, VendorExtensionCollection) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1/x-medkit-metrics/cpu_usage");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->collection, "x-medkit-metrics");
+  EXPECT_EQ(result->resource_path, "/cpu_usage");
+}
+
+TEST(ParseResourceUriTest, MultiSegmentResourcePath) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1/data/parent/child/value");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->resource_path, "/parent/child/value");
+}
+
+TEST(ParseResourceUriTest, InvalidMissingCollection) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(ParseResourceUriTest, InvalidMalformedUri) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/not/a/valid/uri");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(ParseResourceUriTest, InvalidFunctionEntityType) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/functions/func1/data/topic");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(ParseResourceUriTest, PathTraversalRejected) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1/data/../../../etc/passwd");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(ParseResourceUriTest, PathTraversalInMiddleRejected) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1/data/a/../b");
+  EXPECT_FALSE(result.has_value());
+}
+
 // --- subscription_to_json ---
 
 TEST(CyclicSubscriptionJsonTest, ContainsAllRequiredFields) {

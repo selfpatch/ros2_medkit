@@ -21,6 +21,8 @@
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/providers/log_provider.hpp"
 #include "ros2_medkit_gateway/providers/update_provider.hpp"
+#include "ros2_medkit_gateway/resource_sampler.hpp"
+#include "ros2_medkit_gateway/subscription_transport.hpp"
 
 #include <httplib.h>
 #include <memory>
@@ -98,6 +100,15 @@ class PluginManager {
    */
   void register_routes(httplib::Server & server, const std::string & api_prefix);
 
+  /// Register a resource sampler for a vendor collection (must start with "x-")
+  void register_resource_sampler(const std::string & collection, ResourceSamplerFn fn);
+
+  /// Register a custom transport provider
+  void register_transport(std::unique_ptr<SubscriptionTransportProvider> provider);
+
+  /// Set registries (called during gateway init)
+  void set_registries(ResourceSamplerRegistry & samplers, TransportRegistry & transports);
+
   /**
    * @brief Shutdown all plugins
    */
@@ -163,6 +174,8 @@ class PluginManager {
   PluginContext * context_ = nullptr;
   UpdateProvider * first_update_provider_ = nullptr;
   LogProvider * first_log_provider_ = nullptr;
+  ResourceSamplerRegistry * sampler_registry_ = nullptr;
+  TransportRegistry * transport_registry_ = nullptr;
   bool shutdown_called_ = false;
   mutable std::shared_mutex plugins_mutex_;
 };

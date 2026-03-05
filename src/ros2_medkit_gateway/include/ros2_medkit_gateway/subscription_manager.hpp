@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -46,8 +47,9 @@ struct CyclicSubscriptionInfo {
   std::string entity_id;
   std::string entity_type;  // "apps" or "components"
   std::string resource_uri;
-  std::string topic_name;
-  std::string protocol;  // Always "sse" for now
+  std::string collection;     // "data", "faults", "configurations", "x-medkit-*"
+  std::string resource_path;  // path within collection (may be empty)
+  std::string protocol;       // Always "sse" for now
   CyclicInterval interval{CyclicInterval::NORMAL};
   int duration_sec{0};
   std::chrono::steady_clock::time_point created_at;
@@ -85,7 +87,8 @@ class SubscriptionManager {
   /// Create a new subscription. Returns subscription info or error string.
   tl::expected<CyclicSubscriptionInfo, std::string>
   create(const std::string & entity_id, const std::string & entity_type, const std::string & resource_uri,
-         const std::string & topic_name, const std::string & protocol, CyclicInterval interval, int duration_sec);
+         const std::string & collection, const std::string & resource_path, const std::string & protocol,
+         CyclicInterval interval, int duration_sec);
 
   /// Get a subscription by ID
   std::optional<CyclicSubscriptionInfo> get(const std::string & sub_id) const;
@@ -112,6 +115,9 @@ class SubscriptionManager {
   /// Signal shutdown — wakes all waiting streams
   void shutdown();
 
+  /// Set callback invoked when a subscription is removed (remove, cleanup_expired, shutdown)
+  void set_on_removed(std::function<void(const CyclicSubscriptionInfo &)> callback);
+
   /**
    * @brief Wait for an update or removal on the given subscription.
    *
@@ -134,6 +140,7 @@ class SubscriptionManager {
   size_t max_subscriptions_;
   std::atomic<uint64_t> next_id_{1};
   std::atomic<bool> shutdown_flag_{false};
+  std::function<void(const CyclicSubscriptionInfo &)> on_removed_;
 };
 
 }  // namespace ros2_medkit_gateway

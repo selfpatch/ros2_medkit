@@ -60,31 +60,31 @@ class SubscriptionManagerTest : public ::testing::Test {
 
 TEST_F(SubscriptionManagerTest, CreateFailsAtCapacity) {
   for (int i = 0; i < 5; ++i) {
-    auto r = mgr_.create("e", "apps", "/r", "/t", "sse", CyclicInterval::FAST, 60);
+    auto r = mgr_.create("e", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 60);
     ASSERT_TRUE(r.has_value()) << "Subscription " << i << " should succeed";
   }
-  auto r = mgr_.create("e", "apps", "/r", "/t", "sse", CyclicInterval::FAST, 60);
+  auto r = mgr_.create("e", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 60);
   ASSERT_FALSE(r.has_value());
   EXPECT_NE(r.error().find("capacity"), std::string::npos);
 }
 
 TEST_F(SubscriptionManagerTest, CapacityFreedAfterRemove) {
   for (int i = 0; i < 5; ++i) {
-    (void)mgr_.create("e", "apps", "/r", "/t", "sse", CyclicInterval::FAST, 60);
+    (void)mgr_.create("e", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 60);
   }
   auto list = mgr_.list("e");
   ASSERT_FALSE(list.empty());
   mgr_.remove(list[0].id);
 
-  auto r = mgr_.create("e", "apps", "/r", "/t", "sse", CyclicInterval::FAST, 60);
+  auto r = mgr_.create("e", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 60);
   EXPECT_TRUE(r.has_value()) << "Should succeed after freeing a slot";
 }
 
 // --- ID uniqueness ---
 
 TEST_F(SubscriptionManagerTest, GeneratesUniqueIds) {
-  auto r1 = mgr_.create("a", "apps", "/r1", "/t1", "sse", CyclicInterval::FAST, 60);
-  auto r2 = mgr_.create("a", "apps", "/r2", "/t2", "sse", CyclicInterval::FAST, 60);
+  auto r1 = mgr_.create("a", "apps", "/r1", "data", "/t1", "sse", CyclicInterval::FAST, 60);
+  auto r2 = mgr_.create("a", "apps", "/r2", "data", "/t2", "sse", CyclicInterval::FAST, 60);
   ASSERT_TRUE(r1.has_value());
   ASSERT_TRUE(r2.has_value());
   EXPECT_NE(r1->id, r2->id);
@@ -93,8 +93,8 @@ TEST_F(SubscriptionManagerTest, GeneratesUniqueIds) {
 // --- Expiry edge cases ---
 
 TEST_F(SubscriptionManagerTest, CleanupExpiredRemovesOnlyExpired) {
-  (void)mgr_.create("a", "apps", "/r", "/t", "sse", CyclicInterval::FAST, 0);    // expired immediately
-  (void)mgr_.create("b", "apps", "/r", "/t", "sse", CyclicInterval::FAST, 300);  // still active
+  (void)mgr_.create("a", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 0);    // expired immediately
+  (void)mgr_.create("b", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 300);  // still active
 
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -105,7 +105,7 @@ TEST_F(SubscriptionManagerTest, CleanupExpiredRemovesOnlyExpired) {
 }
 
 TEST_F(SubscriptionManagerTest, IsActiveReturnsFalseAfterExpiry) {
-  auto r = mgr_.create("a", "apps", "/r", "/t", "sse", CyclicInterval::FAST, 0);
+  auto r = mgr_.create("a", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 0);
   ASSERT_TRUE(r.has_value());
 
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -119,7 +119,7 @@ TEST_F(SubscriptionManagerTest, IsActiveReturnsFalseForNonexistent) {
 // --- Update edge cases ---
 
 TEST_F(SubscriptionManagerTest, UpdateOnlyIntervalLeavesOtherFieldsUnchanged) {
-  auto created = mgr_.create("a", "apps", "/r", "/t", "sse", CyclicInterval::NORMAL, 300);
+  auto created = mgr_.create("a", "apps", "/r", "data", "/t", "sse", CyclicInterval::NORMAL, 300);
   ASSERT_TRUE(created.has_value());
 
   auto updated = mgr_.update(created->id, CyclicInterval::FAST, std::nullopt);
@@ -131,7 +131,7 @@ TEST_F(SubscriptionManagerTest, UpdateOnlyIntervalLeavesOtherFieldsUnchanged) {
 }
 
 TEST_F(SubscriptionManagerTest, UpdateDurationExtendsExpiry) {
-  auto created = mgr_.create("a", "apps", "/r", "/t", "sse", CyclicInterval::NORMAL, 10);
+  auto created = mgr_.create("a", "apps", "/r", "data", "/t", "sse", CyclicInterval::NORMAL, 10);
   ASSERT_TRUE(created.has_value());
 
   auto updated = mgr_.update(created->id, std::nullopt, 600);
@@ -153,7 +153,7 @@ TEST(SubscriptionManagerConcurrencyTest, ConcurrentCreateIsThreadSafe) {
 
   for (int i = 0; i < 20; ++i) {
     threads.emplace_back([&mgr, &success_count, i]() {
-      auto r = mgr.create("entity_" + std::to_string(i), "apps", "/r", "/t", "sse", CyclicInterval::FAST, 60);
+      auto r = mgr.create("entity_" + std::to_string(i), "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 60);
       if (r.has_value()) {
         success_count.fetch_add(1);
       }
@@ -173,7 +173,7 @@ TEST(SubscriptionManagerConcurrencyTest, ConcurrentCreateRespectsCapacity) {
 
   for (int i = 0; i < 20; ++i) {
     threads.emplace_back([&mgr, &success_count, i]() {
-      auto r = mgr.create("e_" + std::to_string(i), "apps", "/r", "/t", "sse", CyclicInterval::FAST, 60);
+      auto r = mgr.create("e_" + std::to_string(i), "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 60);
       if (r.has_value()) {
         success_count.fetch_add(1);
       }
@@ -189,7 +189,7 @@ TEST(SubscriptionManagerConcurrencyTest, ConcurrentCreateRespectsCapacity) {
 
 TEST(SubscriptionManagerSyncTest, WaitForUpdateTimesOut) {
   SubscriptionManager mgr(10);
-  auto created = mgr.create("a", "apps", "/r", "/t", "sse", CyclicInterval::FAST, 300);
+  auto created = mgr.create("a", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 300);
   ASSERT_TRUE(created.has_value());
 
   auto start = std::chrono::steady_clock::now();
@@ -202,7 +202,7 @@ TEST(SubscriptionManagerSyncTest, WaitForUpdateTimesOut) {
 
 TEST(SubscriptionManagerSyncTest, WaitForUpdateWokenByNotify) {
   SubscriptionManager mgr(10);
-  auto created = mgr.create("a", "apps", "/r", "/t", "sse", CyclicInterval::FAST, 300);
+  auto created = mgr.create("a", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 300);
   ASSERT_TRUE(created.has_value());
 
   std::thread notifier([&mgr, id = created->id]() {
@@ -217,7 +217,7 @@ TEST(SubscriptionManagerSyncTest, WaitForUpdateWokenByNotify) {
 
 TEST(SubscriptionManagerSyncTest, WaitForUpdateReturnsTrueIfRemoved) {
   SubscriptionManager mgr(10);
-  auto created = mgr.create("a", "apps", "/r", "/t", "sse", CyclicInterval::FAST, 300);
+  auto created = mgr.create("a", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 300);
   ASSERT_TRUE(created.has_value());
 
   std::thread remover([&mgr, id = created->id]() {
@@ -228,4 +228,47 @@ TEST(SubscriptionManagerSyncTest, WaitForUpdateReturnsTrueIfRemoved) {
   bool notified = mgr.wait_for_update(created->id, std::chrono::milliseconds(500));
   EXPECT_TRUE(notified);
   remover.join();
+}
+
+// --- on_removed callback ---
+
+TEST(SubscriptionManagerCallbackTest, OnRemovedCalledOnRemove) {
+  SubscriptionManager mgr(10);
+  std::vector<std::string> removed_ids;
+  mgr.set_on_removed([&](const CyclicSubscriptionInfo & info) {
+    removed_ids.push_back(info.id);
+  });
+  auto created = mgr.create("a", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 300);
+  ASSERT_TRUE(created.has_value());
+  mgr.remove(created->id);
+  ASSERT_EQ(removed_ids.size(), 1u);
+  EXPECT_EQ(removed_ids[0], created->id);
+}
+
+TEST(SubscriptionManagerCallbackTest, OnRemovedCalledOnCleanupExpired) {
+  SubscriptionManager mgr(10);
+  std::vector<std::string> removed_ids;
+  mgr.set_on_removed([&](const CyclicSubscriptionInfo & info) {
+    removed_ids.push_back(info.id);
+  });
+  auto created = mgr.create("a", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 0);
+  ASSERT_TRUE(created.has_value());
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  mgr.cleanup_expired();
+  ASSERT_EQ(removed_ids.size(), 1u);
+  EXPECT_EQ(removed_ids[0], created->id);
+}
+
+TEST(SubscriptionManagerCallbackTest, OnRemovedCalledOnShutdown) {
+  SubscriptionManager mgr(10);
+  std::vector<std::string> removed_ids;
+  mgr.set_on_removed([&](const CyclicSubscriptionInfo & info) {
+    removed_ids.push_back(info.id);
+  });
+  auto r1 = mgr.create("a", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 300);
+  auto r2 = mgr.create("b", "apps", "/r", "faults", "", "sse", CyclicInterval::NORMAL, 300);
+  ASSERT_TRUE(r1.has_value());
+  ASSERT_TRUE(r2.has_value());
+  mgr.shutdown();
+  EXPECT_EQ(removed_ids.size(), 2u);
 }
