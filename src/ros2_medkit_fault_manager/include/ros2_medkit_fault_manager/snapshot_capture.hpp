@@ -51,8 +51,8 @@ struct RosbagConfig {
   /// If false (default), ring buffer runs continuously from startup
   bool lazy_start{false};
 
-  /// Storage format: "sqlite3" or "mcap"
-  std::string format{"sqlite3"};
+  /// Storage format: "mcap" or "sqlite3"
+  std::string format{"mcap"};
 
   /// Path to store bag files (empty = system temp directory)
   std::string storage_path;
