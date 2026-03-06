@@ -18,6 +18,10 @@ Integration tests for namespace blacklist/whitelist in hybrid gap-fill.
 
 Tests that namespace_blacklist and namespace_whitelist parameters
 correctly filter which heuristic entities the runtime layer creates.
+
+Strategy: launch two unmanifested nodes - one in a blacklisted namespace
+(/chassis/brakes) and one in a non-blacklisted namespace (/powertrain/engine).
+The blacklisted one should be filtered from gap-fill; the other should appear.
 """
 
 import os
@@ -26,6 +30,7 @@ import unittest
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import TimerAction
+import launch_ros.actions
 import launch_testing
 import launch_testing.actions
 
@@ -53,7 +58,31 @@ def generate_test_description():
     demo_nodes = create_demo_nodes(
         ['temp_sensor', 'rpm_sensor', 'pressure_sensor', 'calibration'],
     )
-    delayed = TimerAction(period=2.0, actions=demo_nodes)
+
+    # Launch an extra unmanifested node in /chassis/brakes (blacklisted)
+    # This should be FILTERED by the namespace blacklist.
+    unmanifested_chassis_node = launch_ros.actions.Node(
+        package='ros2_medkit_integration_tests',
+        executable='demo_engine_temp_sensor',
+        name='unmanifested_chassis_sensor',
+        namespace='/chassis/brakes',
+        output='screen',
+    )
+
+    # Launch an extra unmanifested node in /powertrain/engine (not blacklisted)
+    # This should NOT be filtered and appear as a heuristic gap-fill app.
+    unmanifested_engine_node = launch_ros.actions.Node(
+        package='ros2_medkit_integration_tests',
+        executable='demo_engine_temp_sensor',
+        name='unmanifested_engine_sensor',
+        namespace='/powertrain/engine',
+        output='screen',
+    )
+
+    delayed = TimerAction(
+        period=2.0,
+        actions=demo_nodes + [unmanifested_chassis_node, unmanifested_engine_node],
+    )
 
     return (
         LaunchDescription([
@@ -94,8 +123,30 @@ class TestNamespaceFilter(GatewayTestCase):
         self.assertIn('powertrain', area_ids)
         self.assertIn('chassis', area_ids)
 
+    def test_blacklist_filters_unmanifested_chassis_node(self):
+        """Unmanifested node in blacklisted /chassis should NOT appear as app."""
+        # Wait for the non-blacklisted unmanifested node to appear first,
+        # proving that gap-fill is active and enough time has passed
+        self.poll_endpoint_until(
+            '/apps',
+            lambda d: d if any(
+                'unmanifested_engine_sensor' in a.get('id', '')
+                for a in d.get('items', [])
+            ) else None,
+            timeout=30.0,
+        )
+
+        # Now verify the blacklisted one is absent
+        data = self.get_json('/apps')
+        app_ids = [a['id'] for a in data.get('items', [])]
+        for app_id in app_ids:
+            self.assertNotIn(
+                'unmanifested_chassis_sensor', app_id,
+                f"Blacklisted namespace node should not appear: {app_id}",
+            )
+
     def test_health_shows_gap_fill_filtering(self):
-        """Health endpoint should show pipeline stats."""
+        """Health endpoint should show pipeline stats including filtered count."""
         health = self.poll_endpoint_until(
             '/health',
             lambda data: data if 'discovery' in data

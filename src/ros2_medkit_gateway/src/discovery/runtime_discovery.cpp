@@ -94,6 +94,7 @@ std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
     Area area;
     area.id = area_name;
     area.namespace_path = (area_name == "root") ? "/" : "/" + area_name;
+    area.source = "heuristic";
     areas.push_back(area);
   }
 

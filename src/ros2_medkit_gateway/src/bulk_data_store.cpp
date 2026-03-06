@@ -74,9 +74,9 @@ std::string BulkDataStore::generate_id(const std::string & category) {
   auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
 
   // Generate 8 hex chars from random
-  // Local (not static thread_local) to avoid initial-exec TLS relocations (TPOFF32)
-  // that break when gateway_lib.a is linked into a shared object (test_gateway_plugin.so)
-  std::mt19937 gen(std::random_device{}());
+  // gateway_lib.a is compiled with POSITION_INDEPENDENT_CODE (fPIC), so the compiler
+  // emits global-dynamic TLS which works in both executables and shared objects.
+  static thread_local std::mt19937 gen(std::random_device{}());
   std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
   uint32_t rand_val = dist(gen);
 

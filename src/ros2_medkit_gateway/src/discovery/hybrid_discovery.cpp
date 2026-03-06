@@ -46,14 +46,11 @@ std::vector<Function> HybridDiscoveryStrategy::discover_functions() {
 }
 
 void HybridDiscoveryStrategy::refresh() {
-  auto new_result = pipeline_.execute();
-  size_t total = new_result.report.total_entities;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    cached_result_ = std::move(new_result);
-  }
+  // Hold mutex for the full execute()+swap to prevent data races with add_layer()
+  std::lock_guard<std::mutex> lock(mutex_);
+  cached_result_ = pipeline_.execute();
   if (node_) {
-    RCLCPP_INFO(node_->get_logger(), "Hybrid discovery refreshed: %zu entities", total);
+    RCLCPP_INFO(node_->get_logger(), "Hybrid discovery refreshed: %zu entities", cached_result_.report.total_entities);
   }
 }
 
