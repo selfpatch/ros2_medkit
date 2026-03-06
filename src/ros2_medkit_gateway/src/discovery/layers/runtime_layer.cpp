@@ -56,6 +56,29 @@ size_t filter_by_namespace(std::vector<Entity> & entities, const GapFillConfig &
   return before - entities.size();
 }
 
+// Extract namespace from a fully-qualified node name (e.g. "/ns/sub/node" -> "/ns/sub")
+std::string namespace_from_fqn(const std::string & fqn) {
+  auto pos = fqn.rfind('/');
+  if (pos == std::string::npos || pos == 0) {
+    return "/";
+  }
+  return fqn.substr(0, pos);
+}
+
+// Filter apps by namespace derived from bound_fqn
+size_t filter_apps_by_namespace(std::vector<App> & apps, const GapFillConfig & config) {
+  size_t before = apps.size();
+  apps.erase(std::remove_if(apps.begin(), apps.end(),
+                            [&config](const App & a) {
+                              if (!a.bound_fqn.has_value()) {
+                                return false;  // Keep unbound apps
+                              }
+                              return !is_namespace_allowed(namespace_from_fqn(*a.bound_fqn), config);
+                            }),
+             apps.end());
+  return before - apps.size();
+}
+
 }  // namespace
 
 RuntimeLayer::RuntimeLayer(RuntimeDiscoveryStrategy * runtime_strategy) : runtime_strategy_(runtime_strategy) {
@@ -94,6 +117,7 @@ LayerOutput RuntimeLayer::discover() {
 
   if (gap_fill_config_.allow_heuristic_apps) {
     output.apps = std::move(apps);
+    last_filtered_count_ += filter_apps_by_namespace(output.apps, gap_fill_config_);
   }
 
   if (gap_fill_config_.allow_heuristic_functions) {
