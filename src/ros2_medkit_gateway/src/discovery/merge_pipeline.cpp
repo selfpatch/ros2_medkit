@@ -92,7 +92,10 @@ void merge_bool(bool & target, bool source, MergeWinner winner) {
       target = source;
       break;
     case MergeWinner::BOTH:
-      // Either true wins
+      // OR semantics: once true, stays true. This is intentional for status flags
+      // like is_online (any layer reporting online = online). For classification
+      // bools like external, an incorrect true from a lower layer is sticky -
+      // use AUTHORITATIVE policy on the correcting layer to override.
       target = target || source;
       break;
     case MergeWinner::TARGET:
@@ -179,6 +182,9 @@ void apply_field_group_merge(Entity & target, const Entity & source, FieldGroup 
       case FieldGroup::HIERARCHY:
         merge_scalar(target.namespace_path, source.namespace_path, res.scalar);
         merge_scalar(target.parent_area_id, source.parent_area_id, res.scalar);
+        break;
+      case FieldGroup::METADATA:
+        merge_scalar(target.source, source.source, res.scalar);
         break;
       default:
         break;

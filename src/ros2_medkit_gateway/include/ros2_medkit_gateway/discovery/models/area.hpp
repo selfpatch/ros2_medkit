@@ -37,6 +37,7 @@ struct Area {
   std::string description;        ///< Human-readable description
   std::vector<std::string> tags;  ///< Tags for filtering
   std::string parent_area_id;     ///< Parent area ID for sub-areas
+  std::string source;             ///< Origin of this area (e.g., "manifest", "heuristic")
 
   /**
    * @brief Convert to JSON representation
@@ -66,6 +67,9 @@ struct Area {
     }
     if (!parent_area_id.empty()) {
       x_medkit["parentAreaId"] = parent_area_id;
+    }
+    if (!source.empty()) {
+      x_medkit["source"] = source;
     }
     j["x-medkit"] = x_medkit;
 

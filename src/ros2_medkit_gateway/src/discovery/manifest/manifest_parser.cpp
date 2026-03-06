@@ -136,6 +136,7 @@ void ManifestParser::parse_area_recursive(const YAML::Node & node, const std::st
   area.tags = get_string_vector(node, "tags");
   // Set parent from recursive call, or from explicit parent_area field
   area.parent_area_id = parent_id.empty() ? get_string(node, "parent_area") : parent_id;
+  area.source = "manifest";
 
   areas.push_back(area);
 

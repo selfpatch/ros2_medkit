@@ -40,12 +40,29 @@ bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
     manifest_manager_ = std::make_unique<discovery::ManifestManager>(node_);
 
     if (config.manifest_path.empty()) {
+      if (config.mode == DiscoveryMode::HYBRID) {
+        RCLCPP_WARN(node_->get_logger(),
+                    "No manifest_path set for hybrid mode. Falling back to runtime_only. "
+                    "This fallback is deprecated and will be removed in a future release.");
+        config_.mode = DiscoveryMode::RUNTIME_ONLY;
+        create_strategy();
+        return true;
+      }
       RCLCPP_ERROR(node_->get_logger(), "Manifest path required for %s mode. Set discovery.manifest_path.",
                    discovery_mode_to_string(config.mode).c_str());
       return false;
     }
 
     if (!manifest_manager_->load_manifest(config.manifest_path, config.manifest_strict_validation)) {
+      if (config.mode == DiscoveryMode::HYBRID) {
+        RCLCPP_WARN(node_->get_logger(),
+                    "Manifest load failed in hybrid mode. Falling back to runtime_only. "
+                    "This fallback is deprecated and will be removed in a future release.");
+        config_.mode = DiscoveryMode::RUNTIME_ONLY;
+        manifest_manager_.reset();
+        create_strategy();
+        return true;
+      }
       RCLCPP_ERROR(node_->get_logger(), "Manifest load failed in %s mode. Cannot proceed.",
                    discovery_mode_to_string(config.mode).c_str());
       return false;
@@ -213,27 +230,40 @@ std::optional<Function> DiscoveryManager::get_function(const std::string & id) {
 }
 
 std::vector<Area> DiscoveryManager::get_subareas(const std::string & area_id) {
-  if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
+  if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_subareas(area_id);
   }
-  return {};  // No subareas in runtime mode
+  // HYBRID: filter from pipeline-merged output; RUNTIME: no subareas
+  std::vector<Area> result;
+  for (const auto & a : discover_areas()) {
+    if (a.parent_area_id == area_id) {
+      result.push_back(a);
+    }
+  }
+  return result;
 }
 
 std::vector<Component> DiscoveryManager::get_subcomponents(const std::string & component_id) {
-  if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
+  if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_subcomponents(component_id);
   }
-  return {};  // No subcomponents in runtime mode
+  // HYBRID: filter from pipeline-merged output; RUNTIME: no subcomponents
+  std::vector<Component> result;
+  for (const auto & c : discover_components()) {
+    if (c.parent_component_id == component_id) {
+      result.push_back(c);
+    }
+  }
+  return result;
 }
 
 std::vector<Component> DiscoveryManager::get_components_for_area(const std::string & area_id) {
-  if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
+  if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_components_for_area(area_id);
   }
-  // Fallback: filter runtime components by area
+  // HYBRID: filter from pipeline-merged output; RUNTIME: filter by area
   std::vector<Component> result;
-  auto all = discover_components();
-  for (const auto & c : all) {
+  for (const auto & c : discover_components()) {
     if (c.area == area_id) {
       result.push_back(c);
     }
@@ -242,13 +272,12 @@ std::vector<Component> DiscoveryManager::get_components_for_area(const std::stri
 }
 
 std::vector<App> DiscoveryManager::get_apps_for_component(const std::string & component_id) {
-  if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
+  if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_apps_for_component(component_id);
   }
-  // Filter runtime apps by component_id
+  // HYBRID: filter from pipeline-merged output; RUNTIME: filter by component
   std::vector<App> result;
-  auto apps = discover_apps();
-  for (const auto & app : apps) {
+  for (const auto & app : discover_apps()) {
     if (app.component_id == component_id) {
       result.push_back(app);
     }
