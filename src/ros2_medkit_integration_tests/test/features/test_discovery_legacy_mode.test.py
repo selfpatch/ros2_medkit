@@ -58,16 +58,16 @@ def generate_test_description():
 class TestLegacyDiscoveryMode(GatewayTestCase):
     """Test create_synthetic_components=false (legacy 1:1 node-to-component mode)."""
 
-    POLL_INTERVAL = 1.0
-    POLL_TIMEOUT = 30.0
-
     def test_each_node_has_own_component(self):
         """Each node should become its own Component (no synthetic grouping)."""
-        components = self.poll_endpoint_until(
+        data = self.poll_endpoint_until(
             '/components',
-            lambda data: len(data) >= 3,
+            lambda d: d if any(
+                'temp_sensor' in c['id'] for c in d.get('items', [])
+            ) else None,
+            timeout=60.0,
         )
-        component_ids = [c['id'] for c in components]
+        component_ids = [c['id'] for c in data['items']]
 
         # Each demo node should appear as a component
         # Node names: temp_sensor, rpm_sensor, pressure_sensor
@@ -82,13 +82,16 @@ class TestLegacyDiscoveryMode(GatewayTestCase):
 
     def test_no_synthetic_namespace_components(self):
         """No synthetic components from namespace grouping should exist."""
-        components = self.poll_endpoint_until(
+        data = self.poll_endpoint_until(
             '/components',
-            lambda data: len(data) >= 3,
+            lambda d: d if any(
+                'temp_sensor' in c['id'] for c in d.get('items', [])
+            ) else None,
+            timeout=60.0,
         )
 
         # With synthetic off, components should NOT have source="synthetic"
-        for comp in components:
+        for comp in data['items']:
             x_medkit = comp.get('x-medkit', {})
             source = x_medkit.get('source', '')
             self.assertNotEqual(

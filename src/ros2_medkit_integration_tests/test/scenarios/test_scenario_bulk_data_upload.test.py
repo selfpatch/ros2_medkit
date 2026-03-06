@@ -31,12 +31,11 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH, get_test_port
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_demo_nodes, create_gateway_node
 
-# Use a unique port to avoid conflicts with other integration tests
-TEST_PORT = 8765
+TEST_PORT = get_test_port()
 BULK_DATA_BASE_URL = f'http://localhost:{TEST_PORT}{API_BASE_PATH}'
 
 
@@ -48,7 +47,6 @@ def generate_test_description():
         port=TEST_PORT,
         extra_params={
             'server.host': '127.0.0.1',
-            'server.port': TEST_PORT,
             'bulk_data.storage_dir': tmpdir,
             'bulk_data.max_upload_size': 104857600,
             'bulk_data.categories': ['calibration', 'firmware'],

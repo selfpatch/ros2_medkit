@@ -26,13 +26,13 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH, get_test_port
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import get_coverage_env
 
 
-PORT_NO_PLUGIN = 8088
-PORT_WITH_PLUGIN = 8089
+PORT_NO_PLUGIN = get_test_port(0)
+PORT_WITH_PLUGIN = get_test_port(1)
 
 
 def _get_test_plugin_path():

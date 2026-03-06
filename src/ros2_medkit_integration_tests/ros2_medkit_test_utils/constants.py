@@ -14,9 +14,22 @@
 
 """Shared constants for ros2_medkit integration tests."""
 
+import os
+
 API_BASE_PATH = '/api/v1'
-DEFAULT_PORT = 8080
+DEFAULT_PORT = int(os.environ.get('GATEWAY_TEST_PORT', '8080'))
 DEFAULT_BASE_URL = f'http://localhost:{DEFAULT_PORT}{API_BASE_PATH}'
+
+
+def get_test_port(offset=0):
+    """Return the assigned test port plus an optional offset.
+
+    Each integration test gets a unique ``GATEWAY_TEST_PORT`` from CMake.
+    Tests that launch multiple gateway instances use *offset* to get
+    additional non-colliding ports (e.g. ``get_test_port(1)``).
+    """
+    return DEFAULT_PORT + offset
+
 
 # Gateway startup
 GATEWAY_STARTUP_TIMEOUT = 30.0

@@ -31,11 +31,15 @@ import launch_testing.actions
 import pytest
 import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH
+from ros2_medkit_test_utils.constants import (
+    ALLOWED_EXIT_CODES,
+    API_BASE_PATH,
+    get_test_port,
+)
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 
-AUTH_PORT = 8085
+AUTH_PORT = get_test_port()
 AUTH_BASE_URL = f'http://127.0.0.1:{AUTH_PORT}{API_BASE_PATH}'
 
 
@@ -46,7 +50,6 @@ def generate_test_description():
         port=AUTH_PORT,
         extra_params={
             'server.host': '127.0.0.1',
-            'server.port': AUTH_PORT,
             'auth.enabled': True,
             'auth.jwt_secret': 'test_secret_key_for_jwt_signing_integration_test_12345',
             'auth.jwt_algorithm': 'HS256',

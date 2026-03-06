@@ -35,13 +35,13 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH, get_test_port
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 
 # Test configuration
 GATEWAY_HOST = '127.0.0.1'
-GATEWAY_PORT = 8087
+GATEWAY_PORT = get_test_port()
 ALLOWED_ORIGIN = 'http://localhost:5173'
 
 
@@ -51,7 +51,6 @@ def generate_test_description():
         port=GATEWAY_PORT,
         extra_params={
             'server.host': GATEWAY_HOST,
-            'server.port': GATEWAY_PORT,
             'rate_limiting.enabled': True,
             'rate_limiting.global_requests_per_minute': 100,
             'rate_limiting.client_requests_per_minute': 2,
