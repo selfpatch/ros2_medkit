@@ -64,12 +64,12 @@ MergeReport HybridDiscoveryStrategy::get_merge_report() const {
 
 LinkingResult HybridDiscoveryStrategy::get_linking_result() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return pipeline_.get_linking_result();
+  return cached_result_.linking_result;
 }
 
 std::vector<std::string> HybridDiscoveryStrategy::get_orphan_nodes() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return pipeline_.get_linking_result().orphan_nodes;
+  return cached_result_.linking_result.orphan_nodes;
 }
 
 void HybridDiscoveryStrategy::add_layer(std::unique_ptr<DiscoveryLayer> layer) {

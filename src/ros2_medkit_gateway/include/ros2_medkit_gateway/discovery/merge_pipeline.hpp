@@ -37,6 +37,7 @@ struct MergeResult {
   std::vector<App> apps;
   std::vector<Function> functions;
   MergeReport report;
+  LinkingResult linking_result;
 };
 
 /**

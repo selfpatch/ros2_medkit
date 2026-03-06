@@ -101,8 +101,10 @@ std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
 }
 
 std::vector<Component> RuntimeDiscoveryStrategy::discover_components() {
-  auto apps = discover_apps();
+  return discover_components(discover_apps());
+}
 
+std::vector<Component> RuntimeDiscoveryStrategy::discover_components(const std::vector<App> & apps) {
   if (!config_.create_synthetic_components) {
     // Legacy mode: each App becomes its own Component (1:1 mapping)
     std::vector<Component> components;

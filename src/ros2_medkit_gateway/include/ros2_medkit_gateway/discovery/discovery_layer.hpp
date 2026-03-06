@@ -63,6 +63,12 @@ class DiscoveryLayer {
   /// Merge policy this layer uses for the given field group
   virtual MergePolicy policy_for(FieldGroup group) const = 0;
 
+  /// Whether this layer provides runtime apps for post-merge linking.
+  /// Only RuntimeLayer (or test doubles) should return true.
+  virtual bool provides_runtime_apps() const {
+    return false;
+  }
+
   /// Provide the current discovery context (entities from previous layers).
   /// Called by MergePipeline before discover(). Default no-op.
   virtual void set_discovery_context(const IntrospectionInput & /*context*/) {

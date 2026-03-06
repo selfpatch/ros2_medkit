@@ -78,8 +78,11 @@ LayerOutput RuntimeLayer::discover() {
     last_filtered_count_ += filter_by_namespace(output.areas, gap_fill_config_);
   }
 
+  // Discover apps once - used by both components (synthetic grouping) and apps output
+  auto apps = runtime_strategy_->discover_apps();
+
   if (gap_fill_config_.allow_heuristic_components) {
-    output.components = runtime_strategy_->discover_components();
+    output.components = runtime_strategy_->discover_components(apps);
 
     // Topic components are discovered separately and must be included
     auto topic_components = runtime_strategy_->discover_topic_components();
@@ -90,7 +93,7 @@ LayerOutput RuntimeLayer::discover() {
   }
 
   if (gap_fill_config_.allow_heuristic_apps) {
-    output.apps = runtime_strategy_->discover_apps();
+    output.apps = std::move(apps);
   }
 
   if (gap_fill_config_.allow_heuristic_functions) {
