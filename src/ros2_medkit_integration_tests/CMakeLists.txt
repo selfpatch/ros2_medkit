@@ -79,6 +79,11 @@ install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 if(BUILD_TESTING)
   find_package(launch_testing_ament_cmake REQUIRED)
 
+  # Each integration test gets a unique HTTP port via GATEWAY_TEST_PORT env var,
+  # allowing parallel CTest execution without port conflicts.
+  # Stride of 10 per test so multi-gateway tests can use get_test_port(offset).
+  set(_INTEG_PORT 9100)
+
   # Feature tests (atomic, independent, 120s timeout)
   file(GLOB FEATURE_TESTS test/features/*.test.py)
   foreach(test_file ${FEATURE_TESTS})
@@ -87,7 +92,11 @@ if(BUILD_TESTING)
       TARGET ${test_name}
       TIMEOUT 120
     )
-    set_tests_properties(${test_name} PROPERTIES LABELS "integration;feature")
+    set_tests_properties(${test_name} PROPERTIES
+      LABELS "integration;feature"
+      ENVIRONMENT "GATEWAY_TEST_PORT=${_INTEG_PORT}"
+    )
+    math(EXPR _INTEG_PORT "${_INTEG_PORT} + 10")
   endforeach()
 
   # Scenario tests (E2E stories, 300s timeout)
@@ -98,7 +107,11 @@ if(BUILD_TESTING)
       TARGET ${test_name}
       TIMEOUT 300
     )
-    set_tests_properties(${test_name} PROPERTIES LABELS "integration;scenario")
+    set_tests_properties(${test_name} PROPERTIES
+      LABELS "integration;scenario"
+      ENVIRONMENT "GATEWAY_TEST_PORT=${_INTEG_PORT}"
+    )
+    math(EXPR _INTEG_PORT "${_INTEG_PORT} + 10")
   endforeach()
 endif()
 

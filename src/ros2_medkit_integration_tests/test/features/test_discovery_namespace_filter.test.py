@@ -69,14 +69,12 @@ def generate_test_description():
 class TestNamespaceFilter(GatewayTestCase):
     """Test namespace blacklist filtering in hybrid gap-fill."""
 
-    POLL_INTERVAL = 1.0
-    POLL_TIMEOUT = 30.0
-
     def test_gateway_starts_with_namespace_filter(self):
         """Gateway should start successfully with namespace blacklist."""
         health = self.poll_endpoint_until(
             '/health',
-            lambda data: data.get('status') == 'healthy',
+            lambda data: data if data.get('status') == 'healthy' else None,
+            timeout=30.0,
         )
         self.assertEqual(health['status'], 'healthy')
         discovery = health.get('discovery', {})
@@ -86,11 +84,12 @@ class TestNamespaceFilter(GatewayTestCase):
         """Manifest entities from blacklisted namespaces should still be present."""
         # Manifest defines chassis area and its components -
         # blacklist only affects gap-fill (heuristic entities), not manifest entities
-        areas = self.poll_endpoint_until(
+        data = self.poll_endpoint_until(
             '/areas',
-            lambda data: any(a['id'] == 'powertrain' for a in data),
+            lambda d: d if any(a['id'] == 'powertrain' for a in d.get('items', [])) else None,
+            timeout=30.0,
         )
-        area_ids = [a['id'] for a in areas]
+        area_ids = [a['id'] for a in data['items']]
         # Manifest-defined areas should still exist regardless of blacklist
         self.assertIn('powertrain', area_ids)
         self.assertIn('chassis', area_ids)
@@ -99,7 +98,9 @@ class TestNamespaceFilter(GatewayTestCase):
         """Health endpoint should show pipeline stats."""
         health = self.poll_endpoint_until(
             '/health',
-            lambda data: 'discovery' in data and 'pipeline' in data.get('discovery', {}),
+            lambda data: data if 'discovery' in data
+            and 'pipeline' in data.get('discovery', {}) else None,
+            timeout=30.0,
         )
         pipeline = health['discovery']['pipeline']
         self.assertIn('total_entities', pipeline)

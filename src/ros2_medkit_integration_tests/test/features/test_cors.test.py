@@ -39,14 +39,14 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH, get_test_port
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 
 # Test configuration - two gateway instances with different CORS settings
 GATEWAY_HOST = '127.0.0.1'
-GATEWAY_PORT_NO_CREDS = 8085  # CORS without credentials
-GATEWAY_PORT_WITH_CREDS = 8086  # CORS with credentials enabled
+GATEWAY_PORT_NO_CREDS = get_test_port(0)
+GATEWAY_PORT_WITH_CREDS = get_test_port(1)
 ALLOWED_ORIGIN = 'http://localhost:5173'
 ALLOWED_ORIGIN_2 = 'http://localhost:3000'
 DISALLOWED_ORIGIN = 'http://evil.com'
@@ -59,7 +59,6 @@ def generate_test_description():
         port=GATEWAY_PORT_NO_CREDS,
         extra_params={
             'server.host': GATEWAY_HOST,
-            'server.port': GATEWAY_PORT_NO_CREDS,
             'cors.allowed_origins': [ALLOWED_ORIGIN, ALLOWED_ORIGIN_2],
             'cors.allowed_methods': ['GET', 'PUT', 'OPTIONS'],
             'cors.allowed_headers': ['Content-Type', 'Accept', 'Authorization'],
@@ -73,7 +72,6 @@ def generate_test_description():
         port=GATEWAY_PORT_WITH_CREDS,
         extra_params={
             'server.host': GATEWAY_HOST,
-            'server.port': GATEWAY_PORT_WITH_CREDS,
             'cors.allowed_origins': [ALLOWED_ORIGIN],
             'cors.allowed_methods': ['GET', 'PUT', 'OPTIONS'],
             'cors.allowed_headers': ['Content-Type', 'Accept', 'Authorization'],

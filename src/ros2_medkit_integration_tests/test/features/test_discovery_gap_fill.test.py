@@ -74,16 +74,14 @@ def generate_test_description():
 class TestGapFillConfig(GatewayTestCase):
     """Test gap-fill restrictions in hybrid mode."""
 
-    POLL_INTERVAL = 1.0
-    POLL_TIMEOUT = 30.0
-
     def test_only_manifest_areas_present(self):
         """With allow_heuristic_areas=false, only manifest areas should exist."""
-        areas = self.poll_endpoint_until(
+        data = self.poll_endpoint_until(
             '/areas',
-            lambda data: len(data) >= 1,
+            lambda d: d if len(d.get('items', [])) >= 1 else None,
+            timeout=30.0,
         )
-        area_ids = [a['id'] for a in areas]
+        area_ids = [a['id'] for a in data['items']]
 
         # Manifest defines: powertrain, chassis, body, perception
         # No heuristic areas from runtime namespaces should appear
@@ -97,18 +95,19 @@ class TestGapFillConfig(GatewayTestCase):
 
     def test_only_manifest_components_present(self):
         """With allow_heuristic_components=false, only manifest components exist."""
-        components = self.poll_endpoint_until(
+        data = self.poll_endpoint_until(
             '/components',
-            lambda data: len(data) >= 1,
+            lambda d: d if len(d.get('items', [])) >= 1 else None,
+            timeout=30.0,
         )
-        component_ids = [c['id'] for c in components]
+        component_ids = [c['id'] for c in data['items']]
 
         # Only manifest-defined components should be present
         manifest_components = [
             'engine-ecu', 'temp-sensor-hw', 'rpm-sensor-hw',
-            'brake-ecu', 'pressure-sensor-hw',
+            'brake-ecu', 'brake-pressure-sensor-hw', 'brake-actuator-hw',
+            'door-sensor-hw', 'light-module',
             'lidar-unit',
-            'door-controller', 'light-controller',
         ]
         for comp_id in component_ids:
             self.assertIn(
@@ -120,7 +119,8 @@ class TestGapFillConfig(GatewayTestCase):
         """Health endpoint should show filtered_by_gap_fill count."""
         health = self.poll_endpoint_until(
             '/health',
-            lambda data: 'discovery' in data,
+            lambda data: data if 'discovery' in data else None,
+            timeout=30.0,
         )
         discovery = health.get('discovery', {})
         pipeline = discovery.get('pipeline', {})

@@ -95,9 +95,7 @@ def create_gateway_node(*, port=DEFAULT_PORT, extra_params=None, coverage=True):
         Ready-to-use gateway node launch action.
 
     """
-    params = {'refresh_interval_ms': 1000}
-    if port != DEFAULT_PORT:
-        params['server_port'] = port
+    params = {'refresh_interval_ms': 1000, 'server.port': port}
     if extra_params:
         params.update(extra_params)
 

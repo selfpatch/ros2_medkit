@@ -36,11 +36,12 @@ from launch.actions import TimerAction
 import launch_ros.actions
 import launch_testing
 import launch_testing.actions
+from ros2_medkit_test_utils.constants import get_test_port
 from ros2_medkit_test_utils.coverage import get_coverage_env
 import urllib3
 
-# Port for HTTPS testing (different from default HTTP port)
-HTTPS_PORT = 8443
+# Port for HTTPS testing
+HTTPS_PORT = get_test_port()
 HTTPS_BASE_URL = f'https://localhost:{HTTPS_PORT}'
 
 
