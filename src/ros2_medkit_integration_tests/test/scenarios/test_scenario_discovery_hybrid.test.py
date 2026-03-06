@@ -51,9 +51,9 @@ def generate_test_description():
     )
 
     gateway = create_gateway_node(extra_params={
-        'discovery_mode': 'hybrid',
-        'manifest_path': manifest_path,
-        'manifest_strict_validation': False,
+        'discovery.mode': 'hybrid',
+        'discovery.manifest_path': manifest_path,
+        'discovery.manifest_strict_validation': False,
         'unmanifested_nodes': 'warn',
     })
 

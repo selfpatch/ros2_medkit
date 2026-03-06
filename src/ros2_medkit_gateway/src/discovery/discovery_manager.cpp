@@ -39,17 +39,15 @@ bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
   if (config.mode == DiscoveryMode::MANIFEST_ONLY || config.mode == DiscoveryMode::HYBRID) {
     manifest_manager_ = std::make_unique<discovery::ManifestManager>(node_);
 
-    if (!config.manifest_path.empty()) {
-      if (!manifest_manager_->load_manifest(config.manifest_path, config.manifest_strict_validation)) {
-        if (config.mode == DiscoveryMode::MANIFEST_ONLY) {
-          RCLCPP_ERROR(node_->get_logger(), "Manifest load failed and mode is manifest_only. Cannot proceed.");
-          return false;
-        }
-        RCLCPP_WARN(node_->get_logger(), "Manifest load failed. Falling back to runtime-only discovery.");
-        config_.mode = DiscoveryMode::RUNTIME_ONLY;
-      }
-    } else if (config.mode == DiscoveryMode::MANIFEST_ONLY) {
-      RCLCPP_ERROR(node_->get_logger(), "Manifest path required for manifest_only mode.");
+    if (config.manifest_path.empty()) {
+      RCLCPP_ERROR(node_->get_logger(), "Manifest path required for %s mode. Set discovery.manifest_path.",
+                   discovery_mode_to_string(config.mode).c_str());
+      return false;
+    }
+
+    if (!manifest_manager_->load_manifest(config.manifest_path, config.manifest_strict_validation)) {
+      RCLCPP_ERROR(node_->get_logger(), "Manifest load failed in %s mode. Cannot proceed.",
+                   discovery_mode_to_string(config.mode).c_str());
       return false;
     }
   }
