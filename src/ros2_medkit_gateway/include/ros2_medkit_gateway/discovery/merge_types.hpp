@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -58,6 +59,40 @@ inline const char * field_group_to_string(FieldGroup fg) {
       return "METADATA";
   }
   return "UNKNOWN";
+}
+
+/// Parse a FieldGroup from its lowercase string form (e.g. "identity", "live_data")
+inline std::optional<FieldGroup> field_group_from_string(const std::string & s) {
+  if (s == "identity") {
+    return FieldGroup::IDENTITY;
+  }
+  if (s == "hierarchy") {
+    return FieldGroup::HIERARCHY;
+  }
+  if (s == "live_data") {
+    return FieldGroup::LIVE_DATA;
+  }
+  if (s == "status") {
+    return FieldGroup::STATUS;
+  }
+  if (s == "metadata") {
+    return FieldGroup::METADATA;
+  }
+  return std::nullopt;
+}
+
+/// Parse a MergePolicy from its lowercase string form (e.g. "authoritative", "enrichment", "fallback")
+inline std::optional<MergePolicy> merge_policy_from_string(const std::string & s) {
+  if (s == "authoritative") {
+    return MergePolicy::AUTHORITATIVE;
+  }
+  if (s == "enrichment") {
+    return MergePolicy::ENRICHMENT;
+  }
+  if (s == "fallback") {
+    return MergePolicy::FALLBACK;
+  }
+  return std::nullopt;
 }
 
 /**

@@ -26,6 +26,7 @@
 #include "ros2_medkit_gateway/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/discovery/runtime_discovery.hpp"
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
@@ -105,6 +106,9 @@ struct DiscoveryConfig {
    */
   struct MergePipelineConfig {
     discovery::GapFillConfig gap_fill;
+    /// Per-layer merge policy overrides: layer_name -> (field_group_name -> policy_name)
+    /// e.g. {"manifest": {"live_data": "authoritative"}, "runtime": {"identity": "authoritative"}}
+    std::map<std::string, std::map<std::string, std::string>> layer_policies;
   } merge_pipeline;
 };
 
@@ -370,6 +374,12 @@ class DiscoveryManager {
    * @brief Create and activate the appropriate strategy
    */
   void create_strategy();
+
+  /**
+   * @brief Apply user-configured merge policy overrides to a layer
+   */
+  template <typename LayerT>
+  void apply_layer_policy_overrides(const std::string & layer_name, LayerT & layer);
 
   rclcpp::Node * node_;
   DiscoveryConfig config_;

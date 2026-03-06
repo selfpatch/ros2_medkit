@@ -58,6 +58,26 @@ bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
   return true;
 }
 
+template <typename LayerT>
+void DiscoveryManager::apply_layer_policy_overrides(const std::string & layer_name, LayerT & layer) {
+  auto it = config_.merge_pipeline.layer_policies.find(layer_name);
+  if (it == config_.merge_pipeline.layer_policies.end()) {
+    return;
+  }
+  for (const auto & [fg_str, policy_str] : it->second) {
+    auto fg = discovery::field_group_from_string(fg_str);
+    auto policy = discovery::merge_policy_from_string(policy_str);
+    if (fg && policy) {
+      layer.set_policy(*fg, *policy);
+      RCLCPP_INFO(node_->get_logger(), "Layer '%s': override %s = %s", layer_name.c_str(), fg_str.c_str(),
+                  policy_str.c_str());
+    } else {
+      RCLCPP_WARN(node_->get_logger(), "Layer '%s': ignoring invalid override %s = %s", layer_name.c_str(),
+                  fg_str.c_str(), policy_str.c_str());
+    }
+  }
+}
+
 void DiscoveryManager::create_strategy() {
   // Configure runtime strategy with runtime options
   discovery::RuntimeDiscoveryStrategy::RuntimeConfig runtime_config;
@@ -82,10 +102,16 @@ void DiscoveryManager::create_strategy() {
 
     case DiscoveryMode::HYBRID: {
       discovery::MergePipeline pipeline(node_->get_logger());
-      pipeline.add_layer(std::make_unique<discovery::ManifestLayer>(manifest_manager_.get()));
+
+      auto manifest_layer = std::make_unique<discovery::ManifestLayer>(manifest_manager_.get());
+      // Apply per-layer policy overrides for manifest
+      apply_layer_policy_overrides("manifest", *manifest_layer);
+      pipeline.add_layer(std::move(manifest_layer));
 
       auto runtime_layer = std::make_unique<discovery::RuntimeLayer>(runtime_strategy_.get());
       runtime_layer->set_gap_fill_config(config_.merge_pipeline.gap_fill);
+      // Apply per-layer policy overrides for runtime
+      apply_layer_policy_overrides("runtime", *runtime_layer);
       pipeline.add_layer(std::move(runtime_layer));
 
       // Set up RuntimeLinker for post-merge app-to-node binding

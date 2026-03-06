@@ -184,13 +184,23 @@ ros2_medkit_gateway:
           # namespace_blacklist: ["/rosout"]
           # namespace_whitelist: []
 
-        # Per-layer policy overrides (NOT YET IMPLEMENTED - planned for future release)
-        # Defaults: manifest=AUTH for identity/hierarchy/metadata, runtime=AUTH for live_data/status
-        # layers:
-        #   manifest:
-        #     live_data: "authoritative"     # override: manifest topics win
-        #   runtime:
-        #     identity: "authoritative"      # override: trust runtime names
+        # Per-layer merge policy overrides (optional, empty string = use layer default)
+        # Values: "authoritative", "enrichment", "fallback"
+        # Defaults: manifest=AUTH for identity/hierarchy/metadata, ENRICH for live_data, FALLBACK for status
+        #           runtime=AUTH for live_data/status, ENRICH for metadata, FALLBACK for identity/hierarchy
+        layers:
+          manifest:
+            identity: ""
+            hierarchy: ""
+            live_data: ""
+            status: ""
+            metadata: ""
+          runtime:
+            identity: ""
+            hierarchy: ""
+            live_data: ""
+            status: ""
+            metadata: ""
 
     # Authentication Configuration (REQ_INTEROP_086, REQ_INTEROP_087)
     # JWT-based authentication with Role-Based Access Control (RBAC)
