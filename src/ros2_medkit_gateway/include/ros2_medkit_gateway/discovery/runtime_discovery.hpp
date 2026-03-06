@@ -86,6 +86,9 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   /// @copydoc DiscoveryStrategy::discover_components
   std::vector<Component> discover_components() override;
 
+  /// Discover components using pre-discovered apps (avoids redundant graph introspection)
+  std::vector<Component> discover_components(const std::vector<App> & apps);
+
   /// @copydoc DiscoveryStrategy::discover_apps
   /// @note Returns nodes as Apps in runtime discovery
   std::vector<App> discover_apps() override;

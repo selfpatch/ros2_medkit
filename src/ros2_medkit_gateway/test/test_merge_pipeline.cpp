@@ -37,6 +37,9 @@ class TestLayer : public DiscoveryLayer {
   std::string name() const override {
     return name_;
   }
+  bool provides_runtime_apps() const override {
+    return name_ == "runtime";
+  }
   LayerOutput discover() override {
     return output_;
   }

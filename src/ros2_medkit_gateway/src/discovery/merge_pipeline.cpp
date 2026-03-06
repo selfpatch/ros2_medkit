@@ -414,8 +414,7 @@ MergeResult MergePipeline::execute() {
       report.filtered_by_gap_fill += runtime_layer->last_filtered_count();
     }
     // Save runtime apps for the linker BEFORE they are moved into app_layers below.
-    // Check both dynamic type and layer name for testability with TestLayer.
-    if (runtime_layer || layers_[i]->name() == "runtime") {
+    if (runtime_layer || layers_[i]->provides_runtime_apps()) {
       runtime_apps = output.apps;
     }
 
@@ -472,6 +471,7 @@ MergeResult MergePipeline::execute() {
         result.areas.size() + result.components.size() + result.apps.size() + result.functions.size();
 
     linking_result_ = linker_->get_last_result();
+    result.linking_result = linking_result_;
   }
 
   RCLCPP_INFO(logger_, "MergePipeline: %zu entities from %zu layers, %zu enriched, %zu conflicts",

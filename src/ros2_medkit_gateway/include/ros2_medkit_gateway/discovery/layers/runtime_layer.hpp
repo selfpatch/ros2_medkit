@@ -36,6 +36,9 @@ class RuntimeLayer : public DiscoveryLayer {
   std::string name() const override {
     return "runtime";
   }
+  bool provides_runtime_apps() const override {
+    return true;
+  }
   LayerOutput discover() override;
   MergePolicy policy_for(FieldGroup group) const override;
 

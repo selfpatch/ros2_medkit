@@ -131,7 +131,7 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const 
               (!binding.topic_namespace.empty() && matches_topic_namespace(binding.topic_namespace, rt_app))) {
             result.binding_conflicts++;
             result.warnings.push_back("App '" + manifest_app.id + "' cannot bind to '" + fqn +
-                                      "' - already bound to app '" + result.node_to_app[fqn] + "'");
+                                      "' - already bound to app '" + result.node_to_app.at(fqn) + "'");
             log_warn(result.warnings.back());
             break;
           }

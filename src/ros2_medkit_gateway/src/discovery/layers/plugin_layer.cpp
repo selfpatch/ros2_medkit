@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/discovery/layers/plugin_layer.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <utility>
 
 namespace ros2_medkit_gateway {
