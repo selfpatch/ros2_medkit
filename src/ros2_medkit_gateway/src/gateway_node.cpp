@@ -154,6 +154,13 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("discovery.merge_pipeline.gap_fill.namespace_whitelist", std::vector<std::string>{});
   declare_parameter("discovery.merge_pipeline.gap_fill.namespace_blacklist", std::vector<std::string>{});
 
+  // Per-layer merge policy overrides (optional, empty string = use layer default)
+  for (const auto & layer : {"manifest", "runtime"}) {
+    for (const auto & fg : {"identity", "hierarchy", "live_data", "status", "metadata"}) {
+      declare_parameter(std::string("discovery.merge_pipeline.layers.") + layer + "." + fg, std::string(""));
+    }
+  }
+
   // Get parameter values
   server_host_ = get_parameter("server.host").as_string();
   server_port_ = static_cast<int>(get_parameter("server.port").as_int());
@@ -377,6 +384,16 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
       get_parameter("discovery.merge_pipeline.gap_fill.namespace_whitelist").as_string_array();
   discovery_config.merge_pipeline.gap_fill.namespace_blacklist =
       get_parameter("discovery.merge_pipeline.gap_fill.namespace_blacklist").as_string_array();
+
+  // Read per-layer merge policy overrides
+  for (const auto & layer : {"manifest", "runtime"}) {
+    for (const auto & fg : {"identity", "hierarchy", "live_data", "status", "metadata"}) {
+      auto val = get_parameter(std::string("discovery.merge_pipeline.layers.") + layer + "." + fg).as_string();
+      if (!val.empty()) {
+        discovery_config.merge_pipeline.layer_policies[layer][fg] = val;
+      }
+    }
+  }
 
   if (!discovery_mgr_->initialize(discovery_config)) {
     RCLCPP_ERROR(get_logger(), "Failed to initialize discovery manager");
