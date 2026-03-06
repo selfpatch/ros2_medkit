@@ -102,6 +102,26 @@ std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
 
 std::vector<Component> RuntimeDiscoveryStrategy::discover_components() {
   auto apps = discover_apps();
+
+  if (!config_.create_synthetic_components) {
+    // Legacy mode: each App becomes its own Component (1:1 mapping)
+    std::vector<Component> components;
+    components.reserve(apps.size());
+    for (const auto & app : apps) {
+      Component comp;
+      comp.id = app.id;
+      comp.source = "heuristic";
+      if (app.bound_fqn.has_value()) {
+        comp.fqn = app.bound_fqn.value();
+        auto slash_pos = comp.fqn.rfind('/');
+        comp.namespace_path = (slash_pos == std::string::npos || slash_pos == 0) ? "/" : comp.fqn.substr(0, slash_pos);
+        comp.area = extract_area_from_namespace(comp.namespace_path);
+      }
+      components.push_back(std::move(comp));
+    }
+    return components;
+  }
+
   return discover_synthetic_components(apps);
 }
 

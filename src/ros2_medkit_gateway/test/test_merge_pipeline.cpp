@@ -824,6 +824,48 @@ TEST_F(MergePipelineTest, AppStatusMerge_BoolOrSemantics) {
   EXPECT_EQ(result.apps[0].bound_fqn, "/nav/controller");
 }
 
+// @verifies REQ_INTEROP_003
+TEST_F(MergePipelineTest, ThreeLayerMerge_PerFieldGroupOwnerTracking) {
+  // Regression test: verify that when Runtime wins STATUS (AUTH) over Manifest (FALLBACK),
+  // a Plugin (ENRICH) cannot override Runtime's authoritative STATUS.
+  // Previously, owner_layer_idx was fixed to first layer, so Plugin compared against
+  // Manifest's FALLBACK policy instead of Runtime's AUTH, incorrectly winning STATUS.
+  App manifest_app = make_app("controller", "nav_comp");
+  manifest_app.is_online = false;
+
+  App runtime_app = make_app("controller", "nav_comp");
+  runtime_app.is_online = true;
+  runtime_app.bound_fqn = "/nav/controller";
+
+  App plugin_app = make_app("controller", "nav_comp");
+  plugin_app.is_online = false;  // Plugin says offline - should NOT override Runtime's AUTH
+  plugin_app.bound_fqn = std::nullopt;
+
+  LayerOutput manifest_out, runtime_out, plugin_out;
+  manifest_out.apps.push_back(manifest_app);
+  runtime_out.apps.push_back(runtime_app);
+  plugin_out.apps.push_back(plugin_app);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::FALLBACK},
+                                                  {FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::IDENTITY, MergePolicy::FALLBACK}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "plugin", plugin_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::ENRICHMENT},
+                                                  {FieldGroup::IDENTITY, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.apps.size(), 1u);
+  // Runtime's AUTH should win STATUS - plugin's ENRICH cannot override
+  EXPECT_TRUE(result.apps[0].is_online);
+  EXPECT_EQ(result.apps[0].bound_fqn, "/nav/controller");
+}
+
 // --- GapFillConfig namespace filtering ---
 // These tests verify the namespace matching semantics used by RuntimeLayer.
 // Since filter_by_namespace is internal to runtime_layer.cpp, we replicate the

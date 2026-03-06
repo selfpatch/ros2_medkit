@@ -441,7 +441,9 @@ ros_binding Fields
 
 **Matching behavior:**
 
-1. **Exact match** (default): ``node_name`` and ``namespace`` must match exactly
+1. **Name and namespace match** (default): ``node_name`` must match exactly.
+   ``namespace`` uses path-segment-boundary matching: ``/nav`` matches ``/nav``
+   and ``/nav/sub`` but NOT ``/navigation``.
 2. **Wildcard namespace**: Set ``namespace: "*"`` to match node in any namespace
 3. **Topic namespace**: Match nodes by their published topic prefix
 

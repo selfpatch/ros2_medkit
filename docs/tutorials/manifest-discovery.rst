@@ -288,7 +288,8 @@ The ``ros_binding`` section specifies how to match an app to a ROS 2 node:
 
 **Match Types:**
 
-- **Exact match** (default): Node name and namespace must match exactly
+- **Name and namespace match** (default): Node name must match exactly. Namespace uses
+  path-segment-boundary matching (``/nav`` matches ``/nav`` and ``/nav/sub`` but NOT ``/navigation``)
 - **Wildcard namespace**: Use ``namespace: "*"`` to match any namespace
 - **Topic namespace**: Match nodes by their topic prefix
 
