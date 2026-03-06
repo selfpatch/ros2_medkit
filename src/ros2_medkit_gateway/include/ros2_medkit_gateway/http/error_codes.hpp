@@ -114,6 +114,21 @@ constexpr const char * ERR_X_MEDKIT_UPDATE_NOT_PREPARED = "x-medkit-update-not-p
 /// Automated mode not supported for this package
 constexpr const char * ERR_X_MEDKIT_UPDATE_NOT_AUTOMATED = "x-medkit-update-not-automated";
 
+/// Vendor-specific: invalid resource URI format for subscriptions
+constexpr const char * ERR_X_MEDKIT_INVALID_RESOURCE_URI = "x-medkit-invalid-resource-uri";
+
+/// Vendor-specific: collection not supported for entity type
+constexpr const char * ERR_X_MEDKIT_COLLECTION_NOT_SUPPORTED = "x-medkit-collection-not-supported";
+
+/// Vendor-specific: no data provider registered for collection
+constexpr const char * ERR_X_MEDKIT_COLLECTION_NOT_AVAILABLE = "x-medkit-collection-not-available";
+
+/// Vendor-specific: resource URI entity doesn't match route entity
+constexpr const char * ERR_X_MEDKIT_ENTITY_MISMATCH = "x-medkit-entity-mismatch";
+
+/// Vendor-specific: unsupported subscription protocol
+constexpr const char * ERR_X_MEDKIT_UNSUPPORTED_PROTOCOL = "x-medkit-unsupported-protocol";
+
 /**
  * @brief Check if an error code is a vendor-specific code
  * @param error_code Error code to check
