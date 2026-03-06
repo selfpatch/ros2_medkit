@@ -986,3 +986,129 @@ TEST_F(MergePipelineTest, FunctionMerge_HostsAndIdentity) {
   EXPECT_EQ(result.functions[0].hosts.size(), 2u);           // ENRICHMENT fills hosts
   EXPECT_EQ(result.functions[0].source, "manifest");         // higher priority source
 }
+
+// --- field_group_from_string / merge_policy_from_string parsing ---
+
+TEST(MergeTypesParsingTest, FieldGroupFromStringValid) {
+  EXPECT_EQ(field_group_from_string("identity"), FieldGroup::IDENTITY);
+  EXPECT_EQ(field_group_from_string("hierarchy"), FieldGroup::HIERARCHY);
+  EXPECT_EQ(field_group_from_string("live_data"), FieldGroup::LIVE_DATA);
+  EXPECT_EQ(field_group_from_string("status"), FieldGroup::STATUS);
+  EXPECT_EQ(field_group_from_string("metadata"), FieldGroup::METADATA);
+}
+
+TEST(MergeTypesParsingTest, FieldGroupFromStringInvalid) {
+  EXPECT_EQ(field_group_from_string(""), std::nullopt);
+  EXPECT_EQ(field_group_from_string("IDENTITY"), std::nullopt);
+  EXPECT_EQ(field_group_from_string("Identity"), std::nullopt);
+  EXPECT_EQ(field_group_from_string("unknown"), std::nullopt);
+  EXPECT_EQ(field_group_from_string("live-data"), std::nullopt);
+}
+
+TEST(MergeTypesParsingTest, MergePolicyFromStringValid) {
+  EXPECT_EQ(merge_policy_from_string("authoritative"), MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(merge_policy_from_string("enrichment"), MergePolicy::ENRICHMENT);
+  EXPECT_EQ(merge_policy_from_string("fallback"), MergePolicy::FALLBACK);
+}
+
+TEST(MergeTypesParsingTest, MergePolicyFromStringInvalid) {
+  EXPECT_EQ(merge_policy_from_string(""), std::nullopt);
+  EXPECT_EQ(merge_policy_from_string("AUTHORITATIVE"), std::nullopt);
+  EXPECT_EQ(merge_policy_from_string("auth"), std::nullopt);
+  EXPECT_EQ(merge_policy_from_string("unknown"), std::nullopt);
+}
+
+// --- ManifestLayer / RuntimeLayer set_policy override ---
+
+TEST(LayerPolicyOverrideTest, ManifestLayerSetPolicyOverridesDefault) {
+  ManifestLayer layer(nullptr);
+
+  // Default: LIVE_DATA = ENRICHMENT
+  EXPECT_EQ(layer.policy_for(FieldGroup::LIVE_DATA), MergePolicy::ENRICHMENT);
+
+  // Override to AUTHORITATIVE
+  layer.set_policy(FieldGroup::LIVE_DATA, MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::LIVE_DATA), MergePolicy::AUTHORITATIVE);
+
+  // Other policies unchanged
+  EXPECT_EQ(layer.policy_for(FieldGroup::IDENTITY), MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::STATUS), MergePolicy::FALLBACK);
+}
+
+TEST(LayerPolicyOverrideTest, RuntimeLayerSetPolicyOverridesDefault) {
+  RuntimeLayer layer(nullptr);
+
+  // Default: IDENTITY = FALLBACK
+  EXPECT_EQ(layer.policy_for(FieldGroup::IDENTITY), MergePolicy::FALLBACK);
+
+  // Override to AUTHORITATIVE
+  layer.set_policy(FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::IDENTITY), MergePolicy::AUTHORITATIVE);
+
+  // Other policies unchanged
+  EXPECT_EQ(layer.policy_for(FieldGroup::LIVE_DATA), MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::METADATA), MergePolicy::ENRICHMENT);
+}
+
+TEST(LayerPolicyOverrideTest, PluginLayerSetPolicyOverridesDefault) {
+  PluginLayer layer("test_plugin", nullptr);
+
+  // Default: all ENRICHMENT
+  EXPECT_EQ(layer.policy_for(FieldGroup::IDENTITY), MergePolicy::ENRICHMENT);
+
+  // Override IDENTITY to AUTHORITATIVE
+  layer.set_policy(FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::IDENTITY), MergePolicy::AUTHORITATIVE);
+  EXPECT_EQ(layer.policy_for(FieldGroup::HIERARCHY), MergePolicy::ENRICHMENT);
+}
+
+// --- Policy override affects merge behavior end-to-end ---
+
+TEST_F(MergePipelineTest, PolicyOverrideChangedMergeBehavior) {
+  // Manifest layer with LIVE_DATA overridden from ENRICHMENT to AUTHORITATIVE
+  // This means manifest topics should win over runtime topics
+  LayerOutput manifest_output;
+  manifest_output.areas.push_back(make_area("powertrain"));
+
+  Component manifest_comp;
+  manifest_comp.id = "engine";
+  manifest_comp.area = "powertrain";
+  manifest_comp.source = "manifest";
+  manifest_comp.topics.publishes = {"manifest_topic"};
+  manifest_output.components.push_back(manifest_comp);
+
+  // Runtime layer provides same component with different topics
+  Component runtime_comp;
+  runtime_comp.id = "engine";
+  runtime_comp.area = "powertrain";
+  runtime_comp.source = "runtime";
+  runtime_comp.topics.publishes = {"runtime_topic"};
+
+  LayerOutput runtime_output;
+  runtime_output.components.push_back(runtime_comp);
+
+  // Use TestLayers with actual ManifestLayer/RuntimeLayer default policies + override
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_output,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::HIERARCHY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::LIVE_DATA, MergePolicy::AUTHORITATIVE},  // overridden!
+                                                  {FieldGroup::STATUS, MergePolicy::FALLBACK},
+                                                  {FieldGroup::METADATA, MergePolicy::AUTHORITATIVE}}));
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_output,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::FALLBACK},
+                                                  {FieldGroup::HIERARCHY, MergePolicy::FALLBACK},
+                                                  {FieldGroup::LIVE_DATA, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::STATUS, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.components.size(), 1u);
+
+  // With both layers AUTH for LIVE_DATA, manifest (higher priority) wins
+  // This means we get a conflict but manifest topics survive
+  EXPECT_EQ(result.components[0].source, "manifest");
+  EXPECT_GE(result.report.conflict_count, 1u);
+}

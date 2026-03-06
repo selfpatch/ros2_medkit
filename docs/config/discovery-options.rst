@@ -192,9 +192,6 @@ Complete YAML configuration for runtime discovery:
          mode: "runtime_only"
 
          runtime:
-           # Map nodes to Apps
-           expose_nodes_as_apps: true
-
            # Group Apps into Components by namespace
            create_synthetic_components: true
            grouping_strategy: "namespace"

@@ -123,9 +123,9 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("rate_limiting.client_max_idle_seconds", 600);
 
   // Discovery mode parameters
-  declare_parameter("discovery_mode", "runtime_only");  // runtime_only, manifest_only, hybrid
-  declare_parameter("manifest_path", "");
-  declare_parameter("manifest_strict_validation", true);
+  declare_parameter("discovery.mode", "runtime_only");  // runtime_only, manifest_only, hybrid
+  declare_parameter("discovery.manifest_path", "");
+  declare_parameter("discovery.manifest_strict_validation", true);
 
   // Software updates parameters
   declare_parameter("updates.enabled", false);
@@ -355,19 +355,36 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
 
   // Configure and initialize discovery manager
   DiscoveryConfig discovery_config;
-  discovery_config.mode = parse_discovery_mode(get_parameter("discovery_mode").as_string());
-  discovery_config.manifest_path = get_parameter("manifest_path").as_string();
-  discovery_config.manifest_strict_validation = get_parameter("manifest_strict_validation").as_bool();
+
+  auto mode_str = get_parameter("discovery.mode").as_string();
+  discovery_config.mode = parse_discovery_mode(mode_str);
+  if (mode_str != "runtime_only" && mode_str != "manifest_only" && mode_str != "hybrid") {
+    RCLCPP_WARN(get_logger(), "Unknown discovery.mode '%s', defaulting to 'runtime_only'", mode_str.c_str());
+  }
+
+  discovery_config.manifest_path = get_parameter("discovery.manifest_path").as_string();
+  discovery_config.manifest_strict_validation = get_parameter("discovery.manifest_strict_validation").as_bool();
 
   // Runtime discovery options
   discovery_config.runtime.create_synthetic_components =
       get_parameter("discovery.runtime.create_synthetic_components").as_bool();
-  discovery_config.runtime.grouping =
-      parse_grouping_strategy(get_parameter("discovery.runtime.grouping_strategy").as_string());
+
+  auto grouping_str = get_parameter("discovery.runtime.grouping_strategy").as_string();
+  discovery_config.runtime.grouping = parse_grouping_strategy(grouping_str);
+  if (grouping_str != "none" && grouping_str != "namespace") {
+    RCLCPP_WARN(get_logger(), "Unknown grouping_strategy '%s', defaulting to 'none'", grouping_str.c_str());
+  }
+
   discovery_config.runtime.synthetic_component_name_pattern =
       get_parameter("discovery.runtime.synthetic_component_name_pattern").as_string();
-  discovery_config.runtime.topic_only_policy =
-      parse_topic_only_policy(get_parameter("discovery.runtime.topic_only_policy").as_string());
+
+  auto topic_policy_str = get_parameter("discovery.runtime.topic_only_policy").as_string();
+  discovery_config.runtime.topic_only_policy = parse_topic_only_policy(topic_policy_str);
+  if (topic_policy_str != "ignore" && topic_policy_str != "create_component" &&
+      topic_policy_str != "create_area_only") {
+    RCLCPP_WARN(get_logger(), "Unknown topic_only_policy '%s', defaulting to 'create_component'",
+                topic_policy_str.c_str());
+  }
   discovery_config.runtime.min_topics_for_component =
       static_cast<int>(get_parameter("discovery.runtime.min_topics_for_component").as_int());
 

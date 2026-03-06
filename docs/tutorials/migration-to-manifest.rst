@@ -306,9 +306,8 @@ Step 7: Test in Hybrid Mode
    .. code-block:: bash
 
       ros2 run ros2_medkit_gateway gateway_node --ros-args \
-          -p manifest.enabled:=true \
-          -p manifest.file_path:=/path/to/system_manifest.yaml \
-          -p manifest.mode:=hybrid
+          -p discovery.mode:=hybrid \
+          -p discovery.manifest_path:=/path/to/system_manifest.yaml
 
 3. **Check manifest status**:
 
@@ -378,9 +377,9 @@ Run validation:
 
    # Start gateway with strict validation
    ros2 run ros2_medkit_gateway gateway_node --ros-args \
-       -p manifest.enabled:=true \
-       -p manifest.file_path:=/path/to/system_manifest.yaml \
-       -p manifest.strict_validation:=true
+       -p discovery.mode:=hybrid \
+       -p discovery.manifest_path:=/path/to/system_manifest.yaml \
+       -p discovery.manifest_strict_validation:=true
 
 Common Issues
 -------------

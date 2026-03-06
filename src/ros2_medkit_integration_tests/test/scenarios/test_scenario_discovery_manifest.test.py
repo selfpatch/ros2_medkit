@@ -53,9 +53,9 @@ def generate_test_description():
     )
 
     gateway = create_gateway_node(extra_params={
-        'discovery_mode': 'manifest_only',
-        'manifest_path': manifest_path,
-        'manifest_strict_validation': False,
+        'discovery.mode': 'manifest_only',
+        'discovery.manifest_path': manifest_path,
+        'discovery.manifest_strict_validation': False,
     })
 
     # Launch a subset of demo nodes to verify apps become online

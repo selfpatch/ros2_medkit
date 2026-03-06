@@ -119,9 +119,9 @@ Option 1: Using Launch File
                package='ros2_medkit_gateway',
                executable='gateway_node',
                parameters=[{
-                   'manifest.enabled': True,
-                   'manifest.file_path': '/path/to/system_manifest.yaml',
-                   'manifest.mode': 'hybrid',
+                   'discovery.mode': 'hybrid',
+                   'discovery.manifest_path': '/path/to/system_manifest.yaml',
+                   'discovery.manifest_strict_validation': True,
                }]
            )
        ])
@@ -137,18 +137,15 @@ Add to your ``gateway_params.yaml``:
      ros__parameters:
        # ... existing parameters ...
 
-       manifest:
-         # Enable manifest-based discovery
-         enabled: true
-
-         # Path to manifest YAML file
-         file_path: "/path/to/system_manifest.yaml"
-
+       discovery:
          # Discovery mode: "runtime_only", "hybrid", or "manifest_only"
          mode: "hybrid"
 
+         # Path to manifest YAML file (required for hybrid and manifest_only)
+         manifest_path: "/path/to/system_manifest.yaml"
+
          # Strict validation: fail on any validation error
-         strict_validation: true
+         manifest_strict_validation: true
 
 Then launch with:
 
@@ -163,9 +160,8 @@ Option 3: Command Line Parameters
 .. code-block:: bash
 
    ros2 run ros2_medkit_gateway gateway_node --ros-args \
-       -p manifest.enabled:=true \
-       -p manifest.file_path:=/path/to/system_manifest.yaml \
-       -p manifest.mode:=hybrid
+       -p discovery.mode:=hybrid \
+       -p discovery.manifest_path:=/path/to/system_manifest.yaml
 
 Verifying the Configuration
 ---------------------------

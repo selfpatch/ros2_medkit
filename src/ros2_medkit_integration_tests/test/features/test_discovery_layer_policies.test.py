@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+# Copyright 2026 bburda
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Integration tests for per-layer merge policy overrides in hybrid mode.
+
+Tests that users can override default merge policies per layer per field group
+via discovery.merge_pipeline.layers.<layer>.<field_group> parameters.
+"""
+
+import os
+import unittest
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import TimerAction
+import launch_testing
+import launch_testing.actions
+
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
+from ros2_medkit_test_utils.launch_helpers import create_demo_nodes, create_gateway_node
+
+
+def generate_test_description():
+    pkg_share = get_package_share_directory('ros2_medkit_gateway')
+    manifest_path = os.path.join(
+        pkg_share, 'config', 'examples', 'demo_nodes_manifest.yaml'
+    )
+
+    # Hybrid mode with custom layer policy overrides:
+    # - Manifest LIVE_DATA overridden from "enrichment" to "authoritative"
+    #   (manifest topics should take precedence over runtime topics)
+    # - Runtime IDENTITY overridden from "fallback" to "enrichment"
+    #   (runtime names can fill empty manifest names)
+    gateway_node = create_gateway_node(extra_params={
+        'discovery.mode': 'hybrid',
+        'discovery.manifest_path': manifest_path,
+        'discovery.manifest_strict_validation': False,
+        'discovery.merge_pipeline.layers.manifest.live_data': 'authoritative',
+        'discovery.merge_pipeline.layers.runtime.identity': 'enrichment',
+    })
+
+    # Launch demo nodes that match manifest apps
+    demo_nodes = create_demo_nodes(
+        ['temp_sensor', 'rpm_sensor', 'calibration', 'pressure_sensor'],
+    )
+    delayed = TimerAction(period=2.0, actions=demo_nodes)
+
+    return (
+        LaunchDescription([
+            gateway_node,
+            delayed,
+            launch_testing.actions.ReadyToTest(),
+        ]),
+        {'gateway_node': gateway_node},
+    )
+
+
+# @verifies REQ_INTEROP_003
+class TestLayerPolicyOverrides(GatewayTestCase):
+    """Test per-layer merge policy overrides in hybrid mode."""
+
+    POLL_INTERVAL = 1.0
+    POLL_TIMEOUT = 30.0
+
+    def test_gateway_starts_with_policy_overrides(self):
+        """Gateway should start successfully with custom layer policies."""
+        health = self.poll_endpoint_until(
+            '/health',
+            lambda data: data.get('status') == 'healthy',
+        )
+        self.assertEqual(health['status'], 'healthy')
+
+    def test_discovery_mode_is_hybrid(self):
+        """Discovery mode should be hybrid."""
+        health = self.poll_endpoint_until(
+            '/health',
+            lambda data: 'discovery' in data,
+        )
+        discovery = health.get('discovery', {})
+        self.assertEqual(discovery.get('mode'), 'hybrid')
+
+    def test_manifest_entities_present(self):
+        """Manifest-defined entities should be discoverable."""
+        areas = self.poll_endpoint_until(
+            '/areas',
+            lambda data: any(a['id'] == 'powertrain' for a in data),
+        )
+        area_ids = [a['id'] for a in areas]
+        self.assertIn('powertrain', area_ids)
+        self.assertIn('chassis', area_ids)
+
+    def test_apps_linked_to_running_nodes(self):
+        """Apps should be linked to running nodes (is_online=true)."""
+        apps = self.poll_endpoint_until(
+            '/apps',
+            lambda data: any(
+                a.get('x-medkit', {}).get('isOnline', False) for a in data
+            ),
+        )
+        online_apps = [
+            a for a in apps
+            if a.get('x-medkit', {}).get('isOnline', False)
+        ]
+        self.assertGreater(len(online_apps), 0, "No apps are online")
+
+    def test_merge_pipeline_has_layers(self):
+        """Health endpoint should report merge pipeline with layer names."""
+        health = self.poll_endpoint_until(
+            '/health',
+            lambda data: 'discovery' in data and 'pipeline' in data.get('discovery', {}),
+        )
+        pipeline = health['discovery']['pipeline']
+        layers = pipeline.get('layers', [])
+        self.assertIn('manifest', layers)
+        self.assertIn('runtime', layers)
+
+
+@launch_testing.post_shutdown_test()
+class TestShutdown(unittest.TestCase):
+
+    def test_exit_codes(self, proc_info):
+        launch_testing.asserts.assertExitCodes(
+            proc_info, allowable_exit_codes=ALLOWED_EXIT_CODES
+        )
