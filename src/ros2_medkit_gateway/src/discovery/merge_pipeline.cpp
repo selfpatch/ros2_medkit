@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
+#include <array>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -326,22 +327,34 @@ std::vector<Entity> MergePipeline::merge_entities(std::vector<std::pair<size_t, 
     size_t owner_layer_idx = entries[0].layer_idx;
     report.entity_source[id] = layers_[owner_layer_idx]->name();
 
+    // Track current owning layer per field group (initially all owned by first layer)
+    std::array<size_t, sizeof(ALL_FIELD_GROUPS) / sizeof(ALL_FIELD_GROUPS[0])> fg_owner;
+    fg_owner.fill(owner_layer_idx);
+
     // Merge with each subsequent (lower-priority) layer
     for (size_t i = 1; i < entries.size(); i++) {
       size_t source_layer_idx = entries[i].layer_idx;
       report.enriched_count++;
 
-      for (auto fg : ALL_FIELD_GROUPS) {
-        auto target_policy = layers_[owner_layer_idx]->policy_for(fg);
+      for (size_t fg_idx = 0; fg_idx < fg_owner.size(); ++fg_idx) {
+        auto fg = ALL_FIELD_GROUPS[fg_idx];
+        size_t current_owner = fg_owner[fg_idx];
+        auto target_policy = layers_[current_owner]->policy_for(fg);
         auto source_policy = layers_[source_layer_idx]->policy_for(fg);
         auto res = resolve_policies(target_policy, source_policy);
 
         if (res.is_conflict) {
-          report.conflicts.push_back({id, fg, layers_[owner_layer_idx]->name(), layers_[source_layer_idx]->name()});
+          report.conflicts.push_back({id, fg, layers_[current_owner]->name(), layers_[source_layer_idx]->name()});
           report.conflict_count++;
         }
 
         apply_field_group_merge(merged, entries[i].entity, fg, res);
+
+        // If source won with a strictly higher-priority policy, it becomes
+        // the owner of this field group for subsequent merge comparisons.
+        if (!res.is_conflict && policy_priority(source_policy) > policy_priority(target_policy)) {
+          fg_owner[fg_idx] = source_layer_idx;
+        }
       }
     }
 
