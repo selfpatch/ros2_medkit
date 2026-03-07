@@ -550,6 +550,9 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
           return tl::make_unexpected(std::string("DataAccessManager not available"));
         }
         auto * native_sampler = dam->get_native_sampler();
+        if (!native_sampler) {
+          return tl::make_unexpected(std::string("Native topic sampler unavailable"));
+        }
         auto sample = native_sampler->sample_topic(resource_path, dam->get_topic_sample_timeout());
         if (sample.has_data && sample.data.has_value()) {
           nlohmann::json payload;
@@ -586,6 +589,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
             }
           }
           // AREA and FUNCTION: leave source_id empty (returns all faults)
+          // Guard against TOCTOU: entity found but vanished before get_app/get_component
+          if (source_id.empty() && entity_ref->type != SovdEntityType::AREA &&
+              entity_ref->type != SovdEntityType::FUNCTION) {
+            return tl::make_unexpected(std::string("Entity no longer available: " + entity_id));
+          }
         }
         auto result = fault_mgr->list_faults(source_id);
         if (!result.success) {
