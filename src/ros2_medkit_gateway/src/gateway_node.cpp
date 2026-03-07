@@ -809,15 +809,16 @@ void GatewayNode::refresh_cache() {
     auto functions = discovery_mgr_->discover_functions();
 
     std::vector<Component> all_components;
-    if (discovery_mgr_->get_mode() == DiscoveryMode::HYBRID) {
-      // Pipeline already merges node and topic components
-      all_components = discovery_mgr_->discover_components();
-    } else {
+    if (discovery_mgr_->get_mode() == DiscoveryMode::RUNTIME_ONLY) {
+      // RUNTIME_ONLY: merge node + topic components (no pipeline)
       auto node_components = discovery_mgr_->discover_components();
       auto topic_components = discovery_mgr_->discover_topic_components();
       all_components.reserve(node_components.size() + topic_components.size());
       all_components.insert(all_components.end(), node_components.begin(), node_components.end());
       all_components.insert(all_components.end(), topic_components.begin(), topic_components.end());
+    } else {
+      // HYBRID: pipeline merges all sources; MANIFEST_ONLY: manifest components only
+      all_components = discovery_mgr_->discover_components();
     }
 
     // Capture sizes for logging
