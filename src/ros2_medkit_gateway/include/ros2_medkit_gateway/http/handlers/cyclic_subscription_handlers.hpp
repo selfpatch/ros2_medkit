@@ -16,12 +16,10 @@
 
 #include <httplib.h>
 
-#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
-#include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/resource_sampler.hpp"
 #include "ros2_medkit_gateway/subscription_manager.hpp"
 #include "ros2_medkit_gateway/subscription_transport.hpp"
@@ -51,7 +49,6 @@ struct ParsedResourceUri {
 class CyclicSubscriptionHandlers {
  public:
   CyclicSubscriptionHandlers(HandlerContext & ctx, SubscriptionManager & sub_mgr,
-                             std::shared_ptr<SSEClientTracker> client_tracker,
                              ResourceSamplerRegistry & sampler_registry, TransportRegistry & transport_registry,
                              int max_duration_sec);
 
@@ -88,13 +85,9 @@ class CyclicSubscriptionHandlers {
 
   HandlerContext & ctx_;
   SubscriptionManager & sub_mgr_;
-  std::shared_ptr<SSEClientTracker> client_tracker_;
   ResourceSamplerRegistry & sampler_registry_;
   TransportRegistry & transport_registry_;
   int max_duration_sec_;
-
-  /// Keepalive interval for SSE streams
-  static constexpr int kKeepaliveIntervalSec = 15;
 };
 
 }  // namespace handlers

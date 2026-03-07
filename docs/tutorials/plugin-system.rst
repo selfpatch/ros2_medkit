@@ -302,13 +302,14 @@ Plugins can extend cyclic subscriptions by registering custom resource samplers
 and transport providers during ``set_context()``.
 
 **Resource Samplers** provide the data for a collection when sampled by a subscription.
-Register a sampler via ``ResourceSamplerRegistry``:
+Built-in samplers (``data``, ``faults``, ``configurations``, ``updates``) are registered
+by the gateway during startup. Custom samplers are registered via ``ResourceSamplerRegistry``
+on the ``GatewayNode``:
 
 .. code-block:: cpp
 
-   // In set_context():
-   auto& sampler_registry = ctx_->get_sampler_registry();
-   sampler_registry.register_sampler("x-medkit-metrics",
+   auto* sampler_registry = node->get_sampler_registry();
+   sampler_registry->register_sampler("x-medkit-metrics",
      [this](const std::string& entity_id, const std::string& resource_path)
        -> tl::expected<nlohmann::json, std::string> {
        return get_metrics(entity_id, resource_path);
@@ -318,12 +319,12 @@ Once registered, clients can create cyclic subscriptions on the ``x-medkit-metri
 collection for any entity.
 
 **Transport Providers** deliver subscription data via alternative protocols (beyond
-the built-in SSE transport). Register via ``TransportRegistry``:
+the built-in SSE transport). Register via ``TransportRegistry`` on the ``GatewayNode``:
 
 .. code-block:: cpp
 
-   auto& transport_registry = ctx_->get_transport_registry();
-   transport_registry.register_transport(
+   auto* transport_registry = node->get_transport_registry();
+   transport_registry->register_transport(
      std::make_unique<MqttTransportProvider>(mqtt_client_));
 
 The transport must implement ``SubscriptionTransportProvider`` (``start``, ``stop``,

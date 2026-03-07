@@ -124,3 +124,29 @@ TEST(ResourceSamplerRegistryTest, ConcurrentRegisterAndLookup) {
     EXPECT_TRUE(registry.has_sampler("collection_" + std::to_string(i)));
   }
 }
+
+TEST(ResourceSamplerRegistryTest, UpdatesSamplerRegisteredAsBuiltin) {
+  ResourceSamplerRegistry registry;
+  registry.register_sampler(
+      "updates",
+      [](const std::string & /*entity_id*/,
+         const std::string & resource_path) -> tl::expected<nlohmann::json, std::string> {
+        if (resource_path == "known-pkg") {
+          return nlohmann::json{{"status", "inProgress"}, {"progress", 42}};
+        }
+        return tl::make_unexpected(std::string("Update not found: " + resource_path));
+      },
+      true);
+
+  EXPECT_TRUE(registry.has_sampler("updates"));
+  auto sampler = registry.get_sampler("updates");
+  ASSERT_TRUE(sampler.has_value());
+
+  auto result = (*sampler)("any-entity", "known-pkg");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ((*result)["status"], "inProgress");
+  EXPECT_EQ((*result)["progress"], 42);
+
+  auto err = (*sampler)("any-entity", "unknown-pkg");
+  ASSERT_FALSE(err.has_value());
+}
