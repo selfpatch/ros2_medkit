@@ -610,7 +610,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
       true);
 
   sampler_registry_->register_sampler(
-      "communication-logs",
+      "logs",
       [this](const std::string & entity_id,
              const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
         auto * log_mgr = get_log_manager();
@@ -634,7 +634,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
       },
       true);
 
-  RCLCPP_INFO(get_logger(), "Registered built-in resource samplers: data, faults, configurations, communication-logs");
+  RCLCPP_INFO(get_logger(), "Registered built-in resource samplers: data, faults, configurations, logs");
 
   // Register built-in SSE transport
   transport_registry_->register_transport(

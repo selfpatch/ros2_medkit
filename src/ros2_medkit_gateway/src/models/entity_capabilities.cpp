@@ -23,18 +23,10 @@ EntityCapabilities EntityCapabilities::for_type(SovdEntityType type) {
     case SovdEntityType::SERVER:
       // SERVER supports all collections
       caps.collections_ = {
-          ResourceCollection::CONFIGURATIONS,
-          ResourceCollection::DATA,
-          ResourceCollection::FAULTS,
-          ResourceCollection::OPERATIONS,
-          ResourceCollection::BULK_DATA,
-          ResourceCollection::DATA_LISTS,
-          ResourceCollection::LOCKS,
-          ResourceCollection::MODES,
-          ResourceCollection::CYCLIC_SUBSCRIPTIONS,
-          ResourceCollection::COMMUNICATION_LOGS,
-          ResourceCollection::TRIGGERS,
-          ResourceCollection::SCRIPTS,
+          ResourceCollection::CONFIGURATIONS, ResourceCollection::DATA,      ResourceCollection::FAULTS,
+          ResourceCollection::OPERATIONS,     ResourceCollection::BULK_DATA, ResourceCollection::DATA_LISTS,
+          ResourceCollection::LOCKS,          ResourceCollection::MODES,     ResourceCollection::CYCLIC_SUBSCRIPTIONS,
+          ResourceCollection::LOGS,           ResourceCollection::TRIGGERS,  ResourceCollection::SCRIPTS,
           ResourceCollection::UPDATES,
       };
       // SERVER resources
@@ -51,18 +43,10 @@ EntityCapabilities EntityCapabilities::for_type(SovdEntityType type) {
     case SovdEntityType::COMPONENT:
       // COMPONENT supports most collections
       caps.collections_ = {
-          ResourceCollection::CONFIGURATIONS,
-          ResourceCollection::DATA,
-          ResourceCollection::FAULTS,
-          ResourceCollection::OPERATIONS,
-          ResourceCollection::BULK_DATA,
-          ResourceCollection::DATA_LISTS,
-          ResourceCollection::LOCKS,
-          ResourceCollection::MODES,
-          ResourceCollection::CYCLIC_SUBSCRIPTIONS,
-          ResourceCollection::COMMUNICATION_LOGS,
-          ResourceCollection::TRIGGERS,
-          ResourceCollection::SCRIPTS,
+          ResourceCollection::CONFIGURATIONS, ResourceCollection::DATA,      ResourceCollection::FAULTS,
+          ResourceCollection::OPERATIONS,     ResourceCollection::BULK_DATA, ResourceCollection::DATA_LISTS,
+          ResourceCollection::LOCKS,          ResourceCollection::MODES,     ResourceCollection::CYCLIC_SUBSCRIPTIONS,
+          ResourceCollection::LOGS,           ResourceCollection::TRIGGERS,  ResourceCollection::SCRIPTS,
           ResourceCollection::UPDATES,
       };
       caps.resources_ = {"docs",       "logs",          "hosts",           "belongs-to",
@@ -72,18 +56,10 @@ EntityCapabilities EntityCapabilities::for_type(SovdEntityType type) {
     case SovdEntityType::APP:
       // APP supports most collections
       caps.collections_ = {
-          ResourceCollection::CONFIGURATIONS,
-          ResourceCollection::DATA,
-          ResourceCollection::FAULTS,
-          ResourceCollection::OPERATIONS,
-          ResourceCollection::BULK_DATA,
-          ResourceCollection::DATA_LISTS,
-          ResourceCollection::LOCKS,
-          ResourceCollection::MODES,
-          ResourceCollection::CYCLIC_SUBSCRIPTIONS,
-          ResourceCollection::COMMUNICATION_LOGS,
-          ResourceCollection::TRIGGERS,
-          ResourceCollection::SCRIPTS,
+          ResourceCollection::CONFIGURATIONS, ResourceCollection::DATA,      ResourceCollection::FAULTS,
+          ResourceCollection::OPERATIONS,     ResourceCollection::BULK_DATA, ResourceCollection::DATA_LISTS,
+          ResourceCollection::LOCKS,          ResourceCollection::MODES,     ResourceCollection::CYCLIC_SUBSCRIPTIONS,
+          ResourceCollection::LOGS,           ResourceCollection::TRIGGERS,  ResourceCollection::SCRIPTS,
           ResourceCollection::UPDATES,
       };
       caps.resources_ = {"docs", "logs", "is-located-on", "belongs-to", "depends-on", "data-categories", "data-groups"};

@@ -22,6 +22,8 @@ path traversal) return 400.
 
 """
 
+import json
+import threading
 import time
 import unittest
 
@@ -29,7 +31,7 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
@@ -189,6 +191,87 @@ class TestMultiCollectionSubscriptions(GatewayTestCase):
         self.assertEqual(data['interval'], 'slow')
         self.assertIn('observed_resource', data)
         self.assertIn('event_source', data)
+
+    def test_logs_subscription_create(self):
+        """Create a subscription on logs collection.
+
+        @verifies REQ_INTEROP_089
+        """
+        resource = f'/api/v1/apps/{self.app_id}/logs'
+        r = self._create_subscription(resource, interval='slow')
+        self.assertEqual(r.status_code, 201, f'Create failed: {r.text}')
+
+        data = r.json()
+        self.addCleanup(self._delete_subscription, data['id'])
+
+        self.assertEqual(data['protocol'], 'sse')
+        self.assertEqual(data['interval'], 'slow')
+        self.assertIn('observed_resource', data)
+        self.assertIn('event_source', data)
+
+    def test_logs_subscription_sse_stream(self):
+        """SSE stream on logs collection delivers EventEnvelope with log items.
+
+        Creates a cyclic subscription on /apps/{id}/logs, connects to the SSE
+        events endpoint, and verifies that EventEnvelope payloads arrive with
+        log entry items containing id, timestamp, severity, and message fields.
+
+        @verifies REQ_INTEROP_089
+        @verifies REQ_INTEROP_090
+        """
+        resource = f'/api/v1/apps/{self.app_id}/logs'
+        r = self._create_subscription(resource, interval='slow', duration=30)
+        self.assertEqual(r.status_code, 201, f'Create failed: {r.text}')
+
+        data = r.json()
+        self.addCleanup(self._delete_subscription, data['id'])
+
+        events_url = (
+            f'{self.BASE_URL}{data["event_source"].removeprefix(API_BASE_PATH)}'
+        )
+
+        received_events = []
+        stop_event = threading.Event()
+
+        def collect_events():
+            try:
+                with requests.get(events_url, stream=True, timeout=15) as resp:
+                    for line in resp.iter_lines(decode_unicode=True):
+                        if stop_event.is_set():
+                            break
+                        if line and line.startswith('data: '):
+                            event = json.loads(line[6:])
+                            received_events.append(event)
+                            if len(received_events) >= 2:
+                                stop_event.set()
+                                break
+            except requests.exceptions.RequestException:
+                pass
+
+        thread = threading.Thread(target=collect_events, daemon=True)
+        thread.start()
+
+        # slow interval = 500ms, so 2 events should arrive within ~5s
+        stop_event.wait(timeout=15)
+        thread.join(timeout=5)
+
+        self.assertGreaterEqual(
+            len(received_events), 1,
+            f'Expected at least 1 SSE log event, got {len(received_events)}',
+        )
+
+        for event in received_events:
+            self.assertIn('timestamp', event, 'EventEnvelope must have timestamp')
+            self.assertIn('payload', event, 'EventEnvelope must have payload')
+            payload = event['payload']
+            self.assertIn('items', payload, 'Logs payload must have items array')
+            # Log entries from /rosout should be present after demo node startup
+            if payload['items']:
+                entry = payload['items'][0]
+                self.assertIn('id', entry)
+                self.assertIn('timestamp', entry)
+                self.assertIn('severity', entry)
+                self.assertIn('message', entry)
 
     # ===================================================================
     # CRUD operations: list, get, update, delete
