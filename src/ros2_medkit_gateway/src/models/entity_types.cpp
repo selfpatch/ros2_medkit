@@ -58,6 +58,8 @@ std::string to_string(ResourceCollection col) {
       return "modes";
     case ResourceCollection::CYCLIC_SUBSCRIPTIONS:
       return "cyclic-subscriptions";
+    case ResourceCollection::LOGS:
+      return "logs";
     case ResourceCollection::COMMUNICATION_LOGS:
       return "communication-logs";
     case ResourceCollection::TRIGGERS:
@@ -87,6 +89,7 @@ std::optional<ResourceCollection> parse_resource_collection(const std::string & 
       {"locks", ResourceCollection::LOCKS},
       {"modes", ResourceCollection::MODES},
       {"cyclic-subscriptions", ResourceCollection::CYCLIC_SUBSCRIPTIONS},
+      {"logs", ResourceCollection::LOGS},
       {"communication-logs", ResourceCollection::COMMUNICATION_LOGS},
       {"triggers", ResourceCollection::TRIGGERS},
       {"scripts", ResourceCollection::SCRIPTS},

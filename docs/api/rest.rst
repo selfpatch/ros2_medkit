@@ -935,8 +935,8 @@ Cyclic Subscriptions
 
 Cyclic subscriptions provide periodic push-based delivery of any SOVD resource collection
 via Server-Sent Events (SSE). A client creates a subscription specifying the resource URI
-(data, faults, configurations, communication-logs, or ``x-`` vendor extensions) and a
-delivery interval. The server then pushes the latest value at the requested frequency.
+(data, faults, configurations, logs, or ``x-`` vendor extensions) and a delivery interval.
+The server then pushes the latest value at the requested frequency.
 
 Subscriptions are temporary - they do not survive server restart.
 
@@ -945,14 +945,8 @@ Subscriptions are temporary - they do not survive server restart.
 - ``data`` - Topic data (requires a resource path, e.g. ``/data/temperature``)
 - ``faults`` - Fault list (resource path optional, e.g. ``/faults`` or ``/faults/fault_001``)
 - ``configurations`` - Parameter values (resource path optional)
-- ``communication-logs`` - Network protocol logs (SOVD "comlogs", not ``/logs``)
+- ``logs`` - Application log entries from ``/rosout``
 - ``x-*`` - Vendor extensions (e.g. ``x-medkit-metrics``)
-
-.. note::
-
-   SOVD "Communication Logs" (``communication-logs``) are network protocol logs per
-   ISO 17978-3, **not** the gateway's ``/logs`` endpoints which serve application-level
-   log entries from ``/rosout``.
 
 **Interval values:**
 
