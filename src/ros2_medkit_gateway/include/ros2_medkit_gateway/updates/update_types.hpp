@@ -91,4 +91,36 @@ class UpdateProgressReporter {
   std::mutex & mutex_;
 };
 
+/// Serialize UpdateStatusInfo to SOVD-compliant JSON
+inline nlohmann::json update_status_to_json(const UpdateStatusInfo & status) {
+  nlohmann::json j;
+  switch (status.status) {
+    case UpdateStatus::Pending:
+      j["status"] = "pending";
+      break;
+    case UpdateStatus::InProgress:
+      j["status"] = "inProgress";
+      break;
+    case UpdateStatus::Completed:
+      j["status"] = "completed";
+      break;
+    case UpdateStatus::Failed:
+      j["status"] = "failed";
+      break;
+  }
+  if (status.progress.has_value()) {
+    j["progress"] = *status.progress;
+  }
+  if (status.sub_progress.has_value()) {
+    j["sub_progress"] = nlohmann::json::array();
+    for (const auto & sp : *status.sub_progress) {
+      j["sub_progress"].push_back({{"name", sp.name}, {"progress", sp.progress}});
+    }
+  }
+  if (status.error_message.has_value()) {
+    j["error"] = *status.error_message;
+  }
+  return j;
+}
+
 }  // namespace ros2_medkit_gateway

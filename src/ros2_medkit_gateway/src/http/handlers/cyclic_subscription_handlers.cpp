@@ -29,12 +29,10 @@ namespace ros2_medkit_gateway {
 namespace handlers {
 
 CyclicSubscriptionHandlers::CyclicSubscriptionHandlers(HandlerContext & ctx, SubscriptionManager & sub_mgr,
-                                                       std::shared_ptr<SSEClientTracker> client_tracker,
                                                        ResourceSamplerRegistry & sampler_registry,
                                                        TransportRegistry & transport_registry, int max_duration_sec)
   : ctx_(ctx)
   , sub_mgr_(sub_mgr)
-  , client_tracker_(std::move(client_tracker))
   , sampler_registry_(sampler_registry)
   , transport_registry_(transport_registry)
   , max_duration_sec_(max_duration_sec) {
@@ -128,39 +126,44 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
 
   std::string entity_type = extract_entity_type(req);
 
-  // Validate resource URI references the same entity as the route
-  if (parsed->entity_type != entity_type || parsed->entity_id != entity_id) {
-    HandlerContext::send_error(res, 400, ERR_X_MEDKIT_ENTITY_MISMATCH,
-                               "Resource URI must reference the same entity as the route",
-                               {{"parameter", "resource"}, {"value", resource}});
-    return;
-  }
+  // Server-level resources (e.g. updates) skip entity-mismatch and collection checks
+  bool is_server_level = parsed->entity_type.empty();
 
-  // Validate collection support
-  auto known_collection = parse_resource_collection(parsed->collection);
-  if (known_collection.has_value()) {
-    // Known SOVD collection - check entity supports it
-    if (!entity->supports_collection(*known_collection)) {
-      HandlerContext::send_error(res, 400, ERR_X_MEDKIT_COLLECTION_NOT_SUPPORTED,
-                                 "Collection '" + parsed->collection + "' not supported for " + entity_type,
-                                 {{"collection", parsed->collection}, {"entity_type", entity_type}});
+  if (!is_server_level) {
+    // Validate resource URI references the same entity as the route
+    if (parsed->entity_type != entity_type || parsed->entity_id != entity_id) {
+      HandlerContext::send_error(res, 400, ERR_X_MEDKIT_ENTITY_MISMATCH,
+                                 "Resource URI must reference the same entity as the route",
+                                 {{"parameter", "resource"}, {"value", resource}});
       return;
     }
-  } else if (parsed->collection.size() < 2 || parsed->collection.substr(0, 2) != "x-") {
-    // Not a known collection and not a vendor extension
-    HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI,
-                               "Unknown collection '" + parsed->collection +
-                                   "'. Use a known SOVD collection or 'x-' vendor extension.",
-                               {{"collection", parsed->collection}});
-    return;
-  }
 
-  // Data collection requires a resource path (topic name)
-  if (parsed->collection == "data" && parsed->resource_path.empty()) {
-    HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI,
-                               "Data collection requires a resource path (e.g. /api/v1/apps/{id}/data/{topic})",
-                               {{"parameter", "resource"}, {"value", resource}});
-    return;
+    // Validate collection support
+    auto known_collection = parse_resource_collection(parsed->collection);
+    if (known_collection.has_value()) {
+      // Known SOVD collection - check entity supports it
+      if (!entity->supports_collection(*known_collection)) {
+        HandlerContext::send_error(res, 400, ERR_X_MEDKIT_COLLECTION_NOT_SUPPORTED,
+                                   "Collection '" + parsed->collection + "' not supported for " + entity_type,
+                                   {{"collection", parsed->collection}, {"entity_type", entity_type}});
+        return;
+      }
+    } else if (parsed->collection.size() < 2 || parsed->collection.substr(0, 2) != "x-") {
+      // Not a known collection and not a vendor extension
+      HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI,
+                                 "Unknown collection '" + parsed->collection +
+                                     "'. Use a known SOVD collection or 'x-' vendor extension.",
+                                 {{"collection", parsed->collection}});
+      return;
+    }
+
+    // Data collection requires a resource path (topic name)
+    if (parsed->collection == "data" && parsed->resource_path.empty()) {
+      HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI,
+                                 "Data collection requires a resource path (e.g. /api/v1/apps/{id}/data/{topic})",
+                                 {{"parameter", "resource"}, {"value", resource}});
+      return;
+    }
   }
 
   // Check sampler is registered
@@ -373,9 +376,8 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
   }
 
   if (!transport->handle_client_connect(sub_id, req, res)) {
-    HandlerContext::send_error(res, 400, ERR_X_MEDKIT_UNSUPPORTED_PROTOCOL,
-                               "Use event_source URI for protocol '" + sub->protocol + "'",
-                               {{"protocol", sub->protocol}});
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription stream not found",
+                               {{"subscription_id", sub_id}});
   }
 }
 
@@ -413,34 +415,47 @@ std::string CyclicSubscriptionHandlers::extract_entity_type(const httplib::Reque
 
 tl::expected<ParsedResourceUri, std::string>
 CyclicSubscriptionHandlers::parse_resource_uri(const std::string & resource) {
-  // Expected format: /api/v1/{entity_type}/{entity_id}/{collection}[/{resource_path}]
-  static const std::regex resource_regex(R"(^/api/v1/(apps|components)/([^/]+)/([^/]+)(/.*)?$)");
+  // Try entity-scoped format first: /api/v1/{entity_type}/{entity_id}/{collection}[/{resource_path}]
+  static const std::regex entity_regex(R"(^/api/v1/(apps|components)/([^/]+)/([^/]+)(/.*)?$)");
   std::smatch match;
-  if (!std::regex_match(resource, match, resource_regex)) {
-    return tl::make_unexpected("Resource URI must match /api/v1/{apps|components}/{id}/{collection}[/{path}]");
-  }
+  if (std::regex_match(resource, match, entity_regex)) {
+    ParsedResourceUri parsed;
+    parsed.entity_type = match[1].str();
+    parsed.entity_id = match[2].str();
+    parsed.collection = match[3].str();
+    parsed.resource_path = match[4].matched ? match[4].str() : "";
 
-  ParsedResourceUri parsed;
-  parsed.entity_type = match[1].str();
-  parsed.entity_id = match[2].str();
-  parsed.collection = match[3].str();
-  parsed.resource_path = match[4].matched ? match[4].str() : "";
-
-  // Security: reject '..' as a path segment (not as substring of e.g. '/..foo')
-  if (!parsed.resource_path.empty()) {
-    std::string path = parsed.resource_path;
-    size_t pos = 0;
-    while (pos < path.size()) {
-      size_t next = path.find('/', pos + 1);
-      std::string segment = (next == std::string::npos) ? path.substr(pos) : path.substr(pos, next - pos);
-      if (segment == "/.." || segment == "..") {
-        return tl::make_unexpected("Resource path must not contain '..' as a path segment");
+    // Security: reject '..' as a path segment (not as substring of e.g. '/..foo')
+    if (!parsed.resource_path.empty()) {
+      std::string path = parsed.resource_path;
+      size_t pos = 0;
+      while (pos < path.size()) {
+        size_t next = path.find('/', pos + 1);
+        std::string segment = (next == std::string::npos) ? path.substr(pos) : path.substr(pos, next - pos);
+        if (segment == "/.." || segment == "..") {
+          return tl::make_unexpected("Resource path must not contain '..' as a path segment");
+        }
+        pos = (next == std::string::npos) ? path.size() : next;
       }
-      pos = (next == std::string::npos) ? path.size() : next;
     }
+
+    return parsed;
   }
 
-  return parsed;
+  // Try server-level update status: /api/v1/updates/{update-package-id}/status
+  static const std::regex update_status_regex(R"(^/api/v1/updates/([^/]+)/status$)");
+  if (std::regex_match(resource, match, update_status_regex)) {
+    ParsedResourceUri parsed;
+    parsed.entity_type = "";  // server-level, no entity
+    parsed.entity_id = "";
+    parsed.collection = "updates";
+    parsed.resource_path = match[1].str();  // update package ID
+    return parsed;
+  }
+
+  return tl::make_unexpected(
+      "Resource URI must match /api/v1/{apps|components}/{id}/{collection}[/{path}] "
+      "or /api/v1/updates/{id}/status");
 }
 
 }  // namespace handlers

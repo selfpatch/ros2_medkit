@@ -240,8 +240,10 @@ void SubscriptionManager::shutdown() {
       it = subscriptions_.erase(it);
     }
   }
-  for (const auto & info : all_infos) {
-    on_removed_(info);
+  if (on_removed_) {
+    for (const auto & info : all_infos) {
+      on_removed_(info);
+    }
   }
 }
 

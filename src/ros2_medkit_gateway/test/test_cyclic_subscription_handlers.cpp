@@ -118,6 +118,42 @@ TEST(ParseResourceUriTest, DataCollectionEmptyResourcePath) {
   EXPECT_EQ(result->resource_path, "");
 }
 
+// --- parse_resource_uri: server-level update status ---
+
+// @verifies REQ_INTEROP_089
+TEST(ParseResourceUriTest, UpdateStatusUri) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/updates/my-package/status");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->entity_type, "");
+  EXPECT_EQ(result->entity_id, "");
+  EXPECT_EQ(result->collection, "updates");
+  EXPECT_EQ(result->resource_path, "my-package");
+}
+
+TEST(ParseResourceUriTest, UpdateStatusUriWithHyphenatedId) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/updates/ADAS-v2-03-2154/status");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->collection, "updates");
+  EXPECT_EQ(result->resource_path, "ADAS-v2-03-2154");
+}
+
+TEST(ParseResourceUriTest, UpdateStatusUriMissingStatus) {
+  // /api/v1/updates/{id} without /status is not a subscribable resource
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/updates/my-package");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(ParseResourceUriTest, UpdateStatusUriMissingId) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/updates//status");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(ParseResourceUriTest, UpdatesListNotSubscribable) {
+  // /api/v1/updates (list endpoint) is not subscribable
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/updates");
+  EXPECT_FALSE(result.has_value());
+}
+
 // --- subscription_to_json ---
 
 // @verifies REQ_INTEROP_089
@@ -152,6 +188,28 @@ TEST(CyclicSubscriptionJsonTest, AllIntervalValuesSerialize) {
     auto j = CyclicSubscriptionHandlers::subscription_to_json(info, "/events");
     EXPECT_EQ(j["interval"], expected);
   }
+}
+
+// @verifies REQ_INTEROP_089
+TEST(CyclicSubscriptionJsonTest, ServerLevelUpdateResource) {
+  CyclicSubscriptionInfo info;
+  info.id = "sub_updates_001";
+  info.entity_id = "temp_sensor";
+  info.entity_type = "apps";
+  info.resource_uri = "/api/v1/updates/ADAS-v2/status";
+  info.collection = "updates";
+  info.resource_path = "ADAS-v2";
+  info.protocol = "sse";
+  info.interval = CyclicInterval::SLOW;
+
+  std::string event_source = "/api/v1/apps/temp_sensor/cyclic-subscriptions/sub_updates_001/events";
+  auto j = CyclicSubscriptionHandlers::subscription_to_json(info, event_source);
+
+  EXPECT_EQ(j["id"], "sub_updates_001");
+  EXPECT_EQ(j["observed_resource"], "/api/v1/updates/ADAS-v2/status");
+  EXPECT_EQ(j["event_source"], event_source);
+  EXPECT_EQ(j["protocol"], "sse");
+  EXPECT_EQ(j["interval"], "slow");
 }
 
 // --- Error response format (via HandlerContext static helpers) ---

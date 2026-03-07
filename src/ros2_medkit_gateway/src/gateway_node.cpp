@@ -645,7 +645,27 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
       },
       true);
 
-  RCLCPP_INFO(get_logger(), "Registered built-in resource samplers: data, faults, configurations, logs");
+  // Register update status sampler (server-level, uses UpdateManager)
+  if (update_mgr_) {
+    sampler_registry_->register_sampler(
+        "updates",
+        [this](const std::string & /*entity_id*/,
+               const std::string & resource_path) -> tl::expected<nlohmann::json, std::string> {
+          auto * mgr = get_update_manager();
+          if (!mgr || !mgr->has_backend()) {
+            return tl::make_unexpected(std::string("Update backend not available"));
+          }
+          auto result = mgr->get_status(resource_path);
+          if (!result) {
+            return tl::make_unexpected(result.error().message);
+          }
+          return update_status_to_json(*result);
+        },
+        true);
+  }
+
+  RCLCPP_INFO(get_logger(), "Registered built-in resource samplers: data, faults, configurations, logs%s",
+              update_mgr_ ? ", updates" : "");
 
   // Register built-in SSE transport
   transport_registry_->register_transport(
@@ -708,7 +728,7 @@ GatewayNode::~GatewayNode() {
   if (plugin_mgr_) {
     plugin_mgr_->shutdown_all();
   }
-  // 5. Normal member destruction (managers safe - all transports stopped)
+  // 4. Normal member destruction (managers safe - all transports stopped)
 }
 
 const ThreadSafeEntityCache & GatewayNode::get_thread_safe_cache() const {

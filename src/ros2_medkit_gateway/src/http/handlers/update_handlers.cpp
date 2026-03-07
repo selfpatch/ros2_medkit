@@ -35,34 +35,7 @@ bool UpdateHandlers::check_backend(httplib::Response & res) {
 }
 
 json UpdateHandlers::status_to_json(const UpdateStatusInfo & status) {
-  json j;
-  switch (status.status) {
-    case UpdateStatus::Pending:
-      j["status"] = "pending";
-      break;
-    case UpdateStatus::InProgress:
-      j["status"] = "inProgress";
-      break;
-    case UpdateStatus::Completed:
-      j["status"] = "completed";
-      break;
-    case UpdateStatus::Failed:
-      j["status"] = "failed";
-      break;
-  }
-  if (status.progress.has_value()) {
-    j["progress"] = *status.progress;
-  }
-  if (status.sub_progress.has_value()) {
-    j["sub_progress"] = json::array();
-    for (const auto & sp : *status.sub_progress) {
-      j["sub_progress"].push_back({{"name", sp.name}, {"progress", sp.progress}});
-    }
-  }
-  if (status.error_message.has_value()) {
-    j["error"] = *status.error_message;
-  }
-  return j;
+  return update_status_to_json(status);
 }
 
 void UpdateHandlers::handle_list_updates(const httplib::Request & req, httplib::Response & res) {
