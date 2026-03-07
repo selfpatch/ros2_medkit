@@ -4,6 +4,21 @@ Changelog for package ros2_medkit_gateway
 
 0.3.0 (2026-02-27)
 ------------------
+
+**Breaking Changes:**
+
+* ``GET /version-info`` response key renamed from ``sovd_info`` to ``items`` for SOVD alignment (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
+* ``GET /`` root endpoint restructured: ``endpoints`` is now a flat string array, added ``capabilities`` object, ``api_base`` field, and ``name``/``version`` top-level fields (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
+* Default rosbag storage format changed from ``sqlite3`` to ``mcap`` (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
+
+**Features:**
+
+* Layered merge pipeline for hybrid discovery with per-layer, per-field-group merge policies (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
+* Gap-fill configuration: control heuristic entity creation with ``allow_heuristic_*`` options and namespace filtering (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
+* Plugin layer: ``IntrospectionProvider`` now wired into discovery pipeline via ``PluginLayer`` (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
+* ``LogProvider`` plugin interface for custom log backends (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
+* ``/health`` endpoint includes merge pipeline diagnostics (layers, conflicts, gap-fill stats) (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
+* Entity detail responses now include ``logs``, ``bulk-data``, ``cyclic-subscriptions`` URIs (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
 * Gateway plugin framework with dynamic C++ plugin loading (`#237 <https://github.com/selfpatch/ros2_medkit/pull/237>`_)
 * Software updates plugin with 8 SOVD-compliant endpoints (`#237 <https://github.com/selfpatch/ros2_medkit/pull/237>`_, `#231 <https://github.com/selfpatch/ros2_medkit/pull/231>`_)
 * SSE-based periodic data subscriptions for real-time streaming without polling (`#223 <https://github.com/selfpatch/ros2_medkit/pull/223>`_)

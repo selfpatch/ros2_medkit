@@ -59,7 +59,10 @@ def generate_test_description():
 
 
 class TestPluginVendorExtensions(GatewayTestCase):
-    """Vendor extension endpoint tests via test_gateway_plugin."""
+    """Vendor extension endpoint tests via test_gateway_plugin.
+
+    @verifies REQ_INTEROP_003
+    """
 
     MIN_EXPECTED_APPS = 2
     REQUIRED_APPS = {'temp_sensor', 'rpm_sensor'}
