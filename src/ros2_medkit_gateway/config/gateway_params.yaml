@@ -273,7 +273,7 @@ ros2_medkit_gateway:
       # Allowed bulk data categories (besides "rosbags" which is always
       # available via FaultManager)
       # Example: ["calibration", "firmware", "comlogs", "snapshots"]
-      categories: []
+      categories: [""]
 
     # Plugin Framework
     # Extend gateway with custom plugins loaded from shared libraries (.so).
@@ -291,7 +291,7 @@ ros2_medkit_gateway:
     # Plugin lifecycle: load -> configure -> set_context -> register_routes
     # Plugins that throw during any lifecycle call are disabled (not crashed).
     # Default: [] (no plugins)
-    plugins: []
+    plugins: [""]
 
     # Software Updates
     # Enables /updates endpoints for SOVD-compliant software update management.
