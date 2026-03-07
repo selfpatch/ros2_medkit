@@ -1,6 +1,10 @@
 Discovery Options Reference
 ===========================
 
+.. contents::
+   :local:
+   :depth: 2
+
 This document describes configuration options for the gateway's discovery system.
 The discovery system maps ROS 2 graph entities (nodes, topics, services, actions)
 to SOVD entities (areas, components, apps).
@@ -143,7 +147,8 @@ Each layer declares a policy per field-group:
 - Runtime: ``authoritative`` for live_data/status, ``enrichment`` for metadata, ``fallback`` for identity/hierarchy
 
 Override per-layer policies in ``gateway_params.yaml``. Empty string means
-"use layer default":
+"use layer default". Policy values are **case-sensitive** and must be lowercase
+(``authoritative``, ``enrichment``, ``fallback``):
 
 .. code-block:: yaml
 
@@ -220,7 +225,7 @@ pipeline stats, linking results, and merge warnings:
      "status": "healthy",
      "discovery": {
        "mode": "hybrid",
-       "strategy": "HybridDiscoveryStrategy",
+       "strategy": "hybrid",
        "pipeline": {
          "layers": ["manifest", "runtime", "plugin"],
          "total_entities": 6,

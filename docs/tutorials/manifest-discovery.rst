@@ -320,7 +320,7 @@ Check which apps are online:
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps | jq '.[] | {id, name, is_online}'
+   curl http://localhost:8080/api/v1/apps | jq '.items[] | {id, name, is_online}'
 
 Example response:
 

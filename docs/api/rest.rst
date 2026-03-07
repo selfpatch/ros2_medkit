@@ -55,6 +55,23 @@ Server Capabilities
 ``GET /api/v1/version-info``
    Get gateway version and status information.
 
+   **Example Response:**
+
+   .. code-block:: json
+
+      {
+        "items": [
+          {
+            "version": "1.0.0",
+            "base_uri": "/api/v1",
+            "vendor_info": {
+              "version": "0.3.0",
+              "name": "ros2_medkit"
+            }
+          }
+        ]
+      }
+
 ``GET /api/v1/health``
    Health check endpoint. Returns HTTP 200 if gateway is operational.
 
@@ -108,8 +125,7 @@ Components
           {
             "id": "temp_sensor",
             "name": "temp_sensor",
-            "href": "/api/v1/components/temp_sensor",
-            "area": "powertrain"
+            "href": "/api/v1/components/temp_sensor"
           }
         ]
       }
