@@ -89,7 +89,7 @@ TEST_F(HealthHandlersTest, HandleVersionInfoContainsItemsArray) {
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVersionField) {
+TEST_F(HealthHandlersTest, HandleVersionInfoItemsEntryHasVersionField) {
   handlers_.handle_version_info(req_, res_);
   auto body = json::parse(res_.body);
   auto & entry = body["items"][0];
@@ -99,7 +99,7 @@ TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVersionField) {
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasBaseUri) {
+TEST_F(HealthHandlersTest, HandleVersionInfoItemsEntryHasBaseUri) {
   handlers_.handle_version_info(req_, res_);
   auto body = json::parse(res_.body);
   auto & entry = body["items"][0];
@@ -107,7 +107,7 @@ TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasBaseUri) {
 }
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVendorInfo) {
+TEST_F(HealthHandlersTest, HandleVersionInfoItemsEntryHasVendorInfo) {
   handlers_.handle_version_info(req_, res_);
   auto body = json::parse(res_.body);
   auto & entry = body["items"][0];
