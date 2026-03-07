@@ -155,6 +155,37 @@ Data Access Settings
      - ``1.0``
      - Timeout for sampling topics with active publishers. Range: 0.1-30.0.
 
+Logging Configuration
+---------------------
+
+Configure the in-memory log buffer that collects ``/rosout`` messages.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 10 15 50
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``logs.buffer_size``
+     - int
+     - ``200``
+     - Maximum log entries retained per node. Valid range: 1-100000
+       (values outside this range are clamped with a warning).
+
+Example:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       logs:
+         buffer_size: 500
+
+A ``LogProvider`` plugin can replace the default ``/rosout`` backend.
+See :doc:`/tutorials/plugin-system` for details.
+
 Performance Tuning
 ------------------
 
@@ -219,7 +250,7 @@ Example:
 
 .. note::
 
-   The gateway uses native rclcpp APIs for all ROS 2 interactions—no ROS 2 CLI
+   The gateway uses native rclcpp APIs for all ROS 2 interactions - no ROS 2 CLI
    dependencies. Topic discovery, sampling, publishing, service calls, and
    action operations are implemented in pure C++ using ros2_medkit_serialization.
 
@@ -259,6 +290,60 @@ Example:
          max_clients: 10
          max_subscriptions: 100
          max_duration_sec: 3600
+
+Rate Limiting
+-------------
+
+Token-bucket-based rate limiting for API requests. Disabled by default.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 10 15 40
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``rate_limiting.enabled``
+     - bool
+     - ``false``
+     - Enable rate limiting.
+   * - ``rate_limiting.global_requests_per_minute``
+     - int
+     - ``600``
+     - Maximum RPM across all clients combined.
+   * - ``rate_limiting.client_requests_per_minute``
+     - int
+     - ``60``
+     - Maximum RPM per client IP.
+   * - ``rate_limiting.endpoint_limits``
+     - string[]
+     - ``[]``
+     - Per-endpoint overrides as ``"pattern:rpm"`` strings.
+       Pattern uses ``*`` as single-segment wildcard
+       (e.g., ``"/api/v1/*/operations/*:10"``).
+   * - ``rate_limiting.client_cleanup_interval_seconds``
+     - int
+     - ``300``
+     - How often to scan and remove idle client tracking entries (seconds).
+   * - ``rate_limiting.client_max_idle_seconds``
+     - int
+     - ``600``
+     - Remove client entries idle longer than this (seconds).
+
+Example:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       rate_limiting:
+         enabled: true
+         global_requests_per_minute: 600
+         client_requests_per_minute: 60
+         endpoint_limits: ["/api/v1/*/operations/*:10"]
+
+See :doc:`/api/rest` for rate limiting response headers and 429 behavior.
 
 Plugin Framework
 ----------------
@@ -370,6 +455,18 @@ Complete Example
          max_clients: 10
          max_subscriptions: 100
          max_duration_sec: 3600
+
+       logs:
+         buffer_size: 200
+
+       plugins: ["my_ota_plugin"]
+       plugins.my_ota_plugin.path: "/opt/ros2_medkit/lib/libmy_ota_plugin.so"
+
+       updates:
+         enabled: true
+
+       rate_limiting:
+         enabled: false
 
 See Also
 --------
