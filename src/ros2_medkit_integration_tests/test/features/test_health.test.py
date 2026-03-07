@@ -98,13 +98,13 @@ class TestHealth(GatewayTestCase):
         """
         data = self.get_json('/version-info')
 
-        # Check sovd_info array
-        self.assertIn('sovd_info', data)
-        self.assertIsInstance(data['sovd_info'], list)
-        self.assertGreaterEqual(len(data['sovd_info']), 1)
+        # Check items array (SOVD-standard wrapper key)
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+        self.assertGreaterEqual(len(data['items']), 1)
 
-        # Check first sovd_info entry
-        info = data['sovd_info'][0]
+        # Check first items entry
+        info = data['items'][0]
         self.assertIn('version', info)
         self.assertIn('base_uri', info)
         self.assertIn('vendor_info', info)

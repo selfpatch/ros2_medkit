@@ -324,7 +324,7 @@
                 "version-info"
               ]
             },
-            "description": "Get SOVD server version information. Returns sovd_info array with supported SOVD versions, base URIs, and vendor information. Response format: { sovd_info: [{ version, base_uri, vendor_info: { version, name } }] }"
+            "description": "Get SOVD server version information. Returns items array with supported SOVD versions, base URIs, and vendor information. Response format: { items: [{ version, base_uri, vendor_info: { version, name } }] }"
           },
           "response": []
         },

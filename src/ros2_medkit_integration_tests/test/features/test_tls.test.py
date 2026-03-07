@@ -234,11 +234,11 @@ class TestHttpsEndpoints(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        # sovd_info array with version, base_uri, vendor_info
-        self.assertIn('sovd_info', data)
-        self.assertIsInstance(data['sovd_info'], list)
-        self.assertGreater(len(data['sovd_info']), 0)
-        info = data['sovd_info'][0]
+        # items array (SOVD-standard wrapper key)
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+        self.assertGreater(len(data['items']), 0)
+        info = data['items'][0]
         self.assertIn('version', info)
         self.assertIn('base_uri', info)
 

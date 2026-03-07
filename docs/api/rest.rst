@@ -24,16 +24,32 @@ Server Capabilities
    .. code-block:: json
 
       {
-        "api_version": "1.0.0",
-        "gateway_version": "0.3.0",
+        "name": "ROS 2 Medkit Gateway",
+        "version": "0.3.0",
+        "api_base": "/api/v1",
         "endpoints": [
-          {"path": "/areas", "supported_methods": ["GET"]},
-          {"path": "/components", "supported_methods": ["GET"]},
-          {"path": "/apps", "supported_methods": ["GET"]},
-          {"path": "/functions", "supported_methods": ["GET"]},
-          {"path": "/faults", "supported_methods": ["GET", "DELETE"]},
-          {"path": "/updates", "supported_methods": ["GET", "POST"]}
-        ]
+          "GET /api/v1/health",
+          "GET /api/v1/areas",
+          "GET /api/v1/components",
+          "GET /api/v1/apps",
+          "GET /api/v1/functions",
+          "GET /api/v1/faults",
+          "..."
+        ],
+        "capabilities": {
+          "discovery": true,
+          "data_access": true,
+          "operations": true,
+          "async_actions": true,
+          "configurations": true,
+          "faults": true,
+          "logs": true,
+          "bulk_data": true,
+          "cyclic_subscriptions": true,
+          "updates": false,
+          "authentication": false,
+          "tls": false
+        }
       }
 
 ``GET /api/v1/version-info``
@@ -74,6 +90,9 @@ Areas
 ``GET /api/v1/areas/{area_id}/components``
    List components in a specific area.
 
+   Areas also support the same resource collections as components: ``/data``, ``/operations``,
+   ``/configurations``, ``/faults``, ``/bulk-data``. See the corresponding sections below.
+
 Components
 ~~~~~~~~~~
 
@@ -90,8 +109,7 @@ Components
             "id": "temp_sensor",
             "name": "temp_sensor",
             "self": "/api/v1/components/temp_sensor",
-            "area": "powertrain",
-            "resource_collections": ["data", "operations", "configurations", "faults"]
+            "area": "powertrain"
           }
         ]
       }
@@ -130,6 +148,9 @@ Functions
 
 ``GET /api/v1/functions/{function_id}/hosts``
    List apps that host this function.
+
+   Functions also support ``/data``, ``/operations``, ``/configurations``, ``/faults``,
+   and ``/bulk-data``. See the corresponding sections below.
 
 Data Endpoints
 --------------
@@ -479,6 +500,16 @@ Query and manage faults.
 
    - **204:** Fault cleared
    - **404:** Fault not found
+
+``DELETE /api/v1/components/{id}/faults``
+   Clear all faults for an entity.
+
+   Accepts the optional ``?status=`` query parameter (same values as ``GET /faults``).
+   Without it, clears pending and confirmed faults.
+
+   - **204:** Faults cleared (or none to clear)
+   - **400:** Invalid status parameter
+   - **503:** Fault manager unavailable
 
 ``DELETE /api/v1/faults``
    Clear all faults across the system *(ros2_medkit extension, not SOVD)*.
@@ -1250,16 +1281,17 @@ The gateway implements a subset of the SOVD (Service-Oriented Vehicle Diagnostic
 - Operations (``/operations``, ``/executions``)
 - Configurations (``/configurations``)
 - Faults (``/faults``) with ``environment_data`` and SOVD status object
+- Logs (``/logs``) with severity filtering and per-entity configuration
 - Bulk Data (``/bulk-data``) for binary data downloads (rosbags, logs)
 - Software Updates (``/updates``) with async prepare/execute lifecycle
 - Cyclic Subscriptions (``/cyclic-subscriptions``) with SSE-based periodic data delivery
 
 **ros2_medkit Extensions:**
 
-- ``/health`` - Health check endpoint
+- ``/health`` - Health check with discovery pipeline stats
 - ``/version-info`` - Gateway version information
-- ``/manifest/status`` - Manifest discovery status
-- SSE fault streaming - Real-time fault notifications
+- ``DELETE /faults`` - Clear all faults globally
+- ``GET /faults/stream`` - SSE real-time fault notifications
 - ``x-medkit`` extension fields in responses
 
 See Also
