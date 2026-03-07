@@ -25,11 +25,14 @@ Server Capabilities
 
       {
         "api_version": "1.0.0",
-        "gateway_version": "0.1.0",
+        "gateway_version": "0.3.0",
         "endpoints": [
           {"path": "/areas", "supported_methods": ["GET"]},
           {"path": "/components", "supported_methods": ["GET"]},
-          {"path": "/apps", "supported_methods": ["GET"]}
+          {"path": "/apps", "supported_methods": ["GET"]},
+          {"path": "/functions", "supported_methods": ["GET"]},
+          {"path": "/faults", "supported_methods": ["GET", "DELETE"]},
+          {"path": "/updates", "supported_methods": ["GET", "POST"]}
         ]
       }
 
