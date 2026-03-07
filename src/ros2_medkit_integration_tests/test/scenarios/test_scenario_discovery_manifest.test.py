@@ -362,6 +362,30 @@ class TestScenarioDiscoveryManifest(GatewayTestCase):
         self.assertIn('items', data)
 
     # =========================================================================
+    # Regression: no synthetic/topic components leak into manifest_only mode
+    # =========================================================================
+
+    def test_25_no_topic_components_in_manifest_only(self):
+        """Components list contains only manifest-defined IDs.
+
+        Regression test: in manifest_only mode, runtime-discovered
+        topic-based components must not appear in the entity cache.
+        All component IDs must come from the manifest.
+        """
+        manifest_component_ids = {
+            'engine-ecu', 'temp-sensor-hw', 'rpm-sensor-hw',
+            'brake-ecu', 'brake-pressure-sensor-hw', 'brake-actuator-hw',
+            'door-sensor-hw', 'light-module', 'lidar-unit',
+        }
+        data = self.get_json('/components')
+        actual_ids = {c['id'] for c in data['items']}
+        extra = actual_ids - manifest_component_ids
+        self.assertEqual(
+            extra, set(),
+            f'Non-manifest components found in manifest_only mode: {extra}'
+        )
+
+    # =========================================================================
     # Error Cases
     # =========================================================================
 
