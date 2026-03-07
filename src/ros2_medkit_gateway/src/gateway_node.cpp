@@ -426,9 +426,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   auto bd_storage_dir = get_parameter("bulk_data.storage_dir").as_string();
   auto bd_max_upload = static_cast<size_t>(get_parameter("bulk_data.max_upload_size").as_int());
   auto bd_categories = get_parameter("bulk_data.categories").as_string_array();
-  bd_categories.erase(
-      std::remove_if(bd_categories.begin(), bd_categories.end(), [](const auto & item) { return item.empty(); }),
-      bd_categories.end());
+  bd_categories.erase(std::remove_if(bd_categories.begin(), bd_categories.end(),
+                                     [](const auto & item) {
+                                       return item.empty();
+                                     }),
+                      bd_categories.end());
 
   bulk_data_store_ = std::make_unique<BulkDataStore>(bd_storage_dir, bd_max_upload, bd_categories);
   RCLCPP_INFO(get_logger(), "Bulk data store: dir=%s, max_upload=%zuB, categories=%zu", bd_storage_dir.c_str(),
@@ -442,9 +444,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   // Initialize plugin manager
   plugin_mgr_ = std::make_unique<PluginManager>();
   auto plugin_names = get_parameter("plugins").as_string_array();
-  plugin_names.erase(
-      std::remove_if(plugin_names.begin(), plugin_names.end(), [](const auto & item) { return item.empty(); }),
-      plugin_names.end());
+  plugin_names.erase(std::remove_if(plugin_names.begin(), plugin_names.end(),
+                                    [](const auto & item) {
+                                      return item.empty();
+                                    }),
+                     plugin_names.end());
   if (!plugin_names.empty()) {
     std::vector<PluginConfig> configs;
     // Plugin name validation: alphanumeric, underscore, hyphen only (max 256 chars)
