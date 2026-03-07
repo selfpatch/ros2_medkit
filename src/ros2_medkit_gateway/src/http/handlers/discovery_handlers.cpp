@@ -457,6 +457,9 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     response["faults"] = base + "/faults";
     response["subcomponents"] = base + "/subcomponents";
     response["hosts"] = base + "/hosts";
+    response["logs"] = base + "/logs";
+    response["bulk-data"] = base + "/bulk-data";
+    response["cyclic-subscriptions"] = base + "/cyclic-subscriptions";
 
     if (!comp.depends_on.empty()) {
       response["depends-on"] = base + "/depends-on";
@@ -805,6 +808,9 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     response["operations"] = base_uri + "/operations";
     response["configurations"] = base_uri + "/configurations";
     response["faults"] = base_uri + "/faults";
+    response["logs"] = base_uri + "/logs";
+    response["bulk-data"] = base_uri + "/bulk-data";
+    response["cyclic-subscriptions"] = base_uri + "/cyclic-subscriptions";
 
     if (!app.component_id.empty()) {
       response["is-located-on"] = "/api/v1/components/" + app.component_id;

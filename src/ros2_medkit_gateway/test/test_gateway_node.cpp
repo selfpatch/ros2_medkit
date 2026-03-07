@@ -126,13 +126,13 @@ TEST_F(TestGatewayNode, test_version_info_endpoint) {
   EXPECT_EQ(res->get_header_value("Content-Type"), "application/json");
 
   auto json_response = nlohmann::json::parse(res->body);
-  // Check for sovd_info array
-  EXPECT_TRUE(json_response.contains("sovd_info"));
-  EXPECT_TRUE(json_response["sovd_info"].is_array());
-  EXPECT_GE(json_response["sovd_info"].size(), 1);
+  // Check for items array (SOVD-standard wrapper key)
+  EXPECT_TRUE(json_response.contains("items"));
+  EXPECT_TRUE(json_response["items"].is_array());
+  EXPECT_GE(json_response["items"].size(), 1);
 
-  // Check first sovd_info entry
-  const auto & info = json_response["sovd_info"][0];
+  // Check first items entry
+  const auto & info = json_response["items"][0];
   EXPECT_TRUE(info.contains("version"));
   EXPECT_TRUE(info.contains("base_uri"));
   EXPECT_TRUE(info.contains("vendor_info"));

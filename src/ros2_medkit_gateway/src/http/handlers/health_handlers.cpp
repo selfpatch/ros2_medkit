@@ -99,7 +99,6 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "GET /api/v1/areas/{area_id}/faults/{fault_code}",
         "DELETE /api/v1/areas/{area_id}/faults/{fault_code}",
         "DELETE /api/v1/areas/{area_id}/faults",
-        "GET /api/v1/areas/{area_id}/faults/{fault_code}/snapshots",
         // Components
         "GET /api/v1/components",
         "GET /api/v1/components/{component_id}",
@@ -125,7 +124,6 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "GET /api/v1/components/{component_id}/faults/{fault_code}",
         "DELETE /api/v1/components/{component_id}/faults/{fault_code}",
         "DELETE /api/v1/components/{component_id}/faults",
-        "GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots",
         // Apps
         "GET /api/v1/apps",
         "GET /api/v1/apps/{app_id}",
@@ -151,7 +149,6 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "GET /api/v1/apps/{app_id}/faults/{fault_code}",
         "DELETE /api/v1/apps/{app_id}/faults/{fault_code}",
         "DELETE /api/v1/apps/{app_id}/faults",
-        "GET /api/v1/apps/{app_id}/faults/{fault_code}/snapshots",
         // Functions
         "GET /api/v1/functions",
         "GET /api/v1/functions/{function_id}",
@@ -175,12 +172,47 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "GET /api/v1/functions/{function_id}/faults/{fault_code}",
         "DELETE /api/v1/functions/{function_id}/faults/{fault_code}",
         "DELETE /api/v1/functions/{function_id}/faults",
-        "GET /api/v1/functions/{function_id}/faults/{fault_code}/snapshots",
+        // Logs
+        "GET /api/v1/components/{component_id}/logs",
+        "GET /api/v1/components/{component_id}/logs/configuration",
+        "PUT /api/v1/components/{component_id}/logs/configuration",
+        "GET /api/v1/apps/{app_id}/logs",
+        "GET /api/v1/apps/{app_id}/logs/configuration",
+        "PUT /api/v1/apps/{app_id}/logs/configuration",
+        // Bulk Data
+        "GET /api/v1/areas/{area_id}/bulk-data",
+        "GET /api/v1/areas/{area_id}/bulk-data/{category}",
+        "GET /api/v1/areas/{area_id}/bulk-data/{category}/{item_id}",
+        "GET /api/v1/components/{component_id}/bulk-data",
+        "GET /api/v1/components/{component_id}/bulk-data/{category}",
+        "GET /api/v1/components/{component_id}/bulk-data/{category}/{item_id}",
+        "POST /api/v1/components/{component_id}/bulk-data/{category}",
+        "DELETE /api/v1/components/{component_id}/bulk-data/{category}/{item_id}",
+        "GET /api/v1/apps/{app_id}/bulk-data",
+        "GET /api/v1/apps/{app_id}/bulk-data/{category}",
+        "GET /api/v1/apps/{app_id}/bulk-data/{category}/{item_id}",
+        "POST /api/v1/apps/{app_id}/bulk-data/{category}",
+        "DELETE /api/v1/apps/{app_id}/bulk-data/{category}/{item_id}",
+        "GET /api/v1/functions/{function_id}/bulk-data",
+        "GET /api/v1/functions/{function_id}/bulk-data/{category}",
+        "GET /api/v1/functions/{function_id}/bulk-data/{category}/{item_id}",
+        // Cyclic Subscriptions
+        "POST /api/v1/components/{component_id}/cyclic-subscriptions",
+        "GET /api/v1/components/{component_id}/cyclic-subscriptions",
+        "GET /api/v1/components/{component_id}/cyclic-subscriptions/{subscription_id}",
+        "PUT /api/v1/components/{component_id}/cyclic-subscriptions/{subscription_id}",
+        "DELETE /api/v1/components/{component_id}/cyclic-subscriptions/{subscription_id}",
+        "GET /api/v1/components/{component_id}/cyclic-subscriptions/{subscription_id}/events",
+        "POST /api/v1/apps/{app_id}/cyclic-subscriptions",
+        "GET /api/v1/apps/{app_id}/cyclic-subscriptions",
+        "GET /api/v1/apps/{app_id}/cyclic-subscriptions/{subscription_id}",
+        "PUT /api/v1/apps/{app_id}/cyclic-subscriptions/{subscription_id}",
+        "DELETE /api/v1/apps/{app_id}/cyclic-subscriptions/{subscription_id}",
+        "GET /api/v1/apps/{app_id}/cyclic-subscriptions/{subscription_id}/events",
         // Global Faults
         "GET /api/v1/faults",
         "GET /api/v1/faults/stream",
-        "GET /api/v1/faults/{fault_code}/snapshots",
-        "GET /api/v1/faults/{fault_code}/snapshots/bag",
+        "DELETE /api/v1/faults",
     });
 
     const auto & auth_config = ctx_.auth_config();
@@ -193,6 +225,18 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
       endpoints.push_back("POST /api/v1/auth/revoke");
     }
 
+    // Add update endpoints if updates are available
+    if (ctx_.node() && ctx_.node()->get_update_manager()) {
+      endpoints.push_back("GET /api/v1/updates");
+      endpoints.push_back("POST /api/v1/updates");
+      endpoints.push_back("GET /api/v1/updates/{id}");
+      endpoints.push_back("DELETE /api/v1/updates/{id}");
+      endpoints.push_back("GET /api/v1/updates/{id}/status");
+      endpoints.push_back("PUT /api/v1/updates/{id}/prepare");
+      endpoints.push_back("PUT /api/v1/updates/{id}/execute");
+      endpoints.push_back("PUT /api/v1/updates/{id}/automated");
+    }
+
     json capabilities = {
         {"discovery", true},
         {"data_access", true},
@@ -200,12 +244,16 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         {"async_actions", true},
         {"configurations", true},
         {"faults", true},
+        {"logs", true},
+        {"bulk_data", true},
+        {"cyclic_subscriptions", true},
+        {"updates", ctx_.node() && ctx_.node()->get_update_manager() != nullptr},
         {"authentication", auth_config.enabled},
         {"tls", tls_config.enabled},
     };
 
     json response = {
-        {"name", "ROS 2 Medkit Gateway"}, {"version", "0.1.0"},           {"api_base", API_BASE_PATH},
+        {"name", "ROS 2 Medkit Gateway"}, {"version", "0.3.0"},           {"api_base", API_BASE_PATH},
         {"endpoints", endpoints},         {"capabilities", capabilities},
     };
 
@@ -243,10 +291,10 @@ void HealthHandlers::handle_version_info(const httplib::Request & req, httplib::
     json sovd_info_entry = {
         {"version", "1.0.0"},                                             // SOVD standard version
         {"base_uri", API_BASE_PATH},                                      // Version-specific base URI
-        {"vendor_info", {{"version", "0.1.0"}, {"name", "ros2_medkit"}}}  // Vendor-specific info
+        {"vendor_info", {{"version", "0.3.0"}, {"name", "ros2_medkit"}}}  // Vendor-specific info
     };
 
-    json response = {{"sovd_info", json::array({sovd_info_entry})}};
+    json response = {{"items", json::array({sovd_info_entry})}};
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {

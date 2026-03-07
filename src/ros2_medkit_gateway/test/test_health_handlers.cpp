@@ -83,16 +83,16 @@ TEST_F(HealthHandlersTest, HandleHealthResponseIsValidJson) {
 TEST_F(HealthHandlersTest, HandleVersionInfoContainsSovdInfoArray) {
   handlers_.handle_version_info(req_, res_);
   auto body = json::parse(res_.body);
-  ASSERT_TRUE(body.contains("sovd_info"));
-  ASSERT_TRUE(body["sovd_info"].is_array());
-  EXPECT_FALSE(body["sovd_info"].empty());
+  ASSERT_TRUE(body.contains("items"));
+  ASSERT_TRUE(body["items"].is_array());
+  EXPECT_FALSE(body["items"].empty());
 }
 
 // @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVersionField) {
   handlers_.handle_version_info(req_, res_);
   auto body = json::parse(res_.body);
-  auto & entry = body["sovd_info"][0];
+  auto & entry = body["items"][0];
   EXPECT_TRUE(entry.contains("version"));
   EXPECT_TRUE(entry["version"].is_string());
   EXPECT_FALSE(entry["version"].get<std::string>().empty());
@@ -102,7 +102,7 @@ TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVersionField) {
 TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasBaseUri) {
   handlers_.handle_version_info(req_, res_);
   auto body = json::parse(res_.body);
-  auto & entry = body["sovd_info"][0];
+  auto & entry = body["items"][0];
   EXPECT_TRUE(entry.contains("base_uri"));
 }
 
@@ -110,7 +110,7 @@ TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasBaseUri) {
 TEST_F(HealthHandlersTest, HandleVersionInfoSovdEntryHasVendorInfo) {
   handlers_.handle_version_info(req_, res_);
   auto body = json::parse(res_.body);
-  auto & entry = body["sovd_info"][0];
+  auto & entry = body["items"][0];
   EXPECT_TRUE(entry.contains("vendor_info"));
   EXPECT_TRUE(entry["vendor_info"].contains("name"));
   EXPECT_EQ(entry["vendor_info"]["name"], "ros2_medkit");
