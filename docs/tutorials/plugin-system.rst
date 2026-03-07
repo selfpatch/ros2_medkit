@@ -11,8 +11,11 @@ Plugins implement the ``GatewayPlugin`` C++ base class plus one or more typed pr
 
 - **UpdateProvider** - software update backend (CRUD, prepare/execute, automated, status)
 - **IntrospectionProvider** - enriches discovered entities with platform-specific metadata
-  via the merge pipeline. In hybrid mode, each IntrospectionProvider is wrapped as a
-  ``PluginLayer`` and added to the pipeline with ENRICHMENT merge policy.
+  and can introduce new entities. Called during each discovery cycle by the merge pipeline's
+  PluginLayer. See :doc:`/config/discovery-options` for merge pipeline configuration.
+- **LogProvider** - replaces or augments the default ``/rosout`` log backend.
+  Can operate in observer mode (receives log entries) or full-ingestion mode
+  (owns the entire log pipeline). See the ``/logs`` endpoints in :doc:`/api/rest`.
 
 A single plugin can implement multiple provider interfaces. For example, a "systemd" plugin
 could provide both introspection (discover systemd units) and updates (manage service restarts).
@@ -64,6 +67,7 @@ Writing a Plugin
    #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
    #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
    #include "ros2_medkit_gateway/providers/update_provider.hpp"
+   #include "ros2_medkit_gateway/providers/log_provider.hpp"
 
    using namespace ros2_medkit_gateway;
 
@@ -124,6 +128,11 @@ Writing a Plugin
 
    // Required if your plugin implements IntrospectionProvider:
    extern "C" GATEWAY_PLUGIN_EXPORT IntrospectionProvider* get_introspection_provider(GatewayPlugin* p) {
+     return static_cast<MyPlugin*>(p);
+   }
+
+   // Required if your plugin implements LogProvider:
+   extern "C" GATEWAY_PLUGIN_EXPORT LogProvider* get_log_provider(GatewayPlugin* p) {
      return static_cast<MyPlugin*>(p);
    }
 
@@ -223,7 +232,7 @@ Plugin Lifecycle
 1. ``dlopen`` loads the ``.so`` with ``RTLD_NOW | RTLD_LOCAL``
 2. ``plugin_api_version()`` is checked against the gateway's ``PLUGIN_API_VERSION``
 3. ``create_plugin()`` factory function creates the plugin instance
-4. Provider interfaces are queried via ``get_update_provider()`` / ``get_introspection_provider()``
+4. Provider interfaces are queried via ``get_update_provider()`` / ``get_introspection_provider()`` / ``get_log_provider()``
 5. ``configure()`` is called with per-plugin JSON config
 6. ``set_context()`` provides ``PluginContext`` with ROS 2 node, entity cache, faults, and HTTP utilities
 7. ``register_routes()`` allows registering custom REST endpoints
@@ -337,12 +346,9 @@ Multiple Plugins
 Multiple plugins can be loaded simultaneously:
 
 - **UpdateProvider**: Only one plugin's UpdateProvider is used (first in config order)
-- **IntrospectionProvider**: All plugins are added as PluginLayers to the merge pipeline.
-  Each plugin's entities are merged with ENRICHMENT policy - they fill empty fields but
-  never override manifest or runtime values. Plugins are added after all built-in layers,
-  and the pipeline is refreshed once after all plugins are registered (batch registration).
-  The ``introspect()`` method receives an ``IntrospectionInput`` populated with all entities
-  from previous layers (manifest + runtime), enabling context-aware metadata and discovery.
+- **IntrospectionProvider**: All plugins' results are merged via the PluginLayer in the discovery pipeline
+- **LogProvider**: Only the first plugin's LogProvider is used for queries (same as UpdateProvider).
+  All LogProvider plugins receive ``on_log_entry()`` calls as observers.
 - **Custom routes**: All plugins can register endpoints (use unique path prefixes)
 
 Error Handling
