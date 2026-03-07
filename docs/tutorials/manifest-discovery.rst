@@ -265,6 +265,13 @@ In hybrid mode, the ``GET /health`` response includes full discovery diagnostics
 Runtime Linking
 ~~~~~~~~~~~~~~~
 
+.. note::
+
+   In hybrid mode, the gateway uses a layered merge pipeline: manifest entities,
+   runtime-discovered entities, and plugin-contributed entities are merged per
+   field-group before linking. See :doc:`/config/discovery-options` for merge
+   pipeline configuration.
+
 ROS Binding Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -389,30 +396,30 @@ The manifest defines a hierarchical structure:
          - controller-node
          - localization-node
 
-Handling Unmanifested Nodes
----------------------------
+Controlling Gap-Fill in Hybrid Mode
+------------------------------------
 
-In hybrid mode, the gateway may discover ROS 2 nodes that aren't declared
-in the manifest. The ``config.unmanifested_nodes`` setting controls this:
+In hybrid mode, the runtime layer can create heuristic entities for namespaces
+not covered by the manifest. The ``merge_pipeline.gap_fill`` parameters control
+this behavior:
 
 .. code-block:: yaml
 
-   config:
-     # Options: ignore, warn, error, include_as_orphan
-     unmanifested_nodes: warn
+   discovery:
+     merge_pipeline:
+       gap_fill:
+         allow_heuristic_areas: true        # Create areas from namespaces
+         allow_heuristic_components: true    # Create synthetic components
+         allow_heuristic_apps: true          # Create apps from unbound nodes
+         allow_heuristic_functions: false    # Don't create heuristic functions
+         # namespace_blacklist: ["/rosout"]  # Exclude specific namespaces
+         # namespace_whitelist: []           # If set, only allow these namespaces
 
-**Policies:**
+When all ``allow_heuristic_*`` options are ``false``, only manifest-declared
+entities appear. This is effectively the same as ``manifest_only`` mode but
+with the benefit of runtime data (topics, services) on manifest entities.
 
-- ``ignore``: Don't expose unmanifested nodes at all
-- ``warn`` (default): Log warning, include nodes as orphans
-- ``error``: Fail startup if orphan nodes detected
-- ``include_as_orphan``: Include with ``source: "orphan"``
-
-.. note::
-   In hybrid mode with gap-fill configuration (see :doc:`/config/discovery-options`),
-   namespace filtering controls which runtime entities enter the pipeline.
-   ``unmanifested_nodes`` controls how runtime nodes that passed gap-fill
-   but did not match any manifest app are handled by the RuntimeLinker.
+See :doc:`/config/discovery-options` for the full merge pipeline reference.
 
 Hot Reloading
 -------------
