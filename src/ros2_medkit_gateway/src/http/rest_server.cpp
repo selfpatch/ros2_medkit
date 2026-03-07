@@ -125,6 +125,10 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_, sse_client_tracker_);
   bulkdata_handlers_ = std::make_unique<handlers::BulkDataHandlers>(*handler_ctx_);
   auto max_duration_sec = static_cast<int>(node_->get_parameter("sse.max_duration_sec").as_int());
+  if (max_duration_sec <= 0) {
+    RCLCPP_WARN(node_->get_logger(), "sse.max_duration_sec must be > 0, using default 3600");
+    max_duration_sec = 3600;
+  }
   cyclic_sub_handlers_ = std::make_unique<handlers::CyclicSubscriptionHandlers>(
       *handler_ctx_, *node_->get_subscription_manager(), *node_->get_sampler_registry(),
       *node_->get_transport_registry(), max_duration_sec);

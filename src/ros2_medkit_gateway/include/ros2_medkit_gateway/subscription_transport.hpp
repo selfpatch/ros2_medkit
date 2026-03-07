@@ -48,7 +48,15 @@ class SubscriptionTransportProvider {
   /// Subscription interval/duration changed. Transport must re-read info.
   virtual void notify_update(const std::string & sub_id) = 0;
 
-  /// Stop delivery. MUST be synchronous - return only when all threads stopped.
+  /// Stop delivery for a subscription.
+  ///
+  /// For HTTP-based transports (SSE), the HTTP server thread join handles
+  /// synchronous stop - stop() removes state so the streaming loop exits
+  /// on its next is_active() check. GatewayNode::~GatewayNode() calls
+  /// stop_rest_server() before shutdown_all() to ensure this ordering.
+  ///
+  /// Non-HTTP transports MUST ensure all delivery threads have stopped
+  /// before returning from this method.
   virtual void stop(const std::string & sub_id) = 0;
 
   /// Handle HTTP client connection (SSE: chunked provider, WebSocket: upgrade).
