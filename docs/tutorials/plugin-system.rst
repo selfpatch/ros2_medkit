@@ -10,9 +10,10 @@ Overview
 Plugins implement the ``GatewayPlugin`` C++ base class plus one or more typed provider interfaces:
 
 - **UpdateProvider** - software update backend (CRUD, prepare/execute, automated, status)
-- **IntrospectionProvider** - enriches discovered entities with platform-specific metadata
-  and can introduce new entities. Called during each discovery cycle by the merge pipeline's
-  PluginLayer. See :doc:`/config/discovery-options` for merge pipeline configuration.
+- **IntrospectionProvider** - provides platform-specific metadata and can introduce new
+  entities into the entity cache. Called during each discovery cycle by the merge pipeline's
+  PluginLayer. Plugin-provided metadata is accessible via the plugin API, not automatically
+  merged into entity responses. See :doc:`/config/discovery-options` for merge pipeline configuration.
 - **LogProvider** - replaces or augments the default ``/rosout`` log backend.
   Can operate in observer mode (receives log entries) or full-ingestion mode
   (owns the entire log pipeline). See the ``/logs`` endpoints in :doc:`/api/rest`.
@@ -67,7 +68,6 @@ Writing a Plugin
    #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
    #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
    #include "ros2_medkit_gateway/providers/update_provider.hpp"
-   #include "ros2_medkit_gateway/providers/log_provider.hpp"
 
    using namespace ros2_medkit_gateway;
 
@@ -126,17 +126,7 @@ Writing a Plugin
      return static_cast<MyPlugin*>(p);
    }
 
-   // Required if your plugin implements IntrospectionProvider:
-   extern "C" GATEWAY_PLUGIN_EXPORT IntrospectionProvider* get_introspection_provider(GatewayPlugin* p) {
-     return static_cast<MyPlugin*>(p);
-   }
-
-   // Required if your plugin implements LogProvider:
-   extern "C" GATEWAY_PLUGIN_EXPORT LogProvider* get_log_provider(GatewayPlugin* p) {
-     return static_cast<MyPlugin*>(p);
-   }
-
-The ``get_update_provider`` and ``get_introspection_provider`` functions use ``extern "C"``
+The ``get_update_provider`` (and ``get_introspection_provider``, ``get_log_provider``) functions use ``extern "C"``
 to avoid RTTI issues across shared library boundaries. The ``static_cast`` is safe because
 these functions execute inside the plugin's own ``.so`` where the type hierarchy is known.
 

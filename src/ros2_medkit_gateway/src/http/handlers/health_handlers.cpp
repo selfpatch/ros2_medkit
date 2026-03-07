@@ -180,9 +180,6 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "GET /api/v1/apps/{app_id}/logs/configuration",
         "PUT /api/v1/apps/{app_id}/logs/configuration",
         // Bulk Data
-        "GET /api/v1/areas/{area_id}/bulk-data",
-        "GET /api/v1/areas/{area_id}/bulk-data/{category}",
-        "GET /api/v1/areas/{area_id}/bulk-data/{category}/{item_id}",
         "GET /api/v1/components/{component_id}/bulk-data",
         "GET /api/v1/components/{component_id}/bulk-data/{category}",
         "GET /api/v1/components/{component_id}/bulk-data/{category}/{item_id}",
@@ -193,9 +190,6 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "GET /api/v1/apps/{app_id}/bulk-data/{category}/{item_id}",
         "POST /api/v1/apps/{app_id}/bulk-data/{category}",
         "DELETE /api/v1/apps/{app_id}/bulk-data/{category}/{item_id}",
-        "GET /api/v1/functions/{function_id}/bulk-data",
-        "GET /api/v1/functions/{function_id}/bulk-data/{category}",
-        "GET /api/v1/functions/{function_id}/bulk-data/{category}/{item_id}",
         // Cyclic Subscriptions
         "POST /api/v1/components/{component_id}/cyclic-subscriptions",
         "GET /api/v1/components/{component_id}/cyclic-subscriptions",
