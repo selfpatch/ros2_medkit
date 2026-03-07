@@ -416,8 +416,9 @@ this behavior:
          # namespace_whitelist: []           # If set, only allow these namespaces
 
 When all ``allow_heuristic_*`` options are ``false``, only manifest-declared
-entities appear. This is effectively the same as ``manifest_only`` mode but
-with the benefit of runtime data (topics, services) on manifest entities.
+entities appear. Runtime nodes are still discovered for linking, but no
+heuristic entities (areas, components, apps, functions) are created from
+unmatched namespaces or nodes.
 
 See :doc:`/config/discovery-options` for the full merge pipeline reference.
 

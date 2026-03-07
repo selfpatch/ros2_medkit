@@ -115,9 +115,9 @@ Field Groups
    * - ``live_data``
      - topics, services, actions
    * - ``status``
-     - is_online, health, runtime state
+     - is_online, bound_fqn
    * - ``metadata``
-     - source, category, custom metadata fields
+     - source, x-medkit extensions, custom metadata fields
 
 Merge Policies
 ^^^^^^^^^^^^^^
@@ -223,8 +223,12 @@ pipeline stats, linking results, and merge warnings:
        "strategy": "HybridDiscoveryStrategy",
        "pipeline": {
          "layers": ["manifest", "runtime", "plugin"],
-         "entity_source": {"lidar-driver": "manifest", "orphan_node": "runtime"},
-         "conflicts": []
+         "total_entities": 6,
+         "enriched_count": 5,
+         "conflict_count": 0,
+         "conflicts": [],
+         "id_collisions": 0,
+         "filtered_by_gap_fill": 0
        },
        "linking": {
          "linked_count": 5,

@@ -46,20 +46,23 @@ class TestSnapshotsApi(GatewayTestCase):
     MIN_EXPECTED_APPS = 1
     REQUIRED_APPS = {'lidar_sensor'}
 
-    def test_root_endpoint_includes_snapshots(self):
-        """Root endpoint lists snapshots endpoints.
+    def test_root_endpoint_excludes_legacy_snapshots(self):
+        """Root endpoint does not list removed legacy snapshot endpoints.
+
+        Legacy snapshot endpoints were removed in favor of inline snapshots
+        in fault responses and bulk-data endpoints.
 
         @verifies REQ_INTEROP_088
         """
         data = self.get_json('/')
 
-        # Verify snapshots endpoints are listed
+        # Verify legacy snapshot endpoints are NOT listed (removed)
         self.assertIn('endpoints', data)
-        self.assertIn(
+        self.assertNotIn(
             'GET /api/v1/faults/{fault_code}/snapshots',
             data['endpoints']
         )
-        self.assertIn(
+        self.assertNotIn(
             'GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots',
             data['endpoints']
         )

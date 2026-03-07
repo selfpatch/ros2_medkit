@@ -76,7 +76,7 @@ Areas
           {
             "id": "powertrain",
             "name": "Powertrain",
-            "self": "/api/v1/areas/powertrain"
+            "href": "/api/v1/areas/powertrain"
           }
         ]
       }
@@ -91,7 +91,7 @@ Areas
    List components in a specific area.
 
    Areas also support the same resource collections as components: ``/data``, ``/operations``,
-   ``/configurations``, ``/faults``, ``/bulk-data``. See the corresponding sections below.
+   ``/configurations``, and ``/faults``. See the corresponding sections below.
 
 Components
 ~~~~~~~~~~
@@ -108,7 +108,7 @@ Components
           {
             "id": "temp_sensor",
             "name": "temp_sensor",
-            "self": "/api/v1/components/temp_sensor",
+            "href": "/api/v1/components/temp_sensor",
             "area": "powertrain"
           }
         ]
@@ -149,8 +149,8 @@ Functions
 ``GET /api/v1/functions/{function_id}/hosts``
    List apps that host this function.
 
-   Functions also support ``/data``, ``/operations``, ``/configurations``, ``/faults``,
-   and ``/bulk-data``. See the corresponding sections below.
+   Functions also support ``/data``, ``/operations``, ``/configurations``, and ``/faults``.
+   See the corresponding sections below.
 
 Data Endpoints
 --------------

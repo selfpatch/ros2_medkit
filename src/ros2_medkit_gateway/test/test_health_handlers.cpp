@@ -80,7 +80,7 @@ TEST_F(HealthHandlersTest, HandleHealthResponseIsValidJson) {
 // --- handle_version_info ---
 
 // @verifies REQ_INTEROP_001
-TEST_F(HealthHandlersTest, HandleVersionInfoContainsSovdInfoArray) {
+TEST_F(HealthHandlersTest, HandleVersionInfoContainsItemsArray) {
   handlers_.handle_version_info(req_, res_);
   auto body = json::parse(res_.body);
   ASSERT_TRUE(body.contains("items"));
