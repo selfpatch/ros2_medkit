@@ -149,6 +149,8 @@ TEST(EntityCapabilities, AreaSupportsCollectionsViaAggregation) {
   EXPECT_TRUE(caps.is_aggregated(ResourceCollection::CONFIGURATIONS));
   EXPECT_TRUE(caps.is_aggregated(ResourceCollection::FAULTS));
   EXPECT_TRUE(caps.is_aggregated(ResourceCollection::LOGS));
+  // Bulk-data uses host-scoped filtering, not aggregation
+  EXPECT_FALSE(caps.is_aggregated(ResourceCollection::BULK_DATA));
 }
 
 TEST(EntityCapabilities, AreaSupportsContains) {
@@ -187,6 +189,8 @@ TEST(EntityCapabilities, FunctionAggregatesCollections) {
   EXPECT_TRUE(caps.is_aggregated(ResourceCollection::CONFIGURATIONS));
   EXPECT_TRUE(caps.is_aggregated(ResourceCollection::FAULTS));
   EXPECT_TRUE(caps.is_aggregated(ResourceCollection::LOGS));
+  // Bulk-data uses host-scoped filtering, not aggregation
+  EXPECT_FALSE(caps.is_aggregated(ResourceCollection::BULK_DATA));
 }
 
 TEST(EntityCapabilities, UnknownTypeHasNoCapabilities) {

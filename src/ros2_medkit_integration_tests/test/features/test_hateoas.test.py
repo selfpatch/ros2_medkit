@@ -21,8 +21,10 @@ return proper link structures, and x-medkit extensions are present.
 
 """
 
+import os
 import unittest
 
+from ament_index_python.packages import get_package_share_directory
 import launch_testing
 import launch_testing.actions
 import requests
@@ -38,9 +40,19 @@ from ros2_medkit_test_utils.launch_helpers import (
 
 
 def generate_test_description():
+    pkg_share = get_package_share_directory('ros2_medkit_gateway')
+    manifest_path = os.path.join(
+        pkg_share, 'config', 'examples', 'demo_nodes_manifest.yaml'
+    )
+
     return create_test_launch(
         demo_nodes=SENSOR_NODES + ACTUATOR_NODES + SERVICE_NODES,
         fault_manager=False,
+        gateway_params={
+            'discovery.mode': 'hybrid',
+            'discovery.manifest_path': manifest_path,
+            'discovery.manifest_strict_validation': False,
+        },
     )
 
 
@@ -198,11 +210,15 @@ class TestHateoas(GatewayTestCase):
     def test_function_detail_has_capability_uris(self):
         """GET /functions/{id} returns capability URIs including logs and bulk-data.
 
+        Requires hybrid discovery mode with a manifest that defines functions.
+
         @verifies REQ_INTEROP_003
         """
         functions = self.get_json('/functions')['items']
-        if not functions:
-            self.skipTest('No functions available')
+        self.assertGreater(
+            len(functions), 0,
+            'Expected at least one function from manifest'
+        )
 
         func_id = functions[0]['id']
         data = self.get_json(f'/functions/{func_id}')

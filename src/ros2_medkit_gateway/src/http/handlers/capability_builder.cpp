@@ -43,6 +43,10 @@ std::string CapabilityBuilder::capability_to_name(Capability cap) {
       return "depends-on";
     case Capability::LOGS:
       return "logs";
+    case Capability::BULK_DATA:
+      return "bulk-data";
+    case Capability::CYCLIC_SUBSCRIPTIONS:
+      return "cyclic-subscriptions";
     default:
       return "unknown";
   }

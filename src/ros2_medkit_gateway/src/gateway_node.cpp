@@ -74,6 +74,37 @@ nlohmann::json extract_plugin_config(const std::vector<rclcpp::Parameter> & over
   return config;
 }
 
+/// Filter faults by FQN prefix match on reporting_sources.
+/// Used for FUNCTION and COMPONENT entities that aggregate faults from hosted apps.
+nlohmann::json filter_faults_by_fqns(const nlohmann::json & fault_data, const std::set<std::string> & fqns) {
+  nlohmann::json filtered = nlohmann::json::array();
+  if (!fault_data.contains("faults") || !fault_data["faults"].is_array()) {
+    return filtered;
+  }
+  for (const auto & fault : fault_data["faults"]) {
+    if (!fault.contains("reporting_sources")) {
+      continue;
+    }
+    bool matches = false;
+    for (const auto & src : fault["reporting_sources"]) {
+      const std::string src_str = src.get<std::string>();
+      for (const auto & fqn : fqns) {
+        if (src_str.rfind(fqn, 0) == 0) {
+          matches = true;
+          break;
+        }
+      }
+      if (matches) {
+        break;
+      }
+    }
+    if (matches) {
+      filtered.push_back(fault);
+    }
+  }
+  return filtered;
+}
+
 }  // namespace
 
 GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
@@ -586,7 +617,6 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
           if (!result.success) {
             return tl::make_unexpected(result.error_message);
           }
-          // Collect host app FQNs
           auto func = cache.get_function(entity_id);
           if (!func || func->hosts.empty()) {
             nlohmann::json empty_result = {{"faults", nlohmann::json::array()}, {"count", 0}};
@@ -602,31 +632,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
               }
             }
           }
-          // Filter faults by host FQNs (prefix match on reporting_sources)
-          nlohmann::json filtered = nlohmann::json::array();
-          if (result.data.contains("faults") && result.data["faults"].is_array()) {
-            for (const auto & fault : result.data["faults"]) {
-              if (!fault.contains("reporting_sources")) {
-                continue;
-              }
-              bool matches = false;
-              for (const auto & src : fault["reporting_sources"]) {
-                const std::string src_str = src.get<std::string>();
-                for (const auto & fqn : host_fqns) {
-                  if (src_str.rfind(fqn, 0) == 0) {
-                    matches = true;
-                    break;
-                  }
-                }
-                if (matches) {
-                  break;
-                }
-              }
-              if (matches) {
-                filtered.push_back(fault);
-              }
-            }
-          }
+          auto filtered = filter_faults_by_fqns(result.data, host_fqns);
           result.data["faults"] = filtered;
           result.data["count"] = filtered.size();
           return result.data;
@@ -649,31 +655,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
               }
             }
           }
-          // Filter faults by app FQNs (prefix match on reporting_sources)
-          nlohmann::json filtered = nlohmann::json::array();
-          if (result.data.contains("faults") && result.data["faults"].is_array()) {
-            for (const auto & fault : result.data["faults"]) {
-              if (!fault.contains("reporting_sources")) {
-                continue;
-              }
-              bool matches = false;
-              for (const auto & src : fault["reporting_sources"]) {
-                const std::string src_str = src.get<std::string>();
-                for (const auto & fqn : app_fqns) {
-                  if (src_str.rfind(fqn, 0) == 0) {
-                    matches = true;
-                    break;
-                  }
-                }
-                if (matches) {
-                  break;
-                }
-              }
-              if (matches) {
-                filtered.push_back(fault);
-              }
-            }
-          }
+          auto filtered = filter_faults_by_fqns(result.data, app_fqns);
           result.data["faults"] = filtered;
           result.data["count"] = filtered.size();
           return result.data;

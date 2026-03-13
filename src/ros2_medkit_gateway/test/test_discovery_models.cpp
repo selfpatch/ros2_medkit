@@ -305,6 +305,49 @@ TEST_F(AppModelTest, ToCapabilities_OmitsDataWithoutTopics) {
 }
 
 // =============================================================================
+// App effective_fqn() Tests
+// =============================================================================
+
+TEST_F(AppModelTest, EffectiveFqn_ReturnsBoundFqn) {
+  EXPECT_EQ(app_.effective_fqn(), "/nav2/controller_server");
+}
+
+TEST_F(AppModelTest, EffectiveFqn_FallsBackToRosBinding) {
+  app_.bound_fqn = std::nullopt;
+  EXPECT_EQ(app_.effective_fqn(), "/nav2/nav2_controller");
+}
+
+TEST_F(AppModelTest, EffectiveFqn_EmptyNamespaceHasLeadingSlash) {
+  app_.bound_fqn = std::nullopt;
+  app_.ros_binding = App::RosBinding{"my_node", "", ""};
+  EXPECT_EQ(app_.effective_fqn(), "/my_node");
+}
+
+TEST_F(AppModelTest, EffectiveFqn_WildcardReturnsEmpty) {
+  app_.bound_fqn = std::nullopt;
+  app_.ros_binding = App::RosBinding{"my_node", "*", ""};
+  EXPECT_EQ(app_.effective_fqn(), "");
+}
+
+TEST_F(AppModelTest, EffectiveFqn_GlobPatternReturnsEmpty) {
+  app_.bound_fqn = std::nullopt;
+  app_.ros_binding = App::RosBinding{"my_node", "/nav**", ""};
+  EXPECT_EQ(app_.effective_fqn(), "");
+}
+
+TEST_F(AppModelTest, EffectiveFqn_PrefixGlobReturnsEmpty) {
+  app_.bound_fqn = std::nullopt;
+  app_.ros_binding = App::RosBinding{"my_node", "prefix*", ""};
+  EXPECT_EQ(app_.effective_fqn(), "");
+}
+
+TEST_F(AppModelTest, EffectiveFqn_NoBindingReturnsEmpty) {
+  app_.bound_fqn = std::nullopt;
+  app_.ros_binding = std::nullopt;
+  EXPECT_EQ(app_.effective_fqn(), "");
+}
+
+// =============================================================================
 // Function Model Tests
 // =============================================================================
 

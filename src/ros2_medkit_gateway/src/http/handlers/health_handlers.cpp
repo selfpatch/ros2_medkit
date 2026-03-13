@@ -185,7 +185,7 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "GET /api/v1/functions/{function_id}/logs",
         "GET /api/v1/functions/{function_id}/logs/configuration",
         "PUT /api/v1/functions/{function_id}/logs/configuration",
-        // Bulk Data
+        // Bulk Data - always available (depends on fault_manager, not an optional plugin)
         "GET /api/v1/components/{component_id}/bulk-data",
         "GET /api/v1/components/{component_id}/bulk-data/{category}",
         "GET /api/v1/components/{component_id}/bulk-data/{category}/{item_id}",
@@ -202,7 +202,7 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "GET /api/v1/functions/{function_id}/bulk-data",
         "GET /api/v1/functions/{function_id}/bulk-data/{category}",
         "GET /api/v1/functions/{function_id}/bulk-data/{category}/{item_id}",
-        // Cyclic Subscriptions
+        // Cyclic Subscriptions - always available (core gateway feature, not plugin-dependent)
         "POST /api/v1/components/{component_id}/cyclic-subscriptions",
         "GET /api/v1/components/{component_id}/cyclic-subscriptions",
         "GET /api/v1/components/{component_id}/cyclic-subscriptions/{subscription_id}",
