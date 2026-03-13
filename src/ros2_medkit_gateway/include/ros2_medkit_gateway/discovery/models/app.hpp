@@ -85,6 +85,24 @@ struct App {
   bool is_online{false};                 ///< Whether the bound node is running
   bool external{false};                  ///< True if not a ROS node
 
+  /// Get effective FQN: bound_fqn if available, otherwise derived from ros_binding.
+  /// Returns empty string if neither is available. Used by handlers and samplers
+  /// to resolve the ROS node FQN in manifest_only mode where runtime linking
+  /// doesn't set bound_fqn.
+  std::string effective_fqn() const {
+    if (bound_fqn.has_value() && !bound_fqn->empty()) {
+      return *bound_fqn;
+    }
+    if (ros_binding.has_value() && !ros_binding->node_name.empty() && ros_binding->namespace_pattern != "*") {
+      std::string ns = ros_binding->namespace_pattern;
+      if (!ns.empty() && ns.back() != '/') {
+        ns += '/';
+      }
+      return ns + ros_binding->node_name;
+    }
+    return "";
+  }
+
   // === Resources (populated from bound node) ===
   ComponentTopics topics;
   std::vector<ServiceInfo> services;

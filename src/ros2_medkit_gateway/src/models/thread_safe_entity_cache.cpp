@@ -418,10 +418,11 @@ AggregatedConfigurations ThreadSafeEntityCache::get_app_configurations(const std
 
   const auto & app = apps_[it->second];
 
-  // App must have a bound FQN to have parameters
-  if (app.bound_fqn.has_value() && !app.bound_fqn->empty()) {
+  // App must have a resolvable FQN to have parameters
+  auto eff_fqn = app.effective_fqn();
+  if (!eff_fqn.empty()) {
     NodeConfigInfo info;
-    info.node_fqn = *app.bound_fqn;
+    info.node_fqn = std::move(eff_fqn);
     info.app_id = app_id;
     info.entity_id = app_id;
     result.nodes.push_back(info);
@@ -451,9 +452,10 @@ AggregatedConfigurations ThreadSafeEntityCache::get_component_configurations(con
         continue;
       }
       const auto & app = apps_[app_idx];
-      if (app.bound_fqn.has_value() && !app.bound_fqn->empty()) {
+      auto eff_fqn = app.effective_fqn();
+      if (!eff_fqn.empty()) {
         NodeConfigInfo info;
-        info.node_fqn = *app.bound_fqn;
+        info.node_fqn = std::move(eff_fqn);
         info.app_id = app.id;
         info.entity_id = component_id;
         result.nodes.push_back(info);
@@ -499,9 +501,10 @@ AggregatedConfigurations ThreadSafeEntityCache::get_area_configurations(const st
             continue;
           }
           const auto & app = apps_[app_idx];
-          if (app.bound_fqn.has_value() && !app.bound_fqn->empty()) {
+          auto eff_fqn = app.effective_fqn();
+          if (!eff_fqn.empty()) {
             NodeConfigInfo info;
-            info.node_fqn = *app.bound_fqn;
+            info.node_fqn = std::move(eff_fqn);
             info.app_id = app.id;
             info.entity_id = area_id;
             result.nodes.push_back(info);
@@ -538,9 +541,10 @@ AggregatedConfigurations ThreadSafeEntityCache::get_function_configurations(cons
         continue;
       }
       const auto & app = apps_[app_idx];
-      if (app.bound_fqn.has_value() && !app.bound_fqn->empty()) {
+      auto eff_fqn = app.effective_fqn();
+      if (!eff_fqn.empty()) {
         NodeConfigInfo info;
-        info.node_fqn = *app.bound_fqn;
+        info.node_fqn = std::move(eff_fqn);
         info.app_id = app.id;
         info.entity_id = function_id;
         result.nodes.push_back(info);

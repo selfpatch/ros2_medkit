@@ -66,17 +66,18 @@ class TestBulkDataApi(GatewayTestCase):
         self.assertIn('rosbags', data['items'])
 
     def test_bulk_data_list_categories_all_entity_types(self):
-        """Bulk-data endpoint works for supported entity types and rejects unsupported ones.
+        """Bulk-data endpoint works for all entity types that support it.
 
-        Per SOVD Table 8, areas do NOT support resource collections (including bulk-data).
-        Components and apps do support bulk-data.
+        As a ros2_medkit extension, all entity types (apps, components, areas,
+        functions) support bulk-data. Areas and functions provide read-only
+        aggregated access via their hosted/child entities.
 
         @verifies REQ_INTEROP_071
         """
-        # Entity types that support bulk-data (SOVD Table 8)
         supported_endpoints = [
             '/apps/lidar_sensor/bulk-data',
             '/components/perception/bulk-data',
+            '/areas/perception/bulk-data',
         ]
 
         for endpoint in supported_endpoints:
@@ -89,15 +90,6 @@ class TestBulkDataApi(GatewayTestCase):
             data = response.json()
             self.assertIn('items', data)
             self.assertIsInstance(data['items'], list)
-
-        # Areas do NOT support resource collections per SOVD spec
-        response = requests.get(
-            f'{self.BASE_URL}/areas/perception/bulk-data', timeout=10
-        )
-        self.assertEqual(
-            response.status_code, 400,
-            f'Expected 400 for areas bulk-data, got {response.status_code}'
-        )
 
     def test_bulk_data_list_categories_entity_not_found(self):
         """Bulk-data returns 404 for nonexistent entity.

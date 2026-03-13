@@ -372,8 +372,11 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       std::set<std::string> app_fqns;
       for (const auto & app_id : app_ids) {
         auto app = cache.get_app(app_id);
-        if (app && app->bound_fqn.has_value() && !app->bound_fqn->empty()) {
-          app_fqns.insert(app->bound_fqn.value());
+        if (app) {
+          auto fqn = app->effective_fqn();
+          if (!fqn.empty()) {
+            app_fqns.insert(std::move(fqn));
+          }
         }
       }
 

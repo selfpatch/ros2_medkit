@@ -595,8 +595,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
           std::set<std::string> host_fqns;
           for (const auto & app_id : func->hosts) {
             auto app = cache.get_app(app_id);
-            if (app && app->bound_fqn.has_value() && !app->bound_fqn->empty()) {
-              host_fqns.insert(*app->bound_fqn);
+            if (app) {
+              auto fqn = app->effective_fqn();
+              if (!fqn.empty()) {
+                host_fqns.insert(std::move(fqn));
+              }
             }
           }
           // Filter faults by host FQNs (prefix match on reporting_sources)
@@ -639,8 +642,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
           std::set<std::string> app_fqns;
           for (const auto & app_id : app_ids) {
             auto app = cache.get_app(app_id);
-            if (app && app->bound_fqn.has_value() && !app->bound_fqn->empty()) {
-              app_fqns.insert(app->bound_fqn.value());
+            if (app) {
+              auto fqn = app->effective_fqn();
+              if (!fqn.empty()) {
+                app_fqns.insert(std::move(fqn));
+              }
             }
           }
           // Filter faults by app FQNs (prefix match on reporting_sources)
@@ -673,13 +679,13 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
           return result.data;
         }
 
-        // APP: use bound_fqn with prefix matching via list_faults
+        // APP: use effective_fqn with prefix matching via list_faults
         // AREA: use namespace_path with prefix matching via list_faults
         std::string source_id;
         if (entity_ref->type == SovdEntityType::APP) {
           auto app = cache.get_app(entity_id);
           if (app) {
-            source_id = app->bound_fqn.value_or("");
+            source_id = app->effective_fqn();
           }
         } else if (entity_ref->type == SovdEntityType::AREA) {
           auto area = cache.get_area(entity_id);
@@ -734,7 +740,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
         // Match log_handlers.cpp scoping logic:
         // AREA/COMPONENT: entity fqn (namespace_path) with prefix_match=true
         // FUNCTION: host app FQNs with prefix_match=false (exact)
-        // APP: entity fqn (bound_fqn) with prefix_match=false (exact)
+        // APP: entity fqn (effective_fqn) with prefix_match=false (exact)
         const auto & cache = get_thread_safe_cache();
         auto entity_ref = cache.find_entity(entity_id);
         if (!entity_ref) {
@@ -752,8 +758,11 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
           std::vector<std::string> host_fqns;
           for (const auto & app_id : func->hosts) {
             auto app = cache.get_app(app_id);
-            if (app && app->bound_fqn.has_value() && !app->bound_fqn->empty()) {
-              host_fqns.push_back(*app->bound_fqn);
+            if (app) {
+              auto fqn = app->effective_fqn();
+              if (!fqn.empty()) {
+                host_fqns.push_back(std::move(fqn));
+              }
             }
           }
           if (host_fqns.empty()) {
@@ -771,7 +780,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
         }
 
         // AREA and COMPONENT: use namespace_path/fqn with prefix matching
-        // APP: use bound_fqn with exact matching
+        // APP: use effective_fqn with exact matching
         std::string fqn;
         bool prefix_match = false;
         if (entity_ref->type == SovdEntityType::AREA) {
@@ -789,7 +798,7 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
         } else if (entity_ref->type == SovdEntityType::APP) {
           auto app = cache.get_app(entity_id);
           if (app) {
-            fqn = app->bound_fqn.value_or("");
+            fqn = app->effective_fqn();
           }
         }
 
