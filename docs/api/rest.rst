@@ -107,8 +107,12 @@ Areas
 ``GET /api/v1/areas/{area_id}/components``
    List components in a specific area.
 
-   Areas also support the same resource collections as components: ``/data``, ``/operations``,
-   ``/configurations``, and ``/faults``. See the corresponding sections below.
+   .. note::
+
+      **ros2_medkit extension:** Areas support resource collections beyond the SOVD spec,
+      which only defines them for apps and components. Areas provide ``/data``, ``/operations``,
+      ``/configurations``, ``/faults``, ``/logs`` (namespace prefix aggregation), and read-only
+      ``/bulk-data``. See :ref:`sovd-compliance` for details.
 
 Components
 ~~~~~~~~~~
@@ -165,8 +169,12 @@ Functions
 ``GET /api/v1/functions/{function_id}/hosts``
    List apps that host this function.
 
-   Functions also support ``/data``, ``/operations``, ``/configurations``, and ``/faults``.
-   See the corresponding sections below.
+   .. note::
+
+      **ros2_medkit extension:** Functions support resource collections beyond the SOVD spec.
+      ``/data`` and ``/operations`` aggregate from hosted apps (per SOVD). Additionally,
+      ``/configurations``, ``/faults``, ``/logs`` aggregate from hosts, and read-only
+      ``/bulk-data`` is available. See :ref:`sovd-compliance` for details.
 
 Data Endpoints
 --------------
@@ -1285,34 +1293,95 @@ Topic and parameter paths containing ``/`` must be URL-encoded:
    * - ``/chassis/brakes/command``
      - ``chassis%2Fbrakes%2Fcommand``
 
+.. _sovd-compliance:
+
 SOVD Compliance
----------------
+~~~~~~~~~~~~~~~
 
-The gateway implements a subset of the SOVD (Service-Oriented Vehicle Diagnostics) specification:
+The gateway implements a **pragmatic subset** of the SOVD (Service-Oriented Vehicle
+Diagnostics) standard. We follow SOVD where it matters for interoperability -
+endpoint contracts, data model, entity hierarchy - but extend it where ROS 2
+use cases benefit.
 
-**SOVD-Compliant Endpoints:**
+**SOVD-Aligned Capabilities:**
 
 - Discovery (``/areas``, ``/components``, ``/apps``, ``/functions``)
-- Data access (``/data``)
-- Operations (``/operations``, ``/executions``)
+- Data access (``/data``) with topic sampling and JSON serialization
+- Operations (``/operations``, ``/executions``) with async action support
 - Configurations (``/configurations``)
 - Faults (``/faults``) with ``environment_data`` and SOVD status object
 - Logs (``/logs``) with severity filtering and per-entity configuration
-- Bulk Data (``/bulk-data``) for binary data downloads (rosbags, logs)
+- Bulk Data (``/bulk-data``) with custom categories and rosbag downloads
 - Software Updates (``/updates``) with async prepare/execute lifecycle
-- Cyclic Subscriptions (``/cyclic-subscriptions``) with SSE-based periodic data delivery
+- Cyclic Subscriptions (``/cyclic-subscriptions``) with SSE-based delivery
 
-**ros2_medkit Extensions:**
+**Pragmatic Extensions:**
 
-- ``/health`` - Health check with discovery pipeline stats
-- ``/version-info`` - Gateway version information
+The SOVD spec defines resource collections only for apps and components. ros2_medkit
+extends this to areas and functions where aggregation makes practical sense:
+
+.. list-table:: Resource Collection Support Matrix
+   :header-rows: 1
+   :widths: 20 16 16 16 16 16
+
+   * - Resource
+     - Areas
+     - Components
+     - Apps
+     - Functions
+     - SOVD Spec
+   * - data
+     - aggregated
+     - yes
+     - yes
+     - aggregated
+     - apps, components
+   * - operations
+     - aggregated
+     - yes
+     - yes
+     - aggregated
+     - apps, components
+   * - configurations
+     - aggregated
+     - yes
+     - yes
+     - aggregated
+     - apps, components
+   * - faults
+     - aggregated
+     - yes
+     - yes
+     - aggregated
+     - apps, components
+   * - logs
+     - prefix match
+     - prefix match
+     - exact match
+     - from hosts
+     - apps, components
+   * - bulk-data
+     - read-only
+     - full CRUD
+     - full CRUD
+     - read-only
+     - apps, components
+   * - cyclic-subscriptions
+     - \-
+     - yes
+     - yes
+     - \-
+     - apps, components
+
+Other extensions beyond SOVD:
+
+- Vendor extension fields using ``x-medkit`` prefix (per SOVD extension mechanism)
 - ``DELETE /faults`` - Clear all faults globally
 - ``GET /faults/stream`` - SSE real-time fault notifications
-- ``x-medkit`` extension fields in responses
+- ``/health`` - Health check with discovery pipeline diagnostics
+- ``/version-info`` - Gateway version information
 
 See Also
---------
+^^^^^^^^
 
-- :doc:`/tutorials/authentication` - Configure authentication
-- :doc:`/config/server` - Server configuration options
-- `Postman Collection <https://github.com/selfpatch/ros2_medkit/tree/main/postman>`_ - Interactive API testing
+- :doc:`/config/discovery-options` for merge pipeline configuration
