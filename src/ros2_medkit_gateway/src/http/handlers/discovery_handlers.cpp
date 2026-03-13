@@ -149,10 +149,12 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
     response["operations"] = base_uri + "/operations";
     response["configurations"] = base_uri + "/configurations";
     response["faults"] = base_uri + "/faults";
+    response["logs"] = base_uri + "/logs";
+    response["bulk-data"] = base_uri + "/bulk-data";
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::SUBAREAS,   Cap::CONTAINS,       Cap::DATA,
-                             Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS};
+    std::vector<Cap> caps = {Cap::SUBAREAS,       Cap::CONTAINS, Cap::DATA, Cap::OPERATIONS,
+                             Cap::CONFIGURATIONS, Cap::FAULTS,   Cap::LOGS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("areas", area.id, caps);
     append_plugin_capabilities(response["capabilities"], "areas", area.id, SovdEntityType::AREA, ctx_.node());
 
@@ -1020,9 +1022,11 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
     response["operations"] = base_uri + "/operations";
     response["configurations"] = base_uri + "/configurations";
     response["faults"] = base_uri + "/faults";
+    response["logs"] = base_uri + "/logs";
+    response["bulk-data"] = base_uri + "/bulk-data";
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::HOSTS, Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS};
+    std::vector<Cap> caps = {Cap::HOSTS, Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS, Cap::FAULTS, Cap::LOGS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("functions", func.id, caps);
     append_plugin_capabilities(response["capabilities"], "functions", func.id, SovdEntityType::FUNCTION, ctx_.node());
 

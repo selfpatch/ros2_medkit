@@ -860,6 +860,41 @@ void RESTServer::setup_routes() {
              log_handlers_->handle_put_logs_configuration(req, res);
            });
 
+  // GET /areas/{id}/logs - query log entries for an area (prefix match on namespace)
+  srv->Get((api_path("/areas") + R"(/([^/]+)/logs$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    log_handlers_->handle_get_logs(req, res);
+  });
+
+  // GET /areas/{id}/logs/configuration
+  srv->Get((api_path("/areas") + R"(/([^/]+)/logs/configuration$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             log_handlers_->handle_get_logs_configuration(req, res);
+           });
+
+  // PUT /areas/{id}/logs/configuration
+  srv->Put((api_path("/areas") + R"(/([^/]+)/logs/configuration$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             log_handlers_->handle_put_logs_configuration(req, res);
+           });
+
+  // GET /functions/{id}/logs - query log entries for a function (aggregated from hosted apps)
+  srv->Get((api_path("/functions") + R"(/([^/]+)/logs$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             log_handlers_->handle_get_logs(req, res);
+           });
+
+  // GET /functions/{id}/logs/configuration
+  srv->Get((api_path("/functions") + R"(/([^/]+)/logs/configuration$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             log_handlers_->handle_get_logs_configuration(req, res);
+           });
+
+  // PUT /functions/{id}/logs/configuration
+  srv->Put((api_path("/functions") + R"(/([^/]+)/logs/configuration$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             log_handlers_->handle_put_logs_configuration(req, res);
+           });
+
   // === Bulk Data Routes (REQ_INTEROP_071-073) ===
   // List bulk-data categories
   srv->Get((api_path("/apps") + R"(/([^/]+)/bulk-data$)"),

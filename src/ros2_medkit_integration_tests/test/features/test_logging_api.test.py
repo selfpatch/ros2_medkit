@@ -291,6 +291,42 @@ class TestLoggingApi(GatewayTestCase):
         self.assertEqual(data['severity_filter'], 'info')
 
     # ------------------------------------------------------------------
+    # GET /areas/{id}/logs  (prefix match on area namespace)
+    # ------------------------------------------------------------------
+
+    def test_area_get_logs_returns_200(self):
+        """GET /areas/{id}/logs returns 200 with items array.
+
+        Areas use namespace prefix matching - all nodes under the area
+        namespace are included. This is a ros2_medkit extension (SOVD
+        defines resource collections only for apps/components).
+
+        # @verifies REQ_INTEROP_061
+        """
+        areas = self.get_json('/areas')['items']
+        if not areas:
+            self.skipTest('No areas available in runtime discovery mode')
+        area_id = areas[0]['id']
+
+        data = self.get_json(f'/areas/{area_id}/logs')
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+
+    def test_area_get_logs_configuration_returns_200(self):
+        """GET /areas/{id}/logs/configuration returns default config.
+
+        # @verifies REQ_INTEROP_063
+        """
+        areas = self.get_json('/areas')['items']
+        if not areas:
+            self.skipTest('No areas available in runtime discovery mode')
+        area_id = areas[0]['id']
+
+        data = self.get_json(f'/areas/{area_id}/logs/configuration')
+        self.assertIn('severity_filter', data)
+        self.assertIn('max_entries', data)
+
+    # ------------------------------------------------------------------
     # GET /apps/{id}/logs?context=  (context filter)
     # ------------------------------------------------------------------
 

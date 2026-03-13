@@ -27,14 +27,15 @@ namespace handlers {
  * - GET /{entity-path}/logs/configuration - Get log configuration for an entity
  * - PUT /{entity-path}/logs/configuration - Update log configuration for an entity
  *
- * Supported entity types: components, apps.
+ * Supported entity types: components, apps, areas, functions.
  *
  * Log entries are sourced from the /rosout ring buffer by default.
  * If a LogProvider plugin is registered, queries are delegated to it.
  *
  * @par Component vs App semantics
- * Components use prefix matching: all nodes whose FQN starts with the
- * component namespace are included. Apps use exact FQN matching.
+ * Components and areas use prefix matching: all nodes whose FQN starts
+ * with the entity namespace are included. Apps use exact FQN matching.
+ * Functions aggregate logs from all hosted apps.
  */
 class LogHandlers {
  public:
