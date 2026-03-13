@@ -54,7 +54,7 @@ class GatewayPluginContext : public PluginContext {
       return PluginEntityInfo{SovdEntityType::COMPONENT, id, comp->namespace_path, comp->fqn};
     }
     if (auto app = cache.get_app(id)) {
-      return PluginEntityInfo{SovdEntityType::APP, id, {}, app->bound_fqn.value_or("")};
+      return PluginEntityInfo{SovdEntityType::APP, id, {}, app->effective_fqn()};
     }
     if (auto area = cache.get_area(id)) {
       return PluginEntityInfo{SovdEntityType::AREA, id, area->namespace_path, {}};

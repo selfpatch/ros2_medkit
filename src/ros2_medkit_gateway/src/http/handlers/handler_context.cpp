@@ -94,8 +94,9 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
       case SovdEntityType::APP:
         if (auto app = cache.get_app(entity_id)) {
           info.type = EntityType::APP;
-          info.namespace_path = app->bound_fqn.value_or("");
-          info.fqn = app->bound_fqn.value_or("");
+          auto fqn = app->effective_fqn();
+          info.namespace_path = fqn;
+          info.fqn = fqn;
           info.id_field = "app_id";
           info.error_name = "App";
           return info;
@@ -148,9 +149,9 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
   // Search apps (O(1) lookup)
   if (auto app = cache.get_app(entity_id)) {
     info.type = EntityType::APP;
-    // Apps use bound_fqn as namespace_path for fault filtering
-    info.namespace_path = app->bound_fqn.value_or("");
-    info.fqn = app->bound_fqn.value_or("");
+    auto fqn = app->effective_fqn();
+    info.namespace_path = fqn;
+    info.fqn = fqn;
     info.id_field = "app_id";
     info.error_name = "App";
     return info;

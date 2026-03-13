@@ -81,12 +81,17 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
       return;
     }
 
-    // Collect FQNs of hosted apps
+    // Collect FQNs of hosted apps via effective_fqn() which falls back
+    // to ros_binding in manifest_only mode where bound_fqn is not set.
     std::vector<std::string> host_fqns;
     for (const auto & app_id : func->hosts) {
       auto app = cache.get_app(app_id);
-      if (app && app->bound_fqn.has_value() && !app->bound_fqn->empty()) {
-        host_fqns.push_back(*app->bound_fqn);
+      if (!app) {
+        continue;
+      }
+      auto fqn = app->effective_fqn();
+      if (!fqn.empty()) {
+        host_fqns.push_back(std::move(fqn));
       }
     }
 

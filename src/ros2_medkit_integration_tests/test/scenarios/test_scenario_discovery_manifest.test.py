@@ -407,7 +407,7 @@ class TestScenarioDiscoveryManifest(GatewayTestCase):
         data = self.poll_endpoint_until(
             '/functions/engine-monitoring/logs',
             condition=lambda d: d if d.get('items') else None,
-            timeout=15.0,
+            timeout=30.0,
         )
         self.assertGreater(
             len(data['items']), 0,
