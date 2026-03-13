@@ -12,8 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Stub - full implementation in Task 5
-
 #pragma once
 
-namespace ros2_medkit_beacon {}  // namespace ros2_medkit_beacon
+#include "ros2_medkit_beacon_common/beacon_types.hpp"
+
+#include <cstddef>
+#include <string>
+
+namespace ros2_medkit_beacon {
+
+struct ValidationResult {
+  bool valid{true};
+  std::string reason;
+};
+
+struct ValidationLimits {
+  size_t max_id_length{256};
+  size_t max_function_ids{100};
+  size_t max_depends_on{100};
+  size_t max_metadata_entries{50};
+  size_t max_metadata_key_length{64};
+  size_t max_metadata_value_length{1024};
+};
+
+/// Validates and sanitizes a beacon hint in-place.
+/// Returns valid=false if entity_id fails validation (hint must be rejected).
+/// For other fields, invalid entries are removed/truncated (hint remains valid).
+ValidationResult validate_beacon_hint(BeaconHint & hint, const ValidationLimits & limits);
+
+}  // namespace ros2_medkit_beacon
