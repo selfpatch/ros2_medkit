@@ -67,6 +67,9 @@ class PluginContext {
   /// Look up an entity by ID. Returns nullopt if not found.
   virtual std::optional<PluginEntityInfo> get_entity(const std::string & id) const = 0;
 
+  /// Get all Apps belonging to a Component (for aggregation endpoints)
+  virtual std::vector<PluginEntityInfo> get_child_apps(const std::string & component_id) const = 0;
+
   // ---- Fault access ----
 
   /// List faults for a given entity. Returns JSON array of fault objects.
