@@ -14,4 +14,56 @@
 
 #pragma once
 
-namespace ros2_medkit_linux_introspection {}  // namespace ros2_medkit_linux_introspection
+#include <chrono>
+#include <cstdint>
+#include <optional>
+#include <shared_mutex>
+#include <string>
+#include <sys/types.h>
+#include <tl/expected.hpp>
+#include <unordered_map>
+
+namespace ros2_medkit_linux_introspection {
+
+struct ProcessInfo {
+  pid_t pid{0};
+  pid_t ppid{0};
+  std::string cmdline;
+  std::string exe_path;
+  uint64_t rss_bytes{0};
+  uint64_t vm_size_bytes{0};
+  uint64_t cpu_user_ticks{0};
+  uint64_t cpu_system_ticks{0};
+  uint64_t start_time_ticks{0};
+  uint32_t num_threads{0};
+};
+
+/// Read process info from /proc/{pid}
+tl::expected<ProcessInfo, std::string> read_process_info(pid_t pid, const std::string & root = "/");
+
+/// Scan /proc for ROS 2 node processes, return PID for matching node
+tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name, const std::string & node_namespace,
+                                                   const std::string & root = "/");
+
+/// Cache for node-to-PID mappings with TTL-based refresh
+class PidCache {
+ public:
+  explicit PidCache(std::chrono::seconds ttl = std::chrono::seconds{10});
+
+  /// Lookup PID for a node FQN (e.g. "/namespace/node_name"). Refreshes if TTL expired.
+  std::optional<pid_t> lookup(const std::string & node_fqn, const std::string & root = "/");
+
+  /// Force refresh the cache by rescanning /proc
+  void refresh(const std::string & root = "/");
+
+  /// Number of cached entries
+  size_t size() const;
+
+ private:
+  std::unordered_map<std::string, pid_t> node_to_pid_;
+  std::chrono::steady_clock::time_point last_refresh_;
+  std::chrono::seconds ttl_;
+  mutable std::shared_mutex mutex_;
+};
+
+}  // namespace ros2_medkit_linux_introspection
