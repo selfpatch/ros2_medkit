@@ -65,6 +65,20 @@ class GatewayPluginContext : public PluginContext {
     return std::nullopt;
   }
 
+  std::vector<PluginEntityInfo> get_child_apps(const std::string & component_id) const override {
+    std::vector<PluginEntityInfo> result;
+    const auto & cache = node_->get_thread_safe_cache();
+    auto app_ids = cache.get_apps_for_component(component_id);
+    for (const auto & app_id : app_ids) {
+      if (auto app = cache.get_app(app_id)) {
+        result.push_back(PluginEntityInfo{SovdEntityType::APP, app_id,
+                                          "",  // namespace_path not needed for Apps
+                                          app->effective_fqn()});
+      }
+    }
+    return result;
+  }
+
   nlohmann::json list_entity_faults(const std::string & entity_id) const override {
     if (!fault_manager_ || !fault_manager_->is_available()) {
       return nlohmann::json::array();
