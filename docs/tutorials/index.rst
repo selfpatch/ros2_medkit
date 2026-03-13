@@ -21,6 +21,7 @@ Step-by-step guides for common use cases with ros2_medkit.
    web-ui
    mcp-server
    plugin-system
+   linux-introspection
 
 Demos
 -----
@@ -88,3 +89,6 @@ Advanced Tutorials
 
 :doc:`plugin-system`
    Extend the gateway with custom plugins for update backends, introspection, and REST endpoints.
+
+:doc:`linux-introspection`
+   Enrich discovery with Linux process, systemd, and container metadata.
