@@ -51,6 +51,22 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
     return;
   }
 
+  // Validate optional query parameters (shared across all entity types)
+  const std::string min_severity = req.get_param_value("severity");
+  const std::string context_filter = req.get_param_value("context");
+
+  if (!min_severity.empty() && !LogManager::is_valid_severity(min_severity)) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
+                               "Invalid severity value: must be one of debug, info, warning, error, fatal");
+    return;
+  }
+
+  static constexpr size_t kMaxContextFilterLen = 256;
+  if (context_filter.size() > kMaxContextFilterLen) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "context filter exceeds maximum length of 256");
+    return;
+  }
+
   // Components and areas use prefix matching (all nodes under the namespace);
   // Apps use exact matching (single node FQN);
   // Functions aggregate logs from all hosted apps.
@@ -81,22 +97,6 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
       return;
     }
 
-    // Optional query parameters
-    const std::string min_severity = req.get_param_value("severity");
-    const std::string context_filter = req.get_param_value("context");
-
-    if (!min_severity.empty() && !LogManager::is_valid_severity(min_severity)) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                 "Invalid severity value: must be one of debug, info, warning, error, fatal");
-      return;
-    }
-
-    static constexpr size_t kMaxContextFilterLen = 256;
-    if (context_filter.size() > kMaxContextFilterLen) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "context filter exceeds maximum length of 256");
-      return;
-    }
-
     // get_logs accepts multiple FQNs with exact match - one call for all hosts
     auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
     if (!logs) {
@@ -111,22 +111,6 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
   }
 
   const bool prefix_match = (entity.type == EntityType::COMPONENT || entity.type == EntityType::AREA);
-
-  // Optional query parameters
-  const std::string min_severity = req.get_param_value("severity");
-  const std::string context_filter = req.get_param_value("context");
-
-  if (!min_severity.empty() && !LogManager::is_valid_severity(min_severity)) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                               "Invalid severity value: must be one of debug, info, warning, error, fatal");
-    return;
-  }
-
-  static constexpr size_t kMaxContextFilterLen = 256;
-  if (context_filter.size() > kMaxContextFilterLen) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "context filter exceeds maximum length of 256");
-    return;
-  }
 
   auto logs = log_mgr->get_logs({entity.fqn}, prefix_match, min_severity, context_filter, entity_id);
   if (!logs) {
