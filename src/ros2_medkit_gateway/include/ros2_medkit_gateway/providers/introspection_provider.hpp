@@ -43,6 +43,7 @@ struct NewEntities {
   std::vector<Area> areas;
   std::vector<Component> components;
   std::vector<App> apps;
+  std::vector<Function> functions;
 };
 
 /**

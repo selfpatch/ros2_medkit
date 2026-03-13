@@ -63,15 +63,17 @@ LayerOutput PluginLayer::discover() {
 
   auto result = provider_->introspect(discovery_context_);
 
-  // Map new_entities to LayerOutput (no functions - plugins cannot create functions)
+  // Map new_entities to LayerOutput
   output.areas = std::move(result.new_entities.areas);
   output.components = std::move(result.new_entities.components);
   output.apps = std::move(result.new_entities.apps);
+  output.functions = std::move(result.new_entities.functions);
 
   // Validate entity IDs from plugin
   validate_entities(output.areas, name_, logger_);
   validate_entities(output.components, name_, logger_);
   validate_entities(output.apps, name_, logger_);
+  validate_entities(output.functions, name_, logger_);
 
   // Store metadata and pass through LayerOutput for pipeline consumption
   last_metadata_ = result.metadata;

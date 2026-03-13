@@ -474,6 +474,58 @@ TEST_F(MergePipelineTest, PluginReceivesDiscoveryContext) {
   EXPECT_EQ(provider->last_input_.areas[0].id, "powertrain");
 }
 
+// @verifies REQ_DISCO_010
+TEST_F(MergePipelineTest, PluginLayerMapsFunctionsThroughPipeline) {
+  auto provider = std::make_shared<MockIntrospectionProvider>();
+  Function func;
+  func.id = "engine-monitoring";
+  func.name = "Engine Monitoring";
+  func.hosts = {"engine_temp_sensor"};
+  provider->result_.new_entities.functions = {func};
+
+  auto plugin_layer = std::make_unique<PluginLayer>("test_beacon", provider.get());
+  pipeline_.add_layer(std::move(plugin_layer));
+
+  auto result = pipeline_.execute();
+  auto functions = result.functions;
+  ASSERT_EQ(functions.size(), 1u);
+  EXPECT_EQ(functions[0].id, "engine-monitoring");
+  EXPECT_EQ(functions[0].hosts.size(), 1u);
+}
+
+// @verifies REQ_DISCO_010
+TEST_F(MergePipelineTest, PluginFunctionEnrichesExistingFunction) {
+  // Manifest layer provides a function with identity only
+  Function manifest_func = make_function("engine-monitoring", "Engine Monitoring");
+  manifest_func.source = "manifest";
+
+  LayerOutput manifest_out;
+  manifest_out.functions.push_back(manifest_func);
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::HIERARCHY, MergePolicy::ENRICHMENT}}));
+
+  // Plugin layer enriches the same function with hosts
+  auto provider = std::make_shared<MockIntrospectionProvider>();
+  Function plugin_func;
+  plugin_func.id = "engine-monitoring";
+  plugin_func.name = "engine-monitoring-plugin";
+  plugin_func.hosts = {"engine_temp_sensor", "oil_pressure_sensor"};
+  plugin_func.source = "plugin";
+  provider->result_.new_entities.functions = {plugin_func};
+
+  auto plugin_layer = std::make_unique<PluginLayer>("test_beacon", provider.get());
+  pipeline_.add_layer(std::move(plugin_layer));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.functions.size(), 1u);
+  // AUTHORITATIVE manifest identity wins
+  EXPECT_EQ(result.functions[0].name, "Engine Monitoring");
+  // ENRICHMENT from plugin fills hosts
+  EXPECT_EQ(result.functions[0].hosts.size(), 2u);
+}
+
 // --- GapFillConfig tests ---
 
 // @verifies REQ_INTEROP_003

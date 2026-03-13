@@ -78,3 +78,11 @@ Discovery
 
    The server shall support tag-based query parameters that filter discovery responses by tags.
 
+.. req:: Plugin layer maps new Function entities through the merge pipeline
+   :id: REQ_DISCO_010
+   :status: verified
+   :tags: Discovery, Plugin
+
+   Introspection providers shall be able to introduce new Function entities via NewEntities.functions.
+   The merge pipeline shall include plugin-sourced functions in its output and subject them to the
+   same ID validation and merge semantics as other entity types.
