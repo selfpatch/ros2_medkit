@@ -173,6 +173,48 @@ class TestHateoas(GatewayTestCase):
         self.assertEqual(data['operations'], f'{base}/operations')
         self.assertEqual(data['configurations'], f'{base}/configurations')
 
+    def test_area_detail_has_capability_uris(self):
+        """GET /areas/{id} returns capability URIs including logs and bulk-data.
+
+        ros2_medkit extension: areas support resource collections beyond
+        SOVD spec (which only defines them for apps/components).
+
+        @verifies REQ_INTEROP_003
+        """
+        areas = self.get_json('/areas')['items']
+        self.assertGreater(len(areas), 0)
+
+        area_id = areas[0]['id']
+        data = self.get_json(f'/areas/{area_id}')
+
+        base = f'/api/v1/areas/{area_id}'
+        self.assertIn('data', data, 'Area should have data URI')
+        self.assertEqual(data['data'], f'{base}/data')
+        self.assertIn('logs', data, 'Area should have logs URI')
+        self.assertEqual(data['logs'], f'{base}/logs')
+        self.assertIn('bulk-data', data, 'Area should have bulk-data URI')
+        self.assertEqual(data['bulk-data'], f'{base}/bulk-data')
+
+    def test_function_detail_has_capability_uris(self):
+        """GET /functions/{id} returns capability URIs including logs and bulk-data.
+
+        @verifies REQ_INTEROP_003
+        """
+        functions = self.get_json('/functions')['items']
+        if not functions:
+            self.skipTest('No functions available')
+
+        func_id = functions[0]['id']
+        data = self.get_json(f'/functions/{func_id}')
+
+        base = f'/api/v1/functions/{func_id}'
+        self.assertIn('data', data, 'Function should have data URI')
+        self.assertEqual(data['data'], f'{base}/data')
+        self.assertIn('logs', data, 'Function should have logs URI')
+        self.assertEqual(data['logs'], f'{base}/logs')
+        self.assertIn('bulk-data', data, 'Function should have bulk-data URI')
+        self.assertEqual(data['bulk-data'], f'{base}/bulk-data')
+
     # ------------------------------------------------------------------
     # Subareas and subcomponents (test_75-76)
     # ------------------------------------------------------------------

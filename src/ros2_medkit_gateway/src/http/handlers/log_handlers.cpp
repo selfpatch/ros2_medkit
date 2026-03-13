@@ -51,9 +51,66 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
     return;
   }
 
-  // Components use prefix matching (all nodes under the component namespace);
-  // Apps use exact matching (single node FQN).
-  const bool prefix_match = (entity.type == EntityType::COMPONENT);
+  // Components and areas use prefix matching (all nodes under the namespace);
+  // Apps use exact matching (single node FQN);
+  // Functions aggregate logs from all hosted apps.
+  if (entity.type == EntityType::FUNCTION) {
+    // Aggregate logs from all hosted apps
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto func = cache.get_function(entity_id);
+    if (!func || func->hosts.empty()) {
+      json result;
+      result["items"] = json::array();
+      HandlerContext::send_json(res, result);
+      return;
+    }
+
+    // Collect FQNs of hosted apps
+    std::vector<std::string> host_fqns;
+    for (const auto & app_id : func->hosts) {
+      auto app = cache.get_app(app_id);
+      if (app && app->bound_fqn.has_value() && !app->bound_fqn->empty()) {
+        host_fqns.push_back(*app->bound_fqn);
+      }
+    }
+
+    if (host_fqns.empty()) {
+      json result;
+      result["items"] = json::array();
+      HandlerContext::send_json(res, result);
+      return;
+    }
+
+    // Optional query parameters
+    const std::string min_severity = req.get_param_value("severity");
+    const std::string context_filter = req.get_param_value("context");
+
+    if (!min_severity.empty() && !LogManager::is_valid_severity(min_severity)) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
+                                 "Invalid severity value: must be one of debug, info, warning, error, fatal");
+      return;
+    }
+
+    static constexpr size_t kMaxContextFilterLen = 256;
+    if (context_filter.size() > kMaxContextFilterLen) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "context filter exceeds maximum length of 256");
+      return;
+    }
+
+    // get_logs accepts multiple FQNs with exact match - one call for all hosts
+    auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
+    if (!logs) {
+      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
+      return;
+    }
+
+    json result;
+    result["items"] = std::move(*logs);
+    HandlerContext::send_json(res, result);
+    return;
+  }
+
+  const bool prefix_match = (entity.type == EntityType::COMPONENT || entity.type == EntityType::AREA);
 
   // Optional query parameters
   const std::string min_severity = req.get_param_value("severity");

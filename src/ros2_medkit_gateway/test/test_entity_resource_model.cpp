@@ -135,12 +135,20 @@ TEST(EntityCapabilities, ServerSupportsAllCollections) {
   EXPECT_TRUE(caps.supports_collection(ResourceCollection::OPERATIONS));
 }
 
-TEST(EntityCapabilities, AreaDoesNotSupportCollections) {
+TEST(EntityCapabilities, AreaSupportsCollectionsViaAggregation) {
   auto caps = EntityCapabilities::for_type(SovdEntityType::AREA);
-  EXPECT_FALSE(caps.supports_collection(ResourceCollection::CONFIGURATIONS));
-  EXPECT_FALSE(caps.supports_collection(ResourceCollection::DATA));
-  EXPECT_FALSE(caps.supports_collection(ResourceCollection::FAULTS));
-  EXPECT_FALSE(caps.supports_collection(ResourceCollection::OPERATIONS));
+  // ros2_medkit extension: areas support resource collections via aggregation
+  EXPECT_TRUE(caps.supports_collection(ResourceCollection::CONFIGURATIONS));
+  EXPECT_TRUE(caps.supports_collection(ResourceCollection::DATA));
+  EXPECT_TRUE(caps.supports_collection(ResourceCollection::FAULTS));
+  EXPECT_TRUE(caps.supports_collection(ResourceCollection::OPERATIONS));
+  EXPECT_TRUE(caps.supports_collection(ResourceCollection::LOGS));
+  EXPECT_TRUE(caps.supports_collection(ResourceCollection::BULK_DATA));
+  EXPECT_TRUE(caps.is_aggregated(ResourceCollection::DATA));
+  EXPECT_TRUE(caps.is_aggregated(ResourceCollection::OPERATIONS));
+  EXPECT_TRUE(caps.is_aggregated(ResourceCollection::CONFIGURATIONS));
+  EXPECT_TRUE(caps.is_aggregated(ResourceCollection::FAULTS));
+  EXPECT_TRUE(caps.is_aggregated(ResourceCollection::LOGS));
 }
 
 TEST(EntityCapabilities, AreaSupportsContains) {
@@ -165,13 +173,20 @@ TEST(EntityCapabilities, AppSupportsIsLocatedOn) {
   EXPECT_FALSE(caps.supports_resource("hosts"));  // Apps don't host anything
 }
 
-TEST(EntityCapabilities, FunctionAggregatesOperations) {
+TEST(EntityCapabilities, FunctionAggregatesCollections) {
   auto caps = EntityCapabilities::for_type(SovdEntityType::FUNCTION);
+  // ros2_medkit extension: functions support additional collections via aggregation
   EXPECT_TRUE(caps.supports_collection(ResourceCollection::DATA));
   EXPECT_TRUE(caps.supports_collection(ResourceCollection::OPERATIONS));
+  EXPECT_TRUE(caps.supports_collection(ResourceCollection::CONFIGURATIONS));
+  EXPECT_TRUE(caps.supports_collection(ResourceCollection::FAULTS));
+  EXPECT_TRUE(caps.supports_collection(ResourceCollection::LOGS));
+  EXPECT_TRUE(caps.supports_collection(ResourceCollection::BULK_DATA));
   EXPECT_TRUE(caps.is_aggregated(ResourceCollection::DATA));
   EXPECT_TRUE(caps.is_aggregated(ResourceCollection::OPERATIONS));
-  EXPECT_FALSE(caps.supports_collection(ResourceCollection::CONFIGURATIONS));
+  EXPECT_TRUE(caps.is_aggregated(ResourceCollection::CONFIGURATIONS));
+  EXPECT_TRUE(caps.is_aggregated(ResourceCollection::FAULTS));
+  EXPECT_TRUE(caps.is_aggregated(ResourceCollection::LOGS));
 }
 
 TEST(EntityCapabilities, UnknownTypeHasNoCapabilities) {
@@ -580,7 +595,7 @@ TEST_F(AggregationServiceTest, SupportsOperationsCheckCorrect) {
   EXPECT_TRUE(AggregationService::supports_operations(SovdEntityType::COMPONENT));
   EXPECT_TRUE(AggregationService::supports_operations(SovdEntityType::APP));
   EXPECT_TRUE(AggregationService::supports_operations(SovdEntityType::FUNCTION));
-  EXPECT_FALSE(AggregationService::supports_operations(SovdEntityType::AREA));
+  EXPECT_TRUE(AggregationService::supports_operations(SovdEntityType::AREA));
 }
 
 TEST_F(AggregationServiceTest, ShouldAggregateCheckCorrect) {

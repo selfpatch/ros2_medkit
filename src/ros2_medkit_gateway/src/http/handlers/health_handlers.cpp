@@ -179,6 +179,12 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "GET /api/v1/apps/{app_id}/logs",
         "GET /api/v1/apps/{app_id}/logs/configuration",
         "PUT /api/v1/apps/{app_id}/logs/configuration",
+        "GET /api/v1/areas/{area_id}/logs",
+        "GET /api/v1/areas/{area_id}/logs/configuration",
+        "PUT /api/v1/areas/{area_id}/logs/configuration",
+        "GET /api/v1/functions/{function_id}/logs",
+        "GET /api/v1/functions/{function_id}/logs/configuration",
+        "PUT /api/v1/functions/{function_id}/logs/configuration",
         // Bulk Data
         "GET /api/v1/components/{component_id}/bulk-data",
         "GET /api/v1/components/{component_id}/bulk-data/{category}",
