@@ -23,6 +23,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(example_interfaces REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 
 # === Demo node executables ===
 
@@ -53,6 +54,9 @@ medkit_target_dependencies(demo_long_calibration_action rclcpp rclcpp_action exa
 add_executable(demo_lidar_sensor demo_nodes/lidar_sensor.cpp)
 medkit_target_dependencies(demo_lidar_sensor rclcpp rcl_interfaces sensor_msgs std_srvs ros2_medkit_msgs)
 
+add_executable(demo_beacon_publisher demo_nodes/beacon_publisher.cpp)
+medkit_target_dependencies(demo_beacon_publisher rclcpp ros2_medkit_msgs diagnostic_msgs)
+
 install(TARGETS
   demo_engine_temp_sensor
   demo_rpm_sensor
@@ -63,6 +67,7 @@ install(TARGETS
   demo_calibration_service
   demo_long_calibration_action
   demo_lidar_sensor
+  demo_beacon_publisher
   DESTINATION lib/${PROJECT_NAME}
 )
 
