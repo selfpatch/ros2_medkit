@@ -142,6 +142,12 @@ ros2_medkit_gateway:
       # Strict manifest validation (reject invalid manifests)
       manifest_strict_validation: true
 
+      # Configurable main layers (hybrid mode only)
+      # Set false to disable a layer - useful when running manifest+plugin or runtime+plugin
+      # without the other default layer.
+      # manifest.enabled: true     # Set false to disable manifest layer
+      # runtime.enabled: true      # Set false to disable runtime layer
+
       # Runtime (heuristic) discovery options
       # These control how nodes are mapped to SOVD entities in runtime mode
       runtime:
