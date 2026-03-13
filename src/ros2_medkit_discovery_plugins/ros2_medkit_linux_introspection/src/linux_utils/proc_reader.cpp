@@ -19,6 +19,7 @@
 #include <dirent.h>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -69,8 +70,11 @@ std::string parse_cmdline(const std::string & path) {
   return content;
 }
 
+}  // namespace
+
 // Parse node name and namespace from /proc/{pid}/cmdline
-bool parse_ros_args(const std::string & cmdline_path, std::string & node_name, std::string & node_namespace) {
+// Not in anonymous namespace - used by both find_pid_for_node and PidCache::refresh
+static bool parse_ros_args(const std::string & cmdline_path, std::string & node_name, std::string & node_namespace) {
   auto content = read_file_contents(cmdline_path);
   // cmdline is null-separated
   std::vector<std::string> args;
@@ -98,8 +102,6 @@ bool parse_ros_args(const std::string & cmdline_path, std::string & node_name, s
   }
   return !node_name.empty();
 }
-
-}  // namespace
 
 tl::expected<ProcessInfo, std::string> read_process_info(pid_t pid, const std::string & root) {
   auto proc_dir = root + "/proc/" + std::to_string(pid);
@@ -238,6 +240,85 @@ tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name
   closedir(dir);
 
   return tl::make_unexpected("No process found for node " + node_namespace + "/" + node_name);
+}
+
+// --- PidCache implementation ---
+
+PidCache::PidCache(std::chrono::steady_clock::duration ttl) : ttl_(ttl) {
+}
+
+std::optional<pid_t> PidCache::lookup(const std::string & node_fqn, const std::string & root) {
+  {
+    std::shared_lock lock(mutex_);
+    auto now = std::chrono::steady_clock::now();
+    if (now - last_refresh_ < ttl_) {
+      auto it = node_to_pid_.find(node_fqn);
+      if (it != node_to_pid_.end()) {
+        return it->second;
+      }
+      return std::nullopt;
+    }
+  }
+  // TTL expired - refresh
+  refresh(root);
+
+  std::shared_lock lock(mutex_);
+  auto it = node_to_pid_.find(node_fqn);
+  if (it != node_to_pid_.end()) {
+    return it->second;
+  }
+  return std::nullopt;
+}
+
+void PidCache::refresh(const std::string & root) {
+  std::unique_lock lock(mutex_);
+
+  node_to_pid_.clear();
+  auto proc_dir = root + "/proc";
+  DIR * dir = opendir(proc_dir.c_str());
+  if (!dir) {
+    return;
+  }
+
+  struct dirent * entry = nullptr;
+  while ((entry = readdir(dir)) != nullptr) {
+    if (entry->d_type != DT_DIR && entry->d_type != DT_UNKNOWN) {
+      continue;
+    }
+    if (entry->d_type == DT_UNKNOWN) {
+      struct stat st {};
+      auto full_path = proc_dir + "/" + entry->d_name;
+      if (stat(full_path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+        continue;
+      }
+    }
+    bool all_digits = true;
+    for (const char * p = entry->d_name; *p; ++p) {
+      if (*p < '0' || *p > '9') {
+        all_digits = false;
+        break;
+      }
+    }
+    if (!all_digits) {
+      continue;
+    }
+
+    auto cmdline_path = proc_dir + "/" + entry->d_name + "/cmdline";
+    std::string node_name;
+    std::string node_ns;
+    if (parse_ros_args(cmdline_path, node_name, node_ns)) {
+      auto fqn = node_ns + "/" + node_name;
+      auto pid = static_cast<pid_t>(std::stoi(entry->d_name));
+      node_to_pid_[fqn] = pid;
+    }
+  }
+  closedir(dir);
+  last_refresh_ = std::chrono::steady_clock::now();
+}
+
+size_t PidCache::size() const {
+  std::shared_lock lock(mutex_);
+  return node_to_pid_.size();
 }
 
 }  // namespace ros2_medkit_linux_introspection
