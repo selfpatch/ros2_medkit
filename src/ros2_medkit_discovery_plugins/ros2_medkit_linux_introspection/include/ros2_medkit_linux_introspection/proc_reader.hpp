@@ -48,7 +48,7 @@ tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name
 /// Cache for node-to-PID mappings with TTL-based refresh
 class PidCache {
  public:
-  explicit PidCache(std::chrono::seconds ttl = std::chrono::seconds{10});
+  explicit PidCache(std::chrono::steady_clock::duration ttl = std::chrono::seconds{10});
 
   /// Lookup PID for a node FQN (e.g. "/namespace/node_name"). Refreshes if TTL expired.
   std::optional<pid_t> lookup(const std::string & node_fqn, const std::string & root = "/");
@@ -62,7 +62,7 @@ class PidCache {
  private:
   std::unordered_map<std::string, pid_t> node_to_pid_;
   std::chrono::steady_clock::time_point last_refresh_;
-  std::chrono::seconds ttl_;
+  std::chrono::steady_clock::duration ttl_;
   mutable std::shared_mutex mutex_;
 };
 
