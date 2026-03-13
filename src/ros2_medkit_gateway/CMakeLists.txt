@@ -535,4 +535,9 @@ if(BUILD_TESTING)
 
 endif()
 
+# Export include directories for downstream packages (plugins)
+install(DIRECTORY include/ DESTINATION include)
+install(DIRECTORY src/vendored/tl_expected/include/ DESTINATION include)
+ament_export_include_directories(include)
+
 ament_package()
