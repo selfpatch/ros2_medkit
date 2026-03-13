@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+# Copyright 2026 bburda
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Docker-based integration tests for the container introspection plugin.
+
+These tests run OUTSIDE the Docker container, talking to the gateway
+inside it via localhost:9210. The container must be started first with:
+
+    docker compose -f docker-compose.container.yml up -d
+
+The gateway runs inside a Docker container with resource limits (512MB RAM,
+1 CPU). The container plugin detects containerization by reading cgroup
+paths and extracts container ID, runtime, and resource limits.
+"""
+
+import os
+import re
+import time
+
+import pytest
+import requests
+
+BASE_URL = os.environ.get(
+    "CONTAINER_TEST_BASE_URL", "http://localhost:9210/api/v1"
+)
+STARTUP_TIMEOUT = 60
+POLL_INTERVAL = 1
+POLL_RETRIES = 20
+
+
+@pytest.fixture(scope="module", autouse=True)
+def wait_for_gateway():
+    """Wait for gateway health and app discovery inside Docker container."""
+    deadline = time.monotonic() + STARTUP_TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            r = requests.get(f"{BASE_URL}/health", timeout=2)
+            if r.status_code == 200:
+                # Also wait for at least 2 apps (temp_sensor + rpm_sensor)
+                r2 = requests.get(f"{BASE_URL}/apps", timeout=2)
+                if r2.status_code == 200:
+                    apps = r2.json().get("items", [])
+                    if len(apps) >= 2:
+                        return
+        except requests.RequestException:
+            pass
+        time.sleep(1)
+    pytest.fail(f"Gateway not ready after {STARTUP_TIMEOUT}s")
+
+
+def _get_app_ids():
+    """Get all discovered app IDs."""
+    r = requests.get(f"{BASE_URL}/apps", timeout=5)
+    r.raise_for_status()
+    items = r.json().get("items", [])
+    assert len(items) > 0, "No apps discovered"
+    return [item["id"] for item in items]
+
+
+def _get_first_app_id():
+    """Get first discovered app ID."""
+    return _get_app_ids()[0]
+
+
+def _get_first_component_id():
+    """Get first discovered component ID."""
+    r = requests.get(f"{BASE_URL}/components", timeout=5)
+    r.raise_for_status()
+    items = r.json().get("items", [])
+    assert len(items) > 0, "No components discovered"
+    return items[0]["id"]
+
+
+def _poll_endpoint(url, retries=POLL_RETRIES, interval=POLL_INTERVAL):
+    """Poll an endpoint until it returns 200. Returns (status_code, json)."""
+    for _ in range(retries):
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            return r.status_code, r.json()
+        time.sleep(interval)
+    return r.status_code, None
+
+
+class TestContainerAppEndpoint:
+    """Tests for GET /apps/{id}/x-medkit-container."""
+
+    def test_returns_container_info(self):
+        """Container endpoint returns info when running inside Docker."""
+        app_id = _get_first_app_id()
+        status, data = _poll_endpoint(
+            f"{BASE_URL}/apps/{app_id}/x-medkit-container"
+        )
+        assert status == 200, (
+            f"container endpoint not available for {app_id}"
+        )
+        assert "container_id" in data
+        assert "runtime" in data
+
+    def test_container_id_is_64_char_hex(self):
+        """Container ID should be a full 64-character hex SHA-256 hash."""
+        app_id = _get_first_app_id()
+        status, data = _poll_endpoint(
+            f"{BASE_URL}/apps/{app_id}/x-medkit-container"
+        )
+        assert status == 200
+        cid = data["container_id"]
+        assert len(cid) == 64, (
+            f"Expected 64-char container ID, got {len(cid)}: {cid}"
+        )
+        assert re.match(r"^[0-9a-f]{64}$", cid), (
+            f"Container ID is not valid hex: {cid}"
+        )
+
+    def test_runtime_is_docker(self):
+        """Runtime should be detected as 'docker' when running in Docker."""
+        app_id = _get_first_app_id()
+        status, data = _poll_endpoint(
+            f"{BASE_URL}/apps/{app_id}/x-medkit-container"
+        )
+        assert status == 200
+        assert data["runtime"] == "docker", (
+            f"Expected runtime 'docker', got '{data['runtime']}'"
+        )
+
+    def test_memory_limit_detected(self):
+        """Container memory limit should be detected from cgroup.
+
+        docker-compose.container.yml sets 512MB = 536870912 bytes.
+        """
+        app_id = _get_first_app_id()
+        status, data = _poll_endpoint(
+            f"{BASE_URL}/apps/{app_id}/x-medkit-container"
+        )
+        assert status == 200
+        if "memory_limit_bytes" in data:
+            # 512MB = 536870912 bytes
+            assert data["memory_limit_bytes"] == 536870912, (
+                f"Expected 536870912 bytes (512MB), "
+                f"got {data['memory_limit_bytes']}"
+            )
+
+    def test_cpu_quota_detected(self):
+        """Container CPU quota should be detected from cgroup.
+
+        docker-compose.container.yml sets cpus: 1.0.
+        For cgroup v2 with cpus=1.0, the quota is typically 100000us
+        with a period of 100000us.
+        """
+        app_id = _get_first_app_id()
+        status, data = _poll_endpoint(
+            f"{BASE_URL}/apps/{app_id}/x-medkit-container"
+        )
+        assert status == 200
+        if "cpu_quota_us" in data and "cpu_period_us" in data:
+            # cpus: 1.0 means quota/period = 1.0
+            ratio = data["cpu_quota_us"] / data["cpu_period_us"]
+            assert abs(ratio - 1.0) < 0.01, (
+                f"Expected CPU ratio ~1.0, got {ratio} "
+                f"(quota={data['cpu_quota_us']}, "
+                f"period={data['cpu_period_us']})"
+            )
+
+    def test_all_apps_same_container(self):
+        """All apps in the same container should report the same container ID."""
+        app_ids = _get_app_ids()
+        container_ids = set()
+        for app_id in app_ids:
+            status, data = _poll_endpoint(
+                f"{BASE_URL}/apps/{app_id}/x-medkit-container"
+            )
+            if status == 200 and "container_id" in data:
+                container_ids.add(data["container_id"])
+        # All apps run in the same Docker container
+        assert len(container_ids) == 1, (
+            f"Expected 1 unique container ID, got {len(container_ids)}: "
+            f"{container_ids}"
+        )
+
+
+class TestContainerComponentEndpoint:
+    """Tests for GET /components/{id}/x-medkit-container."""
+
+    def test_returns_containers_aggregation(self):
+        """Component endpoint returns aggregated container info."""
+        comp_id = _get_first_component_id()
+        status, data = _poll_endpoint(
+            f"{BASE_URL}/components/{comp_id}/x-medkit-container"
+        )
+        assert status == 200, (
+            f"container component endpoint not available for {comp_id}"
+        )
+        assert "containers" in data
+        assert isinstance(data["containers"], list)
+
+    def test_containers_include_node_ids(self):
+        """Each container in the aggregation includes node_ids."""
+        comp_id = _get_first_component_id()
+        status, data = _poll_endpoint(
+            f"{BASE_URL}/components/{comp_id}/x-medkit-container"
+        )
+        assert status == 200
+        if len(data["containers"]) > 0:
+            container = data["containers"][0]
+            assert "node_ids" in container
+            assert isinstance(container["node_ids"], list)
+            assert len(container["node_ids"]) > 0
+
+    def test_containers_include_runtime(self):
+        """Each container in the aggregation includes runtime info."""
+        comp_id = _get_first_component_id()
+        status, data = _poll_endpoint(
+            f"{BASE_URL}/components/{comp_id}/x-medkit-container"
+        )
+        assert status == 200
+        for container in data["containers"]:
+            assert "runtime" in container
+            assert "container_id" in container
+
+
+class TestContainerErrorHandling:
+    """Tests for error cases on container endpoints."""
+
+    def test_nonexistent_app_returns_404(self):
+        """Requesting container info for a non-existent app returns 404."""
+        r = requests.get(
+            f"{BASE_URL}/apps/nonexistent_app_xyz/x-medkit-container",
+            timeout=5,
+        )
+        assert r.status_code == 404
+
+    def test_nonexistent_component_returns_404(self):
+        """Requesting container info for a non-existent component returns 404."""
+        r = requests.get(
+            f"{BASE_URL}/components/nonexistent_comp_xyz/x-medkit-container",
+            timeout=5,
+        )
+        assert r.status_code == 404
