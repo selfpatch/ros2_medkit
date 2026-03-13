@@ -22,6 +22,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(builtin_interfaces REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Fault.msg"
@@ -31,6 +32,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ExtendedDataRecords.msg"
   "msg/Snapshot.msg"
   "msg/EnvironmentData.msg"
+  "msg/MedkitDiscoveryHint.msg"
   "srv/ReportFault.srv"
   "srv/ListFaults.srv"
   "srv/GetFault.srv"
@@ -39,7 +41,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetRosbag.srv"
   "srv/ListRosbags.srv"
   "srv/ListFaultsForEntity.srv"
-  DEPENDENCIES builtin_interfaces
+  DEPENDENCIES builtin_interfaces diagnostic_msgs
 )
 
 if(BUILD_TESTING)
