@@ -330,6 +330,69 @@ The transport must implement ``SubscriptionTransportProvider`` (``start``, ``sto
 ``notify_update``, ``protocol()``). Clients specify the protocol in the subscription
 creation request.
 
+IntrospectionProvider Example
+-----------------------------
+
+An ``IntrospectionProvider`` enriches entities in the merge pipeline. The plugin
+receives all entities from earlier layers (manifest + runtime) and returns new or
+enriched entities with ``ENRICHMENT`` merge policy.
+
+The ``ros2_medkit_topic_beacon`` plugin is the reference implementation. It
+subscribes to ``/ros2_medkit/discovery``, stores incoming
+``MedkitDiscoveryHint`` messages, and injects their fields during ``introspect()``:
+
+.. code-block:: cpp
+
+   #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+   #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+
+   using namespace ros2_medkit_gateway;
+
+   class MyIntrospectionPlugin : public GatewayPlugin, public IntrospectionProvider {
+    public:
+     std::string name() const override { return "my_introspection"; }
+
+     void configure(const nlohmann::json& config) override {
+       // Read plugin configuration
+     }
+
+     void shutdown() override {}
+
+     // IntrospectionProvider: called on every merge pipeline refresh
+     NewEntities introspect(const IntrospectionInput& input) override {
+       NewEntities result;
+       for (const auto& [id, app] : input.apps) {
+         // Enrich apps with platform metadata
+         EntityInfo enriched = app;
+         enriched.metadata["x-platform-version"] = get_platform_version();
+         result.apps[id] = enriched;
+       }
+       return result;
+     }
+   };
+
+   // Required exports
+   extern "C" GATEWAY_PLUGIN_EXPORT int plugin_api_version() {
+     return PLUGIN_API_VERSION;
+   }
+
+   extern "C" GATEWAY_PLUGIN_EXPORT GatewayPlugin* create_plugin() {
+     return new MyIntrospectionPlugin();
+   }
+
+   extern "C" GATEWAY_PLUGIN_EXPORT IntrospectionProvider* get_introspection_provider(GatewayPlugin* p) {
+     return static_cast<MyIntrospectionPlugin*>(p);
+   }
+
+The ``IntrospectionInput`` contains all entity maps from previous layers:
+
+- ``input.areas``, ``input.components``, ``input.apps``, ``input.functions`` -
+  read-only views of discovered entities to use as context
+
+The returned ``NewEntities`` can contain updated or entirely new entities.
+New entities only appear in responses when ``allow_new_entities`` is true in
+the plugin configuration (or an equivalent policy is set).
+
 Multiple Plugins
 ----------------
 

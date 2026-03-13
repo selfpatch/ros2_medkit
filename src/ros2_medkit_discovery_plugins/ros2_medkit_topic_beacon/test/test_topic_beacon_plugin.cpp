@@ -167,7 +167,6 @@ class TopicBeaconPluginTest : public ::testing::Test {
   rclcpp::Publisher<ros2_medkit_msgs::msg::MedkitDiscoveryHint>::SharedPtr publisher_;
 };
 
-// @verifies REQ_DISCO_010
 TEST_F(TopicBeaconPluginTest, MessageCallbackUpdatesStore) {
   auto msg = make_hint("engine_temp_sensor");
   publisher_->publish(msg);
@@ -185,7 +184,6 @@ TEST_F(TopicBeaconPluginTest, MessageCallbackUpdatesStore) {
   EXPECT_EQ(stored->hint.process_id, 1234u);
 }
 
-// @verifies REQ_DISCO_010
 TEST_F(TopicBeaconPluginTest, IntrospectReturnsCorrectResult) {
   // Populate store directly
   BeaconHint hint;
@@ -207,7 +205,6 @@ TEST_F(TopicBeaconPluginTest, IntrospectReturnsCorrectResult) {
   EXPECT_TRUE(result.metadata["my_app"].contains("x-medkit-beacon-status"));
 }
 
-// @verifies REQ_DISCO_010
 TEST_F(TopicBeaconPluginTest, InvalidMessageRejectedByValidator) {
   // Publish message with empty entity_id - should be rejected by validator
   ros2_medkit_msgs::msg::MedkitDiscoveryHint msg;
@@ -220,14 +217,12 @@ TEST_F(TopicBeaconPluginTest, InvalidMessageRejectedByValidator) {
   EXPECT_EQ(plugin_->store().size(), 0u);
 }
 
-// @verifies REQ_DISCO_010
 TEST_F(TopicBeaconPluginTest, ShutdownDestroysSubscription) {
   ASSERT_NE(plugin_->subscription(), nullptr);
   plugin_->shutdown();
   EXPECT_EQ(plugin_->subscription(), nullptr);
 }
 
-// @verifies REQ_DISCO_010
 TEST_F(TopicBeaconPluginTest, MetadataFromMessagePreserved) {
   auto msg = make_hint("sensor_node");
   diagnostic_msgs::msg::KeyValue kv;
@@ -243,7 +238,6 @@ TEST_F(TopicBeaconPluginTest, MetadataFromMessagePreserved) {
   EXPECT_EQ(stored->hint.metadata.at("gpu_model"), "RTX 4090");
 }
 
-// @verifies REQ_DISCO_010
 TEST_F(TopicBeaconPluginTest, PluginNameAndCapabilities) {
   EXPECT_EQ(plugin_->name(), "topic_beacon");
 
@@ -255,7 +249,6 @@ TEST_F(TopicBeaconPluginTest, PluginNameAndCapabilities) {
   EXPECT_EQ(mock_ctx_->registered_capabilities_[1].name, "x-medkit-beacon");
 }
 
-// @verifies REQ_DISCO_010
 TEST_F(TopicBeaconPluginTest, PluginExportsValid) {
   // Verify extern "C" exports
   EXPECT_EQ(plugin_api_version(), PLUGIN_API_VERSION);

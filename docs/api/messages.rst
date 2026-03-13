@@ -260,6 +260,70 @@ Retrieve diagnostic snapshots captured at fault occurrence time.
 
 See :doc:`/tutorials/snapshots` for detailed usage.
 
+MedkitDiscoveryHint.msg
+~~~~~~~~~~~~~~~~~~~~~~
+
+Push-based entity enrichment hints published by ROS 2 nodes to the gateway
+via the ``/ros2_medkit/discovery`` topic. The topic beacon plugin
+(``ros2_medkit_topic_beacon``) subscribes to this topic and enriches the
+discovery merge pipeline with the received metadata.
+
+.. code-block:: text
+
+   # Required
+   string entity_id                        # Target entity (App or Component ID)
+
+   # Identity hints
+   string stable_id                        # Stable ID alias (x-medkit-stable-id metadata)
+   string display_name                     # Human-friendly display name
+
+   # Topology hints
+   string[] function_ids                   # Function membership (entity belongs to these Functions)
+   string[] depends_on                     # IDs of entities this entity depends on
+   string component_id                     # Parent Component binding
+
+   # Transport hints
+   string transport_type                   # "nitros_zero_copy", "shared_memory", "intra_process"
+   string negotiated_format               # "nitros_image_bgr8", etc.
+
+   # Process diagnostics
+   uint32 process_id                       # OS process ID (PID), 0 = not provided
+   string process_name                     # Process name (e.g. "component_container")
+   string hostname                         # Host identifier (for distributed systems)
+
+   # Freeform metadata
+   diagnostic_msgs/KeyValue[] metadata    # Arbitrary key-value pairs
+
+   # Timing
+   builtin_interfaces/Time stamp           # Timestamp for TTL calculation
+
+All fields except ``entity_id`` are optional. Empty strings and empty arrays
+mean "not provided" and are ignored by the plugin.
+
+The ``stamp`` field is used by the beacon TTL lifecycle:
+
+- **ACTIVE** - hint is within the configured TTL (enrichment applied)
+- **STALE** - hint is past TTL but within expiry (diagnostic data preserved,
+  enrichment still applied with stale flag)
+- **EXPIRED** - hint is past expiry (removed from enrichment)
+
+**Example publisher (C++):**
+
+.. code-block:: cpp
+
+   #include "ros2_medkit_msgs/msg/medkit_discovery_hint.hpp"
+
+   auto pub = node->create_publisher<ros2_medkit_msgs::msg::MedkitDiscoveryHint>(
+     "/ros2_medkit/discovery", 10);
+
+   ros2_medkit_msgs::msg::MedkitDiscoveryHint hint;
+   hint.entity_id = "my_sensor_node";
+   hint.display_name = "Temperature Sensor";
+   hint.function_ids = {"thermal_monitoring"};
+   hint.process_id = getpid();
+   hint.stamp = node->now();
+   pub->publish(hint);
+
 See Also
 --------
 
@@ -267,3 +331,4 @@ See Also
 - :doc:`/tutorials/fault-correlation` - Configure fault correlation rules
 - :doc:`/tutorials/snapshots` - Diagnostic snapshot capture
 - :doc:`/design/ros2_medkit_fault_manager/index` - FaultManager design documentation
+- :doc:`/tutorials/plugin-system` - Beacon plugin configuration and development

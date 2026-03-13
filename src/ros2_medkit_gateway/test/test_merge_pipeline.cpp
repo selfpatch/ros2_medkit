@@ -474,7 +474,6 @@ TEST_F(MergePipelineTest, PluginReceivesDiscoveryContext) {
   EXPECT_EQ(provider->last_input_.areas[0].id, "powertrain");
 }
 
-// @verifies REQ_DISCO_010
 TEST_F(MergePipelineTest, PluginLayerMapsFunctionsThroughPipeline) {
   auto provider = std::make_shared<MockIntrospectionProvider>();
   Function func;
@@ -493,7 +492,6 @@ TEST_F(MergePipelineTest, PluginLayerMapsFunctionsThroughPipeline) {
   EXPECT_EQ(functions[0].hosts.size(), 1u);
 }
 
-// @verifies REQ_DISCO_010
 TEST_F(MergePipelineTest, PluginFunctionEnrichesExistingFunction) {
   // Manifest layer provides a function with identity only
   Function manifest_func = make_function("engine-monitoring", "Engine Monitoring");

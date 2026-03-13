@@ -2,6 +2,17 @@
 Changelog for package ros2_medkit_gateway
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Unreleased
+----------
+
+Added
+~~~~~
+* Beacon discovery plugin system - push-based entity enrichment via ROS 2 topic
+* ``MedkitDiscoveryHint`` message type for beacon publishers
+* ``discovery.manifest.enabled`` / ``discovery.runtime.enabled`` parameters for hybrid mode
+* ``NewEntities.functions`` - plugins can now produce Function entities
+* ``x-medkit-beacon`` vendor extension REST endpoint for beacon metadata
+
 0.3.0 (2026-02-27)
 ------------------
 
