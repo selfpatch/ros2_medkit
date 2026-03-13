@@ -1448,6 +1448,51 @@ Requires: ``container_introspection`` plugin. Only supports cgroup v2
         ]
       }
 
+Beacon Discovery (x-medkit-beacon)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Provided by the ``ros2_medkit_topic_beacon`` plugin (not available when the
+plugin is not loaded). Returns beacon metadata for an entity populated from
+``MedkitDiscoveryHint`` messages published by the entity's node.
+
+``GET /api/v1/apps/{id}/x-medkit-beacon``
+
+``GET /api/v1/components/{id}/x-medkit-beacon``
+
+**Example:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/apps/my_sensor/x-medkit-beacon
+
+**Response (200 OK):**
+
+.. code-block:: json
+
+   {
+     "entity_id": "my_sensor",
+     "status": "active",
+     "display_name": "Temperature Sensor",
+     "function_ids": ["thermal_monitoring"],
+     "process_id": 12345,
+     "process_name": "component_container",
+     "hostname": "robot-01",
+     "last_seen": "2026-03-13T10:30:00.123Z",
+     "stale": false
+   }
+
+**Status values:**
+
+- ``active`` - Hint is within the configured beacon TTL
+- ``stale`` - Hint is past TTL but within expiry (``stale: true``)
+- ``unknown`` - No beacon data has been received for this entity
+
+**Response Codes:**
+
+- **200 OK** - Beacon data returned
+- **404 Not Found** - Entity not found or no beacon data received
+- **404 Not Found** (plugin not loaded) - Endpoint not registered
+
 Error Responses
 ---------------
 

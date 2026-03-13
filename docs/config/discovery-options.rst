@@ -284,6 +284,97 @@ Override discovery options via command line:
      discovery.runtime.topic_only_policy:="ignore" \
      discovery.runtime.min_topics_for_component:=3
 
+Beacon Discovery Plugin (TopicBeaconPlugin)
+--------------------------------------------
+
+The ``ros2_medkit_topic_beacon`` plugin enriches discovered entities with
+push-based metadata from ROS 2 nodes. Nodes publish
+``ros2_medkit_msgs/msg/MedkitDiscoveryHint`` messages to
+``/ros2_medkit/discovery`` and the plugin injects the data into the merge
+pipeline as an ``ENRICHMENT`` layer.
+
+Configuration
+^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       plugins: ["topic_beacon"]
+       plugins.topic_beacon.path: "/path/to/libtopic_beacon_plugin.so"
+
+       # ROS 2 topic to subscribe for beacon hints
+       # Default: "/ros2_medkit/discovery"
+       plugins.topic_beacon.topic: "/ros2_medkit/discovery"
+
+       # Soft TTL: hints older than this are marked STALE (seconds)
+       # Default: 10.0
+       plugins.topic_beacon.beacon_ttl_sec: 10.0
+
+       # Hard expiry: hints older than this are removed (seconds)
+       # Default: 300.0
+       plugins.topic_beacon.beacon_expiry_sec: 300.0
+
+       # Allow plugin to introduce entirely new entities not seen by other layers
+       # When false (recommended), only known entities are enriched
+       # Default: false
+       plugins.topic_beacon.allow_new_entities: false
+
+       # Verify process is alive by checking /proc/<pid>
+       # Default: true
+       plugins.topic_beacon.check_process_alive: true
+
+       # Maximum number of hints to keep in memory
+       # Default: 10000
+       plugins.topic_beacon.max_hints: 10000
+
+       # Rate limit for incoming beacon messages
+       # Default: 100
+       plugins.topic_beacon.max_messages_per_second: 100
+
+Beacon Lifecycle
+^^^^^^^^^^^^^^^^
+
+Each hint follows a soft TTL lifecycle based on the ``stamp`` field:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 15 85
+
+   * - State
+     - Description
+   * - **ACTIVE**
+     - Hint is within ``beacon_ttl_sec``. Enrichment is applied normally.
+   * - **STALE**
+     - Hint is past TTL but within ``beacon_expiry_sec``.
+       Enrichment is still applied; the ``x-medkit-beacon`` endpoint
+       includes a ``stale`` flag in its response.
+   * - **EXPIRED**
+     - Hint is past ``beacon_expiry_sec``. It is removed from the store
+       and no longer contributes to enrichment.
+
+The ``x-medkit-beacon`` vendor endpoint exposes current beacon state:
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/apps/my_sensor/x-medkit-beacon
+
+**Example Response:**
+
+.. code-block:: json
+
+   {
+     "entity_id": "my_sensor",
+     "status": "active",
+     "display_name": "Temperature Sensor",
+     "function_ids": ["thermal_monitoring"],
+     "process_id": 12345,
+     "process_name": "component_container",
+     "hostname": "robot-01",
+     "last_seen": "2026-03-13T10:30:00.123Z",
+     "stale": false
+   }
+
 See Also
 --------
 
