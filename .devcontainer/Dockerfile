@@ -39,6 +39,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     graphviz \
     plantuml \
     lcov \
+    libsystemd-dev \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 
