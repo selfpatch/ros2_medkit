@@ -47,6 +47,8 @@ struct DiscoveryConfig {
   DiscoveryMode mode{DiscoveryMode::RUNTIME_ONLY};
   std::string manifest_path;
   bool manifest_strict_validation{true};
+  bool manifest_enabled{true};  // enable/disable manifest layer in hybrid mode
+  bool runtime_enabled{true};   // enable/disable runtime layer in hybrid mode
 
   /**
    * @brief Runtime (heuristic) discovery options

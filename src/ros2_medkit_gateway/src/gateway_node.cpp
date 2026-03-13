@@ -162,6 +162,8 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("discovery.mode", "runtime_only");  // runtime_only, manifest_only, hybrid
   declare_parameter("discovery.manifest_path", "");
   declare_parameter("discovery.manifest_strict_validation", true);
+  declare_parameter("discovery.manifest.enabled", true);
+  declare_parameter("discovery.runtime.enabled", true);
 
   // Software updates parameters
   declare_parameter("updates.enabled", false);
@@ -400,6 +402,8 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
 
   discovery_config.manifest_path = get_parameter("discovery.manifest_path").as_string();
   discovery_config.manifest_strict_validation = get_parameter("discovery.manifest_strict_validation").as_bool();
+  discovery_config.manifest_enabled = get_parameter("discovery.manifest.enabled").as_bool();
+  discovery_config.runtime_enabled = get_parameter("discovery.runtime.enabled").as_bool();
 
   // Runtime discovery options
   discovery_config.runtime.create_synthetic_components =

@@ -118,24 +118,40 @@ void DiscoveryManager::create_strategy() {
     case DiscoveryMode::HYBRID: {
       discovery::MergePipeline pipeline(node_->get_logger());
 
-      auto manifest_layer = std::make_unique<discovery::ManifestLayer>(manifest_manager_.get());
-      // Apply per-layer policy overrides for manifest
-      apply_layer_policy_overrides("manifest", *manifest_layer);
-      pipeline.add_layer(std::move(manifest_layer));
+      if (config_.manifest_enabled) {
+        auto manifest_layer = std::make_unique<discovery::ManifestLayer>(manifest_manager_.get());
+        apply_layer_policy_overrides("manifest", *manifest_layer);
+        pipeline.add_layer(std::move(manifest_layer));
+      } else {
+        RCLCPP_INFO(node_->get_logger(), "Manifest layer disabled in hybrid mode");
+      }
 
-      auto runtime_layer = std::make_unique<discovery::RuntimeLayer>(runtime_strategy_.get());
-      runtime_layer->set_gap_fill_config(config_.merge_pipeline.gap_fill);
-      // Apply per-layer policy overrides for runtime
-      apply_layer_policy_overrides("runtime", *runtime_layer);
-      pipeline.add_layer(std::move(runtime_layer));
+      if (config_.runtime_enabled) {
+        auto runtime_layer = std::make_unique<discovery::RuntimeLayer>(runtime_strategy_.get());
+        runtime_layer->set_gap_fill_config(config_.merge_pipeline.gap_fill);
+        apply_layer_policy_overrides("runtime", *runtime_layer);
+        pipeline.add_layer(std::move(runtime_layer));
+      } else {
+        RCLCPP_INFO(node_->get_logger(), "Runtime layer disabled in hybrid mode");
+      }
 
-      // Set up RuntimeLinker for post-merge app-to-node binding
-      auto manifest_config = manifest_manager_ ? manifest_manager_->get_config() : discovery::ManifestConfig{};
-      pipeline.set_linker(std::make_unique<discovery::RuntimeLinker>(node_), manifest_config);
+      // Warn if no layers at all (plugins may still be loaded later)
+      if (!config_.manifest_enabled && !config_.runtime_enabled) {
+        RCLCPP_WARN(node_->get_logger(),
+                    "Both manifest and runtime layers disabled in hybrid mode. "
+                    "Entity discovery relies entirely on plugins.");
+      }
+
+      // RuntimeLinker only makes sense when runtime is enabled
+      if (config_.runtime_enabled) {
+        auto manifest_config = manifest_manager_ ? manifest_manager_->get_config() : discovery::ManifestConfig{};
+        pipeline.set_linker(std::make_unique<discovery::RuntimeLinker>(node_), manifest_config);
+      }
 
       hybrid_strategy_ = std::make_unique<discovery::HybridDiscoveryStrategy>(node_, std::move(pipeline));
       active_strategy_ = hybrid_strategy_.get();
-      RCLCPP_INFO(node_->get_logger(), "Discovery mode: hybrid (merge pipeline)");
+      RCLCPP_INFO(node_->get_logger(), "Discovery mode: hybrid (manifest=%s, runtime=%s)",
+                  config_.manifest_enabled ? "on" : "off", config_.runtime_enabled ? "on" : "off");
       break;
     }
 
