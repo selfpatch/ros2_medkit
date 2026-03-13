@@ -13,8 +13,18 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+#include "ros2_medkit_linux_introspection/cgroup_reader.hpp"
+#include "ros2_medkit_linux_introspection/proc_reader.hpp"
+
+#include <httplib.h>
+#include <nlohmann/json.hpp>
+
+#include <map>
+#include <memory>
+#include <string>
 
 using namespace ros2_medkit_gateway;  // NOLINT(build/namespaces)
 
@@ -23,10 +33,153 @@ class ContainerPlugin : public GatewayPlugin, public IntrospectionProvider {
   std::string name() const override {
     return "container_introspection";
   }
-  void configure(const nlohmann::json &) override {
+
+  void configure(const nlohmann::json & config) override {
+    auto ttl = std::chrono::seconds{10};
+    if (config.contains("pid_cache_ttl_seconds")) {
+      ttl = std::chrono::seconds{config["pid_cache_ttl_seconds"].get<int>()};
+    }
+    pid_cache_ = std::make_unique<ros2_medkit_linux_introspection::PidCache>(ttl);
+    if (config.contains("proc_root")) {
+      proc_root_ = config["proc_root"].get<std::string>();
+    }
   }
-  IntrospectionResult introspect(const IntrospectionInput &) override {
-    return {};
+
+  void set_context(PluginContext & ctx) override {
+    ctx_ = &ctx;
+    ctx.register_capability(SovdEntityType::APP, "x-medkit-container");
+    ctx.register_capability(SovdEntityType::COMPONENT, "x-medkit-container");
+  }
+
+  void register_routes(httplib::Server & server, const std::string & api_prefix) override {
+    server.Get((api_prefix + R"(/apps/([^/]+)/x-medkit-container)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_app_request(req, res);
+               });
+    server.Get((api_prefix + R"(/components/([^/]+)/x-medkit-container)").c_str(),
+               [this](const httplib::Request & req, httplib::Response & res) {
+                 handle_component_request(req, res);
+               });
+  }
+
+  IntrospectionResult introspect(const IntrospectionInput & input) override {
+    IntrospectionResult result;
+    pid_cache_->refresh(proc_root_);
+
+    for (const auto & app : input.apps) {
+      auto fqn = app.effective_fqn();
+      if (fqn.empty()) {
+        continue;
+      }
+
+      auto pid_opt = pid_cache_->lookup(fqn, proc_root_);
+      if (!pid_opt) {
+        continue;
+      }
+
+      if (!ros2_medkit_linux_introspection::is_containerized(*pid_opt, proc_root_)) {
+        continue;
+      }
+
+      auto cgroup_info = ros2_medkit_linux_introspection::read_cgroup_info(*pid_opt, proc_root_);
+      if (!cgroup_info) {
+        continue;
+      }
+
+      result.metadata[app.id] = cgroup_info_to_json(*cgroup_info);
+    }
+    return result;
+  }
+
+ private:
+  PluginContext * ctx_{nullptr};
+  std::unique_ptr<ros2_medkit_linux_introspection::PidCache> pid_cache_ =
+      std::make_unique<ros2_medkit_linux_introspection::PidCache>();
+  std::string proc_root_{"/"};
+
+  static nlohmann::json cgroup_info_to_json(const ros2_medkit_linux_introspection::CgroupInfo & info) {
+    nlohmann::json j;
+    j["container_id"] = info.container_id;
+    j["runtime"] = info.container_runtime;
+    if (info.memory_limit_bytes) {
+      j["memory_limit_bytes"] = *info.memory_limit_bytes;
+    }
+    if (info.cpu_quota_us) {
+      j["cpu_quota_us"] = *info.cpu_quota_us;
+    }
+    if (info.cpu_period_us) {
+      j["cpu_period_us"] = *info.cpu_period_us;
+    }
+    return j;
+  }
+
+  void handle_app_request(const httplib::Request & req, httplib::Response & res) {
+    auto entity_id = req.matches[1].str();
+    auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
+    if (!entity) {
+      return;
+    }
+
+    auto pid_opt = pid_cache_->lookup(entity->fqn, proc_root_);
+    if (!pid_opt) {
+      PluginContext::send_error(res, 503, "x-medkit-pid-lookup-failed", "PID lookup failed for node " + entity->fqn);
+      return;
+    }
+
+    if (!ros2_medkit_linux_introspection::is_containerized(*pid_opt, proc_root_)) {
+      PluginContext::send_error(res, 404, "x-medkit-not-containerized",
+                                "Node " + entity->fqn + " is not running in a container");
+      return;
+    }
+
+    auto cgroup_info = ros2_medkit_linux_introspection::read_cgroup_info(*pid_opt, proc_root_);
+    if (!cgroup_info) {
+      PluginContext::send_error(res, 503, "x-medkit-cgroup-read-failed", cgroup_info.error());
+      return;
+    }
+
+    PluginContext::send_json(res, cgroup_info_to_json(*cgroup_info));
+  }
+
+  void handle_component_request(const httplib::Request & req, httplib::Response & res) {
+    auto entity_id = req.matches[1].str();
+    auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
+    if (!entity) {
+      return;
+    }
+
+    auto child_apps = ctx_->get_child_apps(entity_id);
+    std::map<std::string, nlohmann::json> containers;  // Deduplicate by container_id
+
+    for (const auto & app : child_apps) {
+      auto pid_opt = pid_cache_->lookup(app.fqn, proc_root_);
+      if (!pid_opt) {
+        continue;
+      }
+      if (!ros2_medkit_linux_introspection::is_containerized(*pid_opt, proc_root_)) {
+        continue;
+      }
+
+      auto cgroup_info = ros2_medkit_linux_introspection::read_cgroup_info(*pid_opt, proc_root_);
+      if (!cgroup_info) {
+        continue;
+      }
+
+      auto & cid = cgroup_info->container_id;
+      if (containers.find(cid) == containers.end()) {
+        auto j = cgroup_info_to_json(*cgroup_info);
+        j["node_ids"] = nlohmann::json::array();
+        containers[cid] = std::move(j);
+      }
+      containers[cid]["node_ids"].push_back(app.id);
+    }
+
+    nlohmann::json result;
+    result["containers"] = nlohmann::json::array();
+    for (auto & [_, container_json] : containers) {
+      result["containers"].push_back(std::move(container_json));
+    }
+    PluginContext::send_json(res, result);
   }
 };
 

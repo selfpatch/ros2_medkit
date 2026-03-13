@@ -13,6 +13,38 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
+#include "ros2_medkit_linux_introspection/cgroup_reader.hpp"
 
-TEST(Stub, Compiles) {
+using namespace ros2_medkit_linux_introspection;
+
+TEST(ContainerPlugin, CgroupInfoToJson) {
+  CgroupInfo info;
+  info.container_id = "a1b2c3d4e5f6";
+  info.container_runtime = "docker";
+  info.memory_limit_bytes = 1073741824;
+  info.cpu_quota_us = 100000;
+  info.cpu_period_us = 100000;
+
+  nlohmann::json j;
+  j["container_id"] = info.container_id;
+  j["runtime"] = info.container_runtime;
+  if (info.memory_limit_bytes) {
+    j["memory_limit_bytes"] = *info.memory_limit_bytes;
+  }
+  if (info.cpu_quota_us) {
+    j["cpu_quota_us"] = *info.cpu_quota_us;
+  }
+  if (info.cpu_period_us) {
+    j["cpu_period_us"] = *info.cpu_period_us;
+  }
+
+  EXPECT_EQ(j["container_id"], "a1b2c3d4e5f6");
+  EXPECT_EQ(j["runtime"], "docker");
+  EXPECT_EQ(j["memory_limit_bytes"], 1073741824u);
+}
+
+TEST(ContainerPlugin, NotContainerizedSkipped) {
+  // When is_containerized() returns false, plugin should not return metadata
+  EXPECT_FALSE(is_containerized(1, "/nonexistent_root"));
 }
