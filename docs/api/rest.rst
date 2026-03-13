@@ -549,7 +549,8 @@ Logs Endpoints
 --------------
 
 Query and configure the /rosout ring buffer for an entity. Supported entity types:
-**components** and **apps**.
+**areas** (namespace prefix match), **components** (namespace prefix match), **apps** (exact FQN match),
+and **functions** (aggregated from hosted apps).
 
 .. note::
 
@@ -653,10 +654,10 @@ The ``context.function``, ``context.file``, and ``context.line`` fields are omit
         "max_entries": 500
       }
 
-   ``severity_filter`` — minimum severity to return in query results (``debug`` | ``info`` | ``warning`` |
+   ``severity_filter`` - minimum severity to return in query results (``debug`` | ``info`` | ``warning`` |
    ``error`` | ``fatal``). Entries below this level are excluded from queries. Default: ``debug``.
 
-   ``max_entries`` — maximum number of entries returned per query. Must be between 1 and 10,000
+   ``max_entries`` - maximum number of entries returned per query. Must be between 1 and 10,000
    (inclusive). Default: ``100``.
 
    **Response 204:** No content.
@@ -1296,7 +1297,7 @@ Topic and parameter paths containing ``/`` must be URL-encoded:
 .. _sovd-compliance:
 
 SOVD Compliance
-~~~~~~~~~~~~~~~
+---------------
 
 The gateway implements a **pragmatic subset** of the SOVD (Service-Oriented Vehicle
 Diagnostics) standard. We follow SOVD where it matters for interoperability -
@@ -1382,6 +1383,8 @@ Other extensions beyond SOVD:
 - ``/version-info`` - Gateway version information
 
 See Also
-^^^^^^^^
+~~~~~~~~
 
 - :doc:`/config/discovery-options` for merge pipeline configuration
+- :doc:`/tutorials/authentication` - Configure authentication
+- :doc:`/config/server` - Server configuration options

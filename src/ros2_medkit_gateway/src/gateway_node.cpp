@@ -18,6 +18,7 @@
 #include <cctype>
 #include <chrono>
 #include <cinttypes>
+#include <set>
 #include <unordered_set>
 
 #include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
@@ -572,28 +573,122 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
         if (!fault_mgr) {
           return tl::make_unexpected(std::string("FaultManager not available"));
         }
-        // Determine source_id for fault filtering based on entity type
+        // Determine fault filtering based on entity type (mirrors fault_handlers.cpp logic)
         const auto & cache = get_thread_safe_cache();
         auto entity_ref = cache.find_entity(entity_id);
+        if (!entity_ref) {
+          return tl::make_unexpected(std::string("Entity not found: " + entity_id));
+        }
+
+        if (entity_ref->type == SovdEntityType::FUNCTION) {
+          // FUNCTION: get all faults, filter by host app FQNs
+          auto result = fault_mgr->list_faults("");
+          if (!result.success) {
+            return tl::make_unexpected(result.error_message);
+          }
+          // Collect host app FQNs
+          auto func = cache.get_function(entity_id);
+          if (!func || func->hosts.empty()) {
+            nlohmann::json empty_result = {{"faults", nlohmann::json::array()}, {"count", 0}};
+            return empty_result;
+          }
+          std::set<std::string> host_fqns;
+          for (const auto & app_id : func->hosts) {
+            auto app = cache.get_app(app_id);
+            if (app && app->bound_fqn.has_value() && !app->bound_fqn->empty()) {
+              host_fqns.insert(*app->bound_fqn);
+            }
+          }
+          // Filter faults by host FQNs (prefix match on reporting_sources)
+          nlohmann::json filtered = nlohmann::json::array();
+          if (result.data.contains("faults") && result.data["faults"].is_array()) {
+            for (const auto & fault : result.data["faults"]) {
+              if (!fault.contains("reporting_sources")) {
+                continue;
+              }
+              bool matches = false;
+              for (const auto & src : fault["reporting_sources"]) {
+                const std::string src_str = src.get<std::string>();
+                for (const auto & fqn : host_fqns) {
+                  if (src_str.rfind(fqn, 0) == 0) {
+                    matches = true;
+                    break;
+                  }
+                }
+                if (matches) {
+                  break;
+                }
+              }
+              if (matches) {
+                filtered.push_back(fault);
+              }
+            }
+          }
+          result.data["faults"] = filtered;
+          result.data["count"] = filtered.size();
+          return result.data;
+        }
+
+        if (entity_ref->type == SovdEntityType::COMPONENT) {
+          // COMPONENT: get all faults, filter by hosted app FQNs
+          auto result = fault_mgr->list_faults("");
+          if (!result.success) {
+            return tl::make_unexpected(result.error_message);
+          }
+          auto app_ids = cache.get_apps_for_component(entity_id);
+          std::set<std::string> app_fqns;
+          for (const auto & app_id : app_ids) {
+            auto app = cache.get_app(app_id);
+            if (app && app->bound_fqn.has_value() && !app->bound_fqn->empty()) {
+              app_fqns.insert(app->bound_fqn.value());
+            }
+          }
+          // Filter faults by app FQNs (prefix match on reporting_sources)
+          nlohmann::json filtered = nlohmann::json::array();
+          if (result.data.contains("faults") && result.data["faults"].is_array()) {
+            for (const auto & fault : result.data["faults"]) {
+              if (!fault.contains("reporting_sources")) {
+                continue;
+              }
+              bool matches = false;
+              for (const auto & src : fault["reporting_sources"]) {
+                const std::string src_str = src.get<std::string>();
+                for (const auto & fqn : app_fqns) {
+                  if (src_str.rfind(fqn, 0) == 0) {
+                    matches = true;
+                    break;
+                  }
+                }
+                if (matches) {
+                  break;
+                }
+              }
+              if (matches) {
+                filtered.push_back(fault);
+              }
+            }
+          }
+          result.data["faults"] = filtered;
+          result.data["count"] = filtered.size();
+          return result.data;
+        }
+
+        // APP: use bound_fqn with prefix matching via list_faults
+        // AREA: use namespace_path with prefix matching via list_faults
         std::string source_id;
-        if (entity_ref) {
-          if (entity_ref->type == SovdEntityType::APP) {
-            auto app = cache.get_app(entity_id);
-            if (app) {
-              source_id = app->bound_fqn.value_or("");
-            }
-          } else if (entity_ref->type == SovdEntityType::COMPONENT) {
-            auto comp = cache.get_component(entity_id);
-            if (comp) {
-              source_id = comp->namespace_path;
-            }
+        if (entity_ref->type == SovdEntityType::APP) {
+          auto app = cache.get_app(entity_id);
+          if (app) {
+            source_id = app->bound_fqn.value_or("");
           }
-          // AREA and FUNCTION: leave source_id empty (returns all faults)
-          // Guard against TOCTOU: entity found but vanished before get_app/get_component
-          if (source_id.empty() && entity_ref->type != SovdEntityType::AREA &&
-              entity_ref->type != SovdEntityType::FUNCTION) {
-            return tl::make_unexpected(std::string("Entity no longer available: " + entity_id));
+        } else if (entity_ref->type == SovdEntityType::AREA) {
+          auto area = cache.get_area(entity_id);
+          if (area) {
+            source_id = area->namespace_path;
           }
+        }
+        if (source_id.empty()) {
+          return tl::make_unexpected(std::string("Entity no longer available: " + entity_id));
         }
         auto result = fault_mgr->list_faults(source_id);
         if (!result.success) {
@@ -636,14 +731,72 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
         if (!log_mgr) {
           return tl::make_unexpected(std::string("LogManager not available"));
         }
+        // Match log_handlers.cpp scoping logic:
+        // AREA/COMPONENT: entity fqn (namespace_path) with prefix_match=true
+        // FUNCTION: host app FQNs with prefix_match=false (exact)
+        // APP: entity fqn (bound_fqn) with prefix_match=false (exact)
         const auto & cache = get_thread_safe_cache();
-        auto configs = cache.get_entity_configurations(entity_id);
-        std::vector<std::string> node_fqns;
-        node_fqns.reserve(configs.nodes.size());
-        for (const auto & node : configs.nodes) {
-          node_fqns.push_back(node.node_fqn);
+        auto entity_ref = cache.find_entity(entity_id);
+        if (!entity_ref) {
+          return tl::make_unexpected(std::string("Entity not found: " + entity_id));
         }
-        auto result = log_mgr->get_logs(node_fqns, false, "", "", entity_id);
+
+        if (entity_ref->type == SovdEntityType::FUNCTION) {
+          // Aggregate logs from all hosted apps (exact match)
+          auto func = cache.get_function(entity_id);
+          if (!func || func->hosts.empty()) {
+            nlohmann::json payload;
+            payload["items"] = nlohmann::json::array();
+            return payload;
+          }
+          std::vector<std::string> host_fqns;
+          for (const auto & app_id : func->hosts) {
+            auto app = cache.get_app(app_id);
+            if (app && app->bound_fqn.has_value() && !app->bound_fqn->empty()) {
+              host_fqns.push_back(*app->bound_fqn);
+            }
+          }
+          if (host_fqns.empty()) {
+            nlohmann::json payload;
+            payload["items"] = nlohmann::json::array();
+            return payload;
+          }
+          auto result = log_mgr->get_logs(host_fqns, false, "", "", entity_id);
+          if (!result.has_value()) {
+            return tl::make_unexpected(result.error());
+          }
+          nlohmann::json payload;
+          payload["items"] = std::move(*result);
+          return payload;
+        }
+
+        // AREA and COMPONENT: use namespace_path/fqn with prefix matching
+        // APP: use bound_fqn with exact matching
+        std::string fqn;
+        bool prefix_match = false;
+        if (entity_ref->type == SovdEntityType::AREA) {
+          auto area = cache.get_area(entity_id);
+          if (area) {
+            fqn = area->namespace_path;
+          }
+          prefix_match = true;
+        } else if (entity_ref->type == SovdEntityType::COMPONENT) {
+          auto comp = cache.get_component(entity_id);
+          if (comp) {
+            fqn = comp->fqn;
+          }
+          prefix_match = true;
+        } else if (entity_ref->type == SovdEntityType::APP) {
+          auto app = cache.get_app(entity_id);
+          if (app) {
+            fqn = app->bound_fqn.value_or("");
+          }
+        }
+
+        if (fqn.empty()) {
+          return tl::make_unexpected(std::string("Entity no longer available: " + entity_id));
+        }
+        auto result = log_mgr->get_logs({fqn}, prefix_match, "", "", entity_id);
         if (!result.has_value()) {
           return tl::make_unexpected(result.error());
         }
