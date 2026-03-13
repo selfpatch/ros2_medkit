@@ -115,6 +115,18 @@ class BulkDataHandlers {
   HandlerContext & ctx_;
 
   /**
+   * @brief Get source filters for rosbag queries based on entity type.
+   *
+   * For apps/components/areas: returns the entity's FQN or namespace path.
+   * For functions: aggregates FQNs from all hosting apps (read-only
+   * aggregated view - upload/delete are blocked at the route level).
+   *
+   * @param entity Entity information
+   * @return Vector of source filter strings (empty if no valid filters)
+   */
+  std::vector<std::string> get_source_filters(const EntityInfo & entity) const;
+
+  /**
    * @brief Stream file contents to HTTP response.
    * @param res HTTP response to write to
    * @param file_path Path to file to stream (can be file or rosbag directory)

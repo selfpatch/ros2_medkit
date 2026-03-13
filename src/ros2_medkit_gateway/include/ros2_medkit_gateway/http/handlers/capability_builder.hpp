@@ -41,18 +41,20 @@ class CapabilityBuilder {
    * @brief Available capability types for SOVD entities.
    */
   enum class Capability {
-    DATA,                ///< Entity has data endpoints
-    OPERATIONS,          ///< Entity has operations (services/actions)
-    CONFIGURATIONS,      ///< Entity has configurations (parameters)
-    FAULTS,              ///< Entity has fault management
-    SUBAREAS,            ///< Entity has child areas (areas only)
-    SUBCOMPONENTS,       ///< Entity has child components (components only)
-    RELATED_COMPONENTS,  ///< Entity has related components (areas only)
-    CONTAINS,            ///< Entity contains other entities (areas->components)
-    RELATED_APPS,        ///< Entity has related apps (components only)
-    HOSTS,               ///< Entity has host apps (functions/components)
-    DEPENDS_ON,          ///< Entity has dependencies (components only)
-    LOGS                 ///< Entity has application log entries (components and apps)
+    DATA,                 ///< Entity has data endpoints
+    OPERATIONS,           ///< Entity has operations (services/actions)
+    CONFIGURATIONS,       ///< Entity has configurations (parameters)
+    FAULTS,               ///< Entity has fault management
+    SUBAREAS,             ///< Entity has child areas (areas only)
+    SUBCOMPONENTS,        ///< Entity has child components (components only)
+    RELATED_COMPONENTS,   ///< Entity has related components (areas only)
+    CONTAINS,             ///< Entity contains other entities (areas->components)
+    RELATED_APPS,         ///< Entity has related apps (components only)
+    HOSTS,                ///< Entity has host apps (functions/components)
+    DEPENDS_ON,           ///< Entity has dependencies (components only)
+    LOGS,                 ///< Entity has application log entries (components and apps)
+    BULK_DATA,            ///< Entity has bulk data endpoints (rosbags)
+    CYCLIC_SUBSCRIPTIONS  ///< Entity has cyclic subscription endpoints
   };
 
   /**

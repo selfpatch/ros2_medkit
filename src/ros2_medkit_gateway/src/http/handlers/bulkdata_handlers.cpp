@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <unordered_map>
+#include <vector>
 
 #include "ros2_medkit_gateway/bulk_data_store.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -96,57 +97,64 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
 
   if (category == "rosbags") {
     // === Rosbags: served via FaultManager ===
-    // Get FaultManager from node
     auto fault_mgr = ctx_.node()->get_fault_manager();
 
-    // Get all faults for this entity (filter by FQN/namespace path)
-    // Use the entity's FQN or namespace_path as the source_id filter
-    std::string source_filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
-    auto faults_result = fault_mgr->list_faults(source_filter);
+    // Get source filters for this entity (single for most, multiple for functions).
+    // Functions aggregate rosbags from all hosting apps.
+    auto source_filters = get_source_filters(entity);
 
-    // Build a map of fault_code -> fault_json for quick lookup
+    // Collect faults across all source filters for timestamp enrichment
     std::unordered_map<std::string, nlohmann::json> fault_map;
-    if (faults_result.success && faults_result.data.contains("faults")) {
-      for (const auto & fault_json : faults_result.data["faults"]) {
-        if (fault_json.contains("fault_code")) {
-          std::string fc = fault_json["fault_code"].get<std::string>();
-          fault_map[fc] = fault_json;
+    for (const auto & source_filter : source_filters) {
+      auto faults_result = fault_mgr->list_faults(source_filter);
+      if (faults_result.success && faults_result.data.contains("faults")) {
+        for (const auto & fault_json : faults_result.data["faults"]) {
+          if (fault_json.contains("fault_code")) {
+            std::string fc = fault_json["fault_code"].get<std::string>();
+            fault_map[fc] = fault_json;
+          }
         }
       }
     }
 
-    // Use batch rosbag retrieval (single service call) instead of N+1 individual calls
-    auto rosbags_result = fault_mgr->list_rosbags(source_filter);
+    // Collect rosbags across all source filters
+    std::vector<nlohmann::json> all_rosbags;
+    for (const auto & source_filter : source_filters) {
+      auto rosbags_result = fault_mgr->list_rosbags(source_filter);
+      if (rosbags_result.success && rosbags_result.data.contains("rosbags")) {
+        for (const auto & rosbag : rosbags_result.data["rosbags"]) {
+          all_rosbags.push_back(rosbag);
+        }
+      }
+    }
 
     nlohmann::json items = nlohmann::json::array();
 
-    if (rosbags_result.success && rosbags_result.data.contains("rosbags")) {
-      for (const auto & rosbag : rosbags_result.data["rosbags"]) {
-        std::string fault_code = rosbag.value("fault_code", "");
-        std::string format = rosbag.value("format", "mcap");
-        uint64_t size_bytes = rosbag.value("size_bytes", 0);
-        double duration_sec = rosbag.value("duration_sec", 0.0);
+    for (const auto & rosbag : all_rosbags) {
+      std::string fault_code = rosbag.value("fault_code", "");
+      std::string format = rosbag.value("format", "mcap");
+      uint64_t size_bytes = rosbag.value("size_bytes", 0);
+      double duration_sec = rosbag.value("duration_sec", 0.0);
 
-        // Use fault_code as bulk_data_id
-        std::string bulk_data_id = fault_code;
+      // Use fault_code as bulk_data_id
+      std::string bulk_data_id = fault_code;
 
-        // Get timestamp from fault if available
-        int64_t created_at_ns = 0;
-        auto it = fault_map.find(fault_code);
-        if (it != fault_map.end()) {
-          double first_occurred = it->second.value("first_occurred", 0.0);
-          created_at_ns = static_cast<int64_t>(first_occurred * 1'000'000'000);
-        }
-
-        nlohmann::json descriptor = {
-            {"id", bulk_data_id},
-            {"name", fault_code + " recording " + format_timestamp_ns(created_at_ns)},
-            {"mimetype", get_rosbag_mimetype(format)},
-            {"size", size_bytes},
-            {"creation_date", format_timestamp_ns(created_at_ns)},
-            {"x-medkit", {{"fault_code", fault_code}, {"duration_sec", duration_sec}, {"format", format}}}};
-        items.push_back(descriptor);
+      // Get timestamp from fault if available
+      int64_t created_at_ns = 0;
+      auto it = fault_map.find(fault_code);
+      if (it != fault_map.end()) {
+        double first_occurred = it->second.value("first_occurred", 0.0);
+        created_at_ns = static_cast<int64_t>(first_occurred * 1'000'000'000);
       }
+
+      nlohmann::json descriptor = {
+          {"id", bulk_data_id},
+          {"name", fault_code + " recording " + format_timestamp_ns(created_at_ns)},
+          {"mimetype", get_rosbag_mimetype(format)},
+          {"size", size_bytes},
+          {"creation_date", format_timestamp_ns(created_at_ns)},
+          {"x-medkit", {{"fault_code", fault_code}, {"duration_sec", duration_sec}, {"format", format}}}};
+      items.push_back(descriptor);
     }
 
     nlohmann::json response = {{"items", items}};
@@ -409,12 +417,19 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
       return;
     }
 
-    // Security check: verify rosbag belongs to this entity
-    // Use targeted get_fault lookup instead of loading the entire fault list
-    std::string source_filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
-    auto fault_result = fault_mgr->get_fault(fault_code, source_filter);
+    // Security check: verify rosbag belongs to this entity.
+    // For functions, check all hosting apps (aggregated view).
+    auto source_filters = get_source_filters(entity);
+    bool fault_verified = false;
+    for (const auto & sf : source_filters) {
+      auto fault_result = fault_mgr->get_fault(fault_code, sf);
+      if (fault_result.success) {
+        fault_verified = true;
+        break;
+      }
+    }
 
-    if (!fault_result.success) {
+    if (!fault_verified) {
       HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found for this entity",
                                  {{"entity_id", entity_info->entity_id}});
       return;
@@ -511,6 +526,33 @@ std::string BulkDataHandlers::get_rosbag_mimetype(const std::string & format) {
     return "application/x-sqlite3";
   }
   return "application/octet-stream";
+}
+
+std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo & entity) const {
+  if (entity.type == EntityType::FUNCTION) {
+    // Functions aggregate rosbags from all hosting apps
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto host_app_ids = cache.get_apps_for_function(entity.id);
+    std::vector<std::string> filters;
+    filters.reserve(host_app_ids.size());
+    for (const auto & app_id : host_app_ids) {
+      auto app = cache.get_app(app_id);
+      if (app) {
+        auto fqn = app->effective_fqn();
+        if (!fqn.empty()) {
+          filters.push_back(fqn);
+        }
+      }
+    }
+    return filters;
+  }
+
+  // For other entity types, use FQN or namespace_path
+  std::string filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
+  if (filter.empty()) {
+    return {};
+  }
+  return {filter};
 }
 
 }  // namespace handlers

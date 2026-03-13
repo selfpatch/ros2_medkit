@@ -66,11 +66,11 @@ class TestBulkDataApi(GatewayTestCase):
         self.assertIn('rosbags', data['items'])
 
     def test_bulk_data_list_categories_all_entity_types(self):
-        """Bulk-data endpoint works for all entity types that support it.
+        """Bulk-data endpoint works for apps, components, and areas.
 
-        As a ros2_medkit extension, all entity types (apps, components, areas,
-        functions) support bulk-data. Areas and functions provide read-only
-        aggregated access via their hosted/child entities.
+        As a ros2_medkit extension, these entity types support bulk-data.
+        Areas provide read-only aggregated access via their child entities.
+        Functions also support bulk-data (tested separately with manifest).
 
         @verifies REQ_INTEROP_071
         """

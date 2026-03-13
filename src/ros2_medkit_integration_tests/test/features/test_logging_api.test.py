@@ -46,6 +46,7 @@ class TestLoggingApi(GatewayTestCase):
 
     MIN_EXPECTED_APPS = 1
     REQUIRED_APPS = {'temp_sensor'}
+    REQUIRED_AREAS = {'powertrain'}
 
     # ------------------------------------------------------------------
     # GET /apps/{id}/logs
@@ -304,8 +305,7 @@ class TestLoggingApi(GatewayTestCase):
         # @verifies REQ_INTEROP_061
         """
         areas = self.get_json('/areas')['items']
-        if not areas:
-            self.skipTest('No areas available in runtime discovery mode')
+        self.assertGreater(len(areas), 0, 'Expected at least one area')
         area_id = areas[0]['id']
 
         data = self.get_json(f'/areas/{area_id}/logs')
@@ -318,8 +318,7 @@ class TestLoggingApi(GatewayTestCase):
         # @verifies REQ_INTEROP_063
         """
         areas = self.get_json('/areas')['items']
-        if not areas:
-            self.skipTest('No areas available in runtime discovery mode')
+        self.assertGreater(len(areas), 0, 'Expected at least one area')
         area_id = areas[0]['id']
 
         data = self.get_json(f'/areas/{area_id}/logs/configuration')
