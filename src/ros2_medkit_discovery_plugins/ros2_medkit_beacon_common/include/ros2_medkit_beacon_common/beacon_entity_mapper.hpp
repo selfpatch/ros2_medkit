@@ -12,8 +12,39 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Stub - full implementation in Task 7
-
 #pragma once
 
-namespace ros2_medkit_beacon {}  // namespace ros2_medkit_beacon
+#include "ros2_medkit_beacon_common/beacon_hint_store.hpp"
+#include "ros2_medkit_beacon_common/beacon_types.hpp"
+
+#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace ros2_medkit_beacon {
+
+class BeaconEntityMapper {
+ public:
+  struct Config {
+    bool allow_new_entities{false};
+  };
+
+  BeaconEntityMapper();
+  explicit BeaconEntityMapper(Config config);
+
+  ros2_medkit_gateway::IntrospectionResult map(const std::vector<BeaconHintStore::StoredHint> & hints,
+                                               const ros2_medkit_gateway::IntrospectionInput & current_entities) const;
+
+ private:
+  nlohmann::json build_metadata(const BeaconHintStore::StoredHint & hint) const;
+
+  void apply_function_membership(const BeaconHint & hint, ros2_medkit_gateway::IntrospectionResult & result,
+                                 const ros2_medkit_gateway::IntrospectionInput & current) const;
+
+  Config config_;
+};
+
+}  // namespace ros2_medkit_beacon
