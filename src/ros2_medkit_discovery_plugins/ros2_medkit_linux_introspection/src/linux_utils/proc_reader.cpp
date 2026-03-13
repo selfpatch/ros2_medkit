@@ -13,3 +13,231 @@
 // limitations under the License.
 
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
+
+#include <algorithm>
+#include <cstring>
+#include <dirent.h>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+namespace ros2_medkit_linux_introspection {
+
+namespace {
+
+std::string read_file_contents(const std::string & path) {
+  std::ifstream f(path);
+  if (!f.is_open()) {
+    return {};
+  }
+  return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+}
+
+// Parse VmRSS and VmSize from /proc/{pid}/status
+void parse_status_file(const std::string & path, uint64_t & rss_bytes, uint64_t & vm_size_bytes) {
+  std::ifstream f(path);
+  std::string line;
+  while (std::getline(f, line)) {
+    if (line.rfind("VmRSS:", 0) == 0) {
+      uint64_t val = 0;
+      if (sscanf(line.c_str(), "VmRSS: %lu", &val) == 1) {  // NOLINT(runtime/printf)
+        rss_bytes = val * 1024;                             // kB to bytes
+      }
+    } else if (line.rfind("VmSize:", 0) == 0) {
+      uint64_t val = 0;
+      if (sscanf(line.c_str(), "VmSize: %lu", &val) == 1) {  // NOLINT(runtime/printf)
+        vm_size_bytes = val * 1024;
+      }
+    }
+  }
+}
+
+// Parse cmdline from /proc/{pid}/cmdline (null-separated arguments)
+std::string parse_cmdline(const std::string & path) {
+  auto content = read_file_contents(path);
+  // Replace null bytes with spaces for display
+  std::replace(content.begin(), content.end(), '\0', ' ');
+  // Trim trailing space
+  if (!content.empty() && content.back() == ' ') {
+    content.pop_back();
+  }
+  return content;
+}
+
+// Parse node name and namespace from /proc/{pid}/cmdline
+bool parse_ros_args(const std::string & cmdline_path, std::string & node_name, std::string & node_namespace) {
+  auto content = read_file_contents(cmdline_path);
+  // cmdline is null-separated
+  std::vector<std::string> args;
+  std::string current;
+  for (char c : content) {
+    if (c == '\0') {
+      if (!current.empty()) {
+        args.push_back(std::move(current));
+      }
+      current.clear();
+    } else {
+      current += c;
+    }
+  }
+  if (!current.empty()) {
+    args.push_back(std::move(current));
+  }
+
+  for (const auto & arg : args) {
+    if (arg.rfind("__node:=", 0) == 0) {
+      node_name = arg.substr(8);
+    } else if (arg.rfind("__ns:=", 0) == 0) {
+      node_namespace = arg.substr(6);
+    }
+  }
+  return !node_name.empty();
+}
+
+}  // namespace
+
+tl::expected<ProcessInfo, std::string> read_process_info(pid_t pid, const std::string & root) {
+  auto proc_dir = root + "/proc/" + std::to_string(pid);
+
+  if (!fs::exists(proc_dir)) {
+    return tl::make_unexpected("Process " + std::to_string(pid) + " not found");
+  }
+
+  ProcessInfo info;
+  info.pid = pid;
+
+  // Parse /proc/{pid}/stat
+  auto stat_content = read_file_contents(proc_dir + "/stat");
+  if (stat_content.empty()) {
+    return tl::make_unexpected("Cannot read " + proc_dir + "/stat");
+  }
+
+  // Find the closing paren of (comm) to skip process names with spaces
+  auto comm_end = stat_content.rfind(')');
+  if (comm_end == std::string::npos || comm_end + 2 >= stat_content.size()) {
+    return tl::make_unexpected("Malformed stat file for PID " + std::to_string(pid));
+  }
+
+  // Fields after (comm): state ppid pgrp session tty_nr tpgid flags
+  //   minflt cminflt majflt cmajflt utime stime cutime cstime priority nice
+  //   num_threads itrealvalue starttime vsize rss ...
+  std::istringstream ss(stat_content.substr(comm_end + 2));
+  std::string state;
+  int64_t ppid = 0;
+  int64_t pgrp = 0;
+  int64_t session = 0;
+  int64_t tty_nr = 0;
+  int64_t tpgid = 0;
+  uint64_t flags = 0;
+  uint64_t minflt = 0;
+  uint64_t cminflt = 0;
+  uint64_t majflt = 0;
+  uint64_t cmajflt = 0;
+  uint64_t utime = 0;
+  uint64_t stime = 0;
+  uint64_t cutime = 0;
+  uint64_t cstime = 0;
+  int64_t priority = 0;
+  int64_t nice = 0;
+  uint32_t num_threads = 0;
+  int64_t itrealvalue = 0;
+  uint64_t starttime = 0;
+
+  ss >> state >> ppid >> pgrp >> session >> tty_nr >> tpgid >> flags;
+  ss >> minflt >> cminflt >> majflt >> cmajflt;
+  ss >> utime >> stime >> cutime >> cstime;
+  ss >> priority >> nice >> num_threads >> itrealvalue >> starttime;
+
+  // Suppress unused variable warnings for positional fields we don't need
+  (void)pgrp;
+  (void)session;
+  (void)tty_nr;
+  (void)tpgid;
+  (void)flags;
+  (void)minflt;
+  (void)cminflt;
+  (void)majflt;
+  (void)cmajflt;
+  (void)cutime;
+  (void)cstime;
+  (void)priority;
+  (void)nice;
+  (void)itrealvalue;
+  (void)state;
+
+  info.ppid = static_cast<pid_t>(ppid);
+  info.cpu_user_ticks = utime;
+  info.cpu_system_ticks = stime;
+  info.num_threads = num_threads;
+  info.start_time_ticks = starttime;
+
+  // Parse /proc/{pid}/status for VmRSS, VmSize
+  parse_status_file(proc_dir + "/status", info.rss_bytes, info.vm_size_bytes);
+
+  // Parse /proc/{pid}/cmdline
+  info.cmdline = parse_cmdline(proc_dir + "/cmdline");
+
+  // Read /proc/{pid}/exe symlink
+  std::error_code ec;
+  auto exe = fs::read_symlink(proc_dir + "/exe", ec);
+  if (!ec) {
+    info.exe_path = exe.string();
+  }
+
+  return info;
+}
+
+tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name, const std::string & node_namespace,
+                                                   const std::string & root) {
+  auto proc_dir = root + "/proc";
+  DIR * dir = opendir(proc_dir.c_str());
+  if (!dir) {
+    return tl::make_unexpected("Cannot open " + proc_dir);
+  }
+
+  struct dirent * entry = nullptr;
+  while ((entry = readdir(dir)) != nullptr) {
+    // Skip non-numeric entries
+    if (entry->d_type != DT_DIR && entry->d_type != DT_UNKNOWN) {
+      continue;
+    }
+    if (entry->d_type == DT_UNKNOWN) {
+      struct stat st {};
+      auto full_path = proc_dir + "/" + entry->d_name;
+      if (stat(full_path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+        continue;
+      }
+    }
+    bool all_digits = true;
+    for (const char * p = entry->d_name; *p; ++p) {
+      if (*p < '0' || *p > '9') {
+        all_digits = false;
+        break;
+      }
+    }
+    if (!all_digits) {
+      continue;
+    }
+
+    auto cmdline_path = proc_dir + "/" + entry->d_name + "/cmdline";
+    std::string found_node;
+    std::string found_ns;
+    if (parse_ros_args(cmdline_path, found_node, found_ns)) {
+      if (found_node == node_name && (node_namespace.empty() || found_ns == node_namespace)) {
+        pid_t found_pid = static_cast<pid_t>(std::stoi(entry->d_name));
+        closedir(dir);
+        return found_pid;
+      }
+    }
+  }
+  closedir(dir);
+
+  return tl::make_unexpected("No process found for node " + node_namespace + "/" + node_name);
+}
+
+}  // namespace ros2_medkit_linux_introspection
