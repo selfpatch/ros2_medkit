@@ -35,11 +35,13 @@ bool BeaconHintStore::update(const BeaconHint & hint) {
   if (it != hints_.end()) {
     // Refresh existing hint: update last_seen and overwrite non-empty fields.
     StoredHint & stored = it->second;
-    stored.last_seen = std::chrono::steady_clock::now();
 
-    // Also update received_at if the incoming hint carries a more recent timestamp.
+    // Use hint.received_at for TTL if the plugin set it; otherwise fall back to now().
     if (hint.received_at != std::chrono::steady_clock::time_point{}) {
+      stored.last_seen = hint.received_at;
       stored.hint.received_at = hint.received_at;
+    } else {
+      stored.last_seen = std::chrono::steady_clock::now();
     }
 
     // Overwrite non-empty string fields.
@@ -94,10 +96,12 @@ bool BeaconHintStore::update(const BeaconHint & hint) {
   // Insert new entry.
   StoredHint stored;
   stored.hint = hint;
-  stored.last_seen = std::chrono::steady_clock::now();
 
-  // If received_at was not set by caller, use now as a sensible default.
-  if (stored.hint.received_at == std::chrono::steady_clock::time_point{}) {
+  // Use hint.received_at for TTL if the plugin set it; otherwise fall back to now().
+  if (hint.received_at != std::chrono::steady_clock::time_point{}) {
+    stored.last_seen = hint.received_at;
+  } else {
+    stored.last_seen = std::chrono::steady_clock::now();
     stored.hint.received_at = stored.last_seen;
   }
 

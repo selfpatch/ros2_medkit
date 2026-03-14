@@ -438,3 +438,76 @@ TEST(BeaconHintStore, ConcurrentGetDoesNotBlock) {
   // No crashes or deadlocks - success if we reach here.
   SUCCEED();
 }
+
+// ---------------------------------------------------------------------------
+// ReceivedAtSetsLastSeen
+//
+// A hint with received_at set to 5 seconds ago should produce a last_seen
+// that reflects that age (approximately 5s old, not ~0s).
+// ---------------------------------------------------------------------------
+TEST(BeaconHintStore, ReceivedAtSetsLastSeen) {
+  BeaconHintStore::Config cfg;
+  cfg.beacon_ttl_sec = 10.0;
+  cfg.beacon_expiry_sec = 300.0;
+  BeaconHintStore store(cfg);
+
+  auto five_sec_ago = std::chrono::steady_clock::now() - std::chrono::seconds(5);
+
+  BeaconHint hint;
+  hint.entity_id = "app_stamped";
+  hint.received_at = five_sec_ago;
+  ASSERT_TRUE(store.update(hint));
+
+  auto result = store.get("app_stamped");
+  ASSERT_TRUE(result.has_value());
+
+  // last_seen should be approximately 5 seconds ago, not now.
+  auto age = std::chrono::duration<double>(std::chrono::steady_clock::now() - result->last_seen).count();
+  EXPECT_GE(age, 4.5);  // At least 4.5s old
+  EXPECT_LE(age, 6.0);  // Not more than 6s old (generous margin)
+}
+
+// ---------------------------------------------------------------------------
+// DefaultReceivedAtUsesNow
+//
+// A hint with default (zero-initialized) received_at should have last_seen
+// set to approximately steady_clock::now() at insert time.
+// ---------------------------------------------------------------------------
+TEST(BeaconHintStore, DefaultReceivedAtUsesNow) {
+  BeaconHintStore store;
+
+  BeaconHint hint;
+  hint.entity_id = "app_no_stamp";
+  // received_at is default-constructed (zero / epoch)
+  ASSERT_TRUE(store.update(hint));
+
+  auto result = store.get("app_no_stamp");
+  ASSERT_TRUE(result.has_value());
+
+  // last_seen should be approximately now (age ~0).
+  auto age = std::chrono::duration<double>(std::chrono::steady_clock::now() - result->last_seen).count();
+  EXPECT_LT(age, 1.0);  // Should be less than 1 second old
+}
+
+// ---------------------------------------------------------------------------
+// ReceivedAtFarPastIsImmediatelyStale
+//
+// A hint with received_at set far in the past should be immediately STALE
+// if the age exceeds the TTL.
+// ---------------------------------------------------------------------------
+TEST(BeaconHintStore, ReceivedAtFarPastIsImmediatelyStale) {
+  BeaconHintStore::Config cfg;
+  cfg.beacon_ttl_sec = 2.0;
+  cfg.beacon_expiry_sec = 60.0;
+  BeaconHintStore store(cfg);
+
+  // Set received_at to 10 seconds ago - well past the 2s TTL.
+  BeaconHint hint;
+  hint.entity_id = "app_old_stamp";
+  hint.received_at = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+  ASSERT_TRUE(store.update(hint));
+
+  auto result = store.get("app_old_stamp");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, HintStatus::STALE);
+}

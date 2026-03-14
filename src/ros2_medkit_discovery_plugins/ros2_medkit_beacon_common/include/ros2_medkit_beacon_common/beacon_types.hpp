@@ -46,7 +46,11 @@ struct BeaconHint {
   // Freeform
   std::unordered_map<std::string, std::string> metadata;
 
-  // Timing (set by plugin, not from message directly)
+  // Timing - back-projected into steady_clock domain by the plugin.
+  // TopicBeaconPlugin converts the message stamp (if non-zero) to a steady_clock
+  // time_point by computing the message age and subtracting from steady_clock::now().
+  // ParameterBeaconPlugin always uses steady_clock::now() (no stamp concept).
+  // Default (zero) means "not set" - the store falls back to steady_clock::now().
   std::chrono::steady_clock::time_point received_at;
 };
 
