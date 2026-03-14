@@ -1,0 +1,686 @@
+// Copyright 2026 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "capability_generator.hpp"
+
+#include <string>
+#include <vector>
+
+#include "openapi_spec_builder.hpp"
+#include "path_builder.hpp"
+
+#include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
+#include "ros2_medkit_gateway/models/entity_capabilities.hpp"
+#include "ros2_medkit_gateway/models/entity_types.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+
+namespace ros2_medkit_gateway {
+namespace openapi {
+
+namespace {
+
+/// Gateway version - must match the version in health_handlers.cpp
+constexpr const char * kGatewayVersion = "0.1.0";
+/// SOVD specification version
+constexpr const char * kSovdVersion = "1.0.0";
+
+}  // namespace
+
+CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr)
+  : ctx_(ctx), node_(node), plugin_mgr_(plugin_mgr), schema_builder_() {
+}
+
+std::optional<nlohmann::json> CapabilityGenerator::generate(const std::string & base_path) const {
+  auto resolved = PathResolver::resolve(base_path);
+
+  switch (resolved.category) {
+    case PathCategory::kRoot:
+      return generate_root();
+
+    case PathCategory::kEntityCollection:
+      return generate_entity_collection(resolved);
+
+    case PathCategory::kSpecificEntity:
+      if (!validate_entity_hierarchy(resolved)) {
+        return std::nullopt;
+      }
+      return generate_specific_entity(resolved);
+
+    case PathCategory::kResourceCollection:
+      if (!validate_entity_hierarchy(resolved)) {
+        return std::nullopt;
+      }
+      return generate_resource_collection(resolved);
+
+    case PathCategory::kSpecificResource:
+      if (!validate_entity_hierarchy(resolved)) {
+        return std::nullopt;
+      }
+      return generate_specific_resource(resolved);
+
+    case PathCategory::kUnresolved:
+    case PathCategory::kError:
+      return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+// -----------------------------------------------------------------------------
+// Root spec - server-level endpoints
+// -----------------------------------------------------------------------------
+
+nlohmann::json CapabilityGenerator::generate_root() const {
+  auto spec = build_base_spec();
+  PathBuilder path_builder(schema_builder_);
+  nlohmann::json paths;
+
+  // Health endpoint
+  nlohmann::json health_path;
+  nlohmann::json health_get;
+  health_get["summary"] = "Health check";
+  health_get["description"] = "Returns gateway health status.";
+  health_get["responses"]["200"]["description"] = "Gateway is healthy";
+  health_get["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::health_schema();
+  health_path["get"] = std::move(health_get);
+  paths["/health"] = std::move(health_path);
+
+  // Version-info endpoint
+  nlohmann::json version_path;
+  nlohmann::json version_get;
+  version_get["summary"] = "SOVD version information";
+  version_get["description"] = "Returns SOVD specification version and vendor info (SOVD 7.4.1).";
+  version_get["responses"]["200"]["description"] = "Version information";
+  version_get["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::version_info_schema();
+  version_path["get"] = std::move(version_get);
+  paths["/version-info"] = std::move(version_path);
+
+  // Root endpoint (API overview)
+  nlohmann::json root_path;
+  nlohmann::json root_get;
+  root_get["summary"] = "API overview";
+  root_get["description"] = "Returns gateway metadata, available endpoints, and capabilities.";
+  root_get["responses"]["200"]["description"] = "API overview";
+  root_get["responses"]["200"]["content"]["application/json"]["schema"] = {
+      {"type", "object"},
+      {"properties",
+       {{"name", {{"type", "string"}}},
+        {"version", {{"type", "string"}}},
+        {"api_base", {{"type", "string"}}},
+        {"endpoints", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+        {"capabilities", {{"type", "object"}}}}}};
+  root_path["get"] = std::move(root_get);
+  paths["/"] = std::move(root_path);
+
+  // Entity collection endpoints
+  for (const auto & entity_type : {"areas", "components", "apps", "functions"}) {
+    std::string collection_path = std::string("/") + entity_type;
+    std::string detail_path = collection_path + "/{" + entity_type + std::string("_id}");
+
+    paths[collection_path] = path_builder.build_entity_collection(entity_type);
+    paths[detail_path] = path_builder.build_entity_detail(entity_type);
+  }
+
+  // Global faults
+  paths["/faults"] = path_builder.build_faults_collection("");
+  paths["/faults/stream"] = path_builder.build_sse_endpoint("/faults/stream", "Stream fault events");
+
+  // Auth endpoints (if auth is enabled)
+  const auto & auth_config = ctx_.auth_config();
+  if (auth_config.enabled) {
+    nlohmann::json auth_authorize;
+    nlohmann::json auth_post;
+    auth_post["summary"] = "Authorize client";
+    auth_post["description"] = "Authenticate and obtain authorization.";
+    auth_post["responses"]["200"]["description"] = "Authorization successful";
+    auth_authorize["post"] = std::move(auth_post);
+    paths["/auth/authorize"] = std::move(auth_authorize);
+
+    nlohmann::json auth_token;
+    nlohmann::json token_post;
+    token_post["summary"] = "Obtain access token";
+    token_post["description"] = "Exchange credentials for a JWT access token.";
+    token_post["responses"]["200"]["description"] = "Token issued";
+    auth_token["post"] = std::move(token_post);
+    paths["/auth/token"] = std::move(auth_token);
+
+    nlohmann::json auth_revoke;
+    nlohmann::json revoke_post;
+    revoke_post["summary"] = "Revoke token";
+    revoke_post["description"] = "Revoke an access token.";
+    revoke_post["responses"]["200"]["description"] = "Token revoked";
+    auth_revoke["post"] = std::move(revoke_post);
+    paths["/auth/revoke"] = std::move(auth_revoke);
+  }
+
+  OpenApiSpecBuilder builder;
+  builder.info("ROS 2 Medkit Gateway", kGatewayVersion)
+      .sovd_version(kSovdVersion)
+      .server(build_server_url(), "Gateway server")
+      .add_paths(paths);
+
+  if (auth_config.enabled) {
+    builder.security_scheme("bearerAuth", {{"type", "http"}, {"scheme", "bearer"}, {"bearerFormat", "JWT"}});
+  }
+
+  return builder.build();
+}
+
+// -----------------------------------------------------------------------------
+// Entity collection spec (e.g., /areas, /components)
+// -----------------------------------------------------------------------------
+
+nlohmann::json CapabilityGenerator::generate_entity_collection(const ResolvedPath & resolved) const {
+  PathBuilder path_builder(schema_builder_);
+  nlohmann::json paths;
+
+  // Build parent path prefix from parent chain
+  std::string prefix;
+  for (const auto & parent : resolved.parent_chain) {
+    prefix += "/" + parent.entity_type + "/{" + parent.entity_id + "}";
+  }
+
+  // Collection listing path
+  std::string collection_path = prefix + "/" + resolved.entity_type;
+  paths[collection_path] = path_builder.build_entity_collection(resolved.entity_type);
+
+  // Detail path for individual entity
+  // Derive singular for path parameter
+  std::string singular = resolved.entity_type;
+  if (!singular.empty() && singular.back() == 's') {
+    singular.pop_back();
+  }
+  std::string detail_path = collection_path + "/{" + singular + "_id}";
+  paths[detail_path] = path_builder.build_entity_detail(resolved.entity_type);
+
+  OpenApiSpecBuilder builder;
+  builder.info("ROS 2 Medkit Gateway - " + resolved.entity_type, kGatewayVersion)
+      .sovd_version(kSovdVersion)
+      .server(build_server_url(), "Gateway server")
+      .add_paths(paths);
+
+  return builder.build();
+}
+
+// -----------------------------------------------------------------------------
+// Specific entity spec (e.g., /apps/my_app)
+// -----------------------------------------------------------------------------
+
+nlohmann::json CapabilityGenerator::generate_specific_entity(const ResolvedPath & resolved) const {
+  PathBuilder path_builder(schema_builder_);
+  nlohmann::json paths;
+
+  // Build entity path prefix
+  std::string entity_path;
+  for (const auto & parent : resolved.parent_chain) {
+    entity_path += "/" + parent.entity_type + "/" + parent.entity_id;
+  }
+  entity_path += "/" + resolved.entity_type + "/" + resolved.entity_id;
+
+  // Entity detail endpoint
+  paths[entity_path] = path_builder.build_entity_detail(resolved.entity_type);
+
+  // Add resource collection paths based on entity capabilities
+  auto sovd_type = entity_type_from_keyword(resolved.entity_type);
+  add_resource_collection_paths(paths, entity_path, resolved.entity_id, sovd_type);
+
+  OpenApiSpecBuilder builder;
+  builder.info("ROS 2 Medkit Gateway - " + resolved.entity_id, kGatewayVersion)
+      .sovd_version(kSovdVersion)
+      .server(build_server_url(), "Gateway server")
+      .add_paths(paths);
+
+  return builder.build();
+}
+
+// -----------------------------------------------------------------------------
+// Resource collection spec (e.g., /apps/my_app/data)
+// -----------------------------------------------------------------------------
+
+nlohmann::json CapabilityGenerator::generate_resource_collection(const ResolvedPath & resolved) const {
+  PathBuilder path_builder(schema_builder_);
+  nlohmann::json paths;
+
+  // Build entity path
+  std::string entity_path;
+  for (const auto & parent : resolved.parent_chain) {
+    entity_path += "/" + parent.entity_type + "/" + parent.entity_id;
+  }
+  entity_path += "/" + resolved.entity_type + "/" + resolved.entity_id;
+
+  std::string collection_path = entity_path + "/" + resolved.resource_collection;
+  const auto & cache = node_.get_thread_safe_cache();
+
+  if (resolved.resource_collection == "data") {
+    auto data = cache.get_entity_data(resolved.entity_id);
+    paths[collection_path] = path_builder.build_data_collection(entity_path, data.topics);
+    // Add individual data item paths
+    for (const auto & topic : data.topics) {
+      std::string item_path = collection_path + "/" + topic.name;
+      paths[item_path] = path_builder.build_data_item(entity_path, topic);
+    }
+  } else if (resolved.resource_collection == "operations") {
+    auto ops = cache.get_app_operations(resolved.entity_id);
+    // Try component/area/function-level aggregation if app-level is empty
+    auto sovd_type = entity_type_from_keyword(resolved.entity_type);
+    if (ops.empty() && sovd_type == SovdEntityType::COMPONENT) {
+      ops = cache.get_component_operations(resolved.entity_id);
+    } else if (ops.empty() && sovd_type == SovdEntityType::AREA) {
+      ops = cache.get_area_operations(resolved.entity_id);
+    } else if (ops.empty() && sovd_type == SovdEntityType::FUNCTION) {
+      ops = cache.get_function_operations(resolved.entity_id);
+    }
+    paths[collection_path] = path_builder.build_operations_collection(entity_path, ops);
+    for (const auto & svc : ops.services) {
+      std::string item_path = collection_path + "/" + svc.name;
+      paths[item_path] = path_builder.build_operation_item(entity_path, svc);
+    }
+    for (const auto & action : ops.actions) {
+      std::string item_path = collection_path + "/" + action.name;
+      paths[item_path] = path_builder.build_operation_item(entity_path, action);
+    }
+  } else if (resolved.resource_collection == "configurations") {
+    paths[collection_path] = path_builder.build_configurations_collection(entity_path);
+  } else if (resolved.resource_collection == "faults") {
+    paths[collection_path] = path_builder.build_faults_collection(entity_path);
+  } else if (resolved.resource_collection == "logs") {
+    paths[collection_path] = path_builder.build_logs_collection(entity_path);
+  } else if (resolved.resource_collection == "bulk-data") {
+    paths[collection_path] = path_builder.build_bulk_data_collection(entity_path);
+  } else if (resolved.resource_collection == "cyclic-subscriptions") {
+    paths[collection_path] = path_builder.build_cyclic_subscriptions_collection(entity_path);
+  } else {
+    // Unsupported resource collection - just note it exists with a generic path
+    nlohmann::json generic_path;
+    nlohmann::json get_op;
+    get_op["summary"] = "List " + resolved.resource_collection + " for " + resolved.entity_id;
+    get_op["responses"]["200"]["description"] = "Successful response";
+    generic_path["get"] = std::move(get_op);
+    paths[collection_path] = std::move(generic_path);
+  }
+
+  OpenApiSpecBuilder builder;
+  builder.info("ROS 2 Medkit Gateway - " + resolved.entity_id + "/" + resolved.resource_collection, kGatewayVersion)
+      .sovd_version(kSovdVersion)
+      .server(build_server_url(), "Gateway server")
+      .add_paths(paths);
+
+  return builder.build();
+}
+
+// -----------------------------------------------------------------------------
+// Specific resource spec (e.g., /apps/my_app/data/temperature)
+// -----------------------------------------------------------------------------
+
+nlohmann::json CapabilityGenerator::generate_specific_resource(const ResolvedPath & resolved) const {
+  PathBuilder path_builder(schema_builder_);
+  nlohmann::json paths;
+
+  // Build full path
+  std::string entity_path;
+  for (const auto & parent : resolved.parent_chain) {
+    entity_path += "/" + parent.entity_type + "/" + parent.entity_id;
+  }
+  entity_path += "/" + resolved.entity_type + "/" + resolved.entity_id;
+
+  std::string resource_path = entity_path + "/" + resolved.resource_collection + "/" + resolved.resource_id;
+  const auto & cache = node_.get_thread_safe_cache();
+
+  if (resolved.resource_collection == "data") {
+    // Look up specific topic data
+    auto data = cache.get_entity_data(resolved.entity_id);
+    bool found = false;
+    for (const auto & topic : data.topics) {
+      if (topic.name == resolved.resource_id) {
+        paths[resource_path] = path_builder.build_data_item(entity_path, topic);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      // Topic not found in cache, generate a generic data path
+      TopicData generic_topic;
+      generic_topic.name = resolved.resource_id;
+      generic_topic.type = "";
+      generic_topic.direction = "publish";
+      paths[resource_path] = path_builder.build_data_item(entity_path, generic_topic);
+    }
+  } else if (resolved.resource_collection == "operations") {
+    // Look up specific operation
+    auto ops = cache.get_app_operations(resolved.entity_id);
+    auto sovd_type = entity_type_from_keyword(resolved.entity_type);
+    if (ops.empty() && sovd_type == SovdEntityType::COMPONENT) {
+      ops = cache.get_component_operations(resolved.entity_id);
+    } else if (ops.empty() && sovd_type == SovdEntityType::AREA) {
+      ops = cache.get_area_operations(resolved.entity_id);
+    } else if (ops.empty() && sovd_type == SovdEntityType::FUNCTION) {
+      ops = cache.get_function_operations(resolved.entity_id);
+    }
+
+    bool found = false;
+    for (const auto & svc : ops.services) {
+      if (svc.name == resolved.resource_id) {
+        paths[resource_path] = path_builder.build_operation_item(entity_path, svc);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      for (const auto & action : ops.actions) {
+        if (action.name == resolved.resource_id) {
+          paths[resource_path] = path_builder.build_operation_item(entity_path, action);
+          found = true;
+          break;
+        }
+      }
+    }
+    if (!found) {
+      // Operation not found - generate generic
+      ServiceInfo generic_svc;
+      generic_svc.name = resolved.resource_id;
+      generic_svc.type = "";
+      paths[resource_path] = path_builder.build_operation_item(entity_path, generic_svc);
+    }
+  } else if (resolved.resource_collection == "faults") {
+    paths[resource_path] = path_builder.build_faults_collection(entity_path);
+  } else {
+    // Generic resource path
+    nlohmann::json generic_path;
+    nlohmann::json get_op;
+    get_op["summary"] = "Get " + resolved.resource_id;
+    get_op["responses"]["200"]["description"] = "Successful response";
+    generic_path["get"] = std::move(get_op);
+    paths[resource_path] = std::move(generic_path);
+  }
+
+  OpenApiSpecBuilder builder;
+  builder.info("ROS 2 Medkit Gateway - " + resolved.resource_id, kGatewayVersion)
+      .sovd_version(kSovdVersion)
+      .server(build_server_url(), "Gateway server")
+      .add_paths(paths);
+
+  return builder.build();
+}
+
+// -----------------------------------------------------------------------------
+// Entity hierarchy validation
+// -----------------------------------------------------------------------------
+
+bool CapabilityGenerator::validate_entity_hierarchy(const ResolvedPath & resolved) const {
+  const auto & cache = node_.get_thread_safe_cache();
+
+  // Validate the main entity exists
+  if (!resolved.entity_id.empty()) {
+    auto entity_type = entity_type_from_keyword(resolved.entity_type);
+    switch (entity_type) {
+      case SovdEntityType::AREA:
+        if (!cache.has_area(resolved.entity_id)) {
+          return false;
+        }
+        break;
+      case SovdEntityType::COMPONENT:
+        if (!cache.has_component(resolved.entity_id)) {
+          return false;
+        }
+        break;
+      case SovdEntityType::APP:
+        if (!cache.has_app(resolved.entity_id)) {
+          return false;
+        }
+        break;
+      case SovdEntityType::FUNCTION:
+        if (!cache.has_function(resolved.entity_id)) {
+          return false;
+        }
+        break;
+      default:
+        return false;
+    }
+  }
+
+  // Validate each parent in the chain
+  for (const auto & parent : resolved.parent_chain) {
+    auto parent_type = entity_type_from_keyword(parent.entity_type);
+    switch (parent_type) {
+      case SovdEntityType::AREA:
+        if (!cache.has_area(parent.entity_id)) {
+          return false;
+        }
+        break;
+      case SovdEntityType::COMPONENT:
+        if (!cache.has_component(parent.entity_id)) {
+          return false;
+        }
+        break;
+      case SovdEntityType::APP:
+        if (!cache.has_app(parent.entity_id)) {
+          return false;
+        }
+        break;
+      case SovdEntityType::FUNCTION:
+        if (!cache.has_function(parent.entity_id)) {
+          return false;
+        }
+        break;
+      default:
+        return false;
+    }
+  }
+
+  // Validate parent-child relationships
+  // Walk the chain: each parent must actually contain the next entity
+  if (!resolved.parent_chain.empty()) {
+    for (size_t i = 0; i < resolved.parent_chain.size(); ++i) {
+      const auto & parent = resolved.parent_chain[i];
+      std::string child_id;
+      std::string child_type_keyword;
+
+      if (i + 1 < resolved.parent_chain.size()) {
+        child_id = resolved.parent_chain[i + 1].entity_id;
+        child_type_keyword = resolved.parent_chain[i + 1].entity_type;
+      } else {
+        child_id = resolved.entity_id;
+        child_type_keyword = resolved.entity_type;
+      }
+
+      if (child_id.empty()) {
+        continue;
+      }
+
+      auto parent_sovd_type = entity_type_from_keyword(parent.entity_type);
+      auto child_sovd_type = entity_type_from_keyword(child_type_keyword);
+
+      // Verify the parent-child relationship
+      if (parent_sovd_type == SovdEntityType::AREA && child_sovd_type == SovdEntityType::COMPONENT) {
+        auto children = cache.get_components_for_area(parent.entity_id);
+        bool found = false;
+        for (const auto & c : children) {
+          if (c == child_id) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          return false;
+        }
+      } else if (parent_sovd_type == SovdEntityType::AREA && child_sovd_type == SovdEntityType::AREA) {
+        // Subarea relationship
+        auto children = cache.get_subareas(parent.entity_id);
+        bool found = false;
+        for (const auto & c : children) {
+          if (c == child_id) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          return false;
+        }
+      } else if (parent_sovd_type == SovdEntityType::COMPONENT && child_sovd_type == SovdEntityType::APP) {
+        auto children = cache.get_apps_for_component(parent.entity_id);
+        bool found = false;
+        for (const auto & c : children) {
+          if (c == child_id) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          return false;
+        }
+      }
+      // Other relationships (function->apps etc.) are less strictly hierarchical
+    }
+  }
+
+  return true;
+}
+
+// -----------------------------------------------------------------------------
+// Helper methods
+// -----------------------------------------------------------------------------
+
+nlohmann::json CapabilityGenerator::build_base_spec() const {
+  OpenApiSpecBuilder builder;
+  builder.info("ROS 2 Medkit Gateway", kGatewayVersion)
+      .sovd_version(kSovdVersion)
+      .server(build_server_url(), "Gateway server");
+
+  const auto & auth_config = ctx_.auth_config();
+  if (auth_config.enabled) {
+    builder.security_scheme("bearerAuth", {{"type", "http"}, {"scheme", "bearer"}, {"bearerFormat", "JWT"}});
+  }
+
+  return builder.build();
+}
+
+std::string CapabilityGenerator::build_server_url() const {
+  // Read host/port from node parameters
+  std::string host;
+  int port = 8080;
+  try {
+    host = node_.get_parameter("server.host").as_string();
+    port = static_cast<int>(node_.get_parameter("server.port").as_int());
+  } catch (...) {
+    host = "localhost";
+  }
+
+  // Use localhost for display if bound to all interfaces
+  if (host == "0.0.0.0") {
+    host = "localhost";
+  }
+
+  // Determine protocol based on TLS config
+  std::string protocol = "http";
+  if (ctx_.tls_config().enabled) {
+    protocol = "https";
+  }
+
+  return protocol + "://" + host + ":" + std::to_string(port) + API_BASE_PATH;
+}
+
+SovdEntityType CapabilityGenerator::entity_type_from_keyword(const std::string & keyword) {
+  if (keyword == "areas" || keyword == "subareas") {
+    return SovdEntityType::AREA;
+  }
+  if (keyword == "components" || keyword == "subcomponents") {
+    return SovdEntityType::COMPONENT;
+  }
+  if (keyword == "apps") {
+    return SovdEntityType::APP;
+  }
+  if (keyword == "functions") {
+    return SovdEntityType::FUNCTION;
+  }
+  return SovdEntityType::UNKNOWN;
+}
+
+std::optional<ResourceCollection> CapabilityGenerator::resource_collection_from_keyword(const std::string & keyword) {
+  return parse_resource_collection(keyword);
+}
+
+void CapabilityGenerator::add_resource_collection_paths(nlohmann::json & paths, const std::string & entity_path,
+                                                        const std::string & entity_id,
+                                                        ros2_medkit_gateway::SovdEntityType entity_type) const {
+  PathBuilder path_builder(schema_builder_);
+  auto caps = EntityCapabilities::for_type(entity_type);
+  const auto & cache = node_.get_thread_safe_cache();
+
+  for (const auto & col : caps.collections()) {
+    std::string col_path = entity_path + "/" + to_path_segment(col);
+
+    switch (col) {
+      case ResourceCollection::DATA: {
+        auto data = cache.get_entity_data(entity_id);
+        paths[col_path] = path_builder.build_data_collection(entity_path, data.topics);
+        break;
+      }
+      case ResourceCollection::OPERATIONS: {
+        AggregatedOperations ops;
+        switch (entity_type) {
+          case SovdEntityType::APP:
+            ops = cache.get_app_operations(entity_id);
+            break;
+          case SovdEntityType::COMPONENT:
+            ops = cache.get_component_operations(entity_id);
+            break;
+          case SovdEntityType::AREA:
+            ops = cache.get_area_operations(entity_id);
+            break;
+          case SovdEntityType::FUNCTION:
+            ops = cache.get_function_operations(entity_id);
+            break;
+          default:
+            break;
+        }
+        paths[col_path] = path_builder.build_operations_collection(entity_path, ops);
+        break;
+      }
+      case ResourceCollection::CONFIGURATIONS:
+        paths[col_path] = path_builder.build_configurations_collection(entity_path);
+        break;
+      case ResourceCollection::FAULTS:
+        paths[col_path] = path_builder.build_faults_collection(entity_path);
+        break;
+      case ResourceCollection::BULK_DATA:
+        paths[col_path] = path_builder.build_bulk_data_collection(entity_path);
+        break;
+      case ResourceCollection::CYCLIC_SUBSCRIPTIONS:
+        paths[col_path] = path_builder.build_cyclic_subscriptions_collection(entity_path);
+        break;
+      default:
+        // For other collections we don't have specific builders, add generic listing
+        {
+          nlohmann::json generic_path;
+          nlohmann::json get_op;
+          get_op["summary"] = "List " + to_string(col) + " for " + entity_id;
+          get_op["responses"]["200"]["description"] = "Successful response";
+          generic_path["get"] = std::move(get_op);
+          paths[col_path] = std::move(generic_path);
+        }
+        break;
+    }
+  }
+
+  // Logs endpoint - supported by components and apps (not in EntityCapabilities collections
+  // but exposed as a resource endpoint)
+  if (entity_type == SovdEntityType::COMPONENT || entity_type == SovdEntityType::APP) {
+    std::string logs_path = entity_path + "/logs";
+    paths[logs_path] = path_builder.build_logs_collection(entity_path);
+  }
+}
+
+}  // namespace openapi
+}  // namespace ros2_medkit_gateway

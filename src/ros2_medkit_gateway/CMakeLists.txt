@@ -153,6 +153,9 @@ add_library(gateway_lib STATIC
   # OpenAPI documentation module
   src/openapi/schema_builder.cpp
   src/openapi/path_builder.cpp
+  src/openapi/openapi_spec_builder.cpp
+  src/openapi/path_resolver.cpp
+  src/openapi/capability_generator.cpp
 )
 
 medkit_target_dependencies(gateway_lib
@@ -509,6 +512,19 @@ if(BUILD_TESTING)
   ament_add_gtest(test_path_builder test/test_path_builder.cpp)
   target_link_libraries(test_path_builder gateway_lib)
 
+  # OpenAPI spec builder tests (full document assembly)
+  ament_add_gtest(test_openapi_spec_builder test/test_openapi_spec_builder.cpp)
+  target_link_libraries(test_openapi_spec_builder gateway_lib)
+
+  # Path resolver tests (OpenAPI path classification)
+  ament_add_gtest(test_path_resolver test/test_path_resolver.cpp)
+  target_link_libraries(test_path_resolver gateway_lib)
+
+  # Capability generator tests (OpenAPI spec generation engine)
+  ament_add_gtest(test_capability_generator test/test_capability_generator.cpp)
+  target_link_libraries(test_capability_generator gateway_lib)
+  set_tests_properties(test_capability_generator PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=67")
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -553,6 +569,9 @@ if(BUILD_TESTING)
       test_route_descriptions
       test_schema_builder
       test_path_builder
+      test_openapi_spec_builder
+      test_path_resolver
+      test_capability_generator
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
