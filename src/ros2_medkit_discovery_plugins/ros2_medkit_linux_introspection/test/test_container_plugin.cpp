@@ -13,38 +13,43 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
-#include <nlohmann/json.hpp>
-#include "ros2_medkit_linux_introspection/cgroup_reader.hpp"
+#include "ros2_medkit_linux_introspection/container_utils.hpp"
 
 using namespace ros2_medkit_linux_introspection;
 
-TEST(ContainerPlugin, CgroupInfoToJson) {
+// @verifies REQ_INTEROP_003
+TEST(ContainerPlugin, CgroupInfoToJsonAllFields) {
   CgroupInfo info;
-  info.container_id = "a1b2c3d4e5f6";
+  info.container_id = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
   info.container_runtime = "docker";
   info.memory_limit_bytes = 1073741824;
   info.cpu_quota_us = 100000;
   info.cpu_period_us = 100000;
 
-  nlohmann::json j;
-  j["container_id"] = info.container_id;
-  j["runtime"] = info.container_runtime;
-  if (info.memory_limit_bytes) {
-    j["memory_limit_bytes"] = *info.memory_limit_bytes;
-  }
-  if (info.cpu_quota_us) {
-    j["cpu_quota_us"] = *info.cpu_quota_us;
-  }
-  if (info.cpu_period_us) {
-    j["cpu_period_us"] = *info.cpu_period_us;
-  }
-
-  EXPECT_EQ(j["container_id"], "a1b2c3d4e5f6");
+  auto j = cgroup_info_to_json(info);
+  EXPECT_EQ(j["container_id"], info.container_id);
   EXPECT_EQ(j["runtime"], "docker");
   EXPECT_EQ(j["memory_limit_bytes"], 1073741824u);
+  EXPECT_EQ(j["cpu_quota_us"], 100000);
+  EXPECT_EQ(j["cpu_period_us"], 100000);
 }
 
+// @verifies REQ_INTEROP_003
+TEST(ContainerPlugin, CgroupInfoToJsonMissingOptionals) {
+  CgroupInfo info;
+  info.container_id = "deadbeef12345678deadbeef12345678deadbeef12345678deadbeef12345678";
+  info.container_runtime = "containerd";
+  // Leave optionals unset
+
+  auto j = cgroup_info_to_json(info);
+  EXPECT_EQ(j["container_id"], info.container_id);
+  EXPECT_EQ(j["runtime"], "containerd");
+  EXPECT_FALSE(j.contains("memory_limit_bytes"));
+  EXPECT_FALSE(j.contains("cpu_quota_us"));
+  EXPECT_FALSE(j.contains("cpu_period_us"));
+}
+
+// @verifies REQ_INTEROP_003
 TEST(ContainerPlugin, NotContainerizedSkipped) {
-  // When is_containerized() returns false, plugin should not return metadata
   EXPECT_FALSE(is_containerized(1, "/nonexistent_root"));
 }
