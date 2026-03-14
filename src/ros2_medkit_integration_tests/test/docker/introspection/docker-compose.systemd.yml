@@ -15,6 +15,10 @@
 # Docker Compose for systemd introspection plugin integration tests.
 # Runs gateway + demo nodes inside a systemd-managed container.
 # Requires: privileged mode, cgroup host namespace for full systemd support.
+# WARNING: This compose file runs a PRIVILEGED container with host cgroup access.
+# Only run on isolated CI runners or development machines.
+# The privileged mode is required for systemd to function inside the container.
+# Do NOT use this configuration in production or shared environments.
 
 services:
   gateway-systemd:
