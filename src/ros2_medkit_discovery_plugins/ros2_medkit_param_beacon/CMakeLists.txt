@@ -48,7 +48,7 @@ target_include_directories(param_beacon_plugin PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-ament_target_dependencies(param_beacon_plugin
+medkit_target_dependencies(param_beacon_plugin
   ros2_medkit_gateway
   ros2_medkit_beacon_common
   rclcpp
@@ -91,7 +91,7 @@ if(BUILD_TESTING)
     TIMEOUT 30)
   target_include_directories(test_param_beacon_plugin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  ament_target_dependencies(test_param_beacon_plugin
+  medkit_target_dependencies(test_param_beacon_plugin
     ros2_medkit_gateway ros2_medkit_beacon_common rclcpp)
   target_link_libraries(test_param_beacon_plugin
     nlohmann_json::nlohmann_json
