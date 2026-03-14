@@ -252,9 +252,9 @@ TEST_F(TopicBeaconPluginTest, PluginNameAndCapabilities) {
   // Verify capabilities were registered
   ASSERT_EQ(mock_ctx_->registered_capabilities_.size(), 2u);
   EXPECT_EQ(mock_ctx_->registered_capabilities_[0].type, SovdEntityType::APP);
-  EXPECT_EQ(mock_ctx_->registered_capabilities_[0].name, "x-medkit-beacon");
+  EXPECT_EQ(mock_ctx_->registered_capabilities_[0].name, "x-medkit-topic-beacon");
   EXPECT_EQ(mock_ctx_->registered_capabilities_[1].type, SovdEntityType::COMPONENT);
-  EXPECT_EQ(mock_ctx_->registered_capabilities_[1].name, "x-medkit-beacon");
+  EXPECT_EQ(mock_ctx_->registered_capabilities_[1].name, "x-medkit-topic-beacon");
 }
 
 TEST_F(TopicBeaconPluginTest, PluginExportsValid) {
