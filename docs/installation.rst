@@ -198,6 +198,91 @@ Troubleshooting
 
       source ~/ros2_medkit_ws/install/setup.bash
 
+.. _experimental-pixi:
+
+Experimental: Pixi
+------------------
+
+.. warning::
+
+   Pixi support is **experimental** and not the official build path. The standard
+   ROS 2 toolchain (rosdep + colcon) remains the primary and recommended method.
+   This feature is under evaluation - feedback is welcome on
+   `GitHub issue #265 <https://github.com/selfpatch/ros2_medkit/issues/265>`_.
+
+`Pixi <https://pixi.sh>`_ provides a reproducible, lockfile-based development environment
+using packages from `RoboStack <https://robostack.github.io>`_ (conda-forge). It does not
+require a system-wide ROS 2 installation - Pixi manages all dependencies in an isolated
+environment.
+
+Currently supported on **Linux x86_64** only. macOS and Windows support are tracked
+separately (`#267 <https://github.com/selfpatch/ros2_medkit/issues/267>`_,
+`#268 <https://github.com/selfpatch/ros2_medkit/issues/268>`_).
+
+**Install Pixi:**
+
+.. code-block:: bash
+
+   curl -fsSL https://pixi.sh/install.sh | bash
+
+**Clone and build:**
+
+.. code-block:: bash
+
+   git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
+   cd ros2_medkit
+   pixi install -e jazzy    # or: pixi install -e humble
+   pixi run -e jazzy build
+   pixi run -e jazzy test
+   pixi run -e jazzy smoke
+
+**Environments:**
+
+Two environments are available, matching the supported ROS 2 distributions:
+
+- ``jazzy`` - ROS 2 Jazzy Jalisco (recommended)
+- ``humble`` - ROS 2 Humble Hawksbill
+
+Use ``-e <env>`` with all pixi commands, e.g. ``pixi run -e humble build``.
+
+**Available tasks:**
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Task
+     - Description
+   * - ``pixi run -e <env> prep``
+     - Install cpp-httplib into Pixi prefix (runs automatically before build)
+   * - ``pixi run -e <env> build``
+     - Build all packages with colcon
+   * - ``pixi run -e <env> test``
+     - Run unit tests (excludes linters and integration tests)
+   * - ``pixi run -e <env> test-integ``
+     - Run integration tests
+   * - ``pixi run -e <env> test-results``
+     - Show detailed test results
+   * - ``pixi run -e <env> start``
+     - Launch the gateway
+   * - ``pixi run -e <env> smoke``
+     - Smoke test: launch gateway and check health endpoint
+
+**Known limitations:**
+
+- **Linux x86_64 only** - macOS fails due to dynmsg/yaml-cpp Apple Clang incompatibility
+  (`#267 <https://github.com/selfpatch/ros2_medkit/issues/267>`_);
+  Windows fails due to MSVC build issues
+  (`#268 <https://github.com/selfpatch/ros2_medkit/issues/268>`_)
+- **cpp-httplib built from source** - not available on conda-forge; ``pixi run prep`` clones
+  and builds v0.14.3 from GitHub
+- **RoboStack package coverage** - not all ROS 2 packages are available on RoboStack;
+  ``pixi install`` will report any missing packages
+- **No integration tests in CI** - only unit tests and smoke test run in CI;
+  ``test-integ`` is available for local use
+- **Lockfile size** - ``pixi.lock`` can be large; collapsed in GitHub diffs via
+  ``.gitattributes``
+
 Next Steps
 ----------
 
