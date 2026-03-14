@@ -24,7 +24,7 @@
 string entity_id                          # Target entity (App or Component ID)
 
 # === Identity hints ===
-string stable_id                          # Stable ID alias (stored as x-medkit-stable-id metadata)
+string stable_id                          # Stable ID alias (stored as x-medkit-beacon-stable-id metadata)
 string display_name                       # Human-friendly name
 
 # === Topology hints ===

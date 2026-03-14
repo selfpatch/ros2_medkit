@@ -218,17 +218,19 @@ macro(medkit_target_dependencies target)
             # only include dirs via ament_export_include_directories, no CMake targets).
             # Create an IMPORTED INTERFACE target on the fly.
             set(_mtd_iface_target "${_mtd_arg}::${_mtd_arg}")
-            add_library(${_mtd_iface_target} IMPORTED INTERFACE)
-            if(DEFINED ${_mtd_arg}_INCLUDE_DIRS)
-              set_target_properties(${_mtd_iface_target} PROPERTIES
-                INTERFACE_INCLUDE_DIRECTORIES "${${_mtd_arg}_INCLUDE_DIRS}")
-            endif()
-            if(DEFINED ${_mtd_arg}_LIBRARIES AND NOT "${${_mtd_arg}_LIBRARIES}" STREQUAL "")
-              set_target_properties(${_mtd_iface_target} PROPERTIES
-                INTERFACE_LINK_LIBRARIES "${${_mtd_arg}_LIBRARIES}")
+            if(NOT TARGET ${_mtd_iface_target})
+              add_library(${_mtd_iface_target} IMPORTED INTERFACE)
+              if(DEFINED ${_mtd_arg}_INCLUDE_DIRS)
+                set_target_properties(${_mtd_iface_target} PROPERTIES
+                  INTERFACE_INCLUDE_DIRECTORIES "${${_mtd_arg}_INCLUDE_DIRS}")
+              endif()
+              if(DEFINED ${_mtd_arg}_LIBRARIES AND NOT "${${_mtd_arg}_LIBRARIES}" STREQUAL "")
+                set_target_properties(${_mtd_iface_target} PROPERTIES
+                  INTERFACE_LINK_LIBRARIES "${${_mtd_arg}_LIBRARIES}")
+              endif()
+              message(STATUS "[MedkitCompat] ${_mtd_arg}: created interface target from _INCLUDE_DIRS/_LIBRARIES")
             endif()
             list(APPEND _mtd_dep_targets ${_mtd_iface_target})
-            message(STATUS "[MedkitCompat] ${_mtd_arg}: created interface target from _INCLUDE_DIRS/_LIBRARIES")
             unset(_mtd_iface_target)
           else()
             message(FATAL_ERROR

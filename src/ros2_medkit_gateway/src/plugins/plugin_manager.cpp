@@ -323,8 +323,13 @@ std::vector<GatewayPlugin::RouteDescription> PluginManager::get_all_route_descri
     if (!lp.load_result.plugin) {
       continue;
     }
-    auto routes = lp.load_result.plugin->get_route_descriptions();
-    all.insert(all.end(), routes.begin(), routes.end());
+    try {
+      auto routes = lp.load_result.plugin->get_route_descriptions();
+      all.insert(all.end(), routes.begin(), routes.end());
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' threw in get_route_descriptions(): %s",
+                   lp.load_result.plugin->name().c_str(), e.what());
+    }
   }
   return all;
 }
