@@ -201,3 +201,25 @@ TEST(CgroupReader, ReadCgroupInfoMissingCgroupFile) {
 
   fs::remove_all(tmpdir);
 }
+
+TEST(CgroupReader, ExtractDockerOldStyleContainerId) {
+  std::string path = "/docker/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+  auto id = extract_container_id(path);
+  EXPECT_EQ(id, "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2");
+}
+
+TEST(CgroupReader, CgroupV1FormatNotSupported) {
+  // cgroup v1 uses "hierarchy-ID:controller-list:cgroup-path" format.
+  // Our reader only supports cgroup v2 ("0::<path>").
+  // This test documents the intentional limitation.
+  auto tmpdir = fs::temp_directory_path() / "test_cgroup_v1";
+  fs::create_directories(tmpdir / "proc" / "42");
+  {
+    std::ofstream f(tmpdir / "proc" / "42" / "cgroup");
+    f << "12:memory:/docker/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n"
+      << "11:cpu:/docker/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n";
+  }
+  // cgroup v1 format is not supported - returns false
+  EXPECT_FALSE(is_containerized(42, tmpdir.string()));
+  fs::remove_all(tmpdir);
+}
