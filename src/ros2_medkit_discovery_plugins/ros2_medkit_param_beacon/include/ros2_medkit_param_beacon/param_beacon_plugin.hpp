@@ -27,6 +27,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -114,4 +115,7 @@ class ParameterBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin,
   std::unordered_map<std::string, int> backoff_counts_;
   std::unordered_map<std::string, int> skip_remaining_;
   size_t start_offset_{0};
+
+  bool capacity_warned_{false};
+  std::unordered_set<std::string> logged_skipped_entities_;
 };

@@ -194,7 +194,18 @@ IntrospectionResult ParameterBeaconPlugin::introspect(const IntrospectionInput &
   }
 
   auto snapshot = store_->evict_and_snapshot();
-  return mapper_.map(snapshot, input);
+  auto result = mapper_.map(snapshot, input);
+
+  for (const auto & stored : snapshot) {
+    if (result.metadata.find(stored.hint.entity_id) == result.metadata.end()) {
+      if (logged_skipped_entities_.insert(stored.hint.entity_id).second) {
+        log_info("Beacon entity '" + stored.hint.entity_id +
+                 "' not in known entities (allow_new_entities=false), skipped");
+      }
+    }
+  }
+
+  return result;
 }
 
 // --- Polling logic ---
@@ -301,11 +312,18 @@ void ParameterBeaconPlugin::poll_node(const std::string & fqn) {
     // Validate
     auto result = validate_beacon_hint(hint, limits_);
     if (!result.valid) {
+      log_warn("Beacon hint rejected for '" + hint.entity_id + "': " + result.reason);
       return;
     }
 
     // Store
-    store_->update(hint);
+    if (!store_->update(hint)) {
+      if (!capacity_warned_) {
+        log_warn("BeaconHintStore capacity reached (max_hints=" + std::to_string(store_->size()) +
+                 "). New entities will not be tracked.");
+        capacity_warned_ = true;
+      }
+    }
 
     // Reset backoff on success
     backoff_counts_.erase(fqn);

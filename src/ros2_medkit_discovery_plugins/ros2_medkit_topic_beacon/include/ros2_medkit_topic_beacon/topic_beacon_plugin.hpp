@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -103,4 +104,6 @@ class TopicBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin, public ros2
   ros2_medkit_beacon::BeaconEntityMapper mapper_;
   ros2_medkit_beacon::ValidationLimits limits_;
   TokenBucket rate_limiter_{100.0};
+  bool capacity_warned_{false};
+  std::unordered_set<std::string> logged_skipped_entities_;
 };
