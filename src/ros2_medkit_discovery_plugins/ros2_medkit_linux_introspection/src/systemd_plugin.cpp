@@ -52,12 +52,17 @@ struct UnitInfo {
 };
 
 // Query unit properties via sd-bus
-std::optional<UnitInfo> query_unit_info(const std::string & unit_name) {
-  sd_bus * raw_bus = nullptr;
-  if (sd_bus_open_system(&raw_bus) < 0) {
-    return std::nullopt;
+std::optional<UnitInfo> query_unit_info(const std::string & unit_name, sd_bus * shared_bus = nullptr) {
+  SdBusPtr owned_bus;
+  sd_bus * bus = shared_bus;
+  if (!bus) {
+    sd_bus * raw_bus = nullptr;
+    if (sd_bus_open_system(&raw_bus) < 0) {
+      return std::nullopt;
+    }
+    owned_bus.reset(raw_bus);
+    bus = raw_bus;
   }
-  SdBusPtr bus(raw_bus);
 
   UnitInfo info;
   info.unit = unit_name;
@@ -72,7 +77,7 @@ std::optional<UnitInfo> query_unit_info(const std::string & unit_name) {
 
   // ActiveState
   char * value = nullptr;
-  if (sd_bus_get_property_string(bus.get(), "org.freedesktop.systemd1", obj_path.c_str(), iface, "ActiveState", nullptr,
+  if (sd_bus_get_property_string(bus, "org.freedesktop.systemd1", obj_path.c_str(), iface, "ActiveState", nullptr,
                                  &value) >= 0 &&
       value) {
     info.active_state = value;
@@ -81,7 +86,7 @@ std::optional<UnitInfo> query_unit_info(const std::string & unit_name) {
 
   // SubState
   value = nullptr;
-  if (sd_bus_get_property_string(bus.get(), "org.freedesktop.systemd1", obj_path.c_str(), iface, "SubState", nullptr,
+  if (sd_bus_get_property_string(bus, "org.freedesktop.systemd1", obj_path.c_str(), iface, "SubState", nullptr,
                                  &value) >= 0 &&
       value) {
     info.sub_state = value;
@@ -92,8 +97,8 @@ std::optional<UnitInfo> query_unit_info(const std::string & unit_name) {
   const char * svc_iface = "org.freedesktop.systemd1.Service";
   sd_bus_error error = SD_BUS_ERROR_NULL;
   uint32_t nrestarts = 0;
-  if (sd_bus_get_property_trivial(bus.get(), "org.freedesktop.systemd1", obj_path.c_str(), svc_iface, "NRestarts",
-                                  &error, 'u', &nrestarts) >= 0) {
+  if (sd_bus_get_property_trivial(bus, "org.freedesktop.systemd1", obj_path.c_str(), svc_iface, "NRestarts", &error,
+                                  'u', &nrestarts) >= 0) {
     info.restart_count = nrestarts;
   }
   sd_bus_error_free(&error);
@@ -101,8 +106,8 @@ std::optional<UnitInfo> query_unit_info(const std::string & unit_name) {
   // WatchdogUSec (Service-specific property)
   uint64_t watchdog = 0;
   error = SD_BUS_ERROR_NULL;
-  if (sd_bus_get_property_trivial(bus.get(), "org.freedesktop.systemd1", obj_path.c_str(), svc_iface, "WatchdogUSec",
-                                  &error, 't', &watchdog) >= 0) {
+  if (sd_bus_get_property_trivial(bus, "org.freedesktop.systemd1", obj_path.c_str(), svc_iface, "WatchdogUSec", &error,
+                                  't', &watchdog) >= 0) {
     info.watchdog_usec = watchdog;
   }
   sd_bus_error_free(&error);
@@ -157,6 +162,12 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
     IntrospectionResult result;
     pid_cache_->refresh(proc_root_);
 
+    sd_bus * raw_bus = nullptr;
+    SdBusPtr request_bus;
+    if (sd_bus_open_system(&raw_bus) >= 0) {
+      request_bus.reset(raw_bus);
+    }
+
     for (const auto & app : input.apps) {
       auto fqn = app.effective_fqn();
       if (fqn.empty()) {
@@ -175,7 +186,7 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
       std::string unit_name(unit_cstr);
       free(unit_cstr);  // NOLINT(cppcoreguidelines-no-malloc)
 
-      auto unit_info = query_unit_info(unit_name);
+      auto unit_info = query_unit_info(unit_name, request_bus.get());
       if (!unit_info) {
         continue;
       }
@@ -239,6 +250,12 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
     auto child_apps = ctx_->get_child_apps(entity_id);
     std::map<std::string, nlohmann::json> units;  // Deduplicate by unit name
 
+    sd_bus * raw_bus = nullptr;
+    SdBusPtr request_bus;
+    if (sd_bus_open_system(&raw_bus) >= 0) {
+      request_bus.reset(raw_bus);
+    }
+
     for (const auto & app : child_apps) {
       auto pid_opt = pid_cache_->lookup(app.fqn, proc_root_);
       if (!pid_opt) {
@@ -253,7 +270,7 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
       free(unit_cstr);  // NOLINT(cppcoreguidelines-no-malloc)
 
       if (units.find(unit_name) == units.end()) {
-        auto unit_info = query_unit_info(unit_name);
+        auto unit_info = query_unit_info(unit_name, request_bus.get());
         if (!unit_info) {
           continue;
         }
