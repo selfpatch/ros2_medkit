@@ -121,3 +121,14 @@ TEST(ProcReader, FindPidForNodeInSyntheticProc) {
 
   fs::remove_all(tmpdir);
 }
+
+TEST(ProcReader, ReadSystemUptime) {
+  auto result = read_system_uptime("/");
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_GT(*result, 0.0);
+}
+
+TEST(ProcReader, ReadSystemUptimeMissingFile) {
+  auto result = read_system_uptime("/nonexistent_root");
+  ASSERT_FALSE(result.has_value());
+}
