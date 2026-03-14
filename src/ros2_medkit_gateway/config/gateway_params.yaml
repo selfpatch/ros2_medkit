@@ -308,6 +308,13 @@ ros2_medkit_gateway:
       # Default: false
       enabled: false
 
+    # OpenAPI Documentation Endpoints
+    # Controls the /docs endpoints that serve OpenAPI capability descriptions
+    docs:
+      # Master switch for OpenAPI /docs endpoints
+      # When false, /docs routes return 404
+      enabled: true
+
     # Rate Limiting Configuration
     # Token-bucket-based rate limiting for API requests.
     # Disabled by default for backward compatibility.

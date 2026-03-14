@@ -23,6 +23,9 @@ if(ENABLE_COVERAGE)
   add_link_options(--coverage)
 endif()
 
+# Swagger UI embedding option
+option(ENABLE_SWAGGER_UI "Embed Swagger UI assets in gateway binary" OFF)
+
 # Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -203,6 +206,12 @@ set_target_properties(gateway_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # Gateway node executable
 add_executable(gateway_node src/main.cpp)
 target_link_libraries(gateway_node gateway_lib)
+
+# Apply Swagger UI compile definition to both library and executable
+if(ENABLE_SWAGGER_UI)
+  target_compile_definitions(gateway_lib PUBLIC ENABLE_SWAGGER_UI)
+  target_compile_definitions(gateway_node PRIVATE ENABLE_SWAGGER_UI)
+endif()
 
 # Apply coverage flags to main targets
 if(ENABLE_COVERAGE)

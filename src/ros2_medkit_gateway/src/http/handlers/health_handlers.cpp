@@ -221,6 +221,26 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "DELETE /api/v1/faults",
     });
 
+    // Read docs.enabled parameter (defaults to true)
+    bool docs_enabled = true;
+    if (ctx_.node()) {
+      try {
+        docs_enabled = ctx_.node()->get_parameter("docs.enabled").as_bool();
+      } catch (...) {
+        // Parameter may not be declared - default to true
+      }
+    }
+
+    if (docs_enabled) {
+      endpoints.push_back("GET /api/v1/{entity-path}/docs");
+      endpoints.push_back("GET /api/v1/docs");
+    }
+#ifdef ENABLE_SWAGGER_UI
+    if (docs_enabled) {
+      endpoints.push_back("GET /api/v1/swagger-ui");
+    }
+#endif
+
     const auto & auth_config = ctx_.auth_config();
     const auto & tls_config = ctx_.tls_config();
 
