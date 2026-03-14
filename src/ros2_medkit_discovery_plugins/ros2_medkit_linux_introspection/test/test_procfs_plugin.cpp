@@ -12,27 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <filesystem>
-#include <fstream>
 #include <gtest/gtest.h>
-#include <nlohmann/json.hpp>
-#include <unistd.h>
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
-#include "ros2_medkit_linux_introspection/proc_reader.hpp"
+#include "ros2_medkit_linux_introspection/procfs_utils.hpp"
 
-namespace fs = std::filesystem;
-using namespace ros2_medkit_gateway;
+using namespace ros2_medkit_linux_introspection;
 
-// Test that introspect() returns metadata for Apps with matching PIDs.
-// Since we can't easily construct full IntrospectionInput with real Apps,
-// test the underlying proc_reader functions and JSON serialization separately.
-
-TEST(ProcfsPlugin, ProcessInfoToJson) {
-  // Verify the JSON format matches spec
-  ros2_medkit_linux_introspection::ProcessInfo info;
+// @verifies REQ_INTEROP_003
+TEST(ProcfsPlugin, ProcessInfoToJsonAllFields) {
+  ProcessInfo info;
   info.pid = 1234;
   info.ppid = 1;
+  info.state = "S";
   info.exe_path = "/usr/bin/talker";
+  info.cmdline = "/usr/bin/talker --ros-args __node:=talker";
   info.rss_bytes = 524288;
   info.vm_size_bytes = 2097152;
   info.num_threads = 4;
@@ -40,19 +32,46 @@ TEST(ProcfsPlugin, ProcessInfoToJson) {
   info.cpu_system_ticks = 340;
   info.start_time_ticks = 12345;
 
-  // Simulate what procfs_plugin.cpp will do
-  nlohmann::json j;
-  j["pid"] = info.pid;
-  j["ppid"] = info.ppid;
-  j["exe"] = info.exe_path;
-  j["rss_bytes"] = info.rss_bytes;
-  j["vm_size_bytes"] = info.vm_size_bytes;
-  j["threads"] = info.num_threads;
-  j["cpu_user_ticks"] = info.cpu_user_ticks;
-  j["cpu_system_ticks"] = info.cpu_system_ticks;
+  double system_uptime = 50000.0;
+  auto j = process_info_to_json(info, system_uptime);
 
   EXPECT_EQ(j["pid"], 1234);
+  EXPECT_EQ(j["ppid"], 1);
+  EXPECT_EQ(j["state"], "S");
   EXPECT_EQ(j["exe"], "/usr/bin/talker");
+  EXPECT_EQ(j["cmdline"], "/usr/bin/talker --ros-args __node:=talker");
   EXPECT_EQ(j["rss_bytes"], 524288u);
+  EXPECT_EQ(j["vm_size_bytes"], 2097152u);
   EXPECT_EQ(j["threads"], 4u);
+  EXPECT_EQ(j["cpu_user_ticks"], 1520u);
+  EXPECT_EQ(j["cpu_system_ticks"], 340u);
+
+  // cpu_*_seconds should be ticks / sysconf(_SC_CLK_TCK)
+  EXPECT_GT(j["cpu_user_seconds"].get<double>(), 0.0);
+  EXPECT_GT(j["cpu_system_seconds"].get<double>(), 0.0);
+
+  // uptime_seconds should be > 0 given valid start_time and system_uptime
+  EXPECT_GT(j["uptime_seconds"].get<double>(), 0.0);
+}
+
+// @verifies REQ_INTEROP_003
+TEST(ProcfsPlugin, ProcessInfoToJsonZeroUptime) {
+  ProcessInfo info;
+  info.pid = 1;
+  info.start_time_ticks = 0;  // No start time
+
+  auto j = process_info_to_json(info, 50000.0);
+  EXPECT_EQ(j["uptime_seconds"].get<double>(), 0.0);
+}
+
+// @verifies REQ_INTEROP_003
+TEST(ProcfsPlugin, ProcessInfoToJsonNegativeUptimeClamped) {
+  ProcessInfo info;
+  info.pid = 1;
+  // start_time_ticks larger than system_uptime * ticks_per_sec
+  info.start_time_ticks = 999999999;
+
+  auto j = process_info_to_json(info, 1.0);
+  // Should be clamped to 0, not negative
+  EXPECT_GE(j["uptime_seconds"].get<double>(), 0.0);
 }
