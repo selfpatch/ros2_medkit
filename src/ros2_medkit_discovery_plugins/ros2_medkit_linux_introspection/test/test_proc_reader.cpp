@@ -195,3 +195,15 @@ TEST_F(SyntheticProcTest, EmptyStatFile) {
   ASSERT_FALSE(result.has_value());
   EXPECT_NE(result.error().find("Cannot read"), std::string::npos);
 }
+
+// @verifies REQ_INTEROP_003
+TEST_F(SyntheticProcTest, TruncatedStatAfterComm) {
+  fs::create_directories(tmpdir_ / "proc" / "42");
+  {
+    std::ofstream f(tmpdir_ / "proc" / "42" / "stat");
+    f << "42 (test_node) S 1";  // Valid comm but truncated after ppid
+  }
+  auto result = read_process_info(42, tmpdir_.string());
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("Truncated"), std::string::npos);
+}

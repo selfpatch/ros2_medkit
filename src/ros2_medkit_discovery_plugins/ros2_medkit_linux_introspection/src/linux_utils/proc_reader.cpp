@@ -15,6 +15,7 @@
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
 
 #include <algorithm>
+#include <cinttypes>
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
@@ -57,12 +58,12 @@ void parse_status_file(const std::string & path, uint64_t & rss_bytes, uint64_t 
   while (std::getline(f, line)) {
     if (line.rfind("VmRSS:", 0) == 0) {
       uint64_t val = 0;
-      if (sscanf(line.c_str(), "VmRSS: %lu", &val) == 1) {  // NOLINT(runtime/printf)
-        rss_bytes = val * 1024;                             // kB to bytes
+      if (sscanf(line.c_str(), "VmRSS: %" SCNu64, &val) == 1) {  // NOLINT(runtime/printf)
+        rss_bytes = val * 1024;                                  // kB to bytes
       }
     } else if (line.rfind("VmSize:", 0) == 0) {
       uint64_t val = 0;
-      if (sscanf(line.c_str(), "VmSize: %lu", &val) == 1) {  // NOLINT(runtime/printf)
+      if (sscanf(line.c_str(), "VmSize: %" SCNu64, &val) == 1) {  // NOLINT(runtime/printf)
         vm_size_bytes = val * 1024;
       }
     }
@@ -165,6 +166,10 @@ tl::expected<ProcessInfo, std::string> read_process_info(pid_t pid, const std::s
   ss >> minflt >> cminflt >> majflt >> cmajflt;
   ss >> utime >> stime >> cutime >> cstime;
   ss >> priority >> nice >> num_threads >> itrealvalue >> starttime;
+
+  if (ss.fail()) {
+    return tl::make_unexpected("Truncated stat file for PID " + std::to_string(pid));
+  }
 
   // Suppress unused variable warnings for positional fields we don't need
   (void)pgrp;
