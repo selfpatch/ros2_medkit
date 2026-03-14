@@ -199,6 +199,8 @@ set_target_properties(gateway_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # Gateway node executable
 add_executable(gateway_node src/main.cpp)
 target_link_libraries(gateway_node gateway_lib)
+# Export symbols to dlopen'd plugins (PluginContext::send_json, send_error, etc.)
+set_target_properties(gateway_node PROPERTIES ENABLE_EXPORTS ON)
 
 # Apply coverage flags to main targets
 if(ENABLE_COVERAGE)
