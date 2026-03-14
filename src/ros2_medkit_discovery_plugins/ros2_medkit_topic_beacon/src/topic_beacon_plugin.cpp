@@ -72,7 +72,7 @@ void TopicBeaconPlugin::configure(const nlohmann::json & config) {
   mapper_config.allow_new_entities = config.value("allow_new_entities", false);
   mapper_ = BeaconEntityMapper(mapper_config);
 
-  rate_limiter_ = TokenBucket(max_mps);
+  rate_limiter_.reset(max_mps);
 
   // Note: field group policy overrides are handled by PluginLayer via
   // apply_layer_policy_overrides() in discovery_manager.cpp, not here.

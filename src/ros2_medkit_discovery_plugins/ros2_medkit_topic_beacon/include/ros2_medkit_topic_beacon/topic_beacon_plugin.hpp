@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -35,16 +36,19 @@
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
 // Simple token bucket for rate limiting.
-// Thread safety: on_beacon() is called from the DDS callback thread.
-// If gateway uses multi-threaded executor, add std::mutex to try_consume().
-// With single-threaded executor (default rclcpp::spin), this is safe as-is.
+// Thread safety: on_beacon() is called from the DDS callback thread,
+// so try_consume() is guarded by a mutex for multi-threaded executor safety.
 class TokenBucket {
  public:
+  TokenBucket() : TokenBucket(100.0) {
+  }
+
   explicit TokenBucket(double max_per_second)
     : max_tokens_(max_per_second), tokens_(max_per_second), last_refill_(std::chrono::steady_clock::now()) {
   }
 
   bool try_consume() {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration<double>(now - last_refill_).count();
     tokens_ = std::min(max_tokens_, tokens_ + elapsed * max_tokens_);
@@ -56,7 +60,16 @@ class TokenBucket {
     return false;
   }
 
+  /// Reinitialize the bucket with a new rate (avoids move/copy of mutex).
+  void reset(double max_per_second) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    max_tokens_ = max_per_second;
+    tokens_ = max_per_second;
+    last_refill_ = std::chrono::steady_clock::now();
+  }
+
  private:
+  mutable std::mutex mutex_;
   double max_tokens_;
   double tokens_;
   std::chrono::steady_clock::time_point last_refill_;

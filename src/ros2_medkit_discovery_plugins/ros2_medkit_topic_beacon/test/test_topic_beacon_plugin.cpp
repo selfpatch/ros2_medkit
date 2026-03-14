@@ -270,3 +270,63 @@ TEST_F(TopicBeaconPluginTest, PluginExportsValid) {
 
   delete raw_plugin;
 }
+
+// --- TokenBucket unit tests ---
+
+TEST(TokenBucketTest, FreshBucketAllowsConsume) {
+  TokenBucket bucket(10.0);
+  EXPECT_TRUE(bucket.try_consume());
+}
+
+TEST(TokenBucketTest, BucketExhaustion) {
+  TokenBucket bucket(5.0);
+  int consumed = 0;
+  for (int i = 0; i < 100; ++i) {
+    if (bucket.try_consume()) {
+      ++consumed;
+    }
+  }
+  EXPECT_EQ(consumed, 5);  // Initial tokens = max_per_second = 5
+}
+
+TEST(TokenBucketTest, DefaultConstructor) {
+  TokenBucket bucket;
+  EXPECT_TRUE(bucket.try_consume());  // default 100 tokens
+}
+
+// --- Rate limiting rejection test ---
+
+TEST_F(TopicBeaconPluginTest, RateLimitingRejectsExcessMessages) {
+  // Create a separate plugin with very low rate limit
+  auto rate_limited_plugin = std::make_unique<TopicBeaconPlugin>();
+
+  nlohmann::json config;
+  config["topic"] = "/test_rate_limit_topic";
+  config["beacon_ttl_sec"] = 10.0;
+  config["beacon_expiry_sec"] = 300.0;
+  config["max_messages_per_second"] = 2.0;  // Only 2 tokens initially
+  rate_limited_plugin->configure(config);
+  rate_limited_plugin->set_context(*mock_ctx_);
+
+  auto rate_pub = node_->create_publisher<ros2_medkit_msgs::msg::MedkitDiscoveryHint>("/test_rate_limit_topic",
+                                                                                      rclcpp::QoS(100).reliable());
+
+  // Publish 20 messages with unique entity_ids
+  const int num_messages = 20;
+  for (int i = 0; i < num_messages; ++i) {
+    auto msg = make_hint("rate_test_entity_" + std::to_string(i));
+    rate_pub->publish(msg);
+  }
+
+  // Spin to process all queued messages
+  spin_for(std::chrono::milliseconds(500));
+
+  // Rate limiter should have rejected most messages.
+  // With rate=2.0, the bucket starts with 2 tokens. Some refill may happen
+  // during processing, but far fewer than 20 messages should get through.
+  auto accepted = rate_limited_plugin->store().size();
+  EXPECT_GT(accepted, 0u) << "At least some messages should be accepted";
+  EXPECT_LT(accepted, static_cast<size_t>(num_messages)) << "Rate limiter should reject excess messages";
+
+  rate_limited_plugin->shutdown();
+}
