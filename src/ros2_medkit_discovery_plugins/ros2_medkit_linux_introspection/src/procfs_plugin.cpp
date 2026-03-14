@@ -17,15 +17,14 @@
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
+#include "ros2_medkit_linux_introspection/procfs_utils.hpp"
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
-#include <fstream>
 #include <map>
 #include <memory>
 #include <string>
-#include <unistd.h>
 
 using namespace ros2_medkit_gateway;  // NOLINT(build/namespaces)
 
@@ -70,6 +69,9 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
     IntrospectionResult result;
     pid_cache_->refresh(proc_root_);
 
+    auto sys_uptime = ros2_medkit_linux_introspection::read_system_uptime(proc_root_);
+    double uptime_val = sys_uptime ? *sys_uptime : 0.0;
+
     for (const auto & app : input.apps) {
       auto fqn = app.effective_fqn();
       if (fqn.empty()) {
@@ -86,7 +88,7 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
         continue;
       }
 
-      result.metadata[app.id] = process_info_to_json(*proc_info);
+      result.metadata[app.id] = ros2_medkit_linux_introspection::process_info_to_json(*proc_info, uptime_val);
     }
     return result;
   }
@@ -96,34 +98,6 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
   std::unique_ptr<ros2_medkit_linux_introspection::PidCache> pid_cache_ =
       std::make_unique<ros2_medkit_linux_introspection::PidCache>();
   std::string proc_root_{"/"};
-
-  static nlohmann::json process_info_to_json(const ros2_medkit_linux_introspection::ProcessInfo & info) {
-    // Calculate uptime from start_time_ticks
-    long ticks_per_sec = sysconf(_SC_CLK_TCK);
-    double uptime_sec = 0.0;
-    if (ticks_per_sec > 0 && info.start_time_ticks > 0) {
-      std::ifstream uptime_file("/proc/uptime");
-      double system_uptime = 0.0;
-      if (uptime_file >> system_uptime) {
-        double start_sec = static_cast<double>(info.start_time_ticks) / static_cast<double>(ticks_per_sec);
-        uptime_sec = system_uptime - start_sec;
-        if (uptime_sec < 0) {
-          uptime_sec = 0;
-        }
-      }
-    }
-
-    return {{"pid", info.pid},
-            {"ppid", info.ppid},
-            {"exe", info.exe_path},
-            {"cmdline", info.cmdline},
-            {"rss_bytes", info.rss_bytes},
-            {"vm_size_bytes", info.vm_size_bytes},
-            {"threads", info.num_threads},
-            {"cpu_user_ticks", info.cpu_user_ticks},
-            {"cpu_system_ticks", info.cpu_system_ticks},
-            {"uptime_seconds", static_cast<uint64_t>(uptime_sec)}};
-  }
 
   void handle_app_request(const httplib::Request & req, httplib::Response & res) {
     auto entity_id = req.matches[1].str();
@@ -144,7 +118,9 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
       return;
     }
 
-    PluginContext::send_json(res, process_info_to_json(*proc_info));
+    auto sys_uptime = ros2_medkit_linux_introspection::read_system_uptime(proc_root_);
+    PluginContext::send_json(
+        res, ros2_medkit_linux_introspection::process_info_to_json(*proc_info, sys_uptime ? *sys_uptime : 0.0));
   }
 
   void handle_component_request(const httplib::Request & req, httplib::Response & res) {
@@ -157,6 +133,9 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
     auto child_apps = ctx_->get_child_apps(entity_id);
     std::map<pid_t, nlohmann::json> processes;  // Deduplicate by PID
 
+    auto sys_uptime = ros2_medkit_linux_introspection::read_system_uptime(proc_root_);
+    double uptime_val = sys_uptime ? *sys_uptime : 0.0;
+
     for (const auto & app : child_apps) {
       auto pid_opt = pid_cache_->lookup(app.fqn, proc_root_);
       if (!pid_opt) {
@@ -168,7 +147,7 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
         if (!proc_info) {
           continue;
         }
-        auto j = process_info_to_json(*proc_info);
+        auto j = ros2_medkit_linux_introspection::process_info_to_json(*proc_info, uptime_val);
         j["node_ids"] = nlohmann::json::array();
         processes[*pid_opt] = std::move(j);
       }
