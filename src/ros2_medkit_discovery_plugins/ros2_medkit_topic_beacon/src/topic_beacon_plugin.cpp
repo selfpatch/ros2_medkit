@@ -153,7 +153,19 @@ void TopicBeaconPlugin::on_beacon(const ros2_medkit_msgs::msg::MedkitDiscoveryHi
   hint.process_id = msg->process_id;
   hint.process_name = msg->process_name;
   hint.hostname = msg->hostname;
-  hint.received_at = std::chrono::steady_clock::now();
+  // Use message stamp for TTL if non-zero; otherwise fall back to steady_clock::now().
+  if (msg->stamp.sec != 0 || msg->stamp.nanosec != 0) {
+    auto now_wall = rclcpp::Clock(RCL_SYSTEM_TIME).now();
+    auto msg_age = now_wall - rclcpp::Time(msg->stamp);
+    if (msg_age.nanoseconds() > 0) {
+      hint.received_at = std::chrono::steady_clock::now() - std::chrono::nanoseconds(msg_age.nanoseconds());
+    } else {
+      // Stamp is in the future (clock skew) - treat as just-received.
+      hint.received_at = std::chrono::steady_clock::now();
+    }
+  } else {
+    hint.received_at = std::chrono::steady_clock::now();
+  }
 
   // Convert KeyValue[] to map
   for (const auto & kv : msg->metadata) {
