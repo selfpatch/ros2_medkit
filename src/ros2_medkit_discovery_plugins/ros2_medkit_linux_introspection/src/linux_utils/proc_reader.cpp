@@ -242,6 +242,19 @@ tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name
   return tl::make_unexpected("No process found for node " + node_namespace + "/" + node_name);
 }
 
+tl::expected<double, std::string> read_system_uptime(const std::string & root) {
+  auto path = root + "/proc/uptime";
+  std::ifstream f(path);
+  if (!f.is_open()) {
+    return tl::make_unexpected("Cannot open " + path);
+  }
+  double uptime = 0.0;
+  if (!(f >> uptime)) {
+    return tl::make_unexpected("Cannot parse " + path);
+  }
+  return uptime;
+}
+
 // --- PidCache implementation ---
 
 PidCache::PidCache(std::chrono::steady_clock::duration ttl) : ttl_(ttl) {

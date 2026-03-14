@@ -46,6 +46,9 @@ tl::expected<ProcessInfo, std::string> read_process_info(pid_t pid, const std::s
 tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name, const std::string & node_namespace,
                                                    const std::string & root = "/");
 
+/// Read system uptime in seconds from /proc/uptime
+tl::expected<double, std::string> read_system_uptime(const std::string & root = "/");
+
 /// Cache for node-to-PID mappings with TTL-based refresh
 class PidCache {
  public:
