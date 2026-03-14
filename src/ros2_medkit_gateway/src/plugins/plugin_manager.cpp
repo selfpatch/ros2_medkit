@@ -316,6 +316,19 @@ std::vector<std::pair<std::string, IntrospectionProvider *>> PluginManager::get_
   return result;
 }
 
+std::vector<GatewayPlugin::RouteDescription> PluginManager::get_all_route_descriptions() const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
+  std::vector<GatewayPlugin::RouteDescription> all;
+  for (const auto & lp : plugins_) {
+    if (!lp.load_result.plugin) {
+      continue;
+    }
+    auto routes = lp.load_result.plugin->get_route_descriptions();
+    all.insert(all.end(), routes.begin(), routes.end());
+  }
+  return all;
+}
+
 bool PluginManager::has_plugins() const {
   std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
   for (const auto & lp : plugins_) {

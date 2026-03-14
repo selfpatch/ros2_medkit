@@ -58,6 +58,7 @@ class ParameterBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin,
   void set_context(ros2_medkit_gateway::PluginContext & context) override;
   void shutdown() override;
   void register_routes(httplib::Server & server, const std::string & api_prefix) override;
+  std::vector<ros2_medkit_gateway::GatewayPlugin::RouteDescription> get_route_descriptions() const override;
 
   // IntrospectionProvider
   ros2_medkit_gateway::IntrospectionResult introspect(const ros2_medkit_gateway::IntrospectionInput & input) override;

@@ -249,6 +249,14 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
       endpoints.push_back("PUT /api/v1/updates/{id}/automated");
     }
 
+    // Add plugin-registered endpoints
+    if (ctx_.node() && ctx_.node()->get_plugin_manager()) {
+      auto plugin_routes = ctx_.node()->get_plugin_manager()->get_all_route_descriptions();
+      for (const auto & route : plugin_routes) {
+        endpoints.push_back(route.method + " " + API_BASE_PATH + "/" + route.pattern);
+      }
+    }
+
     json capabilities = {
         {"discovery", true},
         {"data_access", true},
@@ -262,6 +270,8 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         {"updates", ctx_.node() && ctx_.node()->get_update_manager() != nullptr},
         {"authentication", auth_config.enabled},
         {"tls", tls_config.enabled},
+        {"vendor_extensions",
+         ctx_.node() && ctx_.node()->get_plugin_manager() && ctx_.node()->get_plugin_manager()->has_plugins()},
     };
 
     json response = {

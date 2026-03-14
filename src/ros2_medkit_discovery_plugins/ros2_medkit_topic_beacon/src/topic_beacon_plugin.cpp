@@ -106,6 +106,13 @@ void TopicBeaconPlugin::shutdown() {
   subscription_.reset();
 }
 
+std::vector<GatewayPlugin::RouteDescription> TopicBeaconPlugin::get_route_descriptions() const {
+  return {
+      {"GET", "apps/{app_id}/x-medkit-topic-beacon"},
+      {"GET", "components/{component_id}/x-medkit-topic-beacon"},
+  };
+}
+
 void TopicBeaconPlugin::register_routes(httplib::Server & server, const std::string & api_prefix) {
   // Register beacon metadata endpoint for apps and components
   for (const auto & entity_type : {"apps", "components"}) {
