@@ -170,9 +170,9 @@ tl::expected<ProcessInfo, std::string> read_process_info(pid_t pid, const std::s
   (void)priority;
   (void)nice;
   (void)itrealvalue;
-  (void)state;
 
   info.ppid = static_cast<pid_t>(ppid);
+  info.state = state;
   info.cpu_user_ticks = utime;
   info.cpu_system_ticks = stime;
   info.num_threads = num_threads;
