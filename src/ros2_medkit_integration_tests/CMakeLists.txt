@@ -91,7 +91,11 @@ if(BUILD_TESTING)
   # Each integration test gets a unique HTTP port via GATEWAY_TEST_PORT env var,
   # allowing parallel CTest execution without port conflicts.
   # Stride of 10 per test so multi-gateway tests can use get_test_port(offset).
+  # Each test also gets a unique ROS_DOMAIN_ID to prevent DDS cross-contamination
+  # between tests (e.g., stale DDS participants from previous tests leaking into
+  # subsequent test's graph discovery).
   set(_INTEG_PORT 9100)
+  set(_INTEG_DOMAIN_ID 100)
 
   # Feature tests (atomic, independent, 120s timeout)
   file(GLOB FEATURE_TESTS test/features/*.test.py)
@@ -103,9 +107,10 @@ if(BUILD_TESTING)
     )
     set_tests_properties(${test_name} PROPERTIES
       LABELS "integration;feature"
-      ENVIRONMENT "GATEWAY_TEST_PORT=${_INTEG_PORT}"
+      ENVIRONMENT "GATEWAY_TEST_PORT=${_INTEG_PORT};ROS_DOMAIN_ID=${_INTEG_DOMAIN_ID}"
     )
     math(EXPR _INTEG_PORT "${_INTEG_PORT} + 10")
+    math(EXPR _INTEG_DOMAIN_ID "${_INTEG_DOMAIN_ID} + 1")
   endforeach()
 
   # Scenario tests (E2E stories, 300s timeout)
@@ -118,9 +123,10 @@ if(BUILD_TESTING)
     )
     set_tests_properties(${test_name} PROPERTIES
       LABELS "integration;scenario"
-      ENVIRONMENT "GATEWAY_TEST_PORT=${_INTEG_PORT}"
+      ENVIRONMENT "GATEWAY_TEST_PORT=${_INTEG_PORT};ROS_DOMAIN_ID=${_INTEG_DOMAIN_ID}"
     )
     math(EXPR _INTEG_PORT "${_INTEG_PORT} + 10")
+    math(EXPR _INTEG_DOMAIN_ID "${_INTEG_DOMAIN_ID} + 1")
   endforeach()
 endif()
 
