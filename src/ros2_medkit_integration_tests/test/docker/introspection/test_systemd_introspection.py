@@ -96,7 +96,10 @@ class TestSystemdAppEndpoint:
     """Tests for GET /apps/{id}/x-medkit-systemd."""
 
     def test_returns_unit_info(self):
-        """Systemd endpoint returns unit info with active_state."""
+        """Systemd endpoint returns unit info with active_state.
+
+        @verifies REQ_INTEROP_003
+        """
         app_id = _get_first_app_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/apps/{app_id}/x-medkit-systemd"
@@ -111,7 +114,10 @@ class TestSystemdAppEndpoint:
         assert data["sub_state"] == "running"
 
     def test_returns_unit_type(self):
-        """Systemd endpoint includes unit_type field."""
+        """Systemd endpoint includes unit_type field.
+
+        @verifies REQ_INTEROP_003
+        """
         app_id = _get_first_app_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/apps/{app_id}/x-medkit-systemd"
@@ -120,7 +126,10 @@ class TestSystemdAppEndpoint:
         assert data["unit_type"] == "service"
 
     def test_returns_restart_count(self):
-        """Systemd endpoint includes restart_count (NRestarts property)."""
+        """Systemd endpoint includes restart_count (NRestarts property).
+
+        @verifies REQ_INTEROP_003
+        """
         app_id = _get_first_app_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/apps/{app_id}/x-medkit-systemd"
@@ -131,7 +140,10 @@ class TestSystemdAppEndpoint:
         assert data["restart_count"] >= 0
 
     def test_returns_watchdog_usec(self):
-        """Systemd endpoint includes watchdog_usec field."""
+        """Systemd endpoint includes watchdog_usec field.
+
+        @verifies REQ_INTEROP_003
+        """
         app_id = _get_first_app_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/apps/{app_id}/x-medkit-systemd"
@@ -145,7 +157,10 @@ class TestSystemdComponentEndpoint:
     """Tests for GET /components/{id}/x-medkit-systemd."""
 
     def test_returns_units_aggregation(self):
-        """Component endpoint returns aggregated unit info for child apps."""
+        """Component endpoint returns aggregated unit info for child apps.
+
+        @verifies REQ_INTEROP_003
+        """
         comp_id = _get_first_component_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/components/{comp_id}/x-medkit-systemd"
@@ -157,7 +172,10 @@ class TestSystemdComponentEndpoint:
         assert isinstance(data["units"], list)
 
     def test_units_include_node_ids(self):
-        """Each unit in the aggregation includes node_ids listing the apps."""
+        """Each unit in the aggregation includes node_ids listing the apps.
+
+        @verifies REQ_INTEROP_003
+        """
         comp_id = _get_first_component_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/components/{comp_id}/x-medkit-systemd"
@@ -170,7 +188,10 @@ class TestSystemdComponentEndpoint:
             assert len(unit["node_ids"]) > 0
 
     def test_units_have_active_state(self):
-        """Each unit in the aggregation includes active_state."""
+        """Each unit in the aggregation includes active_state.
+
+        @verifies REQ_INTEROP_003
+        """
         comp_id = _get_first_component_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/components/{comp_id}/x-medkit-systemd"
@@ -185,7 +206,10 @@ class TestSystemdErrorHandling:
     """Tests for error cases on systemd endpoints."""
 
     def test_nonexistent_app_returns_404(self):
-        """Requesting systemd info for a non-existent app returns 404."""
+        """Requesting systemd info for a non-existent app returns 404.
+
+        @verifies REQ_INTEROP_003
+        """
         r = requests.get(
             f"{BASE_URL}/apps/nonexistent_app_xyz/x-medkit-systemd",
             timeout=5,
@@ -193,7 +217,10 @@ class TestSystemdErrorHandling:
         assert r.status_code == 404
 
     def test_nonexistent_component_returns_404(self):
-        """Requesting systemd info for a non-existent component returns 404."""
+        """Requesting systemd info for a non-existent component returns 404.
+
+        @verifies REQ_INTEROP_003
+        """
         r = requests.get(
             f"{BASE_URL}/components/nonexistent_comp_xyz/x-medkit-systemd",
             timeout=5,
