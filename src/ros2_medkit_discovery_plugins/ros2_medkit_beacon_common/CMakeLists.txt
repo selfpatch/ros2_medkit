@@ -32,6 +32,7 @@ add_library(beacon_common_lib STATIC
   src/beacon_validator.cpp
   src/beacon_hint_store.cpp
   src/beacon_entity_mapper.cpp
+  src/beacon_response_builder.cpp
 )
 
 set_target_properties(beacon_common_lib PROPERTIES

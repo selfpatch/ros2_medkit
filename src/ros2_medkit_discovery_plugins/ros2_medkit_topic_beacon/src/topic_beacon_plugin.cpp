@@ -17,6 +17,8 @@
 #include <algorithm>
 #include <chrono>
 
+#include "ros2_medkit_beacon_common/beacon_response_builder.hpp"
+
 using ros2_medkit_beacon::BeaconEntityMapper;
 using ros2_medkit_beacon::BeaconHint;
 using ros2_medkit_beacon::BeaconHintStore;
@@ -110,31 +112,19 @@ void TopicBeaconPlugin::register_routes(httplib::Server & server, const std::str
     auto pattern = api_prefix + "/" + entity_type + R"(/([^/]+)/x-medkit-topic-beacon)";
     server.Get(pattern.c_str(), [this](const httplib::Request & req, httplib::Response & res) {
       auto entity_id = req.matches[1].str();
-      auto stored = store_->get(entity_id);
-      if (!stored) {
-        res.status = 404;
-        nlohmann::json err = {{"error", "No beacon data for entity"}, {"entity_id", entity_id}};
-        res.set_content(err.dump(), "application/json");
+
+      auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
+      if (!entity) {
         return;
       }
-      // Build response from stored hint
-      nlohmann::json data;
-      data["entity_id"] = entity_id;
-      data["status"] = stored->status == BeaconHintStore::HintStatus::ACTIVE ? "active" : "stale";
-      auto age = std::chrono::duration<double>(std::chrono::steady_clock::now() - stored->last_seen).count();
-      data["age_sec"] = age;
-      data["stable_id"] = stored->hint.stable_id;
-      data["display_name"] = stored->hint.display_name;
-      data["transport_type"] = stored->hint.transport_type;
-      data["negotiated_format"] = stored->hint.negotiated_format;
-      data["process_id"] = stored->hint.process_id;
-      data["process_name"] = stored->hint.process_name;
-      data["hostname"] = stored->hint.hostname;
-      data["component_id"] = stored->hint.component_id;
-      data["function_ids"] = stored->hint.function_ids;
-      data["depends_on"] = stored->hint.depends_on;
-      data["metadata"] = stored->hint.metadata;
-      PluginContext::send_json(res, data);
+
+      auto stored = store_->get(entity_id);
+      if (!stored) {
+        PluginContext::send_error(res, 404, "x-medkit-beacon-not-found", "No beacon data for entity");
+        return;
+      }
+
+      PluginContext::send_json(res, ros2_medkit_beacon::build_beacon_response(entity_id, *stored));
     });
   }
 }
