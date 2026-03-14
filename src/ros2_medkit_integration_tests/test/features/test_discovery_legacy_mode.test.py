@@ -60,38 +60,32 @@ class TestLegacyDiscoveryMode(GatewayTestCase):
 
     def test_each_node_has_own_component(self):
         """Each node should become its own Component (no synthetic grouping)."""
-        required_nodes = ('temp_sensor', 'rpm_sensor', 'pressure_sensor')
+        expected = ['temp_sensor', 'rpm_sensor', 'pressure_sensor']
         data = self.poll_endpoint_until(
             '/components',
             lambda d: d if all(
-                any(node_name in c['id'] for c in d.get('items', []))
-                for node_name in required_nodes
+                any(name in c['id'] for c in d.get('items', []))
+                for name in expected
             ) else None,
             timeout=60.0,
         )
         component_ids = [c['id'] for c in data['items']]
 
         # Each demo node should appear as a component
-        # Node names: temp_sensor, rpm_sensor, pressure_sensor
-        self.assertTrue(
-            any('temp_sensor' in cid for cid in component_ids),
-            f"temp_sensor not found in components: {component_ids}",
-        )
-        self.assertTrue(
-            any('rpm_sensor' in cid for cid in component_ids),
-            f"rpm_sensor not found in components: {component_ids}",
-        )
-        self.assertTrue(
-            any('pressure_sensor' in cid for cid in component_ids),
-            f"pressure_sensor not found in components: {component_ids}",
-        )
+        for name in expected:
+            self.assertTrue(
+                any(name in cid for cid in component_ids),
+                f"{name} not found in components: {component_ids}",
+            )
 
     def test_no_synthetic_namespace_components(self):
         """No synthetic components from namespace grouping should exist."""
+        expected = ['temp_sensor', 'rpm_sensor', 'pressure_sensor']
         data = self.poll_endpoint_until(
             '/components',
-            lambda d: d if any(
-                'temp_sensor' in c['id'] for c in d.get('items', [])
+            lambda d: d if all(
+                any(name in c['id'] for c in d.get('items', []))
+                for name in expected
             ) else None,
             timeout=60.0,
         )
