@@ -14,6 +14,7 @@
 
 #include "capability_generator.hpp"
 
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,20 @@ CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, Gateway
 }
 
 std::optional<nlohmann::json> CapabilityGenerator::generate(const std::string & base_path) const {
+  auto cache_key = get_cache_key(base_path);
+  auto cached = lookup_cache(cache_key);
+  if (cached.has_value()) {
+    return cached;
+  }
+
+  auto result = generate_impl(base_path);
+  if (result.has_value()) {
+    store_cache(cache_key, *result);
+  }
+  return result;
+}
+
+std::optional<nlohmann::json> CapabilityGenerator::generate_impl(const std::string & base_path) const {
   auto resolved = PathResolver::resolve(base_path);
 
   switch (resolved.category) {
@@ -71,7 +86,13 @@ std::optional<nlohmann::json> CapabilityGenerator::generate(const std::string & 
       }
       return generate_specific_resource(resolved);
 
-    case PathCategory::kUnresolved:
+    case PathCategory::kUnresolved: {
+      auto plugin_spec = generate_plugin_docs(base_path);
+      if (!plugin_spec.empty()) {
+        return plugin_spec;
+      }
+      return std::nullopt;
+    }
     case PathCategory::kError:
       return std::nullopt;
   }
@@ -415,6 +436,39 @@ nlohmann::json CapabilityGenerator::generate_specific_resource(const ResolvedPat
 }
 
 // -----------------------------------------------------------------------------
+// Plugin route docs
+// -----------------------------------------------------------------------------
+
+nlohmann::json CapabilityGenerator::generate_plugin_docs(const std::string & path) const {
+  if (!plugin_mgr_) {
+    return {};
+  }
+
+  auto descriptions = plugin_mgr_->collect_route_descriptions();
+  nlohmann::json matching_paths = nlohmann::json::object();
+
+  for (const auto & desc : descriptions) {
+    auto paths_json = desc.to_json();  // CapabilityGenerator is friend
+    for (auto & [key, value] : paths_json.items()) {
+      if (key.find(path) != std::string::npos || path.find(key) != std::string::npos) {
+        matching_paths[key] = value;
+      }
+    }
+  }
+
+  if (matching_paths.empty()) {
+    return {};
+  }
+
+  OpenApiSpecBuilder builder;
+  builder.info("ROS 2 Medkit Gateway - Plugin", kGatewayVersion)
+      .sovd_version(kSovdVersion)
+      .server(build_server_url(), "Gateway server")
+      .add_paths(matching_paths);
+  return builder.build();
+}
+
+// -----------------------------------------------------------------------------
 // Entity hierarchy validation
 // -----------------------------------------------------------------------------
 
@@ -680,6 +734,37 @@ void CapabilityGenerator::add_resource_collection_paths(nlohmann::json & paths, 
     std::string logs_path = entity_path + "/logs";
     paths[logs_path] = path_builder.build_logs_collection(entity_path);
   }
+}
+
+// -----------------------------------------------------------------------------
+// Cache helpers
+// -----------------------------------------------------------------------------
+
+std::string CapabilityGenerator::get_cache_key(const std::string & path) const {
+  auto & cache = node_.get_thread_safe_cache();
+  auto generation = cache.generation();
+  {
+    std::unique_lock lock(cache_mutex_);
+    if (generation != cached_generation_) {
+      spec_cache_.clear();
+      cached_generation_ = generation;
+    }
+  }
+  return std::to_string(generation) + ":" + path;
+}
+
+std::optional<nlohmann::json> CapabilityGenerator::lookup_cache(const std::string & key) const {
+  std::shared_lock lock(cache_mutex_);
+  auto it = spec_cache_.find(key);
+  if (it != spec_cache_.end()) {
+    return it->second;
+  }
+  return std::nullopt;
+}
+
+void CapabilityGenerator::store_cache(const std::string & key, const nlohmann::json & spec) const {
+  std::unique_lock lock(cache_mutex_);
+  spec_cache_[key] = spec;
 }
 
 }  // namespace openapi

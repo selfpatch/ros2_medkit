@@ -20,6 +20,7 @@
 #include "ros2_medkit_gateway/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/models/entity_types.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <optional>
 #include <shared_mutex>
@@ -407,8 +408,21 @@ class ThreadSafeEntityCache {
    */
   std::chrono::system_clock::time_point get_last_update() const;
 
+  /**
+   * @brief Get the current generation counter
+   *
+   * The generation counter is incremented on every cache mutation (update_all,
+   * update_areas, update_components, update_apps, update_functions). Consumers
+   * can use this to detect when cached derived data (e.g., OpenAPI specs) is
+   * stale and needs regeneration.
+   */
+  uint64_t generation() const;
+
  private:
   mutable std::shared_mutex mutex_;
+
+  // Generation counter - incremented on every entity mutation
+  std::atomic<uint64_t> generation_{0};
 
   // Primary storage
   std::vector<Area> areas_;

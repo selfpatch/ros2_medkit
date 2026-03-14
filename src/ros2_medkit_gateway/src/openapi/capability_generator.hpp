@@ -16,7 +16,9 @@
 
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 
 #include "path_resolver.hpp"
 #include "schema_builder.hpp"
@@ -74,10 +76,31 @@ class CapabilityGenerator {
                                      const std::string & entity_id,
                                      ros2_medkit_gateway::SovdEntityType entity_type) const;
 
+  /// Generate OpenAPI docs for plugin-registered routes (via dlsym).
+  nlohmann::json generate_plugin_docs(const std::string & path) const;
+
+  /// Core generation logic (called on cache miss).
+  std::optional<nlohmann::json> generate_impl(const std::string & base_path) const;
+
+  /// Build a cache key for the given path, invalidating the cache if the
+  /// entity cache generation has changed.
+  std::string get_cache_key(const std::string & path) const;
+
+  /// Look up a previously cached spec by key.
+  std::optional<nlohmann::json> lookup_cache(const std::string & key) const;
+
+  /// Store a generated spec in the cache.
+  void store_cache(const std::string & key, const nlohmann::json & spec) const;
+
   handlers::HandlerContext & ctx_;
   GatewayNode & node_;
   PluginManager * plugin_mgr_;
   SchemaBuilder schema_builder_;
+
+  // Generation-based spec cache - invalidated when entity cache changes
+  mutable std::shared_mutex cache_mutex_;
+  mutable std::unordered_map<std::string, nlohmann::json> spec_cache_;
+  mutable uint64_t cached_generation_{0};
 };
 
 }  // namespace openapi
