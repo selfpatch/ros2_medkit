@@ -53,8 +53,6 @@ DEMO_NODE_REGISTRY = {
     # Operations (services / actions)
     'calibration': ('demo_calibration_service', 'calibration', '/powertrain/engine'),
     'long_calibration': ('demo_long_calibration_action', 'long_calibration', '/powertrain/engine'),
-    # Beacon
-    'beacon_publisher': ('demo_beacon_publisher', 'beacon_publisher', '/'),
 }
 
 # Convenience groupings for callers that want subsets of demo nodes.
