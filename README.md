@@ -47,6 +47,26 @@ ros2 launch ros2_medkit_gateway gateway.launch.py
 
 For more examples, see our [Postman collection](postman/).
 
+### Experimental: Pixi
+
+> **Note:** Pixi support is experimental and not the official build path.
+> The standard ROS 2 toolchain (rosdep + colcon) remains the primary method.
+
+[Pixi](https://pixi.sh) provides a reproducible, lockfile-based environment
+without requiring a system-wide ROS 2 installation (Linux x86_64 only):
+
+```bash
+curl -fsSL https://pixi.sh/install.sh | bash
+pixi install -e jazzy     # or: pixi install -e humble
+pixi run -e jazzy build
+pixi run -e jazzy test
+pixi run -e jazzy smoke   # verify gateway starts
+```
+
+See [installation docs](https://selfpatch.github.io/ros2_medkit/installation.html#experimental-pixi)
+for details and known limitations.
+Feedback welcome on [#265](https://github.com/selfpatch/ros2_medkit/issues/265).
+
 ## ✨ Features
 
 | Feature | Status | Description |
