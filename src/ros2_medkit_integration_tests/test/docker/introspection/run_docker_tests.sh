@@ -57,8 +57,7 @@ wait_for_healthy() {
     echo "Waiting for $service to be healthy (timeout: ${timeout}s)..."
     while [ $SECONDS -lt $deadline ]; do
         local health
-        health=$(docker compose -f "$compose_file" ps --format json "$service" 2>/dev/null \
-            | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('Health',''))" 2>/dev/null || echo "")
+        health=$(docker compose -f "$compose_file" ps --format '{{.Health}}' "$service" 2>/dev/null || echo "")
         if [ "$health" = "healthy" ]; then
             echo "$service is healthy"
             return 0
