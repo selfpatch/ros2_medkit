@@ -88,17 +88,15 @@ if(BUILD_TESTING)
   target_include_directories(test_procfs_plugin PRIVATE ${ros2_medkit_gateway_INCLUDE_DIRS})
   medkit_target_dependencies(test_procfs_plugin nlohmann_json)
 
-  if(SYSTEMD_FOUND)
-    ament_add_gtest(test_systemd_plugin test/test_systemd_plugin.cpp)
-    target_link_libraries(test_systemd_plugin medkit_linux_utils ${SYSTEMD_LIBRARIES} cpp_httplib_target)
-    target_include_directories(test_systemd_plugin PRIVATE ${SYSTEMD_INCLUDE_DIRS} ${ros2_medkit_gateway_INCLUDE_DIRS})
-    medkit_target_dependencies(test_systemd_plugin nlohmann_json)
-  endif()
-
   ament_add_gtest(test_container_plugin test/test_container_plugin.cpp)
   target_link_libraries(test_container_plugin medkit_linux_utils cpp_httplib_target)
   target_include_directories(test_container_plugin PRIVATE ${ros2_medkit_gateway_INCLUDE_DIRS})
   medkit_target_dependencies(test_container_plugin nlohmann_json)
+
+  ament_add_gtest(test_systemd_plugin test/test_systemd_plugin.cpp)
+  target_link_libraries(test_systemd_plugin medkit_linux_utils)
+  target_include_directories(test_systemd_plugin PRIVATE ${ros2_medkit_gateway_INCLUDE_DIRS})
+  medkit_target_dependencies(test_systemd_plugin nlohmann_json)
 endif()
 
 ament_package()

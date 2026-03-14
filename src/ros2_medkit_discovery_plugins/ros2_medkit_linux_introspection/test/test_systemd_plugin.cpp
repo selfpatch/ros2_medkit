@@ -14,25 +14,42 @@
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+#include "ros2_medkit_linux_introspection/systemd_utils.hpp"
 
-TEST(SystemdPlugin, UnitInfoToJson) {
-  nlohmann::json j;
-  j["unit"] = "talker.service";
-  j["unit_type"] = "service";
-  j["active_state"] = "active";
-  j["sub_state"] = "running";
-  j["restart_count"] = 2;
-  j["watchdog_usec"] = 5000000;
+using namespace ros2_medkit_linux_introspection;
 
-  EXPECT_EQ(j["unit"], "talker.service");
-  EXPECT_EQ(j["restart_count"], 2);
-  EXPECT_EQ(j["active_state"], "active");
+// @verifies REQ_INTEROP_003
+TEST(SystemdUtils, EscapeSimpleServiceName) {
+  EXPECT_EQ(escape_unit_for_dbus("my_service"), "my_service");
 }
 
-TEST(SystemdPlugin, GracefulSkipWhenNotInUnit) {
-  // On most dev machines, the test process itself is not a systemd unit.
-  // The plugin should gracefully skip (no metadata) for non-unit processes.
-  // This is tested at integration level; here verify structure exists.
+// @verifies REQ_INTEROP_003
+TEST(SystemdUtils, EscapeDotInServiceExtension) {
+  EXPECT_EQ(escape_unit_for_dbus("talker.service"), "talker_2eservice");
+}
+
+// @verifies REQ_INTEROP_003
+TEST(SystemdUtils, EscapeHyphenInUnitName) {
+  EXPECT_EQ(escape_unit_for_dbus("ros2-talker.service"), "ros2_2dtalker_2eservice");
+}
+
+// @verifies REQ_INTEROP_003
+TEST(SystemdUtils, EscapeAtSignInTemplateUnit) {
+  EXPECT_EQ(escape_unit_for_dbus("container@instance.service"), "container_40instance_2eservice");
+}
+
+// @verifies REQ_INTEROP_003
+TEST(SystemdUtils, EscapeSlashInPath) {
+  EXPECT_EQ(escape_unit_for_dbus("sys/devices"), "sys_2fdevices");
+}
+
+// @verifies REQ_INTEROP_003
+TEST(SystemdUtils, EscapeEmptyString) {
+  EXPECT_EQ(escape_unit_for_dbus(""), "");
+}
+
+// @verifies REQ_INTEROP_003
+TEST(SystemdUtils, ComponentEndpointEmptyUnitsArray) {
   nlohmann::json empty_result;
   empty_result["units"] = nlohmann::json::array();
   EXPECT_TRUE(empty_result["units"].is_array());
