@@ -73,8 +73,8 @@ void TopicBeaconPlugin::set_context(PluginContext & context) {
       });
 
   // Register vendor extension capability
-  ctx_->register_capability(SovdEntityType::APP, "x-medkit-beacon");
-  ctx_->register_capability(SovdEntityType::COMPONENT, "x-medkit-beacon");
+  ctx_->register_capability(SovdEntityType::APP, "x-medkit-topic-beacon");
+  ctx_->register_capability(SovdEntityType::COMPONENT, "x-medkit-topic-beacon");
 
   RCLCPP_INFO(node->get_logger(), "TopicBeaconPlugin: subscribed to '%s'", topic_.c_str());
 }
@@ -86,7 +86,7 @@ void TopicBeaconPlugin::shutdown() {
 void TopicBeaconPlugin::register_routes(httplib::Server & server, const std::string & api_prefix) {
   // Register beacon metadata endpoint for apps and components
   for (const auto & entity_type : {"apps", "components"}) {
-    auto pattern = api_prefix + "/" + entity_type + R"(/([^/]+)/x-medkit-beacon)";
+    auto pattern = api_prefix + "/" + entity_type + R"(/([^/]+)/x-medkit-topic-beacon)";
     server.Get(pattern.c_str(), [this](const httplib::Request & req, httplib::Response & res) {
       auto entity_id = req.matches[1].str();
       auto stored = store_->get(entity_id);

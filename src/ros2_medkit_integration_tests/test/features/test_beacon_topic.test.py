@@ -19,7 +19,7 @@ Validates the full beacon pipeline: demo_beacon_publisher publishes
 MedkitDiscoveryHint messages on /ros2_medkit/discovery, the gateway's
 TopicBeaconPlugin receives them, stores hints in BeaconHintStore,
 maps them via BeaconEntityMapper, and serves enriched metadata at the
-vendor extension endpoint GET /{entity_type}/{id}/x-medkit-beacon.
+vendor extension endpoint GET /{entity_type}/{id}/x-medkit-topic-beacon.
 
 The gateway runs in hybrid mode with the topic_beacon plugin loaded
 and allow_new_entities=False, so the beacon enriches existing
@@ -98,7 +98,7 @@ class TestBeaconTopic(GatewayTestCase):
     def test_01_beacon_enrichment(self):
         """Verify entity metadata includes beacon data via vendor endpoint."""
         data = self.poll_endpoint_until(
-            '/apps/temp_sensor/x-medkit-beacon',
+            '/apps/temp_sensor/x-medkit-topic-beacon',
             lambda d: d if d.get('status') == 'active' else None,
             timeout=30,
         )
@@ -110,25 +110,25 @@ class TestBeaconTopic(GatewayTestCase):
         self.assertEqual(data['process_name'], 'test_beacon')
 
     def test_02_beacon_capabilities_registered(self):
-        """Verify app capabilities include x-medkit-beacon."""
+        """Verify app capabilities include x-medkit-topic-beacon."""
         data = self.get_json('/apps/temp_sensor')
         capabilities = data.get('capabilities', [])
         cap_names = [c['name'] for c in capabilities]
         self.assertIn(
-            'x-medkit-beacon',
+            'x-medkit-topic-beacon',
             cap_names,
-            f'x-medkit-beacon not in capabilities: {cap_names}',
+            f'x-medkit-topic-beacon not in capabilities: {cap_names}',
         )
         # Verify href points to the correct path
         beacon_cap = next(
-            c for c in capabilities if c['name'] == 'x-medkit-beacon'
+            c for c in capabilities if c['name'] == 'x-medkit-topic-beacon'
         )
-        self.assertIn('/apps/temp_sensor/x-medkit-beacon', beacon_cap['href'])
+        self.assertIn('/apps/temp_sensor/x-medkit-topic-beacon', beacon_cap['href'])
 
     def test_03_beacon_vendor_endpoint_not_found(self):
         """Verify 404 for entity without beacon data."""
         r = requests.get(
-            f'{self.BASE_URL}/apps/nonexistent_entity/x-medkit-beacon',
+            f'{self.BASE_URL}/apps/nonexistent_entity/x-medkit-topic-beacon',
             timeout=5,
         )
         self.assertEqual(r.status_code, 404)
@@ -136,7 +136,7 @@ class TestBeaconTopic(GatewayTestCase):
     def test_04_beacon_metadata_fields(self):
         """Verify all expected beacon metadata fields are present."""
         data = self.poll_endpoint_until(
-            '/apps/temp_sensor/x-medkit-beacon',
+            '/apps/temp_sensor/x-medkit-topic-beacon',
             lambda d: d if d.get('status') == 'active' else None,
             timeout=30,
         )
