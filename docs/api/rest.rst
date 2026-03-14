@@ -1290,6 +1290,164 @@ JWT-based authentication with Role-Based Access Control (RBAC).
 
       {"token": "dGhpcyBpcyBhIHJlZnJlc2g..."}
 
+Vendor Extension Endpoints (Plugins)
+-------------------------------------
+
+Plugin-registered endpoints use the ``x-medkit-`` prefix following the SOVD vendor extension
+mechanism. These endpoints are only available when the corresponding plugin is loaded
+(see :doc:`/tutorials/linux-introspection`).
+
+.. warning::
+
+   The procfs plugin exposes process command lines (``/proc/{pid}/cmdline``) via HTTP.
+   Command lines may contain sensitive data (API keys, passwords passed as arguments).
+   Enable authentication when using the procfs plugin in production environments.
+
+.. note::
+
+   Vendor extension endpoints are registered dynamically by plugins. They do not appear in
+   the ``GET /`` root endpoint list. Use entity capability responses (``GET /apps/{id}``,
+   ``GET /components/{id}``) to discover available extensions via the ``capabilities`` field.
+
+Linux Process Introspection (x-medkit-procfs)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Requires: ``procfs_introspection`` plugin.
+
+``GET /api/v1/apps/{id}/x-medkit-procfs``
+   Get process-level information for a single app.
+
+   **Response 200:**
+
+   .. code-block:: json
+
+      {
+        "pid": 1234,
+        "ppid": 1,
+        "state": "S",
+        "exe": "/usr/bin/talker",
+        "cmdline": "/usr/bin/talker --ros-args __node:=talker __ns:=/demo",
+        "rss_bytes": 524288,
+        "vm_size_bytes": 2097152,
+        "threads": 4,
+        "cpu_user_ticks": 1520,
+        "cpu_system_ticks": 340,
+        "cpu_user_seconds": 15.2,
+        "cpu_system_seconds": 3.4,
+        "uptime_seconds": 123.45
+      }
+
+   - **404:** Process not found (node not running or PID cache miss)
+   - **503:** Failed to read process information
+
+``GET /api/v1/components/{id}/x-medkit-procfs``
+   Aggregate process info for all apps in the component. Processes are
+   deduplicated by PID (multiple nodes in the same process appear once).
+
+   **Response 200:**
+
+   .. code-block:: json
+
+      {
+        "processes": [
+          {
+            "pid": 1234,
+            "node_ids": ["talker", "listener"],
+            "...": "same fields as app endpoint"
+          }
+        ]
+      }
+
+Systemd Unit Introspection (x-medkit-systemd)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Requires: ``systemd_introspection`` plugin and ``libsystemd``.
+
+``GET /api/v1/apps/{id}/x-medkit-systemd``
+   Get systemd unit information for the app's process.
+
+   **Response 200:**
+
+   .. code-block:: json
+
+      {
+        "unit": "ros2-talker.service",
+        "unit_type": "service",
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 2,
+        "watchdog_usec": 5000000
+      }
+
+   ``restart_count`` and ``watchdog_usec`` are only meaningful for service units.
+   For other unit types (timer, mount, etc.) they are always 0.
+
+   - **404:** Process not found or not managed by a systemd unit
+   - **503:** Failed to query systemd properties
+
+``GET /api/v1/components/{id}/x-medkit-systemd``
+   Aggregate systemd unit info for all apps in the component. Units are
+   deduplicated by unit name.
+
+   **Response 200:**
+
+   .. code-block:: json
+
+      {
+        "units": [
+          {
+            "unit": "ros2-talker.service",
+            "node_ids": ["talker", "listener"],
+            "...": "same fields as app endpoint"
+          }
+        ]
+      }
+
+Container Introspection (x-medkit-container)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Requires: ``container_introspection`` plugin. Only supports cgroup v2
+(Ubuntu 22.04+, Fedora 31+).
+
+``GET /api/v1/apps/{id}/x-medkit-container``
+   Get container information for the app's process.
+
+   **Response 200:**
+
+   .. code-block:: json
+
+      {
+        "container_id": "a1b2c3d4e5f6...",
+        "runtime": "docker",
+        "memory_limit_bytes": 1073741824,
+        "cpu_quota_us": 100000,
+        "cpu_period_us": 100000
+      }
+
+   Fields ``memory_limit_bytes``, ``cpu_quota_us``, and ``cpu_period_us`` are only present
+   when the container has resource limits configured.
+
+   - **404:** Process not found or not running in a container
+   - **503:** Failed to read cgroup information
+
+``GET /api/v1/components/{id}/x-medkit-container``
+   Aggregate container info for all apps in the component. Containers are
+   deduplicated by container ID.
+
+   **Response 200:**
+
+   .. code-block:: json
+
+      {
+        "containers": [
+          {
+            "container_id": "a1b2c3d4e5f6...",
+            "node_ids": ["talker", "listener"],
+            "...": "same fields as app endpoint"
+          }
+        ]
+      }
+
 Error Responses
 ---------------
 
