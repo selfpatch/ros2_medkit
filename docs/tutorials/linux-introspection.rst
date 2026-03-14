@@ -63,6 +63,8 @@ is independent:
    ros2_medkit_gateway:
      ros__parameters:
        plugins: ["procfs", "systemd", "container"]
+       # Paths are relative to the colcon workspace root (where you run 'ros2 launch').
+       # Use absolute paths if launching from a different directory.
        plugins.procfs.path: "install/ros2_medkit_linux_introspection/lib/ros2_medkit_linux_introspection/libprocfs_introspection.so"
        plugins.procfs.pid_cache_ttl_seconds: 10
        plugins.systemd.path: "install/ros2_medkit_linux_introspection/lib/ros2_medkit_linux_introspection/libsystemd_introspection.so"
