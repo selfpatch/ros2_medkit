@@ -150,6 +150,9 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   declare_parameter("auth.issuer", "ros2_medkit_gateway");
   declare_parameter("auth.clients", std::vector<std::string>{});
 
+  // OpenAPI documentation endpoints
+  declare_parameter("docs.enabled", true);
+
   // Rate limiting parameters
   declare_parameter("rate_limiting.enabled", false);
   declare_parameter("rate_limiting.global_requests_per_minute", 600);
