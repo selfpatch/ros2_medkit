@@ -14,8 +14,6 @@
 
 #pragma once
 
-#include "ros2_medkit_beacon_common/beacon_types.hpp"
-
 #include <chrono>
 #include <mutex>
 #include <optional>
@@ -23,6 +21,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "ros2_medkit_beacon_common/beacon_types.hpp"
 
 namespace ros2_medkit_beacon {
 

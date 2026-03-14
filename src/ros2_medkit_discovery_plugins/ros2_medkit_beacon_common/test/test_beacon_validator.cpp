@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_beacon_common/beacon_validator.hpp"
-
 #include <gtest/gtest.h>
+
 #include <string>
 
-using namespace ros2_medkit_beacon;
+#include "ros2_medkit_beacon_common/beacon_validator.hpp"
+
+using ros2_medkit_beacon::BeaconHint;
+using ros2_medkit_beacon::validate_beacon_hint;
+using ros2_medkit_beacon::ValidationLimits;
 
 class TestBeaconValidator : public ::testing::Test {
  protected:

@@ -14,25 +14,25 @@
 
 #pragma once
 
+#include <httplib.h>
+
+#include <algorithm>
+#include <chrono>
+#include <memory>
+#include <string>
+
+#include <nlohmann/json.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <ros2_medkit_msgs/msg/medkit_discovery_hint.hpp>
+
 #include "ros2_medkit_beacon_common/beacon_entity_mapper.hpp"
 #include "ros2_medkit_beacon_common/beacon_hint_store.hpp"
 #include "ros2_medkit_beacon_common/beacon_types.hpp"
 #include "ros2_medkit_beacon_common/beacon_validator.hpp"
-
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
-
-#include <ros2_medkit_msgs/msg/medkit_discovery_hint.hpp>
-
-#include <httplib.h>
-#include <nlohmann/json.hpp>
-#include <rclcpp/rclcpp.hpp>
-
-#include <chrono>
-#include <memory>
-#include <string>
 
 // Simple token bucket for rate limiting.
 // Thread safety: on_beacon() is called from the DDS callback thread.
