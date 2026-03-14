@@ -152,6 +152,13 @@ void ParameterBeaconPlugin::shutdown() {
   skip_remaining_.clear();
 }
 
+std::vector<GatewayPlugin::RouteDescription> ParameterBeaconPlugin::get_route_descriptions() const {
+  return {
+      {"GET", "apps/{app_id}/x-medkit-param-beacon"},
+      {"GET", "components/{component_id}/x-medkit-param-beacon"},
+  };
+}
+
 void ParameterBeaconPlugin::register_routes(httplib::Server & server, const std::string & api_prefix) {
   for (const auto & entity_type : {"apps", "components"}) {
     auto pattern = api_prefix + "/" + entity_type + R"(/([^/]+)/x-medkit-param-beacon)";

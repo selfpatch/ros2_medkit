@@ -20,6 +20,7 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 
 namespace ros2_medkit_gateway {
 
@@ -41,6 +42,12 @@ class PluginContext;
  */
 class GatewayPlugin {
  public:
+  /// Describes a single REST route registered by a plugin (for handle_root auto-registration)
+  struct RouteDescription {
+    std::string method;   ///< HTTP method (e.g. "GET", "POST")
+    std::string pattern;  ///< Path pattern relative to api_prefix (e.g. "apps/{app_id}/x-medkit-topic-beacon")
+  };
+
   virtual ~GatewayPlugin() = default;
 
   /**
@@ -80,6 +87,19 @@ class GatewayPlugin {
    * @param api_prefix API path prefix (e.g., "/api/v1")
    */
   virtual void register_routes(httplib::Server & /*server*/, const std::string & /*api_prefix*/) {
+  }
+
+  /**
+   * @brief Describe routes registered by this plugin
+   *
+   * Used by handle_root to dynamically include plugin endpoints in the
+   * API root listing. Patterns should be relative to api_prefix
+   * (e.g. "apps/{app_id}/x-medkit-topic-beacon").
+   *
+   * @return Route descriptions for all endpoints this plugin registers
+   */
+  virtual std::vector<RouteDescription> get_route_descriptions() const {
+    return {};
   }
 
   /**
