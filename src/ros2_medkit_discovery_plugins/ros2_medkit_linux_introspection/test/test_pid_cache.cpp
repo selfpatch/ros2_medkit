@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace ros2_medkit_linux_introspection;
@@ -53,6 +54,7 @@ class PidCacheTest : public ::testing::Test {
   fs::path tmpdir_;
 };
 
+// @verifies REQ_INTEROP_003
 TEST_F(PidCacheTest, LookupAfterRefresh) {
   PidCache cache(std::chrono::seconds{60});
   cache.refresh(tmpdir_.string());
@@ -68,6 +70,7 @@ TEST_F(PidCacheTest, LookupAfterRefresh) {
   EXPECT_EQ(cache.size(), 2u);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(PidCacheTest, LookupMissingNode) {
   PidCache cache(std::chrono::seconds{60});
   cache.refresh(tmpdir_.string());
@@ -76,6 +79,7 @@ TEST_F(PidCacheTest, LookupMissingNode) {
   EXPECT_FALSE(pid.has_value());
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(PidCacheTest, AutoRefreshOnTTLExpiry) {
   PidCache cache(std::chrono::milliseconds{1});  // 1ms TTL
   cache.refresh(tmpdir_.string());
@@ -98,6 +102,7 @@ TEST_F(PidCacheTest, AutoRefreshOnTTLExpiry) {
   EXPECT_EQ(pid.value(), 300);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(PidCacheTest, NoRefreshWithinTTL) {
   PidCache cache(std::chrono::seconds{60});
   cache.refresh(tmpdir_.string());
@@ -117,6 +122,7 @@ TEST_F(PidCacheTest, NoRefreshWithinTTL) {
   EXPECT_EQ(cache.size(), 2u);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(PidCacheTest, EmptyProcDir) {
   auto empty_dir = fs::temp_directory_path() / "test_pid_cache_empty";
   fs::create_directories(empty_dir / "proc");
@@ -131,6 +137,7 @@ TEST_F(PidCacheTest, EmptyProcDir) {
   fs::remove_all(empty_dir);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(PidCacheTest, NonexistentProcDir) {
   auto bad_dir = fs::temp_directory_path() / "test_pid_cache_nonexistent";
   fs::remove_all(bad_dir);  // Ensure it doesn't exist
@@ -138,4 +145,31 @@ TEST_F(PidCacheTest, NonexistentProcDir) {
   PidCache cache(std::chrono::seconds{60});
   cache.refresh(bad_dir.string());
   EXPECT_EQ(cache.size(), 0u);
+}
+
+// @verifies REQ_INTEROP_003
+TEST_F(PidCacheTest, ConcurrentLookupDoesNotCrash) {
+  PidCache cache(std::chrono::milliseconds{1});
+
+  constexpr int kNumThreads = 8;
+  constexpr int kIterations = 100;
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+
+  for (int i = 0; i < kNumThreads; ++i) {
+    threads.emplace_back([&cache, this]() {
+      for (int j = 0; j < kIterations; ++j) {
+        cache.lookup("/demo/talker", tmpdir_.string());
+        cache.lookup("/demo/listener", tmpdir_.string());
+        cache.lookup("/demo/nonexistent", tmpdir_.string());
+      }
+    });
+  }
+
+  for (auto & t : threads) {
+    t.join();
+  }
+
+  // No crash or deadlock = pass
+  EXPECT_GE(cache.size(), 0u);
 }

@@ -44,6 +44,7 @@ class SyntheticProcTest : public ::testing::Test {
 // Standalone tests (no synthetic dirs needed)
 // ---------------------------------------------------------------------------
 
+// @verifies REQ_INTEROP_003
 TEST(ProcReader, ReadSelfProcess) {
   auto result = read_process_info(getpid());
   ASSERT_TRUE(result.has_value()) << result.error();
@@ -57,12 +58,14 @@ TEST(ProcReader, ReadSelfProcess) {
   EXPECT_FALSE(info.exe_path.empty());
 }
 
+// @verifies REQ_INTEROP_003
 TEST(ProcReader, ReadNonexistentPidFails) {
   auto result = read_process_info(999999999);
   ASSERT_FALSE(result.has_value());
   EXPECT_FALSE(result.error().empty());
 }
 
+// @verifies REQ_INTEROP_003
 TEST(ProcReader, StateFieldPopulated) {
   // Read our own process - should have state "R" (running) or "S" (sleeping)
   auto result = read_process_info(getpid());
@@ -70,12 +73,14 @@ TEST(ProcReader, StateFieldPopulated) {
   EXPECT_FALSE(result.value().state.empty());
 }
 
+// @verifies REQ_INTEROP_003
 TEST(ProcReader, ReadSystemUptime) {
   auto result = read_system_uptime("/");
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_GT(*result, 0.0);
 }
 
+// @verifies REQ_INTEROP_003
 TEST(ProcReader, ReadSystemUptimeMissingFile) {
   auto result = read_system_uptime("/nonexistent_root");
   ASSERT_FALSE(result.has_value());
@@ -85,6 +90,7 @@ TEST(ProcReader, ReadSystemUptimeMissingFile) {
 // Fixture-based tests (use SyntheticProcTest)
 // ---------------------------------------------------------------------------
 
+// @verifies REQ_INTEROP_003
 TEST_F(SyntheticProcTest, ReadSyntheticProc) {
   fs::create_directories(tmpdir_ / "proc" / "42");
 
@@ -127,6 +133,7 @@ TEST_F(SyntheticProcTest, ReadSyntheticProc) {
   EXPECT_EQ(info.start_time_ticks, 12345u);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(SyntheticProcTest, FindPidForNodeInSyntheticProc) {
   fs::create_directories(tmpdir_ / "proc" / "100");
   fs::create_directories(tmpdir_ / "proc" / "200");
@@ -154,6 +161,7 @@ TEST_F(SyntheticProcTest, FindPidForNodeInSyntheticProc) {
   ASSERT_FALSE(missing.has_value());
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(SyntheticProcTest, ReadSystemUptimeSynthetic) {
   {
     std::ofstream f(tmpdir_ / "proc" / "uptime");
@@ -164,6 +172,7 @@ TEST_F(SyntheticProcTest, ReadSystemUptimeSynthetic) {
   EXPECT_NEAR(*result, 12345.67, 0.01);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(SyntheticProcTest, MalformedStatMissingComm) {
   fs::create_directories(tmpdir_ / "proc" / "42");
   {
@@ -175,6 +184,7 @@ TEST_F(SyntheticProcTest, MalformedStatMissingComm) {
   EXPECT_NE(result.error().find("Malformed"), std::string::npos);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(SyntheticProcTest, EmptyStatFile) {
   fs::create_directories(tmpdir_ / "proc" / "42");
   {

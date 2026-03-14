@@ -20,6 +20,7 @@
 namespace fs = std::filesystem;
 using namespace ros2_medkit_linux_introspection;
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, ExtractDockerContainerId) {
   std::string path =
       "/system.slice/"
@@ -28,6 +29,7 @@ TEST(CgroupReader, ExtractDockerContainerId) {
   EXPECT_EQ(id, "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2");
 }
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, ExtractPodmanContainerId) {
   std::string path =
       "/user.slice/user-1000.slice/user@1000.service/"
@@ -36,6 +38,7 @@ TEST(CgroupReader, ExtractPodmanContainerId) {
   EXPECT_EQ(id, "aabbccddee112233aabbccddee112233aabbccddee112233aabbccddee112233");
 }
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, ExtractContainerdContainerId) {
   std::string path =
       "/system.slice/containerd.service/"
@@ -44,11 +47,13 @@ TEST(CgroupReader, ExtractContainerdContainerId) {
   EXPECT_EQ(id, "deadbeef12345678deadbeef12345678deadbeef12345678deadbeef12345678");
 }
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, ExtractNoContainerId) {
   EXPECT_TRUE(extract_container_id("/user.slice/user-1000.slice/session-1.scope").empty());
   EXPECT_TRUE(extract_container_id("/").empty());
 }
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, DetectRuntime) {
   EXPECT_EQ(detect_runtime("/system.slice/docker-abc123.scope"), "docker");
   EXPECT_EQ(detect_runtime("/user.slice/libpod-abc123.scope"), "podman");
@@ -56,6 +61,7 @@ TEST(CgroupReader, DetectRuntime) {
   EXPECT_TRUE(detect_runtime("/user.slice/session-1.scope").empty());
 }
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, IsContainerizedSyntheticProc) {
   auto tmpdir = fs::temp_directory_path() / "test_cgroup";
   fs::create_directories(tmpdir / "proc" / "42");
@@ -81,6 +87,7 @@ TEST(CgroupReader, IsContainerizedSyntheticProc) {
   fs::remove_all(tmpdir);
 }
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, ReadCgroupInfoWithResourceLimits) {
   auto tmpdir = fs::temp_directory_path() / "test_cgroup_limits";
   fs::create_directories(tmpdir / "proc" / "42");
@@ -125,6 +132,7 @@ TEST(CgroupReader, ReadCgroupInfoWithResourceLimits) {
   fs::remove_all(tmpdir);
 }
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, ReadCgroupInfoUnlimitedResources) {
   auto tmpdir = fs::temp_directory_path() / "test_cgroup_unlimited";
   fs::create_directories(tmpdir / "proc" / "42");
@@ -167,6 +175,7 @@ TEST(CgroupReader, ReadCgroupInfoUnlimitedResources) {
   fs::remove_all(tmpdir);
 }
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, ReadCgroupInfoMissingResourceFiles) {
   auto tmpdir = fs::temp_directory_path() / "test_cgroup_nores";
   fs::create_directories(tmpdir / "proc" / "42");
@@ -190,6 +199,7 @@ TEST(CgroupReader, ReadCgroupInfoMissingResourceFiles) {
   fs::remove_all(tmpdir);
 }
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, ReadCgroupInfoMissingCgroupFile) {
   auto tmpdir = fs::temp_directory_path() / "test_cgroup_nocg";
   fs::create_directories(tmpdir / "proc" / "42");
@@ -202,12 +212,14 @@ TEST(CgroupReader, ReadCgroupInfoMissingCgroupFile) {
   fs::remove_all(tmpdir);
 }
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, ExtractDockerOldStyleContainerId) {
   std::string path = "/docker/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
   auto id = extract_container_id(path);
   EXPECT_EQ(id, "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2");
 }
 
+// @verifies REQ_INTEROP_003
 TEST(CgroupReader, CgroupV1FormatNotSupported) {
   // cgroup v1 uses "hierarchy-ID:controller-list:cgroup-path" format.
   // Our reader only supports cgroup v2 ("0::<path>").
