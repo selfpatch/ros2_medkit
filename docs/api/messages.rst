@@ -300,6 +300,9 @@ discovery merge pipeline with the received metadata.
 All fields except ``entity_id`` are optional. Empty strings and empty arrays
 mean "not provided" and are ignored by the plugin.
 
+The same field semantics apply to ``ParameterBeaconPlugin`` via node
+parameters. See :doc:`/config/discovery-options` for parameter naming.
+
 The ``stamp`` field is used by the beacon TTL lifecycle:
 
 - **ACTIVE** - hint is within the configured TTL (enrichment applied)

@@ -284,6 +284,37 @@ Override discovery options via command line:
      discovery.runtime.topic_only_policy:="ignore" \
      discovery.runtime.min_topics_for_component:=3
 
+Discovery Mechanism Selection
+-----------------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Scenario
+     - Recommended mechanism
+   * - Quick start, no configuration needed
+     - ``runtime_only`` (default)
+   * - Stable system with known topology
+     - ``manifest_only`` or ``hybrid``
+   * - Runtime metadata from nodes (fast updates, custom topics)
+     - TopicBeaconPlugin (push-based)
+   * - Runtime metadata from nodes (no custom code, uses parameters)
+     - ParameterBeaconPlugin (pull-based)
+   * - Structured topology with runtime enrichment
+     - ``hybrid`` + beacon plugin(s)
+
+**Topic beacon vs parameter beacon:**
+
+- Use **TopicBeaconPlugin** when nodes can publish ``MedkitDiscoveryHint`` messages
+  to a shared topic. Best for low-latency updates and nodes that already have
+  custom publishing logic.
+- Use **ParameterBeaconPlugin** when nodes declare metadata as standard ROS 2
+  parameters. No custom publishing code needed - the plugin polls parameters
+  automatically.
+- Both can run simultaneously. Each maintains a separate store, and both inject
+  into the merge pipeline as enrichment layers.
+
 Beacon Discovery Plugin (TopicBeaconPlugin)
 --------------------------------------------
 
@@ -376,6 +407,133 @@ The ``x-medkit-topic-beacon`` vendor endpoint exposes current beacon state:
      "depends_on": [],
      "metadata": {"custom_key": "custom_value"}
    }
+
+Parameter Beacon Plugin (ParameterBeaconPlugin)
+------------------------------------------------
+
+The ``ros2_medkit_param_beacon`` plugin enriches discovered entities with
+pull-based metadata by polling ROS 2 node parameters. Unlike the topic beacon
+which relies on nodes publishing to a shared topic, the parameter beacon
+actively discovers and reads parameters matching a configurable prefix from
+each known node.
+
+This approach works well for nodes that already declare their metadata as
+ROS 2 parameters (e.g., via ``declare_parameter()``) without needing any
+custom publishing code.
+
+Configuration
+^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       plugins: ["parameter_beacon"]
+       plugins.parameter_beacon.path: "/path/to/libparam_beacon_plugin.so"
+
+       # Parameter name prefix to scan
+       # Default: "ros2_medkit.discovery"
+       plugins.parameter_beacon.parameter_prefix: "ros2_medkit.discovery"
+
+       # How often to poll all nodes (seconds)
+       # Default: 5.0
+       plugins.parameter_beacon.poll_interval_sec: 5.0
+
+       # Maximum time per poll cycle (seconds)
+       # Default: 10.0
+       plugins.parameter_beacon.poll_budget_sec: 10.0
+
+       # Timeout for each node's parameter service call (seconds)
+       # Default: 2.0
+       plugins.parameter_beacon.param_timeout_sec: 2.0
+
+       # Soft TTL: hints older than this are marked STALE (seconds)
+       # Default: 15.0
+       plugins.parameter_beacon.beacon_ttl_sec: 15.0
+
+       # Hard expiry: hints older than this are removed (seconds)
+       # Default: 300.0
+       plugins.parameter_beacon.beacon_expiry_sec: 300.0
+
+       # Allow plugin to introduce entirely new entities not seen by other layers
+       # Default: false
+       plugins.parameter_beacon.allow_new_entities: false
+
+       # Maximum number of hints to keep in memory
+       # Default: 10000
+       plugins.parameter_beacon.max_hints: 10000
+
+Parameter Naming
+^^^^^^^^^^^^^^^^
+
+Nodes declare parameters under the configured prefix (default:
+``ros2_medkit.discovery``). Each parameter maps to a ``BeaconHint`` field:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Parameter
+     - BeaconHint field
+   * - ``ros2_medkit.discovery.entity_id`` (string, required)
+     - ``entity_id``
+   * - ``ros2_medkit.discovery.stable_id`` (string)
+     - ``stable_id``
+   * - ``ros2_medkit.discovery.display_name`` (string)
+     - ``display_name``
+   * - ``ros2_medkit.discovery.component_id`` (string)
+     - ``component_id``
+   * - ``ros2_medkit.discovery.transport_type`` (string)
+     - ``transport_type``
+   * - ``ros2_medkit.discovery.negotiated_format`` (string)
+     - ``negotiated_format``
+   * - ``ros2_medkit.discovery.process_name`` (string)
+     - ``process_name``
+   * - ``ros2_medkit.discovery.hostname`` (string)
+     - ``hostname``
+   * - ``ros2_medkit.discovery.process_id`` (integer)
+     - ``process_id``
+   * - ``ros2_medkit.discovery.function_ids`` (string array)
+     - ``function_ids``
+   * - ``ros2_medkit.discovery.depends_on`` (string array)
+     - ``depends_on``
+   * - ``ros2_medkit.discovery.metadata.<key>`` (string)
+     - ``metadata[<key>]``
+
+**Example node (C++):**
+
+.. code-block:: cpp
+
+   node->declare_parameter("ros2_medkit.discovery.entity_id", "my_sensor");
+   node->declare_parameter("ros2_medkit.discovery.display_name", "Temperature Sensor");
+   node->declare_parameter("ros2_medkit.discovery.function_ids",
+       std::vector<std::string>{"thermal_monitoring"});
+   node->declare_parameter("ros2_medkit.discovery.process_id",
+       static_cast<int64_t>(getpid()));
+
+Running Both Plugins
+^^^^^^^^^^^^^^^^^^^^
+
+The topic and parameter beacon plugins can be active simultaneously. Each
+maintains its own ``BeaconHintStore`` and contributes independently to the
+merge pipeline.
+
+When both are active, align TTL and expiry values to avoid inconsistent
+staleness behavior:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       plugins: ["topic_beacon", "parameter_beacon"]
+       plugins.topic_beacon.path: "/path/to/libtopic_beacon_plugin.so"
+       plugins.topic_beacon.beacon_ttl_sec: 10.0
+       plugins.topic_beacon.beacon_expiry_sec: 300.0
+
+       plugins.parameter_beacon.path: "/path/to/libparam_beacon_plugin.so"
+       plugins.parameter_beacon.poll_interval_sec: 5.0
+       plugins.parameter_beacon.beacon_ttl_sec: 15.0
+       plugins.parameter_beacon.beacon_expiry_sec: 300.0
 
 See Also
 --------
