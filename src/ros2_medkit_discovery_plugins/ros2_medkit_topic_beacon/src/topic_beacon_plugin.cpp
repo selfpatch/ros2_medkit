@@ -38,17 +38,38 @@ void TopicBeaconPlugin::configure(const nlohmann::json & config) {
   topic_ = config.value("topic", std::string("/ros2_medkit/discovery"));
 
   BeaconHintStore::Config store_config;
-  store_config.beacon_ttl_sec = config.value("beacon_ttl_sec", 10.0);
-  store_config.beacon_expiry_sec = config.value("beacon_expiry_sec", 300.0);
-  store_config.check_process_alive = config.value("check_process_alive", true);
-  store_config.max_hints = config.value("max_hints", static_cast<size_t>(10000));
+  auto beacon_ttl = config.value("beacon_ttl_sec", 10.0);
+  auto beacon_expiry = config.value("beacon_expiry_sec", 300.0);
+  auto max_hints = config.value("max_hints", static_cast<size_t>(10000));
+  auto max_mps = config.value("max_messages_per_second", 100.0);
+
+  // Clamp to safe minimums
+  if (beacon_ttl < 0.1) {
+    log_warn("beacon_ttl_sec clamped from " + std::to_string(beacon_ttl) + " to 0.1");
+    beacon_ttl = 0.1;
+  }
+  if (beacon_expiry < 1.0) {
+    log_warn("beacon_expiry_sec clamped from " + std::to_string(beacon_expiry) + " to 1.0");
+    beacon_expiry = 1.0;
+  }
+  if (max_hints < 1) {
+    log_warn("max_hints clamped from 0 to 1");
+    max_hints = 1;
+  }
+  if (max_mps < 1.0) {
+    log_warn("max_messages_per_second clamped from " + std::to_string(max_mps) + " to 1.0");
+    max_mps = 1.0;
+  }
+
+  store_config.beacon_ttl_sec = beacon_ttl;
+  store_config.beacon_expiry_sec = beacon_expiry;
+  store_config.max_hints = max_hints;
   store_ = std::make_unique<BeaconHintStore>(store_config);
 
   BeaconEntityMapper::Config mapper_config;
   mapper_config.allow_new_entities = config.value("allow_new_entities", false);
   mapper_ = BeaconEntityMapper(mapper_config);
 
-  auto max_mps = config.value("max_messages_per_second", 100.0);
   rate_limiter_ = TokenBucket(max_mps);
 
   // Note: field group policy overrides are handled by PluginLayer via

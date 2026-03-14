@@ -347,6 +347,63 @@ TEST(BeaconHintStore, ConcurrentUpdateAndSnapshot) {
 }
 
 // ---------------------------------------------------------------------------
+// MetadataReplacedOnRefresh
+// ---------------------------------------------------------------------------
+TEST(BeaconHintStore, MetadataReplacedOnRefresh) {
+  BeaconHintStore store;
+
+  // Insert with initial metadata
+  auto hint1 = make_hint("app_1");
+  hint1.metadata = {{"firmware", "1.0"}, {"calibrated", "true"}};
+  ASSERT_TRUE(store.update(hint1));
+
+  {
+    auto result = store.get("app_1");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->hint.metadata.size(), 2u);
+    EXPECT_EQ(result->hint.metadata["firmware"], "1.0");
+    EXPECT_EQ(result->hint.metadata["calibrated"], "true");
+  }
+
+  // Refresh with different metadata - old keys should be gone
+  auto hint2 = make_hint("app_1");
+  hint2.metadata = {{"firmware", "2.0"}};
+  ASSERT_TRUE(store.update(hint2));
+
+  {
+    auto result = store.get("app_1");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->hint.metadata.size(), 1u);
+    EXPECT_EQ(result->hint.metadata["firmware"], "2.0");
+    EXPECT_EQ(result->hint.metadata.count("calibrated"), 0u);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// EmptyMetadataPreservesExisting
+// ---------------------------------------------------------------------------
+TEST(BeaconHintStore, EmptyMetadataPreservesExisting) {
+  BeaconHintStore store;
+
+  // Insert with metadata
+  auto hint1 = make_hint("app_1");
+  hint1.metadata = {{"firmware", "1.0"}};
+  ASSERT_TRUE(store.update(hint1));
+
+  // Refresh with empty metadata - existing metadata should be preserved
+  auto hint2 = make_hint("app_1");
+  // hint2.metadata is empty by default
+  ASSERT_TRUE(store.update(hint2));
+
+  {
+    auto result = store.get("app_1");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->hint.metadata.size(), 1u);
+    EXPECT_EQ(result->hint.metadata["firmware"], "1.0");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // ConcurrentGetDoesNotBlock
 // ---------------------------------------------------------------------------
 TEST(BeaconHintStore, ConcurrentGetDoesNotBlock) {

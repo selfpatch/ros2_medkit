@@ -31,7 +31,6 @@ class BeaconHintStore {
   struct Config {
     double beacon_ttl_sec{10.0};
     double beacon_expiry_sec{300.0};
-    bool check_process_alive{true};
     size_t max_hints{10000};
   };
 

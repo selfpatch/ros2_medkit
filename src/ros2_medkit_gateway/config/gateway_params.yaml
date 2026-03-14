@@ -315,7 +315,6 @@ ros2_medkit_gateway:
     # plugins.topic_beacon.beacon_ttl_sec: 10.0
     # plugins.topic_beacon.beacon_expiry_sec: 300.0
     # plugins.topic_beacon.allow_new_entities: false
-    # plugins.topic_beacon.check_process_alive: true
     # plugins.topic_beacon.max_hints: 10000
     # plugins.topic_beacon.max_messages_per_second: 100
 

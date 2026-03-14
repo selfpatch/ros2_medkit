@@ -116,3 +116,46 @@ TEST_F(TestBeaconValidator, ZeroPidTreatedAsNotProvided) {
   auto result = validate_beacon_hint(hint, limits_);
   EXPECT_TRUE(result.valid);
 }
+
+TEST_F(TestBeaconValidator, OversizedStringFieldsTruncated) {
+  auto hint = make_valid_hint();
+  // 10 KB hostname should be truncated to max_string_length (512)
+  hint.hostname = std::string(10240, 'h');
+  hint.display_name = std::string(10240, 'd');
+  hint.process_name = std::string(10240, 'p');
+  hint.transport_type = std::string(10240, 't');
+  hint.negotiated_format = std::string(10240, 'n');
+  auto result = validate_beacon_hint(hint, limits_);
+  EXPECT_TRUE(result.valid);
+  EXPECT_EQ(hint.hostname.size(), limits_.max_string_length);
+  EXPECT_EQ(hint.display_name.size(), limits_.max_string_length);
+  EXPECT_EQ(hint.process_name.size(), limits_.max_string_length);
+  EXPECT_EQ(hint.transport_type.size(), limits_.max_string_length);
+  EXPECT_EQ(hint.negotiated_format.size(), limits_.max_string_length);
+}
+
+TEST_F(TestBeaconValidator, ShortStringFieldsUnchanged) {
+  auto hint = make_valid_hint();
+  hint.hostname = "robot-01";
+  hint.display_name = "Lidar";
+  hint.process_name = "lidar_node";
+  hint.transport_type = "zenoh";
+  hint.negotiated_format = "cdr";
+  auto result = validate_beacon_hint(hint, limits_);
+  EXPECT_TRUE(result.valid);
+  EXPECT_EQ(hint.hostname, "robot-01");
+  EXPECT_EQ(hint.display_name, "Lidar");
+  EXPECT_EQ(hint.process_name, "lidar_node");
+  EXPECT_EQ(hint.transport_type, "zenoh");
+  EXPECT_EQ(hint.negotiated_format, "cdr");
+}
+
+TEST_F(TestBeaconValidator, CustomMaxStringLength) {
+  ValidationLimits custom;
+  custom.max_string_length = 10;
+  auto hint = make_valid_hint();
+  hint.hostname = std::string(50, 'x');
+  auto result = validate_beacon_hint(hint, custom);
+  EXPECT_TRUE(result.valid);
+  EXPECT_EQ(hint.hostname.size(), 10u);
+}
