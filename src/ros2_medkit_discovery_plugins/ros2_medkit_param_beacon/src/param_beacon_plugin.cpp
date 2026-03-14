@@ -184,11 +184,25 @@ void ParameterBeaconPlugin::poll_loop() {
 }
 
 void ParameterBeaconPlugin::poll_cycle() {
-  // Copy current targets
+  // Get targets: prefer introspection-provided list, fall back to ROS graph discovery
   std::vector<std::string> targets;
   {
     std::shared_lock<std::shared_mutex> lock(nodes_mutex_);
     targets = poll_targets_;
+  }
+
+  if (targets.empty() && param_node_) {
+    // No introspection targets available (e.g., not in hybrid mode).
+    // Discover nodes directly from the ROS 2 graph.
+    auto names_and_ns = param_node_->get_node_graph_interface()->get_node_names_and_namespaces();
+    for (const auto & [name, ns] : names_and_ns) {
+      // Skip internal nodes (leading underscore) and the gateway
+      if (name.empty() || name[0] == '_' || name == "ros2_medkit_gateway") {
+        continue;
+      }
+      auto fqn = (ns == "/" ? "/" : ns + "/") + name;
+      targets.push_back(fqn);
+    }
   }
 
   if (targets.empty()) {
