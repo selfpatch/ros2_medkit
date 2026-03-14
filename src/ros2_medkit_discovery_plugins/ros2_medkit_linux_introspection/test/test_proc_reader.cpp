@@ -85,6 +85,13 @@ TEST(ProcReader, ReadSyntheticProc) {
   fs::remove_all(tmpdir);
 }
 
+TEST(ProcReader, StateFieldPopulated) {
+  // Read our own process - should have state "R" (running) or "S" (sleeping)
+  auto result = read_process_info(getpid());
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_FALSE(result.value().state.empty());
+}
+
 TEST(ProcReader, FindPidForNodeInSyntheticProc) {
   auto tmpdir = fs::temp_directory_path() / "test_find_pid";
   fs::create_directories(tmpdir / "proc" / "100");

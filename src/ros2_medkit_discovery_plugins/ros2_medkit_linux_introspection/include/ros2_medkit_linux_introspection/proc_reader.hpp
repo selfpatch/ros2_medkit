@@ -28,6 +28,7 @@ namespace ros2_medkit_linux_introspection {
 struct ProcessInfo {
   pid_t pid{0};
   pid_t ppid{0};
+  std::string state;  // Process state: R=running, S=sleeping, D=disk, Z=zombie, T=stopped
   std::string cmdline;
   std::string exe_path;
   uint64_t rss_bytes{0};
