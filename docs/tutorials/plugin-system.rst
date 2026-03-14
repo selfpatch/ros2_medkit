@@ -337,9 +337,11 @@ An ``IntrospectionProvider`` enriches entities in the merge pipeline. The plugin
 receives all entities from earlier layers (manifest + runtime) and returns new or
 enriched entities with ``ENRICHMENT`` merge policy.
 
-The ``ros2_medkit_topic_beacon`` plugin is the reference implementation. It
+The ``ros2_medkit_topic_beacon`` (push-based) and ``ros2_medkit_param_beacon``
+(pull-based) plugins are the reference implementations. ``ros2_medkit_topic_beacon``
 subscribes to ``/ros2_medkit/discovery``, stores incoming
-``MedkitDiscoveryHint`` messages, and injects their fields during ``introspect()``:
+``MedkitDiscoveryHint`` messages, and injects their fields during ``introspect()``.
+``ros2_medkit_param_beacon`` polls ROS 2 parameters instead:
 
 .. code-block:: cpp
 
@@ -359,13 +361,16 @@ subscribes to ``/ros2_medkit/discovery``, stores incoming
      void shutdown() override {}
 
      // IntrospectionProvider: called on every merge pipeline refresh
-     NewEntities introspect(const IntrospectionInput& input) override {
-       NewEntities result;
-       for (const auto& [id, app] : input.apps) {
-         // Enrich apps with platform metadata
-         EntityInfo enriched = app;
-         enriched.metadata["x-platform-version"] = get_platform_version();
-         result.apps[id] = enriched;
+     IntrospectionResult introspect(const IntrospectionInput& input) override {
+       IntrospectionResult result;
+       for (const auto& app : input.apps) {
+         // Shadow the existing app with enriched metadata
+         App shadow;
+         shadow.id = app.id;
+         result.new_entities.apps.push_back(shadow);
+         result.metadata[app.id] = {
+           {"x-platform-version", get_platform_version()}
+         };
        }
        return result;
      }
@@ -384,14 +389,21 @@ subscribes to ``/ros2_medkit/discovery``, stores incoming
      return static_cast<MyIntrospectionPlugin*>(p);
    }
 
-The ``IntrospectionInput`` contains all entity maps from previous layers:
+The ``IntrospectionInput`` contains entity vectors from previous layers:
 
 - ``input.areas``, ``input.components``, ``input.apps``, ``input.functions`` -
-  read-only views of discovered entities to use as context
+  read-only vectors of discovered entities to use as context
 
-The returned ``NewEntities`` can contain updated or entirely new entities.
-New entities only appear in responses when ``allow_new_entities`` is true in
-the plugin configuration (or an equivalent policy is set).
+The returned ``IntrospectionResult`` wraps two fields:
+
+- ``new_entities`` - a ``NewEntities`` struct with vectors for ``areas``,
+  ``components``, ``apps``, and ``functions`` that the plugin introduces
+- ``metadata`` - a map from entity ID to a ``nlohmann::json`` object with
+  plugin-specific enrichment data (e.g. vendor extension fields)
+
+New entities in ``new_entities`` only appear in responses when
+``allow_new_entities`` is true in the plugin configuration (or an equivalent
+policy is set).
 
 Multiple Plugins
 ----------------
@@ -399,7 +411,11 @@ Multiple Plugins
 Multiple plugins can be loaded simultaneously:
 
 - **UpdateProvider**: Only one plugin's UpdateProvider is used (first in config order)
-- **IntrospectionProvider**: All plugins' results are merged via the PluginLayer in the discovery pipeline
+- **IntrospectionProvider**: All plugins' ``IntrospectionResult`` values are merged
+  via the PluginLayer in the discovery pipeline - ``new_entities`` vectors are
+  concatenated and ``metadata`` maps are merged. Both ``ros2_medkit_topic_beacon``
+  and ``ros2_medkit_param_beacon`` can be active at the same time, each contributing
+  their own discovered entities and metadata.
 - **LogProvider**: Only the first plugin's LogProvider is used for queries (same as UpdateProvider).
   All LogProvider plugins receive ``on_log_entry()`` calls as observers.
 - **Custom routes**: All plugins can register endpoints (use unique path prefixes)
