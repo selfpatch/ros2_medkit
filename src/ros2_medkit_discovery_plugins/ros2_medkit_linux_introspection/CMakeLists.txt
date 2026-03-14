@@ -31,14 +31,15 @@ set_target_properties(medkit_linux_utils PROPERTIES POSITION_INDEPENDENT_CODE ON
 target_include_directories(medkit_linux_utils PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
-medkit_target_dependencies(medkit_linux_utils ros2_medkit_gateway)
+target_include_directories(medkit_linux_utils PUBLIC ${ros2_medkit_gateway_INCLUDE_DIRS})
 
 # --- procfs plugin ---
 add_library(procfs_introspection MODULE
   src/procfs_plugin.cpp
 )
 target_link_libraries(procfs_introspection medkit_linux_utils cpp_httplib_target OpenSSL::SSL OpenSSL::Crypto)
-medkit_target_dependencies(procfs_introspection ros2_medkit_gateway nlohmann_json)
+target_include_directories(procfs_introspection PRIVATE ${ros2_medkit_gateway_INCLUDE_DIRS})
+medkit_target_dependencies(procfs_introspection nlohmann_json)
 install(TARGETS procfs_introspection LIBRARY DESTINATION lib/${PROJECT_NAME})
 
 # --- systemd plugin ---
@@ -50,8 +51,8 @@ if(SYSTEMD_FOUND)
     src/systemd_plugin.cpp
   )
   target_link_libraries(systemd_introspection medkit_linux_utils ${SYSTEMD_LIBRARIES} cpp_httplib_target OpenSSL::SSL OpenSSL::Crypto)
-  target_include_directories(systemd_introspection PRIVATE ${SYSTEMD_INCLUDE_DIRS})
-  medkit_target_dependencies(systemd_introspection ros2_medkit_gateway nlohmann_json)
+  target_include_directories(systemd_introspection PRIVATE ${SYSTEMD_INCLUDE_DIRS} ${ros2_medkit_gateway_INCLUDE_DIRS})
+  medkit_target_dependencies(systemd_introspection nlohmann_json)
   install(TARGETS systemd_introspection LIBRARY DESTINATION lib/${PROJECT_NAME})
 else()
   message(WARNING "libsystemd not found - systemd_introspection plugin will not be built")
@@ -62,7 +63,8 @@ add_library(container_introspection MODULE
   src/container_plugin.cpp
 )
 target_link_libraries(container_introspection medkit_linux_utils cpp_httplib_target OpenSSL::SSL OpenSSL::Crypto)
-medkit_target_dependencies(container_introspection ros2_medkit_gateway nlohmann_json)
+target_include_directories(container_introspection PRIVATE ${ros2_medkit_gateway_INCLUDE_DIRS})
+medkit_target_dependencies(container_introspection nlohmann_json)
 install(TARGETS container_introspection LIBRARY DESTINATION lib/${PROJECT_NAME})
 
 # --- Tests ---
@@ -83,18 +85,20 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_procfs_plugin test/test_procfs_plugin.cpp)
   target_link_libraries(test_procfs_plugin medkit_linux_utils cpp_httplib_target)
-  medkit_target_dependencies(test_procfs_plugin ros2_medkit_gateway nlohmann_json)
+  target_include_directories(test_procfs_plugin PRIVATE ${ros2_medkit_gateway_INCLUDE_DIRS})
+  medkit_target_dependencies(test_procfs_plugin nlohmann_json)
 
   if(SYSTEMD_FOUND)
     ament_add_gtest(test_systemd_plugin test/test_systemd_plugin.cpp)
     target_link_libraries(test_systemd_plugin medkit_linux_utils ${SYSTEMD_LIBRARIES} cpp_httplib_target)
-    target_include_directories(test_systemd_plugin PRIVATE ${SYSTEMD_INCLUDE_DIRS})
-    medkit_target_dependencies(test_systemd_plugin ros2_medkit_gateway nlohmann_json)
+    target_include_directories(test_systemd_plugin PRIVATE ${SYSTEMD_INCLUDE_DIRS} ${ros2_medkit_gateway_INCLUDE_DIRS})
+    medkit_target_dependencies(test_systemd_plugin nlohmann_json)
   endif()
 
   ament_add_gtest(test_container_plugin test/test_container_plugin.cpp)
   target_link_libraries(test_container_plugin medkit_linux_utils cpp_httplib_target)
-  medkit_target_dependencies(test_container_plugin ros2_medkit_gateway nlohmann_json)
+  target_include_directories(test_container_plugin PRIVATE ${ros2_medkit_gateway_INCLUDE_DIRS})
+  medkit_target_dependencies(test_container_plugin nlohmann_json)
 endif()
 
 ament_package()
