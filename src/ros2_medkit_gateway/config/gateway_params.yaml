@@ -307,7 +307,7 @@ ros2_medkit_gateway:
     # --- Beacon Discovery Plugin (TopicBeaconPlugin) ---
     # Subscribes to /ros2_medkit/discovery and enriches discovered entities
     # with push-based metadata from ROS 2 nodes (MedkitDiscoveryHint messages).
-    # Registers the x-medkit-beacon vendor endpoint on all apps and components.
+    # Registers the x-medkit-topic-beacon vendor endpoint on all apps and components.
     # Uncomment and set path to enable:
     # plugins: ["topic_beacon"]
     # plugins.topic_beacon.path: "/path/to/libtopic_beacon_plugin.so"
@@ -317,6 +317,20 @@ ros2_medkit_gateway:
     # plugins.topic_beacon.allow_new_entities: false
     # plugins.topic_beacon.max_hints: 10000
     # plugins.topic_beacon.max_messages_per_second: 100
+
+    # --- Parameter Beacon Plugin (ParameterBeaconPlugin) ---
+    # Polls ROS 2 node parameters matching a prefix to enrich discovered entities
+    # with pull-based metadata. Registers x-medkit-param-beacon vendor endpoint.
+    # plugins: ["parameter_beacon"]
+    # plugins.parameter_beacon.path: "/path/to/libparam_beacon_plugin.so"
+    # plugins.parameter_beacon.parameter_prefix: "ros2_medkit.discovery"
+    # plugins.parameter_beacon.poll_interval_sec: 5.0
+    # plugins.parameter_beacon.poll_budget_sec: 10.0
+    # plugins.parameter_beacon.param_timeout_sec: 2.0
+    # plugins.parameter_beacon.beacon_ttl_sec: 15.0
+    # plugins.parameter_beacon.beacon_expiry_sec: 300.0
+    # plugins.parameter_beacon.allow_new_entities: false
+    # plugins.parameter_beacon.max_hints: 10000
 
     # Software Updates
     # Enables /updates endpoints for SOVD-compliant software update management.

@@ -1448,50 +1448,89 @@ Requires: ``container_introspection`` plugin. Only supports cgroup v2
         ]
       }
 
-Beacon Discovery (x-medkit-beacon)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+x-medkit-topic-beacon
+~~~~~~~~~~~~~~~~~~~~~
 
 Provided by the ``ros2_medkit_topic_beacon`` plugin (not available when the
 plugin is not loaded). Returns beacon metadata for an entity populated from
-``MedkitDiscoveryHint`` messages published by the entity's node.
+``MedkitDiscoveryHint`` messages published by the entity's node via a ROS 2
+topic (push-based).
 
-``GET /api/v1/apps/{id}/x-medkit-beacon``
+``GET /api/v1/apps/{id}/x-medkit-topic-beacon``
 
-``GET /api/v1/components/{id}/x-medkit-beacon``
+``GET /api/v1/components/{id}/x-medkit-topic-beacon``
 
 **Example:**
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/my_sensor/x-medkit-beacon
+   curl http://localhost:8080/api/v1/apps/engine_temp_sensor/x-medkit-topic-beacon
 
 **Response (200 OK):**
 
 .. code-block:: json
 
    {
-     "entity_id": "my_sensor",
+     "entity_id": "engine_temp_sensor",
      "status": "active",
-     "display_name": "Temperature Sensor",
-     "function_ids": ["thermal_monitoring"],
+     "age_sec": 1.234,
+     "stable_id": "",
+     "display_name": "Engine Temperature Sensor",
+     "transport_type": "shared_memory",
+     "negotiated_format": "",
      "process_id": 12345,
-     "process_name": "component_container",
-     "hostname": "robot-01",
-     "last_seen": "2026-03-13T10:30:00.123Z",
-     "stale": false
+     "process_name": "sensor_node",
+     "hostname": "robot-1",
+     "component_id": "powertrain",
+     "function_ids": ["monitoring"],
+     "depends_on": [],
+     "metadata": {"custom_key": "custom_value"}
    }
 
 **Status values:**
 
-- ``active`` - Hint is within the configured beacon TTL
-- ``stale`` - Hint is past TTL but within expiry (``stale: true``)
-- ``unknown`` - No beacon data has been received for this entity
+- ``active`` - Hint is within the configured ``beacon_ttl_sec``
+- ``stale`` - Hint is past TTL but within ``beacon_expiry_sec``
+
+**Notes:**
+
+- ``age_sec`` is the elapsed time in seconds since the last hint was received.
+- When no beacon data exists for an entity, the endpoint returns 404 with
+  error code ``x-medkit-beacon-not-found`` (not an ``"unknown"`` status).
 
 **Response Codes:**
 
-- **200 OK** - Beacon data returned
-- **404 Not Found** - Entity not found or no beacon data received
-- **404 Not Found** (plugin not loaded) - Endpoint not registered
+- **200 OK** - Beacon data found and returned
+- **404 Not Found** (code: ``ERR_ENTITY_NOT_FOUND``) - Entity does not exist
+- **404 Not Found** (code: ``x-medkit-beacon-not-found``) - Entity exists but no beacon data received
+
+x-medkit-param-beacon
+~~~~~~~~~~~~~~~~~~~~~
+
+Provided by the ``ros2_medkit_param_beacon`` plugin (not available when the
+plugin is not loaded). Returns beacon metadata for an entity populated by
+polling ROS 2 node parameters matching a configured prefix (pull-based).
+
+``GET /api/v1/apps/{id}/x-medkit-param-beacon``
+
+``GET /api/v1/components/{id}/x-medkit-param-beacon``
+
+**Example:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/apps/engine_temp_sensor/x-medkit-param-beacon
+
+**Response (200 OK):**
+
+The response schema is identical to ``x-medkit-topic-beacon``. See above for
+the full field listing.
+
+**Response Codes:**
+
+- **200 OK** - Beacon data found and returned
+- **404 Not Found** (code: ``ERR_ENTITY_NOT_FOUND``) - Entity does not exist
+- **404 Not Found** (code: ``x-medkit-beacon-not-found``) - Entity exists but no beacon data received
 
 Error Responses
 ---------------
