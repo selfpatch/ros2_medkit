@@ -97,7 +97,10 @@ class TestContainerAppEndpoint:
     """Tests for GET /apps/{id}/x-medkit-container."""
 
     def test_returns_container_info(self):
-        """Container endpoint returns info when running inside Docker."""
+        """Container endpoint returns info when running inside Docker.
+
+        @verifies REQ_INTEROP_003
+        """
         app_id = _get_first_app_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/apps/{app_id}/x-medkit-container"
@@ -109,7 +112,10 @@ class TestContainerAppEndpoint:
         assert "runtime" in data
 
     def test_container_id_is_64_char_hex(self):
-        """Container ID should be a full 64-character hex SHA-256 hash."""
+        """Container ID should be a full 64-character hex SHA-256 hash.
+
+        @verifies REQ_INTEROP_003
+        """
         app_id = _get_first_app_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/apps/{app_id}/x-medkit-container"
@@ -124,7 +130,10 @@ class TestContainerAppEndpoint:
         )
 
     def test_runtime_is_docker(self):
-        """Runtime should be detected as 'docker' when running in Docker."""
+        """Runtime should be detected as 'docker' when running in Docker.
+
+        @verifies REQ_INTEROP_003
+        """
         app_id = _get_first_app_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/apps/{app_id}/x-medkit-container"
@@ -138,18 +147,22 @@ class TestContainerAppEndpoint:
         """Container memory limit should be detected from cgroup.
 
         docker-compose.container.yml sets 512MB = 536870912 bytes.
+
+        @verifies REQ_INTEROP_003
         """
         app_id = _get_first_app_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/apps/{app_id}/x-medkit-container"
         )
         assert status == 200
-        if "memory_limit_bytes" in data:
-            # 512MB = 536870912 bytes
-            assert data["memory_limit_bytes"] == 536870912, (
-                f"Expected 536870912 bytes (512MB), "
-                f"got {data['memory_limit_bytes']}"
-            )
+        assert "memory_limit_bytes" in data, (
+            f"memory_limit_bytes missing from response: {data}"
+        )
+        # 512MB = 536870912 bytes
+        assert data["memory_limit_bytes"] == 536870912, (
+            f"Expected 536870912 bytes (512MB), "
+            f"got {data['memory_limit_bytes']}"
+        )
 
     def test_cpu_quota_detected(self):
         """Container CPU quota should be detected from cgroup.
@@ -157,23 +170,33 @@ class TestContainerAppEndpoint:
         docker-compose.container.yml sets cpus: 1.0.
         For cgroup v2 with cpus=1.0, the quota is typically 100000us
         with a period of 100000us.
+
+        @verifies REQ_INTEROP_003
         """
         app_id = _get_first_app_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/apps/{app_id}/x-medkit-container"
         )
         assert status == 200
-        if "cpu_quota_us" in data and "cpu_period_us" in data:
-            # cpus: 1.0 means quota/period = 1.0
-            ratio = data["cpu_quota_us"] / data["cpu_period_us"]
-            assert abs(ratio - 1.0) < 0.01, (
-                f"Expected CPU ratio ~1.0, got {ratio} "
-                f"(quota={data['cpu_quota_us']}, "
-                f"period={data['cpu_period_us']})"
-            )
+        assert "cpu_quota_us" in data, (
+            f"cpu_quota_us missing from response: {data}"
+        )
+        assert "cpu_period_us" in data, (
+            f"cpu_period_us missing from response: {data}"
+        )
+        # cpus: 1.0 means quota/period = 1.0
+        ratio = data["cpu_quota_us"] / data["cpu_period_us"]
+        assert abs(ratio - 1.0) < 0.01, (
+            f"Expected CPU ratio ~1.0, got {ratio} "
+            f"(quota={data['cpu_quota_us']}, "
+            f"period={data['cpu_period_us']})"
+        )
 
     def test_all_apps_same_container(self):
-        """All apps in the same container should report the same container ID."""
+        """All apps in the same container should report the same container ID.
+
+        @verifies REQ_INTEROP_003
+        """
         app_ids = _get_app_ids()
         container_ids = set()
         for app_id in app_ids:
@@ -193,7 +216,10 @@ class TestContainerComponentEndpoint:
     """Tests for GET /components/{id}/x-medkit-container."""
 
     def test_returns_containers_aggregation(self):
-        """Component endpoint returns aggregated container info."""
+        """Component endpoint returns aggregated container info.
+
+        @verifies REQ_INTEROP_003
+        """
         comp_id = _get_first_component_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/components/{comp_id}/x-medkit-container"
@@ -205,7 +231,10 @@ class TestContainerComponentEndpoint:
         assert isinstance(data["containers"], list)
 
     def test_containers_include_node_ids(self):
-        """Each container in the aggregation includes node_ids."""
+        """Each container in the aggregation includes node_ids.
+
+        @verifies REQ_INTEROP_003
+        """
         comp_id = _get_first_component_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/components/{comp_id}/x-medkit-container"
@@ -218,7 +247,10 @@ class TestContainerComponentEndpoint:
             assert len(container["node_ids"]) > 0
 
     def test_containers_include_runtime(self):
-        """Each container in the aggregation includes runtime info."""
+        """Each container in the aggregation includes runtime info.
+
+        @verifies REQ_INTEROP_003
+        """
         comp_id = _get_first_component_id()
         status, data = _poll_endpoint(
             f"{BASE_URL}/components/{comp_id}/x-medkit-container"
@@ -233,7 +265,10 @@ class TestContainerErrorHandling:
     """Tests for error cases on container endpoints."""
 
     def test_nonexistent_app_returns_404(self):
-        """Requesting container info for a non-existent app returns 404."""
+        """Requesting container info for a non-existent app returns 404.
+
+        @verifies REQ_INTEROP_003
+        """
         r = requests.get(
             f"{BASE_URL}/apps/nonexistent_app_xyz/x-medkit-container",
             timeout=5,
@@ -241,7 +276,10 @@ class TestContainerErrorHandling:
         assert r.status_code == 404
 
     def test_nonexistent_component_returns_404(self):
-        """Requesting container info for a non-existent component returns 404."""
+        """Requesting container info for a non-existent component returns 404.
+
+        @verifies REQ_INTEROP_003
+        """
         r = requests.get(
             f"{BASE_URL}/components/nonexistent_comp_xyz/x-medkit-container",
             timeout=5,
