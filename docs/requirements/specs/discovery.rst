@@ -77,3 +77,38 @@ Discovery
    :tags: Discovery
 
    The server shall support tag-based query parameters that filter discovery responses by tags.
+
+.. req:: Topic beacon enriches entities
+   :id: REQ_DISCO_BEACON_01
+   :status: verified
+   :tags: Discovery, Beacon
+
+   The TopicBeaconPlugin shall enrich discovered entities with metadata from MedkitDiscoveryHint messages published to a configurable ROS 2 topic.
+
+.. req:: Parameter beacon enriches entities
+   :id: REQ_DISCO_BEACON_02
+   :status: verified
+   :tags: Discovery, Beacon
+
+   The ParameterBeaconPlugin shall enrich discovered entities by polling node parameters matching a configurable prefix.
+
+.. req:: Beacon hint lifecycle
+   :id: REQ_DISCO_BEACON_03
+   :status: verified
+   :tags: Discovery, Beacon
+
+   Beacon hints shall follow an ACTIVE, STALE, EXPIRED lifecycle based on configurable TTL and expiry durations.
+
+.. req:: Vendor endpoints expose beacon data
+   :id: REQ_DISCO_BEACON_04
+   :status: verified
+   :tags: Discovery, Beacon
+
+   Each beacon plugin shall register vendor extension endpoints that return per-entity beacon metadata in JSON format.
+
+.. req:: Input validation rejects malformed hints
+   :id: REQ_DISCO_BEACON_05
+   :status: verified
+   :tags: Discovery, Beacon
+
+   The beacon validator shall reject hints with empty entity IDs, oversized fields, or excessive metadata entries.

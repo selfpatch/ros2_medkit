@@ -42,6 +42,7 @@ BeaconHint make_hint(const std::string & entity_id, const std::string & transpor
 // ---------------------------------------------------------------------------
 // InsertAndRetrieve
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, InsertAndRetrieve) {
   BeaconHintStore store;
   auto hint = make_hint("app_1");
@@ -57,6 +58,7 @@ TEST(BeaconHintStore, InsertAndRetrieve) {
 // ---------------------------------------------------------------------------
 // UpdateRefreshesTimestamp
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, UpdateRefreshesTimestamp) {
   BeaconHintStore store;
   auto hint = make_hint("app_1");
@@ -77,6 +79,7 @@ TEST(BeaconHintStore, UpdateRefreshesTimestamp) {
 // ---------------------------------------------------------------------------
 // UpdateOverwritesFields
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, UpdateOverwritesFields) {
   BeaconHintStore store;
   ASSERT_TRUE(store.update(make_hint("app_1", "ros2")));
@@ -95,6 +98,7 @@ TEST(BeaconHintStore, UpdateOverwritesFields) {
 // ---------------------------------------------------------------------------
 // StaleHintReactivatedOnRefresh
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, StaleHintReactivatedOnRefresh) {
   BeaconHintStore::Config cfg;
   cfg.beacon_ttl_sec = 1.0;
@@ -136,6 +140,7 @@ TEST(BeaconHintStore, StaleHintReactivatedOnRefresh) {
 // ---------------------------------------------------------------------------
 // TTLTransitionToStale
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, TTLTransitionToStale) {
   BeaconHintStore::Config cfg;
   cfg.beacon_ttl_sec = 0.05;  // 50ms
@@ -155,6 +160,7 @@ TEST(BeaconHintStore, TTLTransitionToStale) {
 // ---------------------------------------------------------------------------
 // ExpiryRemovesHint
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, ExpiryRemovesHint) {
   BeaconHintStore::Config cfg;
   cfg.beacon_ttl_sec = 0.05;
@@ -174,6 +180,7 @@ TEST(BeaconHintStore, ExpiryRemovesHint) {
 // ---------------------------------------------------------------------------
 // EvictAndSnapshotIsAtomic
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, EvictAndSnapshotIsAtomic) {
   BeaconHintStore::Config cfg;
   cfg.beacon_ttl_sec = 0.05;
@@ -201,6 +208,7 @@ TEST(BeaconHintStore, EvictAndSnapshotIsAtomic) {
 // ---------------------------------------------------------------------------
 // EvictOnEmptyStoreIsNoop
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, EvictOnEmptyStoreIsNoop) {
   BeaconHintStore store;
   auto snapshot = store.evict_and_snapshot();
@@ -229,6 +237,7 @@ TEST(BeaconHintStore, EvictOnEmptyStoreIsNoop) {
 //                           stale_app age=150ms > TTL=50ms but < expiry=200ms. STALE.
 //                           active_app: refresh at t=250ms -> ACTIVE.
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, MixedStatesInSnapshot) {
   BeaconHintStore::Config cfg;
   cfg.beacon_ttl_sec = 0.05;     // 50ms
@@ -271,6 +280,7 @@ TEST(BeaconHintStore, MixedStatesInSnapshot) {
 // ---------------------------------------------------------------------------
 // CapacityLimitRejectsNewEntity
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, CapacityLimitRejectsNewEntity) {
   BeaconHintStore::Config cfg;
   cfg.max_hints = 3;
@@ -288,6 +298,7 @@ TEST(BeaconHintStore, CapacityLimitRejectsNewEntity) {
 // ---------------------------------------------------------------------------
 // CapacityLimitAcceptsRefresh
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, CapacityLimitAcceptsRefresh) {
   BeaconHintStore::Config cfg;
   cfg.max_hints = 3;
@@ -349,6 +360,7 @@ TEST(BeaconHintStore, ConcurrentUpdateAndSnapshot) {
 // ---------------------------------------------------------------------------
 // MetadataReplacedOnRefresh
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, MetadataReplacedOnRefresh) {
   BeaconHintStore store;
 
@@ -382,6 +394,7 @@ TEST(BeaconHintStore, MetadataReplacedOnRefresh) {
 // ---------------------------------------------------------------------------
 // EmptyMetadataPreservesExisting
 // ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
 TEST(BeaconHintStore, EmptyMetadataPreservesExisting) {
   BeaconHintStore store;
 
@@ -441,6 +454,7 @@ TEST(BeaconHintStore, ConcurrentGetDoesNotBlock) {
 
 // ---------------------------------------------------------------------------
 // ReceivedAtSetsLastSeen
+// @verifies REQ_DISCO_BEACON_03
 //
 // A hint with received_at set to 5 seconds ago should produce a last_seen
 // that reflects that age (approximately 5s old, not ~0s).
@@ -469,6 +483,7 @@ TEST(BeaconHintStore, ReceivedAtSetsLastSeen) {
 
 // ---------------------------------------------------------------------------
 // DefaultReceivedAtUsesNow
+// @verifies REQ_DISCO_BEACON_03
 //
 // A hint with default (zero-initialized) received_at should have last_seen
 // set to approximately steady_clock::now() at insert time.
@@ -491,6 +506,7 @@ TEST(BeaconHintStore, DefaultReceivedAtUsesNow) {
 
 // ---------------------------------------------------------------------------
 // ReceivedAtFarPastIsImmediatelyStale
+// @verifies REQ_DISCO_BEACON_03
 //
 // A hint with received_at set far in the past should be immediately STALE
 // if the age exceeds the TTL.
@@ -510,4 +526,82 @@ TEST(BeaconHintStore, ReceivedAtFarPastIsImmediatelyStale) {
   auto result = store.get("app_old_stamp");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->status, HintStatus::STALE);
+}
+
+// ---------------------------------------------------------------------------
+// TTLLifecycle
+// @verifies REQ_DISCO_BEACON_03
+//
+// Verify the ACTIVE -> STALE -> EXPIRED lifecycle with short TTL and expiry.
+// ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
+TEST(BeaconHintStore, TTLLifecycle) {
+  BeaconHintStore::Config cfg;
+  cfg.beacon_ttl_sec = 0.1;     // 100ms TTL
+  cfg.beacon_expiry_sec = 0.3;  // 300ms expiry
+  BeaconHintStore store(cfg);
+
+  // Insert hint and verify ACTIVE immediately.
+  ASSERT_TRUE(store.update(make_hint("lifecycle_app")));
+  EXPECT_EQ(store.get("lifecycle_app")->status, HintStatus::ACTIVE);
+
+  // Wait past TTL (0.25s > 0.1s TTL) but before expiry.
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  EXPECT_EQ(store.get("lifecycle_app")->status, HintStatus::STALE);
+
+  // Wait past expiry (total ~0.7s > 0.3s expiry).
+  std::this_thread::sleep_for(std::chrono::milliseconds(450));
+  auto snapshot = store.evict_and_snapshot();
+  EXPECT_TRUE(snapshot.empty());
+  EXPECT_EQ(store.size(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// MinimalHint
+// @verifies REQ_DISCO_BEACON_03
+//
+// A hint with only entity_id set should store and retrieve correctly.
+// ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
+TEST(BeaconHintStore, MinimalHint) {
+  BeaconHintStore store;
+
+  BeaconHint hint;
+  hint.entity_id = "minimal_app";
+  // All other fields are empty/default.
+  ASSERT_TRUE(store.update(hint));
+
+  auto result = store.get("minimal_app");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->hint.entity_id, "minimal_app");
+  EXPECT_TRUE(result->hint.transport_type.empty());
+  EXPECT_TRUE(result->hint.display_name.empty());
+  EXPECT_EQ(result->hint.process_id, 0u);
+  EXPECT_EQ(result->status, HintStatus::ACTIVE);
+}
+
+// ---------------------------------------------------------------------------
+// CapacityBehaviorThirdInsertRejected
+// @verifies REQ_DISCO_BEACON_03
+//
+// A store with max_hints=2 should reject the 3rd unique entity insert.
+// ---------------------------------------------------------------------------
+// @verifies REQ_DISCO_BEACON_03
+TEST(BeaconHintStore, CapacityBehaviorThirdInsertRejected) {
+  BeaconHintStore::Config cfg;
+  cfg.max_hints = 2;
+  BeaconHintStore store(cfg);
+
+  ASSERT_TRUE(store.update(make_hint("entity_a")));
+  ASSERT_TRUE(store.update(make_hint("entity_b")));
+  EXPECT_EQ(store.size(), 2u);
+
+  // Third insert with a different entity_id should be rejected.
+  EXPECT_FALSE(store.update(make_hint("entity_c")));
+  EXPECT_EQ(store.size(), 2u);
+
+  // Verify only the first two are stored.
+  EXPECT_TRUE(store.get("entity_a").has_value());
+  EXPECT_TRUE(store.get("entity_b").has_value());
+  EXPECT_FALSE(store.get("entity_c").has_value());
 }

@@ -36,6 +36,7 @@ class TestBeaconValidator : public ::testing::Test {
   }
 };
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, ValidHintAccepted) {
   auto hint = make_valid_hint();
   auto result = validate_beacon_hint(hint, limits_);
@@ -43,6 +44,7 @@ TEST_F(TestBeaconValidator, ValidHintAccepted) {
   EXPECT_TRUE(result.reason.empty());
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, EmptyEntityIdRejected) {
   auto hint = make_valid_hint();
   hint.entity_id = "";
@@ -51,6 +53,7 @@ TEST_F(TestBeaconValidator, EmptyEntityIdRejected) {
   EXPECT_FALSE(result.reason.empty());
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, InvalidEntityIdCharsRejected) {
   auto hint = make_valid_hint();
   hint.entity_id = "bad/entity id";
@@ -58,6 +61,7 @@ TEST_F(TestBeaconValidator, InvalidEntityIdCharsRejected) {
   EXPECT_FALSE(result.valid);
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, EntityIdWithNullByteRejected) {
   auto hint = make_valid_hint();
   hint.entity_id = std::string("bad\0id", 6);
@@ -65,6 +69,7 @@ TEST_F(TestBeaconValidator, EntityIdWithNullByteRejected) {
   EXPECT_FALSE(result.valid);
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, OversizedEntityIdRejected) {
   auto hint = make_valid_hint();
   hint.entity_id = std::string(257, 'a');
@@ -72,6 +77,7 @@ TEST_F(TestBeaconValidator, OversizedEntityIdRejected) {
   EXPECT_FALSE(result.valid);
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, InvalidFunctionIdSkipped) {
   auto hint = make_valid_hint();
   hint.function_ids = {"valid-id", "bad/id", "also_valid"};
@@ -82,6 +88,7 @@ TEST_F(TestBeaconValidator, InvalidFunctionIdSkipped) {
   EXPECT_EQ(hint.function_ids[1], "also_valid");
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, FunctionIdsTruncatedAtLimit) {
   auto hint = make_valid_hint();
   for (size_t i = 0; i < 105; ++i) {
@@ -92,6 +99,7 @@ TEST_F(TestBeaconValidator, FunctionIdsTruncatedAtLimit) {
   EXPECT_EQ(hint.function_ids.size(), limits_.max_function_ids);
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, MetadataKeyTooLongSkipped) {
   auto hint = make_valid_hint();
   hint.metadata[std::string(65, 'k')] = "value";
@@ -102,6 +110,7 @@ TEST_F(TestBeaconValidator, MetadataKeyTooLongSkipped) {
   EXPECT_TRUE(hint.metadata.count("good_key"));
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, MetadataValueTruncated) {
   auto hint = make_valid_hint();
   hint.metadata["key"] = std::string(2000, 'v');
@@ -110,6 +119,7 @@ TEST_F(TestBeaconValidator, MetadataValueTruncated) {
   EXPECT_EQ(hint.metadata["key"].size(), limits_.max_metadata_value_length);
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, ZeroPidTreatedAsNotProvided) {
   auto hint = make_valid_hint();
   hint.process_id = 0;
@@ -117,6 +127,7 @@ TEST_F(TestBeaconValidator, ZeroPidTreatedAsNotProvided) {
   EXPECT_TRUE(result.valid);
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, OversizedStringFieldsTruncated) {
   auto hint = make_valid_hint();
   // 10 KB hostname should be truncated to max_string_length (512)
@@ -134,6 +145,7 @@ TEST_F(TestBeaconValidator, OversizedStringFieldsTruncated) {
   EXPECT_EQ(hint.negotiated_format.size(), limits_.max_string_length);
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, ShortStringFieldsUnchanged) {
   auto hint = make_valid_hint();
   hint.hostname = "robot-01";
@@ -150,6 +162,7 @@ TEST_F(TestBeaconValidator, ShortStringFieldsUnchanged) {
   EXPECT_EQ(hint.negotiated_format, "cdr");
 }
 
+// @verifies REQ_DISCO_BEACON_05
 TEST_F(TestBeaconValidator, CustomMaxStringLength) {
   ValidationLimits custom;
   custom.max_string_length = 10;
