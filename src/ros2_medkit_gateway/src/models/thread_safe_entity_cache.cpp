@@ -35,6 +35,7 @@ void ThreadSafeEntityCache::update_all(std::vector<Area> areas, std::vector<Comp
   last_update_ = std::chrono::system_clock::now();
 
   rebuild_all_indexes();
+  generation_.fetch_add(1, std::memory_order_release);
 }
 
 void ThreadSafeEntityCache::update_areas(std::vector<Area> areas) {
@@ -43,6 +44,7 @@ void ThreadSafeEntityCache::update_areas(std::vector<Area> areas) {
   last_update_ = std::chrono::system_clock::now();
   rebuild_area_index();
   rebuild_relationship_indexes();
+  generation_.fetch_add(1, std::memory_order_release);
 }
 
 void ThreadSafeEntityCache::update_components(std::vector<Component> components) {
@@ -52,6 +54,7 @@ void ThreadSafeEntityCache::update_components(std::vector<Component> components)
   rebuild_component_index();
   rebuild_relationship_indexes();
   rebuild_operation_index();
+  generation_.fetch_add(1, std::memory_order_release);
 }
 
 void ThreadSafeEntityCache::update_apps(std::vector<App> apps) {
@@ -61,6 +64,7 @@ void ThreadSafeEntityCache::update_apps(std::vector<App> apps) {
   rebuild_app_index();
   rebuild_relationship_indexes();
   rebuild_operation_index();
+  generation_.fetch_add(1, std::memory_order_release);
 }
 
 void ThreadSafeEntityCache::update_functions(std::vector<Function> functions) {
@@ -69,6 +73,7 @@ void ThreadSafeEntityCache::update_functions(std::vector<Function> functions) {
   last_update_ = std::chrono::system_clock::now();
   rebuild_function_index();
   rebuild_relationship_indexes();
+  generation_.fetch_add(1, std::memory_order_release);
 }
 
 void ThreadSafeEntityCache::update_topic_types(std::unordered_map<std::string, std::string> topic_types) {
@@ -657,6 +662,10 @@ std::string ThreadSafeEntityCache::validate() const {
 std::chrono::system_clock::time_point ThreadSafeEntityCache::get_last_update() const {
   std::shared_lock lock(mutex_);
   return last_update_;
+}
+
+uint64_t ThreadSafeEntityCache::generation() const {
+  return generation_.load(std::memory_order_acquire);
 }
 
 // ============================================================================

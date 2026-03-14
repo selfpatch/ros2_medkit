@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/openapi/route_descriptions.hpp"
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_loader.hpp"
@@ -143,6 +144,10 @@ class PluginManager {
    * @return (plugin_name, provider) pairs for all IntrospectionProvider plugins
    */
   std::vector<std::pair<std::string, IntrospectionProvider *>> get_named_introspection_providers() const;
+
+  /// Collect OpenAPI route descriptions from all loaded plugins.
+  /// Uses dlsym to check for optional "describe_plugin_routes" export.
+  std::vector<openapi::RouteDescriptions> collect_route_descriptions() const;
 
   // ---- Capability queries (used by discovery handlers) ----
 
