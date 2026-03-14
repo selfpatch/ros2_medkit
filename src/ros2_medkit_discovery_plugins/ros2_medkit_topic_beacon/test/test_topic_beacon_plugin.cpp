@@ -12,12 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_topic_beacon/topic_beacon_plugin.hpp"
-
-#include <diagnostic_msgs/msg/key_value.hpp>
 #include <gtest/gtest.h>
-#include <nlohmann/json.hpp>
-#include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
 #include <memory>
@@ -25,8 +20,21 @@
 #include <thread>
 #include <vector>
 
-using namespace ros2_medkit_gateway;
-using namespace ros2_medkit_beacon;
+#include <diagnostic_msgs/msg/key_value.hpp>
+#include <nlohmann/json.hpp>
+#include <rclcpp/rclcpp.hpp>
+
+#include "ros2_medkit_topic_beacon/topic_beacon_plugin.hpp"
+
+using ros2_medkit_beacon::BeaconHint;
+using ros2_medkit_gateway::App;
+using ros2_medkit_gateway::GatewayPlugin;
+using ros2_medkit_gateway::IntrospectionInput;
+using ros2_medkit_gateway::IntrospectionProvider;
+using ros2_medkit_gateway::PLUGIN_API_VERSION;
+using ros2_medkit_gateway::PluginContext;
+using ros2_medkit_gateway::PluginEntityInfo;
+using ros2_medkit_gateway::SovdEntityType;
 
 // Extern "C" plugin exports (defined in topic_beacon_plugin.cpp, linked into test binary)
 extern "C" int plugin_api_version();
@@ -201,7 +209,7 @@ TEST_F(TopicBeaconPluginTest, IntrospectReturnsCorrectResult) {
 
   auto result = plugin_->introspect(input);
   EXPECT_FALSE(result.metadata.empty());
-  EXPECT_TRUE(result.metadata.count("my_app") > 0);
+  EXPECT_GT(result.metadata.count("my_app"), 0u);
   EXPECT_TRUE(result.metadata["my_app"].contains("x-medkit-beacon-status"));
 }
 

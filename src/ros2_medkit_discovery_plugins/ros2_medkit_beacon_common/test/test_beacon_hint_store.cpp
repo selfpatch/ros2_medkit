@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_beacon_common/beacon_hint_store.hpp"
-
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -21,6 +19,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "ros2_medkit_beacon_common/beacon_hint_store.hpp"
 
 using ros2_medkit_beacon::BeaconHint;
 using ros2_medkit_beacon::BeaconHintStore;

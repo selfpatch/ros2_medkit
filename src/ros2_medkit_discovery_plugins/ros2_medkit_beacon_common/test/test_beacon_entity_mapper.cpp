@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_beacon_common/beacon_entity_mapper.hpp"
-
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <chrono>
 #include <string>
 #include <vector>
+
+#include "ros2_medkit_beacon_common/beacon_entity_mapper.hpp"
 
 using ros2_medkit_beacon::BeaconEntityMapper;
 using ros2_medkit_beacon::BeaconHint;

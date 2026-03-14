@@ -14,10 +14,10 @@
 
 #pragma once
 
-#include "ros2_medkit_beacon_common/beacon_types.hpp"
-
 #include <cstddef>
 #include <string>
+
+#include "ros2_medkit_beacon_common/beacon_types.hpp"
 
 namespace ros2_medkit_beacon {
 

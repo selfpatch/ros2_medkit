@@ -17,8 +17,18 @@
 #include <algorithm>
 #include <chrono>
 
-using namespace ros2_medkit_gateway;
-using namespace ros2_medkit_beacon;
+using ros2_medkit_beacon::BeaconEntityMapper;
+using ros2_medkit_beacon::BeaconHint;
+using ros2_medkit_beacon::BeaconHintStore;
+using ros2_medkit_beacon::validate_beacon_hint;
+using ros2_medkit_beacon::ValidationLimits;
+using ros2_medkit_gateway::GatewayPlugin;
+using ros2_medkit_gateway::IntrospectionInput;
+using ros2_medkit_gateway::IntrospectionProvider;
+using ros2_medkit_gateway::IntrospectionResult;
+using ros2_medkit_gateway::PLUGIN_API_VERSION;
+using ros2_medkit_gateway::PluginContext;
+using ros2_medkit_gateway::SovdEntityType;
 
 std::string TopicBeaconPlugin::name() const {
   return "topic_beacon";

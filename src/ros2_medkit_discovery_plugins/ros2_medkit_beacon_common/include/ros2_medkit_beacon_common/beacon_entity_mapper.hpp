@@ -14,15 +14,15 @@
 
 #pragma once
 
-#include "ros2_medkit_beacon_common/beacon_hint_store.hpp"
-#include "ros2_medkit_beacon_common/beacon_types.hpp"
-
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
-
-#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
+
+#include "ros2_medkit_beacon_common/beacon_hint_store.hpp"
+#include "ros2_medkit_beacon_common/beacon_types.hpp"
+#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
 namespace ros2_medkit_beacon {
 
@@ -36,7 +36,7 @@ class BeaconEntityMapper {
   explicit BeaconEntityMapper(Config config);
 
   ros2_medkit_gateway::IntrospectionResult map(const std::vector<BeaconHintStore::StoredHint> & hints,
-                                               const ros2_medkit_gateway::IntrospectionInput & current_entities) const;
+                                               const ros2_medkit_gateway::IntrospectionInput & current) const;
 
  private:
   nlohmann::json build_metadata(const BeaconHintStore::StoredHint & hint) const;
