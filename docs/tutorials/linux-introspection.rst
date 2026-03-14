@@ -14,9 +14,9 @@ Apps and Components.
 - **container** - detects containerization via cgroup path analysis. Supports Docker,
   podman, and containerd. Reads cgroup v2 resource limits (``memory.max``, ``cpu.max``).
 
-All three plugins share a PID cache that maps ROS 2 node fully-qualified names to Linux
-PIDs by scanning ``/proc``. The cache refreshes on each discovery cycle and on demand
-when the TTL expires.
+Each plugin maintains its own PID cache that maps ROS 2 node fully-qualified names to
+Linux PIDs by scanning ``/proc``. The cache refreshes on each discovery cycle and on
+demand when the TTL expires.
 
 Requirements
 ------------
@@ -260,7 +260,7 @@ validation errors (404 for unknown entities) are handled automatically by
 +-----+---------------------------------------+-----------------------------------------------+
 | Code| Error ID                              | Description                                   |
 +=====+=======================================+===============================================+
-| 503 | ``x-medkit-pid-lookup-failed``        | PID not found for node. The node may not be   |
+| 404 | ``x-medkit-pid-lookup-failed``        | PID not found for node. The node may not be   |
 |     |                                       | running, or the PID cache has not refreshed.  |
 +-----+---------------------------------------+-----------------------------------------------+
 | 503 | ``x-medkit-proc-read-failed``         | Failed to read ``/proc/{pid}`` info. Process  |
@@ -303,13 +303,11 @@ regardless of how many other nodes share the same process.
 Introspection Metadata
 ----------------------
 
-Beyond REST endpoints, each plugin provides metadata during discovery cycles via the
-``IntrospectionProvider`` interface. This metadata is attached per-App in the entity
-cache and is accessible through the plugin API. It is populated on each discovery cycle
-and does not require explicit REST calls.
-
-To access introspection metadata programmatically, use the ``/apps/{id}`` discovery
-response, which includes plugin-provided metadata in the entity's capabilities.
+Plugin introspection data is accessed via the vendor extension endpoints registered by
+each plugin (e.g., ``GET /apps/{id}/x-medkit-procfs``). The ``IntrospectionProvider``
+interface enriches the discovery pipeline with capabilities and metadata fields, but the
+detailed introspection data is served through the plugin's own HTTP routes rather than
+embedded in standard discovery responses.
 
 Troubleshooting
 ---------------
