@@ -11,7 +11,9 @@ Added
 * ``MedkitDiscoveryHint`` message type for beacon publishers
 * ``discovery.manifest.enabled`` / ``discovery.runtime.enabled`` parameters for hybrid mode
 * ``NewEntities.functions`` - plugins can now produce Function entities
-* ``x-medkit-beacon`` vendor extension REST endpoint for beacon metadata
+* ``x-medkit-topic-beacon`` vendor extension REST endpoint (TopicBeaconPlugin) for push-based beacon metadata
+* ``x-medkit-param-beacon`` vendor extension REST endpoint (ParameterBeaconPlugin) for pull-based parameter beacon metadata
+* ``ros2_medkit_beacon_common`` shared library - ``BeaconHintStore``, ``build_beacon_response()``, and base ``BeaconPlugin`` class used by both beacon plugins
 
 0.3.0 (2026-02-27)
 ------------------

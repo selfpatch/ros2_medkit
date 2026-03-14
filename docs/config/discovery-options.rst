@@ -331,7 +331,8 @@ Configuration
 Beacon Lifecycle
 ^^^^^^^^^^^^^^^^
 
-Each hint follows a soft TTL lifecycle based on the ``stamp`` field:
+Each hint follows a soft TTL lifecycle based on the ``stamp`` field when
+provided, otherwise based on reception time:
 
 .. list-table::
    :header-rows: 1
@@ -343,32 +344,37 @@ Each hint follows a soft TTL lifecycle based on the ``stamp`` field:
      - Hint is within ``beacon_ttl_sec``. Enrichment is applied normally.
    * - **STALE**
      - Hint is past TTL but within ``beacon_expiry_sec``.
-       Enrichment is still applied; the ``x-medkit-beacon`` endpoint
-       includes a ``stale`` flag in its response.
+       Enrichment is still applied; the ``x-medkit-topic-beacon`` endpoint
+       returns ``"status": "stale"`` in its response.
    * - **EXPIRED**
      - Hint is past ``beacon_expiry_sec``. It is removed from the store
        and no longer contributes to enrichment.
 
-The ``x-medkit-beacon`` vendor endpoint exposes current beacon state:
+The ``x-medkit-topic-beacon`` vendor endpoint exposes current beacon state:
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/my_sensor/x-medkit-beacon
+   curl http://localhost:8080/api/v1/apps/engine_temp_sensor/x-medkit-topic-beacon
 
 **Example Response:**
 
 .. code-block:: json
 
    {
-     "entity_id": "my_sensor",
+     "entity_id": "engine_temp_sensor",
      "status": "active",
-     "display_name": "Temperature Sensor",
-     "function_ids": ["thermal_monitoring"],
+     "age_sec": 1.234,
+     "stable_id": "",
+     "display_name": "Engine Temperature Sensor",
+     "transport_type": "shared_memory",
+     "negotiated_format": "",
      "process_id": 12345,
-     "process_name": "component_container",
-     "hostname": "robot-01",
-     "last_seen": "2026-03-13T10:30:00.123Z",
-     "stale": false
+     "process_name": "sensor_node",
+     "hostname": "robot-1",
+     "component_id": "powertrain",
+     "function_ids": ["monitoring"],
+     "depends_on": [],
+     "metadata": {"custom_key": "custom_value"}
    }
 
 See Also
