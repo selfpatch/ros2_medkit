@@ -103,6 +103,24 @@ from multiple sources. Three layers contribute entities independently:
 
 Each layer's contribution is merged per **field-group** with configurable policies.
 
+Layer Enable/Disable
+^^^^^^^^^^^^^^^^^^^^
+
+Individual layers can be disabled without changing the discovery mode.
+This is useful when running beacon plugins as the sole enrichment source
+(disable manifest and/or runtime layers, keep only plugins):
+
+.. code-block:: yaml
+
+   discovery:
+     manifest:
+       enabled: true    # Default: true
+     runtime:
+       enabled: true    # Default: true
+
+When a layer is disabled, its entities are not discovered and its merge
+contributions are skipped. Plugins always run regardless of these flags.
+
 Field Groups
 ^^^^^^^^^^^^
 
@@ -407,6 +425,57 @@ The ``x-medkit-topic-beacon`` vendor endpoint exposes current beacon state:
      "depends_on": [],
      "metadata": {"custom_key": "custom_value"}
    }
+
+Beacon Metadata Keys
+^^^^^^^^^^^^^^^^^^^^
+
+When a beacon hint is applied to an entity, the following metadata keys are
+injected into the entity's response (e.g., ``GET /api/v1/apps/{id}``).
+These keys appear in the entity's ``metadata`` field, NOT in the vendor
+extension endpoint response.
+
+The keys are built by ``build_metadata()`` in ``beacon_entity_mapper.cpp``:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 15 45
+
+   * - Key
+     - Type
+     - Description
+   * - ``x-medkit-beacon-status``
+     - string
+     - Beacon state: ``"active"`` or ``"stale"``
+   * - ``x-medkit-beacon-age-sec``
+     - number
+     - Seconds since the hint was last seen
+   * - ``x-medkit-beacon-transport-type``
+     - string
+     - DDS transport type (e.g., ``"shared_memory"``, ``"nitros_zero_copy"``)
+   * - ``x-medkit-beacon-negotiated-format``
+     - string
+     - Negotiated data format (e.g., ``"nitros_image_bgr8"``)
+   * - ``x-medkit-beacon-process-id``
+     - integer
+     - OS process ID (PID)
+   * - ``x-medkit-beacon-process-name``
+     - string
+     - Process name
+   * - ``x-medkit-beacon-hostname``
+     - string
+     - Host identifier
+   * - ``x-medkit-beacon-stable-id``
+     - string
+     - Stable identity alias
+   * - ``x-medkit-beacon-depends-on``
+     - array
+     - Entity IDs this entity depends on
+   * - ``x-medkit-beacon-functions``
+     - array
+     - Function IDs this entity belongs to
+   * - ``x-medkit-beacon-<key>``
+     - string
+     - Freeform metadata from ``MedkitDiscoveryHint.metadata[]``
 
 Parameter Beacon Plugin (ParameterBeaconPlugin)
 ------------------------------------------------
