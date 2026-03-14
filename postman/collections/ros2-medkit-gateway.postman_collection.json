@@ -1986,6 +1986,66 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "Vendor Extensions",
+      "description": "Vendor-specific extension endpoints (x-medkit-* prefix). These endpoints expose beacon plugin state for individual apps.",
+      "item": [
+        {
+          "name": "GET App Topic Beacon State",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/:app_id/x-medkit-topic-beacon",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                ":app_id",
+                "x-medkit-topic-beacon"
+              ],
+              "variable": [
+                {
+                  "key": "app_id",
+                  "value": "engine_temp_sensor",
+                  "description": "App entity ID"
+                }
+              ]
+            },
+            "description": "Get the current topic beacon state for an app. Returns beacon status (active/stale), age, transport metadata, process info, and custom metadata from the most recent MedkitDiscoveryHint published by the node. Returns 404 if no hint has been received for this app."
+          },
+          "response": []
+        },
+        {
+          "name": "GET App Parameter Beacon State",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/apps/:app_id/x-medkit-param-beacon",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "apps",
+                ":app_id",
+                "x-medkit-param-beacon"
+              ],
+              "variable": [
+                {
+                  "key": "app_id",
+                  "value": "engine_temp_sensor",
+                  "description": "App entity ID"
+                }
+              ]
+            },
+            "description": "Get the current parameter beacon state for an app. Returns beacon status (active/stale), age, and metadata collected by polling the node's ROS 2 parameters under the configured prefix (default: ros2_medkit.discovery). Returns 404 if no hint has been collected for this app."
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

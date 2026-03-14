@@ -19,6 +19,9 @@ Multi-package colcon workspace under `src/`:
 | `ros2_medkit_serialization` | Runtime JSON <-> ROS 2 message serialization via dynmsg |
 | `ros2_medkit_msgs` | Custom service/message definitions |
 | `ros2_medkit_integration_tests` | Python integration test framework + launch tests |
+| `ros2_medkit_beacon_common` | Shared beacon validation, hint store, and entity mapper |
+| `ros2_medkit_topic_beacon` | Push-based topic beacon discovery plugin |
+| `ros2_medkit_param_beacon` | Pull-based parameter beacon discovery plugin |
 
 ## Architecture
 
