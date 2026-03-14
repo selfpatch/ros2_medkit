@@ -67,7 +67,20 @@ ament_export_include_directories(include)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  # uncrustify/cpplint conflict with project-wide clang-format (120 cols vs 100)
+  list(APPEND AMENT_LINT_AUTO_EXCLUDE
+    ament_cmake_uncrustify
+    ament_cmake_cpplint
+    ament_cmake_clang_format
+  )
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_clang_format REQUIRED)
+  file(GLOB_RECURSE _format_files
+    "include/*.hpp" "src/*.cpp" "test/*.cpp"
+  )
+  ament_clang_format(${_format_files}
+    CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../../.clang-format")
 
   find_package(ament_cmake_gtest REQUIRED)
 
