@@ -15,10 +15,12 @@
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <dirent.h>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <sys/stat.h>
@@ -30,6 +32,15 @@ namespace fs = std::filesystem;
 namespace ros2_medkit_linux_introspection {
 
 namespace {
+
+struct DirCloser {
+  void operator()(DIR * d) const {
+    if (d) {
+      closedir(d);
+    }
+  }
+};
+using UniqueDir = std::unique_ptr<DIR, DirCloser>;
 
 std::string read_file_contents(const std::string & path) {
   std::ifstream f(path);
@@ -197,14 +208,13 @@ tl::expected<ProcessInfo, std::string> read_process_info(pid_t pid, const std::s
 tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name, const std::string & node_namespace,
                                                    const std::string & root) {
   auto proc_dir = root + "/proc";
-  DIR * dir = opendir(proc_dir.c_str());
+  UniqueDir dir(opendir(proc_dir.c_str()));
   if (!dir) {
     return tl::make_unexpected("Cannot open " + proc_dir);
   }
 
   struct dirent * entry = nullptr;
-  while ((entry = readdir(dir)) != nullptr) {
-    // Skip non-numeric entries
+  while ((entry = readdir(dir.get())) != nullptr) {
     if (entry->d_type != DT_DIR && entry->d_type != DT_UNKNOWN) {
       continue;
     }
@@ -231,13 +241,15 @@ tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name
     std::string found_ns;
     if (parse_ros_args(cmdline_path, found_node, found_ns)) {
       if (found_node == node_name && (node_namespace.empty() || found_ns == node_namespace)) {
-        pid_t found_pid = static_cast<pid_t>(std::stoi(entry->d_name));
-        closedir(dir);
-        return found_pid;
+        char * end = nullptr;
+        long pid_val = std::strtol(entry->d_name, &end, 10);
+        if (end == entry->d_name || *end != '\0' || pid_val <= 0) {
+          continue;
+        }
+        return static_cast<pid_t>(pid_val);
       }
     }
   }
-  closedir(dir);
 
   return tl::make_unexpected("No process found for node " + node_namespace + "/" + node_name);
 }
@@ -286,15 +298,22 @@ std::optional<pid_t> PidCache::lookup(const std::string & node_fqn, const std::s
 void PidCache::refresh(const std::string & root) {
   std::unique_lock lock(mutex_);
 
+  // Double-check TTL under exclusive lock to avoid redundant scans
+  auto now = std::chrono::steady_clock::now();
+  if (now - last_refresh_ < ttl_) {
+    return;
+  }
+
   node_to_pid_.clear();
   auto proc_dir = root + "/proc";
-  DIR * dir = opendir(proc_dir.c_str());
+  UniqueDir dir(opendir(proc_dir.c_str()));
   if (!dir) {
+    last_refresh_ = std::chrono::steady_clock::now();
     return;
   }
 
   struct dirent * entry = nullptr;
-  while ((entry = readdir(dir)) != nullptr) {
+  while ((entry = readdir(dir.get())) != nullptr) {
     if (entry->d_type != DT_DIR && entry->d_type != DT_UNKNOWN) {
       continue;
     }
@@ -321,11 +340,13 @@ void PidCache::refresh(const std::string & root) {
     std::string node_ns;
     if (parse_ros_args(cmdline_path, node_name, node_ns)) {
       auto fqn = node_ns + "/" + node_name;
-      auto pid = static_cast<pid_t>(std::stoi(entry->d_name));
-      node_to_pid_[fqn] = pid;
+      char * end = nullptr;
+      long pid_val = std::strtol(entry->d_name, &end, 10);
+      if (end != entry->d_name && *end == '\0' && pid_val > 0) {
+        node_to_pid_[fqn] = static_cast<pid_t>(pid_val);
+      }
     }
   }
-  closedir(dir);
   last_refresh_ = std::chrono::steady_clock::now();
 }
 
