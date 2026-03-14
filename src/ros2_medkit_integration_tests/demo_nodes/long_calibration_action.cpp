@@ -28,6 +28,8 @@
  * - Result: int32[] sequence (final calibration values)
  */
 
+#include <unistd.h>
+
 #include <atomic>
 #include <cstdlib>
 #include <example_interfaces/action/fibonacci.hpp>
