@@ -320,10 +320,6 @@ Configuration
        # Default: false
        plugins.topic_beacon.allow_new_entities: false
 
-       # Verify process is alive by checking /proc/<pid>
-       # Default: true
-       plugins.topic_beacon.check_process_alive: true
-
        # Maximum number of hints to keep in memory
        # Default: 10000
        plugins.topic_beacon.max_hints: 10000

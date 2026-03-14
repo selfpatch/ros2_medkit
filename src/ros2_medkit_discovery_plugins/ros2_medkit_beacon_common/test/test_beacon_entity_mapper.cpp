@@ -516,6 +516,27 @@ TEST(BeaconEntityMapper, DisplayNameEmptyDoesNotOverrideName) {
 }
 
 // ---------------------------------------------------------------------------
+// FreeformMetadataDoesNotOverrideStructuredFields
+// ---------------------------------------------------------------------------
+TEST(BeaconEntityMapper, FreeformMetadataDoesNotOverrideStructuredFields) {
+  auto input = make_base_input();
+  BeaconEntityMapper mapper;
+
+  auto sh = make_stored_hint("lidar_driver", HintStatus::ACTIVE, std::chrono::seconds(1));
+  // Attempt to inject a freeform key "status" that collides with x-medkit-beacon-status
+  sh.hint.metadata = {{"status", "evil"}, {"age-sec", "999"}};
+
+  auto result = mapper.map({sh}, input);
+
+  ASSERT_TRUE(result.metadata.count("lidar_driver"));
+  auto & meta = result.metadata.at("lidar_driver");
+  // Structured "active" must win over freeform "evil"
+  EXPECT_EQ(meta["x-medkit-beacon-status"], "active");
+  // Structured age-sec must be a number (not the freeform string "999")
+  EXPECT_TRUE(meta["x-medkit-beacon-age-sec"].is_number());
+}
+
+// ---------------------------------------------------------------------------
 // ComponentIdEmptyDoesNotOverride
 // ---------------------------------------------------------------------------
 TEST(BeaconEntityMapper, ComponentIdEmptyDoesNotOverride) {

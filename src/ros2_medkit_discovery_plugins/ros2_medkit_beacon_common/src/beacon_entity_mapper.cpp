@@ -110,6 +110,12 @@ nlohmann::json BeaconEntityMapper::build_metadata(const BeaconHintStore::StoredH
   nlohmann::json meta;
   const auto & hint = stored.hint;
 
+  // Freeform metadata FIRST - structured fields below will overwrite any collisions,
+  // ensuring a freeform key like "status" cannot override x-medkit-beacon-status.
+  for (const auto & [key, value] : hint.metadata) {
+    meta["x-medkit-beacon-" + key] = value;
+  }
+
   // Status
   meta["x-medkit-beacon-status"] = (stored.status == HintStatus::ACTIVE) ? "active" : "stale";
 
@@ -150,11 +156,6 @@ nlohmann::json BeaconEntityMapper::build_metadata(const BeaconHintStore::StoredH
   // Optional function_ids
   if (!hint.function_ids.empty()) {
     meta["x-medkit-beacon-functions"] = hint.function_ids;
-  }
-
-  // Freeform metadata with x-medkit-beacon- prefix
-  for (const auto & [key, value] : hint.metadata) {
-    meta["x-medkit-beacon-" + key] = value;
   }
 
   return meta;

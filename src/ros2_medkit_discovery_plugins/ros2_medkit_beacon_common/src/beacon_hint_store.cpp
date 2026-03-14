@@ -76,9 +76,9 @@ bool BeaconHintStore::update(const BeaconHint & hint) {
       stored.hint.depends_on = hint.depends_on;
     }
 
-    // Merge metadata (new keys take precedence).
-    for (const auto & kv : hint.metadata) {
-      stored.hint.metadata[kv.first] = kv.second;
+    // Replace metadata wholesale (prevents unbounded growth across refreshes).
+    if (!hint.metadata.empty()) {
+      stored.hint.metadata = hint.metadata;
     }
 
     // Recompute status.

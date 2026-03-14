@@ -28,6 +28,7 @@ struct ValidationResult {
 
 struct ValidationLimits {
   size_t max_id_length{256};
+  size_t max_string_length{512};
   size_t max_function_ids{100};
   size_t max_depends_on{100};
   size_t max_metadata_entries{50};

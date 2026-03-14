@@ -21,6 +21,12 @@ namespace ros2_medkit_beacon {
 
 namespace {
 
+void truncate_if_needed(std::string & str, size_t max_length) {
+  if (str.size() > max_length) {
+    str.resize(max_length);
+  }
+}
+
 bool is_valid_id(const std::string & id, size_t max_length) {
   if (id.empty() || id.size() > max_length) {
     return false;
@@ -56,6 +62,13 @@ ValidationResult validate_beacon_hint(BeaconHint & hint, const ValidationLimits 
   if (!is_valid_id(hint.entity_id, limits.max_id_length)) {
     return {false, "invalid entity_id: '" + hint.entity_id + "'"};
   }
+
+  // Truncate freeform string fields that lack character-set validation.
+  truncate_if_needed(hint.display_name, limits.max_string_length);
+  truncate_if_needed(hint.process_name, limits.max_string_length);
+  truncate_if_needed(hint.hostname, limits.max_string_length);
+  truncate_if_needed(hint.transport_type, limits.max_string_length);
+  truncate_if_needed(hint.negotiated_format, limits.max_string_length);
 
   if (!hint.stable_id.empty() && !is_valid_id(hint.stable_id, limits.max_id_length)) {
     hint.stable_id.clear();

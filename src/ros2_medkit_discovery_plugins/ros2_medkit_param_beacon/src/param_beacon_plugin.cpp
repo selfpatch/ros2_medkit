@@ -42,27 +42,55 @@ void ParameterBeaconPlugin::configure(const nlohmann::json & config) {
   poll_budget_sec_ = config.value("poll_budget_sec", 10.0);
   param_timeout_sec_ = config.value("param_timeout_sec", 2.0);
 
-  BeaconHintStore::Config store_config;
-  store_config.beacon_ttl_sec = config.value("beacon_ttl_sec", 15.0);
-  store_config.beacon_expiry_sec = config.value("beacon_expiry_sec", 300.0);
-  store_config.check_process_alive = config.value("check_process_alive", true);
-  store_config.max_hints = config.value("max_hints", static_cast<size_t>(10000));
+  auto beacon_ttl = config.value("beacon_ttl_sec", 15.0);
+  auto beacon_expiry = config.value("beacon_expiry_sec", 300.0);
+  auto max_hints = config.value("max_hints", static_cast<size_t>(10000));
+
+  // Clamp to safe minimums
+  if (poll_interval_.count() < 0.1) {
+    log_warn("poll_interval_sec clamped from " + std::to_string(poll_interval_.count()) + " to 0.1");
+    poll_interval_ = std::chrono::duration<double>(0.1);
+  }
+  if (poll_budget_sec_ < 0.1) {
+    log_warn("poll_budget_sec clamped from " + std::to_string(poll_budget_sec_) + " to 0.1");
+    poll_budget_sec_ = 0.1;
+  }
+  if (param_timeout_sec_ < 0.1) {
+    log_warn("param_timeout_sec clamped from " + std::to_string(param_timeout_sec_) + " to 0.1");
+    param_timeout_sec_ = 0.1;
+  }
+  if (beacon_ttl < 0.1) {
+    log_warn("beacon_ttl_sec clamped from " + std::to_string(beacon_ttl) + " to 0.1");
+    beacon_ttl = 0.1;
+  }
+  if (beacon_expiry < 1.0) {
+    log_warn("beacon_expiry_sec clamped from " + std::to_string(beacon_expiry) + " to 1.0");
+    beacon_expiry = 1.0;
+  }
+  if (max_hints < 1) {
+    log_warn("max_hints clamped from 0 to 1");
+    max_hints = 1;
+  }
 
   // Config validation
-  if (store_config.beacon_ttl_sec <= poll_interval_.count()) {
+  if (beacon_ttl <= poll_interval_.count()) {
     log_warn(
         "beacon_ttl_sec <= poll_interval_sec: hints will stale between polls. Auto-setting ttl = 3 "
         "* poll_interval");
-    store_config.beacon_ttl_sec = poll_interval_.count() * 3.0;
+    beacon_ttl = poll_interval_.count() * 3.0;
   }
-  if (store_config.beacon_expiry_sec <= store_config.beacon_ttl_sec) {
+  if (beacon_expiry <= beacon_ttl) {
     log_warn("beacon_expiry_sec <= beacon_ttl_sec. Auto-setting expiry = 10 * ttl");
-    store_config.beacon_expiry_sec = store_config.beacon_ttl_sec * 10.0;
+    beacon_expiry = beacon_ttl * 10.0;
   }
   if (poll_budget_sec_ <= param_timeout_sec_) {
     log_warn("poll_budget_sec <= param_timeout_sec: at most one node polled per cycle");
   }
 
+  BeaconHintStore::Config store_config;
+  store_config.beacon_ttl_sec = beacon_ttl;
+  store_config.beacon_expiry_sec = beacon_expiry;
+  store_config.max_hints = max_hints;
   store_ = std::make_unique<BeaconHintStore>(store_config);
 
   BeaconEntityMapper::Config mapper_config;
@@ -249,7 +277,9 @@ void ParameterBeaconPlugin::poll_node(const std::string & fqn) {
     if (!client->wait_for_service(std::chrono::duration<double>(param_timeout_sec_))) {
       // Timeout - apply backoff
       auto & count = backoff_counts_[fqn];
-      ++count;
+      if (count < 100) {
+        ++count;  // cap to prevent overflow
+      }
       int skip = std::min(1 << std::min(count - 1, 3), 8);
       skip_remaining_[fqn] = skip;
       return;
@@ -286,7 +316,9 @@ void ParameterBeaconPlugin::poll_node(const std::string & fqn) {
   } catch (const std::exception & e) {
     // Node disappeared or service error - apply backoff
     auto & count = backoff_counts_[fqn];
-    ++count;
+    if (count < 100) {
+      ++count;  // cap to prevent overflow
+    }
     int skip = std::min(1 << std::min(count - 1, 3), 8);
     skip_remaining_[fqn] = skip;
   }
