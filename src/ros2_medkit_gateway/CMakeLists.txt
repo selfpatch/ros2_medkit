@@ -494,6 +494,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_log_handlers test/test_log_handlers.cpp)
   target_link_libraries(test_log_handlers gateway_lib)
 
+  # Route descriptions tests (OpenAPI doc builder)
+  ament_add_gtest(test_route_descriptions test/test_route_descriptions.cpp)
+  target_link_libraries(test_route_descriptions gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -535,6 +539,7 @@ if(BUILD_TESTING)
       test_merge_pipeline
       test_graph_provider_plugin
       test_runtime_linker
+      test_route_descriptions
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
