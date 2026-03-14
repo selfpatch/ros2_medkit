@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
+#include "ros2_medkit_linux_introspection/systemd_utils.hpp"
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -40,21 +41,6 @@ struct SdBusDeleter {
   }
 };
 using SdBusPtr = std::unique_ptr<sd_bus, SdBusDeleter>;
-
-// Escape unit name for systemd D-Bus object path
-std::string escape_unit_for_dbus(const std::string & unit) {
-  std::string result;
-  for (char c : unit) {
-    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-      result += c;
-    } else {
-      char buf[8];
-      snprintf(buf, sizeof(buf), "_%02x", static_cast<unsigned char>(c));
-      result += buf;
-    }
-  }
-  return result;
-}
 
 struct UnitInfo {
   std::string unit;
@@ -81,7 +67,7 @@ std::optional<UnitInfo> query_unit_info(const std::string & unit_name) {
     info.unit_type = unit_name.substr(dot_pos + 1);
   }
 
-  auto obj_path = "/org/freedesktop/systemd1/unit/" + escape_unit_for_dbus(unit_name);
+  auto obj_path = "/org/freedesktop/systemd1/unit/" + ros2_medkit_linux_introspection::escape_unit_for_dbus(unit_name);
   const char * iface = "org.freedesktop.systemd1.Unit";
 
   // ActiveState
@@ -133,14 +119,21 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
   }
 
   void configure(const nlohmann::json & config) override {
-    auto ttl = std::chrono::seconds{10};
+    std::chrono::seconds ttl{10};
     if (config.contains("pid_cache_ttl_seconds")) {
-      ttl = std::chrono::seconds{config["pid_cache_ttl_seconds"].get<int>()};
+      auto val = config["pid_cache_ttl_seconds"].get<int>();
+      if (val < 1) {
+        val = 1;
+      }
+      ttl = std::chrono::seconds{val};
     }
-    pid_cache_ = std::make_unique<ros2_medkit_linux_introspection::PidCache>(ttl);
     if (config.contains("proc_root")) {
       proc_root_ = config["proc_root"].get<std::string>();
+      if (proc_root_.empty() || proc_root_[0] != '/') {
+        proc_root_ = "/";
+      }
     }
+    pid_cache_ = std::make_unique<ros2_medkit_linux_introspection::PidCache>(ttl);
   }
 
   void set_context(PluginContext & ctx) override {
@@ -213,14 +206,14 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
 
     auto pid_opt = pid_cache_->lookup(entity->fqn, proc_root_);
     if (!pid_opt) {
-      PluginContext::send_error(res, 503, "x-medkit-pid-lookup-failed", "PID lookup failed for node " + entity->fqn);
+      PluginContext::send_error(res, 404, "x-medkit-pid-lookup-failed", "Process not found for entity " + entity_id);
       return;
     }
 
     char * unit_cstr = nullptr;
     if (sd_pid_get_unit(*pid_opt, &unit_cstr) < 0 || !unit_cstr) {
       PluginContext::send_error(res, 404, "x-medkit-not-in-systemd-unit",
-                                "Node " + entity->fqn + " is not running in a systemd unit");
+                                "Entity " + entity_id + " is not managed by a systemd unit");
       return;
     }
     std::string unit_name(unit_cstr);
@@ -229,7 +222,7 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
     auto unit_info = query_unit_info(unit_name);
     if (!unit_info) {
       PluginContext::send_error(res, 503, "x-medkit-systemd-query-failed",
-                                "Failed to query systemd properties for unit " + unit_name);
+                                "Failed to query systemd properties for entity " + entity_id);
       return;
     }
 
