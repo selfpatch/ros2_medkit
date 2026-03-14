@@ -160,4 +160,6 @@ linkcheck_ignore = [
     # avoid 395+ GitHub requests (rate-limiting) and anchor mismatches
     # on branches where files differ from main.
     r"https://github\.com/selfpatch/ros2_medkit/blob/.+#L\d+",
+    # GitHub issue links may 404 in linkcheck without auth token
+    r"https://github\.com/selfpatch/ros2_medkit/issues/\d+",
 ]
