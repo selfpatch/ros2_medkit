@@ -37,10 +37,17 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
   void configure(const nlohmann::json & config) override {
     std::chrono::seconds ttl{10};
     if (config.contains("pid_cache_ttl_seconds")) {
-      ttl = std::chrono::seconds{config["pid_cache_ttl_seconds"].get<int>()};
+      auto val = config["pid_cache_ttl_seconds"].get<int>();
+      if (val < 1) {
+        val = 1;
+      }
+      ttl = std::chrono::seconds{val};
     }
     if (config.contains("proc_root")) {
       proc_root_ = config["proc_root"].get<std::string>();
+      if (proc_root_.empty() || proc_root_[0] != '/') {
+        proc_root_ = "/";
+      }
     }
     pid_cache_ = std::make_unique<ros2_medkit_linux_introspection::PidCache>(ttl);
   }
@@ -108,13 +115,14 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
 
     auto pid_opt = pid_cache_->lookup(entity->fqn, proc_root_);
     if (!pid_opt) {
-      PluginContext::send_error(res, 503, "x-medkit-pid-lookup-failed", "PID lookup failed for node " + entity->fqn);
+      PluginContext::send_error(res, 404, "x-medkit-pid-lookup-failed", "Process not found for entity " + entity_id);
       return;
     }
 
     auto proc_info = ros2_medkit_linux_introspection::read_process_info(*pid_opt, proc_root_);
     if (!proc_info) {
-      PluginContext::send_error(res, 503, "x-medkit-proc-read-failed", proc_info.error());
+      PluginContext::send_error(res, 503, "x-medkit-proc-read-failed",
+                                "Failed to read process information for entity " + entity_id);
       return;
     }
 
