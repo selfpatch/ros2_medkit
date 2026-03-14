@@ -261,7 +261,7 @@ Retrieve diagnostic snapshots captured at fault occurrence time.
 See :doc:`/tutorials/snapshots` for detailed usage.
 
 MedkitDiscoveryHint.msg
-~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
 
 Push-based entity enrichment hints published by ROS 2 nodes to the gateway
 via the ``/ros2_medkit/discovery`` topic. The topic beacon plugin
