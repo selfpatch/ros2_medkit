@@ -174,7 +174,7 @@ void TopicBeaconPlugin::on_beacon(const ros2_medkit_msgs::msg::MedkitDiscoveryHi
   // Use message stamp for TTL if non-zero; otherwise fall back to steady_clock::now().
   if (msg->stamp.sec != 0 || msg->stamp.nanosec != 0) {
     auto now_wall = rclcpp::Clock(RCL_SYSTEM_TIME).now();
-    auto msg_age = now_wall - rclcpp::Time(msg->stamp);
+    auto msg_age = now_wall - rclcpp::Time(msg->stamp.sec, msg->stamp.nanosec, RCL_SYSTEM_TIME);
     if (msg_age.nanoseconds() > 0) {
       hint.received_at = std::chrono::steady_clock::now() - std::chrono::nanoseconds(msg_age.nanoseconds());
     } else {
