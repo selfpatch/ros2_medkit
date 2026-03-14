@@ -57,6 +57,9 @@ medkit_target_dependencies(demo_lidar_sensor rclcpp rcl_interfaces sensor_msgs s
 add_executable(demo_beacon_publisher demo_nodes/beacon_publisher.cpp)
 medkit_target_dependencies(demo_beacon_publisher rclcpp ros2_medkit_msgs diagnostic_msgs)
 
+add_executable(demo_param_beacon_node demo_nodes/param_beacon_node.cpp)
+medkit_target_dependencies(demo_param_beacon_node rclcpp)
+
 install(TARGETS
   demo_engine_temp_sensor
   demo_rpm_sensor
@@ -68,6 +71,7 @@ install(TARGETS
   demo_long_calibration_action
   demo_lidar_sensor
   demo_beacon_publisher
+  demo_param_beacon_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
