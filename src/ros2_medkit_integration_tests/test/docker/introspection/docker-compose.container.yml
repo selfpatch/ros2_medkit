@@ -23,11 +23,8 @@ services:
       dockerfile: src/ros2_medkit_integration_tests/test/docker/introspection/Dockerfile.container
     ports:
       - "9210:8080"
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
+    mem_limit: 512m
+    cpus: 1.0
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/api/v1/health"]
       interval: 5s
