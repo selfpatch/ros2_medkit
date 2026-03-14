@@ -147,6 +147,8 @@ add_library(gateway_lib STATIC
   src/plugins/plugin_context.cpp
   src/plugins/plugin_loader.cpp
   src/plugins/plugin_manager.cpp
+  # OpenAPI documentation module
+  src/openapi/schema_builder.cpp
 )
 
 medkit_target_dependencies(gateway_lib
@@ -482,6 +484,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_route_descriptions test/test_route_descriptions.cpp)
   target_link_libraries(test_route_descriptions gateway_lib)
 
+  # Schema builder tests (OpenAPI schema generation)
+  ament_add_gtest(test_schema_builder test/test_schema_builder.cpp)
+  target_link_libraries(test_schema_builder gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -522,6 +528,7 @@ if(BUILD_TESTING)
       test_merge_pipeline
       test_runtime_linker
       test_route_descriptions
+      test_schema_builder
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
