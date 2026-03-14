@@ -1989,7 +1989,7 @@
     },
     {
       "name": "Vendor Extensions",
-      "description": "Vendor-specific extension endpoints (x-medkit-* prefix). These endpoints expose beacon plugin state for individual apps.",
+      "description": "Vendor-specific extension endpoints (x-medkit-* prefix). These endpoints expose beacon plugin state for apps and components.",
       "item": [
         {
           "name": "GET App Topic Beacon State",
@@ -2042,6 +2042,60 @@
               ]
             },
             "description": "Get the current parameter beacon state for an app. Returns beacon status (active/stale), age, and metadata collected by polling the node's ROS 2 parameters under the configured prefix (default: ros2_medkit.discovery). Returns 404 if no hint has been collected for this app."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Component Topic Beacon State",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/:component_id/x-medkit-topic-beacon",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                ":component_id",
+                "x-medkit-topic-beacon"
+              ],
+              "variable": [
+                {
+                  "key": "component_id",
+                  "value": "powertrain_engine",
+                  "description": "Component entity ID"
+                }
+              ]
+            },
+            "description": "Get the current topic beacon state for a component."
+          },
+          "response": []
+        },
+        {
+          "name": "GET Component Parameter Beacon State",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/components/:component_id/x-medkit-param-beacon",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "components",
+                ":component_id",
+                "x-medkit-param-beacon"
+              ],
+              "variable": [
+                {
+                  "key": "component_id",
+                  "value": "powertrain_engine",
+                  "description": "Component entity ID"
+                }
+              ]
+            },
+            "description": "Get the current parameter beacon state for a component."
           },
           "response": []
         }

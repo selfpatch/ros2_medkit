@@ -46,7 +46,7 @@ void ParameterBeaconPlugin::configure(const nlohmann::json & config) {
 
   auto beacon_ttl = config.value("beacon_ttl_sec", 15.0);
   auto beacon_expiry = config.value("beacon_expiry_sec", 300.0);
-  auto max_hints = config.value("max_hints", static_cast<size_t>(10000));
+  auto max_hints = static_cast<size_t>(std::max(config.value("max_hints", 10000), 1));
 
   // Clamp to safe minimums
   if (poll_interval_.count() < 0.1) {
@@ -69,10 +69,7 @@ void ParameterBeaconPlugin::configure(const nlohmann::json & config) {
     log_warn("beacon_expiry_sec clamped from " + std::to_string(beacon_expiry) + " to 1.0");
     beacon_expiry = 1.0;
   }
-  if (max_hints < 1) {
-    log_warn("max_hints clamped from 0 to 1");
-    max_hints = 1;
-  }
+  // max_hints already clamped to >= 1 via std::max above
 
   // Config validation
   if (beacon_ttl <= poll_interval_.count()) {
@@ -198,6 +195,9 @@ IntrospectionResult ParameterBeaconPlugin::introspect(const IntrospectionInput &
 
   for (const auto & stored : snapshot) {
     if (result.metadata.find(stored.hint.entity_id) == result.metadata.end()) {
+      if (logged_skipped_entities_.size() >= 1000) {
+        logged_skipped_entities_.clear();
+      }
       if (logged_skipped_entities_.insert(stored.hint.entity_id).second) {
         log_info("Beacon entity '" + stored.hint.entity_id +
                  "' not in known entities (allow_new_entities=false), skipped");
