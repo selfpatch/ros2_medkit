@@ -22,6 +22,7 @@ Changelog for package ros2_medkit_gateway
 * Area and function log endpoints with namespace aggregation and host-based aggregation (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
 * Entity capabilities fix: areas and functions now report correct resource collections (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
 * SOVD compliance documentation with resource collection support matrix (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
+* Linux introspection plugins: procfs, systemd, and container plugins for process-level diagnostics via ``x-medkit-*`` vendor extension endpoints (`#263 <https://github.com/selfpatch/ros2_medkit/pull/263>`_)
 * Gateway plugin framework with dynamic C++ plugin loading (`#237 <https://github.com/selfpatch/ros2_medkit/pull/237>`_)
 * Software updates plugin with 8 SOVD-compliant endpoints (`#237 <https://github.com/selfpatch/ros2_medkit/pull/237>`_, `#231 <https://github.com/selfpatch/ros2_medkit/pull/231>`_)
 * SSE-based periodic data subscriptions for real-time streaming without polling (`#223 <https://github.com/selfpatch/ros2_medkit/pull/223>`_)
