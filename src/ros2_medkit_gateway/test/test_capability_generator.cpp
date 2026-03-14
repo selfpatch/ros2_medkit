@@ -340,3 +340,80 @@ TEST_F(CapabilityGeneratorTest, AreaCollectionContainsBothListAndDetailPaths) {
   EXPECT_TRUE(spec["paths"].contains("/areas"));
   EXPECT_TRUE(spec["paths"].contains("/areas/{area_id}"));
 }
+
+// =============================================================================
+// Caching tests
+// =============================================================================
+
+TEST_F(CapabilityGeneratorTest, CacheReturnsSameResultForSamePath) {
+  auto spec1 = generator_->generate("/apps");
+  auto spec2 = generator_->generate("/apps");
+  ASSERT_TRUE(spec1.has_value());
+  ASSERT_TRUE(spec2.has_value());
+  EXPECT_EQ(*spec1, *spec2);
+}
+
+TEST_F(CapabilityGeneratorTest, CacheReturnsSameResultForRootPath) {
+  auto spec1 = generator_->generate("/");
+  auto spec2 = generator_->generate("/");
+  ASSERT_TRUE(spec1.has_value());
+  ASSERT_TRUE(spec2.has_value());
+  EXPECT_EQ(*spec1, *spec2);
+}
+
+TEST_F(CapabilityGeneratorTest, CacheReturnsDifferentResultsForDifferentPaths) {
+  auto spec1 = generator_->generate("/apps");
+  auto spec2 = generator_->generate("/components");
+  ASSERT_TRUE(spec1.has_value());
+  ASSERT_TRUE(spec2.has_value());
+  // Different paths should produce different specs (different titles at minimum)
+  EXPECT_NE(*spec1, *spec2);
+}
+
+TEST_F(CapabilityGeneratorTest, CacheDoesNotReturnResultForInvalidPath) {
+  auto spec1 = generator_->generate("/nonexistent/path");
+  EXPECT_FALSE(spec1.has_value());
+  // Calling again should also return nullopt (invalid results are not cached)
+  auto spec2 = generator_->generate("/nonexistent/path");
+  EXPECT_FALSE(spec2.has_value());
+}
+
+// =============================================================================
+// ThreadSafeEntityCache generation counter tests (standalone, no GatewayNode)
+// =============================================================================
+
+TEST(ThreadSafeEntityCacheGenerationTest, GenerationStartsAtZero) {
+  ThreadSafeEntityCache cache;
+  EXPECT_EQ(cache.generation(), 0u);
+}
+
+TEST(ThreadSafeEntityCacheGenerationTest, GenerationIncrementsOnUpdateAll) {
+  ThreadSafeEntityCache cache;
+  cache.update_all({}, {}, {}, {});
+  EXPECT_EQ(cache.generation(), 1u);
+}
+
+TEST(ThreadSafeEntityCacheGenerationTest, GenerationIncrementsOnEachUpdate) {
+  ThreadSafeEntityCache cache;
+
+  cache.update_areas({});
+  EXPECT_EQ(cache.generation(), 1u);
+
+  cache.update_components({});
+  EXPECT_EQ(cache.generation(), 2u);
+
+  cache.update_apps({});
+  EXPECT_EQ(cache.generation(), 3u);
+
+  cache.update_functions({});
+  EXPECT_EQ(cache.generation(), 4u);
+
+  cache.update_all({}, {}, {}, {});
+  EXPECT_EQ(cache.generation(), 5u);
+}
+
+TEST(ThreadSafeEntityCacheGenerationTest, TopicTypesUpdateDoesNotIncrementGeneration) {
+  ThreadSafeEntityCache cache;
+  cache.update_topic_types({{"topic", "std_msgs/msg/String"}});
+  EXPECT_EQ(cache.generation(), 0u);
+}

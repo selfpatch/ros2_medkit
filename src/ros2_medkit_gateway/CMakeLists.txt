@@ -130,6 +130,7 @@ add_library(gateway_lib STATIC
   src/http/handlers/cyclic_subscription_handlers.cpp
   src/http/handlers/sse_transport_provider.cpp
   src/http/handlers/auth_handlers.cpp
+  src/http/handlers/docs_handlers.cpp
   # Bulk data storage
   src/bulk_data_store.cpp
   # HTTP utilities

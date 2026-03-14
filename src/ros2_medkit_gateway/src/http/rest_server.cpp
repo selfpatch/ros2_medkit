@@ -137,6 +137,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
     update_handlers_ = std::make_unique<handlers::UpdateHandlers>(*handler_ctx_, node_->get_update_manager());
   }
 
+  docs_handlers_ = std::make_unique<handlers::DocsHandlers>(*handler_ctx_, *node_, node_->get_plugin_manager());
+
   // Set up global error handlers for SOVD GenericError compliance
   setup_global_error_handlers();
   // Set up pre-routing handler for CORS and Authentication
@@ -253,6 +255,14 @@ void RESTServer::setup_routes() {
   if (!srv) {
     throw std::runtime_error("No server instance available for route setup");
   }
+
+  // === Docs routes - MUST be before data/config item routes to avoid (.+) capture collision ===
+  srv->Get(api_path("/docs"), [this](const httplib::Request & req, httplib::Response & res) {
+    docs_handlers_->handle_docs_root(req, res);
+  });
+  srv->Get((api_path("") + R"((.+)/docs$)"), [this](const httplib::Request & req, httplib::Response & res) {
+    docs_handlers_->handle_docs_any_path(req, res);
+  });
 
   // Health check
   srv->Get(api_path("/health"), [this](const httplib::Request & req, httplib::Response & res) {

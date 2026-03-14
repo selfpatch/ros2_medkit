@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 
+#include <dlfcn.h>
+
 #include <rclcpp/rclcpp.hpp>
 
 namespace ros2_medkit_gateway {
@@ -353,6 +355,41 @@ std::vector<std::string> PluginManager::plugin_names() const {
     }
   }
   return names;
+}
+
+std::vector<openapi::RouteDescriptions> PluginManager::collect_route_descriptions() const {
+  std::vector<openapi::RouteDescriptions> all_descriptions;
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
+
+  for (const auto & lp : plugins_) {
+    if (!lp.load_result.plugin) {
+      continue;
+    }
+
+    void * handle = lp.load_result.dl_handle();
+    if (!handle) {
+      continue;
+    }
+
+    // Check for optional describe_plugin_routes symbol
+    using DescribeFn = openapi::RouteDescriptions (*)();
+    auto fn = reinterpret_cast<DescribeFn>(dlsym(handle, "describe_plugin_routes"));
+    if (!fn) {
+      continue;  // Plugin doesn't export route descriptions - skip silently
+    }
+
+    try {
+      all_descriptions.push_back(fn());
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(logger(), "Plugin '%s' threw in describe_plugin_routes(): %s", lp.load_result.plugin->name().c_str(),
+                  e.what());
+    } catch (...) {
+      RCLCPP_WARN(logger(), "Plugin '%s' threw unknown exception in describe_plugin_routes()",
+                  lp.load_result.plugin->name().c_str());
+    }
+  }
+
+  return all_descriptions;
 }
 
 }  // namespace ros2_medkit_gateway
