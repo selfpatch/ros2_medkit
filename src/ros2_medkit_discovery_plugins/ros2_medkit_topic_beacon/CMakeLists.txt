@@ -43,7 +43,7 @@ add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
 
 # MODULE target: loaded via dlopen at runtime by PluginManager.
 # Symbols from gateway_lib are resolved from the host process at runtime.
-# We only need headers at compile time (via ament_target_dependencies).
+# We only need headers at compile time (via medkit_target_dependencies).
 add_library(topic_beacon_plugin MODULE
   src/topic_beacon_plugin.cpp
 )
@@ -52,7 +52,7 @@ target_include_directories(topic_beacon_plugin PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-ament_target_dependencies(topic_beacon_plugin
+medkit_target_dependencies(topic_beacon_plugin
   ros2_medkit_msgs
   ros2_medkit_gateway
   ros2_medkit_beacon_common
@@ -96,7 +96,7 @@ if(BUILD_TESTING)
     TIMEOUT 30)
   target_include_directories(test_topic_beacon_plugin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  ament_target_dependencies(test_topic_beacon_plugin
+  medkit_target_dependencies(test_topic_beacon_plugin
     ros2_medkit_msgs ros2_medkit_gateway ros2_medkit_beacon_common rclcpp diagnostic_msgs)
   target_link_libraries(test_topic_beacon_plugin
     nlohmann_json::nlohmann_json

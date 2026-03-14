@@ -22,6 +22,10 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Shared cmake modules (multi-distro compat)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../../cmake")
+include(ROS2MedkitCompat)
+
 find_package(ament_cmake REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 find_package(ros2_medkit_gateway REQUIRED)
@@ -44,7 +48,7 @@ target_include_directories(beacon_common_lib PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(beacon_common_lib
+medkit_target_dependencies(beacon_common_lib
   ros2_medkit_msgs
   ros2_medkit_gateway
   rclcpp
@@ -87,15 +91,15 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_beacon_validator test/test_beacon_validator.cpp)
   target_link_libraries(test_beacon_validator beacon_common_lib)
-  ament_target_dependencies(test_beacon_validator ros2_medkit_gateway)
+  medkit_target_dependencies(test_beacon_validator ros2_medkit_gateway)
 
   ament_add_gtest(test_beacon_hint_store test/test_beacon_hint_store.cpp)
   target_link_libraries(test_beacon_hint_store beacon_common_lib)
-  ament_target_dependencies(test_beacon_hint_store ros2_medkit_gateway)
+  medkit_target_dependencies(test_beacon_hint_store ros2_medkit_gateway)
 
   ament_add_gtest(test_beacon_entity_mapper test/test_beacon_entity_mapper.cpp)
   target_link_libraries(test_beacon_entity_mapper beacon_common_lib)
-  ament_target_dependencies(test_beacon_entity_mapper ros2_medkit_gateway)
+  medkit_target_dependencies(test_beacon_entity_mapper ros2_medkit_gateway)
 endif()
 
 ament_package()
