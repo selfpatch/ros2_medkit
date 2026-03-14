@@ -247,6 +247,7 @@ AMENT_IGNORE
 # Git worktrees
 .worktrees/
 
-# End of https://www.toptal.com/developers/gitignore/api/ros2,c++,pythonPLAN.md
+# Pixi
+.pixi/
 
-PLAN.mdsrc/dynamic_message_introspection/
+# End of https://www.toptal.com/developers/gitignore/api/ros2,c++,python
