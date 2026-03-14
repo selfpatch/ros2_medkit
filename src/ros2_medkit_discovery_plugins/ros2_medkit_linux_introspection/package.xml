@@ -13,7 +13,7 @@
   <depend>nlohmann-json-dev</depend>
   <depend>libcpp-httplib-dev</depend>
   <depend>libssl-dev</depend>
-  <build_depend>libsystemd-dev</build_depend>
+  <depend>libsystemd-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_cmake_gtest</test_depend>
