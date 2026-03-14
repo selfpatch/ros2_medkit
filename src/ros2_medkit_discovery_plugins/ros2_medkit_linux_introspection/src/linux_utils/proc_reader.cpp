@@ -344,7 +344,7 @@ void PidCache::refresh(const std::string & root) {
     std::string node_name;
     std::string node_ns;
     if (parse_ros_args(cmdline_path, node_name, node_ns)) {
-      auto fqn = node_ns + "/" + node_name;
+      auto fqn = (node_ns == "/" || node_ns.empty()) ? "/" + node_name : node_ns + "/" + node_name;
       char * end = nullptr;
       long pid_val = std::strtol(entry->d_name, &end, 10);
       if (end != entry->d_name && *end == '\0' && pid_val > 0) {

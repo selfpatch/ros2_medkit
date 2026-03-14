@@ -148,6 +148,22 @@ TEST_F(PidCacheTest, NonexistentProcDir) {
 }
 
 // @verifies REQ_INTEROP_003
+TEST_F(PidCacheTest, LookupRootNamespaceNode) {
+  fs::create_directories(tmpdir_ / "proc" / "500");
+  {
+    std::ofstream f(tmpdir_ / "proc" / "500" / "cmdline");
+    std::string cmdline = std::string("/usr/bin/talker") + '\0' + std::string("--ros-args") + '\0' +
+                          std::string("__node:=talker") + '\0' + std::string("__ns:=/") + '\0';
+    f.write(cmdline.data(), static_cast<std::streamsize>(cmdline.size()));
+  }
+
+  PidCache cache(std::chrono::milliseconds(100));
+  auto result = cache.lookup("/talker", tmpdir_.string());
+  ASSERT_TRUE(result.has_value()) << "Root-namespace node lookup failed";
+  EXPECT_EQ(*result, 500);
+}
+
+// @verifies REQ_INTEROP_003
 TEST_F(PidCacheTest, ConcurrentLookupDoesNotCrash) {
   PidCache cache(std::chrono::milliseconds{1});
 
