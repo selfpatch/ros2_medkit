@@ -32,8 +32,9 @@
 namespace ros2_medkit_gateway {
 namespace openapi {
 
-CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr)
-  : ctx_(ctx), node_(node), plugin_mgr_(plugin_mgr), schema_builder_() {
+CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
+                                         const RouteRegistry * route_registry)
+  : ctx_(ctx), node_(node), plugin_mgr_(plugin_mgr), route_registry_(route_registry), schema_builder_() {
 }
 
 // TODO(#272): Fix TOCTOU race - use compare-and-swap when storing cached specs
@@ -98,125 +99,17 @@ std::optional<nlohmann::json> CapabilityGenerator::generate_impl(const std::stri
 // -----------------------------------------------------------------------------
 
 nlohmann::json CapabilityGenerator::generate_root() const {
-  auto spec = build_base_spec();
-  PathBuilder path_builder(schema_builder_, ctx_.auth_config().enabled);
-  nlohmann::json paths;
-
-  // Health endpoint
-  nlohmann::json health_path;
-  nlohmann::json health_get;
-  health_get["tags"] = nlohmann::json::array({"Server"});
-  health_get["summary"] = "Health check";
-  health_get["description"] = "Returns gateway health status.";
-  health_get["responses"]["200"]["description"] = "Gateway is healthy";
-  health_get["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::health_schema();
-  health_path["get"] = std::move(health_get);
-  paths["/health"] = std::move(health_path);
-
-  // Version-info endpoint
-  nlohmann::json version_path;
-  nlohmann::json version_get;
-  version_get["tags"] = nlohmann::json::array({"Server"});
-  version_get["summary"] = "SOVD version information";
-  version_get["description"] = "Returns SOVD specification version and vendor info (SOVD 7.4.1).";
-  version_get["responses"]["200"]["description"] = "Version information";
-  version_get["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::version_info_schema();
-  version_path["get"] = std::move(version_get);
-  paths["/version-info"] = std::move(version_path);
-
-  // Root endpoint (API overview)
-  nlohmann::json root_path;
-  nlohmann::json root_get;
-  root_get["tags"] = nlohmann::json::array({"Server"});
-  root_get["summary"] = "API overview";
-  root_get["description"] = "Returns gateway metadata, available endpoints, and capabilities.";
-  root_get["responses"]["200"]["description"] = "API overview";
-  root_get["responses"]["200"]["content"]["application/json"]["schema"] = {
-      {"type", "object"},
-      {"properties",
-       {{"name", {{"type", "string"}}},
-        {"version", {{"type", "string"}}},
-        {"api_base", {{"type", "string"}}},
-        {"endpoints", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-        {"capabilities", {{"type", "object"}}}}}};
-  root_path["get"] = std::move(root_get);
-  paths["/"] = std::move(root_path);
-
-  // Entity collection + detail + resource collection endpoints
-  for (const auto & entity_type : {"areas", "components", "apps", "functions"}) {
-    std::string collection_path = std::string("/") + entity_type;
-    std::string singular = entity_type;
-    if (!singular.empty() && singular.back() == 's') {
-      singular.pop_back();
-    }
-    std::string entity_path = collection_path + "/{" + singular + "_id}";
-
-    paths[collection_path] = path_builder.build_entity_collection(entity_type);
-    paths[entity_path] = path_builder.build_entity_detail(entity_type);
-
-    // Resource collection endpoints for each entity type
-    paths[entity_path + "/data"] = path_builder.build_data_collection(entity_path, {});
-    paths[entity_path + "/data/{data_id}"] =
-        path_builder.build_data_item(entity_path, {"{data_id}", "object", "publish"});
-    paths[entity_path + "/operations"] = path_builder.build_operations_collection(entity_path, {});
-    paths[entity_path + "/configurations"] = path_builder.build_configurations_collection(entity_path);
-    paths[entity_path + "/configurations/{config_id}"] = path_builder.build_configurations_collection(entity_path);
-    paths[entity_path + "/faults"] = path_builder.build_faults_collection(entity_path);
-    paths[entity_path + "/logs"] = path_builder.build_logs_collection(entity_path);
-    paths[entity_path + "/bulk-data"] = path_builder.build_bulk_data_collection(entity_path);
-    paths[entity_path + "/cyclic-subscriptions"] = path_builder.build_cyclic_subscriptions_collection(entity_path);
-  }
-
-  // Subareas under areas
-  paths["/areas/{area_id}/subareas"] = path_builder.build_entity_collection("subareas");
-  paths["/areas/{area_id}/subareas/{subarea_id}"] = path_builder.build_entity_detail("subareas");
-
-  // Subcomponents under components
-  paths["/components/{component_id}/subcomponents"] = path_builder.build_entity_collection("subcomponents");
-  paths["/components/{component_id}/subcomponents/{subcomponent_id}"] =
-      path_builder.build_entity_detail("subcomponents");
-
-  // Global faults
-  paths["/faults"] = path_builder.build_faults_collection("");
-  paths["/faults/stream"] = path_builder.build_sse_endpoint("/faults/stream", "Stream fault events");
-
-  // Auth endpoints (if auth is enabled)
-  const auto & auth_config = ctx_.auth_config();
-  if (auth_config.enabled) {
-    nlohmann::json auth_authorize;
-    nlohmann::json auth_post;
-    auth_post["tags"] = nlohmann::json::array({"Authentication"});
-    auth_post["summary"] = "Authorize client";
-    auth_post["description"] = "Authenticate and obtain authorization.";
-    auth_post["responses"]["200"]["description"] = "Authorization successful";
-    auth_authorize["post"] = std::move(auth_post);
-    paths["/auth/authorize"] = std::move(auth_authorize);
-
-    nlohmann::json auth_token;
-    nlohmann::json token_post;
-    token_post["tags"] = nlohmann::json::array({"Authentication"});
-    token_post["summary"] = "Obtain access token";
-    token_post["description"] = "Exchange credentials for a JWT access token.";
-    token_post["responses"]["200"]["description"] = "Token issued";
-    auth_token["post"] = std::move(token_post);
-    paths["/auth/token"] = std::move(auth_token);
-
-    nlohmann::json auth_revoke;
-    nlohmann::json revoke_post;
-    revoke_post["tags"] = nlohmann::json::array({"Authentication"});
-    revoke_post["summary"] = "Revoke token";
-    revoke_post["description"] = "Revoke an access token.";
-    revoke_post["responses"]["200"]["description"] = "Token revoked";
-    auth_revoke["post"] = std::move(revoke_post);
-    paths["/auth/revoke"] = std::move(auth_revoke);
-  }
-
   OpenApiSpecBuilder builder;
   builder.info("ROS 2 Medkit Gateway", kGatewayVersion)
       .sovd_version(kSovdVersion)
-      .server(build_server_url(), "Gateway server")
-      .add_paths(paths);
+      .server(build_server_url(), "Gateway server");
 
+  // Use route registry as single source of truth for paths when available
+  if (route_registry_) {
+    builder.add_paths(route_registry_->to_openapi_paths());
+  }
+
+  const auto & auth_config = ctx_.auth_config();
   if (auth_config.enabled) {
     builder.security_scheme("bearerAuth", {{"type", "http"}, {"scheme", "bearer"}, {"bearerFormat", "JWT"}});
   }

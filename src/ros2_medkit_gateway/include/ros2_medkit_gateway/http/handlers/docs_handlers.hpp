@@ -27,6 +27,7 @@ class PluginManager;
 
 namespace openapi {
 class CapabilityGenerator;
+class RouteRegistry;
 }  // namespace openapi
 
 namespace handlers {
@@ -40,7 +41,8 @@ namespace handlers {
  */
 class DocsHandlers {
  public:
-  DocsHandlers(HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr);
+  DocsHandlers(HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
+               const openapi::RouteRegistry * route_registry = nullptr);
   ~DocsHandlers();
 
   /// GET /docs - Root capability description

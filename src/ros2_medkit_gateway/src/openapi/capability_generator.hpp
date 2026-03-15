@@ -21,6 +21,7 @@
 #include <unordered_map>
 
 #include "path_resolver.hpp"
+#include "route_registry.hpp"
 #include "schema_builder.hpp"
 
 #include "ros2_medkit_gateway/models/entity_types.hpp"
@@ -44,7 +45,8 @@ class CapabilityGenerator {
  public:
   static constexpr size_t kMaxCacheSize = 256;
 
-  CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr);
+  CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
+                      const RouteRegistry * route_registry = nullptr);
 
   /// Generate OpenAPI spec for the given base path (without /docs suffix).
   /// Returns nullopt if the path is not valid or resolvable.
@@ -97,6 +99,7 @@ class CapabilityGenerator {
   handlers::HandlerContext & ctx_;
   GatewayNode & node_;
   PluginManager * plugin_mgr_;
+  const RouteRegistry * route_registry_;
   SchemaBuilder schema_builder_;
 
   // Generation-based spec cache - invalidated when entity cache changes
