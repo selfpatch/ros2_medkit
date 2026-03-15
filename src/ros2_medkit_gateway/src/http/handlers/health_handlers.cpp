@@ -22,6 +22,7 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
+#include "ros2_medkit_gateway/version.hpp"
 
 using json = nlohmann::json;
 
@@ -237,15 +238,17 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
       }
     }
 
+    // Insert docs endpoints after health/version-info (position 2)
     if (docs_enabled) {
-      endpoints.push_back("GET /api/v1/{entity-path}/docs");
-      endpoints.push_back("GET /api/v1/docs");
-    }
+      auto it = endpoints.begin() + 2;
+      it = endpoints.insert(it, "GET /api/v1/docs");
+      ++it;
+      it = endpoints.insert(it, "GET /api/v1/{entity-path}/docs");
 #ifdef ENABLE_SWAGGER_UI
-    if (docs_enabled) {
-      endpoints.push_back("GET /api/v1/swagger-ui");
-    }
+      ++it;
+      endpoints.insert(it, "GET /api/v1/swagger-ui");
 #endif
+    }
 
     const auto & auth_config = ctx_.auth_config();
     const auto & tls_config = ctx_.tls_config();
@@ -295,7 +298,7 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
     };
 
     json response = {
-        {"name", "ROS 2 Medkit Gateway"}, {"version", "0.3.0"},           {"api_base", API_BASE_PATH},
+        {"name", "ROS 2 Medkit Gateway"}, {"version", kGatewayVersion},   {"api_base", API_BASE_PATH},
         {"endpoints", endpoints},         {"capabilities", capabilities},
     };
 
@@ -331,9 +334,9 @@ void HealthHandlers::handle_version_info(const httplib::Request & req, httplib::
   try {
     // SOVD 7.4.1 compliant response format
     json sovd_info_entry = {
-        {"version", "1.0.0"},                                             // SOVD standard version
-        {"base_uri", API_BASE_PATH},                                      // Version-specific base URI
-        {"vendor_info", {{"version", "0.3.0"}, {"name", "ros2_medkit"}}}  // Vendor-specific info
+        {"version", kSovdVersion},                                                // SOVD standard version
+        {"base_uri", API_BASE_PATH},                                              // Version-specific base URI
+        {"vendor_info", {{"version", kGatewayVersion}, {"name", "ros2_medkit"}}}  // Vendor-specific info
     };
 
     json response = {{"items", json::array({sovd_info_entry})}};

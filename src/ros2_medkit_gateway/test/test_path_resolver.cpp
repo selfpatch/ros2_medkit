@@ -24,7 +24,7 @@ using ros2_medkit_gateway::openapi::PathResolver;
 // =============================================================================
 
 TEST(PathResolverTest, RootPath) {
-  // @verifies REQ_OPENAPI_DOCS_ENDPOINT
+  // @verifies REQ_INTEROP_002
   auto result = PathResolver::resolve("/");
   EXPECT_EQ(result.category, PathCategory::kRoot);
 }
@@ -35,14 +35,14 @@ TEST(PathResolverTest, EmptyPath) {
 }
 
 TEST(PathResolverTest, EntityCollection) {
-  // @verifies REQ_OPENAPI_DOCS_ENDPOINT
+  // @verifies REQ_INTEROP_002
   auto result = PathResolver::resolve("/areas");
   EXPECT_EQ(result.category, PathCategory::kEntityCollection);
   EXPECT_EQ(result.entity_type, "areas");
 }
 
 TEST(PathResolverTest, SpecificEntity) {
-  // @verifies REQ_OPENAPI_DOCS_ENDPOINT
+  // @verifies REQ_INTEROP_002
   auto result = PathResolver::resolve("/apps/my_app");
   EXPECT_EQ(result.category, PathCategory::kSpecificEntity);
   EXPECT_EQ(result.entity_type, "apps");
@@ -50,7 +50,7 @@ TEST(PathResolverTest, SpecificEntity) {
 }
 
 TEST(PathResolverTest, ResourceCollection) {
-  // @verifies REQ_OPENAPI_DOCS_ENDPOINT
+  // @verifies REQ_INTEROP_002
   auto result = PathResolver::resolve("/apps/my_app/data");
   EXPECT_EQ(result.category, PathCategory::kResourceCollection);
   EXPECT_EQ(result.entity_id, "my_app");
@@ -58,7 +58,7 @@ TEST(PathResolverTest, ResourceCollection) {
 }
 
 TEST(PathResolverTest, SpecificResource) {
-  // @verifies REQ_OPENAPI_DOCS_ENDPOINT
+  // @verifies REQ_INTEROP_002
   auto result = PathResolver::resolve("/apps/my_app/data/temperature");
   EXPECT_EQ(result.category, PathCategory::kSpecificResource);
   EXPECT_EQ(result.entity_id, "my_app");
@@ -71,7 +71,7 @@ TEST(PathResolverTest, SpecificResource) {
 // =============================================================================
 
 TEST(PathResolverTest, DeepNestedPath) {
-  // @verifies REQ_OPENAPI_DOCS_ENDPOINT
+  // @verifies REQ_INTEROP_002
   auto result = PathResolver::resolve("/areas/powertrain/components/engine/apps/ecu/data/temp");
   EXPECT_EQ(result.category, PathCategory::kSpecificResource);
   EXPECT_EQ(result.entity_id, "ecu");
@@ -85,7 +85,7 @@ TEST(PathResolverTest, DeepNestedPath) {
 }
 
 TEST(PathResolverTest, NestedEntityCollection) {
-  // @verifies REQ_OPENAPI_DOCS_ENDPOINT
+  // @verifies REQ_INTEROP_002
   auto result = PathResolver::resolve("/areas/powertrain/components");
   EXPECT_EQ(result.category, PathCategory::kEntityCollection);
   EXPECT_EQ(result.entity_type, "components");
@@ -209,6 +209,11 @@ TEST(PathResolverTest, SpecificResourcePreservesEntityInfo) {
   EXPECT_EQ(result.resource_collection, "operations");
   EXPECT_EQ(result.resource_id, "start_motor");
   EXPECT_TRUE(result.parent_chain.empty());
+}
+
+TEST(PathResolverTest, PathTooDeepReturnsError) {
+  auto result = PathResolver::resolve("/areas/a/components/b/apps/c/data/d/extra1/extra2/extra3");
+  EXPECT_EQ(result.category, PathCategory::kError);
 }
 
 TEST(PathResolverTest, ResourceCollectionPreservesEntityInfo) {

@@ -346,7 +346,7 @@ ros2_medkit_gateway:
     # Controls the /docs endpoints that serve OpenAPI capability descriptions
     docs:
       # Master switch for OpenAPI /docs endpoints
-      # When false, /docs routes return 404
+      # When false, /docs routes return 501
       enabled: true
 
     # Rate Limiting Configuration

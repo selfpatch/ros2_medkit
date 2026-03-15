@@ -176,7 +176,7 @@ TEST(SchemaBuilderStaticTest, VersionInfoSchema) {
 // =============================================================================
 
 TEST(SchemaBuilderRuntimeTest, FromRosMsgKnownType) {
-  // @verifies REQ_OPENAPI_SCHEMA_GENERATION
+  // @verifies REQ_INTEROP_002
   SchemaBuilder builder;
   auto schema = builder.from_ros_msg("std_msgs/msg/String");
 
@@ -187,7 +187,7 @@ TEST(SchemaBuilderRuntimeTest, FromRosMsgKnownType) {
 }
 
 TEST(SchemaBuilderRuntimeTest, FromRosMsgUnknownType) {
-  // @verifies REQ_OPENAPI_SCHEMA_GENERATION
+  // @verifies REQ_INTEROP_002
   SchemaBuilder builder;
   auto schema = builder.from_ros_msg("nonexistent/msg/Type");
 

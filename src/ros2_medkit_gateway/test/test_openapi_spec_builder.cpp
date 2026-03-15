@@ -30,14 +30,14 @@ class OpenApiSpecBuilderTest : public ::testing::Test {
 // =============================================================================
 
 TEST_F(OpenApiSpecBuilderTest, BuildProducesOpenApi310Version) {
-  // @verifies REQ_OPENAPI_SPEC
+  // @verifies REQ_INTEROP_002
   auto spec = builder_.info("Test API", "1.0.0").build();
   ASSERT_TRUE(spec.contains("openapi"));
   EXPECT_EQ(spec["openapi"], "3.1.0");
 }
 
 TEST_F(OpenApiSpecBuilderTest, BuildContainsInfoBlock) {
-  // @verifies REQ_OPENAPI_SPEC
+  // @verifies REQ_INTEROP_002
   auto spec = builder_.info("ros2_medkit Gateway", "0.5.0").build();
   ASSERT_TRUE(spec.contains("info"));
   EXPECT_EQ(spec["info"]["title"], "ros2_medkit Gateway");
@@ -45,7 +45,7 @@ TEST_F(OpenApiSpecBuilderTest, BuildContainsInfoBlock) {
 }
 
 TEST_F(OpenApiSpecBuilderTest, BuildContainsSovdVersion) {
-  // @verifies REQ_OPENAPI_SPEC
+  // @verifies REQ_INTEROP_002
   auto spec = builder_.info("API", "1.0.0").sovd_version("R24-11").build();
   ASSERT_TRUE(spec["info"].contains("x-sovd-version"));
   EXPECT_EQ(spec["info"]["x-sovd-version"], "R24-11");
@@ -61,7 +61,7 @@ TEST_F(OpenApiSpecBuilderTest, BuildWithoutSovdVersionOmitsExtension) {
 // =============================================================================
 
 TEST_F(OpenApiSpecBuilderTest, BuildContainsServersArray) {
-  // @verifies REQ_OPENAPI_SPEC
+  // @verifies REQ_INTEROP_002
   auto spec = builder_.info("API", "1.0.0").server("http://localhost:8080/api/v1").build();
   ASSERT_TRUE(spec.contains("servers"));
   ASSERT_TRUE(spec["servers"].is_array());
@@ -101,7 +101,7 @@ TEST_F(OpenApiSpecBuilderTest, NoServersProducesEmptyArray) {
 // =============================================================================
 
 TEST_F(OpenApiSpecBuilderTest, BuildContainsPathsObject) {
-  // @verifies REQ_OPENAPI_SPEC
+  // @verifies REQ_INTEROP_002
   auto spec = builder_.info("API", "1.0.0").build();
   ASSERT_TRUE(spec.contains("paths"));
   EXPECT_TRUE(spec["paths"].is_object());
@@ -137,7 +137,7 @@ TEST_F(OpenApiSpecBuilderTest, EmptyPathsWhenNoneAdded) {
 // =============================================================================
 
 TEST_F(OpenApiSpecBuilderTest, BuildContainsComponentsSchemas) {
-  // @verifies REQ_OPENAPI_SPEC
+  // @verifies REQ_INTEROP_002
   nlohmann::json schemas = {{"EntityDetail", {{"type", "object"}}}};
   auto spec = builder_.info("API", "1.0.0").add_schemas(schemas).build();
   ASSERT_TRUE(spec.contains("components"));
@@ -159,7 +159,7 @@ TEST_F(OpenApiSpecBuilderTest, AddSchemasMergesMultipleCalls) {
 // =============================================================================
 
 TEST_F(OpenApiSpecBuilderTest, AlwaysIncludesGenericErrorResponse) {
-  // @verifies REQ_OPENAPI_SPEC
+  // @verifies REQ_INTEROP_002
   auto spec = builder_.info("API", "1.0.0").build();
   ASSERT_TRUE(spec["components"].contains("responses"));
   ASSERT_TRUE(spec["components"]["responses"].contains("GenericError"));
@@ -178,7 +178,7 @@ TEST_F(OpenApiSpecBuilderTest, AlwaysIncludesGenericErrorResponse) {
 // =============================================================================
 
 TEST_F(OpenApiSpecBuilderTest, SecuritySchemeAddsToComponents) {
-  // @verifies REQ_OPENAPI_SPEC
+  // @verifies REQ_INTEROP_002
   nlohmann::json bearer_scheme = {{"type", "http"}, {"scheme", "bearer"}, {"bearerFormat", "JWT"}};
   auto spec = builder_.info("API", "1.0.0").security_scheme("bearerAuth", bearer_scheme).build();
 
@@ -218,7 +218,7 @@ TEST_F(OpenApiSpecBuilderTest, MultipleSecuritySchemes) {
 // =============================================================================
 
 TEST_F(OpenApiSpecBuilderTest, FluentInterfaceChaining) {
-  // @verifies REQ_OPENAPI_SPEC
+  // @verifies REQ_INTEROP_002
   nlohmann::json paths = {{"/health", {{"get", {{"summary", "Health check"}}}}}};
   nlohmann::json schemas = {{"Health", {{"type", "object"}}}};
   nlohmann::json bearer = {{"type", "http"}, {"scheme", "bearer"}};

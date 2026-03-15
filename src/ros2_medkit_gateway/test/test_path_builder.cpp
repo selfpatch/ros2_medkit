@@ -38,7 +38,7 @@ class PathBuilderTest : public ::testing::Test {
 // =============================================================================
 
 TEST_F(PathBuilderTest, EntityCollectionHasGet) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   auto result = path_builder_.build_entity_collection("apps");
   ASSERT_TRUE(result.contains("get"));
   EXPECT_TRUE(result["get"].contains("summary"));
@@ -88,7 +88,7 @@ TEST_F(PathBuilderTest, EntityCollectionHasErrorResponses) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, EntityDetailHasGet) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   auto result = path_builder_.build_entity_detail("apps");
   ASSERT_TRUE(result.contains("get"));
   EXPECT_TRUE(result["get"].contains("summary"));
@@ -109,7 +109,7 @@ TEST_F(PathBuilderTest, EntityDetailHasPathParam) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, DataCollectionHasGet) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   std::vector<TopicData> topics = {{"temperature", "std_msgs/msg/Float32", "publish"},
                                    {"command", "std_msgs/msg/String", "subscribe"}};
   auto result = path_builder_.build_data_collection("apps/sensor", topics);
@@ -129,7 +129,7 @@ TEST_F(PathBuilderTest, DataCollectionHasSovdExtension) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, DataItemGetAlwaysPresent) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   TopicData topic{"temperature", "std_msgs/msg/Float32", "publish"};
   auto result = path_builder_.build_data_item("apps/sensor", topic);
   ASSERT_TRUE(result.contains("get"));
@@ -137,7 +137,7 @@ TEST_F(PathBuilderTest, DataItemGetAlwaysPresent) {
 }
 
 TEST_F(PathBuilderTest, DataItemPutForSubscribeTopic) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   TopicData topic{"command", "std_msgs/msg/String", "subscribe"};
   auto result = path_builder_.build_data_item("apps/actuator", topic);
   ASSERT_TRUE(result.contains("get"));
@@ -181,7 +181,7 @@ TEST_F(PathBuilderTest, DataItemSchemaFromRosType) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, OperationsCollectionHasGet) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   AggregatedOperations ops;
   ops.services.push_back({"calibrate", "/engine/calibrate", "std_srvs/srv/Trigger", std::nullopt});
   auto result = path_builder_.build_operations_collection("apps/engine", ops);
@@ -203,7 +203,7 @@ TEST_F(PathBuilderTest, OperationsCollectionResponseHasItems) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, ServiceOperationHasGetAndPost) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   ServiceInfo service{"calibrate", "/engine/calibrate", "std_srvs/srv/Trigger", std::nullopt};
   auto result = path_builder_.build_operation_item("apps/engine", service);
   ASSERT_TRUE(result.contains("get"));
@@ -234,7 +234,7 @@ TEST_F(PathBuilderTest, ServiceOperationNotAsynchronous) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, ActionOperationHasGetAndPost) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   ActionInfo action{"navigate", "/nav/navigate", "nav2_msgs/action/NavigateToPose", std::nullopt};
   auto result = path_builder_.build_operation_item("apps/navigation", action);
   ASSERT_TRUE(result.contains("get"));
@@ -265,7 +265,7 @@ TEST_F(PathBuilderTest, ActionOperationHasSovdName) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, ConfigurationsHasGetPutDelete) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   auto result = path_builder_.build_configurations_collection("apps/sensor");
   ASSERT_TRUE(result.contains("get"));
   ASSERT_TRUE(result.contains("put"));
@@ -296,7 +296,7 @@ TEST_F(PathBuilderTest, ConfigurationsPutHasRequestBody) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, FaultsHasGetAndPut) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   auto result = path_builder_.build_faults_collection("apps/engine");
   ASSERT_TRUE(result.contains("get"));
   ASSERT_TRUE(result.contains("put"));
@@ -325,7 +325,7 @@ TEST_F(PathBuilderTest, FaultsPutHasStatusRequestBody) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, LogsHasGet) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   auto result = path_builder_.build_logs_collection("apps/sensor");
   ASSERT_TRUE(result.contains("get"));
   EXPECT_TRUE(result["get"]["responses"].contains("200"));
@@ -357,7 +357,7 @@ TEST_F(PathBuilderTest, LogsReturnsLogEntryItems) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, BulkDataHasGet) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   auto result = path_builder_.build_bulk_data_collection("apps/sensor");
   ASSERT_TRUE(result.contains("get"));
   EXPECT_TRUE(result["get"]["responses"].contains("200"));
@@ -368,7 +368,7 @@ TEST_F(PathBuilderTest, BulkDataHasGet) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, CyclicSubscriptionsHasGetAndPost) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   auto result = path_builder_.build_cyclic_subscriptions_collection("apps/sensor");
   ASSERT_TRUE(result.contains("get"));
   ASSERT_TRUE(result.contains("post"));
@@ -391,7 +391,7 @@ TEST_F(PathBuilderTest, CyclicSubscriptionsPostReturns201) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, SseEndpointHasGet) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   auto result = path_builder_.build_sse_endpoint("/events/faults", "Fault event stream");
   ASSERT_TRUE(result.contains("get"));
 }
@@ -413,7 +413,7 @@ TEST_F(PathBuilderTest, SseEndpointHasDescription) {
 // =============================================================================
 
 TEST_F(PathBuilderTest, ErrorResponsesWithoutAuth) {
-  // @verifies REQ_OPENAPI_PATHS
+  // @verifies REQ_INTEROP_002
   auto errors = PathBuilder::error_responses(false);
   EXPECT_TRUE(errors.contains("400"));
   EXPECT_TRUE(errors.contains("404"));
