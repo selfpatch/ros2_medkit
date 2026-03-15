@@ -366,8 +366,7 @@ void RESTServer::setup_routes() {
 
   for (const auto & et : entity_types) {
     std::string base = std::string("/") + et.type;
-    std::string id_param = std::string("{") + et.singular + "_id}";
-    std::string entity_path = base + "/" + id_param;
+    std::string entity_path = base + "/{" + et.singular + "_id}";
 
     // --- Data ---
     // Data item (specific topic) - MUST be before data collection to avoid (.+) capture
