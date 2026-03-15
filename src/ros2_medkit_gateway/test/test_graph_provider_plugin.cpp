@@ -291,9 +291,11 @@ TEST(GraphProviderPluginBuildTest, FiltersInfrastructureAndNitrosTopics) {
 TEST(GraphProviderPluginBuildTest, MarksReachableAndUnreachableNodes) {
   auto input = make_input({make_app("online", {"/topic"}, {}, true), make_app("offline", {}, {"/topic"}, false)},
                           {make_function("fn", {"online", "offline"})});
+  auto state = make_state();
+  state.last_seen_by_app["offline"] = "2026-03-08T11:59:00.000Z";
 
-  auto doc = GraphProviderPlugin::build_graph_document("fn", input, make_state(), default_config(),
-                                                       "2026-03-08T12:00:00.000Z");
+  auto doc =
+      GraphProviderPlugin::build_graph_document("fn", input, state, default_config(), "2026-03-08T12:00:00.000Z");
   const auto & graph = doc["x-medkit-graph"];
   const auto * online_node = find_node(graph, "online");
   const auto * offline_node = find_node(graph, "offline");
@@ -305,6 +307,7 @@ TEST(GraphProviderPluginBuildTest, MarksReachableAndUnreachableNodes) {
   EXPECT_FALSE(online_node->contains("last_seen"));
   EXPECT_EQ((*offline_node)["node_status"], "unreachable");
   EXPECT_TRUE(offline_node->contains("last_seen"));
+  EXPECT_EQ((*offline_node)["last_seen"], "2026-03-08T11:59:00.000Z");
 }
 
 TEST(GraphProviderPluginBuildTest, ReturnsEmptyGraphForNoApps) {
@@ -356,6 +359,7 @@ TEST(GraphProviderPluginMetricsTest, MarksActiveEdgeWhenGreenwaveMetricsExist) {
   EXPECT_DOUBLE_EQ((*edge)["metrics"]["frequency_hz"], 29.8);
   EXPECT_DOUBLE_EQ((*edge)["metrics"]["latency_ms"], 1.2);
   EXPECT_DOUBLE_EQ((*edge)["metrics"]["drop_rate_percent"], 0.0);
+  EXPECT_FALSE((*edge)["metrics"].contains("error_reason"));
   EXPECT_FALSE(edge->contains("error_reason"));
   EXPECT_EQ(graph["pipeline_status"], "healthy");
 }
@@ -371,6 +375,7 @@ TEST(GraphProviderPluginMetricsTest, MarksPendingWhenDiagnosticsHaveNotArrivedYe
 
   ASSERT_NE(edge, nullptr);
   EXPECT_EQ((*edge)["metrics"]["metrics_status"], "pending");
+  EXPECT_FALSE((*edge)["metrics"].contains("error_reason"));
   EXPECT_FALSE(edge->contains("error_reason"));
 }
 
@@ -387,7 +392,9 @@ TEST(GraphProviderPluginMetricsTest, MarksTopicStaleErrorsFromFaultState) {
 
   ASSERT_NE(edge, nullptr);
   EXPECT_EQ((*edge)["metrics"]["metrics_status"], "error");
-  EXPECT_EQ((*edge)["error_reason"], "topic_stale");
+  ASSERT_TRUE((*edge)["metrics"].contains("error_reason"));
+  EXPECT_EQ((*edge)["metrics"]["error_reason"], "topic_stale");
+  EXPECT_FALSE(edge->contains("error_reason"));
   EXPECT_EQ(graph["pipeline_status"], "broken");
 }
 
@@ -402,7 +409,9 @@ TEST(GraphProviderPluginMetricsTest, MarksNodeOfflineErrors) {
 
   ASSERT_NE(edge, nullptr);
   EXPECT_EQ((*edge)["metrics"]["metrics_status"], "error");
-  EXPECT_EQ((*edge)["error_reason"], "node_offline");
+  ASSERT_TRUE((*edge)["metrics"].contains("error_reason"));
+  EXPECT_EQ((*edge)["metrics"]["error_reason"], "node_offline");
+  EXPECT_FALSE(edge->contains("error_reason"));
   EXPECT_EQ(graph["pipeline_status"], "broken");
 }
 
@@ -417,8 +426,22 @@ TEST(GraphProviderPluginMetricsTest, MarksNoDataSourceErrorsWhenDiagnosticsArePr
 
   ASSERT_NE(edge, nullptr);
   EXPECT_EQ((*edge)["metrics"]["metrics_status"], "error");
-  EXPECT_EQ((*edge)["error_reason"], "no_data_source");
+  ASSERT_TRUE((*edge)["metrics"].contains("error_reason"));
+  EXPECT_EQ((*edge)["metrics"]["error_reason"], "no_data_source");
+  EXPECT_FALSE(edge->contains("error_reason"));
   EXPECT_EQ(graph["pipeline_status"], "broken");
+}
+
+TEST(GraphProviderPluginMetricsTest, KeepsBrokenPipelineBottleneckNullWhenNoFrequencyExists) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, make_state(true), default_config(),
+                                                       "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+
+  EXPECT_EQ(graph["pipeline_status"], "broken");
+  EXPECT_TRUE(graph["bottleneck_edge"].is_null());
 }
 
 TEST(GraphProviderPluginMetricsTest, MarksPipelineDegradedWhenFrequencyDropsBelowThreshold) {
@@ -498,4 +521,43 @@ TEST(GraphProviderPluginRouteTest, RegistersFunctionCapabilityOnContext) {
   const auto caps = ctx.get_type_capabilities(SovdEntityType::FUNCTION);
   ASSERT_EQ(caps.size(), 1u);
   EXPECT_EQ(caps[0], "x-medkit-graph");
+}
+
+TEST(GraphProviderPluginRouteTest, UsesPreviousOnlineTimestampForOfflineLastSeen) {
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.set_context(ctx);
+
+  auto online_input = make_input({make_app("node1", {}, {}, true)}, {make_function("fn", {"node1"})});
+  plugin.introspect(online_input);
+
+  std::this_thread::sleep_for(5ms);
+
+  auto offline_input = make_input({make_app("node1", {}, {}, false)}, {make_function("fn", {"node1"})});
+  plugin.introspect(offline_input);
+
+  httplib::Server server;
+  plugin.register_routes(server, "/api/v1");
+
+  LocalHttpServer local_server;
+  local_server.start(server);
+
+  httplib::Client client("127.0.0.1", local_server.port());
+  auto res = client.Get("/api/v1/functions/fn/x-medkit-graph");
+  for (int attempt = 0; !res && attempt < 19; ++attempt) {
+    std::this_thread::sleep_for(50ms);
+    res = client.Get("/api/v1/functions/fn/x-medkit-graph");
+  }
+
+  ASSERT_TRUE(res);
+  ASSERT_EQ(res->status, 200);
+
+  auto body = nlohmann::json::parse(res->body);
+  const auto & graph = body["x-medkit-graph"];
+  const auto * node = find_node(graph, "node1");
+  ASSERT_NE(node, nullptr);
+  ASSERT_TRUE(node->contains("last_seen"));
+  EXPECT_LT((*node)["last_seen"].get<std::string>(), graph["timestamp"].get<std::string>());
+
+  local_server.stop();
 }

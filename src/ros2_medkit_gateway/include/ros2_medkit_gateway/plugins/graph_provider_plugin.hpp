@@ -42,6 +42,7 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   struct GraphBuildState {
     std::unordered_map<std::string, TopicMetrics> topic_metrics;
     std::unordered_set<std::string> stale_topics;
+    std::unordered_map<std::string, std::string> last_seen_by_app;
     bool diagnostics_seen{false};
   };
 
@@ -79,8 +80,9 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   static std::string current_timestamp();
   GraphBuildConfig resolve_config(const std::string & function_id) const;
   std::optional<nlohmann::json> get_cached_or_built_graph(const std::string & function_id);
-  std::optional<nlohmann::json> build_graph_from_entity_cache(const std::string & function_id) const;
+  std::optional<nlohmann::json> build_graph_from_entity_cache(const std::string & function_id);
   std::unordered_set<std::string> collect_stale_topics(const IntrospectionInput & input) const;
+  GraphBuildState build_state_snapshot(const IntrospectionInput & input, const std::string & timestamp);
   void load_parameters();
 
   PluginContext * ctx_{nullptr};
@@ -91,6 +93,9 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   mutable std::mutex metrics_mutex_;
   std::unordered_map<std::string, TopicMetrics> topic_metrics_;
   bool diagnostics_seen_{false};
+
+  mutable std::mutex status_mutex_;
+  std::unordered_map<std::string, std::string> last_seen_by_app_;
 
   mutable std::mutex config_mutex_;
   ConfigOverrides config_;
