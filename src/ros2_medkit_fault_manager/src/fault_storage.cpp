@@ -48,12 +48,12 @@ DebounceConfig InMemoryFaultStorage::get_debounce_config() const {
   return config_;
 }
 
-void InMemoryFaultStorage::update_status(FaultState & state) {
+void InMemoryFaultStorage::update_status(FaultState & state, const DebounceConfig & config) {
   // Note: CLEARED faults are handled in report_fault_event() before this is called
 
-  if (state.debounce_counter <= config_.confirmation_threshold) {
+  if (state.debounce_counter <= config.confirmation_threshold) {
     state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-  } else if (config_.healing_enabled && state.debounce_counter >= config_.healing_threshold) {
+  } else if (config.healing_enabled && state.debounce_counter >= config.healing_threshold) {
     state.status = ros2_medkit_msgs::msg::Fault::STATUS_HEALED;
   } else if (state.debounce_counter < 0) {
     state.status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
@@ -66,7 +66,7 @@ void InMemoryFaultStorage::update_status(FaultState & state) {
 
 bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                               const std::string & description, const std::string & source_id,
-                                              const rclcpp::Time & timestamp) {
+                                              const rclcpp::Time & timestamp, const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
@@ -90,11 +90,11 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     state.reporting_sources.insert(source_id);
 
     // CRITICAL severity bypasses debounce and confirms immediately
-    if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+    if (config.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
       state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
     } else {
       // Set status based on debounce counter vs threshold
-      update_status(state);
+      update_status(state, config);
     }
 
     faults_.emplace(fault_code, std::move(state));
@@ -125,10 +125,10 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
       state.description = description;
     }
     // Check for immediate CRITICAL confirmation
-    if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+    if (config.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
       state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
     } else {
-      update_status(state);
+      update_status(state, config);
     }
     return true;  // Reactivation treated as new occurrence for event publishing
   }
@@ -162,7 +162,7 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     }
 
     // Check for immediate confirmation of CRITICAL
-    if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+    if (config.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
       state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
       return false;
     }
@@ -177,7 +177,7 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
   }
 
   // Update status based on debounce counter
-  update_status(state);
+  update_status(state, config);
 
   return false;
 }

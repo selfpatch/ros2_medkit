@@ -107,13 +107,23 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // Create event publisher for SSE streaming
   event_publisher_ = create_publisher<ros2_medkit_msgs::msg::FaultEvent>("~/events", rclcpp::QoS(100).reliable());
 
-  // Configure debounce settings
-  DebounceConfig config;
-  config.confirmation_threshold = confirmation_threshold_;
-  config.healing_enabled = healing_enabled_;
-  config.healing_threshold = healing_threshold_;
-  config.auto_confirm_after_sec = auto_confirm_after_sec_;
-  storage_->set_debounce_config(config);
+  // Build global debounce config
+  global_config_.confirmation_threshold = confirmation_threshold_;
+  global_config_.healing_enabled = healing_enabled_;
+  global_config_.healing_threshold = healing_threshold_;
+  global_config_.auto_confirm_after_sec = auto_confirm_after_sec_;
+  storage_->set_debounce_config(global_config_);
+
+  // Load per-entity threshold overrides (optional)
+  auto entity_thresholds_file = declare_parameter<std::string>("entity_thresholds_config_file", "");
+  if (!entity_thresholds_file.empty()) {
+    auto entries = EntityThresholdResolver::load_from_yaml(entity_thresholds_file);
+    if (!entries.empty()) {
+      threshold_resolver_ = std::make_unique<EntityThresholdResolver>(std::move(entries));
+      RCLCPP_INFO(get_logger(), "Loaded %zu per-entity threshold overrides from %s", threshold_resolver_->size(),
+                  entity_thresholds_file.c_str());
+    }
+  }
 
   // Create service servers
   report_fault_srv_ = create_service<ros2_medkit_msgs::srv::ReportFault>(
@@ -282,9 +292,13 @@ void FaultManagerNode::handle_report_fault(
   auto fault_before = storage_->get_fault(request->fault_code);
   std::string status_before = fault_before ? fault_before->status : "";
 
+  // Resolve per-entity debounce config (longest-prefix match on source_id)
+  auto resolved_config = resolve_config(request->source_id);
+
   // Report the fault event (use wall clock time, not sim time, for proper timestamps)
-  bool is_new = storage_->report_fault_event(request->fault_code, request->event_type, request->severity,
-                                             request->description, request->source_id, get_wall_clock_time());
+  bool is_new =
+      storage_->report_fault_event(request->fault_code, request->event_type, request->severity, request->description,
+                                   request->source_id, get_wall_clock_time(), resolved_config);
 
   response->accepted = true;
 
@@ -976,6 +990,13 @@ bool FaultManagerNode::matches_entity(const std::vector<std::string> & reporting
     }
   }
   return false;
+}
+
+DebounceConfig FaultManagerNode::resolve_config(const std::string & source_id) const {
+  if (threshold_resolver_) {
+    return threshold_resolver_->resolve(source_id, global_config_);
+  }
+  return global_config_;
 }
 
 }  // namespace ros2_medkit_fault_manager
