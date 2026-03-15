@@ -71,10 +71,6 @@ class CapabilityGenerator {
   /// Map path resolver entity type to SovdEntityType for cache lookups.
   static ros2_medkit_gateway::SovdEntityType entity_type_from_keyword(const std::string & keyword);
 
-  /// Get resource collection enum from path keyword string.
-  static std::optional<ros2_medkit_gateway::ResourceCollection>
-  resource_collection_from_keyword(const std::string & keyword);
-
   /// Build resource collection paths for a specific entity based on its capabilities.
   void add_resource_collection_paths(nlohmann::json & paths, const std::string & entity_path,
                                      const std::string & entity_id,

@@ -40,8 +40,8 @@ TEST(SchemaBuilderStaticTest, GenericErrorSchema) {
   EXPECT_NE(std::find(required.begin(), required.end(), "message"), required.end());
 }
 
-TEST(SchemaBuilderStaticTest, FaultSchema) {
-  auto schema = SchemaBuilder::fault_schema();
+TEST(SchemaBuilderStaticTest, FaultListItemSchema) {
+  auto schema = SchemaBuilder::fault_list_item_schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("fault_code"));
@@ -59,6 +59,40 @@ TEST(SchemaBuilderStaticTest, FaultSchema) {
   EXPECT_EQ(schema["properties"]["reporting_sources"]["type"], "array");
 }
 
+TEST(SchemaBuilderStaticTest, FaultDetailSchema) {
+  auto schema = SchemaBuilder::fault_detail_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  // SOVD nested structure
+  EXPECT_TRUE(schema["properties"].contains("item"));
+  EXPECT_TRUE(schema["properties"].contains("environment_data"));
+  EXPECT_TRUE(schema["properties"].contains("x-medkit"));
+
+  // item subfields
+  auto & item = schema["properties"]["item"];
+  EXPECT_EQ(item["type"], "object");
+  EXPECT_TRUE(item["properties"].contains("code"));
+  EXPECT_TRUE(item["properties"].contains("fault_name"));
+  EXPECT_TRUE(item["properties"].contains("severity"));
+  EXPECT_TRUE(item["properties"].contains("status"));
+  EXPECT_EQ(item["properties"]["status"]["type"], "object");
+  EXPECT_TRUE(item["properties"]["status"]["properties"].contains("aggregatedStatus"));
+
+  // environment_data subfields
+  auto & env = schema["properties"]["environment_data"];
+  EXPECT_EQ(env["type"], "object");
+  EXPECT_TRUE(env["properties"].contains("extended_data_records"));
+  EXPECT_TRUE(env["properties"].contains("snapshots"));
+
+  // x-medkit subfields
+  auto & xmedkit = schema["properties"]["x-medkit"];
+  EXPECT_EQ(xmedkit["type"], "object");
+  EXPECT_TRUE(xmedkit["properties"].contains("occurrence_count"));
+  EXPECT_TRUE(xmedkit["properties"].contains("reporting_sources"));
+  EXPECT_TRUE(xmedkit["properties"].contains("severity_label"));
+  EXPECT_TRUE(xmedkit["properties"].contains("status_raw"));
+}
+
 TEST(SchemaBuilderStaticTest, FaultListSchema) {
   auto schema = SchemaBuilder::fault_list_schema();
   EXPECT_EQ(schema["type"], "object");
@@ -66,7 +100,7 @@ TEST(SchemaBuilderStaticTest, FaultListSchema) {
   ASSERT_TRUE(schema["properties"].contains("items"));
   EXPECT_EQ(schema["properties"]["items"]["type"], "array");
 
-  // Items should contain the fault schema
+  // Items should contain the fault list item schema
   auto & item_schema = schema["properties"]["items"]["items"];
   EXPECT_EQ(item_schema["type"], "object");
   EXPECT_TRUE(item_schema["properties"].contains("fault_code"));
@@ -150,8 +184,17 @@ TEST(SchemaBuilderStaticTest, HealthSchema) {
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("status"));
   EXPECT_TRUE(schema["properties"].contains("timestamp"));
+  EXPECT_TRUE(schema["properties"].contains("discovery"));
   EXPECT_EQ(schema["properties"]["status"]["type"], "string");
   EXPECT_EQ(schema["properties"]["timestamp"]["type"], "integer");
+
+  // Discovery subfields
+  auto & discovery = schema["properties"]["discovery"];
+  EXPECT_EQ(discovery["type"], "object");
+  EXPECT_TRUE(discovery["properties"].contains("mode"));
+  EXPECT_TRUE(discovery["properties"].contains("strategy"));
+  EXPECT_EQ(discovery["properties"]["mode"]["type"], "string");
+  EXPECT_EQ(discovery["properties"]["strategy"]["type"], "string");
 
   // Required
   ASSERT_TRUE(schema.contains("required"));
