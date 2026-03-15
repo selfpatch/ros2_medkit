@@ -57,7 +57,8 @@ add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
 # tl::expected v1.3.1 (CC0) - https://github.com/TartanLlama/expected
 add_library(tl_expected_iface INTERFACE)
 target_include_directories(tl_expected_iface SYSTEM INTERFACE
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/vendored/tl_expected/include
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/vendored/tl_expected/include>
+  $<INSTALL_INTERFACE:include/ros2_medkit_gateway/vendored>
 )
 add_library(tl::expected ALIAS tl_expected_iface)
 
@@ -539,7 +540,7 @@ endif()
 
 # Export include directories for downstream packages (plugins)
 install(DIRECTORY include/ DESTINATION include)
-install(DIRECTORY src/vendored/tl_expected/include/ DESTINATION include)
+install(DIRECTORY src/vendored/tl_expected/include/ DESTINATION include/ros2_medkit_gateway/vendored)
 ament_export_include_directories(include)
 
 ament_package()

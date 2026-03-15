@@ -16,6 +16,7 @@
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+#include "ros2_medkit_linux_introspection/plugin_config.hpp"
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
 #include "ros2_medkit_linux_introspection/procfs_utils.hpp"
 
@@ -35,21 +36,9 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
   }
 
   void configure(const nlohmann::json & config) override {
-    std::chrono::seconds ttl{10};
-    if (config.contains("pid_cache_ttl_seconds")) {
-      auto val = config["pid_cache_ttl_seconds"].get<int>();
-      if (val < 1) {
-        val = 1;
-      }
-      ttl = std::chrono::seconds{val};
-    }
-    if (config.contains("proc_root")) {
-      proc_root_ = config["proc_root"].get<std::string>();
-      if (proc_root_.empty() || proc_root_[0] != '/') {
-        proc_root_ = "/";
-      }
-    }
-    pid_cache_ = std::make_unique<ros2_medkit_linux_introspection::PidCache>(ttl);
+    auto cfg = ros2_medkit_linux_introspection::parse_introspection_config(config);
+    pid_cache_ = std::move(cfg.pid_cache);
+    proc_root_ = std::move(cfg.proc_root);
   }
 
   void set_context(PluginContext & ctx) override {
