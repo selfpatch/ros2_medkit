@@ -105,6 +105,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
   // Health endpoint
   nlohmann::json health_path;
   nlohmann::json health_get;
+  health_get["tags"] = nlohmann::json::array({"Server"});
   health_get["summary"] = "Health check";
   health_get["description"] = "Returns gateway health status.";
   health_get["responses"]["200"]["description"] = "Gateway is healthy";
@@ -115,6 +116,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
   // Version-info endpoint
   nlohmann::json version_path;
   nlohmann::json version_get;
+  version_get["tags"] = nlohmann::json::array({"Server"});
   version_get["summary"] = "SOVD version information";
   version_get["description"] = "Returns SOVD specification version and vendor info (SOVD 7.4.1).";
   version_get["responses"]["200"]["description"] = "Version information";
@@ -125,6 +127,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
   // Root endpoint (API overview)
   nlohmann::json root_path;
   nlohmann::json root_get;
+  root_get["tags"] = nlohmann::json::array({"Server"});
   root_get["summary"] = "API overview";
   root_get["description"] = "Returns gateway metadata, available endpoints, and capabilities.";
   root_get["responses"]["200"]["description"] = "API overview";
@@ -139,17 +142,29 @@ nlohmann::json CapabilityGenerator::generate_root() const {
   root_path["get"] = std::move(root_get);
   paths["/"] = std::move(root_path);
 
-  // Entity collection endpoints
+  // Entity collection + detail + resource collection endpoints
   for (const auto & entity_type : {"areas", "components", "apps", "functions"}) {
     std::string collection_path = std::string("/") + entity_type;
     std::string singular = entity_type;
     if (!singular.empty() && singular.back() == 's') {
       singular.pop_back();
     }
-    std::string detail_path = collection_path + "/{" + singular + "_id}";
+    std::string entity_path = collection_path + "/{" + singular + "_id}";
 
     paths[collection_path] = path_builder.build_entity_collection(entity_type);
-    paths[detail_path] = path_builder.build_entity_detail(entity_type);
+    paths[entity_path] = path_builder.build_entity_detail(entity_type);
+
+    // Resource collection endpoints for each entity type
+    paths[entity_path + "/data"] = path_builder.build_data_collection(entity_path, {});
+    paths[entity_path + "/data/{data_id}"] =
+        path_builder.build_data_item(entity_path, {"{data_id}", "object", "publish"});
+    paths[entity_path + "/operations"] = path_builder.build_operations_collection(entity_path, {});
+    paths[entity_path + "/configurations"] = path_builder.build_configurations_collection(entity_path);
+    paths[entity_path + "/configurations/{config_id}"] = path_builder.build_configurations_collection(entity_path);
+    paths[entity_path + "/faults"] = path_builder.build_faults_collection(entity_path);
+    paths[entity_path + "/logs"] = path_builder.build_logs_collection(entity_path);
+    paths[entity_path + "/bulk-data"] = path_builder.build_bulk_data_collection(entity_path);
+    paths[entity_path + "/cyclic-subscriptions"] = path_builder.build_cyclic_subscriptions_collection(entity_path);
   }
 
   // Global faults
@@ -161,6 +176,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
   if (auth_config.enabled) {
     nlohmann::json auth_authorize;
     nlohmann::json auth_post;
+    auth_post["tags"] = nlohmann::json::array({"Authentication"});
     auth_post["summary"] = "Authorize client";
     auth_post["description"] = "Authenticate and obtain authorization.";
     auth_post["responses"]["200"]["description"] = "Authorization successful";
@@ -169,6 +185,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
 
     nlohmann::json auth_token;
     nlohmann::json token_post;
+    token_post["tags"] = nlohmann::json::array({"Authentication"});
     token_post["summary"] = "Obtain access token";
     token_post["description"] = "Exchange credentials for a JWT access token.";
     token_post["responses"]["200"]["description"] = "Token issued";
@@ -177,6 +194,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
 
     nlohmann::json auth_revoke;
     nlohmann::json revoke_post;
+    revoke_post["tags"] = nlohmann::json::array({"Authentication"});
     revoke_post["summary"] = "Revoke token";
     revoke_post["description"] = "Revoke an access token.";
     revoke_post["responses"]["200"]["description"] = "Token revoked";

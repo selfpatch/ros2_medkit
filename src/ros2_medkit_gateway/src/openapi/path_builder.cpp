@@ -31,6 +31,7 @@ nlohmann::json PathBuilder::build_entity_collection(const std::string & entity_t
   nlohmann::json path_item;
 
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Discovery"});
   get_op["summary"] = "List all " + entity_type;
   get_op["description"] = "Returns the collection of " + entity_type + " entities.";
   get_op["parameters"] = build_query_params_for_collection();
@@ -62,6 +63,7 @@ nlohmann::json PathBuilder::build_entity_detail(const std::string & entity_type)
   }
 
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Discovery"});
   get_op["summary"] = "Get " + singular + " details";
   get_op["description"] = "Returns detailed information about a specific " + singular + ".";
   get_op["parameters"] = nlohmann::json::array({build_path_param(singular + "_id", "The " + singular + " identifier")});
@@ -86,6 +88,7 @@ nlohmann::json PathBuilder::build_data_collection(const std::string & entity_pat
   nlohmann::json path_item;
 
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Data"});
   get_op["summary"] = "List data items for " + entity_path;
   get_op["description"] = "Returns all available data items (topics) for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
@@ -119,6 +122,7 @@ nlohmann::json PathBuilder::build_data_item(const std::string & /*entity_path*/,
 
   // GET - always available
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Data"});
   get_op["summary"] = "Read data: " + topic.name;
   get_op["description"] = "Read current value of topic " + topic.name + " (type: " + topic.type + ").";
   get_op["responses"]["200"]["description"] = "Current topic value";
@@ -134,6 +138,7 @@ nlohmann::json PathBuilder::build_data_item(const std::string & /*entity_path*/,
   // PUT - only if writable (subscribe or both)
   if (topic.direction == "subscribe" || topic.direction == "both") {
     nlohmann::json put_op;
+    put_op["tags"] = nlohmann::json::array({"Data"});
     put_op["summary"] = "Write data: " + topic.name;
     put_op["description"] = "Publish a value to topic " + topic.name + ".";
     put_op["requestBody"]["required"] = true;
@@ -168,6 +173,7 @@ nlohmann::json PathBuilder::build_operations_collection(const std::string & enti
 
   // GET - list all operations
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Operations"});
   get_op["summary"] = "List operations for " + entity_path;
   get_op["description"] = "Returns all available operations (services and actions) for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
@@ -201,6 +207,7 @@ nlohmann::json PathBuilder::build_operation_item(const std::string & /*entity_pa
 
   // GET - get operation details and result
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Operations"});
   get_op["summary"] = "Get operation: " + service.name;
   get_op["description"] = "Get details and last result of service " + service.name + " (type: " + service.type + ").";
   get_op["responses"]["200"]["description"] = "Operation details";
@@ -216,6 +223,7 @@ nlohmann::json PathBuilder::build_operation_item(const std::string & /*entity_pa
 
   // POST - execute operation
   nlohmann::json post_op;
+  post_op["tags"] = nlohmann::json::array({"Operations"});
   post_op["summary"] = "Execute operation: " + service.name;
   post_op["description"] = "Execute service " + service.name + " synchronously.";
   post_op["requestBody"]["required"] = true;
@@ -243,6 +251,7 @@ nlohmann::json PathBuilder::build_operation_item(const std::string & /*entity_pa
 
   // GET - get action status/result
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Operations"});
   get_op["summary"] = "Get action status: " + action.name;
   get_op["description"] = "Get status and result of action " + action.name + " (type: " + action.type + ").";
 
@@ -260,6 +269,7 @@ nlohmann::json PathBuilder::build_operation_item(const std::string & /*entity_pa
 
   // POST - execute action (asynchronous)
   nlohmann::json post_op;
+  post_op["tags"] = nlohmann::json::array({"Operations"});
   post_op["summary"] = "Execute action: " + action.name;
   post_op["description"] = "Start action " + action.name + " asynchronously.";
   post_op["requestBody"]["required"] = true;
@@ -290,6 +300,7 @@ nlohmann::json PathBuilder::build_configurations_collection(const std::string & 
 
   // GET - list all configuration parameters
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Configuration"});
   get_op["summary"] = "List configuration parameters for " + entity_path;
   get_op["description"] = "Returns all configuration parameters for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
@@ -306,6 +317,7 @@ nlohmann::json PathBuilder::build_configurations_collection(const std::string & 
 
   // PUT - update configuration parameter
   nlohmann::json put_op;
+  put_op["tags"] = nlohmann::json::array({"Configuration"});
   put_op["summary"] = "Update configuration parameter";
   put_op["description"] = "Update a specific configuration parameter for this entity.";
   put_op["requestBody"]["required"] = true;
@@ -322,6 +334,7 @@ nlohmann::json PathBuilder::build_configurations_collection(const std::string & 
 
   // DELETE - reset configuration parameter to default
   nlohmann::json delete_op;
+  delete_op["tags"] = nlohmann::json::array({"Configuration"});
   delete_op["summary"] = "Reset configuration parameter";
   delete_op["description"] = "Reset a specific configuration parameter to its default value.";
   delete_op["responses"]["200"]["description"] = "Parameter reset to default";
@@ -345,6 +358,7 @@ nlohmann::json PathBuilder::build_faults_collection(const std::string & entity_p
 
   // GET - list faults
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Faults"});
   get_op["summary"] = entity_path.empty() ? "List all faults" : "List faults for " + entity_path;
   get_op["description"] =
       entity_path.empty() ? "Returns all faults." : "Returns all faults associated with this entity.";
@@ -361,6 +375,7 @@ nlohmann::json PathBuilder::build_faults_collection(const std::string & entity_p
 
   // PUT - update fault status (acknowledge/resolve)
   nlohmann::json put_op;
+  put_op["tags"] = nlohmann::json::array({"Faults"});
   put_op["summary"] = "Update fault status";
   put_op["description"] = "Update the status of a specific fault (e.g., acknowledge or resolve).";
   put_op["requestBody"]["required"] = true;
@@ -388,6 +403,7 @@ nlohmann::json PathBuilder::build_logs_collection(const std::string & entity_pat
   nlohmann::json path_item;
 
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Logs"});
   get_op["summary"] = "List log entries for " + entity_path;
   get_op["description"] = "Returns log entries associated with this entity.";
 
@@ -423,6 +439,7 @@ nlohmann::json PathBuilder::build_bulk_data_collection(const std::string & entit
   nlohmann::json path_item;
 
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Bulk Data"});
   get_op["summary"] = "List bulk data resources for " + entity_path;
   get_op["description"] = "Returns available bulk data resources (snapshots, recordings) for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
@@ -454,6 +471,7 @@ nlohmann::json PathBuilder::build_cyclic_subscriptions_collection(const std::str
 
   // GET - list active subscriptions
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Subscriptions"});
   get_op["summary"] = "List cyclic subscriptions for " + entity_path;
   get_op["description"] = "Returns all active cyclic subscriptions for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
@@ -475,6 +493,7 @@ nlohmann::json PathBuilder::build_cyclic_subscriptions_collection(const std::str
 
   // POST - create a new cyclic subscription
   nlohmann::json post_op;
+  post_op["tags"] = nlohmann::json::array({"Subscriptions"});
   post_op["summary"] = "Create cyclic subscription";
   post_op["description"] = "Create a new cyclic subscription to stream data changes via SSE.";
   post_op["requestBody"]["required"] = true;
@@ -508,6 +527,7 @@ nlohmann::json PathBuilder::build_sse_endpoint(const std::string & /*path*/, con
   nlohmann::json path_item;
 
   nlohmann::json get_op;
+  get_op["tags"] = nlohmann::json::array({"Events"});
   get_op["summary"] = description;
   get_op["description"] = description + " Streams events using Server-Sent Events (SSE).";
   get_op["responses"]["200"]["description"] = "SSE event stream";
