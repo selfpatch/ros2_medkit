@@ -407,6 +407,8 @@ std::string CyclicSubscriptionHandlers::extract_entity_type(const httplib::Reque
       return "apps";
     case SovdEntityType::COMPONENT:
       return "components";
+    case SovdEntityType::FUNCTION:
+      return "functions";
     default:
       RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in cyclic subscription path: %s", req.path.c_str());
       return "apps";
@@ -416,7 +418,7 @@ std::string CyclicSubscriptionHandlers::extract_entity_type(const httplib::Reque
 tl::expected<ParsedResourceUri, std::string>
 CyclicSubscriptionHandlers::parse_resource_uri(const std::string & resource) {
   // Try entity-scoped format first: /api/v1/{entity_type}/{entity_id}/{collection}[/{resource_path}]
-  static const std::regex entity_regex(R"(^/api/v1/(apps|components)/([^/]+)/([^/]+)(/.*)?$)");
+  static const std::regex entity_regex(R"(^/api/v1/(apps|components|functions)/([^/]+)/([^/]+)(/.*)?$)");
   std::smatch match;
   if (std::regex_match(resource, match, entity_regex)) {
     ParsedResourceUri parsed;
@@ -454,7 +456,7 @@ CyclicSubscriptionHandlers::parse_resource_uri(const std::string & resource) {
   }
 
   return tl::make_unexpected(
-      "Resource URI must match /api/v1/{apps|components}/{id}/{collection}[/{path}] "
+      "Resource URI must match /api/v1/{apps|components|functions}/{id}/{collection}[/{path}] "
       "or /api/v1/updates/{id}/status");
 }
 

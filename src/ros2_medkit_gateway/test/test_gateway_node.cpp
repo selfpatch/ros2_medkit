@@ -16,11 +16,16 @@
 #include <httplib.h>  // NOLINT(build/include_order)
 
 #include <chrono>
+#include <cstdio>
+#include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <string>
 #include <thread>
+#include <unistd.h>
 
+#include "ros2_medkit_gateway/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 
@@ -51,6 +56,9 @@ class TestGatewayNode : public ::testing::Test {
   }
 
   void TearDown() override {
+    for (const auto & path : temp_files_) {
+      std::remove(path.c_str());
+    }
     node_.reset();
   }
 
@@ -75,9 +83,48 @@ class TestGatewayNode : public ::testing::Test {
     return httplib::Client(server_host_, server_port_);
   }
 
+  std::string write_temp_manifest(const std::string & contents) {
+    char path_template[] = "/tmp/ros2_medkit_gateway_manifest_XXXXXX";
+    int fd = mkstemp(path_template);
+    EXPECT_GE(fd, 0);
+    if (fd >= 0) {
+      close(fd);
+    }
+
+    std::ofstream out(path_template);
+    out << contents;
+    out.close();
+    temp_files_.emplace_back(path_template);
+    return path_template;
+  }
+
+  void load_function_fixture(const std::string & function_id) {
+    const std::string manifest =
+        "manifest_version: \"1.0\"\n"
+        "functions:\n"
+        "  - id: \"" +
+        function_id +
+        "\"\n"
+        "    name: \"Function Test\"\n";
+
+    ros2_medkit_gateway::DiscoveryConfig config;
+    config.mode = ros2_medkit_gateway::DiscoveryMode::MANIFEST_ONLY;
+    config.manifest_path = write_temp_manifest(manifest);
+    config.manifest_strict_validation = false;
+
+    ASSERT_TRUE(node_->get_discovery_manager()->initialize(config));
+
+    ros2_medkit_gateway::Function func;
+    func.id = function_id;
+    func.name = "Function Test";
+    auto & cache = const_cast<ros2_medkit_gateway::ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+    cache.update_functions({func});
+  }
+
   std::shared_ptr<ros2_medkit_gateway::GatewayNode> node_;
   std::string server_host_;
   int server_port_;
+  std::vector<std::string> temp_files_;
 };
 
 TEST_F(TestGatewayNode, test_health_endpoint) {
@@ -673,6 +720,49 @@ TEST_F(TestGatewayNode, test_function_nonexistent) {
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, 404);
+}
+
+TEST_F(TestGatewayNode, test_function_detail_includes_cyclic_subscriptions_capability) {
+  load_function_fixture("graph_func");
+  auto client = create_client();
+
+  auto res = client.Get((std::string(API_BASE_PATH) + "/functions/graph_func").c_str());
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 200);
+
+  auto body = nlohmann::json::parse(res->body);
+  ASSERT_TRUE(body.contains("cyclic-subscriptions"));
+  EXPECT_EQ(body["cyclic-subscriptions"], "/api/v1/functions/graph_func/cyclic-subscriptions");
+
+  ASSERT_TRUE(body.contains("capabilities"));
+  const auto & caps = body["capabilities"];
+  auto has_cyclic_subscriptions = std::any_of(caps.begin(), caps.end(), [](const auto & cap) {
+    return cap.contains("name") && cap["name"] == "cyclic-subscriptions";
+  });
+  EXPECT_TRUE(has_cyclic_subscriptions);
+}
+
+TEST_F(TestGatewayNode, test_function_cyclic_subscription_create_for_graph_provider) {
+  load_function_fixture("graph_func");
+  auto client = create_client();
+
+  nlohmann::json body = {{"resource", "/api/v1/functions/graph_func/x-medkit-graph"},
+                         {"interval", "normal"},
+                         {"duration", 30},
+                         {"protocol", "sse"}};
+
+  auto res = client.Post((std::string(API_BASE_PATH) + "/functions/graph_func/cyclic-subscriptions").c_str(),
+                         body.dump(), "application/json");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 201);
+
+  auto json_response = nlohmann::json::parse(res->body);
+  EXPECT_EQ(json_response["observed_resource"], "/api/v1/functions/graph_func/x-medkit-graph");
+  EXPECT_EQ(json_response["protocol"], "sse");
+  EXPECT_EQ(json_response["event_source"],
+            "/api/v1/functions/graph_func/cyclic-subscriptions/" + json_response["id"].get<std::string>() + "/events");
 }
 
 TEST_F(TestGatewayNode, test_function_hosts_nonexistent) {

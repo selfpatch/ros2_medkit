@@ -1022,6 +1022,10 @@ void RESTServer::setup_routes() {
            [this](const httplib::Request & req, httplib::Response & res) {
              cyclic_sub_handlers_->handle_events(req, res);
            });
+  srv->Get((api_path("/functions") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)/events$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_events(req, res);
+           });
 
   // Create cyclic subscription
   srv->Post((api_path("/apps") + R"(/([^/]+)/cyclic-subscriptions$)"),
@@ -1029,6 +1033,10 @@ void RESTServer::setup_routes() {
               cyclic_sub_handlers_->handle_create(req, res);
             });
   srv->Post((api_path("/components") + R"(/([^/]+)/cyclic-subscriptions$)"),
+            [this](const httplib::Request & req, httplib::Response & res) {
+              cyclic_sub_handlers_->handle_create(req, res);
+            });
+  srv->Post((api_path("/functions") + R"(/([^/]+)/cyclic-subscriptions$)"),
             [this](const httplib::Request & req, httplib::Response & res) {
               cyclic_sub_handlers_->handle_create(req, res);
             });
@@ -1042,6 +1050,10 @@ void RESTServer::setup_routes() {
            [this](const httplib::Request & req, httplib::Response & res) {
              cyclic_sub_handlers_->handle_list(req, res);
            });
+  srv->Get((api_path("/functions") + R"(/([^/]+)/cyclic-subscriptions$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_list(req, res);
+           });
 
   // Get single subscription
   srv->Get((api_path("/apps") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
@@ -1049,6 +1061,10 @@ void RESTServer::setup_routes() {
              cyclic_sub_handlers_->handle_get(req, res);
            });
   srv->Get((api_path("/components") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_get(req, res);
+           });
+  srv->Get((api_path("/functions") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
            [this](const httplib::Request & req, httplib::Response & res) {
              cyclic_sub_handlers_->handle_get(req, res);
            });
@@ -1062,6 +1078,10 @@ void RESTServer::setup_routes() {
            [this](const httplib::Request & req, httplib::Response & res) {
              cyclic_sub_handlers_->handle_update(req, res);
            });
+  srv->Put((api_path("/functions") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
+           [this](const httplib::Request & req, httplib::Response & res) {
+             cyclic_sub_handlers_->handle_update(req, res);
+           });
 
   // Delete subscription
   srv->Delete((api_path("/apps") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
@@ -1069,6 +1089,10 @@ void RESTServer::setup_routes() {
                 cyclic_sub_handlers_->handle_delete(req, res);
               });
   srv->Delete((api_path("/components") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
+              [this](const httplib::Request & req, httplib::Response & res) {
+                cyclic_sub_handlers_->handle_delete(req, res);
+              });
+  srv->Delete((api_path("/functions") + R"(/([^/]+)/cyclic-subscriptions/([^/]+)$)"),
               [this](const httplib::Request & req, httplib::Response & res) {
                 cyclic_sub_handlers_->handle_delete(req, res);
               });

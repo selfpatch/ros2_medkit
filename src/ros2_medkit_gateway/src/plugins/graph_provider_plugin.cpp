@@ -221,8 +221,29 @@ void GraphProviderPlugin::set_context(PluginContext & context) {
   load_parameters();
   subscribe_to_diagnostics();
 
-  // TODO(#248): Register SSE sampler once function-level cyclic subscription is supported (URI parser currently allows
-  // apps|components only)
+  auto * gateway_node = dynamic_cast<GatewayNode *>(ctx_->node());
+  if (!gateway_node) {
+    log_warn("Skipping x-medkit-graph sampler registration: context node is not a GatewayNode");
+    return;
+  }
+
+  auto * sampler_registry = gateway_node->get_sampler_registry();
+  if (!sampler_registry) {
+    log_warn("Skipping x-medkit-graph sampler registration: sampler registry not available");
+    return;
+  }
+
+  sampler_registry->register_sampler(
+      "x-medkit-graph",
+      [this](const std::string & entity_id,
+             const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
+        auto payload = get_cached_or_built_graph(entity_id);
+        if (!payload.has_value()) {
+          return tl::make_unexpected(std::string("Graph snapshot not available: ") + entity_id);
+        }
+        return *payload;
+      });
+  log_info("Registered x-medkit-graph cyclic subscription sampler");
 }
 
 void GraphProviderPlugin::register_routes(httplib::Server & server, const std::string & api_prefix) {
@@ -239,29 +260,14 @@ void GraphProviderPlugin::register_routes(httplib::Server & server, const std::s
                  return;
                }
 
-               nlohmann::json payload;
-               {
-                 std::lock_guard<std::mutex> lock(cache_mutex_);
-                 auto it = graph_cache_.find(function_id);
-                 if (it != graph_cache_.end()) {
-                   payload = it->second;
-                 }
+               auto payload = get_cached_or_built_graph(function_id);
+               if (!payload.has_value()) {
+                 PluginContext::send_error(res, 503, "service-unavailable", "Graph snapshot not available",
+                                           {{"function_id", function_id}});
+                 return;
                }
 
-               if (payload.is_null()) {
-                 auto rebuilt = build_graph_from_entity_cache(function_id);
-                 if (!rebuilt.has_value()) {
-                   PluginContext::send_error(res, 503, "service-unavailable", "Graph snapshot not available",
-                                             {{"function_id", function_id}});
-                   return;
-                 }
-                 payload = *rebuilt;
-
-                 std::lock_guard<std::mutex> lock(cache_mutex_);
-                 graph_cache_[function_id] = payload;
-               }
-
-               PluginContext::send_json(res, payload);
+               PluginContext::send_json(res, *payload);
              });
 }
 
@@ -509,6 +515,27 @@ GraphProviderPlugin::GraphBuildConfig GraphProviderPlugin::resolve_config(const 
     resolved = it->second;
   }
   return resolved;
+}
+
+std::optional<nlohmann::json> GraphProviderPlugin::get_cached_or_built_graph(const std::string & function_id) {
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    auto it = graph_cache_.find(function_id);
+    if (it != graph_cache_.end()) {
+      return it->second;
+    }
+  }
+
+  auto rebuilt = build_graph_from_entity_cache(function_id);
+  if (!rebuilt.has_value()) {
+    return std::nullopt;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    graph_cache_[function_id] = *rebuilt;
+  }
+  return rebuilt;
 }
 
 std::optional<nlohmann::json>

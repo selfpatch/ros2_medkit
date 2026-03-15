@@ -67,6 +67,15 @@ TEST(ParseResourceUriTest, VendorExtensionCollection) {
   EXPECT_EQ(result->resource_path, "/cpu_usage");
 }
 
+TEST(ParseResourceUriTest, FunctionVendorExtensionCollection) {
+  auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/functions/func1/x-medkit-graph");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->entity_type, "functions");
+  EXPECT_EQ(result->entity_id, "func1");
+  EXPECT_EQ(result->collection, "x-medkit-graph");
+  EXPECT_EQ(result->resource_path, "");
+}
+
 TEST(ParseResourceUriTest, MultiSegmentResourcePath) {
   auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/apps/node1/data/parent/child/value");
   ASSERT_TRUE(result.has_value());
@@ -83,9 +92,13 @@ TEST(ParseResourceUriTest, InvalidMalformedUri) {
   EXPECT_FALSE(result.has_value());
 }
 
-TEST(ParseResourceUriTest, InvalidFunctionEntityType) {
+TEST(ParseResourceUriTest, FunctionEntityTypeSupported) {
   auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/functions/func1/data/topic");
-  EXPECT_FALSE(result.has_value());
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->entity_type, "functions");
+  EXPECT_EQ(result->entity_id, "func1");
+  EXPECT_EQ(result->collection, "data");
+  EXPECT_EQ(result->resource_path, "/topic");
 }
 
 TEST(ParseResourceUriTest, PathTraversalRejected) {
