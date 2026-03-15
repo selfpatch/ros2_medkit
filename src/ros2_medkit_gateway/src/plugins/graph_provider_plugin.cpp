@@ -472,10 +472,6 @@ std::optional<double> GraphProviderPlugin::parse_double(const std::string & valu
   }
 }
 
-bool GraphProviderPlugin::is_filtered_topic(const std::string & topic_name) {
-  return is_filtered_topic_name(topic_name);
-}
-
 std::string GraphProviderPlugin::generate_fault_code(const std::string & diagnostic_name) {
   std::string result;
   result.reserve(diagnostic_name.size());

@@ -75,7 +75,6 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   void diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg);
   static std::optional<TopicMetrics> parse_topic_metrics(const diagnostic_msgs::msg::DiagnosticStatus & status);
   static std::optional<double> parse_double(const std::string & value);
-  static bool is_filtered_topic(const std::string & topic_name);
   static std::string generate_fault_code(const std::string & diagnostic_name);
   static std::string current_timestamp();
   GraphBuildConfig resolve_config(const std::string & function_id) const;
