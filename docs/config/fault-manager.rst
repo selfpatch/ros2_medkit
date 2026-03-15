@@ -131,14 +131,16 @@ threshold overrides:
   ``/sensors/lidar`` over ``/sensors``.
 - Unspecified fields in an entity override inherit from the global defaults.
 - If no prefix matches, the global defaults apply.
-- Thresholds are resolved on every event. Config file changes take effect on the next
-  ``ReportFault`` call (no restart required for in-flight faults).
+- The config file is loaded once at node startup. Changes require a node restart.
 
 .. note::
 
    When multiple entities report the same ``fault_code``, each event applies the
    thresholds resolved from that event's ``source_id``. This means the debounce
    behavior follows the reporting entity, not the fault.
+
+   ``auto_confirm_after_sec`` and ``critical_immediate_confirm`` are global-only and
+   cannot be overridden per-entity.
 
 Snapshot Configuration
 ----------------------

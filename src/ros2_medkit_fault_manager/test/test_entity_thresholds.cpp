@@ -109,6 +109,22 @@ TEST_F(ResolverTest, NoMatchReturnsGlobal) {
 }
 
 // @verifies REQ_INTEROP_095
+TEST_F(ResolverTest, PrefixMatchRequiresPathBoundary) {
+  EntityDebounceOverride entry;
+  entry.prefix = "/sensors/lid";
+  entry.confirmation_threshold = -5;
+
+  EntityThresholdResolver resolver({entry});
+  // "/sensors/lidar" does NOT start with "/sensors/lid/" - no path boundary
+  auto result = resolver.resolve("/sensors/lidar", global_);
+  EXPECT_EQ(result.confirmation_threshold, -1);  // Global default, not -5
+
+  // But "/sensors/lid/front" does match at path boundary
+  auto result2 = resolver.resolve("/sensors/lid/front", global_);
+  EXPECT_EQ(result2.confirmation_threshold, -5);
+}
+
+// @verifies REQ_INTEROP_095
 TEST_F(ResolverTest, PartialOverrideMergesWithGlobal) {
   EntityDebounceOverride entry;
   entry.prefix = "/safety";
