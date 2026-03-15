@@ -602,6 +602,91 @@ TEST(GraphProviderPluginRouteTest, UsesPreviousOnlineTimestampForOfflineLastSeen
   local_server.stop();
 }
 
+TEST(GraphProviderPluginMetricsTest, BrokenPipelineHasNullBottleneckEdgeEvenWhenActiveEdgesExist) {
+  // edge a→b: /ab, b is offline → node_offline error → broken
+  // edge a→c: /ac, both online, freq=5 (below 30*0.5) → active but degraded
+  // pipeline_status should be "broken", bottleneck_edge should be null
+  auto input = make_input(
+      {make_app("a", {"/ab", "/ac"}, {}, true), make_app("b", {}, {"/ab"}, false), make_app("c", {}, {"/ac"}, true)},
+      {make_function("fn", {"a", "b", "c"})});
+  auto state = make_state(true);
+  state.topic_metrics["/ac"] = make_metrics(5.0, 1.0, 0.0, 30.0);
+
+  auto doc =
+      GraphProviderPlugin::build_graph_document("fn", input, state, default_config(), "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+
+  EXPECT_EQ(graph["pipeline_status"], "broken");
+  EXPECT_TRUE(graph["bottleneck_edge"].is_null());
+}
+
+TEST(GraphProviderPluginDiagnosticsTest, SetsDiagnosticsSeenWhenNonGreenwaveMessageArrives) {
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+
+  auto node = std::make_shared<rclcpp::Node>("graph_diag_seen_test_node");
+  auto pub_node = std::make_shared<rclcpp::Node>("graph_diag_seen_pub");
+  auto diagnostics_pub = pub_node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(pub_node);
+
+  {
+    GraphProviderPlugin plugin;
+    FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}}, node.get());
+    plugin.set_context(ctx);
+
+    auto input =
+        make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+
+    // Publish a diagnostic message with no greenwave keys (non-greenwave hardware diagnostics)
+    diagnostic_msgs::msg::DiagnosticArray msg;
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.name = "/some/hardware/driver";
+    status.values = {make_key_value("temperature", "72.3"), make_key_value("voltage", "3.3")};
+    msg.status.push_back(status);
+    diagnostics_pub->publish(msg);
+    executor.spin_some();
+    std::this_thread::sleep_for(20ms);
+    executor.spin_some();
+
+    plugin.introspect(input);
+
+    httplib::Server server;
+    plugin.register_routes(server, "/api/v1");
+    LocalHttpServer local_server;
+    local_server.start(server);
+
+    httplib::Client client("127.0.0.1", local_server.port());
+    auto res = client.Get("/api/v1/functions/fn/x-medkit-graph");
+    for (int attempt = 0; !res && attempt < 19; ++attempt) {
+      std::this_thread::sleep_for(50ms);
+      res = client.Get("/api/v1/functions/fn/x-medkit-graph");
+    }
+
+    ASSERT_TRUE(res);
+    ASSERT_EQ(res->status, 200);
+
+    auto body = nlohmann::json::parse(res->body);
+    const auto & graph = body["x-medkit-graph"];
+    const auto * edge = find_edge(graph, "a", "b", "/topic");
+    ASSERT_NE(edge, nullptr);
+    // /diagnostics is alive (non-greenwave message received), but /topic has no greenwave entry
+    // → must be "error"/"no_data_source", NOT "pending"
+    EXPECT_EQ((*edge)["metrics"]["metrics_status"], "error");
+    EXPECT_EQ((*edge)["metrics"]["error_reason"], "no_data_source");
+
+    local_server.stop();
+  }
+
+  executor.remove_node(pub_node);
+  executor.remove_node(node);
+  pub_node.reset();
+  node.reset();
+  rclcpp::shutdown();
+}
+
 TEST(GraphProviderPluginRouteTest, AppliesPerFunctionConfigOverridesFromNodeParameters) {
   if (!rclcpp::ok()) {
     rclcpp::init(0, nullptr);
