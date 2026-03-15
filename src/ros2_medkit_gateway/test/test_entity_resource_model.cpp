@@ -184,6 +184,7 @@ TEST(EntityCapabilities, FunctionAggregatesCollections) {
   EXPECT_TRUE(caps.supports_collection(ResourceCollection::FAULTS));
   EXPECT_TRUE(caps.supports_collection(ResourceCollection::LOGS));
   EXPECT_TRUE(caps.supports_collection(ResourceCollection::BULK_DATA));
+  EXPECT_TRUE(caps.supports_collection(ResourceCollection::CYCLIC_SUBSCRIPTIONS));
   EXPECT_TRUE(caps.is_aggregated(ResourceCollection::DATA));
   EXPECT_TRUE(caps.is_aggregated(ResourceCollection::OPERATIONS));
   EXPECT_TRUE(caps.is_aggregated(ResourceCollection::CONFIGURATIONS));

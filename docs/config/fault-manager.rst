@@ -75,6 +75,78 @@ The fault manager uses AUTOSAR DEM-style debounce filtering to prevent fault fla
    For immediate fault confirmation (no debounce), set ``confirmation_threshold: 0``.
    Faults with ``SEVERITY_CRITICAL`` always bypass debounce regardless of this setting.
 
+Per-Entity Thresholds
+~~~~~~~~~~~~~~~~~~~~~
+
+Different subsystems often have different failure characteristics. For example, a lidar
+sensor is binary (instant confirmation), while a motor controller may produce transient
+errors that need debouncing. Per-entity thresholds let you configure different debounce
+policies per reporting entity using longest-prefix matching on ``source_id``.
+
+.. code-block:: yaml
+
+   fault_manager:
+     ros__parameters:
+       # Global defaults (used when no entity-specific match)
+       confirmation_threshold: -1
+       healing_enabled: false
+       healing_threshold: 3
+
+       # Path to YAML file with per-entity overrides
+       entity_thresholds:
+         config_file: "/etc/ros2_medkit/entity_thresholds.yaml"
+
+The entity thresholds config file uses a simple map of entity path prefixes to
+threshold overrides:
+
+.. code-block:: yaml
+
+   # entity_thresholds.yaml
+   /sensors/lidar:
+     confirmation_threshold: -1    # instant - lidar is binary
+     healing_threshold: 1
+
+   /powertrain/motor_left:
+     confirmation_threshold: -5    # motor has transients, need 5 events
+     healing_threshold: 10
+
+   /safety:
+     confirmation_threshold: -1    # instant, never auto-heal
+     healing_enabled: false
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 15 50
+
+   * - Parameter
+     - Default
+     - Description
+   * - ``entity_thresholds.config_file``
+     - ``""``
+     - Path to YAML file with per-entity threshold overrides. Empty = disabled.
+
+**How matching works:**
+
+- The ``source_id`` is the identifier passed in ``ReportFault`` service requests, typically the
+  fully qualified name of the reporting ROS 2 node (e.g., ``/sensors/lidar/front_node``).
+  You can inspect actual ``source_id`` values in the ``reporting_sources`` field of existing
+  faults via ``GET /api/v1/faults``.
+- The ``source_id`` from ``ReportFault`` requests is matched against configured prefixes.
+- The **longest matching prefix** wins. For example, ``/sensors/lidar/front`` matches
+  ``/sensors/lidar`` over ``/sensors``.
+- Unspecified fields in an entity override inherit from the global defaults.
+- If no prefix matches, the global defaults apply.
+- The config file is loaded once at node startup. Changes require a node restart.
+
+.. note::
+
+   When multiple entities report the same ``fault_code``, each event applies the
+   thresholds resolved from that event's ``source_id``. This means the debounce
+   behavior follows the reporting entity, not the fault.
+
+   ``auto_confirm_after_sec`` and ``critical_immediate_confirm`` are global-only and
+   cannot be overridden per-entity.
+
 Snapshot Configuration
 ----------------------
 
@@ -228,6 +300,10 @@ Complete Example
        healing_enabled: true
        healing_threshold: 3
        auto_confirm_after_sec: 30.0
+
+       # Per-entity debounce overrides
+       entity_thresholds:
+         config_file: "/etc/ros2_medkit/entity_thresholds.yaml"
 
        # Snapshots
        snapshots:

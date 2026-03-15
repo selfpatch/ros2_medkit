@@ -37,6 +37,17 @@ Faults
 
    The endpoint shall clear the addressed diagnostic fault code for the entity, if permitted.
 
+.. req:: Per-Entity Debounce Thresholds
+   :id: REQ_INTEROP_095
+   :status: verified
+   :tags: Faults
+
+   The fault manager shall support per-entity debounce threshold configuration using
+   longest-prefix matching on the reporting entity's ``source_id``. Entity-specific
+   overrides for ``confirmation_threshold``, ``healing_enabled``, and ``healing_threshold``
+   shall take precedence over global defaults. Unspecified fields shall inherit from global
+   configuration. When no entity prefix matches, global defaults shall apply.
+
 .. req:: Fault Snapshot and Rosbag Capture
    :id: REQ_INTEROP_088
    :status: verified

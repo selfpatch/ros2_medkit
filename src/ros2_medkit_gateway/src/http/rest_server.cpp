@@ -604,8 +604,8 @@ void RESTServer::setup_routes() {
           .response(405, "Method not allowed");
     }
 
-    // --- Cyclic Subscriptions (apps and components only) ---
-    if (et_type_str == "apps" || et_type_str == "components") {
+    // --- Cyclic Subscriptions (apps, components, and functions) ---
+    if (et_type_str == "apps" || et_type_str == "components" || et_type_str == "functions") {
       // SSE events stream - registered before CRUD routes
       reg.get(entity_path + "/cyclic-subscriptions/{subscription_id}/events",
               [this](auto & req, auto & res) {

@@ -994,8 +994,12 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto func_opt = discovery->get_function(function_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto func_opt = cache.get_function(function_id);
+    if (!func_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      func_opt = discovery->get_function(function_id);
+    }
 
     if (!func_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found", {{"function_id", function_id}});
@@ -1026,10 +1030,12 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
     response["faults"] = base_uri + "/faults";
     response["logs"] = base_uri + "/logs";
     response["bulk-data"] = base_uri + "/bulk-data";
+    response["x-medkit-graph"] = base_uri + "/x-medkit-graph";
+    response["cyclic-subscriptions"] = base_uri + "/cyclic-subscriptions";
 
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::HOSTS,  Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS,
-                             Cap::FAULTS, Cap::LOGS, Cap::BULK_DATA};
+                             Cap::FAULTS, Cap::LOGS, Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("functions", func.id, caps);
     append_plugin_capabilities(response["capabilities"], "functions", func.id, SovdEntityType::FUNCTION, ctx_.node());
 

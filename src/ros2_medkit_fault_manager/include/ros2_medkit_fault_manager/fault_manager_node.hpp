@@ -19,6 +19,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
+#include "ros2_medkit_fault_manager/entity_threshold_resolver.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
@@ -125,13 +126,19 @@ class FaultManagerNode : public rclcpp::Node {
   /// Extract topic name from full topic path (last segment)
   static std::string extract_topic_name(const std::string & topic_path);
 
+  /// Resolve debounce config for a given source_id using entity threshold resolver.
+  /// Falls back to global config if no entity-specific overrides match.
+  DebounceConfig resolve_config(const std::string & source_id) const;
+
   std::string storage_type_;
   std::string database_path_;
   int32_t confirmation_threshold_{-1};
   bool healing_enabled_{false};
   int32_t healing_threshold_{3};
   double auto_confirm_after_sec_{0.0};
+  DebounceConfig global_config_;  ///< Global debounce config (built from ROS params)
   std::unique_ptr<FaultStorage> storage_;
+  std::unique_ptr<EntityThresholdResolver> threshold_resolver_;  ///< Per-entity threshold overrides
 
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ListFaults>::SharedPtr list_faults_srv_;

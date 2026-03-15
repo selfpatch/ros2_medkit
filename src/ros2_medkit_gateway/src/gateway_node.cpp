@@ -22,6 +22,7 @@
 #include <unordered_set>
 
 #include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
+#include "ros2_medkit_gateway/plugins/graph_provider_plugin.hpp"
 
 using namespace std::chrono_literals;
 
@@ -490,14 +491,15 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   // Initialize plugin manager
   plugin_mgr_ = std::make_unique<PluginManager>();
   plugin_mgr_->set_registries(*sampler_registry_, *transport_registry_);
+  plugin_mgr_->add_plugin(std::make_unique<GraphProviderPlugin>());
   auto plugin_names = get_parameter("plugins").as_string_array();
   plugin_names.erase(std::remove_if(plugin_names.begin(), plugin_names.end(),
                                     [](const auto & item) {
                                       return item.empty();
                                     }),
                      plugin_names.end());
+  std::vector<PluginConfig> configs;
   if (!plugin_names.empty()) {
-    std::vector<PluginConfig> configs;
     // Plugin name validation: alphanumeric, underscore, hyphen only (max 256 chars)
     auto is_valid_plugin_name = [](const std::string & name) -> bool {
       if (name.empty() || name.size() > 256) {
@@ -532,21 +534,22 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
       }
       configs.push_back({pname, path, std::move(plugin_config)});
     }
-    auto loaded = plugin_mgr_->load_plugins(configs);
-    plugin_mgr_->configure_plugins();
-    plugin_ctx_ = make_gateway_plugin_context(this, fault_mgr_.get());
-    plugin_mgr_->set_context(*plugin_ctx_);
-    RCLCPP_INFO(get_logger(), "Loaded %zu plugin(s)", loaded);
+  }
 
-    // Register IntrospectionProvider plugins as pipeline layers (hybrid mode only)
-    if (discovery_mgr_->get_mode() == DiscoveryMode::HYBRID) {
-      auto providers = plugin_mgr_->get_named_introspection_providers();
-      for (auto & [name, provider] : providers) {
-        discovery_mgr_->add_plugin_layer(name, provider);
-      }
-      if (!providers.empty()) {
-        discovery_mgr_->refresh_pipeline();
-      }
+  auto loaded = plugin_mgr_->load_plugins(configs);
+  plugin_mgr_->configure_plugins();
+  plugin_ctx_ = make_gateway_plugin_context(this, fault_mgr_.get());
+  plugin_mgr_->set_context(*plugin_ctx_);
+  RCLCPP_INFO(get_logger(), "Loaded %zu external plugin(s) and 1 built-in plugin", loaded);
+
+  // Register IntrospectionProvider plugins as pipeline layers (hybrid mode only)
+  if (discovery_mgr_->get_mode() == DiscoveryMode::HYBRID) {
+    auto providers = plugin_mgr_->get_named_introspection_providers();
+    for (auto & [name, provider] : providers) {
+      discovery_mgr_->add_plugin_layer(name, provider);
+    }
+    if (!providers.empty()) {
+      discovery_mgr_->refresh_pipeline();
     }
   }
 

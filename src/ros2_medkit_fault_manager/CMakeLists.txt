@@ -62,6 +62,7 @@ add_library(fault_manager_lib STATIC
   src/correlation/config_parser.cpp
   src/correlation/pattern_matcher.cpp
   src/correlation/correlation_engine.cpp
+  src/entity_threshold_resolver.cpp
 )
 
 target_include_directories(fault_manager_lib PUBLIC
@@ -164,6 +165,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_correlation_engine test/test_correlation_engine.cpp)
   target_link_libraries(test_correlation_engine fault_manager_lib)
 
+  # Entity threshold resolver tests
+  ament_add_gtest(test_entity_thresholds test/test_entity_thresholds.cpp)
+  target_link_libraries(test_entity_thresholds fault_manager_lib)
+  medkit_target_dependencies(test_entity_thresholds rclcpp ros2_medkit_msgs)
+  set_tests_properties(test_entity_thresholds PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=67")
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_fault_manager PRIVATE --coverage -O0 -g)
@@ -180,6 +187,8 @@ if(BUILD_TESTING)
     target_link_options(test_pattern_matcher PRIVATE --coverage)
     target_compile_options(test_correlation_engine PRIVATE --coverage -O0 -g)
     target_link_options(test_correlation_engine PRIVATE --coverage)
+    target_compile_options(test_entity_thresholds PRIVATE --coverage -O0 -g)
+    target_link_options(test_entity_thresholds PRIVATE --coverage)
   endif()
 
   # Integration tests
@@ -200,6 +209,13 @@ if(BUILD_TESTING)
     TIMEOUT 90
   )
   set_tests_properties(test_rosbag_integration PROPERTIES LABELS "integration")
+
+  add_launch_test(
+    test/test_entity_thresholds_integration.test.py
+    TARGET test_entity_thresholds_integration
+    TIMEOUT 60
+  )
+  set_tests_properties(test_entity_thresholds_integration PROPERTIES LABELS "integration")
 endif()
 
 ament_package()

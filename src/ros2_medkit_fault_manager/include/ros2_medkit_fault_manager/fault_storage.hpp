@@ -110,11 +110,12 @@ class FaultStorage {
   /// @param description Human-readable description (only used for FAILED events)
   /// @param source_id Reporting source identifier
   /// @param timestamp Current time for tracking
+  /// @param config Debounce configuration to apply for this event (resolved per-entity by the node)
   /// @return true if this is a new occurrence (new fault or reactivated CLEARED fault),
   ///         false if existing active fault was updated
   virtual bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                   const std::string & description, const std::string & source_id,
-                                  const rclcpp::Time & timestamp) = 0;
+                                  const rclcpp::Time & timestamp, const DebounceConfig & config) = 0;
 
   /// Get faults matching filter criteria
   /// @param filter_by_severity Whether to filter by severity
@@ -205,7 +206,7 @@ class InMemoryFaultStorage : public FaultStorage {
 
   bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                           const std::string & description, const std::string & source_id,
-                          const rclcpp::Time & timestamp) override;
+                          const rclcpp::Time & timestamp, const DebounceConfig & config) override;
 
   std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
                                                         const std::vector<std::string> & statuses) const override;
@@ -233,8 +234,8 @@ class InMemoryFaultStorage : public FaultStorage {
   std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
 
  private:
-  /// Update fault status based on debounce counter
-  void update_status(FaultState & state);
+  /// Update fault status based on debounce counter and given config
+  void update_status(FaultState & state, const DebounceConfig & config);
 
   mutable std::mutex mutex_;
   std::map<std::string, FaultState> faults_;
