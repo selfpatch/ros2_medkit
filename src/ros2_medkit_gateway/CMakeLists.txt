@@ -541,6 +541,6 @@ endif()
 # Export include directories for downstream packages (plugins)
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY src/vendored/tl_expected/include/ DESTINATION include/ros2_medkit_gateway/vendored)
-ament_export_include_directories(include)
+ament_export_include_directories(include include/ros2_medkit_gateway/vendored)
 
 ament_package()
