@@ -93,7 +93,6 @@ jobs:
         timeout-minutes: 15
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-          source install/setup.bash
           colcon test --return-code-on-test-failure \
             --ctest-args -LE linter \
             --event-handlers console_direct+
@@ -218,7 +217,6 @@ jobs:
       - name: Run linters
         run: |
           source /opt/ros/jazzy/setup.bash
-          source install/setup.bash
           colcon test --return-code-on-test-failure \
             --ctest-args -L linter \
             --event-handlers console_direct+
@@ -279,7 +277,6 @@ jobs:
       - name: Run unit and integration tests
         run: |
           source /opt/ros/jazzy/setup.bash
-          source install/setup.bash
           colcon test --return-code-on-test-failure \
             --ctest-args -LE linter \
             --event-handlers console_direct+
@@ -354,7 +351,6 @@ jobs:
       - name: Run unit and integration tests for coverage
         run: |
           source /opt/ros/jazzy/setup.bash
-          source install/setup.bash
           colcon test \
             --ctest-args -LE linter \
             --event-handlers console_direct+
