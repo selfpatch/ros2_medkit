@@ -348,8 +348,9 @@ TEST_F(PathBuilderTest, LogsReturnsLogEntryItems) {
   auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
   auto & item_schema = schema["properties"]["items"]["items"];
   EXPECT_TRUE(item_schema["properties"].contains("timestamp"));
-  EXPECT_TRUE(item_schema["properties"].contains("level"));
+  EXPECT_TRUE(item_schema["properties"].contains("severity"));
   EXPECT_TRUE(item_schema["properties"].contains("message"));
+  EXPECT_TRUE(item_schema["properties"].contains("context"));
 }
 
 // =============================================================================

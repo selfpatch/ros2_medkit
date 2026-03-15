@@ -313,6 +313,7 @@ ros2_medkit_gateway:
     docs:
       # Master switch for OpenAPI /docs endpoints
       # When false, /docs routes return 501
+      # Note: requires gateway restart to take effect (read once at startup)
       enabled: true
 
     # Rate Limiting Configuration
