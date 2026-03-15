@@ -375,7 +375,7 @@ nlohmann::json GraphProviderPlugin::build_graph_document(const std::string & fun
   }
   graph["pipeline_status"] = pipeline_status;
 
-  if (pipeline_status != "healthy" && bottleneck.has_value()) {
+  if (pipeline_status == "degraded" && bottleneck.has_value()) {
     graph["bottleneck_edge"] = bottleneck->first;
   }
 
@@ -405,10 +405,6 @@ void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::Diagn
     if (metrics.has_value()) {
       updates[status.name] = *metrics;
     }
-  }
-
-  if (updates.empty()) {
-    return;
   }
 
   std::lock_guard<std::mutex> lock(metrics_mutex_);
