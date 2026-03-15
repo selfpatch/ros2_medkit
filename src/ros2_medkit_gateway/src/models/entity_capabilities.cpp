@@ -76,8 +76,13 @@ EntityCapabilities EntityCapabilities::for_type(SovdEntityType type) {
       // ros2_medkit extension: functions support additional collections via aggregation
       // (SOVD spec only defines data/operations for functions)
       caps.collections_ = {
-          ResourceCollection::DATA,   ResourceCollection::OPERATIONS, ResourceCollection::CONFIGURATIONS,
-          ResourceCollection::FAULTS, ResourceCollection::LOGS,       ResourceCollection::BULK_DATA,
+          ResourceCollection::DATA,
+          ResourceCollection::OPERATIONS,
+          ResourceCollection::CONFIGURATIONS,
+          ResourceCollection::FAULTS,
+          ResourceCollection::LOGS,
+          ResourceCollection::BULK_DATA,
+          ResourceCollection::CYCLIC_SUBSCRIPTIONS,
       };
       caps.aggregated_collections_ = {
           ResourceCollection::DATA,   ResourceCollection::OPERATIONS, ResourceCollection::CONFIGURATIONS,

@@ -215,6 +215,12 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         "PUT /api/v1/apps/{app_id}/cyclic-subscriptions/{subscription_id}",
         "DELETE /api/v1/apps/{app_id}/cyclic-subscriptions/{subscription_id}",
         "GET /api/v1/apps/{app_id}/cyclic-subscriptions/{subscription_id}/events",
+        "POST /api/v1/functions/{function_id}/cyclic-subscriptions",
+        "GET /api/v1/functions/{function_id}/cyclic-subscriptions",
+        "GET /api/v1/functions/{function_id}/cyclic-subscriptions/{subscription_id}",
+        "PUT /api/v1/functions/{function_id}/cyclic-subscriptions/{subscription_id}",
+        "DELETE /api/v1/functions/{function_id}/cyclic-subscriptions/{subscription_id}",
+        "GET /api/v1/functions/{function_id}/cyclic-subscriptions/{subscription_id}/events",
         // Global Faults
         "GET /api/v1/faults",
         "GET /api/v1/faults/stream",

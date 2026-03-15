@@ -78,6 +78,7 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   static std::string generate_fault_code(const std::string & diagnostic_name);
   static std::string current_timestamp();
   GraphBuildConfig resolve_config(const std::string & function_id) const;
+  std::optional<nlohmann::json> get_cached_or_built_graph(const std::string & function_id);
   std::optional<nlohmann::json> build_graph_from_entity_cache(const std::string & function_id) const;
   std::unordered_set<std::string> collect_stale_topics(const IntrospectionInput & input) const;
   void load_parameters();
