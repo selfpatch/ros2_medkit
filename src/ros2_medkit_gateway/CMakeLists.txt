@@ -213,10 +213,11 @@ target_link_libraries(gateway_node gateway_lib)
 # Export symbols to dlopen'd plugins (PluginContext::send_json, send_error, etc.)
 set_target_properties(gateway_node PROPERTIES ENABLE_EXPORTS ON)
 
-# Apply Swagger UI compile definition to both library and executable
+# Apply Swagger UI compile definition and embed assets
 if(ENABLE_SWAGGER_UI)
   target_compile_definitions(gateway_lib PUBLIC ENABLE_SWAGGER_UI)
   target_compile_definitions(gateway_node PRIVATE ENABLE_SWAGGER_UI)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SwaggerUI.cmake)
 endif()
 
 # Apply coverage flags to main targets
