@@ -236,7 +236,7 @@ nlohmann::json RouteRegistry::to_openapi_paths() const {
               {"operation_id", "The operation identifier"},
               {"execution_id", "The execution identifier"},
               {"config_id", "The configuration parameter identifier (ROS 2 parameter name)"},
-              {"fault_id", "The fault identifier"},
+              {"fault_code", "The fault code identifier"},
               {"subscription_id", "The cyclic subscription identifier"},
               {"category_id", "The bulk data category identifier"},
               {"file_id", "The bulk data file identifier"},
