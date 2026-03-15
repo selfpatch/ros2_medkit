@@ -263,22 +263,25 @@ nlohmann::json RouteRegistry::to_openapi_paths() const {
       operation["responses"]["200"]["description"] = "Successful response";
     }
 
-    // Add standard error responses
-    operation["responses"]["400"]["description"] = "Bad request";
-    operation["responses"]["404"]["description"] = "Not found";
-    operation["responses"]["500"]["description"] = "Internal server error";
-
-    // Check if any route has Authentication tag - add auth error responses
-    bool has_auth_tag = false;
-    for (const auto & r : routes_) {
-      if (r.tag_ == "Authentication") {
-        has_auth_tag = true;
-        break;
-      }
+    // Add standard error responses only if not already explicitly set
+    if (!operation["responses"].contains("400")) {
+      operation["responses"]["400"]["description"] = "Bad request";
     }
-    if (has_auth_tag) {
-      operation["responses"]["401"]["description"] = "Unauthorized";
-      operation["responses"]["403"]["description"] = "Forbidden";
+    if (!operation["responses"].contains("404")) {
+      operation["responses"]["404"]["description"] = "Not found";
+    }
+    if (!operation["responses"].contains("500")) {
+      operation["responses"]["500"]["description"] = "Internal server error";
+    }
+
+    // Add auth error responses if authentication is enabled
+    if (auth_enabled_) {
+      if (!operation["responses"].contains("401")) {
+        operation["responses"]["401"]["description"] = "Unauthorized";
+      }
+      if (!operation["responses"].contains("403")) {
+        operation["responses"]["403"]["description"] = "Forbidden";
+      }
     }
 
     paths[route.path_][route.method_] = std::move(operation);

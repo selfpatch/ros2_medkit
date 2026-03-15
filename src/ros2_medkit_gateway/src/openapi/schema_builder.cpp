@@ -50,15 +50,19 @@ nlohmann::json SchemaBuilder::generic_error() {
 }
 
 nlohmann::json SchemaBuilder::fault_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}},
-            {"fault_code", {{"type", "string"}}},
-            {"entity_id", {{"type", "string"}}},
-            {"severity", {{"type", "string"}}},
-            {"status", {{"type", "object"}}},
-            {"timestamp", {{"type", "string"}}}}},
-          {"required", {"fault_code", "severity", "status"}}};
+  return {
+      {"type", "object"},
+      {"properties",
+       {{"fault_code", {{"type", "string"}}},
+        {"severity", {{"type", "integer"}, {"description", "Numeric severity level"}}},
+        {"severity_label", {{"type", "string"}, {"enum", {"INFO", "WARN", "ERROR", "CRITICAL"}}}},
+        {"description", {{"type", "string"}}},
+        {"first_occurred", {{"type", "number"}, {"description", "Unix timestamp (seconds with nanosecond fraction)"}}},
+        {"last_occurred", {{"type", "number"}, {"description", "Unix timestamp (seconds with nanosecond fraction)"}}},
+        {"occurrence_count", {{"type", "integer"}}},
+        {"status", {{"type", "string"}}},
+        {"reporting_sources", {{"type", "array"}, {"items", {{"type", "string"}}}}}}},
+      {"required", {"fault_code", "severity", "status"}}};
 }
 
 nlohmann::json SchemaBuilder::fault_list_schema() {
@@ -92,17 +96,22 @@ nlohmann::json SchemaBuilder::configuration_param_schema() {
 }
 
 nlohmann::json SchemaBuilder::log_entry_schema() {
+  nlohmann::json context_schema = {{"type", "object"},
+                                   {"properties",
+                                    {{"node", {{"type", "string"}}},
+                                     {"function", {{"type", "string"}}},
+                                     {"file", {{"type", "string"}}},
+                                     {"line", {{"type", "integer"}}}}},
+                                   {"required", {"node"}}};
+
   return {{"type", "object"},
           {"properties",
-           {{"id", {{"type", "integer"}}},
-            {"timestamp", {{"type", "string"}}},
-            {"level", {{"type", "string"}}},
-            {"name", {{"type", "string"}}},
+           {{"id", {{"type", "string"}, {"description", "Log entry ID (e.g. log_123)"}}},
+            {"timestamp", {{"type", "string"}, {"format", "date-time"}}},
+            {"severity", {{"type", "string"}}},
             {"message", {{"type", "string"}}},
-            {"function", {{"type", "string"}}},
-            {"file", {{"type", "string"}}},
-            {"line", {{"type", "integer"}}}}},
-          {"required", {"id", "timestamp", "level", "message"}}};
+            {"context", context_schema}}},
+          {"required", {"id", "timestamp", "severity", "message"}}};
 }
 
 nlohmann::json SchemaBuilder::health_schema() {
@@ -112,18 +121,20 @@ nlohmann::json SchemaBuilder::health_schema() {
 }
 
 nlohmann::json SchemaBuilder::version_info_schema() {
+  nlohmann::json vendor_info_schema = {
+      {"type", "object"},
+      {"properties", {{"version", {{"type", "string"}}}, {"name", {{"type", "string"}}}}},
+      {"required", {"version", "name"}}};
+
+  nlohmann::json info_entry_schema = {
+      {"type", "object"},
+      {"properties",
+       {{"version", {{"type", "string"}}}, {"base_uri", {{"type", "string"}}}, {"vendor_info", vendor_info_schema}}},
+      {"required", {"version", "base_uri"}}};
+
   return {{"type", "object"},
-          {"properties",
-           {{"sovd_info",
-             {{"type", "array"},
-              {"items",
-               {{"type", "object"},
-                {"properties",
-                 {{"version", {{"type", "string"}}},
-                  {"base_uri", {{"type", "string"}}},
-                  {"vendor_info", {{"type", "object"}}}}},
-                {"required", {"version", "base_uri"}}}}}}}},
-          {"required", {"sovd_info"}}};
+          {"properties", {{"items", {{"type", "array"}, {"items", info_entry_schema}}}}},
+          {"required", {"items"}}};
 }
 
 }  // namespace openapi
