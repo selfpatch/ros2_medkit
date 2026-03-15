@@ -1381,7 +1381,6 @@ Other extensions beyond SOVD:
 - ``GET /faults/stream`` - SSE real-time fault notifications
 - ``/health`` - Health check with discovery pipeline diagnostics
 - ``/version-info`` - Gateway version information
-- ``/manifest/status`` - Manifest discovery status
 - ``/docs`` - OpenAPI capability description
 - SSE fault streaming - Real-time fault notifications
 - ``x-medkit`` extension fields in responses
