@@ -168,13 +168,13 @@ void RouteRegistry::register_all(httplib::Server & server, const std::string & a
     const auto & handler = route.handler_;
 
     if (route.method_ == "get") {
-      server.Get(full_path.c_str(), handler);
+      server.Get(full_path, handler);
     } else if (route.method_ == "post") {
-      server.Post(full_path.c_str(), handler);
+      server.Post(full_path, handler);
     } else if (route.method_ == "put") {
-      server.Put(full_path.c_str(), handler);
+      server.Put(full_path, handler);
     } else if (route.method_ == "delete") {
-      server.Delete(full_path.c_str(), handler);
+      server.Delete(full_path, handler);
     }
   }
 }
@@ -345,7 +345,11 @@ std::vector<std::string> RouteRegistry::to_endpoint_list(const std::string & api
     std::transform(method.begin(), method.end(), method.begin(), [](unsigned char c) {
       return std::toupper(c);
     });
-    endpoints.push_back(method + " " + api_prefix + route.path_);
+    std::string endpoint = method;
+    endpoint += " ";
+    endpoint += api_prefix;
+    endpoint += route.path_;
+    endpoints.push_back(std::move(endpoint));
   }
   return endpoints;
 }
