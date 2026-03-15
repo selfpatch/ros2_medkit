@@ -32,8 +32,10 @@ DocsHandlers::DocsHandlers(HandlerContext & ctx, GatewayNode & node, PluginManag
   // Read docs.enabled parameter if it has been declared
   try {
     docs_enabled_ = node.get_parameter("docs.enabled").as_bool();
+  } catch (const std::exception &) {
+    docs_enabled_ = true;  // Parameter may not be declared - default to enabled
   } catch (...) {
-    docs_enabled_ = true;  // Default to enabled
+    docs_enabled_ = true;
   }
 }
 
@@ -62,7 +64,8 @@ void DocsHandlers::handle_docs_any_path(const httplib::Request & req, httplib::R
   auto base_path = req.matches[1].str();
   auto spec = generator_->generate(base_path);
   if (!spec) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "No capability description for path: " + base_path);
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
+                               "No capability description available for the requested path");
     return;
   }
   HandlerContext::send_json(res, *spec);
@@ -72,8 +75,11 @@ void DocsHandlers::handle_docs_any_path(const httplib::Request & req, httplib::R
 
 namespace {
 
-// Swagger UI version must match cmake/SwaggerUI.cmake
-constexpr const char * kSwaggerUiVersion = "5.17.14";
+// Swagger UI version - injected by CMake via target_compile_definitions
+#ifndef SWAGGER_UI_VERSION
+#define SWAGGER_UI_VERSION "5.17.14"
+#endif
+constexpr const char * kSwaggerUiVersion = SWAGGER_UI_VERSION;
 
 // HTML page that loads embedded Swagger UI assets and points to /api/v1/docs
 const std::string & get_embedded_html() {

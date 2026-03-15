@@ -344,8 +344,9 @@ nlohmann::json PathBuilder::build_faults_collection(const std::string & entity_p
 
   // GET - list faults
   nlohmann::json get_op;
-  get_op["summary"] = "List faults for " + entity_path;
-  get_op["description"] = "Returns all faults associated with this entity.";
+  get_op["summary"] = entity_path.empty() ? "List all faults" : "List faults for " + entity_path;
+  get_op["description"] =
+      entity_path.empty() ? "Returns all faults." : "Returns all faults associated with this entity.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
   get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::fault_list_schema();
