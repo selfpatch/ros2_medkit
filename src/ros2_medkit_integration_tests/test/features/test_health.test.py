@@ -25,7 +25,6 @@ import unittest
 
 import launch_testing
 import launch_testing.actions
-import requests
 
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
@@ -129,17 +128,17 @@ class TestHealth(GatewayTestCase):
         self.assertIn('GET /api/v1/apps/{app_id}/configurations', endpoints)
 
     def test_docs_endpoint(self):
-        """GET /components/docs returns 404 (docs not yet implemented).
+        """GET /docs returns OpenAPI 3.1.0 spec.
 
-        TODO(#135): Change to 200 when docs endpoint is implemented.
+        @verifies REQ_INTEROP_002
         """
-        response = requests.get(f'{self.BASE_URL}/components/docs', timeout=10)
-
-        # Currently not implemented - 'docs' is treated as component ID
-        self.assertEqual(
-            response.status_code, 404,
-            'Docs endpoint not implemented - returns 404 (component "docs" not found)'
+        data = self.poll_endpoint_until(
+            '/docs',
+            lambda d: d if 'openapi' in d else None,
         )
+        self.assertEqual(data['openapi'], '3.1.0')
+        self.assertIn('info', data)
+        self.assertIn('paths', data)
 
 
 @launch_testing.post_shutdown_test()
