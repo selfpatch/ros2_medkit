@@ -52,17 +52,17 @@ struct HttplibExceptionHandlerAdapter {
       set_internal_server_error(res, "Unknown exception");
     } catch (const std::exception & e) {
       RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
-      set_internal_server_error(res, e.what());
+      set_internal_server_error(res, "An internal error occurred");
     } catch (...) {
       RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unknown exception caught");
-      set_internal_server_error(res, "Unknown exception");
+      set_internal_server_error(res, "An internal error occurred");
     }
   }
 
   // Older cpp-httplib versions pass std::exception directly.
   void operator()(const httplib::Request & /*req*/, httplib::Response & res, const std::exception & e) const {
     RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
-    set_internal_server_error(res, e.what());
+    set_internal_server_error(res, "An internal error occurred");
   }
 };
 
@@ -115,7 +115,13 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   handler_ctx_ = std::make_unique<handlers::HandlerContext>(node_, cors_config_, auth_config_, tls_config_,
                                                             auth_manager_.get(), node_->get_bulk_data_store());
 
-  health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_);
+  // Create route registry before handlers that need it (HealthHandlers, DocsHandlers).
+  // Routes are populated later in setup_routes(), but both handlers only access
+  // the registry lazily at request time, so the pointer is valid.
+  route_registry_ = std::make_unique<openapi::RouteRegistry>();
+  route_registry_->set_auth_enabled(auth_config_.enabled);
+
+  health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_, route_registry_.get());
   discovery_handlers_ = std::make_unique<handlers::DiscoveryHandlers>(*handler_ctx_);
   data_handlers_ = std::make_unique<handlers::DataHandlers>(*handler_ctx_);
   operation_handlers_ = std::make_unique<handlers::OperationHandlers>(*handler_ctx_);
@@ -138,12 +144,6 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   if (node_->get_update_manager()) {
     update_handlers_ = std::make_unique<handlers::UpdateHandlers>(*handler_ctx_, node_->get_update_manager());
   }
-
-  // Create route registry before DocsHandlers so it can be passed to CapabilityGenerator.
-  // Routes are populated later in setup_routes(), but CapabilityGenerator only accesses
-  // the registry lazily at request time, so the pointer is valid.
-  route_registry_ = std::make_unique<openapi::RouteRegistry>();
-  route_registry_->set_auth_enabled(auth_config_.enabled);
 
   docs_handlers_ = std::make_unique<handlers::DocsHandlers>(*handler_ctx_, *node_, node_->get_plugin_manager(),
                                                             route_registry_.get());
@@ -612,7 +612,7 @@ void RESTServer::setup_routes() {
               [this](auto & req, auto & res) {
                 cyclic_sub_handlers_->handle_events(req, res);
               })
-          .tag("Events")
+          .tag("Subscriptions")
           .summary(std::string("SSE events for cyclic subscription on ") + et.singular);
 
       reg.post(entity_path + "/cyclic-subscriptions",
@@ -770,7 +770,7 @@ void RESTServer::setup_routes() {
           [this](auto & req, auto & res) {
             sse_fault_handler_->handle_stream(req, res);
           })
-      .tag("Events")
+      .tag("Faults")
       .summary("Stream fault events (SSE)")
       .description("Server-Sent Events stream for real-time fault notifications.");
 

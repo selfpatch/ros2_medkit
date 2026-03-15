@@ -101,8 +101,24 @@ std::optional<nlohmann::json> CapabilityGenerator::generate_impl(const std::stri
 nlohmann::json CapabilityGenerator::generate_root() const {
   OpenApiSpecBuilder builder;
   builder.info("ROS 2 Medkit Gateway", kGatewayVersion)
+      .description(
+          "SOVD-compatible REST API for ROS 2 diagnostics and control. "
+          "See https://selfpatch.github.io/ros2_medkit/ for documentation.")
       .sovd_version(kSovdVersion)
-      .server(build_server_url(), "Gateway server");
+      .server(build_server_url(), "Gateway server")
+      .tags({
+          {"Server", "Gateway health, metadata, and version info"},
+          {"Discovery", "Entity discovery and hierarchy navigation"},
+          {"Data", "Read and write ROS 2 topic data"},
+          {"Operations", "Execute ROS 2 service and action operations"},
+          {"Configuration", "Read and write ROS 2 node parameters"},
+          {"Faults", "Fault management and diagnostics"},
+          {"Logs", "Application log access and configuration"},
+          {"Bulk Data", "Large file downloads (rosbags, snapshots)"},
+          {"Subscriptions", "Cyclic data subscriptions and event streaming"},
+          {"Updates", "Software update management"},
+          {"Authentication", "JWT-based authentication"},
+      });
 
   // Use route registry as single source of truth for paths when available
   if (route_registry_) {

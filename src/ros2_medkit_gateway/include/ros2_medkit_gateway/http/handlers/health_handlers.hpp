@@ -19,6 +19,10 @@
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 namespace ros2_medkit_gateway {
+namespace openapi {
+class RouteRegistry;
+}  // namespace openapi
+
 namespace handlers {
 
 /**
@@ -31,7 +35,8 @@ namespace handlers {
  */
 class HealthHandlers {
  public:
-  explicit HealthHandlers(HandlerContext & ctx) : ctx_(ctx) {
+  explicit HealthHandlers(HandlerContext & ctx, const openapi::RouteRegistry * route_registry = nullptr)
+    : ctx_(ctx), route_registry_(route_registry) {
   }
 
   /// GET /health - Health check endpoint
@@ -45,6 +50,7 @@ class HealthHandlers {
 
  private:
   HandlerContext & ctx_;
+  const openapi::RouteRegistry * route_registry_{nullptr};
 };
 
 }  // namespace handlers

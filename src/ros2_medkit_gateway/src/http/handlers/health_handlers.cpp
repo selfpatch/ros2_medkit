@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/http/handlers/health_handlers.hpp"
 
+#include <algorithm>
 #include <chrono>
 
 #include "ros2_medkit_gateway/auth/auth_models.hpp"
@@ -23,6 +24,8 @@
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/version.hpp"
+
+#include "../../openapi/route_registry.hpp"
 
 using json = nlohmann::json;
 
@@ -71,162 +74,14 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
   (void)req;  // Unused parameter
 
   try {
-    json endpoints = json::array({
-        // Health & Discovery
-        "GET /api/v1/health",
-        "GET /api/v1/version-info",
-        // Areas
-        "GET /api/v1/areas",
-        "GET /api/v1/areas/{area_id}",
-        "GET /api/v1/areas/{area_id}/subareas",
-        "GET /api/v1/areas/{area_id}/components",
-        "GET /api/v1/areas/{area_id}/contains",
-        "GET /api/v1/areas/{area_id}/data",
-        "GET /api/v1/areas/{area_id}/data/{data_id}",
-        "PUT /api/v1/areas/{area_id}/data/{data_id}",
-        "GET /api/v1/areas/{area_id}/operations",
-        "GET /api/v1/areas/{area_id}/operations/{operation_id}",
-        "POST /api/v1/areas/{area_id}/operations/{operation_id}/executions",
-        "GET /api/v1/areas/{area_id}/operations/{operation_id}/executions",
-        "GET /api/v1/areas/{area_id}/operations/{operation_id}/executions/{execution_id}",
-        "PUT /api/v1/areas/{area_id}/operations/{operation_id}/executions/{execution_id}",
-        "DELETE /api/v1/areas/{area_id}/operations/{operation_id}/executions/{execution_id}",
-        "GET /api/v1/areas/{area_id}/configurations",
-        "GET /api/v1/areas/{area_id}/configurations/{param_name}",
-        "PUT /api/v1/areas/{area_id}/configurations/{param_name}",
-        "DELETE /api/v1/areas/{area_id}/configurations/{param_name}",
-        "DELETE /api/v1/areas/{area_id}/configurations",
-        "GET /api/v1/areas/{area_id}/faults",
-        "GET /api/v1/areas/{area_id}/faults/{fault_code}",
-        "DELETE /api/v1/areas/{area_id}/faults/{fault_code}",
-        "DELETE /api/v1/areas/{area_id}/faults",
-        // Components
-        "GET /api/v1/components",
-        "GET /api/v1/components/{component_id}",
-        "GET /api/v1/components/{component_id}/subcomponents",
-        "GET /api/v1/components/{component_id}/hosts",
-        "GET /api/v1/components/{component_id}/depends-on",
-        "GET /api/v1/components/{component_id}/data",
-        "GET /api/v1/components/{component_id}/data/{data_id}",
-        "PUT /api/v1/components/{component_id}/data/{data_id}",
-        "GET /api/v1/components/{component_id}/operations",
-        "GET /api/v1/components/{component_id}/operations/{operation_id}",
-        "POST /api/v1/components/{component_id}/operations/{operation_id}/executions",
-        "GET /api/v1/components/{component_id}/operations/{operation_id}/executions",
-        "GET /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}",
-        "PUT /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}",
-        "DELETE /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}",
-        "GET /api/v1/components/{component_id}/configurations",
-        "GET /api/v1/components/{component_id}/configurations/{param_name}",
-        "PUT /api/v1/components/{component_id}/configurations/{param_name}",
-        "DELETE /api/v1/components/{component_id}/configurations/{param_name}",
-        "DELETE /api/v1/components/{component_id}/configurations",
-        "GET /api/v1/components/{component_id}/faults",
-        "GET /api/v1/components/{component_id}/faults/{fault_code}",
-        "DELETE /api/v1/components/{component_id}/faults/{fault_code}",
-        "DELETE /api/v1/components/{component_id}/faults",
-        // Apps
-        "GET /api/v1/apps",
-        "GET /api/v1/apps/{app_id}",
-        "GET /api/v1/apps/{app_id}/depends-on",
-        "GET /api/v1/apps/{app_id}/data",
-        "GET /api/v1/apps/{app_id}/data/{data_id}",
-        "PUT /api/v1/apps/{app_id}/data/{data_id}",
-        "GET /api/v1/apps/{app_id}/data-categories",
-        "GET /api/v1/apps/{app_id}/data-groups",
-        "GET /api/v1/apps/{app_id}/operations",
-        "GET /api/v1/apps/{app_id}/operations/{operation_id}",
-        "POST /api/v1/apps/{app_id}/operations/{operation_id}/executions",
-        "GET /api/v1/apps/{app_id}/operations/{operation_id}/executions",
-        "GET /api/v1/apps/{app_id}/operations/{operation_id}/executions/{execution_id}",
-        "PUT /api/v1/apps/{app_id}/operations/{operation_id}/executions/{execution_id}",
-        "DELETE /api/v1/apps/{app_id}/operations/{operation_id}/executions/{execution_id}",
-        "GET /api/v1/apps/{app_id}/configurations",
-        "GET /api/v1/apps/{app_id}/configurations/{param_name}",
-        "PUT /api/v1/apps/{app_id}/configurations/{param_name}",
-        "DELETE /api/v1/apps/{app_id}/configurations/{param_name}",
-        "DELETE /api/v1/apps/{app_id}/configurations",
-        "GET /api/v1/apps/{app_id}/faults",
-        "GET /api/v1/apps/{app_id}/faults/{fault_code}",
-        "DELETE /api/v1/apps/{app_id}/faults/{fault_code}",
-        "DELETE /api/v1/apps/{app_id}/faults",
-        // Functions
-        "GET /api/v1/functions",
-        "GET /api/v1/functions/{function_id}",
-        "GET /api/v1/functions/{function_id}/hosts",
-        "GET /api/v1/functions/{function_id}/data",
-        "GET /api/v1/functions/{function_id}/data/{data_id}",
-        "PUT /api/v1/functions/{function_id}/data/{data_id}",
-        "GET /api/v1/functions/{function_id}/operations",
-        "GET /api/v1/functions/{function_id}/operations/{operation_id}",
-        "POST /api/v1/functions/{function_id}/operations/{operation_id}/executions",
-        "GET /api/v1/functions/{function_id}/operations/{operation_id}/executions",
-        "GET /api/v1/functions/{function_id}/operations/{operation_id}/executions/{execution_id}",
-        "PUT /api/v1/functions/{function_id}/operations/{operation_id}/executions/{execution_id}",
-        "DELETE /api/v1/functions/{function_id}/operations/{operation_id}/executions/{execution_id}",
-        "GET /api/v1/functions/{function_id}/configurations",
-        "GET /api/v1/functions/{function_id}/configurations/{param_name}",
-        "PUT /api/v1/functions/{function_id}/configurations/{param_name}",
-        "DELETE /api/v1/functions/{function_id}/configurations/{param_name}",
-        "DELETE /api/v1/functions/{function_id}/configurations",
-        "GET /api/v1/functions/{function_id}/faults",
-        "GET /api/v1/functions/{function_id}/faults/{fault_code}",
-        "DELETE /api/v1/functions/{function_id}/faults/{fault_code}",
-        "DELETE /api/v1/functions/{function_id}/faults",
-        // Logs
-        "GET /api/v1/components/{component_id}/logs",
-        "GET /api/v1/components/{component_id}/logs/configuration",
-        "PUT /api/v1/components/{component_id}/logs/configuration",
-        "GET /api/v1/apps/{app_id}/logs",
-        "GET /api/v1/apps/{app_id}/logs/configuration",
-        "PUT /api/v1/apps/{app_id}/logs/configuration",
-        "GET /api/v1/areas/{area_id}/logs",
-        "GET /api/v1/areas/{area_id}/logs/configuration",
-        "PUT /api/v1/areas/{area_id}/logs/configuration",
-        "GET /api/v1/functions/{function_id}/logs",
-        "GET /api/v1/functions/{function_id}/logs/configuration",
-        "PUT /api/v1/functions/{function_id}/logs/configuration",
-        // Bulk Data - always available (depends on fault_manager, not an optional plugin)
-        "GET /api/v1/components/{component_id}/bulk-data",
-        "GET /api/v1/components/{component_id}/bulk-data/{category}",
-        "GET /api/v1/components/{component_id}/bulk-data/{category}/{item_id}",
-        "POST /api/v1/components/{component_id}/bulk-data/{category}",
-        "DELETE /api/v1/components/{component_id}/bulk-data/{category}/{item_id}",
-        "GET /api/v1/apps/{app_id}/bulk-data",
-        "GET /api/v1/apps/{app_id}/bulk-data/{category}",
-        "GET /api/v1/apps/{app_id}/bulk-data/{category}/{item_id}",
-        "POST /api/v1/apps/{app_id}/bulk-data/{category}",
-        "DELETE /api/v1/apps/{app_id}/bulk-data/{category}/{item_id}",
-        "GET /api/v1/areas/{area_id}/bulk-data",
-        "GET /api/v1/areas/{area_id}/bulk-data/{category}",
-        "GET /api/v1/areas/{area_id}/bulk-data/{category}/{item_id}",
-        "GET /api/v1/functions/{function_id}/bulk-data",
-        "GET /api/v1/functions/{function_id}/bulk-data/{category}",
-        "GET /api/v1/functions/{function_id}/bulk-data/{category}/{item_id}",
-        // Cyclic Subscriptions - always available (core gateway feature, not plugin-dependent)
-        "POST /api/v1/components/{component_id}/cyclic-subscriptions",
-        "GET /api/v1/components/{component_id}/cyclic-subscriptions",
-        "GET /api/v1/components/{component_id}/cyclic-subscriptions/{subscription_id}",
-        "PUT /api/v1/components/{component_id}/cyclic-subscriptions/{subscription_id}",
-        "DELETE /api/v1/components/{component_id}/cyclic-subscriptions/{subscription_id}",
-        "GET /api/v1/components/{component_id}/cyclic-subscriptions/{subscription_id}/events",
-        "POST /api/v1/apps/{app_id}/cyclic-subscriptions",
-        "GET /api/v1/apps/{app_id}/cyclic-subscriptions",
-        "GET /api/v1/apps/{app_id}/cyclic-subscriptions/{subscription_id}",
-        "PUT /api/v1/apps/{app_id}/cyclic-subscriptions/{subscription_id}",
-        "DELETE /api/v1/apps/{app_id}/cyclic-subscriptions/{subscription_id}",
-        "GET /api/v1/apps/{app_id}/cyclic-subscriptions/{subscription_id}/events",
-        "POST /api/v1/functions/{function_id}/cyclic-subscriptions",
-        "GET /api/v1/functions/{function_id}/cyclic-subscriptions",
-        "GET /api/v1/functions/{function_id}/cyclic-subscriptions/{subscription_id}",
-        "PUT /api/v1/functions/{function_id}/cyclic-subscriptions/{subscription_id}",
-        "DELETE /api/v1/functions/{function_id}/cyclic-subscriptions/{subscription_id}",
-        "GET /api/v1/functions/{function_id}/cyclic-subscriptions/{subscription_id}/events",
-        // Global Faults
-        "GET /api/v1/faults",
-        "GET /api/v1/faults/stream",
-        "DELETE /api/v1/faults",
-    });
+    // Generate endpoint list from route registry (single source of truth)
+    json endpoints = json::array();
+    if (route_registry_) {
+      auto ep_list = route_registry_->to_endpoint_list(API_BASE_PATH);
+      for (auto & ep : ep_list) {
+        endpoints.push_back(std::move(ep));
+      }
+    }
 
     // Read docs.enabled parameter (defaults to true)
     bool docs_enabled = true;
@@ -238,47 +93,17 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
       }
     }
 
-    // Insert docs endpoints after health/version-info (position 2)
+    // Add docs endpoints (not in registry - registered directly with server)
     if (docs_enabled) {
-      auto it = endpoints.begin() + 2;
-      it = endpoints.insert(it, "GET /api/v1/docs");
-      ++it;
-      it = endpoints.insert(it, "GET /api/v1/{entity-path}/docs");
+      endpoints.push_back("GET " + std::string(API_BASE_PATH) + "/docs");
+      endpoints.push_back("GET " + std::string(API_BASE_PATH) + "/{entity-path}/docs");
 #ifdef ENABLE_SWAGGER_UI
-      ++it;
-      endpoints.insert(it, "GET /api/v1/swagger-ui");
+      endpoints.push_back("GET " + std::string(API_BASE_PATH) + "/swagger-ui");
 #endif
     }
 
     const auto & auth_config = ctx_.auth_config();
     const auto & tls_config = ctx_.tls_config();
-
-    // Add auth endpoints if auth is enabled
-    if (auth_config.enabled) {
-      endpoints.push_back("POST /api/v1/auth/authorize");
-      endpoints.push_back("POST /api/v1/auth/token");
-      endpoints.push_back("POST /api/v1/auth/revoke");
-    }
-
-    // Add update endpoints if updates are available
-    if (ctx_.node() && ctx_.node()->get_update_manager()) {
-      endpoints.push_back("GET /api/v1/updates");
-      endpoints.push_back("POST /api/v1/updates");
-      endpoints.push_back("GET /api/v1/updates/{id}");
-      endpoints.push_back("DELETE /api/v1/updates/{id}");
-      endpoints.push_back("GET /api/v1/updates/{id}/status");
-      endpoints.push_back("PUT /api/v1/updates/{id}/prepare");
-      endpoints.push_back("PUT /api/v1/updates/{id}/execute");
-      endpoints.push_back("PUT /api/v1/updates/{id}/automated");
-    }
-
-    // Add plugin-registered endpoints
-    if (ctx_.node() && ctx_.node()->get_plugin_manager()) {
-      auto plugin_routes = ctx_.node()->get_plugin_manager()->get_all_route_descriptions();
-      for (const auto & route : plugin_routes) {
-        endpoints.push_back(route.method + " " + API_BASE_PATH + "/" + route.pattern);
-      }
-    }
 
     json capabilities = {
         {"discovery", true},

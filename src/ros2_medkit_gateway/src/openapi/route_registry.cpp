@@ -18,6 +18,7 @@
 #include <regex>
 #include <set>
 #include <string>
+#include <unordered_map>
 
 namespace ros2_medkit_gateway {
 namespace openapi {
@@ -225,12 +226,31 @@ nlohmann::json RouteRegistry::to_openapi_paths() const {
         }
         std::string pname = route.path_.substr(pos + 1, close - pos - 1);
         if (explicit_params.find(pname) == explicit_params.end()) {
-          // Auto-generate path parameter
+          // Auto-generate path parameter with description
+          static const std::unordered_map<std::string, std::string> kParamDescriptions = {
+              {"area_id", "The area identifier"},
+              {"component_id", "The component identifier"},
+              {"app_id", "The app identifier"},
+              {"function_id", "The function identifier"},
+              {"data_id", "The data item identifier (ROS 2 topic name)"},
+              {"operation_id", "The operation identifier"},
+              {"execution_id", "The execution identifier"},
+              {"config_id", "The configuration parameter identifier (ROS 2 parameter name)"},
+              {"fault_id", "The fault identifier"},
+              {"subscription_id", "The cyclic subscription identifier"},
+              {"category_id", "The bulk data category identifier"},
+              {"file_id", "The bulk data file identifier"},
+              {"update_id", "The software update identifier"},
+              {"subarea_id", "The subarea identifier"},
+              {"subcomponent_id", "The subcomponent identifier"},
+          };
           nlohmann::json param;
           param["name"] = pname;
           param["in"] = "path";
           param["required"] = true;
           param["schema"] = {{"type", "string"}};
+          auto desc_it = kParamDescriptions.find(pname);
+          param["description"] = (desc_it != kParamDescriptions.end()) ? desc_it->second : "The " + pname + " value";
           if (!operation.contains("parameters")) {
             operation["parameters"] = nlohmann::json::array();
           }
@@ -284,6 +304,28 @@ nlohmann::json RouteRegistry::to_openapi_paths() const {
       }
     }
 
+    // Auto-generate operationId from method + path
+    {
+      std::string op_id = route.method_;
+      bool next_upper = false;
+      for (char c : route.path_) {
+        if (c == '/' || c == '{' || c == '}' || c == '-') {
+          next_upper = true;
+        } else {
+          if (next_upper && !op_id.empty()) {
+            op_id += '_';
+            next_upper = false;
+          }
+          op_id += c;
+        }
+      }
+      // Remove trailing underscore if present
+      if (!op_id.empty() && op_id.back() == '_') {
+        op_id.pop_back();
+      }
+      operation["operationId"] = op_id;
+    }
+
     paths[route.path_][route.method_] = std::move(operation);
   }
 
@@ -293,6 +335,20 @@ nlohmann::json RouteRegistry::to_openapi_paths() const {
 // -----------------------------------------------------------------------------
 // tags - collect unique tags
 // -----------------------------------------------------------------------------
+
+std::vector<std::string> RouteRegistry::to_endpoint_list(const std::string & api_prefix) const {
+  std::vector<std::string> endpoints;
+  endpoints.reserve(routes_.size());
+  for (const auto & route : routes_) {
+    // Uppercase the method
+    std::string method = route.method_;
+    std::transform(method.begin(), method.end(), method.begin(), [](unsigned char c) {
+      return std::toupper(c);
+    });
+    endpoints.push_back(method + " " + api_prefix + route.path_);
+  }
+  return endpoints;
+}
 
 std::vector<std::string> RouteRegistry::tags() const {
   std::set<std::string> tag_set;
