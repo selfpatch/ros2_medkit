@@ -1030,6 +1030,7 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
     response["faults"] = base_uri + "/faults";
     response["logs"] = base_uri + "/logs";
     response["bulk-data"] = base_uri + "/bulk-data";
+    response["x-medkit-graph"] = base_uri + "/x-medkit-graph";
     response["cyclic-subscriptions"] = base_uri + "/cyclic-subscriptions";
 
     using Cap = CapabilityBuilder::Capability;

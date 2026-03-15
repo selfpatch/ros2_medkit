@@ -343,6 +343,7 @@ if(BUILD_TESTING)
   # Add graph provider plugin tests
   ament_add_gtest(test_graph_provider_plugin test/test_graph_provider_plugin.cpp)
   target_link_libraries(test_graph_provider_plugin gateway_lib)
+  set_tests_properties(test_graph_provider_plugin PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=70")
 
   # Add capability builder tests
   ament_add_gtest(test_capability_builder test/test_capability_builder.cpp)

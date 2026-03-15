@@ -26,6 +26,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <set>
 #include <utility>
@@ -33,6 +34,8 @@
 namespace ros2_medkit_gateway {
 
 namespace {
+
+constexpr size_t kMaxCachedTopicMetrics = 512;
 
 bool is_filtered_topic_name(const std::string & topic_name) {
   if (topic_name == "/parameter_events" || topic_name == "/rosout" || topic_name == "/diagnostics") {
@@ -206,95 +209,11 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
   return result;
 }
 
-}  // namespace
-
-std::string GraphProviderPlugin::name() const {
-  return "graph-provider";
-}
-
-void GraphProviderPlugin::configure(const nlohmann::json & /*config*/) {
-}
-
-void GraphProviderPlugin::set_context(PluginContext & context) {
-  ctx_ = &context;
-  ctx_->register_capability(SovdEntityType::FUNCTION, "x-medkit-graph");
-
-  load_parameters();
-  subscribe_to_diagnostics();
-
-  auto * gateway_node = dynamic_cast<GatewayNode *>(ctx_->node());
-  if (!gateway_node) {
-    log_warn("Skipping x-medkit-graph sampler registration: context node is not a GatewayNode");
-    return;
-  }
-
-  auto * sampler_registry = gateway_node->get_sampler_registry();
-  if (!sampler_registry) {
-    log_warn("Skipping x-medkit-graph sampler registration: sampler registry not available");
-    return;
-  }
-
-  sampler_registry->register_sampler(
-      "x-medkit-graph",
-      [this](const std::string & entity_id,
-             const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
-        auto payload = get_cached_or_built_graph(entity_id);
-        if (!payload.has_value()) {
-          return tl::make_unexpected(std::string("Graph snapshot not available: ") + entity_id);
-        }
-        return *payload;
-      });
-  log_info("Registered x-medkit-graph cyclic subscription sampler");
-}
-
-void GraphProviderPlugin::register_routes(httplib::Server & server, const std::string & api_prefix) {
-  server.Get(api_prefix + R"(/functions/([^/]+)/x-medkit-graph)",
-             [this](const httplib::Request & req, httplib::Response & res) {
-               if (!ctx_) {
-                 PluginContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE,
-                                           "Graph provider context not initialized");
-                 return;
-               }
-
-               const auto function_id = req.matches[1].str();
-               auto entity = ctx_->validate_entity_for_route(req, res, function_id);
-               if (!entity) {
-                 return;
-               }
-
-               auto payload = get_cached_or_built_graph(function_id);
-               if (!payload.has_value()) {
-                 PluginContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Graph snapshot not available",
-                                           {{"function_id", function_id}});
-                 return;
-               }
-
-               PluginContext::send_json(res, *payload);
-             });
-}
-
-IntrospectionResult GraphProviderPlugin::introspect(const IntrospectionInput & input) {
-  std::unordered_map<std::string, nlohmann::json> new_cache;
-  const auto timestamp = current_timestamp();
-  auto state = build_state_snapshot("", input, timestamp, false);
-
-  for (const auto & function : input.functions) {
-    new_cache.emplace(function.id,
-                      build_graph_document(function.id, input, state, resolve_config(function.id), timestamp));
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(cache_mutex_);
-    graph_cache_.swap(new_cache);
-  }
-
-  return {};
-}
-
-nlohmann::json GraphProviderPlugin::build_graph_document(const std::string & function_id,
-                                                         const IntrospectionInput & input,
-                                                         const GraphBuildState & state, const GraphBuildConfig & config,
-                                                         const std::string & timestamp) {
+nlohmann::json build_graph_document_for_apps(const std::string & function_id,
+                                             const std::vector<const App *> & scoped_apps,
+                                             const GraphProviderPlugin::GraphBuildState & state,
+                                             const GraphProviderPlugin::GraphBuildConfig & config,
+                                             const std::string & timestamp) {
   nlohmann::json graph = {{"schema_version", "1.0.0"},
                           {"graph_id", function_id + "-graph"},
                           {"timestamp", timestamp},
@@ -305,7 +224,6 @@ nlohmann::json GraphProviderPlugin::build_graph_document(const std::string & fun
                           {"nodes", nlohmann::json::array()},
                           {"edges", nlohmann::json::array()}};
 
-  const auto scoped_apps = resolve_scoped_apps(function_id, input);
   const auto topic_names = collect_unique_topics(scoped_apps);
 
   std::unordered_map<std::string, std::string> topic_ids;
@@ -354,7 +272,8 @@ nlohmann::json GraphProviderPlugin::build_graph_document(const std::string & fun
 
         const auto edge_id = "edge-" + std::to_string(++edge_index);
         const auto metrics_it = state.topic_metrics.find(topic_name);
-        const TopicMetrics * metrics = metrics_it == state.topic_metrics.end() ? nullptr : &metrics_it->second;
+        const GraphProviderPlugin::TopicMetrics * metrics =
+            metrics_it == state.topic_metrics.end() ? nullptr : &metrics_it->second;
         auto edge =
             build_edge_json(edge_id, *publisher, *subscriber, topic_name, topic_it->second, metrics, state, config);
 
@@ -382,6 +301,98 @@ nlohmann::json GraphProviderPlugin::build_graph_document(const std::string & fun
   }
 
   return nlohmann::json{{"x-medkit-graph", std::move(graph)}};
+}
+
+}  // namespace
+
+std::string GraphProviderPlugin::name() const {
+  return "graph-provider";
+}
+
+void GraphProviderPlugin::configure(const nlohmann::json & /*config*/) {
+}
+
+void GraphProviderPlugin::set_context(PluginContext & context) {
+  ctx_ = &context;
+  gateway_node_ = dynamic_cast<GatewayNode *>(ctx_->node());
+  ctx_->register_capability(SovdEntityType::FUNCTION, "x-medkit-graph");
+
+  load_parameters();
+  subscribe_to_diagnostics();
+
+  if (!gateway_node_) {
+    log_warn("Skipping x-medkit-graph sampler registration: context node is not a GatewayNode");
+    return;
+  }
+
+  auto * sampler_registry = gateway_node_->get_sampler_registry();
+  if (!sampler_registry) {
+    log_warn("Skipping x-medkit-graph sampler registration: sampler registry not available");
+    return;
+  }
+
+  sampler_registry->register_sampler(
+      "x-medkit-graph",
+      [this](const std::string & entity_id,
+             const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
+        auto payload = get_cached_or_built_graph(entity_id);
+        if (!payload.has_value()) {
+          return tl::make_unexpected(std::string("Graph snapshot not available: ") + entity_id);
+        }
+        return *payload;
+      });
+  log_info("Registered x-medkit-graph cyclic subscription sampler");
+}
+
+void GraphProviderPlugin::register_routes(httplib::Server & server, const std::string & api_prefix) {
+  server.Get(api_prefix + R"(/functions/([^/]+)/x-medkit-graph)",
+             [this](const httplib::Request & req, httplib::Response & res) {
+               if (!ctx_) {
+                 PluginContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Graph provider context not initialized");
+                 return;
+               }
+
+               const auto function_id = req.matches[1].str();
+               auto entity = ctx_->validate_entity_for_route(req, res, function_id);
+               if (!entity) {
+                 return;
+               }
+
+               auto payload = get_cached_or_built_graph(function_id);
+               if (!payload.has_value()) {
+                 PluginContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Graph snapshot not available",
+                                           {{"function_id", function_id}});
+                 return;
+               }
+
+               PluginContext::send_json(res, *payload);
+             });
+}
+
+IntrospectionResult GraphProviderPlugin::introspect(const IntrospectionInput & input) {
+  std::unordered_map<std::string, nlohmann::json> new_cache;
+  const auto timestamp = current_timestamp();
+  auto state = build_state_snapshot("", input, timestamp, false);
+
+  for (const auto & function : input.functions) {
+    new_cache.emplace(function.id,
+                      build_graph_document(function.id, input, state, resolve_config(function.id), timestamp));
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    graph_cache_.swap(new_cache);
+  }
+
+  return {};
+}
+
+nlohmann::json GraphProviderPlugin::build_graph_document(const std::string & function_id,
+                                                         const IntrospectionInput & input,
+                                                         const GraphBuildState & state, const GraphBuildConfig & config,
+                                                         const std::string & timestamp) {
+  const auto scoped_apps = resolve_scoped_apps(function_id, input);
+  return build_graph_document_for_apps(function_id, scoped_apps, state, config, timestamp);
 }
 
 void GraphProviderPlugin::subscribe_to_diagnostics() {
@@ -412,7 +423,15 @@ void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::Diagn
   std::lock_guard<std::mutex> lock(metrics_mutex_);
   diagnostics_seen_ = true;
   for (auto & [topic_name, metrics] : updates) {
+    if (topic_metrics_.find(topic_name) == topic_metrics_.end()) {
+      topic_metrics_order_.push_back(topic_name);
+    }
     topic_metrics_[topic_name] = metrics;
+  }
+  while (topic_metrics_order_.size() > kMaxCachedTopicMetrics) {
+    const auto evicted_topic = topic_metrics_order_.front();
+    topic_metrics_order_.pop_front();
+    topic_metrics_.erase(evicted_topic);
   }
 }
 
@@ -511,7 +530,7 @@ std::optional<nlohmann::json> GraphProviderPlugin::get_cached_or_built_graph(con
   // In the real gateway, the merged entity cache is the source of truth. The
   // plugin-side cache is populated during the merge pipeline before runtime
   // linking finishes, so rebuilding here avoids serving stale node/topic state.
-  if (ctx_ && dynamic_cast<GatewayNode *>(ctx_->node()) != nullptr) {
+  if (gateway_node_) {
     auto rebuilt = build_graph_from_entity_cache(function_id);
     if (rebuilt.has_value()) {
       std::lock_guard<std::mutex> lock(cache_mutex_);
@@ -528,54 +547,37 @@ std::optional<nlohmann::json> GraphProviderPlugin::get_cached_or_built_graph(con
     }
   }
 
-  auto rebuilt = build_graph_from_entity_cache(function_id);
-  if (!rebuilt.has_value()) {
-    return std::nullopt;
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(cache_mutex_);
-    graph_cache_[function_id] = *rebuilt;
-  }
-  return rebuilt;
+  return std::nullopt;
 }
 
 std::optional<nlohmann::json> GraphProviderPlugin::build_graph_from_entity_cache(const std::string & function_id) {
-  if (!ctx_ || !ctx_->node()) {
-    return std::nullopt;
-  }
-
-  auto * gateway_node = dynamic_cast<GatewayNode *>(ctx_->node());
-  if (!gateway_node) {
+  if (!gateway_node_) {
     return std::nullopt;
   }
 
   IntrospectionInput input;
-  const auto & cache = gateway_node->get_thread_safe_cache();
+  const auto & cache = gateway_node_->get_thread_safe_cache();
   input.areas = cache.get_areas();
   input.components = cache.get_components();
   input.apps = cache.get_apps();
   input.functions = cache.get_functions();
 
   const auto timestamp = current_timestamp();
-  auto state = build_state_snapshot(function_id, input, timestamp, true);
-
-  return build_graph_document(function_id, input, state, resolve_config(function_id), timestamp);
+  // Reuse diagnostics-driven snapshots on the HTTP path instead of blocking a
+  // request thread on a fault-manager service round-trip for stale-topic data.
+  auto state = build_state_snapshot(function_id, input, timestamp, false);
+  const auto scoped_apps = resolve_scoped_apps(function_id, input);
+  return build_graph_document_for_apps(function_id, scoped_apps, state, resolve_config(function_id), timestamp);
 }
 
 std::unordered_set<std::string> GraphProviderPlugin::collect_stale_topics(const std::string & function_id,
                                                                           const IntrospectionInput & input) const {
   std::unordered_set<std::string> stale_topics;
-  if (!ctx_ || !ctx_->node()) {
+  if (!gateway_node_) {
     return stale_topics;
   }
 
-  auto * gateway_node = dynamic_cast<GatewayNode *>(ctx_->node());
-  if (!gateway_node) {
-    return stale_topics;
-  }
-
-  auto * fault_manager = gateway_node->get_fault_manager();
+  auto * fault_manager = gateway_node_->get_fault_manager();
   if (!fault_manager || !fault_manager->is_available()) {
     return stale_topics;
   }
