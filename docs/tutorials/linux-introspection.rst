@@ -325,6 +325,19 @@ started, the cache may not have picked it up yet. Causes:
 - Node exited. The process may have crashed between the cache refresh and the REST
   request.
 
+Composable nodes
+~~~~~~~~~~~~~~~~
+
+Composable nodes loaded via ``ros2 component load`` into a component container do not
+have ``__node:=`` or ``__ns:=`` arguments in their ``/proc/{pid}/cmdline``. Node names
+are set programmatically via ``rclcpp::NodeOptions`` rather than through command-line
+arguments. As a result, the PID cache cannot resolve these nodes and they will appear
+as unreachable in all introspection endpoints.
+
+**Workaround**: Launch composable nodes via ``ros2 launch`` with explicit remapping
+arguments (``--ros-args -r __node:=<name> -r __ns:=<namespace>``) instead of loading
+them dynamically with ``ros2 component load``.
+
 Permission errors (procfs)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 

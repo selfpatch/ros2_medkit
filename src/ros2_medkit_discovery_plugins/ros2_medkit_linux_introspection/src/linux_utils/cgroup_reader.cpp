@@ -15,6 +15,7 @@
 #include "ros2_medkit_linux_introspection/cgroup_reader.hpp"
 
 #include <fstream>
+#include <iostream>
 #include <regex>
 #include <sstream>
 
@@ -96,7 +97,9 @@ tl::expected<CgroupInfo, std::string> read_cgroup_info(pid_t pid, const std::str
   if (!mem_max.empty() && mem_max != "max") {
     try {
       info.memory_limit_bytes = std::stoull(mem_max);
-    } catch (...) {
+    } catch (const std::exception & e) {
+      std::cerr << "[ros2_medkit_linux_introspection] Failed to parse memory.max value '" << mem_max
+                << "': " << e.what() << std::endl;
     }
   }
 
@@ -110,7 +113,9 @@ tl::expected<CgroupInfo, std::string> read_cgroup_info(pid_t pid, const std::str
     if (quota_str != "max") {
       try {
         info.cpu_quota_us = std::stoll(quota_str);
-      } catch (...) {
+      } catch (const std::exception & e) {
+        std::cerr << "[ros2_medkit_linux_introspection] Failed to parse cpu.max quota '" << quota_str
+                  << "': " << e.what() << std::endl;
       }
     }
     if (period > 0) {
