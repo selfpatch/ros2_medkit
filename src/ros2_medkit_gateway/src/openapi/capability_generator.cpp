@@ -167,6 +167,15 @@ nlohmann::json CapabilityGenerator::generate_root() const {
     paths[entity_path + "/cyclic-subscriptions"] = path_builder.build_cyclic_subscriptions_collection(entity_path);
   }
 
+  // Subareas under areas
+  paths["/areas/{area_id}/subareas"] = path_builder.build_entity_collection("subareas");
+  paths["/areas/{area_id}/subareas/{subarea_id}"] = path_builder.build_entity_detail("subareas");
+
+  // Subcomponents under components
+  paths["/components/{component_id}/subcomponents"] = path_builder.build_entity_collection("subcomponents");
+  paths["/components/{component_id}/subcomponents/{subcomponent_id}"] =
+      path_builder.build_entity_detail("subcomponents");
+
   // Global faults
   paths["/faults"] = path_builder.build_faults_collection("");
   paths["/faults/stream"] = path_builder.build_sse_endpoint("/faults/stream", "Stream fault events");
