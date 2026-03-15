@@ -20,6 +20,7 @@
   <depend>rcl_interfaces</depend>
   <depend>example_interfaces</depend>
   <depend>ros2_medkit_msgs</depend>
+  <depend>diagnostic_msgs</depend>
 
   <!-- Test dependencies (Python integration tests) -->
   <test_depend>launch_testing_ament_cmake</test_depend>
@@ -30,6 +31,8 @@
   <test_depend>ros2_medkit_gateway</test_depend>
   <test_depend>ros2_medkit_fault_manager</test_depend>
   <test_depend>ros2_medkit_linux_introspection</test_depend>
+  <test_depend>ros2_medkit_topic_beacon</test_depend>
+  <test_depend>ros2_medkit_param_beacon</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
