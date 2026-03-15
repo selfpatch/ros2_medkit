@@ -994,8 +994,12 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto func_opt = discovery->get_function(function_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto func_opt = cache.get_function(function_id);
+    if (!func_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      func_opt = discovery->get_function(function_id);
+    }
 
     if (!func_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found", {{"function_id", function_id}});
