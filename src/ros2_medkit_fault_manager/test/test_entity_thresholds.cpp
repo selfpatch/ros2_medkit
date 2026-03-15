@@ -324,9 +324,8 @@ TEST_F(PerEntityStorageTest, DifferentEntitiesSameFaultCode) {
   auto fault = storage_.get_fault("OVERHEAT");
   EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);  // Motor needs 5 events
 
-  // Lidar reports same fault_code with lidar config (which has threshold=-1)
-  // Since counter is now -2 and lidar config threshold is -1, still PREFAILED
-  // (counter -2 <= -1 is true, so it confirms!)
+  // Lidar reports same fault_code with lidar config (threshold=-1)
+  // Counter is now -2, lidar threshold is -1, -2 <= -1 -> CONFIRMED
   storage_.report_fault_event("OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Lidar overheat",
                               "/sensors/lidar", clock_.now(), lidar_config_);
   fault = storage_.get_fault("OVERHEAT");

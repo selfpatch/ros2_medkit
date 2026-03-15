@@ -93,7 +93,8 @@ policies per reporting entity using longest-prefix matching on ``source_id``.
        healing_threshold: 3
 
        # Path to YAML file with per-entity overrides
-       entity_thresholds_config_file: "/etc/ros2_medkit/entity_thresholds.yaml"
+       entity_thresholds:
+         config_file: "/etc/ros2_medkit/entity_thresholds.yaml"
 
 The entity thresholds config file uses a simple map of entity path prefixes to
 threshold overrides:
@@ -120,12 +121,16 @@ threshold overrides:
    * - Parameter
      - Default
      - Description
-   * - ``entity_thresholds_config_file``
+   * - ``entity_thresholds.config_file``
      - ``""``
      - Path to YAML file with per-entity threshold overrides. Empty = disabled.
 
 **How matching works:**
 
+- The ``source_id`` is the identifier passed in ``ReportFault`` service requests, typically the
+  fully qualified name of the reporting ROS 2 node (e.g., ``/sensors/lidar/front_node``).
+  You can inspect actual ``source_id`` values in the ``reporting_sources`` field of existing
+  faults via ``GET /api/v1/faults``.
 - The ``source_id`` from ``ReportFault`` requests is matched against configured prefixes.
 - The **longest matching prefix** wins. For example, ``/sensors/lidar/front`` matches
   ``/sensors/lidar`` over ``/sensors``.
@@ -297,7 +302,8 @@ Complete Example
        auto_confirm_after_sec: 30.0
 
        # Per-entity debounce overrides
-       entity_thresholds_config_file: "/etc/ros2_medkit/entity_thresholds.yaml"
+       entity_thresholds:
+         config_file: "/etc/ros2_medkit/entity_thresholds.yaml"
 
        # Snapshots
        snapshots:
