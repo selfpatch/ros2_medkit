@@ -345,7 +345,7 @@ std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::stri
 
 bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                             const std::string & description, const std::string & source_id,
-                                            const rclcpp::Time & timestamp) {
+                                            const rclcpp::Time & timestamp, const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   int64_t timestamp_ns = timestamp.nanoseconds();
@@ -402,9 +402,9 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
 
       // Check for immediate confirmation of CRITICAL
       std::string new_status = current_status;
-      if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+      if (config.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-      } else if (debounce_counter <= config_.confirmation_threshold) {
+      } else if (debounce_counter <= config.confirmation_threshold) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
       } else if (debounce_counter < 0) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
@@ -454,7 +454,7 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
       }
 
       std::string new_status = current_status;
-      if (config_.healing_enabled && debounce_counter >= config_.healing_threshold) {
+      if (config.healing_enabled && debounce_counter >= config.healing_threshold) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_HEALED;
       } else if (debounce_counter > 0) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED;
@@ -490,9 +490,9 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   std::string initial_status;
   constexpr int32_t initial_counter = -1;  // First FAILED event sets counter to -1
   // CRITICAL severity bypasses debounce and confirms immediately
-  if (config_.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+  if (config.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
     initial_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-  } else if (initial_counter <= config_.confirmation_threshold) {
+  } else if (initial_counter <= config.confirmation_threshold) {
     // Counter already meets threshold (e.g., threshold >= -1)
     initial_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
   } else {
