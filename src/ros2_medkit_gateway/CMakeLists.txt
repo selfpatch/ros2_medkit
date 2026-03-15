@@ -207,10 +207,11 @@ set_target_properties(gateway_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_executable(gateway_node src/main.cpp)
 target_link_libraries(gateway_node gateway_lib)
 
-# Apply Swagger UI compile definition to both library and executable
+# Apply Swagger UI compile definition and embed assets
 if(ENABLE_SWAGGER_UI)
   target_compile_definitions(gateway_lib PUBLIC ENABLE_SWAGGER_UI)
   target_compile_definitions(gateway_node PRIVATE ENABLE_SWAGGER_UI)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SwaggerUI.cmake)
 endif()
 
 # Apply coverage flags to main targets

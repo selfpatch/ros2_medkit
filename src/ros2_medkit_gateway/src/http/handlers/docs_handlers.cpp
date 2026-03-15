@@ -14,9 +14,15 @@
 
 #include "ros2_medkit_gateway/http/handlers/docs_handlers.hpp"
 
+#include <string>
+
 #include "../../openapi/capability_generator.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+
+#ifdef ENABLE_SWAGGER_UI
+#include "swagger_ui_assets.hpp"
+#endif
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -61,6 +67,141 @@ void DocsHandlers::handle_docs_any_path(const httplib::Request & req, httplib::R
   }
   HandlerContext::send_json(res, *spec);
 }
+
+#ifdef ENABLE_SWAGGER_UI
+
+namespace {
+
+// Swagger UI version must match cmake/SwaggerUI.cmake
+constexpr const char * kSwaggerUiVersion = "5.17.14";
+
+// HTML page that loads embedded Swagger UI assets and points to /api/v1/docs
+const std::string & get_embedded_html() {
+  static const std::string html =
+      "<!DOCTYPE html>\n"
+      "<html lang=\"en\">\n"
+      "<head>\n"
+      "  <meta charset=\"UTF-8\">\n"
+      "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+      "  <title>ROS 2 Medkit Gateway - API Documentation</title>\n"
+      "  <link rel=\"stylesheet\" href=\"/api/v1/swagger-ui/swagger-ui.css\">\n"
+      "  <style>\n"
+      "    html { box-sizing: border-box; overflow-y: scroll; }\n"
+      "    *, *:before, *:after { box-sizing: inherit; }\n"
+      "    body { margin: 0; background: #fafafa; }\n"
+      "  </style>\n"
+      "</head>\n"
+      "<body>\n"
+      "  <div id=\"swagger-ui\"></div>\n"
+      "  <script src=\"/api/v1/swagger-ui/swagger-ui-bundle.js\"></script>\n"
+      "  <script src=\"/api/v1/swagger-ui/swagger-ui-standalone-preset.js\"></script>\n"
+      "  <script>\n"
+      "    SwaggerUIBundle({\n"
+      "      url: '/api/v1/docs',\n"
+      "      dom_id: '#swagger-ui',\n"
+      "      presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],\n"
+      "      layout: 'StandaloneLayout'\n"
+      "    });\n"
+      "  </script>\n"
+      "</body>\n"
+      "</html>\n";
+  return html;
+}
+
+// CDN fallback HTML - used when assets were not embedded at build time
+const std::string & get_cdn_fallback_html() {
+  static const std::string html = std::string(
+                                      "<!DOCTYPE html>\n"
+                                      "<html lang=\"en\">\n"
+                                      "<head>\n"
+                                      "  <meta charset=\"UTF-8\">\n"
+                                      "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+                                      "  <title>ROS 2 Medkit Gateway - API Documentation</title>\n"
+                                      "  <link rel=\"stylesheet\" href=\"https://unpkg.com/swagger-ui-dist@") +
+                                  kSwaggerUiVersion +
+                                  "/swagger-ui.css\">\n"
+                                  "  <style>\n"
+                                  "    html { box-sizing: border-box; overflow-y: scroll; }\n"
+                                  "    *, *:before, *:after { box-sizing: inherit; }\n"
+                                  "    body { margin: 0; background: #fafafa; }\n"
+                                  "  </style>\n"
+                                  "</head>\n"
+                                  "<body>\n"
+                                  "  <div id=\"swagger-ui\"></div>\n"
+                                  "  <script src=\"https://unpkg.com/swagger-ui-dist@" +
+                                  kSwaggerUiVersion +
+                                  "/swagger-ui-bundle.js\"></script>\n"
+                                  "  <script src=\"https://unpkg.com/swagger-ui-dist@" +
+                                  kSwaggerUiVersion +
+                                  "/swagger-ui-standalone-preset.js\"></script>\n"
+                                  "  <script>\n"
+                                  "    SwaggerUIBundle({\n"
+                                  "      url: '/api/v1/docs',\n"
+                                  "      dom_id: '#swagger-ui',\n"
+                                  "      presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],\n"
+                                  "      layout: 'StandaloneLayout'\n"
+                                  "    });\n"
+                                  "  </script>\n"
+                                  "</body>\n"
+                                  "</html>\n";
+  return html;
+}
+
+}  // namespace
+
+void DocsHandlers::handle_swagger_ui(const httplib::Request & /*req*/, httplib::Response & res) {
+  if (!docs_enabled_) {
+    HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Capability description is disabled");
+    return;
+  }
+
+  if (swagger_ui::assets_embedded) {
+    res.set_content(get_embedded_html(), "text/html");
+  } else {
+    res.set_content(get_cdn_fallback_html(), "text/html");
+  }
+}
+
+void DocsHandlers::handle_swagger_asset(const httplib::Request & req, httplib::Response & res) {
+  if (!docs_enabled_) {
+    HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Capability description is disabled");
+    return;
+  }
+
+  if (!swagger_ui::assets_embedded) {
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Swagger UI assets not embedded in this build");
+    return;
+  }
+
+  auto asset_name = req.matches[1].str();
+
+  const unsigned char * data = nullptr;
+  size_t size = 0;
+  std::string content_type;
+
+  if (asset_name == "swagger-ui-bundle.js") {
+    data = swagger_ui::swagger_ui_bundle_js;
+    size = swagger_ui::swagger_ui_bundle_js_size;
+    content_type = "application/javascript";
+  } else if (asset_name == "swagger-ui.css") {
+    data = swagger_ui::swagger_ui_css;
+    size = swagger_ui::swagger_ui_css_size;
+    content_type = "text/css";
+  } else if (asset_name == "swagger-ui-standalone-preset.js") {
+    data = swagger_ui::swagger_ui_standalone_preset_js;
+    size = swagger_ui::swagger_ui_standalone_preset_js_size;
+    content_type = "application/javascript";
+  } else {
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Unknown Swagger UI asset: " + asset_name);
+    return;
+  }
+
+  // Set cache headers - assets are versioned, safe to cache
+  res.set_header("Cache-Control", "public, max-age=86400");
+  res.set_content(reinterpret_cast<const char *>(data), size, content_type);
+}
+
+#endif  // ENABLE_SWAGGER_UI
 
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway
