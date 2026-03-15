@@ -50,6 +50,7 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
         args: [--maxkb=500]
+        exclude: pixi\.lock
 
   # ── Copyright / License (matches ament_cmake_copyright) ────────────
   - repo: local
