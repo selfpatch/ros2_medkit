@@ -1,0 +1,136 @@
+// Copyright 2026 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <gtest/gtest.h>
+
+#include <memory>
+#include <nlohmann/json.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <regex>
+#include <string>
+#include <thread>
+
+#include "ros2_medkit_gateway/config.hpp"
+#include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/docs_handlers.hpp"
+#include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+
+using namespace ros2_medkit_gateway;
+using namespace std::chrono_literals;
+
+// =============================================================================
+// Test fixture - creates a full GatewayNode for DocsHandlers tests
+// =============================================================================
+
+class DocsHandlersTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    rclcpp::init(0, nullptr);
+  }
+
+  static void TearDownTestSuite() {
+    rclcpp::shutdown();
+  }
+
+  void SetUp() override {
+    node_ = std::make_shared<GatewayNode>();
+    std::this_thread::sleep_for(100ms);
+
+    CorsConfig cors_config;
+    AuthConfig auth_config;
+    TlsConfig tls_config;
+
+    ctx_ = std::make_unique<handlers::HandlerContext>(node_.get(), cors_config, auth_config, tls_config, nullptr);
+  }
+
+  void TearDown() override {
+    ctx_.reset();
+    node_.reset();
+  }
+
+  std::shared_ptr<GatewayNode> node_;
+  std::unique_ptr<handlers::HandlerContext> ctx_;
+};
+
+// =============================================================================
+// Docs disabled returns 501
+// =============================================================================
+
+// @verifies REQ_INTEROP_002
+TEST_F(DocsHandlersTest, DocsDisabledReturns501) {
+  // Override docs.enabled to false (GatewayNode already declares it as true by default)
+  node_->set_parameter(rclcpp::Parameter("docs.enabled", false));
+
+  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager());
+
+  httplib::Request req;
+  httplib::Response res;
+
+  docs_handlers.handle_docs_root(req, res);
+
+  EXPECT_EQ(res.status, 501);
+
+  auto body = nlohmann::json::parse(res.body);
+  EXPECT_TRUE(body.contains("error_code"));
+}
+
+// =============================================================================
+// Docs root returns valid JSON
+// =============================================================================
+
+// @verifies REQ_INTEROP_002
+TEST_F(DocsHandlersTest, DocsRootReturnsValidJson) {
+  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager());
+
+  httplib::Request req;
+  httplib::Response res;
+
+  docs_handlers.handle_docs_root(req, res);
+
+  // send_json does not set res.status (httplib server framework does that),
+  // so verify the response body contains a valid OpenAPI spec
+  ASSERT_FALSE(res.body.empty());
+  auto body = nlohmann::json::parse(res.body);
+  EXPECT_EQ(body["openapi"], "3.1.0");
+  EXPECT_TRUE(body.contains("info"));
+  EXPECT_TRUE(body.contains("paths"));
+  EXPECT_TRUE(body.contains("servers"));
+}
+
+// =============================================================================
+// Invalid path returns 404
+// =============================================================================
+
+// @verifies REQ_INTEROP_002
+TEST_F(DocsHandlersTest, DocsAnyPathReturns404ForInvalidPath) {
+  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager());
+
+  httplib::Request req;
+  httplib::Response res;
+
+  // Simulate cpp-httplib regex match: matches[1] = the captured base path.
+  // httplib::Match is std::smatch, populated via std::regex_match.
+  req.path = "/api/v1/totally_nonexistent_path/docs";
+  std::regex pattern(R"(/api/v1/(.*)/docs)");
+  std::smatch match;
+  std::regex_match(req.path, match, pattern);
+  req.matches = match;
+
+  docs_handlers.handle_docs_any_path(req, res);
+
+  EXPECT_EQ(res.status, 404);
+
+  auto body = nlohmann::json::parse(res.body);
+  EXPECT_TRUE(body.contains("error_code"));
+}

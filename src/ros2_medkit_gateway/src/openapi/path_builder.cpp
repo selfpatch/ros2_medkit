@@ -19,7 +19,8 @@
 namespace ros2_medkit_gateway {
 namespace openapi {
 
-PathBuilder::PathBuilder(const SchemaBuilder & schema_builder) : schema_builder_(schema_builder) {
+PathBuilder::PathBuilder(const SchemaBuilder & schema_builder, bool auth_enabled)
+  : schema_builder_(schema_builder), auth_enabled_(auth_enabled) {
 }
 
 // -----------------------------------------------------------------------------
@@ -525,7 +526,7 @@ nlohmann::json PathBuilder::build_sse_endpoint(const std::string & /*path*/, con
 // Error responses
 // -----------------------------------------------------------------------------
 
-nlohmann::json PathBuilder::error_responses(bool include_auth) {
+nlohmann::json PathBuilder::error_responses() const {
   nlohmann::json errors;
 
   errors["400"]["description"] = "Bad request";
@@ -537,7 +538,7 @@ nlohmann::json PathBuilder::error_responses(bool include_auth) {
   errors["500"]["description"] = "Internal server error";
   errors["500"]["content"]["application/json"]["schema"] = SchemaBuilder::generic_error();
 
-  if (include_auth) {
+  if (auth_enabled_) {
     errors["401"]["description"] = "Unauthorized - authentication required";
     errors["401"]["content"]["application/json"]["schema"] = SchemaBuilder::generic_error();
 

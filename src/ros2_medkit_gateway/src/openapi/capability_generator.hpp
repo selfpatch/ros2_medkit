@@ -42,6 +42,8 @@ namespace openapi {
 /// OpenApiSpecBuilder to produce the full document.
 class CapabilityGenerator {
  public:
+  static constexpr size_t kMaxCacheSize = 256;
+
   CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr);
 
   /// Generate OpenAPI spec for the given base path (without /docs suffix).
