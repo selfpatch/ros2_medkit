@@ -87,6 +87,7 @@ TEST(RouteDescriptionsTest, PostWithRequestBody) {
   auto & post = json["/x-medkit-action"]["post"];
   EXPECT_TRUE(post.contains("requestBody"));
   EXPECT_TRUE(post["requestBody"]["content"]["application/json"].contains("schema"));
+  EXPECT_TRUE(post["requestBody"]["required"].get<bool>());
 }
 
 TEST(RouteDescriptionsTest, SchemaTypes) {

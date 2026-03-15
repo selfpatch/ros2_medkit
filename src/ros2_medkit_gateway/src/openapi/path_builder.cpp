@@ -315,29 +315,12 @@ nlohmann::json PathBuilder::build_configurations_collection(const std::string & 
 
   path_item["get"] = std::move(get_op);
 
-  // PUT - update configuration parameter
-  nlohmann::json put_op;
-  put_op["tags"] = nlohmann::json::array({"Configuration"});
-  put_op["summary"] = "Update configuration parameter";
-  put_op["description"] = "Update a specific configuration parameter for this entity.";
-  put_op["requestBody"]["required"] = true;
-  put_op["requestBody"]["content"]["application/json"]["schema"] = SchemaBuilder::configuration_param_schema();
-  put_op["responses"]["200"]["description"] = "Parameter updated";
-  put_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::configuration_param_schema();
-
-  auto put_errors = error_responses();
-  for (auto & [code, val] : put_errors.items()) {
-    put_op["responses"][code] = val;
-  }
-
-  path_item["put"] = std::move(put_op);
-
-  // DELETE - reset configuration parameter to default
+  // DELETE - delete all configuration parameters
   nlohmann::json delete_op;
   delete_op["tags"] = nlohmann::json::array({"Configuration"});
-  delete_op["summary"] = "Reset configuration parameter";
-  delete_op["description"] = "Reset a specific configuration parameter to its default value.";
-  delete_op["responses"]["200"]["description"] = "Parameter reset to default";
+  delete_op["summary"] = "Delete all configuration parameters";
+  delete_op["description"] = "Delete all configuration parameters for this entity, resetting them to defaults.";
+  delete_op["responses"]["200"]["description"] = "All parameters deleted";
   delete_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::configuration_param_schema();
 
   auto del_errors = error_responses();
@@ -373,25 +356,20 @@ nlohmann::json PathBuilder::build_faults_collection(const std::string & entity_p
 
   path_item["get"] = std::move(get_op);
 
-  // PUT - update fault status (acknowledge/resolve)
-  nlohmann::json put_op;
-  put_op["tags"] = nlohmann::json::array({"Faults"});
-  put_op["summary"] = "Update fault status";
-  put_op["description"] = "Update the status of a specific fault (e.g., acknowledge or resolve).";
-  put_op["requestBody"]["required"] = true;
-  put_op["requestBody"]["content"]["application/json"]["schema"] = {
-      {"type", "object"},
-      {"properties", {{"status", {{"type", "string"}, {"enum", {"acknowledged", "resolved"}}}}}},
-      {"required", {"status"}}};
-  put_op["responses"]["200"]["description"] = "Fault status updated";
-  put_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::fault_schema();
+  // DELETE - clear all faults for this entity
+  nlohmann::json delete_op;
+  delete_op["tags"] = nlohmann::json::array({"Faults"});
+  delete_op["summary"] = entity_path.empty() ? "Clear all faults" : "Clear faults for " + entity_path;
+  delete_op["description"] =
+      entity_path.empty() ? "Clear all faults in the system." : "Clear all faults associated with this entity.";
+  delete_op["responses"]["204"]["description"] = "Faults cleared successfully";
 
-  auto put_errors = error_responses();
-  for (auto & [code, val] : put_errors.items()) {
-    put_op["responses"][code] = val;
+  auto del_errors = error_responses();
+  for (auto & [code, val] : del_errors.items()) {
+    delete_op["responses"][code] = val;
   }
 
-  path_item["put"] = std::move(put_op);
+  path_item["delete"] = std::move(delete_op);
   return path_item;
 }
 

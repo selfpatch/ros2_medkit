@@ -173,6 +173,7 @@ class OperationDesc {
 
     if (has_request_body_) {
       j["requestBody"]["content"]["application/json"]["schema"] = request_body_.to_json();
+      j["requestBody"]["required"] = true;
     }
 
     if (!responses_.empty()) {

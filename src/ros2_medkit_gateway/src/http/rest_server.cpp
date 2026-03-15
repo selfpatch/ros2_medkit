@@ -352,16 +352,15 @@ void RESTServer::setup_routes() {
   struct EntityHandlers {
     const char * type;
     const char * singular;
-    HandlerFn list_handler;  // unused here, listed above
     HandlerFn detail_handler;
   };
 
   // clang-format off
   std::vector<EntityHandlers> entity_types = {
-      {"areas", "area", {}, [this](auto & req, auto & res) { discovery_handlers_->handle_get_area(req, res); }},
-      {"components", "component", {}, [this](auto & req, auto & res) { discovery_handlers_->handle_get_component(req, res); }},
-      {"apps", "app", {}, [this](auto & req, auto & res) { discovery_handlers_->handle_get_app(req, res); }},
-      {"functions", "function", {}, [this](auto & req, auto & res) { discovery_handlers_->handle_get_function(req, res); }},
+      {"areas", "area", [this](auto & req, auto & res) { discovery_handlers_->handle_get_area(req, res); }},
+      {"components", "component", [this](auto & req, auto & res) { discovery_handlers_->handle_get_component(req, res); }},
+      {"apps", "app", [this](auto & req, auto & res) { discovery_handlers_->handle_get_app(req, res); }},
+      {"functions", "function", [this](auto & req, auto & res) { discovery_handlers_->handle_get_function(req, res); }},
   };
   // clang-format on
 
