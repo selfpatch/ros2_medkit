@@ -274,7 +274,7 @@ void GraphProviderPlugin::register_routes(httplib::Server & server, const std::s
 IntrospectionResult GraphProviderPlugin::introspect(const IntrospectionInput & input) {
   std::unordered_map<std::string, nlohmann::json> new_cache;
   const auto timestamp = current_timestamp();
-  auto state = build_state_snapshot(input, timestamp);
+  auto state = build_state_snapshot(input, timestamp, false);
 
   for (const auto & function : input.functions) {
     new_cache.emplace(function.id,
@@ -506,6 +506,18 @@ GraphProviderPlugin::GraphBuildConfig GraphProviderPlugin::resolve_config(const 
 }
 
 std::optional<nlohmann::json> GraphProviderPlugin::get_cached_or_built_graph(const std::string & function_id) {
+  // In the real gateway, the merged entity cache is the source of truth. The
+  // plugin-side cache is populated during the merge pipeline before runtime
+  // linking finishes, so rebuilding here avoids serving stale node/topic state.
+  if (ctx_ && dynamic_cast<GatewayNode *>(ctx_->node()) != nullptr) {
+    auto rebuilt = build_graph_from_entity_cache(function_id);
+    if (rebuilt.has_value()) {
+      std::lock_guard<std::mutex> lock(cache_mutex_);
+      graph_cache_[function_id] = *rebuilt;
+      return rebuilt;
+    }
+  }
+
   {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     auto it = graph_cache_.find(function_id);
@@ -544,7 +556,7 @@ std::optional<nlohmann::json> GraphProviderPlugin::build_graph_from_entity_cache
   input.functions = cache.get_functions();
 
   const auto timestamp = current_timestamp();
-  auto state = build_state_snapshot(input, timestamp);
+  auto state = build_state_snapshot(input, timestamp, true);
 
   return build_graph_document(function_id, input, state, resolve_config(function_id), timestamp);
 }
@@ -600,14 +612,17 @@ std::unordered_set<std::string> GraphProviderPlugin::collect_stale_topics(const 
 }
 
 GraphProviderPlugin::GraphBuildState GraphProviderPlugin::build_state_snapshot(const IntrospectionInput & input,
-                                                                               const std::string & timestamp) {
+                                                                               const std::string & timestamp,
+                                                                               bool include_stale_topics) {
   GraphBuildState state;
   {
     std::lock_guard<std::mutex> lock(metrics_mutex_);
     state.topic_metrics = topic_metrics_;
     state.diagnostics_seen = diagnostics_seen_;
   }
-  state.stale_topics = collect_stale_topics(input);
+  if (include_stale_topics) {
+    state.stale_topics = collect_stale_topics(input);
+  }
 
   {
     std::lock_guard<std::mutex> lock(status_mutex_);
