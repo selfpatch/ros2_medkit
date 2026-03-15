@@ -21,6 +21,7 @@
 #include <thread>
 
 #include "../src/openapi/capability_generator.hpp"
+#include "../src/openapi/route_registry.hpp"
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
@@ -29,6 +30,44 @@ using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::openapi;
 
 using namespace std::chrono_literals;
+
+namespace {
+
+// Populate a RouteRegistry with representative routes matching what the real
+// gateway registers, so that generate_root() produces the paths the tests expect.
+void populate_test_routes(RouteRegistry & reg) {
+  // Dummy handler - these are never actually called in generator tests
+  auto noop = [](const httplib::Request &, httplib::Response &) {};
+
+  reg.get("/health", noop).tag("Server").summary("Health check");
+  reg.get("/", noop).tag("Server").summary("API overview");
+  reg.get("/version-info", noop).tag("Server").summary("SOVD version information");
+
+  for (const auto * et : {"areas", "components", "apps", "functions"}) {
+    std::string base = std::string("/") + et;
+    std::string singular = et;
+    if (!singular.empty() && singular.back() == 's') {
+      singular.pop_back();
+    }
+    std::string entity_path = base + "/{" + singular + "_id}";
+
+    reg.get(base, noop).tag("Discovery").summary(std::string("List ") + et);
+    reg.get(entity_path, noop).tag("Discovery").summary(std::string("Get ") + singular);
+    reg.get(entity_path + "/data", noop).tag("Data");
+    reg.get(entity_path + "/data/{data_id}", noop).tag("Data");
+    reg.get(entity_path + "/operations", noop).tag("Operations");
+    reg.get(entity_path + "/configurations", noop).tag("Configuration");
+    reg.get(entity_path + "/faults", noop).tag("Faults");
+    reg.get(entity_path + "/logs", noop).tag("Logs");
+    reg.get(entity_path + "/bulk-data", noop).tag("Bulk Data");
+    reg.get(entity_path + "/cyclic-subscriptions", noop).tag("Subscriptions");
+  }
+
+  reg.get("/faults", noop).tag("Faults").summary("List all faults globally");
+  reg.get("/faults/stream", noop).tag("Events").summary("Stream fault events (SSE)");
+}
+
+}  // namespace
 
 // =============================================================================
 // Test fixture - creates a full GatewayNode for integration-level tests
@@ -56,17 +95,24 @@ class CapabilityGeneratorTest : public ::testing::Test {
 
     ctx_ = std::make_unique<handlers::HandlerContext>(node_.get(), cors_config, auth_config, tls_config, nullptr);
 
-    generator_ = std::make_unique<CapabilityGenerator>(*ctx_, *node_, node_->get_plugin_manager());
+    // Create a test route registry with representative routes
+    route_registry_ = std::make_unique<RouteRegistry>();
+    populate_test_routes(*route_registry_);
+
+    generator_ =
+        std::make_unique<CapabilityGenerator>(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
   }
 
   void TearDown() override {
     generator_.reset();
+    route_registry_.reset();
     ctx_.reset();
     node_.reset();
   }
 
   std::shared_ptr<GatewayNode> node_;
   std::unique_ptr<handlers::HandlerContext> ctx_;
+  std::unique_ptr<RouteRegistry> route_registry_;
   std::unique_ptr<CapabilityGenerator> generator_;
 };
 

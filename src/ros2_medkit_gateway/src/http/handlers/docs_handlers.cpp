@@ -27,8 +27,11 @@
 namespace ros2_medkit_gateway {
 namespace handlers {
 
-DocsHandlers::DocsHandlers(HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr)
-  : ctx_(ctx), generator_(std::make_unique<openapi::CapabilityGenerator>(ctx, node, plugin_mgr)), docs_enabled_(true) {
+DocsHandlers::DocsHandlers(HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
+                           const openapi::RouteRegistry * route_registry)
+  : ctx_(ctx)
+  , generator_(std::make_unique<openapi::CapabilityGenerator>(ctx, node, plugin_mgr, route_registry))
+  , docs_enabled_(true) {
   // Read docs.enabled parameter if it has been declared
   try {
     docs_enabled_ = node.get_parameter("docs.enabled").as_bool();
