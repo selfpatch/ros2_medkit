@@ -18,6 +18,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "../src/openapi/route_registry.hpp"
 #include "ros2_medkit_gateway/http/handlers/health_handlers.hpp"
 
 using json = nlohmann::json;
@@ -26,6 +27,7 @@ using ros2_medkit_gateway::CorsConfig;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::handlers::HandlerContext;
 using ros2_medkit_gateway::handlers::HealthHandlers;
+using ros2_medkit_gateway::openapi::RouteRegistry;
 
 // HealthHandlers has no dependency on GatewayNode or AuthManager:
 // - handle_health only calls HandlerContext::send_json() (static)
@@ -33,16 +35,41 @@ using ros2_medkit_gateway::handlers::HealthHandlers;
 // - handle_root reads ctx_.auth_config() and ctx_.tls_config() (both disabled by default)
 // All tests use a null GatewayNode and null AuthManager which is safe for these handlers.
 
+namespace {
+
+// No-op handler for route registration in tests
+void noop_handler(const httplib::Request &, httplib::Response &) {
+}
+
+// Populate a test route registry with representative routes
+void populate_test_routes(RouteRegistry & reg) {
+  reg.get("/health", noop_handler).tag("Server").summary("Health check");
+  reg.get("/", noop_handler).tag("Server").summary("API overview");
+  reg.get("/version-info", noop_handler).tag("Server").summary("SOVD version information");
+  reg.get("/areas", noop_handler).tag("Discovery").summary("List areas");
+  reg.get("/apps", noop_handler).tag("Discovery").summary("List apps");
+  reg.get("/components", noop_handler).tag("Discovery").summary("List components");
+  reg.get("/functions", noop_handler).tag("Discovery").summary("List functions");
+  reg.get("/faults", noop_handler).tag("Faults").summary("List all faults");
+}
+
+}  // namespace
+
 class HealthHandlersTest : public ::testing::Test {
  protected:
   CorsConfig cors_config_{};
   AuthConfig auth_config_{};  // enabled = false by default
   TlsConfig tls_config_{};    // enabled = false by default
+  RouteRegistry route_registry_;
   HandlerContext ctx_{nullptr, cors_config_, auth_config_, tls_config_, nullptr};
-  HealthHandlers handlers_{ctx_};
+  HealthHandlers handlers_{ctx_, &route_registry_};
 
   httplib::Request req_;
   httplib::Response res_;
+
+  void SetUp() override {
+    populate_test_routes(route_registry_);
+  }
 
   HandlerContext make_context(const AuthConfig & auth, const TlsConfig & tls) {
     return HandlerContext(nullptr, cors_config_, auth, tls, nullptr);
@@ -180,7 +207,15 @@ TEST_F(HealthHandlersTest, HandleRootAuthEnabledAddsAuthEndpoints) {
   AuthConfig auth_enabled{};
   auth_enabled.enabled = true;
   auto ctx_auth = make_context(auth_enabled, tls_config_);
-  HealthHandlers handlers_auth(ctx_auth);
+
+  // Create registry with auth routes
+  RouteRegistry auth_reg;
+  populate_test_routes(auth_reg);
+  auth_reg.post("/auth/authorize", noop_handler).tag("Authentication");
+  auth_reg.post("/auth/token", noop_handler).tag("Authentication");
+  auth_reg.post("/auth/revoke", noop_handler).tag("Authentication");
+
+  HealthHandlers handlers_auth(ctx_auth, &auth_reg);
 
   handlers_auth.handle_root(req_, res_);
   auto body = json::parse(res_.body);
@@ -203,7 +238,7 @@ TEST_F(HealthHandlersTest, HandleRootAuthEnabledIncludesAuthMetadataBlock) {
   auth_enabled.require_auth_for = ros2_medkit_gateway::AuthRequirement::ALL;
   auth_enabled.jwt_algorithm = ros2_medkit_gateway::JwtAlgorithm::HS256;
   auto ctx_auth = make_context(auth_enabled, tls_config_);
-  HealthHandlers handlers_auth(ctx_auth);
+  HealthHandlers handlers_auth(ctx_auth, &route_registry_);
 
   handlers_auth.handle_root(req_, res_);
   auto body = json::parse(res_.body);
@@ -220,7 +255,7 @@ TEST_F(HealthHandlersTest, HandleRootTlsEnabledIncludesTlsMetadataBlock) {
   tls_enabled.enabled = true;
   tls_enabled.min_version = "1.3";
   auto ctx_tls = make_context(auth_config_, tls_enabled);
-  HealthHandlers handlers_tls(ctx_tls);
+  HealthHandlers handlers_tls(ctx_tls, &route_registry_);
 
   handlers_tls.handle_root(req_, res_);
   auto body = json::parse(res_.body);

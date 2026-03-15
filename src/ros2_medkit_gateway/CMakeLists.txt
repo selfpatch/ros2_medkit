@@ -522,6 +522,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_capability_generator gateway_lib)
   set_tests_properties(test_capability_generator PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=67")
 
+  # Route registry tests (OpenAPI route registration and path conversion)
+  ament_add_gtest(test_route_registry test/test_route_registry.cpp)
+  target_link_libraries(test_route_registry gateway_lib)
+
   # Docs handlers tests (OpenAPI /docs endpoint handlers)
   ament_add_gtest(test_docs_handlers test/test_docs_handlers.cpp)
   target_link_libraries(test_docs_handlers gateway_lib)
@@ -572,6 +576,7 @@ if(BUILD_TESTING)
       test_openapi_spec_builder
       test_path_resolver
       test_capability_generator
+      test_route_registry
       test_docs_handlers
     )
     foreach(_target ${_test_targets})
