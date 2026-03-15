@@ -247,7 +247,7 @@ void GraphProviderPlugin::set_context(PluginContext & context) {
 }
 
 void GraphProviderPlugin::register_routes(httplib::Server & server, const std::string & api_prefix) {
-  server.Get((api_prefix + R"(/functions/([^/]+)/x-medkit-graph)").c_str(),
+  server.Get(api_prefix + R"(/functions/([^/]+)/x-medkit-graph)",
              [this](const httplib::Request & req, httplib::Response & res) {
                if (!ctx_) {
                  PluginContext::send_error(res, 503, "service-unavailable", "Graph provider context not initialized");
@@ -410,7 +410,7 @@ void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::Diagn
   std::lock_guard<std::mutex> lock(metrics_mutex_);
   diagnostics_seen_ = true;
   for (auto & [topic_name, metrics] : updates) {
-    topic_metrics_[topic_name] = std::move(metrics);
+    topic_metrics_[topic_name] = metrics;
   }
 }
 
