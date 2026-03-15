@@ -1,0 +1,9 @@
+# Test entity thresholds config for integration tests
+/sensors/lidar:
+  confirmation_threshold: -1
+  healing_enabled: true
+  healing_threshold: 1
+
+/powertrain/motor:
+  confirmation_threshold: -3
+  healing_threshold: 5

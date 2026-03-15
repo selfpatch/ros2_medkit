@@ -209,6 +209,13 @@ if(BUILD_TESTING)
     TIMEOUT 90
   )
   set_tests_properties(test_rosbag_integration PROPERTIES LABELS "integration")
+
+  add_launch_test(
+    test/test_entity_thresholds_integration.test.py
+    TARGET test_entity_thresholds_integration
+    TIMEOUT 60
+  )
+  set_tests_properties(test_entity_thresholds_integration PROPERTIES LABELS "integration")
 endif()
 
 ament_package()

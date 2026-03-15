@@ -299,6 +299,7 @@ void FaultManagerNode::handle_report_fault(
   std::string status_before = fault_before ? fault_before->status : "";
 
   // Resolve per-entity debounce config (longest-prefix match on source_id)
+  // TODO(#276): warn when different entities resolve different configs for the same fault_code
   auto resolved_config = resolve_config(request->source_id);
 
   // Report the fault event (use wall clock time, not sim time, for proper timestamps)
