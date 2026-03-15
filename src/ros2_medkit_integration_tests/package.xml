@@ -29,6 +29,7 @@
   <test_depend>python3-requests</test_depend>
   <test_depend>ros2_medkit_gateway</test_depend>
   <test_depend>ros2_medkit_fault_manager</test_depend>
+  <test_depend>ros2_medkit_linux_introspection</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

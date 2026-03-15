@@ -698,9 +698,9 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
           return tl::make_unexpected(std::string("ConfigurationManager not available"));
         }
         const auto & cache = get_thread_safe_cache();
-        auto configs = cache.get_entity_configurations(entity_id);
+        auto entity_configs = cache.get_entity_configurations(entity_id);
         nlohmann::json items = nlohmann::json::array();
-        for (const auto & node : configs.nodes) {
+        for (const auto & node : entity_configs.nodes) {
           auto result = config_mgr->list_parameters(node.node_fqn);
           if (result.success && result.data.is_array()) {
             for (auto & param : result.data) {
