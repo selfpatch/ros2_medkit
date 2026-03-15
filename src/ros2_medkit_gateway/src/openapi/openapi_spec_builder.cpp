@@ -25,6 +25,16 @@ OpenApiSpecBuilder & OpenApiSpecBuilder::info(const std::string & title, const s
   return *this;
 }
 
+OpenApiSpecBuilder & OpenApiSpecBuilder::description(const std::string & desc) {
+  description_ = desc;
+  return *this;
+}
+
+OpenApiSpecBuilder & OpenApiSpecBuilder::tags(const std::vector<TagInfo> & tags) {
+  tags_ = tags;
+  return *this;
+}
+
 OpenApiSpecBuilder & OpenApiSpecBuilder::server(const std::string & url, const std::string & description) {
   servers_.push_back({url, description});
   return *this;
@@ -63,8 +73,24 @@ nlohmann::json OpenApiSpecBuilder::build() const {
   // 2. Info block
   spec["info"]["title"] = title_;
   spec["info"]["version"] = version_;
+  if (!description_.empty()) {
+    spec["info"]["description"] = description_;
+  }
   if (!sovd_version_.empty()) {
     spec["info"]["x-sovd-version"] = sovd_version_;
+  }
+
+  // 2b. Top-level tags array
+  if (!tags_.empty()) {
+    spec["tags"] = nlohmann::json::array();
+    for (const auto & t : tags_) {
+      nlohmann::json tag_obj;
+      tag_obj["name"] = t.name;
+      if (!t.description.empty()) {
+        tag_obj["description"] = t.description;
+      }
+      spec["tags"].push_back(std::move(tag_obj));
+    }
   }
 
   // 3. Servers

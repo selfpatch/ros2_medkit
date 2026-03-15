@@ -21,6 +21,12 @@
 namespace ros2_medkit_gateway {
 namespace openapi {
 
+/// Tag metadata for the top-level OpenAPI tags array.
+struct TagInfo {
+  std::string name;
+  std::string description;
+};
+
 /// Assembles a complete OpenAPI 3.1.0 document from paths, schemas, and server info.
 /// Uses builder pattern for fluent configuration.
 class OpenApiSpecBuilder {
@@ -28,11 +34,17 @@ class OpenApiSpecBuilder {
   /// Set the API info block (title and version).
   OpenApiSpecBuilder & info(const std::string & title, const std::string & version);
 
+  /// Set the API description (info.description).
+  OpenApiSpecBuilder & description(const std::string & desc);
+
   /// Add a server entry with URL and optional description.
   OpenApiSpecBuilder & server(const std::string & url, const std::string & description = "");
 
   /// Set the SOVD specification version (x-sovd-version extension in info).
   OpenApiSpecBuilder & sovd_version(const std::string & version);
+
+  /// Set the top-level tags array with name and description for each tag.
+  OpenApiSpecBuilder & tags(const std::vector<TagInfo> & tags);
 
   /// Merge path items into the paths object.
   OpenApiSpecBuilder & add_paths(const nlohmann::json & paths);
@@ -49,6 +61,7 @@ class OpenApiSpecBuilder {
  private:
   std::string title_;
   std::string version_;
+  std::string description_;
   std::string sovd_version_;
 
   struct ServerEntry {
@@ -65,6 +78,8 @@ class OpenApiSpecBuilder {
     nlohmann::json scheme;
   };
   std::vector<SecuritySchemeEntry> security_schemes_;
+
+  std::vector<TagInfo> tags_;
 };
 
 }  // namespace openapi

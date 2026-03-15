@@ -89,6 +89,9 @@ class RouteRegistry {
   /// Get all unique tags (for OpenAPI tags section).
   std::vector<std::string> tags() const;
 
+  /// Generate endpoint list for handle_root (e.g., "GET /api/v1/health").
+  std::vector<std::string> to_endpoint_list(const std::string & api_prefix) const;
+
   /// Number of registered routes.
   size_t size() const {
     return routes_.size();

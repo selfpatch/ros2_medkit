@@ -109,6 +109,40 @@ TEST_F(DocsHandlersTest, DocsRootReturnsValidJson) {
 }
 
 // =============================================================================
+// Entity collection path returns 200 (happy path)
+// =============================================================================
+
+// @verifies REQ_INTEROP_002
+TEST_F(DocsHandlersTest, DocsAnyPathReturns200ForEntityCollection) {
+  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager());
+
+  httplib::Request req;
+  httplib::Response res;
+
+  // Simulate cpp-httplib regex match for /apps collection path.
+  // httplib::Match is std::smatch, populated via std::regex_match.
+  req.path = "/api/v1/apps/docs";
+  std::regex pattern(R"(/api/v1/(.*)/docs)");
+  std::smatch match;
+  std::regex_match(req.path, match, pattern);
+  req.matches = match;
+
+  docs_handlers.handle_docs_any_path(req, res);
+
+  // Entity collection path should generate a valid OpenAPI spec (not 404)
+  ASSERT_FALSE(res.body.empty());
+  auto body = nlohmann::json::parse(res.body);
+
+  // Should not be an error response
+  EXPECT_FALSE(body.contains("error_code")) << "Unexpected error: " << res.body;
+
+  // Should be a valid OpenAPI spec
+  EXPECT_EQ(body["openapi"], "3.1.0");
+  EXPECT_TRUE(body.contains("paths"));
+  EXPECT_TRUE(body["paths"].contains("/apps"));
+}
+
+// =============================================================================
 // Invalid path returns 404
 // =============================================================================
 

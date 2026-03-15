@@ -64,7 +64,7 @@ void populate_test_routes(RouteRegistry & reg) {
   }
 
   reg.get("/faults", noop).tag("Faults").summary("List all faults globally");
-  reg.get("/faults/stream", noop).tag("Events").summary("Stream fault events (SSE)");
+  reg.get("/faults/stream", noop).tag("Faults").summary("Stream fault events (SSE)");
 }
 
 }  // namespace
@@ -493,8 +493,11 @@ TEST_F(CapabilityGeneratorTest, DifferentGenerationsProduceDifferentCacheKeys) {
   ASSERT_TRUE(spec1.has_value());
   EXPECT_EQ((*spec1)["openapi"], "3.1.0");
 
-  // Second generate for the same path should return a valid spec
-  // (either from cache or regenerated)
+  // GatewayNode::get_thread_safe_cache() returns const ref, so we cannot directly
+  // call update_areas() to trigger a generation change from outside the node.
+  // The generation counter mechanism is verified separately in
+  // ThreadSafeEntityCacheGenerationTest. Here we verify that the cache returns
+  // identical results when the generation has not changed.
   auto spec2 = generator_->generate("/");
   ASSERT_TRUE(spec2.has_value());
   EXPECT_EQ((*spec2)["openapi"], "3.1.0");

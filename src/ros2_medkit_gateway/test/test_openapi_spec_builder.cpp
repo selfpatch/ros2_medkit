@@ -56,6 +56,34 @@ TEST_F(OpenApiSpecBuilderTest, BuildWithoutSovdVersionOmitsExtension) {
   EXPECT_FALSE(spec["info"].contains("x-sovd-version"));
 }
 
+TEST_F(OpenApiSpecBuilderTest, DescriptionAppearsInInfoBlock) {
+  auto spec = builder_.info("API", "1.0.0").description("A test API description.").build();
+  ASSERT_TRUE(spec["info"].contains("description"));
+  EXPECT_EQ(spec["info"]["description"], "A test API description.");
+}
+
+TEST_F(OpenApiSpecBuilderTest, NoDescriptionOmitsField) {
+  auto spec = builder_.info("API", "1.0.0").build();
+  EXPECT_FALSE(spec["info"].contains("description"));
+}
+
+TEST_F(OpenApiSpecBuilderTest, TagsArrayAppearsInSpec) {
+  using ros2_medkit_gateway::openapi::TagInfo;
+  auto spec = builder_.info("API", "1.0.0").tags({{"Server", "Server endpoints"}, {"Data", "Data access"}}).build();
+  ASSERT_TRUE(spec.contains("tags"));
+  ASSERT_TRUE(spec["tags"].is_array());
+  ASSERT_EQ(spec["tags"].size(), 2u);
+  EXPECT_EQ(spec["tags"][0]["name"], "Server");
+  EXPECT_EQ(spec["tags"][0]["description"], "Server endpoints");
+  EXPECT_EQ(spec["tags"][1]["name"], "Data");
+  EXPECT_EQ(spec["tags"][1]["description"], "Data access");
+}
+
+TEST_F(OpenApiSpecBuilderTest, NoTagsOmitsField) {
+  auto spec = builder_.info("API", "1.0.0").build();
+  EXPECT_FALSE(spec.contains("tags"));
+}
+
 // =============================================================================
 // Servers
 // =============================================================================
