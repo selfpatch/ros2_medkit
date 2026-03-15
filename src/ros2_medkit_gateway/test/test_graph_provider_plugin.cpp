@@ -230,6 +230,23 @@ class LocalHttpServer {
   int port_{-1};
 };
 
+class ExecutorThreadGuard {
+ public:
+  ExecutorThreadGuard(rclcpp::Executor & executor, std::thread & thread) : executor_(executor), thread_(thread) {
+  }
+
+  ~ExecutorThreadGuard() {
+    executor_.cancel();
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+ private:
+  rclcpp::Executor & executor_;
+  std::thread & thread_;
+};
+
 }  // namespace
 
 TEST(GraphProviderPluginBuildTest, BuildsThreeNodeChain) {
@@ -709,42 +726,46 @@ TEST(GraphProviderPluginIntrospectionTest, IntrospectDoesNotQueryFaultManagerSer
       });
 
   auto gateway_node = std::make_shared<GatewayNode>();
-  rclcpp::executors::SingleThreadedExecutor executor;
-  executor.add_node(service_node);
-  executor.add_node(gateway_node);
-  std::thread spin_thread([&executor]() {
-    executor.spin();
-  });
+  {
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(service_node);
+    executor.add_node(gateway_node);
+    std::thread spin_thread([&executor]() {
+      executor.spin();
+    });
+    ExecutorThreadGuard executor_guard(executor, spin_thread);
 
-  auto * plugin = [&]() -> GraphProviderPlugin * {
-    for (auto * provider : gateway_node->get_plugin_manager()->get_introspection_providers()) {
-      auto * graph_provider = dynamic_cast<GraphProviderPlugin *>(provider);
-      if (graph_provider) {
-        return graph_provider;
+    auto * plugin = [&]() -> GraphProviderPlugin * {
+      for (auto * provider : gateway_node->get_plugin_manager()->get_introspection_providers()) {
+        auto * graph_provider = dynamic_cast<GraphProviderPlugin *>(provider);
+        if (graph_provider) {
+          return graph_provider;
+        }
       }
+      return nullptr;
+    }();
+    ASSERT_NE(plugin, nullptr);
+
+    bool services_available = false;
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (gateway_node->get_fault_manager()->is_available()) {
+        services_available = true;
+        break;
+      }
+      std::this_thread::sleep_for(50ms);
     }
-    return nullptr;
-  }();
-  ASSERT_NE(plugin, nullptr);
+    ASSERT_TRUE(services_available);
 
-  const auto deadline = std::chrono::steady_clock::now() + 3s;
-  while (std::chrono::steady_clock::now() < deadline && !gateway_node->get_fault_manager()->is_available()) {
-    std::this_thread::sleep_for(50ms);
+    list_fault_calls.store(0);
+
+    auto input = make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})},
+                            {make_function("fn", {"a", "b"})});
+    plugin->introspect(input);
+
+    EXPECT_EQ(list_fault_calls.load(), 0);
   }
-  ASSERT_TRUE(gateway_node->get_fault_manager()->is_available());
 
-  list_fault_calls.store(0);
-
-  auto input =
-      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
-  plugin->introspect(input);
-
-  EXPECT_EQ(list_fault_calls.load(), 0);
-
-  executor.cancel();
-  spin_thread.join();
-  executor.remove_node(gateway_node);
-  executor.remove_node(service_node);
   gateway_node.reset();
   clear_fault_service.reset();
   list_faults_service.reset();
