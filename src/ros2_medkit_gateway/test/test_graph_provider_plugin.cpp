@@ -90,6 +90,13 @@ GraphProviderPlugin::TopicMetrics make_metrics(double frequency_hz, std::optiona
   return metrics;
 }
 
+diagnostic_msgs::msg::KeyValue make_key_value(const std::string & key, const std::string & value) {
+  diagnostic_msgs::msg::KeyValue kv;
+  kv.key = key;
+  kv.value = value;
+  return kv;
+}
+
 std::string find_topic_id(const nlohmann::json & graph, const std::string & topic_name) {
   for (const auto & topic : graph["topics"]) {
     if (topic["name"] == topic_name) {
@@ -121,12 +128,12 @@ const nlohmann::json * find_node(const nlohmann::json & graph, const std::string
 
 class FakePluginContext : public PluginContext {
  public:
-  explicit FakePluginContext(std::unordered_map<std::string, PluginEntityInfo> entities)
-    : entities_(std::move(entities)) {
+  explicit FakePluginContext(std::unordered_map<std::string, PluginEntityInfo> entities, rclcpp::Node * node = nullptr)
+    : node_(node), entities_(std::move(entities)) {
   }
 
   rclcpp::Node * node() const override {
-    return nullptr;
+    return node_;
   }
 
   std::optional<PluginEntityInfo> get_entity(const std::string & id) const override {
@@ -176,6 +183,7 @@ class FakePluginContext : public PluginContext {
   }
 
  private:
+  rclcpp::Node * node_{nullptr};
   std::unordered_map<std::string, PluginEntityInfo> entities_;
   std::map<SovdEntityType, std::vector<std::string>> registered_capabilities_;
   std::unordered_map<std::string, std::vector<std::string>> entity_capabilities_;
@@ -270,6 +278,20 @@ TEST(GraphProviderPluginBuildTest, BuildsFanInEdgesSharingTopicId) {
   ASSERT_NE(edge_ac, nullptr);
   ASSERT_NE(edge_bc, nullptr);
   EXPECT_EQ((*edge_ac)["topic_id"], (*edge_bc)["topic_id"]);
+}
+
+TEST(GraphProviderPluginBuildTest, BuildsSelfLoopEdgeForAppPublishingAndSubscribingSameTopic) {
+  auto input = make_input({make_app("a", {"/loop"}, {"/loop"})}, {make_function("fn", {"a"})});
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, make_state(), default_config(),
+                                                       "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+
+  ASSERT_EQ(graph["topics"].size(), 1u);
+  ASSERT_EQ(graph["edges"].size(), 1u);
+  const auto * edge = find_edge(graph, "a", "a", "/loop");
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ((*edge)["topic_id"], find_topic_id(graph, "/loop"));
 }
 
 TEST(GraphProviderPluginBuildTest, FiltersInfrastructureAndNitrosTopics) {
@@ -461,6 +483,24 @@ TEST(GraphProviderPluginMetricsTest, MarksPipelineDegradedWhenFrequencyDropsBelo
   EXPECT_EQ(graph["bottleneck_edge"], (*edge)["edge_id"]);
 }
 
+TEST(GraphProviderPluginMetricsTest, MarksPipelineDegradedWhenDropRateExceedsThreshold) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto state = make_state(true);
+  state.topic_metrics["/topic"] = make_metrics(30.0, 1.0, 7.5, 30.0);
+
+  auto doc =
+      GraphProviderPlugin::build_graph_document("fn", input, state, default_config(), "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ((*edge)["metrics"]["metrics_status"], "active");
+  EXPECT_DOUBLE_EQ((*edge)["metrics"]["drop_rate_percent"], 7.5);
+  EXPECT_EQ(graph["pipeline_status"], "degraded");
+  EXPECT_EQ(graph["bottleneck_edge"], (*edge)["edge_id"]);
+}
+
 TEST(GraphProviderPluginMetricsTest, ChoosesSlowestEdgeAsBottleneck) {
   auto input = make_input({make_app("a", {"/ab", "/ac"}, {}), make_app("b", {}, {"/ab"}), make_app("c", {}, {"/ac"})},
                           {make_function("fn", {"a", "b", "c"})});
@@ -560,4 +600,73 @@ TEST(GraphProviderPluginRouteTest, UsesPreviousOnlineTimestampForOfflineLastSeen
   EXPECT_LT((*node)["last_seen"].get<std::string>(), graph["timestamp"].get<std::string>());
 
   local_server.stop();
+}
+
+TEST(GraphProviderPluginRouteTest, AppliesPerFunctionConfigOverridesFromNodeParameters) {
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+
+  rclcpp::NodeOptions options;
+  options.append_parameter_override("graph_provider.function_overrides.fn.drop_rate_percent_threshold", 1.0);
+  auto node = std::make_shared<rclcpp::Node>("graph_provider_test_node", options);
+  auto publisher_node = std::make_shared<rclcpp::Node>("graph_provider_test_pub");
+  auto diagnostics_pub = publisher_node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(publisher_node);
+
+  {
+    GraphProviderPlugin plugin;
+    FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}}, node.get());
+    plugin.set_context(ctx);
+
+    auto input =
+        make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+
+    diagnostic_msgs::msg::DiagnosticArray msg;
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.name = "/topic";
+    status.values = {make_key_value("frame_rate_msg", "30.0"), make_key_value("current_delay_from_realtime_ms", "1.0"),
+                     make_key_value("expected_frequency", "30.0"), make_key_value("drop_rate_percent", "2.0")};
+    msg.status.push_back(status);
+    diagnostics_pub->publish(msg);
+    executor.spin_some();
+    std::this_thread::sleep_for(20ms);
+    executor.spin_some();
+
+    plugin.introspect(input);
+
+    httplib::Server server;
+    plugin.register_routes(server, "/api/v1");
+
+    LocalHttpServer local_server;
+    local_server.start(server);
+
+    httplib::Client client("127.0.0.1", local_server.port());
+    auto res = client.Get("/api/v1/functions/fn/x-medkit-graph");
+    for (int attempt = 0; !res && attempt < 19; ++attempt) {
+      std::this_thread::sleep_for(50ms);
+      res = client.Get("/api/v1/functions/fn/x-medkit-graph");
+    }
+
+    ASSERT_TRUE(res);
+    ASSERT_EQ(res->status, 200);
+
+    auto body = nlohmann::json::parse(res->body);
+    const auto & graph = body["x-medkit-graph"];
+    EXPECT_EQ(graph["pipeline_status"], "degraded");
+
+    const auto * edge = find_edge(graph, "a", "b", "/topic");
+    ASSERT_NE(edge, nullptr);
+    EXPECT_DOUBLE_EQ((*edge)["metrics"]["drop_rate_percent"], 2.0);
+
+    local_server.stop();
+  }
+
+  executor.remove_node(publisher_node);
+  executor.remove_node(node);
+  publisher_node.reset();
+  node.reset();
+  rclcpp::shutdown();
 }
