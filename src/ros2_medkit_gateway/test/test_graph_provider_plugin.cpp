@@ -614,11 +614,13 @@ TEST(GraphProviderPluginRouteTest, PrefersMergedGatewayEntityCacheOverStalePlugi
   }
 
   auto gateway_node = std::make_shared<GatewayNode>();
+  const auto server_host = gateway_node->get_parameter("server.host").as_string();
+  const auto server_port = static_cast<int>(gateway_node->get_parameter("server.port").as_int());
 
   {
     const auto start = std::chrono::steady_clock::now();
     const auto timeout = std::chrono::seconds(5);
-    httplib::Client health_client("127.0.0.1", 8080);
+    httplib::Client health_client(server_host, server_port);
     while (std::chrono::steady_clock::now() - start < timeout) {
       if (auto health = health_client.Get("/api/v1/health")) {
         if (health->status == 200) {
@@ -648,7 +650,7 @@ TEST(GraphProviderPluginRouteTest, PrefersMergedGatewayEntityCacheOverStalePlugi
     cache.update_apps(fresh_input.apps);
     cache.update_functions(fresh_input.functions);
 
-    httplib::Client client("127.0.0.1", 8080);
+    httplib::Client client(server_host, server_port);
     auto res = client.Get("/api/v1/functions/fn/x-medkit-graph");
     for (int attempt = 0; !res && attempt < 19; ++attempt) {
       std::this_thread::sleep_for(50ms);
