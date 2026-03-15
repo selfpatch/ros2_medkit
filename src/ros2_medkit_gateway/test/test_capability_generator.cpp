@@ -74,7 +74,7 @@ class CapabilityGeneratorTest : public ::testing::Test {
 // Root path generation
 // =============================================================================
 
-// @verifies REQ_OPENAPI_DOCS_ENDPOINT
+// @verifies REQ_INTEROP_002
 TEST_F(CapabilityGeneratorTest, GenerateRootReturnsValidOpenApiSpec) {
   auto result = generator_->generate("/");
 
@@ -88,7 +88,7 @@ TEST_F(CapabilityGeneratorTest, GenerateRootReturnsValidOpenApiSpec) {
   // Verify info block
   ASSERT_TRUE(spec.contains("info"));
   EXPECT_EQ(spec["info"]["title"], "ROS 2 Medkit Gateway");
-  EXPECT_EQ(spec["info"]["version"], "0.1.0");
+  EXPECT_EQ(spec["info"]["version"], "0.3.0");
   ASSERT_TRUE(spec["info"].contains("x-sovd-version"));
   EXPECT_EQ(spec["info"]["x-sovd-version"], "1.0.0");
 
@@ -102,7 +102,7 @@ TEST_F(CapabilityGeneratorTest, GenerateRootReturnsValidOpenApiSpec) {
   ASSERT_TRUE(spec["paths"].is_object());
 }
 
-// @verifies REQ_OPENAPI_DOCS_ENDPOINT
+// @verifies REQ_INTEROP_002
 TEST_F(CapabilityGeneratorTest, GenerateRootContainsHealthEndpoint) {
   auto result = generator_->generate("/");
 
@@ -113,7 +113,7 @@ TEST_F(CapabilityGeneratorTest, GenerateRootContainsHealthEndpoint) {
   ASSERT_TRUE(spec["paths"]["/health"].contains("get"));
 }
 
-// @verifies REQ_OPENAPI_DOCS_ENDPOINT
+// @verifies REQ_INTEROP_002
 TEST_F(CapabilityGeneratorTest, GenerateRootContainsVersionInfo) {
   auto result = generator_->generate("/");
 
@@ -124,7 +124,7 @@ TEST_F(CapabilityGeneratorTest, GenerateRootContainsVersionInfo) {
   ASSERT_TRUE(spec["paths"]["/version-info"].contains("get"));
 }
 
-// @verifies REQ_OPENAPI_DOCS_ENDPOINT
+// @verifies REQ_INTEROP_002
 TEST_F(CapabilityGeneratorTest, GenerateRootContainsEntityCollections) {
   auto result = generator_->generate("/");
 
@@ -137,20 +137,20 @@ TEST_F(CapabilityGeneratorTest, GenerateRootContainsEntityCollections) {
   EXPECT_TRUE(spec["paths"].contains("/functions"));
 }
 
-// @verifies REQ_OPENAPI_DOCS_ENDPOINT
+// @verifies REQ_INTEROP_002
 TEST_F(CapabilityGeneratorTest, GenerateRootContainsEntityDetailPaths) {
   auto result = generator_->generate("/");
 
   ASSERT_TRUE(result.has_value());
   auto & spec = *result;
 
-  EXPECT_TRUE(spec["paths"].contains("/areas/{areas_id}"));
-  EXPECT_TRUE(spec["paths"].contains("/components/{components_id}"));
-  EXPECT_TRUE(spec["paths"].contains("/apps/{apps_id}"));
-  EXPECT_TRUE(spec["paths"].contains("/functions/{functions_id}"));
+  EXPECT_TRUE(spec["paths"].contains("/areas/{area_id}"));
+  EXPECT_TRUE(spec["paths"].contains("/components/{component_id}"));
+  EXPECT_TRUE(spec["paths"].contains("/apps/{app_id}"));
+  EXPECT_TRUE(spec["paths"].contains("/functions/{function_id}"));
 }
 
-// @verifies REQ_OPENAPI_DOCS_ENDPOINT
+// @verifies REQ_INTEROP_002
 TEST_F(CapabilityGeneratorTest, GenerateRootContainsGlobalFaults) {
   auto result = generator_->generate("/");
 
@@ -190,7 +190,7 @@ TEST_F(CapabilityGeneratorTest, GenerateEmptyPathReturnsRoot) {
 // Invalid / unresolvable paths
 // =============================================================================
 
-// @verifies REQ_OPENAPI_DOCS_ENDPOINT
+// @verifies REQ_INTEROP_002
 TEST_F(CapabilityGeneratorTest, GenerateInvalidPathReturnsNullopt) {
   auto result = generator_->generate("/nonexistent/path");
   EXPECT_FALSE(result.has_value());
@@ -210,7 +210,7 @@ TEST_F(CapabilityGeneratorTest, GenerateSingleInvalidSegmentReturnsNullopt) {
 // Entity collection generation
 // =============================================================================
 
-// @verifies REQ_OPENAPI_DOCS_ENDPOINT
+// @verifies REQ_INTEROP_002
 TEST_F(CapabilityGeneratorTest, GenerateEntityCollectionReturnsSpec) {
   auto result = generator_->generate("/areas");
 

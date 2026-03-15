@@ -23,8 +23,10 @@ SchemaBuilder::SchemaBuilder() : serializer_() {
 nlohmann::json SchemaBuilder::from_ros_msg(const std::string & type_string) const {
   try {
     return serializer_.get_schema(type_string);
+  } catch (const std::exception &) {
+    // Expected for unknown ROS 2 message types - graceful degradation
+    return {{"type", "object"}, {"x-medkit-schema-unavailable", true}};
   } catch (...) {
-    // Graceful degradation: return generic object with unavailable marker
     return {{"type", "object"}, {"x-medkit-schema-unavailable", true}};
   }
 }

@@ -27,18 +27,10 @@
 #include "ros2_medkit_gateway/models/entity_capabilities.hpp"
 #include "ros2_medkit_gateway/models/entity_types.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/version.hpp"
 
 namespace ros2_medkit_gateway {
 namespace openapi {
-
-namespace {
-
-/// Gateway version - must match the version in health_handlers.cpp
-constexpr const char * kGatewayVersion = "0.1.0";
-/// SOVD specification version
-constexpr const char * kSovdVersion = "1.0.0";
-
-}  // namespace
 
 CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr)
   : ctx_(ctx), node_(node), plugin_mgr_(plugin_mgr), schema_builder_() {
@@ -148,7 +140,11 @@ nlohmann::json CapabilityGenerator::generate_root() const {
   // Entity collection endpoints
   for (const auto & entity_type : {"areas", "components", "apps", "functions"}) {
     std::string collection_path = std::string("/") + entity_type;
-    std::string detail_path = collection_path + "/{" + entity_type + std::string("_id}");
+    std::string singular = entity_type;
+    if (!singular.empty() && singular.back() == 's') {
+      singular.pop_back();
+    }
+    std::string detail_path = collection_path + "/{" + singular + "_id}";
 
     paths[collection_path] = path_builder.build_entity_collection(entity_type);
     paths[detail_path] = path_builder.build_entity_detail(entity_type);
@@ -271,6 +267,11 @@ nlohmann::json CapabilityGenerator::generate_specific_entity(const ResolvedPath 
 // -----------------------------------------------------------------------------
 
 nlohmann::json CapabilityGenerator::generate_resource_collection(const ResolvedPath & resolved) const {
+  auto sovd_type_check = entity_type_from_keyword(resolved.entity_type);
+  if (sovd_type_check == SovdEntityType::UNKNOWN) {
+    return build_base_spec();
+  }
+
   PathBuilder path_builder(schema_builder_);
   nlohmann::json paths;
 
@@ -346,6 +347,11 @@ nlohmann::json CapabilityGenerator::generate_resource_collection(const ResolvedP
 // -----------------------------------------------------------------------------
 
 nlohmann::json CapabilityGenerator::generate_specific_resource(const ResolvedPath & resolved) const {
+  auto sovd_type_check = entity_type_from_keyword(resolved.entity_type);
+  if (sovd_type_check == SovdEntityType::UNKNOWN) {
+    return build_base_spec();
+  }
+
   PathBuilder path_builder(schema_builder_);
   nlohmann::json paths;
 
@@ -627,6 +633,8 @@ std::string CapabilityGenerator::build_server_url() const {
   try {
     host = node_.get_parameter("server.host").as_string();
     port = static_cast<int>(node_.get_parameter("server.port").as_int());
+  } catch (const std::exception &) {
+    host = "localhost";
   } catch (...) {
     host = "localhost";
   }
@@ -668,6 +676,9 @@ std::optional<ResourceCollection> CapabilityGenerator::resource_collection_from_
 void CapabilityGenerator::add_resource_collection_paths(nlohmann::json & paths, const std::string & entity_path,
                                                         const std::string & entity_id,
                                                         ros2_medkit_gateway::SovdEntityType entity_type) const {
+  if (entity_type == SovdEntityType::UNKNOWN) {
+    return;
+  }
   PathBuilder path_builder(schema_builder_);
   auto caps = EntityCapabilities::for_type(entity_type);
   const auto & cache = node_.get_thread_safe_cache();

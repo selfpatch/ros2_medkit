@@ -212,6 +212,7 @@ if(ENABLE_SWAGGER_UI)
   target_compile_definitions(gateway_lib PUBLIC ENABLE_SWAGGER_UI)
   target_compile_definitions(gateway_node PRIVATE ENABLE_SWAGGER_UI)
   include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SwaggerUI.cmake)
+  target_compile_definitions(gateway_lib PRIVATE SWAGGER_UI_VERSION="${SWAGGER_UI_VERSION}")
 endif()
 
 # Apply coverage flags to main targets

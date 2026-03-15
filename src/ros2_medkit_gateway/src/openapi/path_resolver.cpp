@@ -89,6 +89,12 @@ ResolvedPath PathResolver::resolve(const std::string & path) {
     return result;
   }
 
+  if (segments.size() > 10) {
+    result.category = PathCategory::kError;
+    result.error = "Path too deep (max 10 segments)";
+    return result;
+  }
+
   // Walk segments pairwise: entity_type/entity_id or resource_collection/resource_id
   size_t i = 0;
   while (i < segments.size()) {

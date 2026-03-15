@@ -144,8 +144,9 @@ class OperationDesc {
   }
 
   // Add a response for a given HTTP status code
-  OperationDesc & response(int status_code, const SchemaDesc & schema) {
+  OperationDesc & response(int status_code, const SchemaDesc & schema, const std::string & desc = "") {
     nlohmann::json resp;
+    resp["description"] = desc.empty() ? "Response" : desc;
     resp["content"]["application/json"]["schema"] = schema.to_json();
     responses_[std::to_string(status_code)] = std::move(resp);
     return *this;
