@@ -188,6 +188,10 @@ class FakePluginContext : public PluginContext {
     return it->second;
   }
 
+  std::vector<PluginEntityInfo> get_child_apps(const std::string & /*component_id*/) const override {
+    return {};
+  }
+
  private:
   rclcpp::Node * node_{nullptr};
   std::unordered_map<std::string, PluginEntityInfo> entities_;
