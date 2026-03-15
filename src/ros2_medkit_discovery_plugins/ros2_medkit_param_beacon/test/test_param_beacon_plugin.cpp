@@ -1,4 +1,4 @@
-// Copyright 2026 selfpatch GmbH
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -77,6 +77,9 @@ class MockPluginContext : public PluginContext {
   }
   std::optional<PluginEntityInfo> get_entity(const std::string &) const override {
     return std::nullopt;
+  }
+  std::vector<PluginEntityInfo> get_child_apps(const std::string &) const override {
+    return {};
   }
   nlohmann::json list_entity_faults(const std::string &) const override {
     return nlohmann::json::array();

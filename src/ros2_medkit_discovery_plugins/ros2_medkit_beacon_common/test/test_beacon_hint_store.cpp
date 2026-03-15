@@ -1,4 +1,4 @@
-// Copyright 2026 selfpatch GmbH
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -119,7 +119,7 @@ TEST(BeaconHintStore, StaleHintReactivatedOnRefresh) {
   BeaconHintStore store2(cfg2);
 
   ASSERT_TRUE(store2.update(make_hint("app_1")));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
   {
     auto result = store2.get("app_1");
@@ -153,7 +153,7 @@ TEST(BeaconHintStore, TTLTransitionToStale) {
   EXPECT_EQ(store.get("app_1")->status, HintStatus::ACTIVE);
 
   // After sleeping past TTL, should be STALE.
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
   EXPECT_EQ(store.get("app_1")->status, HintStatus::STALE);
 }
 
@@ -169,8 +169,8 @@ TEST(BeaconHintStore, ExpiryRemovesHint) {
 
   ASSERT_TRUE(store.update(make_hint("app_1")));
 
-  // Sleep past expiry.
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  // Sleep past expiry (4x margin for CI stability).
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
 
   auto snapshot = store.evict_and_snapshot();
   EXPECT_TRUE(snapshot.empty());
@@ -192,7 +192,7 @@ TEST(BeaconHintStore, EvictAndSnapshotIsAtomic) {
   // app_2: inserted then aged past expiry via short sleep.
   ASSERT_TRUE(store.update(make_hint("app_2")));
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
 
   // Insert app_3 fresh after the sleep - should survive.
   ASSERT_TRUE(store.update(make_hint("app_3")));
@@ -241,20 +241,20 @@ TEST(BeaconHintStore, EvictOnEmptyStoreIsNoop) {
 TEST(BeaconHintStore, MixedStatesInSnapshot) {
   BeaconHintStore::Config cfg;
   cfg.beacon_ttl_sec = 0.05;     // 50ms
-  cfg.beacon_expiry_sec = 0.20;  // 200ms
+  cfg.beacon_expiry_sec = 0.40;  // 400ms (wide margin for CI stability)
   BeaconHintStore store(cfg);
 
   // t=0: insert expired_app.
   ASSERT_TRUE(store.update(make_hint("expired_app")));
 
-  // t=100ms: insert active_app and stale_app.
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  // t=200ms: insert active_app and stale_app.
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
   ASSERT_TRUE(store.update(make_hint("active_app")));
   ASSERT_TRUE(store.update(make_hint("stale_app")));
 
-  // t=250ms: expired_app age=250ms > 200ms (EXPIRED). stale_app age=150ms (STALE).
+  // t=500ms: expired_app age=500ms > 400ms (EXPIRED). stale_app age=300ms (STALE, < 400ms).
   // Refresh active_app to keep it ACTIVE.
-  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
   ASSERT_TRUE(store.update(make_hint("active_app")));
 
   // Snapshot: evict expired_app, return active_app (ACTIVE) + stale_app (STALE).
@@ -538,19 +538,20 @@ TEST(BeaconHintStore, ReceivedAtFarPastIsImmediatelyStale) {
 TEST(BeaconHintStore, TTLLifecycle) {
   BeaconHintStore::Config cfg;
   cfg.beacon_ttl_sec = 0.1;     // 100ms TTL
-  cfg.beacon_expiry_sec = 0.3;  // 300ms expiry
+  cfg.beacon_expiry_sec = 2.0;  // 2s expiry (wide gap for CI stability)
   BeaconHintStore store(cfg);
 
   // Insert hint and verify ACTIVE immediately.
   ASSERT_TRUE(store.update(make_hint("lifecycle_app")));
   EXPECT_EQ(store.get("lifecycle_app")->status, HintStatus::ACTIVE);
 
-  // Wait past TTL (0.25s > 0.1s TTL) but before expiry.
-  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  // Wait past TTL (0.4s > 0.1s TTL) but well before expiry (2s).
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
   EXPECT_EQ(store.get("lifecycle_app")->status, HintStatus::STALE);
 
-  // Wait past expiry (total ~0.7s > 0.3s expiry).
-  std::this_thread::sleep_for(std::chrono::milliseconds(450));
+  // Wait past expiry (total ~2.9s > 2.0s expiry). get() returns nullopt for expired.
+  std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+  EXPECT_FALSE(store.get("lifecycle_app").has_value());
   auto snapshot = store.evict_and_snapshot();
   EXPECT_TRUE(snapshot.empty());
   EXPECT_EQ(store.size(), 0u);
@@ -578,6 +579,36 @@ TEST(BeaconHintStore, MinimalHint) {
   EXPECT_TRUE(result->hint.display_name.empty());
   EXPECT_EQ(result->hint.process_id, 0u);
   EXPECT_EQ(result->status, HintStatus::ACTIVE);
+}
+
+// ---------------------------------------------------------------------------
+// GetReturnsNulloptForExpiredHint
+// @verifies REQ_DISCO_BEACON_03
+//
+// After expiry, get() should return nullopt instead of serving stale data.
+// ---------------------------------------------------------------------------
+TEST(BeaconHintStore, GetReturnsNulloptForExpiredHint) {
+  BeaconHintStore::Config config;
+  config.beacon_ttl_sec = 0.05;    // 50ms TTL
+  config.beacon_expiry_sec = 0.1;  // 100ms expiry
+  BeaconHintStore store(config);
+
+  BeaconHint hint;
+  hint.entity_id = "test_entity";
+  hint.received_at = std::chrono::steady_clock::now();
+  store.update(hint);
+
+  // Immediately: should be active
+  auto result = store.get("test_entity");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, HintStatus::ACTIVE);
+
+  // Wait past expiry (4x margin for CI stability)
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+
+  // Should return nullopt for expired hint
+  auto expired_result = store.get("test_entity");
+  EXPECT_FALSE(expired_result.has_value());
 }
 
 // ---------------------------------------------------------------------------

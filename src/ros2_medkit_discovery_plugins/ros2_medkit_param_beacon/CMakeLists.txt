@@ -1,4 +1,4 @@
-# Copyright 2026 selfpatch GmbH
+# Copyright 2026 bburda
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -99,7 +99,7 @@ if(BUILD_TESTING)
     cpp_httplib_target
     OpenSSL::SSL OpenSSL::Crypto)
   set_tests_properties(test_param_beacon_plugin PROPERTIES
-    ENVIRONMENT "ROS_DOMAIN_ID=68")
+    ENVIRONMENT "ROS_DOMAIN_ID=70")
 endif()
 
 ament_package()

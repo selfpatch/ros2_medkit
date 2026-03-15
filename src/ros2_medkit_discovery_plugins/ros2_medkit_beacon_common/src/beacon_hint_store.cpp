@@ -1,4 +1,4 @@
-// Copyright 2026 selfpatch GmbH
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -143,6 +143,12 @@ std::optional<BeaconHintStore::StoredHint> BeaconHintStore::get(const std::strin
   StoredHint copy = it->second;
   // Compute status at read time (do not mutate stored entry under shared lock).
   copy.status = compute_status(copy);
+
+  // Don't serve expired hints - they'll be cleaned up on next evict_and_snapshot()
+  if (copy.status == HintStatus::EXPIRED) {
+    return std::nullopt;
+  }
+
   return copy;
 }
 
