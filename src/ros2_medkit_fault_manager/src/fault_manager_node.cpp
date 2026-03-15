@@ -115,13 +115,19 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   storage_->set_debounce_config(global_config_);
 
   // Load per-entity threshold overrides (optional)
-  auto entity_thresholds_file = declare_parameter<std::string>("entity_thresholds_config_file", "");
+  auto entity_thresholds_file = declare_parameter<std::string>("entity_thresholds.config_file", "");
   if (!entity_thresholds_file.empty()) {
     auto entries = EntityThresholdResolver::load_from_yaml(entity_thresholds_file);
     if (!entries.empty()) {
       threshold_resolver_ = std::make_unique<EntityThresholdResolver>(std::move(entries));
       RCLCPP_INFO(get_logger(), "Loaded %zu per-entity threshold overrides from %s", threshold_resolver_->size(),
                   entity_thresholds_file.c_str());
+      if (auto_confirm_after_sec_ > 0.0) {
+        RCLCPP_WARN(get_logger(),
+                    "Per-entity thresholds are configured but auto_confirm_after_sec=%.1f is also set. "
+                    "Auto-confirmation will bypass entity-specific debounce policies for PREFAILED faults.",
+                    auto_confirm_after_sec_);
+      }
     }
   }
 
