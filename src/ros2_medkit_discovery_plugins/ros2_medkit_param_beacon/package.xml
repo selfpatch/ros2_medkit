@@ -13,6 +13,9 @@
   <depend>ros2_medkit_beacon_common</depend>
   <depend>ros2_medkit_gateway</depend>
   <depend>rclcpp</depend>
+  <depend>nlohmann-json-dev</depend>
+  <depend>libcpp-httplib-dev</depend>
+  <depend>libssl-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

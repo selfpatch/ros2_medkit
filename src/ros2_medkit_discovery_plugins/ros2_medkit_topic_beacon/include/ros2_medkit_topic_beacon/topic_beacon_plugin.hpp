@@ -1,4 +1,4 @@
-// Copyright 2026 selfpatch GmbH
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #include <httplib.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -104,6 +105,7 @@ class TopicBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin, public ros2
   ros2_medkit_beacon::BeaconEntityMapper mapper_;
   ros2_medkit_beacon::ValidationLimits limits_;
   TokenBucket rate_limiter_{100.0};
-  bool capacity_warned_{false};
+  std::atomic<bool> capacity_warned_{false};
+  std::mutex skipped_mutex_;
   std::unordered_set<std::string> logged_skipped_entities_;
 };

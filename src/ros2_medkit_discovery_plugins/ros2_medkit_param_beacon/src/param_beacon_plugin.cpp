@@ -1,4 +1,4 @@
-// Copyright 2026 selfpatch GmbH
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -193,14 +193,17 @@ IntrospectionResult ParameterBeaconPlugin::introspect(const IntrospectionInput &
   auto snapshot = store_->evict_and_snapshot();
   auto result = mapper_.map(snapshot, input);
 
-  for (const auto & stored : snapshot) {
-    if (result.metadata.find(stored.hint.entity_id) == result.metadata.end()) {
-      if (logged_skipped_entities_.size() >= 1000) {
-        logged_skipped_entities_.clear();
-      }
-      if (logged_skipped_entities_.insert(stored.hint.entity_id).second) {
-        log_info("Beacon entity '" + stored.hint.entity_id +
-                 "' not in known entities (allow_new_entities=false), skipped");
+  {
+    std::lock_guard<std::mutex> lock(skipped_mutex_);
+    for (const auto & stored : snapshot) {
+      if (result.metadata.find(stored.hint.entity_id) == result.metadata.end()) {
+        if (logged_skipped_entities_.size() >= 1000) {
+          logged_skipped_entities_.clear();
+        }
+        if (logged_skipped_entities_.insert(stored.hint.entity_id).second) {
+          log_info("Beacon entity '" + stored.hint.entity_id +
+                   "' not in known entities (allow_new_entities=false), skipped");
+        }
       }
     }
   }
@@ -281,6 +284,9 @@ void ParameterBeaconPlugin::poll_node(const std::string & fqn) {
   try {
     auto client = get_or_create_client(fqn);
 
+    // NOTE: Mutex is held across blocking RPCs (wait_for_service + list_parameters +
+    // get_parameters). Nodes are polled sequentially. With param_timeout_sec=T and N nodes,
+    // worst-case cycle time is N*T seconds. Acceptable for typical deployments (<50 nodes).
     std::lock_guard<std::mutex> ops_lock(param_ops_mutex_);
 
     if (!client->wait_for_service(std::chrono::duration<double>(param_timeout_sec_))) {

@@ -1,4 +1,4 @@
-// Copyright 2026 selfpatch GmbH
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,13 @@ namespace ros2_medkit_beacon {
 nlohmann::json build_beacon_response(const std::string & entity_id, const BeaconHintStore::StoredHint & stored) {
   nlohmann::json data;
   data["entity_id"] = entity_id;
-  data["status"] = stored.status == BeaconHintStore::HintStatus::ACTIVE ? "active" : "stale";
+  if (stored.status == BeaconHintStore::HintStatus::ACTIVE) {
+    data["status"] = "active";
+  } else if (stored.status == BeaconHintStore::HintStatus::STALE) {
+    data["status"] = "stale";
+  } else {
+    data["status"] = "expired";
+  }
   auto age = std::chrono::duration<double>(std::chrono::steady_clock::now() - stored.last_seen).count();
   data["age_sec"] = age;
   data["stable_id"] = stored.hint.stable_id;

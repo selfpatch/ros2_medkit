@@ -1,4 +1,4 @@
-// Copyright 2026 selfpatch GmbH
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -137,14 +137,17 @@ IntrospectionResult TopicBeaconPlugin::introspect(const IntrospectionInput & inp
   auto snapshot = store_->evict_and_snapshot();
   auto result = mapper_.map(snapshot, input);
 
-  for (const auto & stored : snapshot) {
-    if (result.metadata.find(stored.hint.entity_id) == result.metadata.end()) {
-      if (logged_skipped_entities_.size() >= 1000) {
-        logged_skipped_entities_.clear();
-      }
-      if (logged_skipped_entities_.insert(stored.hint.entity_id).second) {
-        log_info("Beacon entity '" + stored.hint.entity_id +
-                 "' not in known entities (allow_new_entities=false), skipped");
+  {
+    std::lock_guard<std::mutex> lock(skipped_mutex_);
+    for (const auto & stored : snapshot) {
+      if (result.metadata.find(stored.hint.entity_id) == result.metadata.end()) {
+        if (logged_skipped_entities_.size() >= 1000) {
+          logged_skipped_entities_.clear();
+        }
+        if (logged_skipped_entities_.insert(stored.hint.entity_id).second) {
+          log_info("Beacon entity '" + stored.hint.entity_id +
+                   "' not in known entities (allow_new_entities=false), skipped");
+        }
       }
     }
   }
