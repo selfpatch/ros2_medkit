@@ -75,12 +75,6 @@ void DocsHandlers::handle_docs_any_path(const httplib::Request & req, httplib::R
 
 namespace {
 
-// Swagger UI version - injected by CMake via target_compile_definitions
-#ifndef SWAGGER_UI_VERSION
-#define SWAGGER_UI_VERSION "5.17.14"
-#endif
-constexpr const char * kSwaggerUiVersion = SWAGGER_UI_VERSION;
-
 // HTML page that loads embedded Swagger UI assets and points to /api/v1/docs
 const std::string & get_embedded_html() {
   static const std::string html =
@@ -114,45 +108,6 @@ const std::string & get_embedded_html() {
   return html;
 }
 
-// CDN fallback HTML - used when assets were not embedded at build time
-const std::string & get_cdn_fallback_html() {
-  static const std::string html = std::string(
-                                      "<!DOCTYPE html>\n"
-                                      "<html lang=\"en\">\n"
-                                      "<head>\n"
-                                      "  <meta charset=\"UTF-8\">\n"
-                                      "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
-                                      "  <title>ROS 2 Medkit Gateway - API Documentation</title>\n"
-                                      "  <link rel=\"stylesheet\" href=\"https://unpkg.com/swagger-ui-dist@") +
-                                  kSwaggerUiVersion +
-                                  "/swagger-ui.css\">\n"
-                                  "  <style>\n"
-                                  "    html { box-sizing: border-box; overflow-y: scroll; }\n"
-                                  "    *, *:before, *:after { box-sizing: inherit; }\n"
-                                  "    body { margin: 0; background: #fafafa; }\n"
-                                  "  </style>\n"
-                                  "</head>\n"
-                                  "<body>\n"
-                                  "  <div id=\"swagger-ui\"></div>\n"
-                                  "  <script src=\"https://unpkg.com/swagger-ui-dist@" +
-                                  kSwaggerUiVersion +
-                                  "/swagger-ui-bundle.js\"></script>\n"
-                                  "  <script src=\"https://unpkg.com/swagger-ui-dist@" +
-                                  kSwaggerUiVersion +
-                                  "/swagger-ui-standalone-preset.js\"></script>\n"
-                                  "  <script>\n"
-                                  "    SwaggerUIBundle({\n"
-                                  "      url: '/api/v1/docs',\n"
-                                  "      dom_id: '#swagger-ui',\n"
-                                  "      presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],\n"
-                                  "      layout: 'StandaloneLayout'\n"
-                                  "    });\n"
-                                  "  </script>\n"
-                                  "</body>\n"
-                                  "</html>\n";
-  return html;
-}
-
 }  // namespace
 
 void DocsHandlers::handle_swagger_ui(const httplib::Request & /*req*/, httplib::Response & res) {
@@ -161,21 +116,12 @@ void DocsHandlers::handle_swagger_ui(const httplib::Request & /*req*/, httplib::
     return;
   }
 
-  if (swagger_ui::assets_embedded) {
-    res.set_content(get_embedded_html(), "text/html");
-  } else {
-    res.set_content(get_cdn_fallback_html(), "text/html");
-  }
+  res.set_content(get_embedded_html(), "text/html");
 }
 
 void DocsHandlers::handle_swagger_asset(const httplib::Request & req, httplib::Response & res) {
   if (!docs_enabled_) {
     HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Capability description is disabled");
-    return;
-  }
-
-  if (!swagger_ui::assets_embedded) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Swagger UI assets not embedded in this build");
     return;
   }
 

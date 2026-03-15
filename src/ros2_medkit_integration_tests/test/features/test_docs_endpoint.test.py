@@ -146,9 +146,13 @@ class TestDocsEndpoint(GatewayTestCase):
         )
         self._assert_valid_openapi_spec(data)
 
-        # Should include resource collection paths for this entity
-        paths_str = str(data['paths'])
-        self.assertIn('data', paths_str)
+        # Verify paths dict contains a key with '/data' resource collection
+        paths = data['paths']
+        data_paths = [p for p in paths.keys() if '/data' in p]
+        self.assertGreater(
+            len(data_paths), 0,
+            f'Expected at least one path containing /data. Paths: {list(paths.keys())}'
+        )
 
     def test_data_collection_docs(self):
         """GET /apps/{id}/data/docs returns spec with data item schemas.
@@ -160,7 +164,23 @@ class TestDocsEndpoint(GatewayTestCase):
             lambda d: d if 'paths' in d else None,
         )
         self._assert_valid_openapi_spec(data)
-        self.assertTrue(len(data['paths']) > 0)
+
+        paths = data['paths']
+        self.assertGreater(len(paths), 0, 'Expected at least one path in data docs')
+
+        # Verify at least one path has a GET operation with a response schema
+        has_get_with_schema = False
+        for path_key, path_item in paths.items():
+            if 'get' in path_item:
+                responses = path_item['get'].get('responses', {})
+                if '200' in responses and 'content' in responses['200']:
+                    has_get_with_schema = True
+                    break
+        self.assertTrue(
+            has_get_with_schema,
+            f'Expected at least one data path with GET + 200 response schema. '
+            f'Paths: {list(paths.keys())}'
+        )
 
     def test_operations_collection_docs(self):
         """GET /apps/{id}/operations/docs returns spec for operations.

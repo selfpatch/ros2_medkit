@@ -31,9 +31,5 @@ extern const size_t swagger_ui_css_size;
 extern const unsigned char swagger_ui_standalone_preset_js[];
 extern const size_t swagger_ui_standalone_preset_js_size;
 
-/// Whether assets were successfully embedded at build time.
-/// When false, handlers should serve a CDN-based fallback page.
-extern const bool assets_embedded;
-
 }  // namespace swagger_ui
 }  // namespace ros2_medkit_gateway

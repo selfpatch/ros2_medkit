@@ -30,7 +30,7 @@ class SchemaBuilder;
 /// Uses SchemaBuilder for response/request schemas and adds SOVD extensions.
 class PathBuilder {
  public:
-  explicit PathBuilder(const SchemaBuilder & schema_builder);
+  explicit PathBuilder(const SchemaBuilder & schema_builder, bool auth_enabled = false);
 
   // Entity collection paths (GET /areas, GET /components, etc.)
   nlohmann::json build_entity_collection(const std::string & entity_type) const;
@@ -54,13 +54,14 @@ class PathBuilder {
   nlohmann::json build_sse_endpoint(const std::string & path, const std::string & description) const;
 
   // Common helpers
-  static nlohmann::json error_responses(bool include_auth = false);
+  nlohmann::json error_responses() const;
 
  private:
   nlohmann::json build_path_param(const std::string & name, const std::string & description) const;
   nlohmann::json build_query_params_for_collection() const;
 
   const SchemaBuilder & schema_builder_;
+  bool auth_enabled_;
 };
 
 }  // namespace openapi

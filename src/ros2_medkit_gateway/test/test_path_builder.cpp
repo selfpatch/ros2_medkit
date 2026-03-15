@@ -414,7 +414,7 @@ TEST_F(PathBuilderTest, SseEndpointHasDescription) {
 
 TEST_F(PathBuilderTest, ErrorResponsesWithoutAuth) {
   // @verifies REQ_INTEROP_002
-  auto errors = PathBuilder::error_responses(false);
+  auto errors = path_builder_.error_responses();
   EXPECT_TRUE(errors.contains("400"));
   EXPECT_TRUE(errors.contains("404"));
   EXPECT_TRUE(errors.contains("500"));
@@ -423,7 +423,8 @@ TEST_F(PathBuilderTest, ErrorResponsesWithoutAuth) {
 }
 
 TEST_F(PathBuilderTest, ErrorResponsesWithAuth) {
-  auto errors = PathBuilder::error_responses(true);
+  PathBuilder auth_builder(schema_builder_, true);
+  auto errors = auth_builder.error_responses();
   EXPECT_TRUE(errors.contains("400"));
   EXPECT_TRUE(errors.contains("404"));
   EXPECT_TRUE(errors.contains("500"));
@@ -432,7 +433,7 @@ TEST_F(PathBuilderTest, ErrorResponsesWithAuth) {
 }
 
 TEST_F(PathBuilderTest, ErrorResponsesUseGenericErrorSchema) {
-  auto errors = PathBuilder::error_responses();
+  auto errors = path_builder_.error_responses();
   for (const auto & [code, resp] : errors.items()) {
     ASSERT_TRUE(resp.contains("content")) << "Error " << code << " missing content";
     auto schema = resp["content"]["application/json"]["schema"];
