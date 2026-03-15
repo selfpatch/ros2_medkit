@@ -169,12 +169,17 @@ Functions
 ``GET /api/v1/functions/{function_id}/hosts``
    List apps that host this function.
 
+``GET /api/v1/functions/{function_id}/x-medkit-graph``
+   Get a function-scoped topology snapshot with per-topic metrics and pipeline status.
+
    .. note::
 
       **ros2_medkit extension:** Functions support resource collections beyond the SOVD spec.
       ``/data`` and ``/operations`` aggregate from hosted apps (per SOVD). Additionally,
-      ``/configurations``, ``/faults``, ``/logs`` aggregate from hosts, and read-only
-      ``/bulk-data`` is available. See :ref:`sovd-compliance` for details.
+      ``/configurations``, ``/faults``, ``/logs`` aggregate from hosts, read-only
+      ``/bulk-data`` is available, ``/cyclic-subscriptions`` is supported, and
+      the vendor resource ``/x-medkit-graph`` exposes a function-scoped graph snapshot.
+      See :ref:`sovd-compliance` for details.
 
 Data Endpoints
 --------------
@@ -1005,7 +1010,7 @@ Subscriptions are temporary - they do not survive server restart.
 - ``faults`` - Fault list (resource path optional, e.g. ``/faults`` or ``/faults/fault_001``)
 - ``configurations`` - Parameter values (resource path optional)
 - ``logs`` - Application log entries from ``/rosout``
-- ``x-*`` - Vendor extensions (e.g. ``x-medkit-metrics``)
+- ``x-*`` - Vendor extensions (e.g. ``x-medkit-graph``)
 
 **Interval values:**
 
@@ -1016,7 +1021,7 @@ Subscriptions are temporary - they do not survive server restart.
 ``POST /api/v1/{entity_type}/{entity_id}/cyclic-subscriptions``
    Create a new cyclic subscription.
 
-   **Applies to:** ``/apps``, ``/components``
+   **Applies to:** ``/apps``, ``/components``, ``/functions``
 
    **Request Body:**
 
@@ -1032,7 +1037,8 @@ Subscriptions are temporary - they do not survive server restart.
    **Fields:**
 
    - ``resource`` (string, required): Full SOVD resource URI to observe
-     (e.g. ``/api/v1/apps/{id}/data/{topic}``, ``/api/v1/apps/{id}/faults``)
+     (e.g. ``/api/v1/apps/{id}/data/{topic}``, ``/api/v1/apps/{id}/faults``,
+     ``/api/v1/functions/{id}/x-medkit-graph``)
    - ``protocol`` (string, optional): Transport protocol. Only ``"sse"`` supported. Default: ``"sse"``
    - ``interval`` (string, required): One of ``fast``, ``normal``, ``slow``
    - ``duration`` (integer, required): Subscription lifetime in seconds.
@@ -1371,7 +1377,7 @@ extends this to areas and functions where aggregation makes practical sense:
      - \-
      - yes
      - yes
-     - \-
+     - yes
      - apps, components
 
 Other extensions beyond SOVD:

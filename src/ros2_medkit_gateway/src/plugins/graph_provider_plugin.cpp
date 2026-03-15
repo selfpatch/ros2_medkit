@@ -16,6 +16,7 @@
 
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 
@@ -250,7 +251,8 @@ void GraphProviderPlugin::register_routes(httplib::Server & server, const std::s
   server.Get(api_prefix + R"(/functions/([^/]+)/x-medkit-graph)",
              [this](const httplib::Request & req, httplib::Response & res) {
                if (!ctx_) {
-                 PluginContext::send_error(res, 503, "service-unavailable", "Graph provider context not initialized");
+                 PluginContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE,
+                                           "Graph provider context not initialized");
                  return;
                }
 
@@ -262,7 +264,7 @@ void GraphProviderPlugin::register_routes(httplib::Server & server, const std::s
 
                auto payload = get_cached_or_built_graph(function_id);
                if (!payload.has_value()) {
-                 PluginContext::send_error(res, 503, "service-unavailable", "Graph snapshot not available",
+                 PluginContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Graph snapshot not available",
                                            {{"function_id", function_id}});
                  return;
                }
@@ -274,7 +276,7 @@ void GraphProviderPlugin::register_routes(httplib::Server & server, const std::s
 IntrospectionResult GraphProviderPlugin::introspect(const IntrospectionInput & input) {
   std::unordered_map<std::string, nlohmann::json> new_cache;
   const auto timestamp = current_timestamp();
-  auto state = build_state_snapshot(input, timestamp, false);
+  auto state = build_state_snapshot("", input, timestamp, false);
 
   for (const auto & function : input.functions) {
     new_cache.emplace(function.id,
@@ -556,12 +558,13 @@ std::optional<nlohmann::json> GraphProviderPlugin::build_graph_from_entity_cache
   input.functions = cache.get_functions();
 
   const auto timestamp = current_timestamp();
-  auto state = build_state_snapshot(input, timestamp, true);
+  auto state = build_state_snapshot(function_id, input, timestamp, true);
 
   return build_graph_document(function_id, input, state, resolve_config(function_id), timestamp);
 }
 
-std::unordered_set<std::string> GraphProviderPlugin::collect_stale_topics(const IntrospectionInput & input) const {
+std::unordered_set<std::string> GraphProviderPlugin::collect_stale_topics(const std::string & function_id,
+                                                                          const IntrospectionInput & input) const {
   std::unordered_set<std::string> stale_topics;
   if (!ctx_ || !ctx_->node()) {
     return stale_topics;
@@ -578,14 +581,12 @@ std::unordered_set<std::string> GraphProviderPlugin::collect_stale_topics(const 
   }
 
   std::unordered_map<std::string, std::string> fault_code_to_topic;
-  for (const auto & function : input.functions) {
-    for (const auto & app : resolve_scoped_apps(function.id, input)) {
-      for (const auto & topic_name : filtered_topics(app->topics.publishes)) {
-        fault_code_to_topic.emplace(generate_fault_code(topic_name), topic_name);
-      }
-      for (const auto & topic_name : filtered_topics(app->topics.subscribes)) {
-        fault_code_to_topic.emplace(generate_fault_code(topic_name), topic_name);
-      }
+  for (const auto * app : resolve_scoped_apps(function_id, input)) {
+    for (const auto & topic_name : filtered_topics(app->topics.publishes)) {
+      fault_code_to_topic.emplace(generate_fault_code(topic_name), topic_name);
+    }
+    for (const auto & topic_name : filtered_topics(app->topics.subscribes)) {
+      fault_code_to_topic.emplace(generate_fault_code(topic_name), topic_name);
     }
   }
 
@@ -611,7 +612,8 @@ std::unordered_set<std::string> GraphProviderPlugin::collect_stale_topics(const 
   return stale_topics;
 }
 
-GraphProviderPlugin::GraphBuildState GraphProviderPlugin::build_state_snapshot(const IntrospectionInput & input,
+GraphProviderPlugin::GraphBuildState GraphProviderPlugin::build_state_snapshot(const std::string & function_id,
+                                                                               const IntrospectionInput & input,
                                                                                const std::string & timestamp,
                                                                                bool include_stale_topics) {
   GraphBuildState state;
@@ -621,7 +623,7 @@ GraphProviderPlugin::GraphBuildState GraphProviderPlugin::build_state_snapshot(c
     state.diagnostics_seen = diagnostics_seen_;
   }
   if (include_stale_topics) {
-    state.stale_topics = collect_stale_topics(input);
+    state.stale_topics = collect_stale_topics(function_id, input);
   }
 
   {

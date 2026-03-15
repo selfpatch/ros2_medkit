@@ -80,9 +80,10 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   GraphBuildConfig resolve_config(const std::string & function_id) const;
   std::optional<nlohmann::json> get_cached_or_built_graph(const std::string & function_id);
   std::optional<nlohmann::json> build_graph_from_entity_cache(const std::string & function_id);
-  std::unordered_set<std::string> collect_stale_topics(const IntrospectionInput & input) const;
-  GraphBuildState build_state_snapshot(const IntrospectionInput & input, const std::string & timestamp,
-                                       bool include_stale_topics = true);
+  std::unordered_set<std::string> collect_stale_topics(const std::string & function_id,
+                                                       const IntrospectionInput & input) const;
+  GraphBuildState build_state_snapshot(const std::string & function_id, const IntrospectionInput & input,
+                                       const std::string & timestamp, bool include_stale_topics = true);
   void load_parameters();
 
   PluginContext * ctx_{nullptr};
