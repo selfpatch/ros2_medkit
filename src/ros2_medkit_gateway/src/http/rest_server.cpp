@@ -264,6 +264,16 @@ void RESTServer::setup_routes() {
     docs_handlers_->handle_docs_any_path(req, res);
   });
 
+#ifdef ENABLE_SWAGGER_UI
+  // Swagger UI - interactive API documentation browser
+  srv->Get(api_path("/swagger-ui"), [this](const httplib::Request & req, httplib::Response & res) {
+    docs_handlers_->handle_swagger_ui(req, res);
+  });
+  srv->Get(api_path(R"(/swagger-ui/([^/]+))"), [this](const httplib::Request & req, httplib::Response & res) {
+    docs_handlers_->handle_swagger_asset(req, res);
+  });
+#endif
+
   // Health check
   srv->Get(api_path("/health"), [this](const httplib::Request & req, httplib::Response & res) {
     health_handlers_->handle_health(req, res);

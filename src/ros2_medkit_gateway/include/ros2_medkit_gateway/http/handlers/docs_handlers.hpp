@@ -49,6 +49,14 @@ class DocsHandlers {
   /// GET /{path}/docs - Context-scoped capability description
   void handle_docs_any_path(const httplib::Request & req, httplib::Response & res);
 
+#ifdef ENABLE_SWAGGER_UI
+  /// GET /swagger-ui - Serve Swagger UI HTML page
+  void handle_swagger_ui(const httplib::Request & req, httplib::Response & res);
+
+  /// GET /swagger-ui/{asset} - Serve embedded Swagger UI assets (JS/CSS)
+  void handle_swagger_asset(const httplib::Request & req, httplib::Response & res);
+#endif
+
  private:
   HandlerContext & ctx_;
   std::unique_ptr<openapi::CapabilityGenerator> generator_;
