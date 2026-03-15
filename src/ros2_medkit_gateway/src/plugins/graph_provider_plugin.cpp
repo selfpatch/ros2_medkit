@@ -165,14 +165,14 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
 
   if (node_offline) {
     result.json["metrics"]["metrics_status"] = "error";
-    result.json["error_reason"] = "node_offline";
+    result.json["metrics"]["error_reason"] = "node_offline";
     result.is_error = true;
     return result;
   }
 
   if (topic_stale) {
     result.json["metrics"]["metrics_status"] = "error";
-    result.json["error_reason"] = "topic_stale";
+    result.json["metrics"]["error_reason"] = "topic_stale";
     result.is_error = true;
     return result;
   }
@@ -200,7 +200,7 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
   }
 
   result.json["metrics"]["metrics_status"] = "error";
-  result.json["error_reason"] = "no_data_source";
+  result.json["metrics"]["error_reason"] = "no_data_source";
   result.is_error = true;
   return result;
 }
@@ -272,16 +272,9 @@ void GraphProviderPlugin::register_routes(httplib::Server & server, const std::s
 }
 
 IntrospectionResult GraphProviderPlugin::introspect(const IntrospectionInput & input) {
-  GraphBuildState state;
-  {
-    std::lock_guard<std::mutex> lock(metrics_mutex_);
-    state.topic_metrics = topic_metrics_;
-    state.diagnostics_seen = diagnostics_seen_;
-  }
-  state.stale_topics = collect_stale_topics(input);
-
   std::unordered_map<std::string, nlohmann::json> new_cache;
   const auto timestamp = current_timestamp();
+  auto state = build_state_snapshot(input, timestamp);
 
   for (const auto & function : input.functions) {
     new_cache.emplace(function.id,
@@ -324,7 +317,10 @@ nlohmann::json GraphProviderPlugin::build_graph_document(const std::string & fun
   for (const auto * app : scoped_apps) {
     nlohmann::json node = {{"entity_id", app->id}, {"node_status", app->is_online ? "reachable" : "unreachable"}};
     if (!app->is_online) {
-      node["last_seen"] = timestamp;
+      const auto last_seen_it = state.last_seen_by_app.find(app->id);
+      if (last_seen_it != state.last_seen_by_app.end()) {
+        node["last_seen"] = last_seen_it->second;
+      }
     }
     graph["nodes"].push_back(std::move(node));
   }
@@ -538,8 +534,7 @@ std::optional<nlohmann::json> GraphProviderPlugin::get_cached_or_built_graph(con
   return rebuilt;
 }
 
-std::optional<nlohmann::json>
-GraphProviderPlugin::build_graph_from_entity_cache(const std::string & function_id) const {
+std::optional<nlohmann::json> GraphProviderPlugin::build_graph_from_entity_cache(const std::string & function_id) {
   if (!ctx_ || !ctx_->node()) {
     return std::nullopt;
   }
@@ -556,15 +551,10 @@ GraphProviderPlugin::build_graph_from_entity_cache(const std::string & function_
   input.apps = cache.get_apps();
   input.functions = cache.get_functions();
 
-  GraphBuildState state;
-  {
-    std::lock_guard<std::mutex> lock(metrics_mutex_);
-    state.topic_metrics = topic_metrics_;
-    state.diagnostics_seen = diagnostics_seen_;
-  }
-  state.stale_topics = collect_stale_topics(input);
+  const auto timestamp = current_timestamp();
+  auto state = build_state_snapshot(input, timestamp);
 
-  return build_graph_document(function_id, input, state, resolve_config(function_id), current_timestamp());
+  return build_graph_document(function_id, input, state, resolve_config(function_id), timestamp);
 }
 
 std::unordered_set<std::string> GraphProviderPlugin::collect_stale_topics(const IntrospectionInput & input) const {
@@ -615,6 +605,29 @@ std::unordered_set<std::string> GraphProviderPlugin::collect_stale_topics(const 
   }
 
   return stale_topics;
+}
+
+GraphProviderPlugin::GraphBuildState GraphProviderPlugin::build_state_snapshot(const IntrospectionInput & input,
+                                                                               const std::string & timestamp) {
+  GraphBuildState state;
+  {
+    std::lock_guard<std::mutex> lock(metrics_mutex_);
+    state.topic_metrics = topic_metrics_;
+    state.diagnostics_seen = diagnostics_seen_;
+  }
+  state.stale_topics = collect_stale_topics(input);
+
+  {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    for (const auto & app : input.apps) {
+      if (app.is_online) {
+        last_seen_by_app_[app.id] = timestamp;
+      }
+    }
+    state.last_seen_by_app = last_seen_by_app_;
+  }
+
+  return state;
 }
 
 void GraphProviderPlugin::load_parameters() {
