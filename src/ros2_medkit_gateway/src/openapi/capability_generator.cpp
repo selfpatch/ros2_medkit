@@ -36,6 +36,8 @@ CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, Gateway
   : ctx_(ctx), node_(node), plugin_mgr_(plugin_mgr), schema_builder_() {
 }
 
+// TODO(#272): Fix TOCTOU race - use compare-and-swap when storing cached specs
+// TODO(#273): Use cache.snapshot() for consistent reads across multiple queries
 std::optional<nlohmann::json> CapabilityGenerator::generate(const std::string & base_path) const {
   auto cache_key = get_cache_key(base_path);
   auto cached = lookup_cache(cache_key);
@@ -97,7 +99,7 @@ std::optional<nlohmann::json> CapabilityGenerator::generate_impl(const std::stri
 
 nlohmann::json CapabilityGenerator::generate_root() const {
   auto spec = build_base_spec();
-  PathBuilder path_builder(schema_builder_);
+  PathBuilder path_builder(schema_builder_, ctx_.auth_config().enabled);
   nlohmann::json paths;
 
   // Health endpoint
@@ -200,7 +202,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
 // -----------------------------------------------------------------------------
 
 nlohmann::json CapabilityGenerator::generate_entity_collection(const ResolvedPath & resolved) const {
-  PathBuilder path_builder(schema_builder_);
+  PathBuilder path_builder(schema_builder_, ctx_.auth_config().enabled);
   nlohmann::json paths;
 
   // Build parent path prefix from parent chain
@@ -236,7 +238,7 @@ nlohmann::json CapabilityGenerator::generate_entity_collection(const ResolvedPat
 // -----------------------------------------------------------------------------
 
 nlohmann::json CapabilityGenerator::generate_specific_entity(const ResolvedPath & resolved) const {
-  PathBuilder path_builder(schema_builder_);
+  PathBuilder path_builder(schema_builder_, ctx_.auth_config().enabled);
   nlohmann::json paths;
 
   // Build entity path prefix
@@ -272,7 +274,7 @@ nlohmann::json CapabilityGenerator::generate_resource_collection(const ResolvedP
     return build_base_spec();
   }
 
-  PathBuilder path_builder(schema_builder_);
+  PathBuilder path_builder(schema_builder_, ctx_.auth_config().enabled);
   nlohmann::json paths;
 
   // Build entity path
@@ -352,7 +354,7 @@ nlohmann::json CapabilityGenerator::generate_specific_resource(const ResolvedPat
     return build_base_spec();
   }
 
-  PathBuilder path_builder(schema_builder_);
+  PathBuilder path_builder(schema_builder_, ctx_.auth_config().enabled);
   nlohmann::json paths;
 
   // Build full path
@@ -679,7 +681,7 @@ void CapabilityGenerator::add_resource_collection_paths(nlohmann::json & paths, 
   if (entity_type == SovdEntityType::UNKNOWN) {
     return;
   }
-  PathBuilder path_builder(schema_builder_);
+  PathBuilder path_builder(schema_builder_, ctx_.auth_config().enabled);
   auto caps = EntityCapabilities::for_type(entity_type);
   const auto & cache = node_.get_thread_safe_cache();
 
@@ -775,6 +777,9 @@ std::optional<nlohmann::json> CapabilityGenerator::lookup_cache(const std::strin
 
 void CapabilityGenerator::store_cache(const std::string & key, const nlohmann::json & spec) const {
   std::unique_lock lock(cache_mutex_);
+  if (spec_cache_.size() >= kMaxCacheSize) {
+    spec_cache_.clear();  // Simple eviction: clear all when full
+  }
   spec_cache_[key] = spec;
 }
 

@@ -224,3 +224,10 @@ TEST(PathResolverTest, ResourceCollectionPreservesEntityInfo) {
   EXPECT_EQ(result.resource_collection, "configurations");
   EXPECT_TRUE(result.parent_chain.empty());
 }
+
+TEST(PathResolverTest, ConsecutiveSlashesHandledGracefully) {
+  auto result = PathResolver::resolve("///apps///my_app");
+  EXPECT_EQ(result.category, PathCategory::kSpecificEntity);
+  EXPECT_EQ(result.entity_type, "apps");
+  EXPECT_EQ(result.entity_id, "my_app");
+}
