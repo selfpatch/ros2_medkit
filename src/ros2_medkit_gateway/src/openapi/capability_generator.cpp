@@ -379,7 +379,7 @@ nlohmann::json CapabilityGenerator::generate_plugin_docs(const std::string & pat
   for (const auto & desc : descriptions) {
     auto paths_json = desc.to_json();  // CapabilityGenerator is friend
     for (auto & [key, value] : paths_json.items()) {
-      if (key.find(path) != std::string::npos || path.find(key) != std::string::npos) {
+      if (key == path || key.find(path + "/") == 0) {
         matching_paths[key] = value;
       }
     }
@@ -592,10 +592,6 @@ SovdEntityType CapabilityGenerator::entity_type_from_keyword(const std::string &
   return SovdEntityType::UNKNOWN;
 }
 
-std::optional<ResourceCollection> CapabilityGenerator::resource_collection_from_keyword(const std::string & keyword) {
-  return parse_resource_collection(keyword);
-}
-
 void CapabilityGenerator::add_resource_collection_paths(nlohmann::json & paths, const std::string & entity_path,
                                                         const std::string & entity_id,
                                                         ros2_medkit_gateway::SovdEntityType entity_type) const {
@@ -648,6 +644,40 @@ void CapabilityGenerator::add_resource_collection_paths(nlohmann::json & paths, 
       case ResourceCollection::CYCLIC_SUBSCRIPTIONS:
         paths[col_path] = path_builder.build_cyclic_subscriptions_collection(entity_path);
         break;
+      case ResourceCollection::LOGS:
+        paths[col_path] = path_builder.build_logs_collection(entity_path);
+        // Also add log configuration sub-endpoints
+        {
+          nlohmann::json config_path_item;
+
+          nlohmann::json config_get;
+          config_get["tags"] = nlohmann::json::array({"Logs"});
+          config_get["summary"] = "Get log configuration for " + entity_path;
+          config_get["description"] = "Returns the current log level configuration.";
+          config_get["responses"]["200"]["description"] = "Current log configuration";
+          config_get["responses"]["200"]["content"]["application/json"]["schema"] = {
+              {"type", "object"},
+              {"properties", {{"level", {{"type", "string"}}}, {"entity_id", {{"type", "string"}}}}},
+              {"required", {"level"}}};
+          config_path_item["get"] = std::move(config_get);
+
+          nlohmann::json config_put;
+          config_put["tags"] = nlohmann::json::array({"Logs"});
+          config_put["summary"] = "Update log configuration for " + entity_path;
+          config_put["description"] = "Update the log level configuration.";
+          config_put["requestBody"]["required"] = true;
+          config_put["requestBody"]["content"]["application/json"]["schema"] = {
+              {"type", "object"}, {"properties", {{"level", {{"type", "string"}}}}}, {"required", {"level"}}};
+          config_put["responses"]["200"]["description"] = "Log configuration updated";
+          config_put["responses"]["200"]["content"]["application/json"]["schema"] = {
+              {"type", "object"},
+              {"properties", {{"level", {{"type", "string"}}}, {"entity_id", {{"type", "string"}}}}},
+              {"required", {"level"}}};
+          config_path_item["put"] = std::move(config_put);
+
+          paths[col_path + "/configuration"] = std::move(config_path_item);
+        }
+        break;
       default:
         // For other collections we don't have specific builders, add generic listing
         {
@@ -660,13 +690,6 @@ void CapabilityGenerator::add_resource_collection_paths(nlohmann::json & paths, 
         }
         break;
     }
-  }
-
-  // Logs endpoint - supported by components and apps (not in EntityCapabilities collections
-  // but exposed as a resource endpoint)
-  if (entity_type == SovdEntityType::COMPONENT || entity_type == SovdEntityType::APP) {
-    std::string logs_path = entity_path + "/logs";
-    paths[logs_path] = path_builder.build_logs_collection(entity_path);
   }
 }
 

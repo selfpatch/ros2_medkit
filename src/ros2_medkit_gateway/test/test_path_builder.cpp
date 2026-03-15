@@ -264,12 +264,12 @@ TEST_F(PathBuilderTest, ActionOperationHasSovdName) {
 // Configurations collection tests
 // =============================================================================
 
-TEST_F(PathBuilderTest, ConfigurationsHasGetPutDelete) {
+TEST_F(PathBuilderTest, ConfigurationsHasGetAndDelete) {
   // @verifies REQ_INTEROP_002
   auto result = path_builder_.build_configurations_collection("apps/sensor");
   ASSERT_TRUE(result.contains("get"));
-  ASSERT_TRUE(result.contains("put"));
   ASSERT_TRUE(result.contains("delete"));
+  EXPECT_FALSE(result.contains("put"));
 }
 
 TEST_F(PathBuilderTest, ConfigurationsGetReturnsItemsWrapper) {
@@ -280,26 +280,21 @@ TEST_F(PathBuilderTest, ConfigurationsGetReturnsItemsWrapper) {
   ASSERT_TRUE(schema["properties"].contains("items"));
 }
 
-TEST_F(PathBuilderTest, ConfigurationsPutHasRequestBody) {
+TEST_F(PathBuilderTest, ConfigurationsDeleteHasSummary) {
   auto result = path_builder_.build_configurations_collection("apps/sensor");
-  ASSERT_TRUE(result["put"].contains("requestBody"));
-  EXPECT_TRUE(result["put"]["requestBody"]["required"].get<bool>());
-  auto req_schema = result["put"]["requestBody"]["content"]["application/json"]["schema"];
-  // Should be configuration_param_schema
-  EXPECT_EQ(req_schema["type"], "object");
-  EXPECT_TRUE(req_schema["properties"].contains("name"));
-  EXPECT_TRUE(req_schema["properties"].contains("value"));
+  EXPECT_EQ(result["delete"]["summary"], "Delete all configuration parameters");
 }
 
 // =============================================================================
 // Faults collection tests
 // =============================================================================
 
-TEST_F(PathBuilderTest, FaultsHasGetAndPut) {
+TEST_F(PathBuilderTest, FaultsHasGetAndDelete) {
   // @verifies REQ_INTEROP_002
   auto result = path_builder_.build_faults_collection("apps/engine");
   ASSERT_TRUE(result.contains("get"));
-  ASSERT_TRUE(result.contains("put"));
+  ASSERT_TRUE(result.contains("delete"));
+  EXPECT_FALSE(result.contains("put"));
 }
 
 TEST_F(PathBuilderTest, FaultsGetReturnsFaultList) {
@@ -313,11 +308,9 @@ TEST_F(PathBuilderTest, FaultsGetReturnsFaultList) {
   EXPECT_TRUE(item_schema["properties"].contains("fault_code"));
 }
 
-TEST_F(PathBuilderTest, FaultsPutHasStatusRequestBody) {
+TEST_F(PathBuilderTest, FaultsDeleteReturns204) {
   auto result = path_builder_.build_faults_collection("apps/engine");
-  ASSERT_TRUE(result["put"].contains("requestBody"));
-  auto req_schema = result["put"]["requestBody"]["content"]["application/json"]["schema"];
-  EXPECT_TRUE(req_schema["properties"].contains("status"));
+  ASSERT_TRUE(result["delete"]["responses"].contains("204"));
 }
 
 // =============================================================================

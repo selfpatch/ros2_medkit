@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <deque>
 #include <functional>
 #include <httplib.h>
 #include <map>
@@ -105,7 +106,7 @@ class RouteRegistry {
 
   RouteEntry & add_route(const std::string & method, const std::string & openapi_path, HandlerFn handler);
 
-  std::vector<RouteEntry> routes_;
+  std::deque<RouteEntry> routes_;
   bool auth_enabled_{false};
 };
 

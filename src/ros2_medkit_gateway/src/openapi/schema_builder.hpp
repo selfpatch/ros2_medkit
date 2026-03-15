@@ -49,10 +49,13 @@ class SchemaBuilder {
   /// SOVD GenericError schema (7.4.2)
   static nlohmann::json generic_error();
 
-  /// Single fault object schema
-  static nlohmann::json fault_schema();
+  /// Fault list item schema (flat format from FaultManager::fault_to_json)
+  static nlohmann::json fault_list_item_schema();
 
-  /// Fault list response schema (items wrapper around fault_schema)
+  /// Fault detail schema (SOVD nested format from FaultHandlers::build_sovd_fault_response)
+  static nlohmann::json fault_detail_schema();
+
+  /// Fault list response schema (items wrapper around fault_list_item_schema)
   static nlohmann::json fault_list_schema();
 
   /// Single entity detail schema

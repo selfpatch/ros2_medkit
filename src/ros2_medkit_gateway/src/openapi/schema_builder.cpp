@@ -49,7 +49,7 @@ nlohmann::json SchemaBuilder::generic_error() {
       {"required", {"error_code", "message"}}};
 }
 
-nlohmann::json SchemaBuilder::fault_schema() {
+nlohmann::json SchemaBuilder::fault_list_item_schema() {
   return {
       {"type", "object"},
       {"properties",
@@ -65,8 +65,59 @@ nlohmann::json SchemaBuilder::fault_schema() {
       {"required", {"fault_code", "severity", "status"}}};
 }
 
+nlohmann::json SchemaBuilder::fault_detail_schema() {
+  // SOVD nested structure from FaultHandlers::build_sovd_fault_response
+  nlohmann::json status_schema = {
+      {"type", "object"},
+      {"properties",
+       {{"aggregatedStatus", {{"type", "string"}, {"enum", {"active", "passive", "cleared"}}}},
+        {"testFailed", {{"type", "string"}}},
+        {"confirmedDTC", {{"type", "string"}}},
+        {"pendingDTC", {{"type", "string"}}}}},
+      {"required", {"aggregatedStatus"}}};
+
+  nlohmann::json item_schema = {{"type", "object"},
+                                {"properties",
+                                 {{"code", {{"type", "string"}}},
+                                  {"fault_name", {{"type", "string"}}},
+                                  {"severity", {{"type", "integer"}}},
+                                  {"status", status_schema}}},
+                                {"required", {"code", "severity", "status"}}};
+
+  nlohmann::json snapshot_schema = {{"type", "object"},
+                                    {"properties",
+                                     {{"type", {{"type", "string"}}},
+                                      {"name", {{"type", "string"}}},
+                                      {"data", {}},
+                                      {"bulk_data_uri", {{"type", "string"}}},
+                                      {"size_bytes", {{"type", "integer"}}},
+                                      {"duration_sec", {{"type", "number"}}},
+                                      {"format", {{"type", "string"}}},
+                                      {"x-medkit", {{"type", "object"}}}}}};
+
+  nlohmann::json env_data_schema = {{"type", "object"},
+                                    {"properties",
+                                     {{"extended_data_records",
+                                       {{"type", "object"},
+                                        {"properties",
+                                         {{"first_occurrence", {{"type", "string"}, {"format", "date-time"}}},
+                                          {"last_occurrence", {{"type", "string"}, {"format", "date-time"}}}}}}},
+                                      {"snapshots", {{"type", "array"}, {"items", snapshot_schema}}}}}};
+
+  nlohmann::json x_medkit_schema = {{"type", "object"},
+                                    {"properties",
+                                     {{"occurrence_count", {{"type", "integer"}}},
+                                      {"reporting_sources", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                                      {"severity_label", {{"type", "string"}}},
+                                      {"status_raw", {{"type", "string"}}}}}};
+
+  return {{"type", "object"},
+          {"properties", {{"item", item_schema}, {"environment_data", env_data_schema}, {"x-medkit", x_medkit_schema}}},
+          {"required", {"item", "environment_data"}}};
+}
+
 nlohmann::json SchemaBuilder::fault_list_schema() {
-  return items_wrapper(fault_schema());
+  return items_wrapper(fault_list_item_schema());
 }
 
 nlohmann::json SchemaBuilder::entity_detail_schema() {
@@ -115,8 +166,14 @@ nlohmann::json SchemaBuilder::log_entry_schema() {
 }
 
 nlohmann::json SchemaBuilder::health_schema() {
+  nlohmann::json discovery_schema = {
+      {"type", "object"},
+      {"properties", {{"mode", {{"type", "string"}}}, {"strategy", {{"type", "string"}}}}},
+      {"description", "Discovery subsystem status"}};
+
   return {{"type", "object"},
-          {"properties", {{"status", {{"type", "string"}}}, {"timestamp", {{"type", "integer"}}}}},
+          {"properties",
+           {{"status", {{"type", "string"}}}, {"timestamp", {{"type", "integer"}}}, {"discovery", discovery_schema}}},
           {"required", {"status"}}};
 }
 

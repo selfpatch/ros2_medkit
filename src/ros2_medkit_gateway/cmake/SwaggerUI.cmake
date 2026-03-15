@@ -42,11 +42,21 @@ foreach(_file ${_swagger_files})
   set(_dest "${SWAGGER_UI_DIR}/${_file}")
   if(NOT EXISTS "${_dest}")
     message(STATUS "  Downloading ${_file}...")
+    # SHA256 hashes for integrity verification
+    set(_hash_swagger_ui_bundle_js "c2e4a9ef08144839ff47c14202063ecfe4e59e70a4e7154a26bd50d880c88ba1")
+    set(_hash_swagger_ui_css "40170f0ee859d17f92131ba707329a88a070e4f66874d11365e9a77d232f6117")
+    set(_hash_swagger_ui_standalone_preset_js "33b7a6f5afcac4902fdf93281be2d2e12db15f241d384606e6e6d17745b7f86f")
+
+    # Convert filename to variable-safe key (replace - and . with _)
+    string(REPLACE "-" "_" _hash_key "${_file}")
+    string(REPLACE "." "_" _hash_key "${_hash_key}")
+
     file(DOWNLOAD
       "${SWAGGER_UI_URL}/${_file}"
       "${_dest}"
       STATUS _status
       TIMEOUT 60
+      EXPECTED_HASH SHA256=${_hash_${_hash_key}}
     )
     list(GET _status 0 _code)
     if(NOT _code EQUAL 0)
