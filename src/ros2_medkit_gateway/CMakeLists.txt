@@ -160,6 +160,7 @@ add_library(gateway_lib STATIC
   src/openapi/openapi_spec_builder.cpp
   src/openapi/path_resolver.cpp
   src/openapi/capability_generator.cpp
+  src/openapi/route_registry.cpp
 )
 
 medkit_target_dependencies(gateway_lib

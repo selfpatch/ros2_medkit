@@ -31,6 +31,13 @@
 #include "ros2_medkit_gateway/http/rate_limiter.hpp"
 #include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
 
+// Forward declare RouteRegistry to avoid pulling in full header
+namespace ros2_medkit_gateway {
+namespace openapi {
+class RouteRegistry;
+}  // namespace openapi
+}  // namespace ros2_medkit_gateway
+
 namespace ros2_medkit_gateway {
 
 class GatewayNode;
@@ -102,6 +109,9 @@ class RESTServer {
   std::unique_ptr<handlers::UpdateHandlers> update_handlers_;
   std::unique_ptr<handlers::LogHandlers> log_handlers_;
   std::unique_ptr<handlers::DocsHandlers> docs_handlers_;
+
+  // Route registry: single source of truth for routes + OpenAPI metadata
+  std::unique_ptr<openapi::RouteRegistry> route_registry_;
 };
 
 }  // namespace ros2_medkit_gateway
