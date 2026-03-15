@@ -23,6 +23,9 @@ if(ENABLE_COVERAGE)
   add_link_options(--coverage)
 endif()
 
+# Swagger UI embedding option
+option(ENABLE_SWAGGER_UI "Embed Swagger UI assets in gateway binary" OFF)
+
 # Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -129,6 +132,7 @@ add_library(gateway_lib STATIC
   src/http/handlers/cyclic_subscription_handlers.cpp
   src/http/handlers/sse_transport_provider.cpp
   src/http/handlers/auth_handlers.cpp
+  src/http/handlers/docs_handlers.cpp
   # Bulk data storage
   src/bulk_data_store.cpp
   # HTTP utilities
@@ -149,6 +153,13 @@ add_library(gateway_lib STATIC
   src/plugins/plugin_loader.cpp
   src/plugins/plugin_manager.cpp
   src/plugins/graph_provider_plugin.cpp
+  # OpenAPI documentation module
+  src/openapi/schema_builder.cpp
+  src/openapi/path_builder.cpp
+  src/openapi/openapi_spec_builder.cpp
+  src/openapi/path_resolver.cpp
+  src/openapi/capability_generator.cpp
+  src/openapi/route_registry.cpp
 )
 
 medkit_target_dependencies(gateway_lib
@@ -199,6 +210,14 @@ set_target_properties(gateway_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # Gateway node executable
 add_executable(gateway_node src/main.cpp)
 target_link_libraries(gateway_node gateway_lib)
+
+# Apply Swagger UI compile definition and embed assets
+if(ENABLE_SWAGGER_UI)
+  target_compile_definitions(gateway_lib PUBLIC ENABLE_SWAGGER_UI)
+  target_compile_definitions(gateway_node PRIVATE ENABLE_SWAGGER_UI)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SwaggerUI.cmake)
+  target_compile_definitions(gateway_lib PRIVATE SWAGGER_UI_VERSION="${SWAGGER_UI_VERSION}")
+endif()
 
 # Apply coverage flags to main targets
 if(ENABLE_COVERAGE)
@@ -274,7 +293,7 @@ if(BUILD_TESTING)
 
   ros2_medkit_clang_tidy(
     HEADER_FILTER "^${CMAKE_CURRENT_SOURCE_DIR}/(include|src|test)/"
-    TIMEOUT 1500
+    TIMEOUT 3000
   )
 
   # Add GTest
@@ -486,6 +505,40 @@ if(BUILD_TESTING)
   ament_add_gtest(test_log_handlers test/test_log_handlers.cpp)
   target_link_libraries(test_log_handlers gateway_lib)
 
+  # Route descriptions tests (OpenAPI doc builder)
+  ament_add_gtest(test_route_descriptions test/test_route_descriptions.cpp)
+  target_link_libraries(test_route_descriptions gateway_lib)
+
+  # Schema builder tests (OpenAPI schema generation)
+  ament_add_gtest(test_schema_builder test/test_schema_builder.cpp)
+  target_link_libraries(test_schema_builder gateway_lib)
+
+  # Path builder tests (OpenAPI path item generation)
+  ament_add_gtest(test_path_builder test/test_path_builder.cpp)
+  target_link_libraries(test_path_builder gateway_lib)
+
+  # OpenAPI spec builder tests (full document assembly)
+  ament_add_gtest(test_openapi_spec_builder test/test_openapi_spec_builder.cpp)
+  target_link_libraries(test_openapi_spec_builder gateway_lib)
+
+  # Path resolver tests (OpenAPI path classification)
+  ament_add_gtest(test_path_resolver test/test_path_resolver.cpp)
+  target_link_libraries(test_path_resolver gateway_lib)
+
+  # Capability generator tests (OpenAPI spec generation engine)
+  ament_add_gtest(test_capability_generator test/test_capability_generator.cpp)
+  target_link_libraries(test_capability_generator gateway_lib)
+  set_tests_properties(test_capability_generator PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=67")
+
+  # Route registry tests (OpenAPI route registration and path conversion)
+  ament_add_gtest(test_route_registry test/test_route_registry.cpp)
+  target_link_libraries(test_route_registry gateway_lib)
+
+  # Docs handlers tests (OpenAPI /docs endpoint handlers)
+  ament_add_gtest(test_docs_handlers test/test_docs_handlers.cpp)
+  target_link_libraries(test_docs_handlers gateway_lib)
+  set_tests_properties(test_docs_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=68")
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -526,6 +579,14 @@ if(BUILD_TESTING)
       test_merge_pipeline
       test_graph_provider_plugin
       test_runtime_linker
+      test_route_descriptions
+      test_schema_builder
+      test_path_builder
+      test_openapi_spec_builder
+      test_path_resolver
+      test_capability_generator
+      test_route_registry
+      test_docs_handlers
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)

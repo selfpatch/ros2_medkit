@@ -58,6 +58,11 @@ struct GatewayPluginLoadResult {
   /// Lifetime tied to plugin - do not use after plugin is destroyed.
   LogProvider * log_provider = nullptr;
 
+  /// Get the dlopen handle (for dlsym queries by PluginManager)
+  void * dl_handle() const {
+    return handle_;
+  }
+
  private:
   friend class PluginLoader;
   void * handle_ = nullptr;  // dlopen handle, destroyed after plugin

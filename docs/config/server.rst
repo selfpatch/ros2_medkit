@@ -468,6 +468,41 @@ Complete Example
        rate_limiting:
          enabled: false
 
+API Documentation
+-----------------
+
+Configure the self-describing OpenAPI capability description endpoint.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 15 15 45
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``docs.enabled``
+     - bool
+     - ``true``
+     - Enable/disable ``/docs`` capability description endpoints. When disabled,
+       all ``/docs`` endpoints return HTTP 501.
+
+**Build option:** ``ENABLE_SWAGGER_UI``
+
+Set ``-DENABLE_SWAGGER_UI=ON`` during CMake configure to embed Swagger UI assets
+in the gateway binary. This provides an interactive API browser at
+``/api/v1/swagger-ui``. Requires network access to download assets from unpkg.com
+during configure. Disabled by default.
+
+Example:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       docs:
+         enabled: true
+
 See Also
 --------
 

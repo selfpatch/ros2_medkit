@@ -1445,6 +1445,55 @@ Other extensions beyond SOVD:
 - ``GET /faults/stream`` - SSE real-time fault notifications
 - ``/health`` - Health check with discovery pipeline diagnostics
 - ``/version-info`` - Gateway version information
+- ``/docs`` - OpenAPI capability description
+- SSE fault streaming - Real-time fault notifications
+- ``x-medkit`` extension fields in responses
+
+Capability Description (OpenAPI Docs)
+--------------------------------------
+
+The gateway provides self-describing OpenAPI 3.1.0 capability descriptions at any level
+of the API hierarchy. Append ``/docs`` to any valid path to receive a context-scoped
+OpenAPI spec describing the available operations at that level.
+
+``GET /api/v1/docs``
+   Returns the full OpenAPI spec for the gateway root, including all server-level
+   endpoints, entity collections, and global resources.
+
+``GET /api/v1/{entity-collection}/docs``
+   Returns a spec scoped to the entity collection (e.g., ``/apps/docs``,
+   ``/components/docs``). Includes collection listing and detail endpoints.
+
+``GET /api/v1/{entity-type}/{entity-id}/docs``
+   Returns a spec for a specific entity, including all resource collection
+   endpoints supported by that entity (data, operations, configurations, faults,
+   logs, bulk-data, cyclic-subscriptions).
+
+``GET /api/v1/{entity-type}/{entity-id}/{resource}/docs``
+   Returns a spec for a specific resource collection, with detailed schemas
+   for each resource item.
+
+**Features:**
+
+- Specs include SOVD extensions (``x-sovd-version``, ``x-sovd-data-category``)
+- Entity-level specs reflect actual capabilities from the runtime entity cache
+- Specs are cached per entity cache generation for performance
+- Plugin-registered routes are included in the spec when available
+
+**Configuration:**
+
+- ``docs.enabled`` (bool, default: ``true``) - Set to ``false`` to disable
+  the ``/docs`` endpoints. Returns 501 when disabled.
+
+**Swagger UI (optional):**
+
+When built with ``-DENABLE_SWAGGER_UI=ON``, the gateway serves an interactive
+Swagger UI at ``/api/v1/swagger-ui`` with embedded assets (no CDN dependency).
+
+**Error Responses:**
+
+- **404:** No capability description available for the requested path
+- **501:** Capability description is disabled (``docs.enabled=false``)
 
 See Also
 ~~~~~~~~
