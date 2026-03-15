@@ -71,10 +71,17 @@ class SchemaDesc {
     return s;
   }
 
-  // Factory method for $ref
+  // Factory method for $ref to a schema component
   static SchemaDesc ref(const std::string & ref_name) {
     SchemaDesc s;
     s.json_["$ref"] = "#/components/schemas/" + ref_name;
+    return s;
+  }
+
+  // Factory method for $ref to a response component
+  static SchemaDesc response_ref(const std::string & ref_name) {
+    SchemaDesc s;
+    s.json_["$ref"] = "#/components/responses/" + ref_name;
     return s;
   }
 

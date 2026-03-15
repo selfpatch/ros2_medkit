@@ -125,10 +125,11 @@ nlohmann::json CapabilityGenerator::generate_entity_collection(const ResolvedPat
   PathBuilder path_builder(schema_builder_, ctx_.auth_config().enabled);
   nlohmann::json paths;
 
-  // Build parent path prefix from parent chain
+  // Build parent path prefix from parent chain using concrete entity IDs
+  // (this spec is scoped to a specific entity, not a generic template)
   std::string prefix;
   for (const auto & parent : resolved.parent_chain) {
-    prefix += "/" + parent.entity_type + "/{" + parent.entity_id + "}";
+    prefix += "/" + parent.entity_type + "/" + parent.entity_id;
   }
 
   // Collection listing path
@@ -549,16 +550,16 @@ nlohmann::json CapabilityGenerator::build_base_spec() const {
 }
 
 std::string CapabilityGenerator::build_server_url() const {
-  // Read host/port from node parameters
-  std::string host;
+  // Read host/port independently so a missing host doesn't clobber a valid port
+  std::string host = "localhost";
   int port = 8080;
   try {
     host = node_.get_parameter("server.host").as_string();
-    port = static_cast<int>(node_.get_parameter("server.port").as_int());
-  } catch (const std::exception &) {
-    host = "localhost";
   } catch (...) {
-    host = "localhost";
+  }
+  try {
+    port = static_cast<int>(node_.get_parameter("server.port").as_int());
+  } catch (...) {
   }
 
   // Use localhost for display if bound to all interfaces

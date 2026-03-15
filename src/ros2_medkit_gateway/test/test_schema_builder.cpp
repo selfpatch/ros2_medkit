@@ -44,15 +44,19 @@ TEST(SchemaBuilderStaticTest, FaultSchema) {
   auto schema = SchemaBuilder::fault_schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
-  EXPECT_TRUE(schema["properties"].contains("id"));
   EXPECT_TRUE(schema["properties"].contains("fault_code"));
-  EXPECT_TRUE(schema["properties"].contains("entity_id"));
   EXPECT_TRUE(schema["properties"].contains("severity"));
+  EXPECT_TRUE(schema["properties"].contains("severity_label"));
+  EXPECT_TRUE(schema["properties"].contains("description"));
+  EXPECT_TRUE(schema["properties"].contains("first_occurred"));
+  EXPECT_TRUE(schema["properties"].contains("last_occurred"));
+  EXPECT_TRUE(schema["properties"].contains("occurrence_count"));
   EXPECT_TRUE(schema["properties"].contains("status"));
-  EXPECT_TRUE(schema["properties"].contains("timestamp"));
+  EXPECT_TRUE(schema["properties"].contains("reporting_sources"));
   EXPECT_EQ(schema["properties"]["fault_code"]["type"], "string");
-  EXPECT_EQ(schema["properties"]["severity"]["type"], "string");
-  EXPECT_EQ(schema["properties"]["status"]["type"], "object");
+  EXPECT_EQ(schema["properties"]["severity"]["type"], "integer");
+  EXPECT_EQ(schema["properties"]["status"]["type"], "string");
+  EXPECT_EQ(schema["properties"]["reporting_sources"]["type"], "array");
 }
 
 TEST(SchemaBuilderStaticTest, FaultListSchema) {
@@ -131,14 +135,13 @@ TEST(SchemaBuilderStaticTest, LogEntrySchema) {
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("id"));
   EXPECT_TRUE(schema["properties"].contains("timestamp"));
-  EXPECT_TRUE(schema["properties"].contains("level"));
-  EXPECT_TRUE(schema["properties"].contains("name"));
+  EXPECT_TRUE(schema["properties"].contains("severity"));
   EXPECT_TRUE(schema["properties"].contains("message"));
-  EXPECT_TRUE(schema["properties"].contains("function"));
-  EXPECT_TRUE(schema["properties"].contains("file"));
-  EXPECT_TRUE(schema["properties"].contains("line"));
-  EXPECT_EQ(schema["properties"]["id"]["type"], "integer");
-  EXPECT_EQ(schema["properties"]["level"]["type"], "string");
+  EXPECT_TRUE(schema["properties"].contains("context"));
+  EXPECT_EQ(schema["properties"]["id"]["type"], "string");
+  EXPECT_EQ(schema["properties"]["severity"]["type"], "string");
+  EXPECT_EQ(schema["properties"]["context"]["type"], "object");
+  EXPECT_TRUE(schema["properties"]["context"]["properties"].contains("node"));
 }
 
 TEST(SchemaBuilderStaticTest, HealthSchema) {
@@ -160,15 +163,21 @@ TEST(SchemaBuilderStaticTest, VersionInfoSchema) {
   auto schema = SchemaBuilder::version_info_schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema["properties"].contains("sovd_info"));
-  EXPECT_EQ(schema["properties"]["sovd_info"]["type"], "array");
+  ASSERT_TRUE(schema["properties"].contains("items"));
+  EXPECT_EQ(schema["properties"]["items"]["type"], "array");
 
-  // Items should have version and base_uri
-  auto & item_schema = schema["properties"]["sovd_info"]["items"];
+  // Items should have version, base_uri, and vendor_info
+  auto & item_schema = schema["properties"]["items"]["items"];
   EXPECT_EQ(item_schema["type"], "object");
   EXPECT_TRUE(item_schema["properties"].contains("version"));
   EXPECT_TRUE(item_schema["properties"].contains("base_uri"));
   EXPECT_TRUE(item_schema["properties"].contains("vendor_info"));
+
+  // vendor_info should have version and name
+  auto & vendor_schema = item_schema["properties"]["vendor_info"];
+  EXPECT_EQ(vendor_schema["type"], "object");
+  EXPECT_TRUE(vendor_schema["properties"].contains("version"));
+  EXPECT_TRUE(vendor_schema["properties"].contains("name"));
 }
 
 // =============================================================================

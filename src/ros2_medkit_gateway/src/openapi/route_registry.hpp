@@ -93,6 +93,11 @@ class RouteRegistry {
     return routes_.size();
   }
 
+  /// Set whether authentication is enabled (controls 401/403 in OpenAPI output).
+  void set_auth_enabled(bool enabled) {
+    auth_enabled_ = enabled;
+  }
+
  private:
   /// Convert OpenAPI path to cpp-httplib regex path.
   /// e.g., "/apps/{app_id}/data/{data_id}" -> "/apps/([^/]+)/data/(.+)"
@@ -101,6 +106,7 @@ class RouteRegistry {
   RouteEntry & add_route(const std::string & method, const std::string & openapi_path, HandlerFn handler);
 
   std::vector<RouteEntry> routes_;
+  bool auth_enabled_{false};
 };
 
 }  // namespace openapi

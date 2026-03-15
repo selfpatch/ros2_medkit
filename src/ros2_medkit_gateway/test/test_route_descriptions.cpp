@@ -51,7 +51,7 @@ TEST(RouteDescriptionsTest, SingleGetEndpoint) {
                .response(200, SchemaDesc::object()
                                   .property("beacons", SchemaDesc::array(SchemaDesc::string()))
                                   .required({"beacons"}))
-               .response(404, SchemaDesc::ref("GenericError")));
+               .response(404, SchemaDesc::response_ref("GenericError")));
   auto desc = b.build();
   EXPECT_FALSE(RouteDescriptionsTestAccess::empty(desc));
 

@@ -143,6 +143,7 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // Routes are populated later in setup_routes(), but CapabilityGenerator only accesses
   // the registry lazily at request time, so the pointer is valid.
   route_registry_ = std::make_unique<openapi::RouteRegistry>();
+  route_registry_->set_auth_enabled(auth_config_.enabled);
 
   docs_handlers_ = std::make_unique<handlers::DocsHandlers>(*handler_ctx_, *node_, node_->get_plugin_manager(),
                                                             route_registry_.get());
