@@ -504,14 +504,14 @@ void RESTServer::setup_routes() {
         .tag("Faults")
         .summary(std::string("List faults for ") + et.singular);
 
-    reg.get(entity_path + "/faults/{fault_id}",
+    reg.get(entity_path + "/faults/{fault_code}",
             [this](auto & req, auto & res) {
               fault_handlers_->handle_get_fault(req, res);
             })
         .tag("Faults")
         .summary(std::string("Get specific fault for ") + et.singular);
 
-    reg.del(entity_path + "/faults/{fault_id}",
+    reg.del(entity_path + "/faults/{fault_code}",
             [this](auto & req, auto & res) {
               fault_handlers_->handle_clear_fault(req, res);
             })
