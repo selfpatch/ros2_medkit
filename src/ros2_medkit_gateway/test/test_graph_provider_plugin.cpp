@@ -230,6 +230,21 @@ class LocalHttpServer {
   int port_{-1};
 };
 
+class GraphProviderPluginRosTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    if (!rclcpp::ok()) {
+      rclcpp::init(0, nullptr);
+    }
+  }
+
+  static void TearDownTestSuite() {
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
+  }
+};
+
 }  // namespace
 
 TEST(GraphProviderPluginBuildTest, BuildsThreeNodeChain) {
@@ -608,11 +623,7 @@ TEST(GraphProviderPluginRouteTest, UsesPreviousOnlineTimestampForOfflineLastSeen
   local_server.stop();
 }
 
-TEST(GraphProviderPluginRouteTest, PrefersMergedGatewayEntityCacheOverStalePluginSnapshot) {
-  if (!rclcpp::ok()) {
-    rclcpp::init(0, nullptr);
-  }
-
+TEST_F(GraphProviderPluginRosTest, PrefersMergedGatewayEntityCacheOverStalePluginSnapshot) {
   auto gateway_node = std::make_shared<GatewayNode>();
   const auto server_host = gateway_node->get_parameter("server.host").as_string();
   const auto server_port = static_cast<int>(gateway_node->get_parameter("server.port").as_int());
@@ -675,14 +686,9 @@ TEST(GraphProviderPluginRouteTest, PrefersMergedGatewayEntityCacheOverStalePlugi
   }
 
   gateway_node.reset();
-  rclcpp::shutdown();
 }
 
-TEST(GraphProviderPluginIntrospectionTest, IntrospectDoesNotQueryFaultManagerServiceOnGatewayThread) {
-  if (!rclcpp::ok()) {
-    rclcpp::init(0, nullptr);
-  }
-
+TEST_F(GraphProviderPluginRosTest, IntrospectDoesNotQueryFaultManagerServiceOnGatewayThread) {
   auto service_node = std::make_shared<rclcpp::Node>("graph_faults_service_node");
   std::atomic<int> list_fault_calls{0};
   auto report_fault_service = service_node->create_service<ros2_medkit_msgs::srv::ReportFault>(
@@ -753,7 +759,78 @@ TEST(GraphProviderPluginIntrospectionTest, IntrospectDoesNotQueryFaultManagerSer
   get_fault_service.reset();
   report_fault_service.reset();
   service_node.reset();
-  rclcpp::shutdown();
+}
+
+TEST_F(GraphProviderPluginRosTest, HttpGraphRequestDoesNotQueryFaultManagerService) {
+  auto service_node = std::make_shared<rclcpp::Node>("graph_route_faults_service_node");
+  std::atomic<int> list_fault_calls{0};
+  auto report_fault_service = service_node->create_service<ros2_medkit_msgs::srv::ReportFault>(
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> /*request*/,
+                                        std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> response) {
+        response->accepted = true;
+      });
+  auto get_fault_service = service_node->create_service<ros2_medkit_msgs::srv::GetFault>(
+      "/fault_manager/get_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> /*request*/,
+                                     std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> response) {
+        response->success = false;
+        response->error_message = "not found";
+      });
+  auto list_faults_service = service_node->create_service<ros2_medkit_msgs::srv::ListFaults>(
+      "/fault_manager/list_faults",
+      [&list_fault_calls](const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> /*request*/,
+                          std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> response) {
+        ++list_fault_calls;
+        response->faults.clear();
+      });
+  auto clear_fault_service = service_node->create_service<ros2_medkit_msgs::srv::ClearFault>(
+      "/fault_manager/clear_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> /*request*/,
+                                       std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> response) {
+        response->success = true;
+        response->message = "cleared";
+      });
+
+  auto gateway_node = std::make_shared<GatewayNode>();
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(service_node);
+  executor.add_node(gateway_node);
+  std::thread spin_thread([&executor]() {
+    executor.spin();
+  });
+
+  const auto deadline = std::chrono::steady_clock::now() + 3s;
+  while (std::chrono::steady_clock::now() < deadline && !gateway_node->get_fault_manager()->is_available()) {
+    std::this_thread::sleep_for(50ms);
+  }
+  ASSERT_TRUE(gateway_node->get_fault_manager()->is_available());
+
+  auto & cache = const_cast<ThreadSafeEntityCache &>(gateway_node->get_thread_safe_cache());
+  cache.update_apps({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})});
+  cache.update_functions({make_function("fn", {"a", "b"})});
+
+  const auto server_host = gateway_node->get_parameter("server.host").as_string();
+  const auto server_port = static_cast<int>(gateway_node->get_parameter("server.port").as_int());
+
+  httplib::Client client(server_host, server_port);
+  auto res = client.Get("/api/v1/functions/fn/x-medkit-graph");
+  for (int attempt = 0; !res && attempt < 19; ++attempt) {
+    std::this_thread::sleep_for(50ms);
+    res = client.Get("/api/v1/functions/fn/x-medkit-graph");
+  }
+
+  ASSERT_TRUE(res);
+  ASSERT_EQ(res->status, 200);
+  EXPECT_EQ(list_fault_calls.load(), 0);
+
+  executor.cancel();
+  spin_thread.join();
+  executor.remove_node(gateway_node);
+  executor.remove_node(service_node);
+  gateway_node.reset();
+  clear_fault_service.reset();
+  list_faults_service.reset();
+  get_fault_service.reset();
+  report_fault_service.reset();
+  service_node.reset();
 }
 
 TEST(GraphProviderPluginMetricsTest, BrokenPipelineHasNullBottleneckEdgeEvenWhenActiveEdgesExist) {
@@ -774,11 +851,7 @@ TEST(GraphProviderPluginMetricsTest, BrokenPipelineHasNullBottleneckEdgeEvenWhen
   EXPECT_TRUE(graph["bottleneck_edge"].is_null());
 }
 
-TEST(GraphProviderPluginDiagnosticsTest, SetsDiagnosticsSeenWhenNonGreenwaveMessageArrives) {
-  if (!rclcpp::ok()) {
-    rclcpp::init(0, nullptr);
-  }
-
+TEST_F(GraphProviderPluginRosTest, SetsDiagnosticsSeenWhenNonGreenwaveMessageArrives) {
   auto node = std::make_shared<rclcpp::Node>("graph_diag_seen_test_node");
   auto pub_node = std::make_shared<rclcpp::Node>("graph_diag_seen_pub");
   auto diagnostics_pub = pub_node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
@@ -838,14 +911,9 @@ TEST(GraphProviderPluginDiagnosticsTest, SetsDiagnosticsSeenWhenNonGreenwaveMess
   executor.remove_node(node);
   pub_node.reset();
   node.reset();
-  rclcpp::shutdown();
 }
 
-TEST(GraphProviderPluginRouteTest, AppliesPerFunctionConfigOverridesFromNodeParameters) {
-  if (!rclcpp::ok()) {
-    rclcpp::init(0, nullptr);
-  }
-
+TEST_F(GraphProviderPluginRosTest, AppliesPerFunctionConfigOverridesFromNodeParameters) {
   rclcpp::NodeOptions options;
   options.append_parameter_override("graph_provider.function_overrides.fn.drop_rate_percent_threshold", 1.0);
   auto node = std::make_shared<rclcpp::Node>("graph_provider_test_node", options);
@@ -907,5 +975,4 @@ TEST(GraphProviderPluginRouteTest, AppliesPerFunctionConfigOverridesFromNodePara
   executor.remove_node(node);
   publisher_node.reset();
   node.reset();
-  rclcpp::shutdown();
 }

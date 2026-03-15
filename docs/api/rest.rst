@@ -172,6 +172,64 @@ Functions
 ``GET /api/v1/functions/{function_id}/x-medkit-graph``
    Get a function-scoped topology snapshot with per-topic metrics and pipeline status.
 
+   **Example Response:**
+
+   .. code-block:: json
+
+      {
+        "x-medkit-graph": {
+          "schema_version": "1.0.0",
+          "graph_id": "perception_graph-graph",
+          "timestamp": "2026-03-08T12:00:00.000Z",
+          "scope": {
+            "type": "function",
+            "entity_id": "perception_graph"
+          },
+          "pipeline_status": "degraded",
+          "bottleneck_edge": "edge-2",
+          "topics": [
+            {
+              "topic_id": "topic-1",
+              "name": "/camera/front/image_raw"
+            }
+          ],
+          "nodes": [
+            {
+              "entity_id": "camera_front",
+              "node_status": "reachable"
+            },
+            {
+              "entity_id": "detector",
+              "node_status": "unreachable",
+              "last_seen": "2026-03-08T11:59:42.100Z"
+            }
+          ],
+          "edges": [
+            {
+              "edge_id": "edge-2",
+              "source": "camera_front",
+              "target": "detector",
+              "topic_id": "topic-1",
+              "transport_type": "unknown",
+              "metrics": {
+                "source": "greenwave_monitor",
+                "frequency_hz": 12.5,
+                "latency_ms": 4.2,
+                "drop_rate_percent": 0.0,
+                "metrics_status": "active"
+              }
+            }
+          ]
+        }
+      }
+
+   **Field Notes:**
+
+   - ``pipeline_status``: overall graph state, one of ``healthy``, ``degraded``, ``broken``
+   - ``node_status``: per-node reachability, one of ``reachable``, ``unreachable``
+   - ``metrics_status``: per-edge telemetry state, one of ``pending``, ``active``, ``error``
+   - ``error_reason``: present when ``metrics_status`` is ``error``; one of ``node_offline``, ``topic_stale``, ``no_data_source``
+
    .. note::
 
       **ros2_medkit extension:** Functions support resource collections beyond the SOVD spec.

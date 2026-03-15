@@ -20,6 +20,7 @@
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include <deque>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -29,6 +30,7 @@
 namespace ros2_medkit_gateway {
 
 class PluginContext;
+class GatewayNode;
 
 class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
  public:
@@ -87,13 +89,16 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   void load_parameters();
 
   PluginContext * ctx_{nullptr};
+  GatewayNode * gateway_node_{nullptr};
 
+  // Each mutex protects an independent cache/state bucket; no code path acquires more than one.
   mutable std::mutex cache_mutex_;
   std::unordered_map<std::string, nlohmann::json> graph_cache_;
 
   mutable std::mutex metrics_mutex_;
   std::unordered_map<std::string, TopicMetrics> topic_metrics_;
-  bool diagnostics_seen_{false};
+  std::deque<std::string> topic_metrics_order_;
+  bool diagnostics_seen_{false};  // Guarded by metrics_mutex_.
 
   mutable std::mutex status_mutex_;
   std::unordered_map<std::string, std::string> last_seen_by_app_;

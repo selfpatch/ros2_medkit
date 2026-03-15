@@ -734,6 +734,8 @@ TEST_F(TestGatewayNode, test_function_detail_includes_cyclic_subscriptions_capab
   auto body = nlohmann::json::parse(res->body);
   ASSERT_TRUE(body.contains("cyclic-subscriptions"));
   EXPECT_EQ(body["cyclic-subscriptions"], "/api/v1/functions/graph_func/cyclic-subscriptions");
+  ASSERT_TRUE(body.contains("x-medkit-graph"));
+  EXPECT_EQ(body["x-medkit-graph"], "/api/v1/functions/graph_func/x-medkit-graph");
 
   ASSERT_TRUE(body.contains("capabilities"));
   const auto & caps = body["capabilities"];
