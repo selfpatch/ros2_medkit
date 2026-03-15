@@ -290,7 +290,7 @@ if(BUILD_TESTING)
 
   ros2_medkit_clang_tidy(
     HEADER_FILTER "^${CMAKE_CURRENT_SOURCE_DIR}/(include|src|test)/"
-    TIMEOUT 2400
+    TIMEOUT 3000
   )
 
   # Add GTest
