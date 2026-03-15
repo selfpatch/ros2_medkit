@@ -34,8 +34,9 @@ EntityThresholdResolver::EntityThresholdResolver(std::vector<EntityDebounceOverr
 DebounceConfig EntityThresholdResolver::resolve(const std::string & source_id,
                                                 const DebounceConfig & global_default) const {
   for (const auto & entry : entries_) {
-    // Check if source_id starts with the prefix
-    if (source_id.size() >= entry.prefix.size() && source_id.compare(0, entry.prefix.size(), entry.prefix) == 0) {
+    // Check if source_id starts with the prefix at a path boundary
+    if (source_id.size() >= entry.prefix.size() && source_id.compare(0, entry.prefix.size(), entry.prefix) == 0 &&
+        (source_id.size() == entry.prefix.size() || source_id[entry.prefix.size()] == '/')) {
       // Merge: entry overrides take precedence, unset fields inherit global
       DebounceConfig result = global_default;
       if (entry.confirmation_threshold.has_value()) {
