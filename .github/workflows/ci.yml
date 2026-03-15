@@ -114,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ubuntu:noble
-    timeout-minutes: 40
+    timeout-minutes: 50
     defaults:
       run:
         shell: bash
