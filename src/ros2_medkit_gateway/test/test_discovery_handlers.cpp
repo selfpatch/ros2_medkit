@@ -90,10 +90,7 @@ httplib::Request make_request_with_match(const std::string & path, const std::st
   req.path = path;
 
   std::regex re(pattern);
-  std::smatch matches;
-  if (std::regex_match(path, matches, re)) {
-    req.matches = matches;
-  }
+  std::regex_match(req.path, req.matches, re);
 
   return req;
 }
@@ -199,4 +196,71 @@ TEST_F(DiscoveryHandlersFixtureTest, ListAreasReturnsSeededItems) {
   auto body = parse_json(res);
   ASSERT_TRUE(body.contains("items"));
   ASSERT_EQ(body["items"].size(), 2);
+}
+
+TEST_F(DiscoveryHandlersValidationTest, GetAreaInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/areas/bad@id", R"(/api/v1/areas/([^/]+))");
+  httplib::Response res;
+
+  handlers_.handle_get_area(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetAreaUnknownIdReturns404) {
+  auto req = make_request_with_match("/api/v1/areas/unknown", R"(/api/v1/areas/([^/]+))");
+  httplib::Response res;
+
+  handlers_->handle_get_area(req, res);
+
+  EXPECT_EQ(res.status, 404);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetAreaReturnsCapabilitiesAndLinks) {
+  auto req = make_request_with_match("/api/v1/areas/vehicle", R"(/api/v1/areas/([^/]+))");
+  httplib::Response res;
+
+  handlers_->handle_get_area(req, res);
+
+  auto body = parse_json(res);
+  EXPECT_EQ(body["components"], "/api/v1/areas/vehicle/components");
+  EXPECT_EQ(body["contains"], "/api/v1/areas/vehicle/contains");
+  EXPECT_EQ(body["_links"]["self"], "/api/v1/areas/vehicle");
+  EXPECT_EQ(body["_links"]["collection"], "/api/v1/areas");
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, AreaComponentsReturnsMatchingComponentsOnly) {
+  auto req = make_request_with_match("/api/v1/areas/sensors/components", R"(/api/v1/areas/([^/]+)/components)");
+  httplib::Response res;
+
+  handlers_->handle_area_components(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 1);
+  EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetSubareasReturnsChildAreas) {
+  auto req = make_request_with_match("/api/v1/areas/vehicle/subareas", R"(/api/v1/areas/([^/]+)/subareas)");
+  httplib::Response res;
+
+  handlers_->handle_get_subareas(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 1);
+  EXPECT_EQ(body["items"][0]["id"], "sensors");
+  EXPECT_EQ(body["_links"]["parent"], "/api/v1/areas/vehicle");
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetContainsReturnsAreaComponents) {
+  auto req = make_request_with_match("/api/v1/areas/vehicle/contains", R"(/api/v1/areas/([^/]+)/contains)");
+  httplib::Response res;
+
+  handlers_->handle_get_contains(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 2);
+  EXPECT_EQ(body["items"][0]["id"], "main_ecu");
+  EXPECT_EQ(body["items"][1]["id"], "lidar_unit");
+  EXPECT_EQ(body["_links"]["area"], "/api/v1/areas/vehicle");
 }
