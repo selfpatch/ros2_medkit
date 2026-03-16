@@ -186,7 +186,7 @@ nlohmann::json CapabilityGenerator::generate_specific_entity(const ResolvedPath 
   entity_path += "/" + resolved.entity_type + "/" + resolved.entity_id;
 
   // Entity detail endpoint
-  paths[entity_path] = path_builder.build_entity_detail(resolved.entity_type);
+  paths[entity_path] = path_builder.build_entity_detail(resolved.entity_type, false);
 
   // Add resource collection paths based on entity capabilities
   auto sovd_type = entity_type_from_keyword(resolved.entity_type);
@@ -673,8 +673,11 @@ void CapabilityGenerator::add_resource_collection_paths(nlohmann::json & paths, 
           config_get["responses"]["200"]["description"] = "Current log configuration";
           config_get["responses"]["200"]["content"]["application/json"]["schema"] = {
               {"type", "object"},
-              {"properties", {{"level", {{"type", "string"}}}, {"entity_id", {{"type", "string"}}}}},
-              {"required", {"level"}}};
+              {"properties",
+               {{"severity_filter", {{"type", "string"}, {"description", "Minimum log severity level"}}},
+                {"max_entries", {{"type", "integer"}, {"description", "Maximum number of log entries to retain"}}},
+                {"entity_id", {{"type", "string"}}}}},
+              {"required", {"severity_filter"}}};
           config_path_item["get"] = std::move(config_get);
 
           nlohmann::json config_put;
@@ -683,12 +686,18 @@ void CapabilityGenerator::add_resource_collection_paths(nlohmann::json & paths, 
           config_put["description"] = "Update the log level configuration.";
           config_put["requestBody"]["required"] = true;
           config_put["requestBody"]["content"]["application/json"]["schema"] = {
-              {"type", "object"}, {"properties", {{"level", {{"type", "string"}}}}}, {"required", {"level"}}};
+              {"type", "object"},
+              {"properties",
+               {{"severity_filter", {{"type", "string"}, {"description", "Minimum log severity level"}}},
+                {"max_entries", {{"type", "integer"}, {"description", "Maximum number of log entries to retain"}}}}}};
           config_put["responses"]["200"]["description"] = "Log configuration updated";
           config_put["responses"]["200"]["content"]["application/json"]["schema"] = {
               {"type", "object"},
-              {"properties", {{"level", {{"type", "string"}}}, {"entity_id", {{"type", "string"}}}}},
-              {"required", {"level"}}};
+              {"properties",
+               {{"severity_filter", {{"type", "string"}}},
+                {"max_entries", {{"type", "integer"}}},
+                {"entity_id", {{"type", "string"}}}}},
+              {"required", {"severity_filter"}}};
           config_path_item["put"] = std::move(config_put);
 
           paths[col_path + "/configuration"] = std::move(config_path_item);

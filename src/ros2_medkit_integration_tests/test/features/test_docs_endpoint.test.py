@@ -194,6 +194,45 @@ class TestDocsEndpoint(GatewayTestCase):
         self._assert_valid_openapi_spec(data)
         self.assertTrue(len(data['paths']) > 0)
 
+    def test_logs_configuration_schema_field_names(self):
+        """GET /apps/{id}/logs/docs spec has correct config schema fields.
+
+        The log configuration schema must use 'severity_filter' and 'max_entries',
+        not 'level' (which was a bug in the initial implementation).
+
+        @verifies REQ_INTEROP_002
+        """
+        data = self.poll_endpoint_until(
+            '/apps/temp_sensor/logs/docs',
+            lambda d: d if 'paths' in d else None,
+        )
+        self._assert_valid_openapi_spec(data)
+
+        # Find the /configuration sub-path
+        config_paths = [p for p in data['paths'].keys() if '/configuration' in p]
+        self.assertGreater(
+            len(config_paths), 0,
+            f'Expected a logs/configuration path. Paths: {list(data["paths"].keys())}'
+        )
+
+        config_path = config_paths[0]
+        path_item = data['paths'][config_path]
+
+        # Verify GET response schema has correct field names
+        self.assertIn('get', path_item)
+        get_schema = path_item['get']['responses']['200']['content']['application/json']['schema']
+        props = get_schema.get('properties', {})
+        self.assertIn('severity_filter', props, f'Expected severity_filter in properties: {props}')
+        self.assertIn('max_entries', props, f'Expected max_entries in properties: {props}')
+        self.assertNotIn('level', props, f'Should not contain old "level" field: {props}')
+
+        # Verify PUT request body schema
+        self.assertIn('put', path_item)
+        put_schema = path_item['put']['requestBody']['content']['application/json']['schema']
+        put_props = put_schema.get('properties', {})
+        self.assertIn('severity_filter', put_props)
+        self.assertNotIn('level', put_props)
+
     def test_nonexistent_entity_docs_returns_404(self):
         """GET /apps/nonexistent_entity_xyz/docs returns 404.
 
