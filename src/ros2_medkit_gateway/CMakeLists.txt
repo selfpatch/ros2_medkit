@@ -323,6 +323,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
   target_link_libraries(test_discovery_models gateway_lib)
 
+  # Add discovery handlers tests
+  ament_add_gtest(test_discovery_handlers test/test_discovery_handlers.cpp)
+  target_link_libraries(test_discovery_handlers gateway_lib)
+
   # Add manifest parser tests
   ament_add_gtest(test_manifest_parser test/test_manifest_parser.cpp)
   target_link_libraries(test_manifest_parser gateway_lib)
