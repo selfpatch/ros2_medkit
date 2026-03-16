@@ -26,8 +26,25 @@
 #include "ros2_medkit_gateway/http/handlers/docs_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
+#include "../src/openapi/route_registry.hpp"
+
 using namespace ros2_medkit_gateway;
 using namespace std::chrono_literals;
+
+namespace {
+
+void populate_docs_test_routes(openapi::RouteRegistry & reg) {
+  auto noop = [](const httplib::Request &, httplib::Response &) {};
+  reg.get("/health", noop).tag("Server").summary("Health check");
+  reg.get("/", noop).tag("Server").summary("API overview");
+  reg.get("/version-info", noop).tag("Server").summary("SOVD version information");
+  for (const auto * et : {"areas", "components", "apps", "functions"}) {
+    std::string base = std::string("/") + et;
+    reg.get(base, noop).tag("Discovery").summary(std::string("List ") + et);
+  }
+}
+
+}  // namespace
 
 // =============================================================================
 // Test fixture - creates a full GatewayNode for DocsHandlers tests
@@ -52,15 +69,20 @@ class DocsHandlersTest : public ::testing::Test {
     TlsConfig tls_config;
 
     ctx_ = std::make_unique<handlers::HandlerContext>(node_.get(), cors_config, auth_config, tls_config, nullptr);
+
+    route_registry_ = std::make_unique<openapi::RouteRegistry>();
+    populate_docs_test_routes(*route_registry_);
   }
 
   void TearDown() override {
+    route_registry_.reset();
     ctx_.reset();
     node_.reset();
   }
 
   std::shared_ptr<GatewayNode> node_;
   std::unique_ptr<handlers::HandlerContext> ctx_;
+  std::unique_ptr<openapi::RouteRegistry> route_registry_;
 };
 
 // =============================================================================
@@ -72,7 +94,7 @@ TEST_F(DocsHandlersTest, DocsDisabledReturns501) {
   // Override docs.enabled to false (GatewayNode already declares it as true by default)
   node_->set_parameter(rclcpp::Parameter("docs.enabled", false));
 
-  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager());
+  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
 
   httplib::Request req;
   httplib::Response res;
@@ -91,7 +113,7 @@ TEST_F(DocsHandlersTest, DocsDisabledReturns501) {
 
 // @verifies REQ_INTEROP_002
 TEST_F(DocsHandlersTest, DocsRootReturnsValidJson) {
-  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager());
+  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
 
   httplib::Request req;
   httplib::Response res;
@@ -106,6 +128,11 @@ TEST_F(DocsHandlersTest, DocsRootReturnsValidJson) {
   EXPECT_TRUE(body.contains("info"));
   EXPECT_TRUE(body.contains("paths"));
   EXPECT_TRUE(body.contains("servers"));
+
+  // Root spec should have non-empty paths from the RouteRegistry
+  EXPECT_FALSE(body["paths"].empty()) << "Root spec should contain paths from RouteRegistry";
+  EXPECT_TRUE(body["paths"].contains("/health"));
+  EXPECT_TRUE(body["paths"].contains("/apps"));
 }
 
 // =============================================================================
@@ -114,7 +141,7 @@ TEST_F(DocsHandlersTest, DocsRootReturnsValidJson) {
 
 // @verifies REQ_INTEROP_002
 TEST_F(DocsHandlersTest, DocsAnyPathReturns200ForEntityCollection) {
-  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager());
+  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
 
   httplib::Request req;
   httplib::Response res;
@@ -148,7 +175,7 @@ TEST_F(DocsHandlersTest, DocsAnyPathReturns200ForEntityCollection) {
 
 // @verifies REQ_INTEROP_002
 TEST_F(DocsHandlersTest, DocsAnyPathReturns404ForInvalidPath) {
-  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager());
+  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
 
   httplib::Request req;
   httplib::Response res;
