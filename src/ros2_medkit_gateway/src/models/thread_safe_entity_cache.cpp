@@ -79,6 +79,7 @@ void ThreadSafeEntityCache::update_functions(std::vector<Function> functions) {
 void ThreadSafeEntityCache::update_topic_types(std::unordered_map<std::string, std::string> topic_types) {
   std::unique_lock lock(mutex_);
   topic_type_cache_ = std::move(topic_types);
+  generation_.fetch_add(1, std::memory_order_release);
 }
 
 // ============================================================================

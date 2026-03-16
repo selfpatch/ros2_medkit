@@ -471,29 +471,29 @@ TEST(ThreadSafeEntityCacheGenerationTest, GenerationIncrementsOnEachUpdate) {
   EXPECT_EQ(cache.generation(), 5u);
 }
 
-TEST(ThreadSafeEntityCacheGenerationTest, TopicTypesUpdateDoesNotIncrementGeneration) {
+TEST(ThreadSafeEntityCacheGenerationTest, TopicTypesUpdateIncrementsGeneration) {
+  // Topic types affect OpenAPI schemas via SchemaBuilder::from_ros_msg(),
+  // so changes must invalidate the spec cache.
   ThreadSafeEntityCache cache;
   cache.update_topic_types({{"topic", "std_msgs/msg/String"}});
-  EXPECT_EQ(cache.generation(), 0u);
+  EXPECT_EQ(cache.generation(), 1u);
 }
 
 // =============================================================================
 // Cache size limit tests
 // =============================================================================
 
-TEST_F(CapabilityGeneratorTest, CacheDoesNotGrowUnbounded) {
-  // Generate specs for many different paths to exercise cache eviction
-  // We use entity collection paths since they don't require entity existence
+TEST_F(CapabilityGeneratorTest, RepeatedCacheHitsDoNotGrow) {
+  // Verify that repeated requests for the same small set of paths
+  // are served from cache without unbounded growth.
+  // Note: with generation-based keys only 4 distinct entries are created,
+  // so this primarily tests cache hit behavior, not eviction.
   const std::vector<std::string> entity_types = {"areas", "components", "apps", "functions"};
   for (int i = 0; i < 300; ++i) {
-    // Alternate between valid paths to generate many cache entries
     auto path = "/" + entity_types[static_cast<size_t>(i) % entity_types.size()];
     auto result = generator_->generate(path);
     ASSERT_TRUE(result.has_value()) << "Failed to generate spec for: " << path;
   }
-  // If we get here without crashing or running out of memory, the cache
-  // eviction is working. The exact cache size is an implementation detail
-  // but it should not exceed kMaxCacheSize + 1 (one entry added after clear).
 }
 
 // =============================================================================
