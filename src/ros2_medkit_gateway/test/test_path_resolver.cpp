@@ -231,6 +231,16 @@ TEST(PathResolverTest, PathTooDeepReturnsError) {
   EXPECT_EQ(result.category, PathCategory::kError);
 }
 
+TEST(PathResolverTest, MultiSegmentResourceId) {
+  // @verifies REQ_INTEROP_002
+  // Topic names like /sensors/temperature produce multi-segment resource IDs
+  auto result = PathResolver::resolve("/apps/my_app/data/sensors/temperature");
+  EXPECT_EQ(result.category, PathCategory::kSpecificResource);
+  EXPECT_EQ(result.entity_id, "my_app");
+  EXPECT_EQ(result.resource_collection, "data");
+  EXPECT_EQ(result.resource_id, "sensors/temperature");
+}
+
 TEST(PathResolverTest, ResourceCollectionPreservesEntityInfo) {
   auto result = PathResolver::resolve("/areas/powertrain/configurations");
   EXPECT_EQ(result.category, PathCategory::kResourceCollection);
