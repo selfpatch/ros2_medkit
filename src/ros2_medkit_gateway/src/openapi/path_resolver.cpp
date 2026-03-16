@@ -149,8 +149,12 @@ ResolvedPath PathResolver::resolve(const std::string & path) {
         return result;
       }
 
-      // Next segment is the specific resource ID
+      // Remaining segments form the resource ID (supports multi-segment topic names
+      // like /apps/my_app/data/sensors/temperature)
       result.resource_id = segments[i + 1];
+      for (size_t j = i + 2; j < segments.size(); ++j) {
+        result.resource_id += "/" + segments[j];
+      }
       result.category = PathCategory::kSpecificResource;
       return result;
     }
