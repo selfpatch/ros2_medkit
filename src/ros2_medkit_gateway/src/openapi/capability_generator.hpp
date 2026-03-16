@@ -76,6 +76,10 @@ class CapabilityGenerator {
                                      const std::string & entity_id,
                                      ros2_medkit_gateway::SovdEntityType entity_type) const;
 
+  /// Add logs/configuration GET+PUT sub-paths to the paths object.
+  static void add_log_configuration_path(nlohmann::json & paths, const std::string & logs_path,
+                                         const std::string & entity_path);
+
   /// Generate OpenAPI docs for plugin-registered routes (via dlsym).
   nlohmann::json generate_plugin_docs(const std::string & path) const;
 
