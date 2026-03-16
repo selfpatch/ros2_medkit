@@ -16,8 +16,13 @@
 
 namespace ros2_medkit_gateway {
 
-/// Gateway version - must match the version in package.xml
+/// Gateway version - auto-populated from package.xml via CMake at configure time.
+/// Fallback to hardcoded value if GATEWAY_VERSION is not defined (e.g. non-CMake builds).
+#ifdef GATEWAY_VERSION_STRING
+constexpr const char * kGatewayVersion = GATEWAY_VERSION_STRING;
+#else
 constexpr const char * kGatewayVersion = "0.3.0";
+#endif
 
 /// SOVD specification version
 constexpr const char * kSovdVersion = "1.0.0";
