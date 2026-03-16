@@ -1720,7 +1720,8 @@ OpenAPI spec describing the available operations at that level.
 - Specs include SOVD extensions (``x-sovd-version``, ``x-sovd-data-category``)
 - Entity-level specs reflect actual capabilities from the runtime entity cache
 - Specs are cached per entity cache generation for performance
-- Plugin-registered routes are included in the spec when available
+- Plugin-registered vendor routes appear in path-scoped specs when the requested
+  path matches a plugin route prefix (not in the root spec)
 
 **Configuration:**
 
