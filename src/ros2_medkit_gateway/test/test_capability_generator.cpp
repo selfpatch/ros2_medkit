@@ -387,6 +387,19 @@ TEST_F(CapabilityGeneratorTest, AreaCollectionContainsBothListAndDetailPaths) {
   EXPECT_TRUE(spec["paths"].contains("/areas/{area_id}"));
 }
 
+// @verifies REQ_INTEROP_002
+TEST_F(CapabilityGeneratorTest, EntityCollectionDetailPathHasParameters) {
+  // Entity collection specs use template paths (/apps/{app_id}), so they should
+  // include path parameters for the entity ID
+  auto result = generator_->generate("/apps");
+  ASSERT_TRUE(result.has_value());
+  auto & spec = *result;
+  ASSERT_TRUE(spec["paths"].contains("/apps/{app_id}"));
+  auto & detail = spec["paths"]["/apps/{app_id}"];
+  ASSERT_TRUE(detail["get"].contains("parameters"));
+  EXPECT_EQ(detail["get"]["parameters"][0]["name"], "app_id");
+}
+
 // =============================================================================
 // Caching tests
 // =============================================================================

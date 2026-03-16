@@ -52,7 +52,7 @@ nlohmann::json PathBuilder::build_entity_collection(const std::string & entity_t
 // Entity detail paths
 // -----------------------------------------------------------------------------
 
-nlohmann::json PathBuilder::build_entity_detail(const std::string & entity_type) const {
+nlohmann::json PathBuilder::build_entity_detail(const std::string & entity_type, bool use_template) const {
   nlohmann::json path_item;
 
   // Derive singular name from entity_type for param description
@@ -66,7 +66,10 @@ nlohmann::json PathBuilder::build_entity_detail(const std::string & entity_type)
   get_op["tags"] = nlohmann::json::array({"Discovery"});
   get_op["summary"] = "Get " + singular + " details";
   get_op["description"] = "Returns detailed information about a specific " + singular + ".";
-  get_op["parameters"] = nlohmann::json::array({build_path_param(singular + "_id", "The " + singular + " identifier")});
+  if (use_template) {
+    get_op["parameters"] =
+        nlohmann::json::array({build_path_param(singular + "_id", "The " + singular + " identifier")});
+  }
   get_op["responses"]["200"]["description"] = "Successful response";
   get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::entity_detail_schema();
 
