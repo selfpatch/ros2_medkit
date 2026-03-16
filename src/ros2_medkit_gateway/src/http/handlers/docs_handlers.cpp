@@ -147,7 +147,7 @@ void DocsHandlers::handle_swagger_asset(const httplib::Request & req, httplib::R
     size = swagger_ui::swagger_ui_standalone_preset_js_size;
     content_type = "application/javascript";
   } else {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Unknown Swagger UI asset: " + asset_name);
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Asset not found");
     return;
   }
 
