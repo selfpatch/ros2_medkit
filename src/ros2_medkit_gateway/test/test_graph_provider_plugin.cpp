@@ -721,9 +721,16 @@ TEST_F(GraphProviderPluginRosTest, IntrospectDoesNotQueryFaultManagerServiceOnGa
       });
 
   auto gateway_node = std::make_shared<GatewayNode>();
+
+  // Only spin service_node - gateway_node must NOT be added to the executor.
+  // GatewayNode creates wall timers (refresh_cache, cleanup, subscription_cleanup)
+  // that fire on the executor thread. refresh_cache() calls ROS 2 graph APIs
+  // (get_node_names_and_namespaces, get_topic_names_and_types) which can stall
+  // on CI runners, causing executor.cancel() + join() to deadlock.
+  // Service discovery (is_available/service_is_ready) works via DDS without
+  // the node spinning in an executor.
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(service_node);
-  executor.add_node(gateway_node);
   std::thread spin_thread([&executor]() {
     executor.spin();
   });
@@ -755,7 +762,6 @@ TEST_F(GraphProviderPluginRosTest, IntrospectDoesNotQueryFaultManagerServiceOnGa
 
   executor.cancel();
   spin_thread.join();
-  executor.remove_node(gateway_node);
   executor.remove_node(service_node);
   gateway_node.reset();
   clear_fault_service.reset();
@@ -794,9 +800,11 @@ TEST_F(GraphProviderPluginRosTest, HttpGraphRequestDoesNotQueryFaultManagerServi
       });
 
   auto gateway_node = std::make_shared<GatewayNode>();
+
+  // Only spin service_node - see IntrospectDoesNotQueryFaultManagerServiceOnGatewayThread
+  // for rationale. gateway_node's wall timers can deadlock executor shutdown.
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(service_node);
-  executor.add_node(gateway_node);
   std::thread spin_thread([&executor]() {
     executor.spin();
   });
@@ -827,7 +835,6 @@ TEST_F(GraphProviderPluginRosTest, HttpGraphRequestDoesNotQueryFaultManagerServi
 
   executor.cancel();
   spin_thread.join();
-  executor.remove_node(gateway_node);
   executor.remove_node(service_node);
   gateway_node.reset();
   clear_fault_service.reset();
