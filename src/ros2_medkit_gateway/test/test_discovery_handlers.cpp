@@ -14,16 +14,22 @@
 
 #include <gtest/gtest.h>
 
+#include <arpa/inet.h>
 #include <httplib.h>
+#include <netinet/in.h>
 #include <nlohmann/json.hpp>
 
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
 #include <regex>
 #include <string>
+#include <sys/socket.h>
 #include <unistd.h>
+#include <vector>
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/discovery_handlers.hpp"
@@ -89,6 +95,36 @@ json parse_json(const httplib::Response & res) {
   return json::parse(res.body);
 }
 
+int reserve_local_port() {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) {
+    ADD_FAILURE() << "Failed to create socket for test port reservation: " << std::strerror(errno);
+    return 0;
+  }
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+
+  if (bind(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+    ADD_FAILURE() << "Failed to bind socket for test port reservation: " << std::strerror(errno);
+    close(sock);
+    return 0;
+  }
+
+  socklen_t addr_len = sizeof(addr);
+  if (getsockname(sock, reinterpret_cast<sockaddr *>(&addr), &addr_len) != 0) {
+    ADD_FAILURE() << "Failed to inspect reserved test port: " << std::strerror(errno);
+    close(sock);
+    return 0;
+  }
+
+  int port = ntohs(addr.sin_port);
+  close(sock);
+  return port;
+}
+
 httplib::Request make_request_with_match(const std::string & path, const std::string & pattern) {
   httplib::Request req;
   req.path = path;
@@ -102,13 +138,25 @@ httplib::Request make_request_with_match(const std::string & path, const std::st
 std::string write_temp_manifest(const std::string & contents) {
   char path_template[] = "/tmp/ros2_medkit_discovery_handlers_XXXXXX.yaml";
   int fd = mkstemps(path_template, 5);
-  EXPECT_GE(fd, 0);
-  if (fd >= 0) {
-    close(fd);
+  if (fd < 0) {
+    ADD_FAILURE() << "Failed to create temp manifest file: " << std::strerror(errno);
+    return {};
   }
+  close(fd);
 
   std::ofstream out(path_template);
+  if (!out) {
+    ADD_FAILURE() << "Failed to open temp manifest file for writing: " << path_template;
+    std::remove(path_template);
+    return {};
+  }
   out << contents;
+  if (!out.good()) {
+    ADD_FAILURE() << "Failed to write manifest contents to: " << path_template;
+    out.close();
+    std::remove(path_template);
+    return {};
+  }
   out.close();
   return path_template;
 }
@@ -135,46 +183,66 @@ TEST_F(DiscoveryHandlersValidationTest, GetAreaMissingMatchesReturns400) {
 
 class DiscoveryHandlersFixtureTest : public ::testing::Test {
  protected:
+  inline static std::shared_ptr<GatewayNode> suite_node_;
+  inline static int suite_server_port_ = 0;
+
   static void SetUpTestSuite() {
-    rclcpp::init(0, nullptr);
+    suite_server_port_ = reserve_local_port();
+    ASSERT_NE(suite_server_port_, 0);
+
+    std::vector<std::string> args = {"test_discovery_handlers", "--ros-args", "-p",
+                                     "server.port:=" + std::to_string(suite_server_port_), "-p",
+                                     "refresh_interval_ms:=60000"};
+    std::vector<char *> argv;
+    argv.reserve(args.size());
+    for (auto & arg : args) {
+      argv.push_back(arg.data());
+    }
+
+    rclcpp::init(static_cast<int>(argv.size()), argv.data());
+    suite_node_ = std::make_shared<GatewayNode>();
+    ASSERT_NE(suite_node_, nullptr);
   }
 
   static void TearDownTestSuite() {
-    rclcpp::shutdown();
+    suite_node_.reset();
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
   }
 
   void SetUp() override {
     manifest_path_ = write_temp_manifest(kManifestYaml);
-    node_ = std::make_shared<GatewayNode>();
+    ASSERT_FALSE(manifest_path_.empty());
+    ASSERT_NE(suite_node_, nullptr);
 
     DiscoveryConfig config;
     config.mode = DiscoveryMode::MANIFEST_ONLY;
     config.manifest_path = manifest_path_;
     config.manifest_strict_validation = false;
 
-    ASSERT_TRUE(node_->get_discovery_manager()->initialize(config));
+    ASSERT_TRUE(suite_node_->get_discovery_manager()->initialize(config));
 
-    auto areas = node_->get_discovery_manager()->discover_areas();
-    auto components = node_->get_discovery_manager()->discover_components();
-    auto apps = node_->get_discovery_manager()->discover_apps();
-    auto functions = node_->get_discovery_manager()->discover_functions();
+    auto areas = suite_node_->get_discovery_manager()->discover_areas();
+    auto components = suite_node_->get_discovery_manager()->discover_components();
+    auto apps = suite_node_->get_discovery_manager()->discover_apps();
+    auto functions = suite_node_->get_discovery_manager()->discover_functions();
 
     ASSERT_EQ(apps.size(), 2u);
     apps[0].is_online = true;
     apps[0].bound_fqn = "/vehicle/main_ecu/planner";
     apps[1].bound_fqn = "/sensors/lidar_unit/mapper";
 
-    auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+    auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
     cache.update_all(areas, components, apps, functions);
 
-    ctx_ = std::make_unique<HandlerContext>(node_.get(), cors_, auth_, tls_, nullptr);
+    ctx_ = std::make_unique<HandlerContext>(suite_node_.get(), cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<DiscoveryHandlers>(*ctx_);
   }
 
   void TearDown() override {
     handlers_.reset();
     ctx_.reset();
-    node_.reset();
 
     if (!manifest_path_.empty()) {
       std::remove(manifest_path_.c_str());
@@ -184,7 +252,6 @@ class DiscoveryHandlersFixtureTest : public ::testing::Test {
   CorsConfig cors_{};
   AuthConfig auth_{};
   TlsConfig tls_{};
-  std::shared_ptr<GatewayNode> node_;
   std::unique_ptr<HandlerContext> ctx_;
   std::unique_ptr<DiscoveryHandlers> handlers_;
   std::string manifest_path_;
@@ -244,6 +311,24 @@ TEST_F(DiscoveryHandlersFixtureTest, AreaComponentsReturnsMatchingComponentsOnly
   EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
 }
 
+TEST_F(DiscoveryHandlersValidationTest, AreaComponentsInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/areas/bad@id/components", R"(/api/v1/areas/(.+)/components)");
+  httplib::Response res;
+
+  handlers_.handle_area_components(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, AreaComponentsUnknownAreaReturns404) {
+  auto req = make_request_with_match("/api/v1/areas/unknown/components", R"(/api/v1/areas/([^/]+)/components)");
+  httplib::Response res;
+
+  handlers_->handle_area_components(req, res);
+
+  EXPECT_EQ(res.status, 404);
+}
+
 TEST_F(DiscoveryHandlersFixtureTest, GetSubareasReturnsChildAreas) {
   auto req = make_request_with_match("/api/v1/areas/vehicle/subareas", R"(/api/v1/areas/([^/]+)/subareas)");
   httplib::Response res;
@@ -254,6 +339,24 @@ TEST_F(DiscoveryHandlersFixtureTest, GetSubareasReturnsChildAreas) {
   ASSERT_EQ(body["items"].size(), 1);
   EXPECT_EQ(body["items"][0]["id"], "sensors");
   EXPECT_EQ(body["_links"]["parent"], "/api/v1/areas/vehicle");
+}
+
+TEST_F(DiscoveryHandlersValidationTest, GetSubareasInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/areas/bad@id/subareas", R"(/api/v1/areas/(.+)/subareas)");
+  httplib::Response res;
+
+  handlers_.handle_get_subareas(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetSubareasUnknownAreaReturns404) {
+  auto req = make_request_with_match("/api/v1/areas/unknown/subareas", R"(/api/v1/areas/([^/]+)/subareas)");
+  httplib::Response res;
+
+  handlers_->handle_get_subareas(req, res);
+
+  EXPECT_EQ(res.status, 404);
 }
 
 TEST_F(DiscoveryHandlersFixtureTest, GetContainsReturnsAreaComponents) {
@@ -267,6 +370,24 @@ TEST_F(DiscoveryHandlersFixtureTest, GetContainsReturnsAreaComponents) {
   EXPECT_EQ(body["items"][0]["id"], "main_ecu");
   EXPECT_EQ(body["items"][1]["id"], "lidar_unit");
   EXPECT_EQ(body["_links"]["area"], "/api/v1/areas/vehicle");
+}
+
+TEST_F(DiscoveryHandlersValidationTest, GetContainsInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/areas/bad@id/contains", R"(/api/v1/areas/(.+)/contains)");
+  httplib::Response res;
+
+  handlers_.handle_get_contains(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetContainsUnknownAreaReturns404) {
+  auto req = make_request_with_match("/api/v1/areas/unknown/contains", R"(/api/v1/areas/([^/]+)/contains)");
+  httplib::Response res;
+
+  handlers_->handle_get_contains(req, res);
+
+  EXPECT_EQ(res.status, 404);
 }
 
 TEST_F(DiscoveryHandlersFixtureTest, ListComponentsReturnsMetadata) {
@@ -317,6 +438,26 @@ TEST_F(DiscoveryHandlersFixtureTest, GetSubcomponentsReturnsChildren) {
   EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
 }
 
+TEST_F(DiscoveryHandlersValidationTest, GetSubcomponentsInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/components/bad/id/subcomponents",
+                                     R"(/api/v1/components/(.+)/subcomponents)");
+  httplib::Response res;
+
+  handlers_.handle_get_subcomponents(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetSubcomponentsUnknownComponentReturns404) {
+  auto req = make_request_with_match("/api/v1/components/unknown/subcomponents",
+                                     R"(/api/v1/components/([^/]+)/subcomponents)");
+  httplib::Response res;
+
+  handlers_->handle_get_subcomponents(req, res);
+
+  EXPECT_EQ(res.status, 404);
+}
+
 TEST_F(DiscoveryHandlersFixtureTest, GetHostsReturnsHostedApps) {
   auto req = make_request_with_match("/api/v1/components/main_ecu/hosts", R"(/api/v1/components/([^/]+)/hosts)");
   httplib::Response res;
@@ -328,6 +469,24 @@ TEST_F(DiscoveryHandlersFixtureTest, GetHostsReturnsHostedApps) {
   EXPECT_EQ(body["items"][0]["id"], "planner");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
   EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], false);
+}
+
+TEST_F(DiscoveryHandlersValidationTest, GetHostsInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/components/bad/id/hosts", R"(/api/v1/components/(.+)/hosts)");
+  httplib::Response res;
+
+  handlers_.handle_get_hosts(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetHostsUnknownComponentReturns404) {
+  auto req = make_request_with_match("/api/v1/components/unknown/hosts", R"(/api/v1/components/([^/]+)/hosts)");
+  httplib::Response res;
+
+  handlers_->handle_get_hosts(req, res);
+
+  EXPECT_EQ(res.status, 404);
 }
 
 TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnReturnsResolvedAndMissingDependencies) {
@@ -342,6 +501,26 @@ TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnReturnsResolvedAndMissing
   EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
   EXPECT_EQ(body["items"][1]["id"], "ghost_component");
   EXPECT_EQ(body["items"][1]["x-medkit"]["missing"], true);
+}
+
+TEST_F(DiscoveryHandlersValidationTest, ComponentDependsOnInvalidIdReturns400) {
+  auto req =
+      make_request_with_match("/api/v1/components/bad/id/depends-on", R"(/api/v1/components/(.+)/depends-on)");
+  httplib::Response res;
+
+  handlers_.handle_component_depends_on(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnUnknownComponentReturns404) {
+  auto req =
+      make_request_with_match("/api/v1/components/unknown/depends-on", R"(/api/v1/components/([^/]+)/depends-on)");
+  httplib::Response res;
+
+  handlers_->handle_component_depends_on(req, res);
+
+  EXPECT_EQ(res.status, 404);
 }
 
 TEST_F(DiscoveryHandlersValidationTest, GetAppInvalidIdReturns400) {
@@ -409,6 +588,24 @@ TEST_F(DiscoveryHandlersFixtureTest, AppDependsOnReturnsResolvedAndMissingDepend
   EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/mapper");
 }
 
+TEST_F(DiscoveryHandlersValidationTest, AppDependsOnInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/apps/bad/id/depends-on", R"(/api/v1/apps/(.+)/depends-on)");
+  httplib::Response res;
+
+  handlers_.handle_app_depends_on(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, AppDependsOnUnknownAppReturns404) {
+  auto req = make_request_with_match("/api/v1/apps/unknown/depends-on", R"(/api/v1/apps/([^/]+)/depends-on)");
+  httplib::Response res;
+
+  handlers_->handle_app_depends_on(req, res);
+
+  EXPECT_EQ(res.status, 404);
+}
+
 TEST_F(DiscoveryHandlersValidationTest, GetFunctionInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/functions/bad/id", R"(/api/v1/functions/(.+))");
   httplib::Response res;
@@ -450,6 +647,24 @@ TEST_F(DiscoveryHandlersFixtureTest, GetFunctionReturnsCapabilitiesAndGraphLink)
   EXPECT_EQ(body["x-medkit-graph"], "/api/v1/functions/navigation/x-medkit-graph");
   EXPECT_EQ(body["_links"]["self"], "/api/v1/functions/navigation");
   EXPECT_EQ(body["x-medkit"]["source"], "manifest");
+}
+
+TEST_F(DiscoveryHandlersValidationTest, FunctionHostsInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/functions/bad/id/hosts", R"(/api/v1/functions/(.+)/hosts)");
+  httplib::Response res;
+
+  handlers_.handle_function_hosts(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, FunctionHostsUnknownFunctionReturns404) {
+  auto req = make_request_with_match("/api/v1/functions/unknown/hosts", R"(/api/v1/functions/([^/]+)/hosts)");
+  httplib::Response res;
+
+  handlers_->handle_function_hosts(req, res);
+
+  EXPECT_EQ(res.status, 404);
 }
 
 TEST_F(DiscoveryHandlersFixtureTest, FunctionHostsReturnsHostingApps) {
