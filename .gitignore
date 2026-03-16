@@ -222,6 +222,9 @@ log/
 *.dox
 *.wikidoc
 
+# Local git worktrees
+.worktrees/
+
 # eclipse stuff
 .project
 .cproject
