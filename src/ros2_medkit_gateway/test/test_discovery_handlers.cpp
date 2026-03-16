@@ -343,3 +343,125 @@ TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnReturnsResolvedAndMissing
   EXPECT_EQ(body["items"][1]["id"], "ghost_component");
   EXPECT_EQ(body["items"][1]["x-medkit"]["missing"], true);
 }
+
+TEST_F(DiscoveryHandlersValidationTest, GetAppInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/apps/bad/id", R"(/api/v1/apps/(.+))");
+  httplib::Response res;
+
+  handlers_.handle_get_app(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, ListAppsReturnsSeededMetadata) {
+  httplib::Request req;
+  httplib::Response res;
+
+  handlers_->handle_list_apps(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 2);
+  EXPECT_EQ(body["items"][0]["id"], "planner");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["component_id"], "main_ecu");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], true);
+  EXPECT_EQ(body["items"][0]["x-medkit"]["ros2"]["node"], "/vehicle/main_ecu/planner");
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetAppUnknownIdReturns404) {
+  auto req = make_request_with_match("/api/v1/apps/unknown", R"(/api/v1/apps/([^/]+))");
+  httplib::Response res;
+
+  handlers_->handle_get_app(req, res);
+
+  EXPECT_EQ(res.status, 404);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetAppReturnsLinksAndCapabilities) {
+  auto req = make_request_with_match("/api/v1/apps/mapper", R"(/api/v1/apps/([^/]+))");
+  httplib::Response res;
+
+  handlers_->handle_get_app(req, res);
+
+  auto body = parse_json(res);
+  EXPECT_EQ(body["is-located-on"], "/api/v1/components/lidar_unit");
+  EXPECT_EQ(body["depends-on"], "/api/v1/apps/mapper/depends-on");
+  EXPECT_EQ(body["_links"]["self"], "/api/v1/apps/mapper");
+  EXPECT_EQ(body["_links"]["is-located-on"], "/api/v1/components/lidar_unit");
+  EXPECT_EQ(body["_links"]["depends-on"][0], "/api/v1/apps/planner");
+  EXPECT_EQ(body["_links"]["depends-on"][1], "/api/v1/apps/ghost_app");
+  EXPECT_EQ(body["x-medkit"]["source"], "manifest");
+  EXPECT_EQ(body["x-medkit"]["is_online"], false);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, AppDependsOnReturnsResolvedAndMissingDependencies) {
+  auto req = make_request_with_match("/api/v1/apps/mapper/depends-on", R"(/api/v1/apps/([^/]+)/depends-on)");
+  httplib::Response res;
+
+  handlers_->handle_app_depends_on(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 2);
+  EXPECT_EQ(body["items"][0]["id"], "planner");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], false);
+  EXPECT_EQ(body["items"][1]["id"], "ghost_app");
+  EXPECT_EQ(body["items"][1]["x-medkit"]["missing"], true);
+  EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/mapper");
+}
+
+TEST_F(DiscoveryHandlersValidationTest, GetFunctionInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/functions/bad/id", R"(/api/v1/functions/(.+))");
+  httplib::Response res;
+
+  handlers_.handle_get_function(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, ListFunctionsReturnsSeededFunctions) {
+  httplib::Request req;
+  httplib::Response res;
+
+  handlers_->handle_list_functions(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 2);
+  EXPECT_EQ(body["items"][0]["id"], "navigation");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetFunctionUnknownIdReturns404) {
+  auto req = make_request_with_match("/api/v1/functions/unknown", R"(/api/v1/functions/([^/]+))");
+  httplib::Response res;
+
+  handlers_->handle_get_function(req, res);
+
+  EXPECT_EQ(res.status, 404);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetFunctionReturnsCapabilitiesAndGraphLink) {
+  auto req = make_request_with_match("/api/v1/functions/navigation", R"(/api/v1/functions/([^/]+))");
+  httplib::Response res;
+
+  handlers_->handle_get_function(req, res);
+
+  auto body = parse_json(res);
+  EXPECT_EQ(body["hosts"], "/api/v1/functions/navigation/hosts");
+  EXPECT_EQ(body["x-medkit-graph"], "/api/v1/functions/navigation/x-medkit-graph");
+  EXPECT_EQ(body["_links"]["self"], "/api/v1/functions/navigation");
+  EXPECT_EQ(body["x-medkit"]["source"], "manifest");
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, FunctionHostsReturnsHostingApps) {
+  auto req = make_request_with_match("/api/v1/functions/navigation/hosts", R"(/api/v1/functions/([^/]+)/hosts)");
+  httplib::Response res;
+
+  handlers_->handle_function_hosts(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 1);
+  EXPECT_EQ(body["items"][0]["id"], "planner");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], false);
+  EXPECT_EQ(body["_links"]["function"], "/api/v1/functions/navigation");
+}
