@@ -33,6 +33,7 @@ class RouteDescriptionsTestAccess {
 
 using ros2_medkit_gateway::openapi::RouteDescriptionsTestAccess;
 
+// @verifies REQ_INTEROP_002
 TEST(RouteDescriptionsTest, EmptyBuilderProducesEmptyDescriptions) {
   auto desc = RouteDescriptionBuilder{}.build();
   EXPECT_TRUE(RouteDescriptionsTestAccess::empty(desc));
@@ -41,6 +42,7 @@ TEST(RouteDescriptionsTest, EmptyBuilderProducesEmptyDescriptions) {
   EXPECT_TRUE(json.empty());
 }
 
+// @verifies REQ_INTEROP_002
 TEST(RouteDescriptionsTest, SingleGetEndpoint) {
   RouteDescriptionBuilder b;
   b.add("/x-medkit-beacon/{entity_id}")
@@ -64,6 +66,7 @@ TEST(RouteDescriptionsTest, SingleGetEndpoint) {
   EXPECT_TRUE(path["get"]["responses"].contains("404"));
 }
 
+// @verifies REQ_INTEROP_002
 TEST(RouteDescriptionsTest, MultipleEndpoints) {
   RouteDescriptionBuilder b;
   b.add("/x-medkit-foo").summary("Foo").get(OperationDesc().response(200, SchemaDesc::string()));
@@ -75,6 +78,7 @@ TEST(RouteDescriptionsTest, MultipleEndpoints) {
   EXPECT_TRUE(json.contains("/x-medkit-bar"));
 }
 
+// @verifies REQ_INTEROP_002
 TEST(RouteDescriptionsTest, PostWithRequestBody) {
   RouteDescriptionBuilder b;
   b.add("/x-medkit-action")
@@ -90,6 +94,7 @@ TEST(RouteDescriptionsTest, PostWithRequestBody) {
   EXPECT_TRUE(post["requestBody"]["required"].get<bool>());
 }
 
+// @verifies REQ_INTEROP_002
 TEST(RouteDescriptionsTest, SchemaTypes) {
   auto str = SchemaDesc::string().to_json();
   EXPECT_EQ(str["type"], "string");
