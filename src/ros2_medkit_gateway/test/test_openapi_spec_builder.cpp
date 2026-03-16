@@ -306,6 +306,23 @@ TEST_F(OpenApiSpecBuilderTest, AddEmptyPaths) {
 TEST_F(OpenApiSpecBuilderTest, AddEmptySchemas) {
   nlohmann::json empty_schemas = nlohmann::json::object();
   auto spec = builder_.info("API", "1.0.0").add_schemas(empty_schemas).build();
-  // Should still have GenericError in responses but schemas may be empty
+  // Should still have GenericError in responses but schemas should be absent
   EXPECT_TRUE(spec["components"]["responses"].contains("GenericError"));
+}
+
+// @verifies REQ_INTEROP_002
+TEST_F(OpenApiSpecBuilderTest, NoEmptySchemasSection) {
+  auto spec = builder_.info("Test", "1.0").server("http://localhost").build();
+  // components should exist (for GenericError response), but schemas should be absent when empty
+  ASSERT_TRUE(spec.contains("components"));
+  EXPECT_FALSE(spec["components"].contains("schemas")) << "Empty schemas section should not be emitted";
+  EXPECT_TRUE(spec["components"]["responses"].contains("GenericError"));
+}
+
+// @verifies REQ_INTEROP_002
+TEST_F(OpenApiSpecBuilderTest, NonEmptySchemasArePresentInOutput) {
+  nlohmann::json test_schemas = {{"MyType", {{"type", "object"}}}};
+  auto spec = builder_.info("Test", "1.0").server("http://localhost").add_schemas(test_schemas).build();
+  ASSERT_TRUE(spec["components"].contains("schemas"));
+  EXPECT_TRUE(spec["components"]["schemas"].contains("MyType"));
 }

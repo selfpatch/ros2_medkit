@@ -107,8 +107,10 @@ nlohmann::json OpenApiSpecBuilder::build() const {
   // 4. Paths
   spec["paths"] = paths_;
 
-  // 5. Components - schemas
-  spec["components"]["schemas"] = schemas_;
+  // 5. Components - schemas (only if any were added)
+  if (!schemas_.empty()) {
+    spec["components"]["schemas"] = schemas_;
+  }
 
   // 6. Components - GenericError response (always present)
   spec["components"]["responses"]["GenericError"]["description"] = "SOVD GenericError response";
