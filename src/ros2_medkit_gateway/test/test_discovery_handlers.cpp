@@ -57,12 +57,16 @@ components:
     name: "Main ECU"
     namespace: "/vehicle"
     area: "vehicle"
+    description: "Vehicle control unit"
+    tags: ["compute", "control"]
     depends_on: ["lidar_unit", "ghost_component"]
   - id: "lidar_unit"
     name: "Lidar Unit"
     namespace: "/sensors"
     area: "sensors"
     parent_component_id: "main_ecu"
+    description: "Lidar aggregation"
+    tags: ["sensor"]
 apps:
   - id: "planner"
     name: "Planner"
@@ -263,4 +267,79 @@ TEST_F(DiscoveryHandlersFixtureTest, GetContainsReturnsAreaComponents) {
   EXPECT_EQ(body["items"][0]["id"], "main_ecu");
   EXPECT_EQ(body["items"][1]["id"], "lidar_unit");
   EXPECT_EQ(body["_links"]["area"], "/api/v1/areas/vehicle");
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, ListComponentsReturnsMetadata) {
+  httplib::Request req;
+  httplib::Response res;
+
+  handlers_->handle_list_components(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 2);
+  EXPECT_EQ(body["items"][0]["id"], "main_ecu");
+  EXPECT_EQ(body["items"][0]["description"], "Vehicle control unit");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
+}
+
+TEST_F(DiscoveryHandlersValidationTest, GetComponentInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/components/bad/id", R"(/api/v1/components/(.+))");
+  httplib::Response res;
+
+  handlers_.handle_get_component(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetComponentReturnsRelationshipsAndCapabilities) {
+  auto req = make_request_with_match("/api/v1/components/main_ecu", R"(/api/v1/components/([^/]+))");
+  httplib::Response res;
+
+  handlers_->handle_get_component(req, res);
+
+  auto body = parse_json(res);
+  EXPECT_EQ(body["belongs-to"], "/api/v1/areas/vehicle");
+  EXPECT_EQ(body["subcomponents"], "/api/v1/components/main_ecu/subcomponents");
+  EXPECT_EQ(body["hosts"], "/api/v1/components/main_ecu/hosts");
+  EXPECT_EQ(body["depends-on"], "/api/v1/components/main_ecu/depends-on");
+  EXPECT_EQ(body["_links"]["area"], "/api/v1/areas/vehicle");
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetSubcomponentsReturnsChildren) {
+  auto req = make_request_with_match("/api/v1/components/main_ecu/subcomponents",
+                                     R"(/api/v1/components/([^/]+)/subcomponents)");
+  httplib::Response res;
+
+  handlers_->handle_get_subcomponents(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 1);
+  EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, GetHostsReturnsHostedApps) {
+  auto req = make_request_with_match("/api/v1/components/main_ecu/hosts", R"(/api/v1/components/([^/]+)/hosts)");
+  httplib::Response res;
+
+  handlers_->handle_get_hosts(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 1);
+  EXPECT_EQ(body["items"][0]["id"], "planner");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], false);
+}
+
+TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnReturnsResolvedAndMissingDependencies) {
+  auto req =
+      make_request_with_match("/api/v1/components/main_ecu/depends-on", R"(/api/v1/components/([^/]+)/depends-on)");
+  httplib::Response res;
+
+  handlers_->handle_component_depends_on(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 2);
+  EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
+  EXPECT_EQ(body["items"][1]["id"], "ghost_component");
+  EXPECT_EQ(body["items"][1]["x-medkit"]["missing"], true);
 }
