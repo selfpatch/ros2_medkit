@@ -119,6 +119,8 @@ void DocsHandlers::handle_swagger_ui(const httplib::Request & /*req*/, httplib::
     return;
   }
 
+  res.set_header("Content-Security-Policy",
+                 "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
   res.set_content(get_embedded_html(), "text/html");
 }
 
@@ -152,7 +154,7 @@ void DocsHandlers::handle_swagger_asset(const httplib::Request & req, httplib::R
   }
 
   // Set cache headers - assets are versioned, safe to cache
-  res.set_header("Cache-Control", "public, max-age=86400");
+  res.set_header("Cache-Control", "public, max-age=31536000, immutable");
   res.set_content(reinterpret_cast<const char *>(data), size, content_type);
 }
 

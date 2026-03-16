@@ -26,6 +26,11 @@ endif()
 # Swagger UI embedding option
 option(ENABLE_SWAGGER_UI "Embed Swagger UI assets in gateway binary" OFF)
 
+# Extract version from package.xml so version.hpp stays in sync automatically
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/package.xml" _package_xml)
+string(REGEX MATCH "<version>([0-9]+\\.[0-9]+\\.[0-9]+)</version>" _ "${_package_xml}")
+set(GATEWAY_VERSION "${CMAKE_MATCH_1}")
+
 # Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -208,6 +213,9 @@ target_precompile_headers(gateway_lib PRIVATE
 )
 set_target_properties(gateway_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# Pass version from package.xml to version.hpp
+target_compile_definitions(gateway_lib PUBLIC GATEWAY_VERSION_STRING="${GATEWAY_VERSION}")
+
 # Gateway node executable
 add_executable(gateway_node src/main.cpp)
 target_link_libraries(gateway_node gateway_lib)
@@ -216,7 +224,7 @@ set_target_properties(gateway_node PROPERTIES ENABLE_EXPORTS ON)
 
 # Apply Swagger UI compile definition and embed assets
 if(ENABLE_SWAGGER_UI)
-  target_compile_definitions(gateway_lib PUBLIC ENABLE_SWAGGER_UI)
+  target_compile_definitions(gateway_lib PRIVATE ENABLE_SWAGGER_UI)
   target_compile_definitions(gateway_node PRIVATE ENABLE_SWAGGER_UI)
   include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SwaggerUI.cmake)
   target_compile_definitions(gateway_lib PRIVATE SWAGGER_UI_VERSION="${SWAGGER_UI_VERSION}")
