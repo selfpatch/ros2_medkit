@@ -25,7 +25,7 @@ namespace {
 /// Top-level and nested entity type keywords recognized by the SOVD API.
 const std::unordered_set<std::string> & entity_type_keywords() {
   static const std::unordered_set<std::string> keywords = {
-      "areas", "subareas", "components", "subcomponents", "apps", "functions", "hosts",
+      "areas", "subareas", "components", "subcomponents", "apps", "functions",
   };
   return keywords;
 }
@@ -34,7 +34,7 @@ const std::unordered_set<std::string> & entity_type_keywords() {
 const std::unordered_set<std::string> & resource_collection_keywords() {
   static const std::unordered_set<std::string> keywords = {
       "data", "data-categories", "data-groups",          "operations", "faults",  "configurations",
-      "logs", "bulk-data",       "cyclic-subscriptions", "triggers",   "updates",
+      "logs", "bulk-data",       "cyclic-subscriptions", "triggers",   "updates", "hosts",
   };
   return keywords;
 }
