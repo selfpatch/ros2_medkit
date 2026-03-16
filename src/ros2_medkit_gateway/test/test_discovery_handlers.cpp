@@ -183,16 +183,16 @@ TEST_F(DiscoveryHandlersValidationTest, GetAreaMissingMatchesReturns400) {
 
 class DiscoveryHandlersFixtureTest : public ::testing::Test {
  protected:
-  inline static std::shared_ptr<GatewayNode> suite_node_;
-  inline static int suite_server_port_ = 0;
+  static inline std::shared_ptr<GatewayNode> suite_node_;
+  static inline int suite_server_port_ = 0;
 
   static void SetUpTestSuite() {
     suite_server_port_ = reserve_local_port();
     ASSERT_NE(suite_server_port_, 0);
 
-    std::vector<std::string> args = {"test_discovery_handlers", "--ros-args", "-p",
-                                     "server.port:=" + std::to_string(suite_server_port_), "-p",
-                                     "refresh_interval_ms:=60000"};
+    std::vector<std::string> args = {
+        "test_discovery_handlers",   "--ros-args", "-p", "server.port:=" + std::to_string(suite_server_port_), "-p",
+        "refresh_interval_ms:=60000"};
     std::vector<char *> argv;
     argv.reserve(args.size());
     for (auto & arg : args) {
@@ -439,8 +439,8 @@ TEST_F(DiscoveryHandlersFixtureTest, GetSubcomponentsReturnsChildren) {
 }
 
 TEST_F(DiscoveryHandlersValidationTest, GetSubcomponentsInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/components/bad/id/subcomponents",
-                                     R"(/api/v1/components/(.+)/subcomponents)");
+  auto req =
+      make_request_with_match("/api/v1/components/bad/id/subcomponents", R"(/api/v1/components/(.+)/subcomponents)");
   httplib::Response res;
 
   handlers_.handle_get_subcomponents(req, res);
@@ -504,8 +504,7 @@ TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnReturnsResolvedAndMissing
 }
 
 TEST_F(DiscoveryHandlersValidationTest, ComponentDependsOnInvalidIdReturns400) {
-  auto req =
-      make_request_with_match("/api/v1/components/bad/id/depends-on", R"(/api/v1/components/(.+)/depends-on)");
+  auto req = make_request_with_match("/api/v1/components/bad/id/depends-on", R"(/api/v1/components/(.+)/depends-on)");
   httplib::Response res;
 
   handlers_.handle_component_depends_on(req, res);
