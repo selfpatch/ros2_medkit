@@ -270,7 +270,7 @@ Use ``-e <env>`` with all pixi commands, e.g. ``pixi run -e humble build``.
 
 **Known limitations:**
 
-- **Linux x86_64 only** - macOS fails due to dynmsg/yaml-cpp Apple Clang incompatibility
+- **Linux x86_64 only** - macOS fails due to yaml-cpp build issues with Apple Clang
   (`#267 <https://github.com/selfpatch/ros2_medkit/issues/267>`_);
   Windows fails due to MSVC build issues
   (`#268 <https://github.com/selfpatch/ros2_medkit/issues/268>`_)

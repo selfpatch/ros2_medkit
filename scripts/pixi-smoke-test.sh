@@ -37,6 +37,10 @@ cleanup() { kill "$GW_PID" 2>/dev/null || true; wait "$GW_PID" 2>/dev/null || tr
 trap cleanup EXIT
 
 for i in $(seq 1 "$TIMEOUT"); do
+  if ! kill -0 "$GW_PID" 2>/dev/null; then
+    echo "ERROR: Gateway process died during startup"
+    exit 1
+  fi
   if curl -sf "http://localhost:${PORT}/api/v1/health" > /dev/null 2>&1; then
     echo "Gateway healthy after ${i}s"
     exit 0

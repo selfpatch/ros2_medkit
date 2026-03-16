@@ -23,6 +23,9 @@ requests = "*"
 colcon-common-extensions = "*"
 
 # --- Jazzy environment ---
+# Core ROS packages pinned to major version ranges to guard against breaking
+# changes on `pixi update`. The lockfile (pixi.lock) pins exact versions for
+# day-to-day reproducibility; these ranges are a safety net.
 
 [feature.jazzy]
 channels = [
@@ -31,10 +34,10 @@ channels = [
 ]
 
 [feature.jazzy.dependencies]
-# ROS 2 core
-ros-jazzy-ros-base = "*"
-ros-jazzy-rclcpp = "*"
-ros-jazzy-rclcpp-action = "*"
+# ROS 2 core (pinned to Jazzy-era major versions)
+ros-jazzy-ros-base = ">=0.11,<1"
+ros-jazzy-rclcpp = ">=28,<30"
+ros-jazzy-rclcpp-action = ">=28,<30"
 # Messages
 ros-jazzy-std-msgs = "*"
 ros-jazzy-std-srvs = "*"
@@ -81,6 +84,7 @@ ros-jazzy-ament-cmake-clang-tidy = "*"
 ros-jazzy-ament-index-python = "*"
 
 # --- Humble environment ---
+# Same pinning strategy as Jazzy - major version ranges for core packages.
 
 [feature.humble]
 channels = [
@@ -89,10 +93,10 @@ channels = [
 ]
 
 [feature.humble.dependencies]
-# ROS 2 core
-ros-humble-ros-base = "*"
-ros-humble-rclcpp = "*"
-ros-humble-rclcpp-action = "*"
+# ROS 2 core (pinned to Humble-era major versions)
+ros-humble-ros-base = ">=0.10,<1"
+ros-humble-rclcpp = ">=16,<18"
+ros-humble-rclcpp-action = ">=16,<18"
 # Messages
 ros-humble-std-msgs = "*"
 ros-humble-std-srvs = "*"
