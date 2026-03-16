@@ -151,10 +151,6 @@ TEST(PathResolverTest, NestedEntityTypeKeywords) {
   auto result = PathResolver::resolve("/areas/powertrain/subareas");
   EXPECT_EQ(result.category, PathCategory::kEntityCollection);
   EXPECT_EQ(result.entity_type, "subareas");
-
-  result = PathResolver::resolve("/functions/diag/hosts");
-  EXPECT_EQ(result.category, PathCategory::kEntityCollection);
-  EXPECT_EQ(result.entity_type, "hosts");
 }
 
 TEST(PathResolverTest, SubcomponentsKeyword) {
@@ -169,11 +165,30 @@ TEST(PathResolverTest, SubcomponentsKeyword) {
 
 TEST(PathResolverTest, AllResourceCollectionKeywords) {
   for (const auto & coll : {"data", "operations", "faults", "configurations", "logs", "bulk-data",
-                            "cyclic-subscriptions", "triggers", "updates", "data-categories", "data-groups"}) {
+                            "cyclic-subscriptions", "triggers", "updates", "data-categories", "data-groups", "hosts"}) {
     auto result = PathResolver::resolve(std::string("/apps/my_app/") + coll);
     EXPECT_EQ(result.category, PathCategory::kResourceCollection) << "Failed for: " << coll;
     EXPECT_EQ(result.resource_collection, coll) << "Failed for: " << coll;
   }
+}
+
+TEST(PathResolverTest, HostsIsResourceCollection) {
+  // @verifies REQ_INTEROP_002
+  // "hosts" is a sub-resource of components/functions, not a top-level entity type
+  auto result = PathResolver::resolve("/components/my_comp/hosts");
+  EXPECT_EQ(result.category, PathCategory::kResourceCollection);
+  EXPECT_EQ(result.entity_type, "components");
+  EXPECT_EQ(result.entity_id, "my_comp");
+  EXPECT_EQ(result.resource_collection, "hosts");
+}
+
+TEST(PathResolverTest, HostsUnderFunctionsIsResourceCollection) {
+  // @verifies REQ_INTEROP_002
+  auto result = PathResolver::resolve("/functions/diag/hosts");
+  EXPECT_EQ(result.category, PathCategory::kResourceCollection);
+  EXPECT_EQ(result.entity_type, "functions");
+  EXPECT_EQ(result.entity_id, "diag");
+  EXPECT_EQ(result.resource_collection, "hosts");
 }
 
 // =============================================================================
