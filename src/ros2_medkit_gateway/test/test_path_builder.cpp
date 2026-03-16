@@ -104,6 +104,27 @@ TEST_F(PathBuilderTest, EntityDetailHasPathParam) {
   EXPECT_TRUE(params[0]["required"].get<bool>());
 }
 
+TEST_F(PathBuilderTest, EntityDetailConcretePathOmitsParameters) {
+  // @verifies REQ_INTEROP_002
+  // When use_template=false (concrete entity path), no path parameters should be declared.
+  // OpenAPI 3.1.0 requires path params to match {placeholders} in the path key.
+  auto result = path_builder_.build_entity_detail("apps", false);
+  ASSERT_TRUE(result.contains("get"));
+  EXPECT_FALSE(result["get"].contains("parameters")) << "Concrete entity path should not declare path parameters";
+  EXPECT_TRUE(result["get"].contains("summary"));
+  EXPECT_TRUE(result["get"]["responses"].contains("200"));
+}
+
+TEST_F(PathBuilderTest, EntityDetailTemplatePathHasParameters) {
+  // @verifies REQ_INTEROP_002
+  // Default (use_template=true) should still include path parameters
+  auto result = path_builder_.build_entity_detail("apps", true);
+  ASSERT_TRUE(result["get"].contains("parameters"));
+  EXPECT_EQ(result["get"]["parameters"][0]["name"], "app_id");
+  EXPECT_EQ(result["get"]["parameters"][0]["in"], "path");
+  EXPECT_TRUE(result["get"]["parameters"][0]["required"].get<bool>());
+}
+
 // =============================================================================
 // Data collection tests
 // =============================================================================

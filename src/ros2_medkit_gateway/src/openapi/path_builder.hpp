@@ -36,7 +36,8 @@ class PathBuilder {
   nlohmann::json build_entity_collection(const std::string & entity_type) const;
 
   // Entity detail path (GET /areas/{id}, GET /apps/{id})
-  nlohmann::json build_entity_detail(const std::string & entity_type) const;
+  /// @param use_template If true, emit path parameter for {entity_id}. If false, assume concrete path.
+  nlohmann::json build_entity_detail(const std::string & entity_type, bool use_template = true) const;
 
   // Resource collection paths
   nlohmann::json build_data_collection(const std::string & entity_path, const std::vector<TopicData> & topics) const;
