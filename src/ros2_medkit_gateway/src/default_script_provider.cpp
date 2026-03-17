@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/default_script_provider.hpp"
 
+#include <fcntl.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -361,9 +362,9 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
   // Create pipes for stdout, stderr, and optionally stdin
   int stdout_pipe[2];
   int stderr_pipe[2];
-  int stdin_pipe[2];
+  int stdin_pipe[2] = {-1, -1};
 
-  if (pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0) {
+  if (pipe2(stdout_pipe, O_CLOEXEC) != 0 || pipe2(stderr_pipe, O_CLOEXEC) != 0) {
     {
       std::lock_guard<std::mutex> lock(exec_mutex_);
       active_execution_count_--;  // Release reserved slot
@@ -372,7 +373,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
   }
 
   if (pass_stdin_json) {
-    if (pipe(stdin_pipe) != 0) {
+    if (pipe2(stdin_pipe, O_CLOEXEC) != 0) {
       close(stdout_pipe[0]);
       close(stdout_pipe[1]);
       close(stderr_pipe[0]);
@@ -463,6 +464,8 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
 
   // --- Parent process ---
 
+  setpgid(child_pid, child_pid);  // Also set in parent (race-free with child's setpgid(0,0))
+
   // Close pipe ends we don't use
   close(stdout_pipe[1]);
   close(stderr_pipe[1]);
@@ -503,6 +506,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
   state_ptr->monitor_thread = std::thread([this, state_ptr, stdout_fd, stderr_fd, child_pid]() {
     // Read stdout and stderr until EOF
     constexpr int buf_size = 4096;
+    constexpr size_t kMaxOutputSize = 1024 * 1024;  // 1 MB
     char buf[buf_size];
     bool stdout_open = true;
     bool stderr_open = true;
@@ -541,7 +545,10 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
       if (stdout_open && FD_ISSET(stdout_fd, &read_fds)) {
         auto n = read(stdout_fd, buf, sizeof(buf));
         if (n > 0) {
-          state_ptr->stdout_data.append(buf, static_cast<size_t>(n));
+          if (state_ptr->stdout_data.size() < kMaxOutputSize) {
+            auto to_append = std::min(static_cast<size_t>(n), kMaxOutputSize - state_ptr->stdout_data.size());
+            state_ptr->stdout_data.append(buf, to_append);
+          }
         } else {
           stdout_open = false;
         }
@@ -550,7 +557,10 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
       if (stderr_open && FD_ISSET(stderr_fd, &read_fds)) {
         auto n = read(stderr_fd, buf, sizeof(buf));
         if (n > 0) {
-          state_ptr->stderr_data.append(buf, static_cast<size_t>(n));
+          if (state_ptr->stderr_data.size() < kMaxOutputSize) {
+            auto to_append = std::min(static_cast<size_t>(n), kMaxOutputSize - state_ptr->stderr_data.size());
+            state_ptr->stderr_data.append(buf, to_append);
+          }
         } else {
           stderr_open = false;
         }
@@ -563,6 +573,8 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
     // Reap the child process
     int wstatus = 0;
     waitpid(child_pid, &wstatus, 0);
+
+    state_ptr->pid = -1;  // Mark as reaped
 
     // Update state under lock
     std::lock_guard<std::mutex> lock(exec_mutex_);
@@ -588,7 +600,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
           state_ptr->status = "failed";
           std::string err_msg = state_ptr->stderr_data.empty()
                                     ? "Script exited with code " + std::to_string(state_ptr->exit_code)
-                                    : state_ptr->stderr_data;
+                                    : state_ptr->stderr_data.substr(0, 500);
           state_ptr->error = nlohmann::json{{"message", err_msg}, {"exit_code", state_ptr->exit_code}};
         }
       } else if (WIFSIGNALED(wstatus)) {
@@ -609,6 +621,9 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_sec);
       while (std::chrono::steady_clock::now() < deadline) {
         // Check if process already finished (without reaping - leave that to monitor thread)
+        if (state_ptr->pid <= 0) {
+          return;
+        }
         if (kill(child_pid, 0) != 0) {
           return;  // Process no longer exists, no timeout needed
         }
@@ -617,17 +632,26 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
 
       // Timeout reached - mark and send SIGTERM to process group
       state_ptr->timed_out.store(true);
+      if (state_ptr->pid <= 0) {
+        return;
+      }
       kill(-child_pid, SIGTERM);  // Negative PID = process group
 
       // Grace period (2 seconds), then SIGKILL
       auto grace_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
       while (std::chrono::steady_clock::now() < grace_deadline) {
+        if (state_ptr->pid <= 0) {
+          return;
+        }
         if (kill(child_pid, 0) != 0) {
           return;  // Process exited after SIGTERM
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
       // Still running after grace period - force kill the group
+      if (state_ptr->pid <= 0) {
+        return;
+      }
       kill(-child_pid, SIGKILL);
     });
   }
@@ -670,6 +694,10 @@ DefaultScriptProvider::control_execution(const std::string & /*entity_id*/, cons
   if (state.status != "running") {
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::NotRunning,
                                                       "Execution is not running (status: " + state.status + ")"});
+  }
+
+  if (state.pid <= 0) {
+    return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::NotRunning, "Process already exited"});
   }
 
   if (action == "stop") {
