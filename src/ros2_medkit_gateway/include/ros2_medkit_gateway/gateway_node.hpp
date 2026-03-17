@@ -28,6 +28,7 @@
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/configuration_manager.hpp"
 #include "ros2_medkit_gateway/data_access_manager.hpp"
+#include "ros2_medkit_gateway/default_script_provider.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/http/rate_limiter.hpp"
@@ -39,6 +40,7 @@
 #include "ros2_medkit_gateway/operation_manager.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/resource_sampler.hpp"
+#include "ros2_medkit_gateway/script_manager.hpp"
 #include "ros2_medkit_gateway/subscription_manager.hpp"
 #include "ros2_medkit_gateway/subscription_transport.hpp"
 #include "ros2_medkit_gateway/updates/update_manager.hpp"
@@ -119,6 +121,12 @@ class GatewayNode : public rclcpp::Node {
   LockManager * get_lock_manager() const;
 
   /**
+   * @brief Get the ScriptManager instance
+   * @return Raw pointer to ScriptManager (valid for lifetime of GatewayNode), or nullptr if not initialized
+   */
+  ScriptManager * get_script_manager() const;
+
+  /**
    * @brief Get the PluginManager instance
    * @return Raw pointer to PluginManager (valid for lifetime of GatewayNode)
    */
@@ -173,6 +181,8 @@ class GatewayNode : public rclcpp::Node {
   // plugin_ctx_ is owned here (outlives plugins); plugin_mgr_ holds a non-owning ref.
   std::unique_ptr<PluginContext> plugin_ctx_;
   std::unique_ptr<PluginManager> plugin_mgr_;
+  std::unique_ptr<DefaultScriptProvider> default_script_provider_;
+  std::unique_ptr<ScriptManager> script_mgr_;
   std::unique_ptr<UpdateManager> update_mgr_;
   std::unique_ptr<LockManager> lock_manager_;
   std::unique_ptr<RESTServer> rest_server_;
