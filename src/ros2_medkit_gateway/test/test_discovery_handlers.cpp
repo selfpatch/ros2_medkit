@@ -1,4 +1,4 @@
-// Copyright 2026 bburda
+// Copyright 2026 sewon jeon
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -172,6 +172,7 @@ class DiscoveryHandlersValidationTest : public ::testing::Test {
   DiscoveryHandlers handlers_{ctx_};
 };
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersValidationTest, GetAreaMissingMatchesReturns400) {
   httplib::Request req;
   httplib::Response res;
@@ -257,6 +258,7 @@ class DiscoveryHandlersFixtureTest : public ::testing::Test {
   std::string manifest_path_;
 };
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, ListAreasReturnsSeededItems) {
   httplib::Request req;
   httplib::Response res;
@@ -269,6 +271,7 @@ TEST_F(DiscoveryHandlersFixtureTest, ListAreasReturnsSeededItems) {
   ASSERT_EQ(body["items"].size(), 2);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersValidationTest, GetAreaInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/areas/bad@id", R"(/api/v1/areas/([^/]+))");
   httplib::Response res;
@@ -278,6 +281,7 @@ TEST_F(DiscoveryHandlersValidationTest, GetAreaInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetAreaUnknownIdReturns404) {
   auto req = make_request_with_match("/api/v1/areas/unknown", R"(/api/v1/areas/([^/]+))");
   httplib::Response res;
@@ -287,6 +291,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetAreaUnknownIdReturns404) {
   EXPECT_EQ(res.status, 404);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetAreaReturnsCapabilitiesAndLinks) {
   auto req = make_request_with_match("/api/v1/areas/vehicle", R"(/api/v1/areas/([^/]+))");
   httplib::Response res;
@@ -329,6 +334,7 @@ TEST_F(DiscoveryHandlersFixtureTest, AreaComponentsUnknownAreaReturns404) {
   EXPECT_EQ(res.status, 404);
 }
 
+// @verifies REQ_INTEROP_004
 TEST_F(DiscoveryHandlersFixtureTest, GetSubareasReturnsChildAreas) {
   auto req = make_request_with_match("/api/v1/areas/vehicle/subareas", R"(/api/v1/areas/([^/]+)/subareas)");
   httplib::Response res;
@@ -341,6 +347,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetSubareasReturnsChildAreas) {
   EXPECT_EQ(body["_links"]["parent"], "/api/v1/areas/vehicle");
 }
 
+// @verifies REQ_INTEROP_004
 TEST_F(DiscoveryHandlersValidationTest, GetSubareasInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/areas/bad@id/subareas", R"(/api/v1/areas/(.+)/subareas)");
   httplib::Response res;
@@ -350,6 +357,7 @@ TEST_F(DiscoveryHandlersValidationTest, GetSubareasInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_004
 TEST_F(DiscoveryHandlersFixtureTest, GetSubareasUnknownAreaReturns404) {
   auto req = make_request_with_match("/api/v1/areas/unknown/subareas", R"(/api/v1/areas/([^/]+)/subareas)");
   httplib::Response res;
@@ -359,6 +367,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetSubareasUnknownAreaReturns404) {
   EXPECT_EQ(res.status, 404);
 }
 
+// @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersFixtureTest, GetContainsReturnsAreaComponents) {
   auto req = make_request_with_match("/api/v1/areas/vehicle/contains", R"(/api/v1/areas/([^/]+)/contains)");
   httplib::Response res;
@@ -372,6 +381,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetContainsReturnsAreaComponents) {
   EXPECT_EQ(body["_links"]["area"], "/api/v1/areas/vehicle");
 }
 
+// @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersValidationTest, GetContainsInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/areas/bad@id/contains", R"(/api/v1/areas/(.+)/contains)");
   httplib::Response res;
@@ -381,6 +391,7 @@ TEST_F(DiscoveryHandlersValidationTest, GetContainsInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersFixtureTest, GetContainsUnknownAreaReturns404) {
   auto req = make_request_with_match("/api/v1/areas/unknown/contains", R"(/api/v1/areas/([^/]+)/contains)");
   httplib::Response res;
@@ -390,6 +401,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetContainsUnknownAreaReturns404) {
   EXPECT_EQ(res.status, 404);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, ListComponentsReturnsMetadata) {
   httplib::Request req;
   httplib::Response res;
@@ -403,6 +415,7 @@ TEST_F(DiscoveryHandlersFixtureTest, ListComponentsReturnsMetadata) {
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersValidationTest, GetComponentInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/components/bad/id", R"(/api/v1/components/(.+))");
   httplib::Response res;
@@ -412,6 +425,7 @@ TEST_F(DiscoveryHandlersValidationTest, GetComponentInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetComponentReturnsRelationshipsAndCapabilities) {
   auto req = make_request_with_match("/api/v1/components/main_ecu", R"(/api/v1/components/([^/]+))");
   httplib::Response res;
@@ -426,6 +440,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetComponentReturnsRelationshipsAndCapabili
   EXPECT_EQ(body["_links"]["area"], "/api/v1/areas/vehicle");
 }
 
+// @verifies REQ_INTEROP_005
 TEST_F(DiscoveryHandlersFixtureTest, GetSubcomponentsReturnsChildren) {
   auto req = make_request_with_match("/api/v1/components/main_ecu/subcomponents",
                                      R"(/api/v1/components/([^/]+)/subcomponents)");
@@ -438,6 +453,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetSubcomponentsReturnsChildren) {
   EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
 }
 
+// @verifies REQ_INTEROP_005
 TEST_F(DiscoveryHandlersValidationTest, GetSubcomponentsInvalidIdReturns400) {
   auto req =
       make_request_with_match("/api/v1/components/bad/id/subcomponents", R"(/api/v1/components/(.+)/subcomponents)");
@@ -448,6 +464,7 @@ TEST_F(DiscoveryHandlersValidationTest, GetSubcomponentsInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_005
 TEST_F(DiscoveryHandlersFixtureTest, GetSubcomponentsUnknownComponentReturns404) {
   auto req = make_request_with_match("/api/v1/components/unknown/subcomponents",
                                      R"(/api/v1/components/([^/]+)/subcomponents)");
@@ -458,6 +475,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetSubcomponentsUnknownComponentReturns404)
   EXPECT_EQ(res.status, 404);
 }
 
+// @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersFixtureTest, GetHostsReturnsHostedApps) {
   auto req = make_request_with_match("/api/v1/components/main_ecu/hosts", R"(/api/v1/components/([^/]+)/hosts)");
   httplib::Response res;
@@ -471,6 +489,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetHostsReturnsHostedApps) {
   EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], false);
 }
 
+// @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersValidationTest, GetHostsInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/components/bad/id/hosts", R"(/api/v1/components/(.+)/hosts)");
   httplib::Response res;
@@ -480,6 +499,7 @@ TEST_F(DiscoveryHandlersValidationTest, GetHostsInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersFixtureTest, GetHostsUnknownComponentReturns404) {
   auto req = make_request_with_match("/api/v1/components/unknown/hosts", R"(/api/v1/components/([^/]+)/hosts)");
   httplib::Response res;
@@ -489,6 +509,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetHostsUnknownComponentReturns404) {
   EXPECT_EQ(res.status, 404);
 }
 
+// @verifies REQ_INTEROP_008
 TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnReturnsResolvedAndMissingDependencies) {
   auto req =
       make_request_with_match("/api/v1/components/main_ecu/depends-on", R"(/api/v1/components/([^/]+)/depends-on)");
@@ -503,6 +524,7 @@ TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnReturnsResolvedAndMissing
   EXPECT_EQ(body["items"][1]["x-medkit"]["missing"], true);
 }
 
+// @verifies REQ_INTEROP_008
 TEST_F(DiscoveryHandlersValidationTest, ComponentDependsOnInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/components/bad/id/depends-on", R"(/api/v1/components/(.+)/depends-on)");
   httplib::Response res;
@@ -512,6 +534,7 @@ TEST_F(DiscoveryHandlersValidationTest, ComponentDependsOnInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_008
 TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnUnknownComponentReturns404) {
   auto req =
       make_request_with_match("/api/v1/components/unknown/depends-on", R"(/api/v1/components/([^/]+)/depends-on)");
@@ -522,6 +545,7 @@ TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnUnknownComponentReturns40
   EXPECT_EQ(res.status, 404);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersValidationTest, GetAppInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/apps/bad/id", R"(/api/v1/apps/(.+))");
   httplib::Response res;
@@ -531,6 +555,7 @@ TEST_F(DiscoveryHandlersValidationTest, GetAppInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, ListAppsReturnsSeededMetadata) {
   httplib::Request req;
   httplib::Response res;
@@ -545,6 +570,7 @@ TEST_F(DiscoveryHandlersFixtureTest, ListAppsReturnsSeededMetadata) {
   EXPECT_EQ(body["items"][0]["x-medkit"]["ros2"]["node"], "/vehicle/main_ecu/planner");
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetAppUnknownIdReturns404) {
   auto req = make_request_with_match("/api/v1/apps/unknown", R"(/api/v1/apps/([^/]+))");
   httplib::Response res;
@@ -554,6 +580,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetAppUnknownIdReturns404) {
   EXPECT_EQ(res.status, 404);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetAppReturnsLinksAndCapabilities) {
   auto req = make_request_with_match("/api/v1/apps/mapper", R"(/api/v1/apps/([^/]+))");
   httplib::Response res;
@@ -571,6 +598,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetAppReturnsLinksAndCapabilities) {
   EXPECT_EQ(body["x-medkit"]["is_online"], false);
 }
 
+// @verifies REQ_INTEROP_009
 TEST_F(DiscoveryHandlersFixtureTest, AppDependsOnReturnsResolvedAndMissingDependencies) {
   auto req = make_request_with_match("/api/v1/apps/mapper/depends-on", R"(/api/v1/apps/([^/]+)/depends-on)");
   httplib::Response res;
@@ -587,6 +615,7 @@ TEST_F(DiscoveryHandlersFixtureTest, AppDependsOnReturnsResolvedAndMissingDepend
   EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/mapper");
 }
 
+// @verifies REQ_INTEROP_009
 TEST_F(DiscoveryHandlersValidationTest, AppDependsOnInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/apps/bad/id/depends-on", R"(/api/v1/apps/(.+)/depends-on)");
   httplib::Response res;
@@ -596,6 +625,7 @@ TEST_F(DiscoveryHandlersValidationTest, AppDependsOnInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_009
 TEST_F(DiscoveryHandlersFixtureTest, AppDependsOnUnknownAppReturns404) {
   auto req = make_request_with_match("/api/v1/apps/unknown/depends-on", R"(/api/v1/apps/([^/]+)/depends-on)");
   httplib::Response res;
@@ -605,6 +635,7 @@ TEST_F(DiscoveryHandlersFixtureTest, AppDependsOnUnknownAppReturns404) {
   EXPECT_EQ(res.status, 404);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersValidationTest, GetFunctionInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/functions/bad/id", R"(/api/v1/functions/(.+))");
   httplib::Response res;
@@ -614,6 +645,7 @@ TEST_F(DiscoveryHandlersValidationTest, GetFunctionInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, ListFunctionsReturnsSeededFunctions) {
   httplib::Request req;
   httplib::Response res;
@@ -626,6 +658,7 @@ TEST_F(DiscoveryHandlersFixtureTest, ListFunctionsReturnsSeededFunctions) {
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetFunctionUnknownIdReturns404) {
   auto req = make_request_with_match("/api/v1/functions/unknown", R"(/api/v1/functions/([^/]+))");
   httplib::Response res;
@@ -635,6 +668,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetFunctionUnknownIdReturns404) {
   EXPECT_EQ(res.status, 404);
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetFunctionReturnsCapabilitiesAndGraphLink) {
   auto req = make_request_with_match("/api/v1/functions/navigation", R"(/api/v1/functions/([^/]+))");
   httplib::Response res;

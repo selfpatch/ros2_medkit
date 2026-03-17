@@ -326,6 +326,7 @@ if(BUILD_TESTING)
   # Add discovery handlers tests
   ament_add_gtest(test_discovery_handlers test/test_discovery_handlers.cpp)
   target_link_libraries(test_discovery_handlers gateway_lib)
+  set_tests_properties(test_discovery_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=71")
 
   # Add manifest parser tests
   ament_add_gtest(test_manifest_parser test/test_manifest_parser.cpp)
@@ -506,6 +507,7 @@ if(BUILD_TESTING)
       test_tls_config
       test_fault_manager
       test_discovery_models
+      test_discovery_handlers
       test_manifest_parser
       test_manifest_validator
       test_capability_builder
