@@ -14,9 +14,11 @@
 
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 
 #include <nlohmann/json.hpp>
@@ -49,22 +51,41 @@ struct ScriptsConfig {
   std::vector<ScriptEntryConfig> entries;
 };
 
-/// Tracks the state of a running script execution (stub for Task 7).
+/// Tracks the state of a running script execution.
 struct ExecutionState {
   std::string id;
   std::string script_id;
   std::string entity_id;
-  std::string status;
-  int pid = -1;
+  std::string status;  // running, completed, failed, terminated
+  pid_t pid = -1;
   std::optional<std::string> started_at;
   std::optional<std::string> completed_at;
   std::optional<int> progress;
   std::optional<nlohmann::json> output_parameters;
   std::optional<nlohmann::json> error;
+
+  // Subprocess I/O
+  std::string stdout_data;
+  std::string stderr_data;
+  int exit_code = -1;
+
+  // Thread management
+  std::atomic<bool> timed_out{false};
+  std::thread monitor_thread;
+  std::thread timeout_thread;
+
+  ~ExecutionState();
+
+  // Non-copyable, non-movable (due to atomic + threads)
+  ExecutionState() = default;
+  ExecutionState(const ExecutionState &) = delete;
+  ExecutionState & operator=(const ExecutionState &) = delete;
+  ExecutionState(ExecutionState &&) = delete;
+  ExecutionState & operator=(ExecutionState &&) = delete;
 };
 
 /// Built-in ScriptProvider that loads manifest entries and supports filesystem CRUD for uploaded
-/// scripts. Execution methods are stubbed (implemented in Task 7).
+/// scripts. Includes POSIX subprocess execution with timeout support.
 class DefaultScriptProvider : public ScriptProvider {
  public:
   explicit DefaultScriptProvider(const ScriptsConfig & config);
@@ -118,17 +139,42 @@ class DefaultScriptProvider : public ScriptProvider {
   /// Returns the current time as an ISO 8601 string.
   static std::string now_iso8601();
 
+  /// Resolves the script path and format for execution.
+  /// Checks manifest first, then filesystem uploads.
+  struct ResolvedScript {
+    std::string path;
+    std::string format;
+    int timeout_sec;
+    std::map<std::string, std::string> env;
+    nlohmann::json args;
+  };
+  std::optional<ResolvedScript> resolve_script(const std::string & entity_id, const std::string & script_id);
+
+  /// Determines the interpreter command for a given format.
+  static std::string interpreter_for_format(const std::string & format);
+
+  /// Builds the command-line arguments from manifest args config and request parameters.
+  static std::vector<std::string> build_command_args(const nlohmann::json & args_config,
+                                                     const std::optional<nlohmann::json> & parameters);
+
+  /// Converts an ExecutionState to an ExecutionInfo return value.
+  static ExecutionInfo state_to_info(const ExecutionState & state);
+
+  /// Generates a unique execution ID.
+  std::string generate_execution_id();
+
   ScriptsConfig config_;
   std::map<std::string, ScriptEntryConfig> manifest_scripts_;
   mutable std::mutex fs_mutex_;
 
-  // Execution tracking (populated by Task 7)
+  // Execution tracking
   std::unordered_map<std::string, std::unique_ptr<ExecutionState>> executions_;
-  std::mutex exec_mutex_;
+  mutable std::mutex exec_mutex_;
   int active_execution_count_ = 0;
 
   // Counter for ID generation
   int id_counter_ = 0;
+  int exec_id_counter_ = 0;
 };
 
 }  // namespace ros2_medkit_gateway

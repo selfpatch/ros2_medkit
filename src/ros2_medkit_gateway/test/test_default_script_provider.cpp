@@ -16,14 +16,49 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
 using namespace ros2_medkit_gateway;
 using json = nlohmann::json;
 
 namespace {
+
+// Path to the demo scripts in the source tree
+std::string get_demo_scripts_dir() {
+  // __FILE__ is the path to this test source file at compile time.
+  // From test/test_default_script_provider.cpp, scripts are at
+  // test/demo_nodes/scripts/
+  std::filesystem::path this_file(__FILE__);
+  return (this_file.parent_path() / "demo_nodes" / "scripts").string();
+}
+
+/// Polls execution status until it leaves "running" or timeout is reached.
+/// Returns the final ExecutionInfo.
+std::optional<ExecutionInfo> wait_for_completion(DefaultScriptProvider & provider, const std::string & entity_id,
+                                                 const std::string & script_id, const std::string & execution_id,
+                                                 int timeout_ms = 10000) {
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto result = provider.get_execution(entity_id, script_id, execution_id);
+    if (!result.has_value()) {
+      return std::nullopt;
+    }
+    if (result->status != "running") {
+      return *result;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  // Return last status even if still running
+  auto result = provider.get_execution(entity_id, script_id, execution_id);
+  if (result.has_value()) {
+    return *result;
+  }
+  return std::nullopt;
+}
 
 class DefaultScriptProviderTest : public ::testing::Test {
  protected:
@@ -31,6 +66,7 @@ class DefaultScriptProviderTest : public ::testing::Test {
     test_dir_ = std::filesystem::temp_directory_path() /
                 ("test_scripts_" + std::to_string(getpid()) + "_" + std::to_string(test_counter_++));
     std::filesystem::create_directories(test_dir_);
+    scripts_dir_ = get_demo_scripts_dir();
   }
 
   void TearDown() override {
@@ -62,11 +98,27 @@ class DefaultScriptProviderTest : public ::testing::Test {
     return entry;
   }
 
+  /// Creates a manifest entry pointing to a real demo script.
+  ScriptEntryConfig make_real_script_entry(const std::string & id, const std::string & script_name,
+                                           const std::string & format, int timeout_sec = 300) {
+    ScriptEntryConfig entry;
+    entry.id = id;
+    entry.name = id;
+    entry.description = "Test script";
+    entry.path = scripts_dir_ + "/" + script_name;
+    entry.format = format;
+    entry.timeout_sec = timeout_sec;
+    return entry;
+  }
+
   std::filesystem::path test_dir_;
+  std::string scripts_dir_;
   static int test_counter_;
 };
 
 int DefaultScriptProviderTest::test_counter_ = 0;
+
+// --- CRUD tests (from Task 6, unchanged) ---
 
 // @verifies REQ_INTEROP_090
 TEST_F(DefaultScriptProviderTest, ManifestScriptsLoaded) {
@@ -364,30 +416,6 @@ TEST_F(DefaultScriptProviderTest, DeleteNonexistentScriptFails) {
 }
 
 // @verifies REQ_INTEROP_090
-TEST_F(DefaultScriptProviderTest, ExecutionMethodsStubbed) {
-  auto config = make_config();
-  DefaultScriptProvider provider(config);
-
-  ExecutionRequest req{"now", std::nullopt, std::nullopt};
-
-  auto start = provider.start_execution("comp1", "script_0", req);
-  ASSERT_FALSE(start.has_value());
-  EXPECT_EQ(start.error().code, ScriptBackendError::Internal);
-
-  auto get = provider.get_execution("comp1", "script_0", "exec_0");
-  ASSERT_FALSE(get.has_value());
-  EXPECT_EQ(get.error().code, ScriptBackendError::Internal);
-
-  auto control = provider.control_execution("comp1", "script_0", "exec_0", "stop");
-  ASSERT_FALSE(control.has_value());
-  EXPECT_EQ(control.error().code, ScriptBackendError::Internal);
-
-  auto del = provider.delete_execution("comp1", "script_0", "exec_0");
-  ASSERT_FALSE(del.has_value());
-  EXPECT_EQ(del.error().code, ScriptBackendError::Internal);
-}
-
-// @verifies REQ_INTEROP_090
 TEST_F(DefaultScriptProviderTest, ManifestScriptWithParametersSchema) {
   auto entry = make_manifest_entry("schema_script", "Schema Script");
   entry.parameters_schema = json{{"type", "object"}, {"properties", {{"mode", {{"type", "string"}}}}}};
@@ -427,6 +455,436 @@ TEST_F(DefaultScriptProviderTest, UploadedScriptsIsolatedByEntity) {
   auto list3 = provider.list_scripts("comp3");
   ASSERT_TRUE(list3.has_value());
   EXPECT_EQ(list3->size(), 0u);
+}
+
+// --- Execution tests (Task 7) ---
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, SubprocessExecutionPython) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "echo_py", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+  EXPECT_EQ(start->status, "running");
+  EXPECT_FALSE(start->id.empty());
+
+  auto final_state = wait_for_completion(provider, "comp1", "echo_py", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed")
+      << "error: " << (final_state->error.has_value() ? final_state->error->dump() : "none");
+  ASSERT_TRUE(final_state->output_parameters.has_value());
+
+  // echo_params.py outputs {"args": [...], "env": {...}}
+  auto output = final_state->output_parameters.value();
+  EXPECT_TRUE(output.contains("args"));
+  EXPECT_TRUE(output["args"].is_array());
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, SubprocessExecutionBash) {
+  auto entry = make_real_script_entry("echo_bash", "echo_params.bash", "bash");
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "echo_bash", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  auto final_state = wait_for_completion(provider, "comp1", "echo_bash", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed")
+      << "error: " << (final_state->error.has_value() ? final_state->error->dump() : "none");
+  ASSERT_TRUE(final_state->output_parameters.has_value());
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, SubprocessExecutionSh) {
+  auto entry = make_real_script_entry("echo_sh", "echo_params.sh", "sh");
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "echo_sh", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  auto final_state = wait_for_completion(provider, "comp1", "echo_sh", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed")
+      << "error: " << (final_state->error.has_value() ? final_state->error->dump() : "none");
+  ASSERT_TRUE(final_state->output_parameters.has_value());
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, SubprocessFailure) {
+  // Create a script that exits with code 1
+  auto fail_script = test_dir_ / "fail.sh";
+  {
+    std::ofstream f(fail_script);
+    f << "#!/bin/sh\necho 'something went wrong' >&2\nexit 1\n";
+  }
+  std::filesystem::permissions(fail_script, std::filesystem::perms::owner_exec, std::filesystem::perm_options::add);
+
+  ScriptEntryConfig entry;
+  entry.id = "fail_script";
+  entry.name = "Fail Script";
+  entry.path = fail_script.string();
+  entry.format = "sh";
+  entry.timeout_sec = 30;
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "fail_script", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  auto final_state = wait_for_completion(provider, "comp1", "fail_script", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "failed");
+  ASSERT_TRUE(final_state->error.has_value());
+  EXPECT_TRUE(final_state->error->contains("message"));
+  EXPECT_TRUE(final_state->error->contains("exit_code"));
+  EXPECT_EQ(final_state->error->at("exit_code").get<int>(), 1);
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, SubprocessTimeout) {
+  // Create a script that sleeps for a long time
+  auto slow_script = test_dir_ / "slow.sh";
+  {
+    std::ofstream f(slow_script);
+    f << "#!/bin/sh\nsleep 60\n";
+  }
+  std::filesystem::permissions(slow_script, std::filesystem::perms::owner_exec, std::filesystem::perm_options::add);
+
+  ScriptEntryConfig entry;
+  entry.id = "slow_script";
+  entry.name = "Slow Script";
+  entry.path = slow_script.string();
+  entry.format = "sh";
+  entry.timeout_sec = 1;  // 1 second timeout
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "slow_script", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  // Wait for the timeout to trigger (timeout is 1s + 2s grace period + some margin)
+  auto final_state = wait_for_completion(provider, "comp1", "slow_script", start->id, 15000);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "terminated");
+  ASSERT_TRUE(final_state->error.has_value());
+  EXPECT_NE(final_state->error->at("message").get<std::string>().find("timed out"), std::string::npos);
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, PositionalArgs) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  entry.args = json::array({
+      {{"name", "input"}, {"type", "positional"}},
+      {{"name", "output"}, {"type", "positional"}},
+  });
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  json params = {{"input", "/data/sensor.log"}, {"output", "/tmp/result.json"}};
+  ExecutionRequest req{"now", params, std::nullopt};
+  auto start = provider.start_execution("comp1", "echo_py", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  auto final_state = wait_for_completion(provider, "comp1", "echo_py", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed")
+      << "error: " << (final_state->error.has_value() ? final_state->error->dump() : "none");
+  ASSERT_TRUE(final_state->output_parameters.has_value());
+
+  auto output = final_state->output_parameters.value();
+  ASSERT_TRUE(output.contains("args"));
+  auto args = output["args"];
+  ASSERT_GE(args.size(), 2u);
+  EXPECT_EQ(args[0].get<std::string>(), "/data/sensor.log");
+  EXPECT_EQ(args[1].get<std::string>(), "/tmp/result.json");
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, NamedArgs) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  entry.args = json::array({
+      {{"name", "threshold"}, {"type", "named"}, {"flag", "--threshold"}},
+  });
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  json params = {{"threshold", "0.1"}};
+  ExecutionRequest req{"now", params, std::nullopt};
+  auto start = provider.start_execution("comp1", "echo_py", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  auto final_state = wait_for_completion(provider, "comp1", "echo_py", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed")
+      << "error: " << (final_state->error.has_value() ? final_state->error->dump() : "none");
+  ASSERT_TRUE(final_state->output_parameters.has_value());
+
+  auto output = final_state->output_parameters.value();
+  auto args = output["args"];
+  // Should contain "--threshold" followed by "0.1"
+  bool found = false;
+  for (size_t i = 0; i + 1 < args.size(); ++i) {
+    if (args[i].get<std::string>() == "--threshold" && args[i + 1].get<std::string>() == "0.1") {
+      found = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found) << "Expected --threshold 0.1 in args: " << args.dump();
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, FlagArgs) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  entry.args = json::array({
+      {{"name", "verbose"}, {"type", "flag"}, {"flag", "-v"}},
+  });
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  json params = {{"verbose", true}};
+  ExecutionRequest req{"now", params, std::nullopt};
+  auto start = provider.start_execution("comp1", "echo_py", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  auto final_state = wait_for_completion(provider, "comp1", "echo_py", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed")
+      << "error: " << (final_state->error.has_value() ? final_state->error->dump() : "none");
+  ASSERT_TRUE(final_state->output_parameters.has_value());
+
+  auto output = final_state->output_parameters.value();
+  auto args = output["args"];
+  // Should contain "-v"
+  bool found = false;
+  for (const auto & arg : args) {
+    if (arg.get<std::string>() == "-v") {
+      found = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found) << "Expected -v in args: " << args.dump();
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, EnvVars) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  entry.env = {{"ROBOT_ID", "robot_42"}, {"GATEWAY_URL", "http://localhost:8080"}};
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "echo_py", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  auto final_state = wait_for_completion(provider, "comp1", "echo_py", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed")
+      << "error: " << (final_state->error.has_value() ? final_state->error->dump() : "none");
+  ASSERT_TRUE(final_state->output_parameters.has_value());
+
+  auto output = final_state->output_parameters.value();
+  ASSERT_TRUE(output.contains("env"));
+  auto env = output["env"];
+  EXPECT_EQ(env.value("ROBOT_ID", ""), "robot_42");
+  EXPECT_EQ(env.value("GATEWAY_URL", ""), "http://localhost:8080");
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, StdinJsonFallback) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  // No args config - parameters should be passed via stdin as JSON
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  json params = {{"sensor", "lidar"}, {"threshold", 0.5}};
+  ExecutionRequest req{"now", params, std::nullopt};
+  auto start = provider.start_execution("comp1", "echo_py", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  auto final_state = wait_for_completion(provider, "comp1", "echo_py", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed")
+      << "error: " << (final_state->error.has_value() ? final_state->error->dump() : "none");
+  ASSERT_TRUE(final_state->output_parameters.has_value());
+
+  auto output = final_state->output_parameters.value();
+  // echo_params.py reads stdin and puts it in output["stdin"]
+  ASSERT_TRUE(output.contains("stdin")) << "Expected stdin in output: " << output.dump();
+  EXPECT_EQ(output["stdin"]["sensor"].get<std::string>(), "lidar");
+  EXPECT_DOUBLE_EQ(output["stdin"]["threshold"].get<double>(), 0.5);
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, ConcurrencyLimit) {
+  // Create a script that sleeps briefly
+  auto sleep_script = test_dir_ / "sleep.sh";
+  {
+    std::ofstream f(sleep_script);
+    f << "#!/bin/sh\nsleep 10\n";
+  }
+  std::filesystem::permissions(sleep_script, std::filesystem::perms::owner_exec, std::filesystem::perm_options::add);
+
+  ScriptEntryConfig entry;
+  entry.id = "sleep_script";
+  entry.name = "Sleep Script";
+  entry.path = sleep_script.string();
+  entry.format = "sh";
+  entry.timeout_sec = 30;
+
+  auto config = make_config({entry});
+  config.max_concurrent_executions = 2;  // Low limit for testing
+  DefaultScriptProvider provider(config);
+
+  // Start 2 executions (the limit)
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto exec1 = provider.start_execution("comp1", "sleep_script", req);
+  ASSERT_TRUE(exec1.has_value()) << exec1.error().message;
+
+  auto exec2 = provider.start_execution("comp1", "sleep_script", req);
+  ASSERT_TRUE(exec2.has_value()) << exec2.error().message;
+
+  // Third should be rejected
+  auto exec3 = provider.start_execution("comp1", "sleep_script", req);
+  ASSERT_FALSE(exec3.has_value());
+  EXPECT_EQ(exec3.error().code, ScriptBackendError::ConcurrencyLimit);
+
+  // Clean up: stop the running executions
+  (void)provider.control_execution("comp1", "sleep_script", exec1->id, "forced_termination");
+  (void)provider.control_execution("comp1", "sleep_script", exec2->id, "forced_termination");
+
+  // Wait for them to finish
+  wait_for_completion(provider, "comp1", "sleep_script", exec1->id, 5000);
+  wait_for_completion(provider, "comp1", "sleep_script", exec2->id, 5000);
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, UnsupportedExecutionType) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  ExecutionRequest req{"on_restart", std::nullopt, std::nullopt};
+  auto result = provider.start_execution("comp1", "echo_py", req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::UnsupportedType);
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, ExecutionNotFound) {
+  auto config = make_config();
+  DefaultScriptProvider provider(config);
+
+  auto result = provider.get_execution("comp1", "script", "nonexistent_exec");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::NotFound);
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, DeleteRunningExecutionFails) {
+  auto sleep_script = test_dir_ / "sleep2.sh";
+  {
+    std::ofstream f(sleep_script);
+    f << "#!/bin/sh\nsleep 10\n";
+  }
+  std::filesystem::permissions(sleep_script, std::filesystem::perms::owner_exec, std::filesystem::perm_options::add);
+
+  ScriptEntryConfig entry;
+  entry.id = "sleep2";
+  entry.name = "Sleep";
+  entry.path = sleep_script.string();
+  entry.format = "sh";
+  entry.timeout_sec = 30;
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "sleep2", req);
+  ASSERT_TRUE(start.has_value());
+
+  // Try to delete while running
+  auto del = provider.delete_execution("comp1", "sleep2", start->id);
+  ASSERT_FALSE(del.has_value());
+  EXPECT_EQ(del.error().code, ScriptBackendError::AlreadyRunning);
+
+  // Clean up
+  (void)provider.control_execution("comp1", "sleep2", start->id, "forced_termination");
+  wait_for_completion(provider, "comp1", "sleep2", start->id, 5000);
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, DeleteCompletedExecution) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "echo_py", req);
+  ASSERT_TRUE(start.has_value());
+
+  auto final_state = wait_for_completion(provider, "comp1", "echo_py", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed");
+
+  // Delete completed execution
+  auto del = provider.delete_execution("comp1", "echo_py", start->id);
+  EXPECT_TRUE(del.has_value());
+
+  // Verify it's gone
+  auto get = provider.get_execution("comp1", "echo_py", start->id);
+  ASSERT_FALSE(get.has_value());
+  EXPECT_EQ(get.error().code, ScriptBackendError::NotFound);
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, ControlStopExecution) {
+  auto sleep_script = test_dir_ / "sleep3.sh";
+  {
+    std::ofstream f(sleep_script);
+    f << "#!/bin/sh\nsleep 60\n";
+  }
+  std::filesystem::permissions(sleep_script, std::filesystem::perms::owner_exec, std::filesystem::perm_options::add);
+
+  ScriptEntryConfig entry;
+  entry.id = "sleep3";
+  entry.name = "Sleep";
+  entry.path = sleep_script.string();
+  entry.format = "sh";
+  entry.timeout_sec = 300;
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "sleep3", req);
+  ASSERT_TRUE(start.has_value());
+
+  // Stop execution
+  auto control = provider.control_execution("comp1", "sleep3", start->id, "stop");
+  ASSERT_TRUE(control.has_value());
+  EXPECT_EQ(control->status, "terminated");
+
+  // Wait for monitor thread to reap the child
+  wait_for_completion(provider, "comp1", "sleep3", start->id, 5000);
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, ScriptNotFoundExecution) {
+  auto config = make_config();
+  DefaultScriptProvider provider(config);
+
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto result = provider.start_execution("comp1", "nonexistent_script", req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::NotFound);
 }
 
 }  // namespace
