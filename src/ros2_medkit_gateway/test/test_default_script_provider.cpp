@@ -887,4 +887,33 @@ TEST_F(DefaultScriptProviderTest, ScriptNotFoundExecution) {
   EXPECT_EQ(result.error().code, ScriptBackendError::NotFound);
 }
 
+// --- Path traversal tests ---
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, PathTraversalScriptIdRejected) {
+  auto config = make_config();
+  DefaultScriptProvider provider(config);
+
+  auto result = provider.get_script("comp1", "..");
+  ASSERT_FALSE(result.has_value());
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, DeletePathTraversalRejected) {
+  auto config = make_config();
+  DefaultScriptProvider provider(config);
+
+  auto result = provider.delete_script("comp1", "..");
+  ASSERT_FALSE(result.has_value());
+}
+
+// @verifies REQ_INTEROP_090
+TEST_F(DefaultScriptProviderTest, PathTraversalEntityIdRejected) {
+  auto config = make_config();
+  DefaultScriptProvider provider(config);
+
+  auto result = provider.get_script("..", "script1");
+  ASSERT_FALSE(result.has_value());
+}
+
 }  // namespace

@@ -81,6 +81,16 @@ DefaultScriptProvider::list_scripts(const std::string & entity_id) {
   // 2. Scan filesystem for uploaded scripts: scripts_dir/{entity_id}/*/metadata.json
   if (!config_.scripts_dir.empty()) {
     auto entity_dir = std::filesystem::path(config_.scripts_dir) / entity_id;
+    auto canonical_base = std::filesystem::weakly_canonical(config_.scripts_dir);
+    auto canonical_entity_dir = std::filesystem::weakly_canonical(entity_dir);
+    auto base_str = canonical_base.string();
+    if (base_str.back() != '/') {
+      base_str += '/';
+    }
+    auto entity_str = canonical_entity_dir.string();
+    if (entity_str.size() < base_str.size() || entity_str.compare(0, base_str.size(), base_str) != 0) {
+      return result;  // Path escaped scripts_dir - return manifest-only results
+    }
     std::error_code ec;
     if (std::filesystem::is_directory(entity_dir, ec)) {
       for (const auto & dir_entry : std::filesystem::directory_iterator(entity_dir, ec)) {
@@ -135,7 +145,12 @@ tl::expected<ScriptInfo, ScriptBackendErrorInfo> DefaultScriptProvider::get_scri
 
   // Check filesystem
   if (!config_.scripts_dir.empty()) {
-    auto meta_path = script_dir_path(entity_id, script_id) / "metadata.json";
+    auto dir = script_dir_path(entity_id, script_id);
+    if (dir.empty()) {
+      return tl::make_unexpected(
+          ScriptBackendErrorInfo{ScriptBackendError::NotFound, "Script not found: " + script_id});
+    }
+    auto meta_path = dir / "metadata.json";
     std::error_code ec;
     if (std::filesystem::exists(meta_path, ec)) {
       try {
@@ -187,6 +202,9 @@ DefaultScriptProvider::upload_script(const std::string & entity_id, const std::s
 
   // Create directory
   auto dir = script_dir_path(entity_id, script_id);
+  if (dir.empty()) {
+    return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::InvalidInput, "Invalid script ID"});
+  }
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
   if (ec) {
@@ -268,6 +286,9 @@ tl::expected<void, ScriptBackendErrorInfo> DefaultScriptProvider::delete_script(
   std::lock_guard<std::mutex> lock(fs_mutex_);
 
   auto dir = script_dir_path(entity_id, script_id);
+  if (dir.empty()) {
+    return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::NotFound, "Script not found: " + script_id});
+  }
   std::error_code ec;
   if (!std::filesystem::exists(dir, ec)) {
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::NotFound, "Script not found: " + script_id});
@@ -685,7 +706,32 @@ tl::expected<void, ScriptBackendErrorInfo> DefaultScriptProvider::delete_executi
 
 std::filesystem::path DefaultScriptProvider::script_dir_path(const std::string & entity_id,
                                                              const std::string & script_id) const {
-  return std::filesystem::path(config_.scripts_dir) / entity_id / script_id;
+  auto path = std::filesystem::path(config_.scripts_dir) / entity_id / script_id;
+  auto canonical_base = std::filesystem::weakly_canonical(config_.scripts_dir);
+  auto canonical_path = std::filesystem::weakly_canonical(path);
+  // Safety check: verify path is strictly inside scripts_dir (not equal to it)
+  auto base_str = canonical_base.string();
+  if (base_str.back() != '/') {
+    base_str += '/';
+  }
+  auto path_str = canonical_path.string();
+  if (path_str.size() < base_str.size() || path_str.compare(0, base_str.size(), base_str) != 0) {
+    return {};  // Path escaped scripts_dir or equals scripts_dir
+  }
+  // Verify path is exactly 2 levels deep (entity_id/script_id)
+  auto relative = canonical_path.lexically_relative(canonical_base);
+  auto it = relative.begin();
+  int depth = 0;
+  for (; it != relative.end(); ++it) {
+    if (*it == "..") {
+      return {};  // Should not happen after canonicalization, but be safe
+    }
+    depth++;
+  }
+  if (depth != 2) {
+    return {};  // Must be exactly entity_id/script_id
+  }
+  return canonical_path;
 }
 
 std::string DefaultScriptProvider::generate_id() {
@@ -775,6 +821,9 @@ DefaultScriptProvider::resolve_script(const std::string & entity_id, const std::
   // Check filesystem uploads
   if (!config_.scripts_dir.empty()) {
     auto dir = script_dir_path(entity_id, script_id);
+    if (dir.empty()) {
+      return std::nullopt;
+    }
     auto meta_path = dir / "metadata.json";
     std::error_code ec;
     if (std::filesystem::exists(meta_path, ec)) {

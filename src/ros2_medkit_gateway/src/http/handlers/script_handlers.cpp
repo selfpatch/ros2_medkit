@@ -14,6 +14,9 @@
 
 #include "ros2_medkit_gateway/http/handlers/script_handlers.hpp"
 
+#include <algorithm>
+#include <cctype>
+
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 
@@ -34,6 +37,15 @@ bool ScriptHandlers::check_backend(httplib::Response & res) {
     return false;
   }
   return true;
+}
+
+bool ScriptHandlers::is_valid_resource_id(const std::string & id) {
+  if (id.empty() || id.size() > 256) {
+    return false;
+  }
+  return std::all_of(id.begin(), id.end(), [](unsigned char c) {
+    return std::isalnum(c) || c == '_' || c == '-';
+  });
 }
 
 void ScriptHandlers::send_script_error(httplib::Response & res, const ScriptBackendErrorInfo & err) {
@@ -211,6 +223,10 @@ void ScriptHandlers::handle_get_script(const httplib::Request & req, httplib::Re
   try {
     auto entity_id = req.matches[1].str();
     auto script_id = req.matches[2].str();
+    if (!is_valid_resource_id(script_id)) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
+      return;
+    }
     auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity) {
       return;
@@ -239,6 +255,10 @@ void ScriptHandlers::handle_delete_script(const httplib::Request & req, httplib:
   try {
     auto entity_id = req.matches[1].str();
     auto script_id = req.matches[2].str();
+    if (!is_valid_resource_id(script_id)) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
+      return;
+    }
     auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity) {
       return;
@@ -264,6 +284,10 @@ void ScriptHandlers::handle_start_execution(const httplib::Request & req, httpli
   try {
     auto entity_id = req.matches[1].str();
     auto script_id = req.matches[2].str();
+    if (!is_valid_resource_id(script_id)) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
+      return;
+    }
     auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity) {
       return;
@@ -321,6 +345,14 @@ void ScriptHandlers::handle_get_execution(const httplib::Request & req, httplib:
     auto entity_id = req.matches[1].str();
     auto script_id = req.matches[2].str();
     auto execution_id = req.matches[3].str();
+    if (!is_valid_resource_id(script_id)) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
+      return;
+    }
+    if (!is_valid_resource_id(execution_id)) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid execution ID format");
+      return;
+    }
     auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity) {
       return;
@@ -347,6 +379,14 @@ void ScriptHandlers::handle_control_execution(const httplib::Request & req, http
     auto entity_id = req.matches[1].str();
     auto script_id = req.matches[2].str();
     auto execution_id = req.matches[3].str();
+    if (!is_valid_resource_id(script_id)) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
+      return;
+    }
+    if (!is_valid_resource_id(execution_id)) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid execution ID format");
+      return;
+    }
     auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity) {
       return;
@@ -387,6 +427,14 @@ void ScriptHandlers::handle_delete_execution(const httplib::Request & req, httpl
     auto entity_id = req.matches[1].str();
     auto script_id = req.matches[2].str();
     auto execution_id = req.matches[3].str();
+    if (!is_valid_resource_id(script_id)) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
+      return;
+    }
+    if (!is_valid_resource_id(execution_id)) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid execution ID format");
+      return;
+    }
     auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity) {
       return;
