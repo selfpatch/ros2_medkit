@@ -112,6 +112,7 @@ class TestScriptsNotConfigured(GatewayTestCase):
     MIN_EXPECTED_APPS = 1
     REQUIRED_APPS = {'temp_sensor'}
 
+    # @verifies REQ_INTEROP_041
     def test_01_list_scripts_returns_501(self):
         """GET /apps/{app}/scripts returns 501 without backend."""
         r = requests.get(
@@ -120,6 +121,7 @@ class TestScriptsNotConfigured(GatewayTestCase):
         self.assertEqual(r.status_code, 501)
         self.assertEqual(r.json()['error_code'], 'not-implemented')
 
+    # @verifies REQ_INTEROP_040
     def test_02_upload_script_returns_501(self):
         """POST /apps/{app}/scripts returns 501 without backend."""
         files = {'file': ('test.py', PYTHON_SCRIPT, 'application/octet-stream')}
@@ -130,6 +132,7 @@ class TestScriptsNotConfigured(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 501)
 
+    # @verifies REQ_INTEROP_042
     def test_03_get_script_returns_501(self):
         """GET /apps/{app}/scripts/{id} returns 501 without backend."""
         r = requests.get(
@@ -137,6 +140,7 @@ class TestScriptsNotConfigured(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 501)
 
+    # @verifies REQ_INTEROP_043
     def test_04_delete_script_returns_501(self):
         """DELETE /apps/{app}/scripts/{id} returns 501 without backend."""
         r = requests.delete(
@@ -144,6 +148,7 @@ class TestScriptsNotConfigured(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 501)
 
+    # @verifies REQ_INTEROP_044
     def test_05_start_execution_returns_501(self):
         """POST /apps/{app}/scripts/{id}/executions returns 501."""
         r = requests.post(
@@ -153,6 +158,7 @@ class TestScriptsNotConfigured(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 501)
 
+    # @verifies REQ_INTEROP_046
     def test_06_get_execution_returns_501(self):
         """GET /apps/{app}/scripts/{id}/executions/{eid} returns 501."""
         r = requests.get(
@@ -161,6 +167,7 @@ class TestScriptsNotConfigured(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 501)
 
+    # @verifies REQ_INTEROP_047
     def test_07_control_execution_returns_501(self):
         """PUT /apps/{app}/scripts/{id}/executions/{eid} returns 501."""
         r = requests.put(
@@ -206,12 +213,14 @@ class TestScriptsCRUD(GatewayTestCase):
         self.assertIn('id', data)
         return r, data['id']
 
+    # @verifies REQ_INTEROP_041
     def test_01_list_scripts_empty(self):
         """GET /apps/{app}/scripts returns empty items initially."""
         data = self.get_json('/apps/temp_sensor/scripts')
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list)
 
+    # @verifies REQ_INTEROP_040
     def test_02_upload_and_list(self):
         """Upload a script, verify it appears in the list."""
         r, script_id = self._upload_script()
@@ -221,6 +230,7 @@ class TestScriptsCRUD(GatewayTestCase):
         ids = [item['id'] for item in data['items']]
         self.assertIn(script_id, ids)
 
+    # @verifies REQ_INTEROP_042
     def test_03_get_script_metadata(self):
         """GET /apps/{app}/scripts/{id} returns full metadata."""
         _, script_id = self._upload_script(filename='diag.py')
@@ -231,6 +241,7 @@ class TestScriptsCRUD(GatewayTestCase):
         self.assertIn('href', data)
         self.assertFalse(data['managed'])
 
+    # @verifies REQ_INTEROP_042
     def test_04_get_nonexistent_returns_404(self):
         """GET /apps/{app}/scripts/nonexistent returns 404."""
         r = requests.get(
@@ -239,6 +250,7 @@ class TestScriptsCRUD(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 404)
 
+    # @verifies REQ_INTEROP_043
     def test_05_delete_script(self):
         """DELETE /apps/{app}/scripts/{id} removes it."""
         _, script_id = self._upload_script(filename='to_delete.py')
@@ -256,6 +268,7 @@ class TestScriptsCRUD(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 404)
 
+    # @verifies REQ_INTEROP_043
     def test_06_delete_nonexistent_returns_404(self):
         """DELETE /apps/{app}/scripts/nonexistent returns 404."""
         r = requests.delete(
@@ -264,6 +277,7 @@ class TestScriptsCRUD(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 404)
 
+    # @verifies REQ_INTEROP_040
     def test_07_upload_missing_file_field(self):
         """POST without multipart file field returns 400."""
         r = requests.post(
@@ -282,6 +296,7 @@ class TestScriptsCRUD(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 404)
 
+    # @verifies REQ_INTEROP_040
     def test_09_upload_with_metadata(self):
         """Upload with metadata field sets custom name and description."""
         import json as json_mod
@@ -345,6 +360,7 @@ class TestScriptsExecution(GatewayTestCase):
         self.assertIn('id', data)
         return r, data['id']
 
+    # @verifies REQ_INTEROP_044
     def test_01_execute_python_script(self):
         """Upload Python script, execute, poll until completed."""
         script_id = self._upload_script(
@@ -367,6 +383,7 @@ class TestScriptsExecution(GatewayTestCase):
         # Fast script should produce JSON output
         self.assertIsNotNone(data.get('parameters'))
 
+    # @verifies REQ_INTEROP_044
     def test_02_execute_shell_script(self):
         """Upload shell script, execute, poll until completed."""
         script_id = self._upload_script(
@@ -385,6 +402,7 @@ class TestScriptsExecution(GatewayTestCase):
         )
         self.assertEqual(data['status'], 'completed')
 
+    # @verifies REQ_INTEROP_047
     def test_03_terminate_running_execution(self):
         """Start long-running script, terminate it via control endpoint."""
         script_id = self._upload_script(
@@ -469,6 +487,7 @@ class TestScriptsExecution(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 404)
 
+    # @verifies REQ_INTEROP_046
     def test_06_get_nonexistent_execution(self):
         """GET nonexistent execution returns 404."""
         script_id = self._upload_script(filename='for_404.py')
@@ -479,6 +498,7 @@ class TestScriptsExecution(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 404)
 
+    # @verifies REQ_INTEROP_044
     def test_07_start_execution_missing_type(self):
         """POST without execution_type returns 400."""
         script_id = self._upload_script(filename='no_type.py')
@@ -489,6 +509,7 @@ class TestScriptsExecution(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 400)
 
+    # @verifies REQ_INTEROP_044
     def test_08_start_execution_invalid_json(self):
         """POST with invalid JSON body returns 400."""
         script_id = self._upload_script(filename='bad_json.py')
@@ -500,6 +521,7 @@ class TestScriptsExecution(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 400)
 
+    # @verifies REQ_INTEROP_046
     def test_09_execution_has_timestamps(self):
         """Completed execution has started_at and completed_at timestamps."""
         script_id = self._upload_script(

@@ -36,13 +36,6 @@ Scripts
 
    The endpoint shall start an execution of the addressed script on the entity.
 
-.. req:: GET /{entity}/scripts/{id}/executions
-   :id: REQ_INTEROP_045
-   :status: open
-   :tags: Scripts
-
-   The endpoint shall list executions of the addressed script on the entity.
-
 .. req:: GET /{entity}/scripts/{id}/executions/{exec-id}
    :id: REQ_INTEROP_046
    :status: open
@@ -56,4 +49,3 @@ Scripts
    :tags: Scripts
 
    The endpoint shall control or modify the addressed script execution, if supported.
-

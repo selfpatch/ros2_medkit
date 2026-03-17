@@ -103,7 +103,6 @@ class ScriptManagerTest : public ::testing::Test {
   std::unique_ptr<ScriptManager> manager_;
 };
 
-// @verifies REQ_INTEROP_090
 TEST_F(ScriptManagerTest, HasBackend) {
   EXPECT_TRUE(manager_->has_backend());
 }
@@ -113,6 +112,7 @@ TEST_F(ScriptManagerTest, NoBackend) {
   EXPECT_FALSE(no_backend.has_backend());
 }
 
+// @verifies REQ_INTEROP_041
 TEST_F(ScriptManagerTest, ListScripts) {
   auto result = manager_->list_scripts("comp1");
   ASSERT_TRUE(result.has_value());
@@ -120,35 +120,41 @@ TEST_F(ScriptManagerTest, ListScripts) {
   EXPECT_EQ((*result)[0].id, "script_001");
 }
 
+// @verifies REQ_INTEROP_042
 TEST_F(ScriptManagerTest, GetScript) {
   auto result = manager_->get_script("comp1", "script_001");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->id, "script_001");
 }
 
+// @verifies REQ_INTEROP_042
 TEST_F(ScriptManagerTest, GetScriptNotFound) {
   auto result = manager_->get_script("comp1", "nonexistent");
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, ScriptBackendError::NotFound);
 }
 
+// @verifies REQ_INTEROP_040
 TEST_F(ScriptManagerTest, UploadScript) {
   auto result = manager_->upload_script("comp1", "test.py", "#!/usr/bin/env python3", std::nullopt);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->id, "script_002");
 }
 
+// @verifies REQ_INTEROP_043
 TEST_F(ScriptManagerTest, DeleteScript) {
   auto result = manager_->delete_script("comp1", "script_001");
   EXPECT_TRUE(result.has_value());
 }
 
+// @verifies REQ_INTEROP_043
 TEST_F(ScriptManagerTest, DeleteManifestScript) {
   auto result = manager_->delete_script("comp1", "manifest_script");
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, ScriptBackendError::ManagedScript);
 }
 
+// @verifies REQ_INTEROP_044
 TEST_F(ScriptManagerTest, StartExecution) {
   ExecutionRequest req{"now", std::nullopt, std::nullopt};
   auto result = manager_->start_execution("comp1", "script_001", req);
@@ -157,6 +163,7 @@ TEST_F(ScriptManagerTest, StartExecution) {
   EXPECT_EQ(result->status, "prepared");
 }
 
+// @verifies REQ_INTEROP_046
 TEST_F(ScriptManagerTest, GetExecution) {
   auto result = manager_->get_execution("comp1", "script_001", "exec_001");
   ASSERT_TRUE(result.has_value());
@@ -164,6 +171,7 @@ TEST_F(ScriptManagerTest, GetExecution) {
   EXPECT_EQ(result->progress, 45);
 }
 
+// @verifies REQ_INTEROP_047
 TEST_F(ScriptManagerTest, ControlExecution) {
   auto result = manager_->control_execution("comp1", "script_001", "exec_001", "stop");
   ASSERT_TRUE(result.has_value());
