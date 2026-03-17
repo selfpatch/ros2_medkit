@@ -16,13 +16,13 @@ import json
 import os
 import sys
 
-output = {"args": sys.argv[1:], "env": {}}
+output = {'args': sys.argv[1:], 'env': {}}
 for key in os.environ:
-    if key.startswith("MEDKIT_") or key in ["ROBOT_ID", "GATEWAY_URL"]:
-        output["env"][key] = os.environ[key]
+    if key.startswith('MEDKIT_') or key in ['ROBOT_ID', 'GATEWAY_URL']:
+        output['env'][key] = os.environ[key]
 if not sys.stdin.isatty():
     try:
-        output["stdin"] = json.load(sys.stdin)
+        output['stdin'] = json.load(sys.stdin)
     except Exception:
         pass
 print(json.dumps(output))
