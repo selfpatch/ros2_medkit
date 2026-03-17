@@ -58,6 +58,7 @@ void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
   lp.update_provider = dynamic_cast<UpdateProvider *>(plugin.get());
   lp.introspection_provider = dynamic_cast<IntrospectionProvider *>(plugin.get());
   lp.log_provider = dynamic_cast<LogProvider *>(plugin.get());
+  lp.script_provider = dynamic_cast<ScriptProvider *>(plugin.get());
 
   // Cache first UpdateProvider, warn on duplicates
   if (lp.update_provider) {
@@ -74,6 +75,15 @@ void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
       first_log_provider_ = lp.log_provider;
     } else {
       RCLCPP_DEBUG(logger(), "LogProvider plugin '%s' registered as observer only", plugin->name().c_str());
+    }
+  }
+
+  // Cache first ScriptProvider, warn on duplicates
+  if (lp.script_provider) {
+    if (!first_script_provider_) {
+      first_script_provider_ = lp.script_provider;
+    } else {
+      RCLCPP_WARN(logger(), "Multiple ScriptProvider plugins loaded - ignoring '%s'", plugin->name().c_str());
     }
   }
 
@@ -96,8 +106,9 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
       lp.update_provider = result->update_provider;
       lp.introspection_provider = result->introspection_provider;
       // LogProvider: discovered via extern "C" query function (mirrors UpdateProvider /
-      // IntrospectionProvider mechanism — safe across the dlopen boundary).
+      // IntrospectionProvider mechanism - safe across the dlopen boundary).
       lp.log_provider = result->log_provider;
+      lp.script_provider = result->script_provider;
 
       // Cache first UpdateProvider, warn on duplicates
       if (lp.update_provider) {
@@ -115,6 +126,16 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
           first_log_provider_ = lp.log_provider;
         } else {
           RCLCPP_DEBUG(logger(), "LogProvider plugin '%s' registered as observer only", result->plugin->name().c_str());
+        }
+      }
+
+      // Cache first ScriptProvider, warn on duplicates
+      if (lp.script_provider) {
+        if (!first_script_provider_) {
+          first_script_provider_ = lp.script_provider;
+        } else {
+          RCLCPP_WARN(logger(), "Multiple ScriptProvider plugins loaded - ignoring '%s'",
+                      result->plugin->name().c_str());
         }
       }
 
@@ -159,12 +180,23 @@ void PluginManager::disable_plugin(LoadedPlugin & lp) {
       }
     }
   }
+  if (first_script_provider_ && lp.script_provider == first_script_provider_) {
+    first_script_provider_ = nullptr;
+    for (const auto & other : plugins_) {
+      if (&other != &lp && other.load_result.plugin && other.script_provider) {
+        first_script_provider_ = other.script_provider;
+        break;
+      }
+    }
+  }
   lp.update_provider = nullptr;
   lp.introspection_provider = nullptr;
   lp.log_provider = nullptr;
+  lp.script_provider = nullptr;
   lp.load_result.update_provider = nullptr;
   lp.load_result.introspection_provider = nullptr;
   lp.load_result.log_provider = nullptr;
+  lp.load_result.script_provider = nullptr;
   lp.load_result.plugin.reset();
 }
 
@@ -291,6 +323,11 @@ std::vector<IntrospectionProvider *> PluginManager::get_introspection_providers(
 LogProvider * PluginManager::get_log_provider() const {
   std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
   return first_log_provider_;
+}
+
+ScriptProvider * PluginManager::get_script_provider() const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
+  return first_script_provider_;
 }
 
 std::vector<LogProvider *> PluginManager::get_log_observers() const {

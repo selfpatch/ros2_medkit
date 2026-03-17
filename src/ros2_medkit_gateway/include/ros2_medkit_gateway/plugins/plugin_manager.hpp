@@ -21,6 +21,7 @@
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/providers/log_provider.hpp"
+#include "ros2_medkit_gateway/providers/script_provider.hpp"
 #include "ros2_medkit_gateway/providers/update_provider.hpp"
 #include "ros2_medkit_gateway/resource_sampler.hpp"
 #include "ros2_medkit_gateway/subscription_transport.hpp"
@@ -135,6 +136,11 @@ class PluginManager {
   LogProvider * get_log_provider() const;
 
   /**
+   * @brief Get the first plugin implementing ScriptProvider, or nullptr if none loaded
+   */
+  ScriptProvider * get_script_provider() const;
+
+  /**
    * @brief Get all plugins implementing LogProvider (for observer notifications)
    */
   std::vector<LogProvider *> get_log_observers() const;
@@ -177,6 +183,7 @@ class PluginManager {
     UpdateProvider * update_provider = nullptr;
     IntrospectionProvider * introspection_provider = nullptr;
     LogProvider * log_provider = nullptr;
+    ScriptProvider * script_provider = nullptr;
   };
 
   /// Disable a plugin after a lifecycle error (nulls providers, resets plugin).
@@ -187,6 +194,7 @@ class PluginManager {
   PluginContext * context_ = nullptr;
   UpdateProvider * first_update_provider_ = nullptr;
   LogProvider * first_log_provider_ = nullptr;
+  ScriptProvider * first_script_provider_ = nullptr;
   ResourceSamplerRegistry * sampler_registry_ = nullptr;
   TransportRegistry * transport_registry_ = nullptr;
   bool shutdown_called_ = false;
