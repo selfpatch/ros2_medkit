@@ -1,0 +1,538 @@
+#!/usr/bin/env python3
+# Copyright 2026 bburda
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Integration tests for SOVD Scripts endpoints.
+
+Validates script upload/list/get/delete lifecycle, execution with status polling,
+execution termination, and 501 responses when scripts backend is not configured.
+
+Two gateway instances are launched:
+  - gateway_with_scripts: scripts.scripts_dir set to a temp directory
+  - gateway_no_scripts: no scripts_dir configured (returns 501)
+
+A demo node (temp_sensor) is launched alongside so that entities exist in
+discovery for validate_entity_for_route to pass.
+"""
+
+import tempfile
+import time
+import unittest
+
+from launch import LaunchDescription
+from launch.actions import TimerAction
+import launch_ros.actions
+import launch_testing
+import launch_testing.actions
+import requests
+
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH, get_test_port
+from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
+from ros2_medkit_test_utils.launch_helpers import create_demo_nodes, get_coverage_env
+
+
+PORT_WITH_SCRIPTS = get_test_port(0)
+PORT_NO_SCRIPTS = get_test_port(1)
+
+SCRIPTS_DIR = tempfile.mkdtemp(prefix='medkit_scripts_test_')
+
+# Simple inline scripts for testing
+PYTHON_SCRIPT = '#!/usr/bin/env python3\nimport json\nprint(json.dumps({"result": "ok"}))\n'
+PYTHON_SLEEP_SCRIPT = (
+    '#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n'
+)
+SHELL_SCRIPT = '#!/bin/sh\necho "hello"\n'
+
+
+def generate_test_description():
+    """Launch two gateways and a demo node for entity discovery."""
+    coverage_env = get_coverage_env()
+
+    gateway_with_scripts = launch_ros.actions.Node(
+        package='ros2_medkit_gateway',
+        executable='gateway_node',
+        name='gateway_with_scripts',
+        output='screen',
+        parameters=[{
+            'server.host': '127.0.0.1',
+            'server.port': PORT_WITH_SCRIPTS,
+            'refresh_interval_ms': 1000,
+            'scripts.scripts_dir': SCRIPTS_DIR,
+            'scripts.max_concurrent_executions': 3,
+            'scripts.default_timeout_sec': 30,
+        }],
+        additional_env=coverage_env,
+    )
+
+    gateway_no_scripts = launch_ros.actions.Node(
+        package='ros2_medkit_gateway',
+        executable='gateway_node',
+        name='gateway_no_scripts',
+        output='screen',
+        parameters=[{
+            'server.host': '127.0.0.1',
+            'server.port': PORT_NO_SCRIPTS,
+            'refresh_interval_ms': 1000,
+        }],
+        additional_env=coverage_env,
+    )
+
+    # Launch a demo node so entities are available in discovery.
+    demo_nodes = create_demo_nodes(['temp_sensor'], lidar_faulty=False)
+
+    return LaunchDescription([
+        gateway_with_scripts,
+        gateway_no_scripts,
+        TimerAction(
+            period=2.0,
+            actions=demo_nodes + [launch_testing.actions.ReadyToTest()],
+        ),
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Scenario 1: Scripts backend not configured (501)
+# ---------------------------------------------------------------------------
+
+class TestScriptsNotConfigured(GatewayTestCase):
+    """When scripts_dir is not set, all script endpoints return 501."""
+
+    BASE_URL = f'http://127.0.0.1:{PORT_NO_SCRIPTS}{API_BASE_PATH}'
+    MIN_EXPECTED_APPS = 1
+    REQUIRED_APPS = {'temp_sensor'}
+
+    def test_01_list_scripts_returns_501(self):
+        """GET /apps/{app}/scripts returns 501 without backend."""
+        r = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts', timeout=5
+        )
+        self.assertEqual(r.status_code, 501)
+        self.assertEqual(r.json()['error_code'], 'not-implemented')
+
+    def test_02_upload_script_returns_501(self):
+        """POST /apps/{app}/scripts returns 501 without backend."""
+        files = {'file': ('test.py', PYTHON_SCRIPT, 'application/octet-stream')}
+        r = requests.post(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts',
+            files=files,
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 501)
+
+    def test_03_get_script_returns_501(self):
+        """GET /apps/{app}/scripts/{id} returns 501 without backend."""
+        r = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/some_id', timeout=5
+        )
+        self.assertEqual(r.status_code, 501)
+
+    def test_04_delete_script_returns_501(self):
+        """DELETE /apps/{app}/scripts/{id} returns 501 without backend."""
+        r = requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/some_id', timeout=5
+        )
+        self.assertEqual(r.status_code, 501)
+
+    def test_05_start_execution_returns_501(self):
+        """POST /apps/{app}/scripts/{id}/executions returns 501."""
+        r = requests.post(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/some_id/executions',
+            json={'execution_type': 'now'},
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 501)
+
+    def test_06_get_execution_returns_501(self):
+        """GET /apps/{app}/scripts/{id}/executions/{eid} returns 501."""
+        r = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/s/executions/e',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 501)
+
+    def test_07_control_execution_returns_501(self):
+        """PUT /apps/{app}/scripts/{id}/executions/{eid} returns 501."""
+        r = requests.put(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/s/executions/e',
+            json={'action': 'stop'},
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 501)
+
+    def test_08_delete_execution_returns_501(self):
+        """DELETE /apps/{app}/scripts/{id}/executions/{eid} returns 501."""
+        r = requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/s/executions/e',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 501)
+
+
+# ---------------------------------------------------------------------------
+# Scenario 2: CRUD lifecycle
+# ---------------------------------------------------------------------------
+
+class TestScriptsCRUD(GatewayTestCase):
+    """Upload, list, get, delete lifecycle with scripts backend enabled."""
+
+    BASE_URL = f'http://127.0.0.1:{PORT_WITH_SCRIPTS}{API_BASE_PATH}'
+    MIN_EXPECTED_APPS = 1
+    REQUIRED_APPS = {'temp_sensor'}
+
+    def _upload_script(self, filename='test_script.py', content=PYTHON_SCRIPT):
+        """Upload a script and return (response, script_id)."""
+        files = {'file': (filename, content, 'application/octet-stream')}
+        r = requests.post(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts',
+            files=files,
+            timeout=5,
+        )
+        self.assertEqual(
+            r.status_code, 201,
+            f'Upload failed: {r.status_code} {r.text}',
+        )
+        data = r.json()
+        self.assertIn('id', data)
+        return r, data['id']
+
+    def test_01_list_scripts_empty(self):
+        """GET /apps/{app}/scripts returns empty items initially."""
+        data = self.get_json('/apps/temp_sensor/scripts')
+        self.assertIn('items', data)
+        self.assertIsInstance(data['items'], list)
+
+    def test_02_upload_and_list(self):
+        """Upload a script, verify it appears in the list."""
+        r, script_id = self._upload_script()
+        self.assertIn('Location', r.headers)
+
+        data = self.get_json('/apps/temp_sensor/scripts')
+        ids = [item['id'] for item in data['items']]
+        self.assertIn(script_id, ids)
+
+    def test_03_get_script_metadata(self):
+        """GET /apps/{app}/scripts/{id} returns full metadata."""
+        _, script_id = self._upload_script(filename='diag.py')
+
+        data = self.get_json(f'/apps/temp_sensor/scripts/{script_id}')
+        self.assertEqual(data['id'], script_id)
+        self.assertIn('name', data)
+        self.assertIn('href', data)
+        self.assertFalse(data['managed'])
+
+    def test_04_get_nonexistent_returns_404(self):
+        """GET /apps/{app}/scripts/nonexistent returns 404."""
+        r = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/nonexistent',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_05_delete_script(self):
+        """DELETE /apps/{app}/scripts/{id} removes it."""
+        _, script_id = self._upload_script(filename='to_delete.py')
+
+        r = requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 204)
+
+        # Verify deleted
+        r = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_06_delete_nonexistent_returns_404(self):
+        """DELETE /apps/{app}/scripts/nonexistent returns 404."""
+        r = requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/nonexistent',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_07_upload_missing_file_field(self):
+        """POST without multipart file field returns 400."""
+        r = requests.post(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts',
+            data='not-multipart',
+            headers={'Content-Type': 'application/octet-stream'},
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_08_entity_not_found(self):
+        """Script endpoints return 404 for nonexistent entity."""
+        r = requests.get(
+            f'{self.BASE_URL}/apps/nonexistent_app/scripts',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_09_upload_with_metadata(self):
+        """Upload with metadata field sets custom name and description."""
+        import json as json_mod
+        metadata = json_mod.dumps({
+            'name': 'Custom Name',
+            'description': 'A test script',
+        })
+        files = {
+            'file': ('meta_script.py', PYTHON_SCRIPT, 'application/octet-stream'),
+            'metadata': ('metadata', metadata, 'application/json'),
+        }
+        r = requests.post(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts',
+            files=files,
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 201)
+        data = r.json()
+        script_id = data['id']
+
+        # Verify metadata was applied
+        info = self.get_json(f'/apps/temp_sensor/scripts/{script_id}')
+        self.assertEqual(info['name'], 'Custom Name')
+        self.assertEqual(info['description'], 'A test script')
+
+
+# ---------------------------------------------------------------------------
+# Scenario 3: Execution lifecycle
+# ---------------------------------------------------------------------------
+
+class TestScriptsExecution(GatewayTestCase):
+    """Script execution: start, poll status, terminate, delete."""
+
+    BASE_URL = f'http://127.0.0.1:{PORT_WITH_SCRIPTS}{API_BASE_PATH}'
+    MIN_EXPECTED_APPS = 1
+    REQUIRED_APPS = {'temp_sensor'}
+
+    def _upload_script(self, filename='exec_test.py', content=PYTHON_SCRIPT):
+        """Upload a script and return the script_id."""
+        files = {'file': (filename, content, 'application/octet-stream')}
+        r = requests.post(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts',
+            files=files,
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 201)
+        return r.json()['id']
+
+    def _start_execution(self, script_id, exec_type='now'):
+        """Start an execution and return (response, execution_id)."""
+        r = requests.post(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}/executions',
+            json={'execution_type': exec_type},
+            timeout=5,
+        )
+        self.assertEqual(
+            r.status_code, 202,
+            f'Start execution failed: {r.status_code} {r.text}',
+        )
+        data = r.json()
+        self.assertIn('id', data)
+        return r, data['id']
+
+    def test_01_execute_python_script(self):
+        """Upload Python script, execute, poll until completed."""
+        script_id = self._upload_script(
+            filename='fast.py',
+            content=PYTHON_SCRIPT,
+        )
+
+        r, exec_id = self._start_execution(script_id)
+        self.assertIn('Location', r.headers)
+
+        # Poll until completed
+        exec_endpoint = f'/apps/temp_sensor/scripts/{script_id}/executions/{exec_id}'
+        data = self.poll_endpoint_until(
+            exec_endpoint,
+            lambda d: d if d.get('status') in ('completed', 'failed') else None,
+            timeout=15.0,
+            interval=0.5,
+        )
+        self.assertEqual(data['status'], 'completed')
+        # Fast script should produce JSON output
+        self.assertIsNotNone(data.get('parameters'))
+
+    def test_02_execute_shell_script(self):
+        """Upload shell script, execute, poll until completed."""
+        script_id = self._upload_script(
+            filename='hello.sh',
+            content=SHELL_SCRIPT,
+        )
+
+        _, exec_id = self._start_execution(script_id)
+
+        exec_endpoint = f'/apps/temp_sensor/scripts/{script_id}/executions/{exec_id}'
+        data = self.poll_endpoint_until(
+            exec_endpoint,
+            lambda d: d if d.get('status') in ('completed', 'failed') else None,
+            timeout=15.0,
+            interval=0.5,
+        )
+        self.assertEqual(data['status'], 'completed')
+
+    def test_03_terminate_running_execution(self):
+        """Start long-running script, terminate it via control endpoint."""
+        script_id = self._upload_script(
+            filename='slow.py',
+            content=PYTHON_SLEEP_SCRIPT,
+        )
+
+        _, exec_id = self._start_execution(script_id)
+
+        # Brief pause to let the process start
+        time.sleep(0.5)
+
+        # Send stop action
+        r = requests.put(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+            f'/executions/{exec_id}',
+            json={'action': 'stop'},
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data['status'], 'terminated')
+
+    def test_04_delete_running_execution_rejected(self):
+        """DELETE on a running execution returns 409."""
+        script_id = self._upload_script(
+            filename='slow2.py',
+            content=PYTHON_SLEEP_SCRIPT,
+        )
+
+        _, exec_id = self._start_execution(script_id)
+
+        # Brief pause to let the process start
+        time.sleep(0.5)
+
+        # Attempt to delete while running
+        r = requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+            f'/executions/{exec_id}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 409)
+        data = r.json()
+        self.assertEqual(data['error_code'], 'invalid-request')
+
+        # Cleanup: stop the execution
+        requests.put(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+            f'/executions/{exec_id}',
+            json={'action': 'stop'},
+            timeout=5,
+        )
+
+    def test_05_delete_completed_execution(self):
+        """DELETE on a completed execution succeeds with 204."""
+        script_id = self._upload_script(
+            filename='quick.py',
+            content=PYTHON_SCRIPT,
+        )
+
+        _, exec_id = self._start_execution(script_id)
+
+        # Wait for completion
+        exec_endpoint = f'/apps/temp_sensor/scripts/{script_id}/executions/{exec_id}'
+        self.poll_endpoint_until(
+            exec_endpoint,
+            lambda d: d if d.get('status') in ('completed', 'failed') else None,
+            timeout=15.0,
+            interval=0.5,
+        )
+
+        r = requests.delete(
+            f'{self.BASE_URL}{exec_endpoint}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 204)
+
+        # Verify deleted
+        r = requests.get(
+            f'{self.BASE_URL}{exec_endpoint}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_06_get_nonexistent_execution(self):
+        """GET nonexistent execution returns 404."""
+        script_id = self._upload_script(filename='for_404.py')
+        r = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+            '/executions/nonexistent',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_07_start_execution_missing_type(self):
+        """POST without execution_type returns 400."""
+        script_id = self._upload_script(filename='no_type.py')
+        r = requests.post(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}/executions',
+            json={},
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_08_start_execution_invalid_json(self):
+        """POST with invalid JSON body returns 400."""
+        script_id = self._upload_script(filename='bad_json.py')
+        r = requests.post(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}/executions',
+            data='not{valid json',
+            headers={'Content-Type': 'application/json'},
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_09_execution_has_timestamps(self):
+        """Completed execution has started_at and completed_at timestamps."""
+        script_id = self._upload_script(
+            filename='ts_check.py',
+            content=PYTHON_SCRIPT,
+        )
+
+        _, exec_id = self._start_execution(script_id)
+
+        exec_endpoint = f'/apps/temp_sensor/scripts/{script_id}/executions/{exec_id}'
+        data = self.poll_endpoint_until(
+            exec_endpoint,
+            lambda d: d if d.get('status') in ('completed', 'failed') else None,
+            timeout=15.0,
+            interval=0.5,
+        )
+        self.assertEqual(data['status'], 'completed')
+        self.assertIsNotNone(data.get('started_at'))
+        self.assertIsNotNone(data.get('completed_at'))
+
+
+# ---------------------------------------------------------------------------
+# Shutdown verification
+# ---------------------------------------------------------------------------
+
+@launch_testing.post_shutdown_test()
+class TestShutdown(unittest.TestCase):
+    """Verify all processes exit cleanly."""
+
+    def test_exit_codes(self, proc_info):
+        for info in proc_info:
+            self.assertIn(
+                info.returncode,
+                ALLOWED_EXIT_CODES,
+                f'Process {info.process_name} exited with {info.returncode}',
+            )
