@@ -305,6 +305,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetAreaReturnsCapabilitiesAndLinks) {
   EXPECT_EQ(body["_links"]["collection"], "/api/v1/areas");
 }
 
+// @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersFixtureTest, AreaComponentsReturnsMatchingComponentsOnly) {
   auto req = make_request_with_match("/api/v1/areas/sensors/components", R"(/api/v1/areas/([^/]+)/components)");
   httplib::Response res;
@@ -316,6 +317,7 @@ TEST_F(DiscoveryHandlersFixtureTest, AreaComponentsReturnsMatchingComponentsOnly
   EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
 }
 
+// @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersValidationTest, AreaComponentsInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/areas/bad@id/components", R"(/api/v1/areas/(.+)/components)");
   httplib::Response res;
@@ -325,6 +327,7 @@ TEST_F(DiscoveryHandlersValidationTest, AreaComponentsInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersFixtureTest, AreaComponentsUnknownAreaReturns404) {
   auto req = make_request_with_match("/api/v1/areas/unknown/components", R"(/api/v1/areas/([^/]+)/components)");
   httplib::Response res;
@@ -682,6 +685,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetFunctionReturnsCapabilitiesAndGraphLink)
   EXPECT_EQ(body["x-medkit"]["source"], "manifest");
 }
 
+// @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersValidationTest, FunctionHostsInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/functions/bad/id/hosts", R"(/api/v1/functions/(.+)/hosts)");
   httplib::Response res;
@@ -691,6 +695,7 @@ TEST_F(DiscoveryHandlersValidationTest, FunctionHostsInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
+// @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersFixtureTest, FunctionHostsUnknownFunctionReturns404) {
   auto req = make_request_with_match("/api/v1/functions/unknown/hosts", R"(/api/v1/functions/([^/]+)/hosts)");
   httplib::Response res;
@@ -700,6 +705,7 @@ TEST_F(DiscoveryHandlersFixtureTest, FunctionHostsUnknownFunctionReturns404) {
   EXPECT_EQ(res.status, 404);
 }
 
+// @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersFixtureTest, FunctionHostsReturnsHostingApps) {
   auto req = make_request_with_match("/api/v1/functions/navigation/hosts", R"(/api/v1/functions/([^/]+)/hosts)");
   httplib::Response res;
