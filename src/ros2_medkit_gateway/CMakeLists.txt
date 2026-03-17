@@ -92,6 +92,7 @@ add_library(gateway_lib STATIC
   src/fault_manager.cpp
   src/log_manager.cpp
   src/subscription_manager.cpp
+  src/lock_manager.cpp
   src/resource_sampler.cpp
   src/subscription_transport.cpp
   # Entity resource model
@@ -555,6 +556,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_docs_handlers gateway_lib)
   set_tests_properties(test_docs_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=68")
 
+  # Lock manager tests
+  ament_add_gtest(test_lock_manager test/test_lock_manager.cpp)
+  target_link_libraries(test_lock_manager gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -604,6 +609,7 @@ if(BUILD_TESTING)
       test_capability_generator
       test_route_registry
       test_docs_handlers
+      test_lock_manager
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
