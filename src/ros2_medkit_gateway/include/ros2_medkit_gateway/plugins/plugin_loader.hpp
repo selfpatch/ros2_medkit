@@ -26,6 +26,7 @@ namespace ros2_medkit_gateway {
 class UpdateProvider;
 class IntrospectionProvider;
 class LogProvider;
+class ScriptProvider;
 
 /**
  * @brief Result of loading a gateway plugin.
@@ -58,6 +59,10 @@ struct GatewayPluginLoadResult {
   /// Lifetime tied to plugin - do not use after plugin is destroyed.
   LogProvider * log_provider = nullptr;
 
+  /// Non-owning pointer to ScriptProvider interface (null if not provided).
+  /// Lifetime tied to plugin - do not use after plugin is destroyed.
+  ScriptProvider * script_provider = nullptr;
+
   /// Get the dlopen handle (for dlsym queries by PluginManager)
   void * dl_handle() const {
     return handle_;
@@ -79,6 +84,7 @@ struct GatewayPluginLoadResult {
  *   extern "C" UpdateProvider* get_update_provider(GatewayPlugin* plugin);
  *   extern "C" IntrospectionProvider* get_introspection_provider(GatewayPlugin* plugin);
  *   extern "C" LogProvider* get_log_provider(GatewayPlugin* plugin);
+ *   extern "C" ScriptProvider* get_script_provider(GatewayPlugin* plugin);
  *
  * Path requirements: must be absolute, have .so extension, and resolve to a real file.
  */
