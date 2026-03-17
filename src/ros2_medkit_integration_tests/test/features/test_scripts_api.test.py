@@ -543,6 +543,215 @@ class TestScriptsExecution(GatewayTestCase):
         self.assertIsNotNone(data.get('started_at'))
         self.assertIsNotNone(data.get('completed_at'))
 
+    # @verifies REQ_INTEROP_044
+    def test_10_bash_script_execution(self):
+        """Upload and execute a .bash script."""
+        bash_script = '#!/bin/bash\necho "{\\"format\\": \\"bash\\"}"\n'
+        script_id = self._upload_script(
+            filename='test.bash', content=bash_script
+        )
+        _, exec_id = self._start_execution(script_id)
+        data = self.poll_endpoint_until(
+            f'/apps/temp_sensor/scripts/{script_id}/executions/{exec_id}',
+            lambda d: d if d.get('status') in ('completed', 'failed') else None,
+            timeout=15.0,
+        )
+        self.assertEqual(data['status'], 'completed')
+        # Cleanup
+        requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+            f'/executions/{exec_id}',
+            timeout=5,
+        )
+        requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}',
+            timeout=5,
+        )
+
+    # @verifies REQ_INTEROP_046
+    def test_11_output_content_verified(self):
+        """Verify executed script output is correctly returned in execution response."""
+        py_script = (
+            '#!/usr/bin/env python3\n'
+            'import json\n'
+            'print(json.dumps({"result": "success", "value": 42}))\n'
+        )
+        script_id = self._upload_script(
+            filename='output_test.py', content=py_script
+        )
+        _, exec_id = self._start_execution(script_id)
+        data = self.poll_endpoint_until(
+            f'/apps/temp_sensor/scripts/{script_id}/executions/{exec_id}',
+            lambda d: d if d.get('status') == 'completed' else None,
+            timeout=15.0,
+        )
+        self.assertEqual(data['status'], 'completed')
+        self.assertIsNotNone(data.get('parameters'))
+        self.assertEqual(data['parameters']['result'], 'success')
+        self.assertEqual(data['parameters']['value'], 42)
+        # Cleanup
+        requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+            f'/executions/{exec_id}',
+            timeout=5,
+        )
+        requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}',
+            timeout=5,
+        )
+
+    # @verifies REQ_INTEROP_044
+    def test_12_parameters_via_stdin(self):
+        """Parameters sent in execution request are passed to script via stdin."""
+        py_script = (
+            '#!/usr/bin/env python3\n'
+            'import sys, json\n'
+            'data = json.load(sys.stdin)\n'
+            'print(json.dumps({"received": data}))\n'
+        )
+        script_id = self._upload_script(
+            filename='stdin_test.py', content=py_script
+        )
+        # Start execution WITH parameters
+        r = requests.post(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}/executions',
+            json={
+                'execution_type': 'now',
+                'parameters': {'threshold': 0.5, 'sensor': 'lidar'},
+            },
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 202)
+        exec_id = r.json()['id']
+        data = self.poll_endpoint_until(
+            f'/apps/temp_sensor/scripts/{script_id}/executions/{exec_id}',
+            lambda d: d if d.get('status') == 'completed' else None,
+            timeout=15.0,
+        )
+        self.assertEqual(data['status'], 'completed')
+        self.assertIsNotNone(data.get('parameters'))
+        self.assertEqual(data['parameters']['received']['threshold'], 0.5)
+        self.assertEqual(data['parameters']['received']['sensor'], 'lidar')
+        # Cleanup
+        requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+            f'/executions/{exec_id}',
+            timeout=5,
+        )
+        requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}',
+            timeout=5,
+        )
+
+    # @verifies REQ_INTEROP_046
+    def test_13_failed_script_execution(self):
+        """Script that exits non-zero produces 'failed' status with error info."""
+        py_script = (
+            '#!/usr/bin/env python3\n'
+            'import sys\n'
+            'print("error details", file=sys.stderr)\n'
+            'sys.exit(1)\n'
+        )
+        script_id = self._upload_script(
+            filename='fail_test.py', content=py_script
+        )
+        _, exec_id = self._start_execution(script_id)
+        data = self.poll_endpoint_until(
+            f'/apps/temp_sensor/scripts/{script_id}/executions/{exec_id}',
+            lambda d: d if d.get('status') in ('completed', 'failed') else None,
+            timeout=15.0,
+        )
+        self.assertEqual(data['status'], 'failed')
+        self.assertIn('error', data)
+        self.assertIn('message', data['error'])
+        # Cleanup
+        requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+            f'/executions/{exec_id}',
+            timeout=5,
+        )
+        requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}',
+            timeout=5,
+        )
+
+    # @verifies REQ_INTEROP_040
+    # @verifies REQ_INTEROP_041
+    # @verifies REQ_INTEROP_042
+    # @verifies REQ_INTEROP_043
+    # @verifies REQ_INTEROP_044
+    # @verifies REQ_INTEROP_046
+    def test_14_full_lifecycle(self):
+        """Complete lifecycle: upload -> list -> get -> execute -> poll -> verify -> delete."""
+        py_script = (
+            '#!/usr/bin/env python3\n'
+            'import json\n'
+            'print(json.dumps({"lifecycle": "complete"}))\n'
+        )
+
+        # Upload
+        script_id = self._upload_script(
+            filename='lifecycle.py', content=py_script
+        )
+
+        # List - should contain our script
+        r = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts', timeout=5
+        )
+        self.assertEqual(r.status_code, 200)
+        items = r.json().get('items', [])
+        script_ids = [s['id'] for s in items]
+        self.assertIn(script_id, script_ids)
+
+        # Get - metadata
+        r = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['id'], script_id)
+
+        # Execute
+        _, exec_id = self._start_execution(script_id)
+
+        # Poll to completion
+        data = self.poll_endpoint_until(
+            f'/apps/temp_sensor/scripts/{script_id}/executions/{exec_id}',
+            lambda d: d if d.get('status') == 'completed' else None,
+            timeout=15.0,
+        )
+        self.assertEqual(data['parameters']['lifecycle'], 'complete')
+
+        # Delete execution
+        r = requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+            f'/executions/{exec_id}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 204)
+
+        # Verify execution gone
+        r = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+            f'/executions/{exec_id}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 404)
+
+        # Delete script
+        r = requests.delete(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 204)
+
+        # Verify script gone
+        r = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 404)
+
 
 # ---------------------------------------------------------------------------
 # Shutdown verification
