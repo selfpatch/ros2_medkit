@@ -155,6 +155,8 @@ add_library(gateway_lib STATIC
   src/updates/update_manager.cpp
   # Scripts module
   src/script_manager.cpp
+  # HTTP handlers - scripts
+  src/http/handlers/script_handlers.cpp
   # HTTP handlers - updates
   src/http/handlers/update_handlers.cpp
   # Plugin framework
