@@ -145,6 +145,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
     update_handlers_ = std::make_unique<handlers::UpdateHandlers>(*handler_ctx_, node_->get_update_manager());
   }
 
+  lock_handlers_ = std::make_unique<handlers::LockHandlers>(*handler_ctx_, node_->get_lock_manager());
+
   docs_handlers_ = std::make_unique<handlers::DocsHandlers>(*handler_ctx_, *node_, node_->get_plugin_manager(),
                                                             route_registry_.get());
 
@@ -648,6 +650,44 @@ void RESTServer::setup_routes() {
               })
           .tag("Subscriptions")
           .summary(std::string("Delete cyclic subscription for ") + et.singular);
+    }
+
+    // --- Locking (components and apps only, per SOVD spec) ---
+    if (et_type_str == "components" || et_type_str == "apps") {
+      reg.post(entity_path + "/locks",
+               [this](auto & req, auto & res) {
+                 lock_handlers_->handle_acquire_lock(req, res);
+               })
+          .tag("Locking")
+          .summary(std::string("Acquire lock on ") + et.singular);
+
+      reg.get(entity_path + "/locks",
+              [this](auto & req, auto & res) {
+                lock_handlers_->handle_list_locks(req, res);
+              })
+          .tag("Locking")
+          .summary(std::string("List locks on ") + et.singular);
+
+      reg.get(entity_path + "/locks/{lock_id}",
+              [this](auto & req, auto & res) {
+                lock_handlers_->handle_get_lock(req, res);
+              })
+          .tag("Locking")
+          .summary(std::string("Get lock details for ") + et.singular);
+
+      reg.put(entity_path + "/locks/{lock_id}",
+              [this](auto & req, auto & res) {
+                lock_handlers_->handle_extend_lock(req, res);
+              })
+          .tag("Locking")
+          .summary(std::string("Extend lock on ") + et.singular);
+
+      reg.del(entity_path + "/locks/{lock_id}",
+              [this](auto & req, auto & res) {
+                lock_handlers_->handle_release_lock(req, res);
+              })
+          .tag("Locking")
+          .summary(std::string("Release lock on ") + et.singular);
     }
 
     // --- Discovery relationship endpoints (entity-type-specific) ---
