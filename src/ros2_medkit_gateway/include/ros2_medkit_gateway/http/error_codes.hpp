@@ -129,6 +129,9 @@ constexpr const char * ERR_X_MEDKIT_ENTITY_MISMATCH = "x-medkit-entity-mismatch"
 /// Vendor-specific: unsupported subscription protocol
 constexpr const char * ERR_X_MEDKIT_UNSUPPORTED_PROTOCOL = "x-medkit-unsupported-protocol";
 
+/// SOVD standard: client's lock was broken by another client (409)
+constexpr const char * ERR_LOCK_BROKEN = "lock-broken";
+
 /**
  * @brief Check if an error code is a vendor-specific code
  * @param error_code Error code to check
