@@ -15,13 +15,16 @@
 #include <gtest/gtest.h>
 #include <httplib.h>  // NOLINT(build/include_order)
 
+#include <arpa/inet.h>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <memory>
+#include <netinet/in.h>
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
+#include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
 
@@ -34,6 +37,33 @@ using namespace std::chrono_literals;
 // API version prefix - must match rest_server.cpp
 static constexpr const char * API_BASE_PATH = "/api/v1";
 
+/// Reserve a free TCP port by binding to port 0, reading the assigned port, then closing the socket.
+/// The port is briefly available for the next caller; works reliably on Linux with SO_REUSEADDR.
+static int reserve_free_port() {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) {
+    return 0;
+  }
+  int opt = 1;
+  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+    close(sock);
+    return 0;
+  }
+  socklen_t len = sizeof(addr);
+  if (getsockname(sock, reinterpret_cast<sockaddr *>(&addr), &len) != 0) {
+    close(sock);
+    return 0;
+  }
+  int port = ntohs(addr.sin_port);
+  close(sock);
+  return port;
+}
+
 class TestGatewayNode : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -45,7 +75,13 @@ class TestGatewayNode : public ::testing::Test {
   }
 
   void SetUp() override {
-    node_ = std::make_shared<ros2_medkit_gateway::GatewayNode>();
+    // Reserve a free port for this test to avoid cross-test port collisions
+    int free_port = reserve_free_port();
+    ASSERT_NE(free_port, 0) << "Failed to reserve a free port for test";
+
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({rclcpp::Parameter("server.port", free_port)});
+    node_ = std::make_shared<ros2_medkit_gateway::GatewayNode>(options);
 
     // Get server configuration from node parameters
     server_host_ = node_->get_parameter("server.host").as_string();

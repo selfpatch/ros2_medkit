@@ -33,6 +33,7 @@
 #include "ros2_medkit_gateway/http/rate_limiter.hpp"
 #include "ros2_medkit_gateway/http/rest_server.hpp"
 #include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
+#include "ros2_medkit_gateway/lock_manager.hpp"
 #include "ros2_medkit_gateway/log_manager.hpp"
 #include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
@@ -46,7 +47,7 @@ namespace ros2_medkit_gateway {
 
 class GatewayNode : public rclcpp::Node {
  public:
-  GatewayNode();
+  explicit GatewayNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions{});
   ~GatewayNode() override;
 
   /**
@@ -112,6 +113,12 @@ class GatewayNode : public rclcpp::Node {
   UpdateManager * get_update_manager() const;
 
   /**
+   * @brief Get the LockManager instance
+   * @return Raw pointer to LockManager (valid for lifetime of GatewayNode), or nullptr if locking disabled
+   */
+  LockManager * get_lock_manager() const;
+
+  /**
    * @brief Get the PluginManager instance
    * @return Raw pointer to PluginManager (valid for lifetime of GatewayNode)
    */
@@ -167,6 +174,7 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<PluginContext> plugin_ctx_;
   std::unique_ptr<PluginManager> plugin_mgr_;
   std::unique_ptr<UpdateManager> update_mgr_;
+  std::unique_ptr<LockManager> lock_manager_;
   std::unique_ptr<RESTServer> rest_server_;
 
   // Cache with thread safety
@@ -180,6 +188,9 @@ class GatewayNode : public rclcpp::Node {
 
   // Timer for periodic cleanup of expired cyclic subscriptions
   rclcpp::TimerBase::SharedPtr subscription_cleanup_timer_;
+
+  // Timer for periodic cleanup of expired locks
+  rclcpp::TimerBase::SharedPtr lock_cleanup_timer_;
 
   // REST server thread management
   std::unique_ptr<std::thread> server_thread_;

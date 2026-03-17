@@ -108,7 +108,7 @@ nlohmann::json filter_faults_by_fqns(const nlohmann::json & fault_data, const st
 
 }  // namespace
 
-GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
+GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medkit_gateway", options) {
   RCLCPP_INFO(get_logger(), "Initializing ROS 2 Medkit Gateway...");
 
   // Declare parameters with defaults
@@ -173,6 +173,16 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
 
   // Plugin framework parameters
   declare_parameter("plugins", std::vector<std::string>{});
+
+  // Locking parameters
+  declare_parameter("locking.enabled", true);
+  declare_parameter("locking.default_max_expiration", 3600);
+  declare_parameter("locking.cleanup_interval", 30);
+  declare_parameter("locking.defaults.components.lock_required_scopes",
+                    std::vector<std::string>{"configurations", "operations"});
+  declare_parameter("locking.defaults.components.breakable", true);
+  declare_parameter("locking.defaults.apps.lock_required_scopes", std::vector<std::string>{"configurations"});
+  declare_parameter("locking.defaults.apps.breakable", true);
 
   // Bulk data storage parameters
   declare_parameter("bulk_data.storage_dir", "/tmp/ros2_medkit_bulk_data");
@@ -582,6 +592,41 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
     }
   }
 
+  // Initialize lock manager
+  auto locking_enabled = get_parameter("locking.enabled").as_bool();
+  if (locking_enabled) {
+    LockConfig lock_config;
+    lock_config.enabled = true;
+    lock_config.default_max_expiration = static_cast<int>(get_parameter("locking.default_max_expiration").as_int());
+    lock_config.cleanup_interval = static_cast<int>(get_parameter("locking.cleanup_interval").as_int());
+
+    EntityLockConfig comp_config;
+    comp_config.required_scopes = get_parameter("locking.defaults.components.lock_required_scopes").as_string_array();
+    comp_config.breakable = get_parameter("locking.defaults.components.breakable").as_bool();
+    lock_config.type_defaults["component"] = comp_config;
+
+    EntityLockConfig app_config;
+    app_config.required_scopes = get_parameter("locking.defaults.apps.lock_required_scopes").as_string_array();
+    app_config.breakable = get_parameter("locking.defaults.apps.breakable").as_bool();
+    lock_config.type_defaults["app"] = app_config;
+
+    lock_manager_ = std::make_unique<LockManager>(get_thread_safe_cache(), lock_config);
+
+    auto cleanup_interval = lock_config.cleanup_interval;
+    lock_cleanup_timer_ = this->create_wall_timer(std::chrono::seconds(cleanup_interval), [this]() {
+      auto expired = lock_manager_->cleanup_expired();
+      for (const auto & info : expired) {
+        RCLCPP_INFO(get_logger(), "Lock %s expired on entity %s", info.lock_id.c_str(), info.entity_id.c_str());
+        // TODO: temporary resource cleanup (Task 9)
+      }
+    });
+
+    RCLCPP_INFO(get_logger(), "Lock manager: enabled, max_expiration=%ds, cleanup_interval=%ds",
+                lock_config.default_max_expiration, lock_config.cleanup_interval);
+  } else {
+    RCLCPP_INFO(get_logger(), "Lock manager: disabled");
+  }
+
   // Register built-in resource samplers
   sampler_registry_->register_sampler(
       "data",
@@ -931,6 +976,10 @@ SubscriptionManager * GatewayNode::get_subscription_manager() const {
 
 UpdateManager * GatewayNode::get_update_manager() const {
   return update_mgr_.get();
+}
+
+LockManager * GatewayNode::get_lock_manager() const {
+  return lock_manager_.get();
 }
 
 PluginManager * GatewayNode::get_plugin_manager() const {
