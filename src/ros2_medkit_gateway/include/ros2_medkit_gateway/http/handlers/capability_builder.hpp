@@ -55,7 +55,8 @@ class CapabilityBuilder {
     LOGS,                  ///< Entity has application log entries (components and apps)
     BULK_DATA,             ///< Entity has bulk data endpoints (rosbags)
     CYCLIC_SUBSCRIPTIONS,  ///< Entity has cyclic subscription endpoints
-    LOCKS                  ///< Entity has lock endpoints (components and apps only)
+    LOCKS,                 ///< Entity has lock endpoints (components and apps only)
+    SCRIPTS                ///< Entity has diagnostic script endpoints
   };
 
   /**

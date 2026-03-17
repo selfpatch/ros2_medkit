@@ -49,6 +49,8 @@ std::string CapabilityBuilder::capability_to_name(Capability cap) {
       return "cyclic-subscriptions";
     case Capability::LOCKS:
       return "locks";
+    case Capability::SCRIPTS:
+      return "scripts";
     default:
       return "unknown";
   }

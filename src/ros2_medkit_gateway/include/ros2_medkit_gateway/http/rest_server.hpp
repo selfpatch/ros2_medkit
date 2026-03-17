@@ -109,6 +109,7 @@ class RESTServer {
   std::unique_ptr<handlers::UpdateHandlers> update_handlers_;
   std::unique_ptr<handlers::LogHandlers> log_handlers_;
   std::unique_ptr<handlers::LockHandlers> lock_handlers_;
+  std::unique_ptr<handlers::ScriptHandlers> script_handlers_;
   std::unique_ptr<handlers::DocsHandlers> docs_handlers_;
 
   // Route registry: single source of truth for routes + OpenAPI metadata

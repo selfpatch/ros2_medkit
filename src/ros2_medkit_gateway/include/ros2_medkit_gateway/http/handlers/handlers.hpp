@@ -39,5 +39,6 @@
 #include "ros2_medkit_gateway/http/handlers/lock_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/log_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/operation_handlers.hpp"
+#include "ros2_medkit_gateway/http/handlers/script_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/sse_fault_handler.hpp"
 #include "ros2_medkit_gateway/http/handlers/update_handlers.hpp"
