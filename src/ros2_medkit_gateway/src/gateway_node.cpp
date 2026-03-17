@@ -176,7 +176,6 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("scripts.max_file_size_mb", 10);
   declare_parameter("scripts.max_concurrent_executions", 5);
   declare_parameter("scripts.default_timeout_sec", 300);
-  declare_parameter("scripts.manifest_path", "");
 
   // Plugin framework parameters
   declare_parameter("plugins", std::vector<std::string>{});
@@ -691,12 +690,6 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       scripts_config.max_concurrent_executions =
           static_cast<int>(get_parameter("scripts.max_concurrent_executions").as_int());
       scripts_config.default_timeout_sec = static_cast<int>(get_parameter("scripts.default_timeout_sec").as_int());
-
-      // Load manifest entries from YAML file if specified
-      auto manifest_path = get_parameter("scripts.manifest_path").as_string();
-      if (!manifest_path.empty()) {
-        RCLCPP_INFO(get_logger(), "Scripts manifest path: %s", manifest_path.c_str());
-      }
 
       default_script_provider_ = std::make_unique<DefaultScriptProvider>(scripts_config);
       script_mgr_->set_backend(default_script_provider_.get());
