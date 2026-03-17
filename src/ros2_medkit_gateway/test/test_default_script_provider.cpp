@@ -120,7 +120,7 @@ int DefaultScriptProviderTest::test_counter_ = 0;
 
 // --- CRUD tests (from Task 6, unchanged) ---
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_041
 TEST_F(DefaultScriptProviderTest, ManifestScriptsLoaded) {
   auto entry1 = make_manifest_entry("diag_check", "Diagnostic Check", "Runs diagnostics");
   auto entry2 = make_manifest_entry("health_scan", "Health Scan", "Scans health");
@@ -152,7 +152,7 @@ TEST_F(DefaultScriptProviderTest, ManifestScriptsLoaded) {
   EXPECT_TRUE(found_health);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_040
 TEST_F(DefaultScriptProviderTest, UploadToFilesystem) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -185,7 +185,7 @@ TEST_F(DefaultScriptProviderTest, UploadToFilesystem) {
   EXPECT_TRUE(meta.contains("created_at"));
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_041
 TEST_F(DefaultScriptProviderTest, ListMergesManifestAndUploaded) {
   auto entry = make_manifest_entry("manifest_script", "Manifest Script");
   auto config = make_config({entry});
@@ -218,7 +218,7 @@ TEST_F(DefaultScriptProviderTest, ListMergesManifestAndUploaded) {
   EXPECT_TRUE(found_uploaded);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_042
 TEST_F(DefaultScriptProviderTest, GetManifestScript) {
   auto entry = make_manifest_entry("diag_check", "Diagnostic Check", "Runs diagnostics");
   auto config = make_config({entry});
@@ -233,7 +233,7 @@ TEST_F(DefaultScriptProviderTest, GetManifestScript) {
   EXPECT_TRUE(result->managed);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_042
 TEST_F(DefaultScriptProviderTest, GetUploadedScript) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -252,7 +252,7 @@ TEST_F(DefaultScriptProviderTest, GetUploadedScript) {
   EXPECT_FALSE(result->managed);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_043
 TEST_F(DefaultScriptProviderTest, DeleteUploadedScript) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -279,7 +279,7 @@ TEST_F(DefaultScriptProviderTest, DeleteUploadedScript) {
   EXPECT_EQ(get_result.error().code, ScriptBackendError::NotFound);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_043
 TEST_F(DefaultScriptProviderTest, DeleteManifestScriptFails) {
   auto entry = make_manifest_entry("managed_script", "Managed Script");
   auto config = make_config({entry});
@@ -291,7 +291,7 @@ TEST_F(DefaultScriptProviderTest, DeleteManifestScriptFails) {
   EXPECT_EQ(result.error().code, ScriptBackendError::ManagedScript);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_042
 TEST_F(DefaultScriptProviderTest, GetNonexistentScript) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -301,7 +301,6 @@ TEST_F(DefaultScriptProviderTest, GetNonexistentScript) {
   EXPECT_EQ(result.error().code, ScriptBackendError::NotFound);
 }
 
-// @verifies REQ_INTEROP_090
 TEST_F(DefaultScriptProviderTest, DetectsFormatFromExtension) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -334,7 +333,7 @@ TEST_F(DefaultScriptProviderTest, DetectsFormatFromExtension) {
   EXPECT_TRUE(std::filesystem::exists(test_dir_ / "comp1" / sh_result->id / "script.sh"));
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_040
 TEST_F(DefaultScriptProviderTest, UploadWithParametersSchema) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -351,7 +350,7 @@ TEST_F(DefaultScriptProviderTest, UploadWithParametersSchema) {
   EXPECT_EQ(get_result->parameters_schema.value()["type"], "object");
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_040
 TEST_F(DefaultScriptProviderTest, UploadWithoutMetadata) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -362,7 +361,6 @@ TEST_F(DefaultScriptProviderTest, UploadWithoutMetadata) {
   EXPECT_EQ(result->name, "diagnostic.sh");
 }
 
-// @verifies REQ_INTEROP_090
 TEST_F(DefaultScriptProviderTest, EntityFilterExactMatch) {
   auto entry = make_manifest_entry("filtered_script", "Filtered Script", "Only for comp1", {"comp1"});
   auto config = make_config({entry});
@@ -380,7 +378,6 @@ TEST_F(DefaultScriptProviderTest, EntityFilterExactMatch) {
   EXPECT_EQ(result2->size(), 0u);
 }
 
-// @verifies REQ_INTEROP_090
 TEST_F(DefaultScriptProviderTest, EntityFilterWildcard) {
   auto entry = make_manifest_entry("wildcard_script", "Wildcard Script", "For all entities", {"*"});
   auto config = make_config({entry});
@@ -392,7 +389,6 @@ TEST_F(DefaultScriptProviderTest, EntityFilterWildcard) {
   EXPECT_EQ(result->size(), 1u);
 }
 
-// @verifies REQ_INTEROP_090
 TEST_F(DefaultScriptProviderTest, EntityFilterEmpty) {
   // Empty filter matches everything
   auto entry = make_manifest_entry("unfiltered_script", "Unfiltered Script", "Matches all");
@@ -405,7 +401,7 @@ TEST_F(DefaultScriptProviderTest, EntityFilterEmpty) {
   EXPECT_EQ(result->size(), 1u);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_043
 TEST_F(DefaultScriptProviderTest, DeleteNonexistentScriptFails) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -415,7 +411,7 @@ TEST_F(DefaultScriptProviderTest, DeleteNonexistentScriptFails) {
   EXPECT_EQ(result.error().code, ScriptBackendError::NotFound);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_042
 TEST_F(DefaultScriptProviderTest, ManifestScriptWithParametersSchema) {
   auto entry = make_manifest_entry("schema_script", "Schema Script");
   entry.parameters_schema = json{{"type", "object"}, {"properties", {{"mode", {{"type", "string"}}}}}};
@@ -429,7 +425,7 @@ TEST_F(DefaultScriptProviderTest, ManifestScriptWithParametersSchema) {
   EXPECT_EQ(result->parameters_schema.value()["type"], "object");
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_041
 TEST_F(DefaultScriptProviderTest, UploadedScriptsIsolatedByEntity) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -459,7 +455,7 @@ TEST_F(DefaultScriptProviderTest, UploadedScriptsIsolatedByEntity) {
 
 // --- Execution tests (Task 7) ---
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, SubprocessExecutionPython) {
   auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
   auto config = make_config({entry});
@@ -483,7 +479,7 @@ TEST_F(DefaultScriptProviderTest, SubprocessExecutionPython) {
   EXPECT_TRUE(output["args"].is_array());
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, SubprocessExecutionBash) {
   auto entry = make_real_script_entry("echo_bash", "echo_params.bash", "bash");
   auto config = make_config({entry});
@@ -500,7 +496,7 @@ TEST_F(DefaultScriptProviderTest, SubprocessExecutionBash) {
   ASSERT_TRUE(final_state->output_parameters.has_value());
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, SubprocessExecutionSh) {
   auto entry = make_real_script_entry("echo_sh", "echo_params.sh", "sh");
   auto config = make_config({entry});
@@ -517,7 +513,7 @@ TEST_F(DefaultScriptProviderTest, SubprocessExecutionSh) {
   ASSERT_TRUE(final_state->output_parameters.has_value());
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, SubprocessFailure) {
   // Create a script that exits with code 1
   auto fail_script = test_dir_ / "fail.sh";
@@ -549,7 +545,7 @@ TEST_F(DefaultScriptProviderTest, SubprocessFailure) {
   EXPECT_EQ(final_state->error->at("exit_code").get<int>(), 1);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, SubprocessTimeout) {
   // Create a script that sleeps for a long time
   auto slow_script = test_dir_ / "slow.sh";
@@ -580,7 +576,7 @@ TEST_F(DefaultScriptProviderTest, SubprocessTimeout) {
   EXPECT_NE(final_state->error->at("message").get<std::string>().find("timed out"), std::string::npos);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, PositionalArgs) {
   auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
   entry.args = json::array({
@@ -609,7 +605,7 @@ TEST_F(DefaultScriptProviderTest, PositionalArgs) {
   EXPECT_EQ(args[1].get<std::string>(), "/tmp/result.json");
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, NamedArgs) {
   auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
   entry.args = json::array({
@@ -642,7 +638,7 @@ TEST_F(DefaultScriptProviderTest, NamedArgs) {
   EXPECT_TRUE(found) << "Expected --threshold 0.1 in args: " << args.dump();
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, FlagArgs) {
   auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
   entry.args = json::array({
@@ -675,7 +671,7 @@ TEST_F(DefaultScriptProviderTest, FlagArgs) {
   EXPECT_TRUE(found) << "Expected -v in args: " << args.dump();
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, EnvVars) {
   auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
   entry.env = {{"ROBOT_ID", "robot_42"}, {"GATEWAY_URL", "http://localhost:8080"}};
@@ -699,7 +695,7 @@ TEST_F(DefaultScriptProviderTest, EnvVars) {
   EXPECT_EQ(env.value("GATEWAY_URL", ""), "http://localhost:8080");
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, StdinJsonFallback) {
   auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
   // No args config - parameters should be passed via stdin as JSON
@@ -724,7 +720,7 @@ TEST_F(DefaultScriptProviderTest, StdinJsonFallback) {
   EXPECT_DOUBLE_EQ(output["stdin"]["threshold"].get<double>(), 0.5);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, ConcurrencyLimit) {
   // Create a script that sleeps briefly
   auto sleep_script = test_dir_ / "sleep.sh";
@@ -767,7 +763,7 @@ TEST_F(DefaultScriptProviderTest, ConcurrencyLimit) {
   wait_for_completion(provider, "comp1", "sleep_script", exec2->id, 5000);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, UnsupportedExecutionType) {
   auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
   auto config = make_config({entry});
@@ -779,7 +775,7 @@ TEST_F(DefaultScriptProviderTest, UnsupportedExecutionType) {
   EXPECT_EQ(result.error().code, ScriptBackendError::UnsupportedType);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_046
 TEST_F(DefaultScriptProviderTest, ExecutionNotFound) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -789,7 +785,6 @@ TEST_F(DefaultScriptProviderTest, ExecutionNotFound) {
   EXPECT_EQ(result.error().code, ScriptBackendError::NotFound);
 }
 
-// @verifies REQ_INTEROP_090
 TEST_F(DefaultScriptProviderTest, DeleteRunningExecutionFails) {
   auto sleep_script = test_dir_ / "sleep2.sh";
   {
@@ -821,7 +816,6 @@ TEST_F(DefaultScriptProviderTest, DeleteRunningExecutionFails) {
   wait_for_completion(provider, "comp1", "sleep2", start->id, 5000);
 }
 
-// @verifies REQ_INTEROP_090
 TEST_F(DefaultScriptProviderTest, DeleteCompletedExecution) {
   auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
   auto config = make_config({entry});
@@ -845,7 +839,7 @@ TEST_F(DefaultScriptProviderTest, DeleteCompletedExecution) {
   EXPECT_EQ(get.error().code, ScriptBackendError::NotFound);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_047
 TEST_F(DefaultScriptProviderTest, ControlStopExecution) {
   auto sleep_script = test_dir_ / "sleep3.sh";
   {
@@ -876,7 +870,7 @@ TEST_F(DefaultScriptProviderTest, ControlStopExecution) {
   wait_for_completion(provider, "comp1", "sleep3", start->id, 5000);
 }
 
-// @verifies REQ_INTEROP_090
+// @verifies REQ_INTEROP_044
 TEST_F(DefaultScriptProviderTest, ScriptNotFoundExecution) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -889,7 +883,6 @@ TEST_F(DefaultScriptProviderTest, ScriptNotFoundExecution) {
 
 // --- Path traversal tests ---
 
-// @verifies REQ_INTEROP_090
 TEST_F(DefaultScriptProviderTest, PathTraversalScriptIdRejected) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -898,7 +891,6 @@ TEST_F(DefaultScriptProviderTest, PathTraversalScriptIdRejected) {
   ASSERT_FALSE(result.has_value());
 }
 
-// @verifies REQ_INTEROP_090
 TEST_F(DefaultScriptProviderTest, DeletePathTraversalRejected) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
@@ -907,7 +899,6 @@ TEST_F(DefaultScriptProviderTest, DeletePathTraversalRejected) {
   ASSERT_FALSE(result.has_value());
 }
 
-// @verifies REQ_INTEROP_090
 TEST_F(DefaultScriptProviderTest, PathTraversalEntityIdRejected) {
   auto config = make_config();
   DefaultScriptProvider provider(config);
