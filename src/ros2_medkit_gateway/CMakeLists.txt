@@ -154,6 +154,8 @@ add_library(gateway_lib STATIC
   src/auth/auth_requirement_policy.cpp
   # Updates module
   src/updates/update_manager.cpp
+  # Scripts module
+  src/script_manager.cpp
   # HTTP handlers - updates
   src/http/handlers/update_handlers.cpp
   # Plugin framework
@@ -453,6 +455,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_update_manager test/test_update_manager.cpp)
   target_link_libraries(test_update_manager gateway_lib)
 
+  # Add script manager tests
+  ament_add_gtest(test_script_manager test/test_script_manager.cpp)
+  target_link_libraries(test_script_manager gateway_lib)
+
   # Add data handler tests
   ament_add_gtest(test_data_handlers test/test_data_handlers.cpp)
   target_link_libraries(test_data_handlers gateway_lib)
@@ -605,6 +611,7 @@ if(BUILD_TESTING)
       test_cyclic_subscription_handlers
       test_sse_transport_provider
       test_update_manager
+      test_script_manager
       test_data_handlers
       test_auth_handlers
       test_health_handlers
