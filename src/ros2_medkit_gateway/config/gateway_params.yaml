@@ -342,6 +342,21 @@ ros2_medkit_gateway:
       # Default: false
       enabled: false
 
+    # ---------------------------------------------------------------------------
+    # Scripts Configuration
+    # ---------------------------------------------------------------------------
+    # Diagnostic scripts: upload, manage, and execute scripts on entities.
+    # Set scripts_dir to enable. Leave empty to disable (all script endpoints return 501).
+    scripts:
+      # Directory for storing uploaded scripts. Empty = feature disabled.
+      scripts_dir: ""
+      # Maximum uploaded script file size in megabytes
+      max_file_size_mb: 10
+      # Maximum number of scripts executing concurrently
+      max_concurrent_executions: 5
+      # Default timeout per execution in seconds
+      default_timeout_sec: 300
+
     # OpenAPI Documentation Endpoints
     # Controls the /docs endpoints that serve OpenAPI capability descriptions
     docs:
