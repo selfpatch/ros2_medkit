@@ -462,7 +462,10 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     response["logs"] = base + "/logs";
     response["bulk-data"] = base + "/bulk-data";
     response["cyclic-subscriptions"] = base + "/cyclic-subscriptions";
-    response["scripts"] = base + "/scripts";
+
+    if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
+      response["scripts"] = base + "/scripts";
+    }
 
     if (!comp.depends_on.empty()) {
       response["depends-on"] = base + "/depends-on";
@@ -497,8 +500,10 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::DATA,   Cap::OPERATIONS, Cap::CONFIGURATIONS,
                              Cap::FAULTS, Cap::LOGS,       Cap::SUBCOMPONENTS,
-                             Cap::HOSTS,  Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS,
-                             Cap::SCRIPTS};
+                             Cap::HOSTS,  Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS};
+    if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
+      caps.push_back(Cap::SCRIPTS);
+    }
     if (ctx_.node() && ctx_.node()->get_lock_manager()) {
       caps.push_back(Cap::LOCKS);
     }
@@ -819,7 +824,10 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     response["logs"] = base_uri + "/logs";
     response["bulk-data"] = base_uri + "/bulk-data";
     response["cyclic-subscriptions"] = base_uri + "/cyclic-subscriptions";
-    response["scripts"] = base_uri + "/scripts";
+
+    if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
+      response["scripts"] = base_uri + "/scripts";
+    }
 
     if (!app.component_id.empty()) {
       response["is-located-on"] = "/api/v1/components/" + app.component_id;
@@ -831,7 +839,10 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
 
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS,      Cap::FAULTS,
-                             Cap::LOGS, Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS, Cap::SCRIPTS};
+                             Cap::LOGS, Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS};
+    if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
+      caps.push_back(Cap::SCRIPTS);
+    }
     if (ctx_.node() && ctx_.node()->get_lock_manager()) {
       caps.push_back(Cap::LOCKS);
     }
