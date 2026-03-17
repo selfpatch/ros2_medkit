@@ -57,7 +57,7 @@ struct ExecutionState {
   std::string script_id;
   std::string entity_id;
   std::string status;  // running, completed, failed, terminated
-  pid_t pid = -1;
+  std::atomic<pid_t> pid{-1};
   std::optional<std::string> started_at;
   std::optional<std::string> completed_at;
   std::optional<int> progress;

@@ -485,7 +485,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
   state->script_id = script_id;
   state->entity_id = entity_id;
   state->status = "running";
-  state->pid = child_pid;
+  state->pid.store(child_pid);
   state->started_at = now_iso8601();
 
   int timeout_sec = resolved->timeout_sec;
@@ -574,7 +574,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
     int wstatus = 0;
     waitpid(child_pid, &wstatus, 0);
 
-    state_ptr->pid = -1;  // Mark as reaped
+    state_ptr->pid.store(-1);  // Mark as reaped
 
     // Update state under lock
     std::lock_guard<std::mutex> lock(exec_mutex_);
@@ -621,7 +621,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_sec);
       while (std::chrono::steady_clock::now() < deadline) {
         // Check if process already finished (without reaping - leave that to monitor thread)
-        if (state_ptr->pid <= 0) {
+        if (state_ptr->pid.load() <= 0) {
           return;
         }
         if (kill(child_pid, 0) != 0) {
@@ -632,7 +632,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
 
       // Timeout reached - mark and send SIGTERM to process group
       state_ptr->timed_out.store(true);
-      if (state_ptr->pid <= 0) {
+      if (state_ptr->pid.load() <= 0) {
         return;
       }
       kill(-child_pid, SIGTERM);  // Negative PID = process group
@@ -640,7 +640,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
       // Grace period (2 seconds), then SIGKILL
       auto grace_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
       while (std::chrono::steady_clock::now() < grace_deadline) {
-        if (state_ptr->pid <= 0) {
+        if (state_ptr->pid.load() <= 0) {
           return;
         }
         if (kill(child_pid, 0) != 0) {
@@ -649,7 +649,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
       // Still running after grace period - force kill the group
-      if (state_ptr->pid <= 0) {
+      if (state_ptr->pid.load() <= 0) {
         return;
       }
       kill(-child_pid, SIGKILL);
@@ -696,19 +696,20 @@ DefaultScriptProvider::control_execution(const std::string & /*entity_id*/, cons
                                                       "Execution is not running (status: " + state.status + ")"});
   }
 
-  if (state.pid <= 0) {
+  auto local_pid = state.pid.load();
+  if (local_pid <= 0) {
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::NotRunning, "Process already exited"});
   }
 
   if (action == "stop") {
-    kill(-state.pid, SIGTERM);  // Kill the process group
+    kill(-local_pid, SIGTERM);  // Kill the process group
     state.status = "terminated";
     state.error = nlohmann::json{{"message", "Execution stopped by user"}};
     return state_to_info(state);
   }
 
   if (action == "forced_termination") {
-    kill(-state.pid, SIGKILL);  // Kill the process group
+    kill(-local_pid, SIGKILL);  // Kill the process group
     state.status = "terminated";
     state.error = nlohmann::json{{"message", "Execution forcefully terminated"}};
     return state_to_info(state);
