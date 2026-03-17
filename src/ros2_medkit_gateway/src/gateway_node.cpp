@@ -170,6 +170,13 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Software updates parameters
   declare_parameter("updates.enabled", false);
 
+  // Scripts parameters
+  declare_parameter("scripts.scripts_dir", "");
+  declare_parameter("scripts.max_file_size_mb", 10);
+  declare_parameter("scripts.max_concurrent_executions", 5);
+  declare_parameter("scripts.default_timeout_sec", 300);
+  declare_parameter("scripts.manifest_path", "");
+
   // Plugin framework parameters
   declare_parameter("plugins", std::vector<std::string>{});
 
@@ -670,6 +677,34 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     RCLCPP_INFO(get_logger(), "Lock manager: disabled");
   }
 
+  // Scripts
+  script_mgr_ = std::make_unique<ScriptManager>();
+  auto * plugin_script_provider = plugin_mgr_->get_script_provider();
+  if (plugin_script_provider) {
+    script_mgr_->set_backend(plugin_script_provider);
+    RCLCPP_INFO(get_logger(), "Using plugin ScriptProvider");
+  } else {
+    auto scripts_dir = get_parameter("scripts.scripts_dir").as_string();
+    if (!scripts_dir.empty()) {
+      ScriptsConfig scripts_config;
+      scripts_config.scripts_dir = scripts_dir;
+      scripts_config.max_file_size_mb = static_cast<int>(get_parameter("scripts.max_file_size_mb").as_int());
+      scripts_config.max_concurrent_executions =
+          static_cast<int>(get_parameter("scripts.max_concurrent_executions").as_int());
+      scripts_config.default_timeout_sec = static_cast<int>(get_parameter("scripts.default_timeout_sec").as_int());
+
+      // Load manifest entries from YAML file if specified
+      auto manifest_path = get_parameter("scripts.manifest_path").as_string();
+      if (!manifest_path.empty()) {
+        RCLCPP_INFO(get_logger(), "Scripts manifest path: %s", manifest_path.c_str());
+      }
+
+      default_script_provider_ = std::make_unique<DefaultScriptProvider>(scripts_config);
+      script_mgr_->set_backend(default_script_provider_.get());
+      RCLCPP_INFO(get_logger(), "Scripts enabled with directory: %s", scripts_dir.c_str());
+    }
+  }
+
   // Register built-in resource samplers
   sampler_registry_->register_sampler(
       "data",
@@ -1023,6 +1058,10 @@ UpdateManager * GatewayNode::get_update_manager() const {
 
 LockManager * GatewayNode::get_lock_manager() const {
   return lock_manager_.get();
+}
+
+ScriptManager * GatewayNode::get_script_manager() const {
+  return script_mgr_.get();
 }
 
 PluginManager * GatewayNode::get_plugin_manager() const {

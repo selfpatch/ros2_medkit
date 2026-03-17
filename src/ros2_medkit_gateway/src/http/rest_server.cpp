@@ -147,11 +147,9 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
 
   lock_handlers_ = std::make_unique<handlers::LockHandlers>(*handler_ctx_, node_->get_lock_manager());
 
-  // TODO(Task 9): Wire ScriptHandlers when GatewayNode::get_script_manager() is available
-  // if (node_->get_script_manager()) {
-  //   script_handlers_ =
-  //       std::make_unique<handlers::ScriptHandlers>(*handler_ctx_, node_->get_script_manager());
-  // }
+  if (node_->get_script_manager()) {
+    script_handlers_ = std::make_unique<handlers::ScriptHandlers>(*handler_ctx_, node_->get_script_manager());
+  }
 
   docs_handlers_ = std::make_unique<handlers::DocsHandlers>(*handler_ctx_, *node_, node_->get_plugin_manager(),
                                                             route_registry_.get());
