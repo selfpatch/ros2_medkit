@@ -43,6 +43,13 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "GET:/api/v1/components/*/configurations/*",
            "GET:/api/v1/components/*/faults",
            "GET:/api/v1/components/*/faults/*",
+           // Scripts: read-only (list, details, execution status)
+           "GET:/api/v1/components/*/scripts",
+           "GET:/api/v1/components/*/scripts/*",
+           "GET:/api/v1/apps/*/scripts",
+           "GET:/api/v1/apps/*/scripts/*",
+           "GET:/api/v1/components/*/scripts/*/executions/*",
+           "GET:/api/v1/apps/*/scripts/*/executions/*",
        }},
       {UserRole::OPERATOR,
        {
@@ -74,6 +81,20 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "DELETE:/api/v1/components/*/faults/*",
            // Publish data to topics (PUT)
            "PUT:/api/v1/components/*/data/*",
+           // Scripts: read (inherited from VIEWER)
+           "GET:/api/v1/components/*/scripts",
+           "GET:/api/v1/components/*/scripts/*",
+           "GET:/api/v1/apps/*/scripts",
+           "GET:/api/v1/apps/*/scripts/*",
+           "GET:/api/v1/components/*/scripts/*/executions/*",
+           "GET:/api/v1/apps/*/scripts/*/executions/*",
+           // Scripts: start/control/delete executions
+           "POST:/api/v1/components/*/scripts/*/executions",
+           "POST:/api/v1/apps/*/scripts/*/executions",
+           "PUT:/api/v1/components/*/scripts/*/executions/*",
+           "PUT:/api/v1/apps/*/scripts/*/executions/*",
+           "DELETE:/api/v1/components/*/scripts/*/executions/*",
+           "DELETE:/api/v1/apps/*/scripts/*/executions/*",
        }},
       {UserRole::CONFIGURATOR,
        {
@@ -105,6 +126,25 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            // Reset configurations (DELETE)
            "DELETE:/api/v1/components/*/configurations",
            "DELETE:/api/v1/components/*/configurations/*",
+           // Scripts: read (inherited from VIEWER)
+           "GET:/api/v1/components/*/scripts",
+           "GET:/api/v1/components/*/scripts/*",
+           "GET:/api/v1/apps/*/scripts",
+           "GET:/api/v1/apps/*/scripts/*",
+           "GET:/api/v1/components/*/scripts/*/executions/*",
+           "GET:/api/v1/apps/*/scripts/*/executions/*",
+           // Scripts: start/control/delete executions (inherited from OPERATOR)
+           "POST:/api/v1/components/*/scripts/*/executions",
+           "POST:/api/v1/apps/*/scripts/*/executions",
+           "PUT:/api/v1/components/*/scripts/*/executions/*",
+           "PUT:/api/v1/apps/*/scripts/*/executions/*",
+           "DELETE:/api/v1/components/*/scripts/*/executions/*",
+           "DELETE:/api/v1/apps/*/scripts/*/executions/*",
+           // Scripts: upload/delete scripts
+           "POST:/api/v1/components/*/scripts",
+           "POST:/api/v1/apps/*/scripts",
+           "DELETE:/api/v1/components/*/scripts/*",
+           "DELETE:/api/v1/apps/*/scripts/*",
        }},
       {UserRole::ADMIN,
        {
