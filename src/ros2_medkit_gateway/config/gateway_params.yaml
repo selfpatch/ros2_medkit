@@ -374,3 +374,16 @@ ros2_medkit_gateway:
 
       # Remove client entries idle longer than this (seconds)
       client_max_idle_seconds: 600
+
+# Locking configuration (SOVD resource locking, ISO 17978-3 Section 7.17)
+locking:
+  enabled: true
+  default_max_expiration: 3600        # max allowed TTL in seconds
+  cleanup_interval: 30                # seconds between cleanup sweeps
+  defaults:
+    components:
+      lock_required_scopes: [configurations, operations]
+      breakable: true
+    apps:
+      lock_required_scopes: [configurations]
+      breakable: true
