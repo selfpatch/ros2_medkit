@@ -119,6 +119,8 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         {"updates", ctx_.node() && ctx_.node()->get_update_manager() != nullptr},
         {"authentication", auth_config.enabled},
         {"tls", tls_config.enabled},
+        {"scripts", ctx_.node() && ctx_.node()->get_script_manager() != nullptr &&
+                        ctx_.node()->get_script_manager()->has_backend()},
         {"vendor_extensions",
          ctx_.node() && ctx_.node()->get_plugin_manager() && ctx_.node()->get_plugin_manager()->has_plugins()},
     };

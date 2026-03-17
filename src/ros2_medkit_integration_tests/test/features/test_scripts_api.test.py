@@ -446,7 +446,7 @@ class TestScriptsExecution(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 409)
         data = r.json()
-        self.assertEqual(data['error_code'], 'invalid-request')
+        self.assertEqual(data['error_code'], 'x-medkit-script-running')
 
         # Cleanup: stop the execution
         requests.put(

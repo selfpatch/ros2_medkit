@@ -207,9 +207,9 @@ void ScriptHandlers::handle_upload_script(const httplib::Request & req, httplib:
     std::string entity_type_segment = (req.path.find("/components/") != std::string::npos) ? "components" : "apps";
     auto script_path = "/api/v1/" + entity_type_segment + "/" + entity_id + "/scripts/" + result->id;
 
-    HandlerContext::send_json(res, json{{"id", result->id}, {"name", result->name}});
     res.status = 201;
     res.set_header("Location", script_path);
+    HandlerContext::send_json(res, json{{"id", result->id}, {"name", result->name}});
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
   }
@@ -328,9 +328,9 @@ void ScriptHandlers::handle_start_execution(const httplib::Request & req, httpli
     auto exec_path =
         "/api/v1/" + entity_type_segment + "/" + entity_id + "/scripts/" + script_id + "/executions/" + result->id;
 
-    HandlerContext::send_json(res, execution_info_to_json(*result));
     res.status = 202;
     res.set_header("Location", exec_path);
+    HandlerContext::send_json(res, execution_info_to_json(*result));
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
   }
