@@ -134,6 +134,7 @@ add_library(gateway_lib STATIC
   src/http/handlers/config_handlers.cpp
   src/http/handlers/fault_handlers.cpp
   src/http/handlers/log_handlers.cpp
+  src/http/handlers/lock_handlers.cpp
   src/http/handlers/bulkdata_handlers.cpp
   src/http/handlers/sse_fault_handler.cpp
   src/http/handlers/cyclic_subscription_handlers.cpp
@@ -568,6 +569,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_lock_manager test/test_lock_manager.cpp)
   target_link_libraries(test_lock_manager gateway_lib)
 
+  # Lock handlers tests
+  ament_add_gtest(test_lock_handlers test/test_lock_handlers.cpp)
+  target_link_libraries(test_lock_handlers gateway_lib)
+  set_tests_properties(test_lock_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=69")
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -619,6 +625,7 @@ if(BUILD_TESTING)
       test_route_registry
       test_docs_handlers
       test_lock_manager
+      test_lock_handlers
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
