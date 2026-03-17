@@ -173,8 +173,8 @@ class DefaultScriptProvider : public ScriptProvider {
   int active_execution_count_ = 0;
 
   // Counter for ID generation
-  int id_counter_ = 0;
-  int exec_id_counter_ = 0;
+  std::atomic<int> id_counter_{0};
+  std::atomic<int> exec_id_counter_{0};
 };
 
 }  // namespace ros2_medkit_gateway

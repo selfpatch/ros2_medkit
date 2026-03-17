@@ -315,7 +315,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
                                                       "Unsupported execution type: " + request.execution_type});
   }
 
-  // Check concurrency limit
+  // Check concurrency limit and reserve a slot atomically
   {
     std::lock_guard<std::mutex> lock(exec_mutex_);
     if (active_execution_count_ >= config_.max_concurrent_executions) {
@@ -323,11 +323,16 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
                                                         "Maximum concurrent executions reached (" +
                                                             std::to_string(config_.max_concurrent_executions) + ")"});
     }
+    active_execution_count_++;  // Reserve slot
   }
 
   // Resolve script
   auto resolved = resolve_script(entity_id, script_id);
   if (!resolved) {
+    {
+      std::lock_guard<std::mutex> lock(exec_mutex_);
+      active_execution_count_--;  // Release reserved slot
+    }
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::NotFound, "Script not found: " + script_id});
   }
 
@@ -359,6 +364,10 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
   int stdin_pipe[2];
 
   if (pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0) {
+    {
+      std::lock_guard<std::mutex> lock(exec_mutex_);
+      active_execution_count_--;  // Release reserved slot
+    }
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Failed to create pipes"});
   }
 
@@ -368,6 +377,10 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
       close(stdout_pipe[1]);
       close(stderr_pipe[0]);
       close(stderr_pipe[1]);
+      {
+        std::lock_guard<std::mutex> lock(exec_mutex_);
+        active_execution_count_--;  // Release reserved slot
+      }
       return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Failed to create stdin pipe"});
     }
   }
@@ -400,6 +413,10 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
     if (pass_stdin_json) {
       close(stdin_pipe[0]);
       close(stdin_pipe[1]);
+    }
+    {
+      std::lock_guard<std::mutex> lock(exec_mutex_);
+      active_execution_count_--;  // Release reserved slot
     }
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Failed to fork process"});
   }
@@ -475,7 +492,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
 
   {
     std::lock_guard<std::mutex> lock(exec_mutex_);
-    active_execution_count_++;
+    // Slot already reserved above - don't increment again
     executions_[exec_id] = std::move(state);
   }
 
@@ -675,30 +692,35 @@ DefaultScriptProvider::control_execution(const std::string & /*entity_id*/, cons
 tl::expected<void, ScriptBackendErrorInfo> DefaultScriptProvider::delete_execution(const std::string & /*entity_id*/,
                                                                                    const std::string & /*script_id*/,
                                                                                    const std::string & execution_id) {
-  std::lock_guard<std::mutex> lock(exec_mutex_);
+  std::unique_ptr<ExecutionState> owned;
+  {
+    std::lock_guard<std::mutex> lock(exec_mutex_);
 
-  auto it = executions_.find(execution_id);
-  if (it == executions_.end()) {
-    return tl::make_unexpected(
-        ScriptBackendErrorInfo{ScriptBackendError::NotFound, "Execution not found: " + execution_id});
+    auto it = executions_.find(execution_id);
+    if (it == executions_.end()) {
+      return tl::make_unexpected(
+          ScriptBackendErrorInfo{ScriptBackendError::NotFound, "Execution not found: " + execution_id});
+    }
+
+    auto & state = *it->second;
+    if (state.status == "running") {
+      return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::AlreadyRunning,
+                                                        "Cannot delete running execution. Stop it first."});
+    }
+
+    owned = std::move(it->second);
+    executions_.erase(it);
   }
 
-  auto & state = *it->second;
-  if (state.status == "running") {
-    return tl::make_unexpected(
-        ScriptBackendErrorInfo{ScriptBackendError::AlreadyRunning, "Cannot delete running execution. Stop it first."});
+  // Join threads WITHOUT holding exec_mutex_ to avoid deadlock:
+  // the monitor thread acquires exec_mutex_ to update status.
+  if (owned->monitor_thread.joinable()) {
+    owned->monitor_thread.join();
+  }
+  if (owned->timeout_thread.joinable()) {
+    owned->timeout_thread.join();
   }
 
-  // Detach threads before erasing so the unique_ptr destructor doesn't join
-  // (they should already be finished since status is not "running")
-  if (state.monitor_thread.joinable()) {
-    state.monitor_thread.join();
-  }
-  if (state.timeout_thread.joinable()) {
-    state.timeout_thread.join();
-  }
-
-  executions_.erase(it);
   return {};
 }
 
