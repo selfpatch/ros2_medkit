@@ -147,6 +147,12 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
 
   lock_handlers_ = std::make_unique<handlers::LockHandlers>(*handler_ctx_, node_->get_lock_manager());
 
+  // TODO(Task 9): Wire ScriptHandlers when GatewayNode::get_script_manager() is available
+  // if (node_->get_script_manager()) {
+  //   script_handlers_ =
+  //       std::make_unique<handlers::ScriptHandlers>(*handler_ctx_, node_->get_script_manager());
+  // }
+
   docs_handlers_ = std::make_unique<handlers::DocsHandlers>(*handler_ctx_, *node_, node_->get_plugin_manager(),
                                                             route_registry_.get());
 
@@ -688,6 +694,69 @@ void RESTServer::setup_routes() {
               })
           .tag("Locking")
           .summary(std::string("Release lock on ") + et.singular);
+    }
+
+    // --- Scripts (apps and components only) ---
+    if (script_handlers_ && (et_type_str == "apps" || et_type_str == "components")) {
+      reg.post(entity_path + "/scripts",
+               [this](auto & req, auto & res) {
+                 script_handlers_->handle_upload_script(req, res);
+               })
+          .tag("Scripts")
+          .summary(std::string("Upload diagnostic script for ") + et.singular)
+          .response(201, "Script uploaded");
+
+      reg.get(entity_path + "/scripts",
+              [this](auto & req, auto & res) {
+                script_handlers_->handle_list_scripts(req, res);
+              })
+          .tag("Scripts")
+          .summary(std::string("List scripts for ") + et.singular);
+
+      reg.get(entity_path + "/scripts/{script_id}",
+              [this](auto & req, auto & res) {
+                script_handlers_->handle_get_script(req, res);
+              })
+          .tag("Scripts")
+          .summary(std::string("Get script metadata for ") + et.singular);
+
+      reg.del(entity_path + "/scripts/{script_id}",
+              [this](auto & req, auto & res) {
+                script_handlers_->handle_delete_script(req, res);
+              })
+          .tag("Scripts")
+          .summary(std::string("Delete script for ") + et.singular)
+          .response(204, "Script deleted");
+
+      reg.post(entity_path + "/scripts/{script_id}/executions",
+               [this](auto & req, auto & res) {
+                 script_handlers_->handle_start_execution(req, res);
+               })
+          .tag("Scripts")
+          .summary(std::string("Start script execution for ") + et.singular)
+          .response(202, "Execution started");
+
+      reg.get(entity_path + "/scripts/{script_id}/executions/{execution_id}",
+              [this](auto & req, auto & res) {
+                script_handlers_->handle_get_execution(req, res);
+              })
+          .tag("Scripts")
+          .summary(std::string("Get execution status for ") + et.singular);
+
+      reg.put(entity_path + "/scripts/{script_id}/executions/{execution_id}",
+              [this](auto & req, auto & res) {
+                script_handlers_->handle_control_execution(req, res);
+              })
+          .tag("Scripts")
+          .summary(std::string("Terminate script execution for ") + et.singular);
+
+      reg.del(entity_path + "/scripts/{script_id}/executions/{execution_id}",
+              [this](auto & req, auto & res) {
+                script_handlers_->handle_delete_execution(req, res);
+              })
+          .tag("Scripts")
+          .summary(std::string("Remove completed execution for ") + et.singular)
+          .response(204, "Execution removed");
     }
 
     // --- Discovery relationship endpoints (entity-type-specific) ---
