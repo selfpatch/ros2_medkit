@@ -40,6 +40,7 @@ class ScriptHandlers {
 
   bool check_backend(httplib::Response & res);
   void send_script_error(httplib::Response & res, const ScriptBackendErrorInfo & err);
+  static bool is_valid_resource_id(const std::string & id);
   static nlohmann::json script_info_to_json(const ScriptInfo & info, const std::string & base_path);
   static nlohmann::json execution_info_to_json(const ExecutionInfo & info);
 };
