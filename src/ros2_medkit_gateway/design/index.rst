@@ -35,6 +35,7 @@ The following diagram shows the relationships between the main components of the
            + get_discovery_manager(): DiscoveryManager*
            + get_configuration_manager(): ConfigurationManager*
            + get_lock_manager(): LockManager*
+           + get_script_manager(): ScriptManager*
        }
 
        class DiscoveryManager {
@@ -146,6 +147,19 @@ The following diagram shows the relationships between the main components of the
            + get_lock(): optional<LockInfo>
        }
 
+       class ScriptManager {
+           + set_backend(): void
+           + has_backend(): bool
+           + list_scripts(): expected<vector<ScriptInfo>, Error>
+           + get_script(): expected<ScriptInfo, Error>
+           + upload_script(): expected<ScriptUploadResult, Error>
+           + delete_script(): expected<void, Error>
+           + start_execution(): expected<ExecutionInfo, Error>
+           + get_execution(): expected<ExecutionInfo, Error>
+           + control_execution(): expected<ExecutionInfo, Error>
+           + delete_execution(): expected<void, Error>
+       }
+
        class NativeTopicSampler {
            + discover_all_topics(): vector<TopicInfo>
            + discover_topics(): vector<TopicInfo>
@@ -226,6 +240,7 @@ The following diagram shows the relationships between the main components of the
    GatewayNode *-down-> OperationManager : owns
    GatewayNode *-down-> ConfigurationManager : owns
    GatewayNode *-down-> LockManager : owns
+   GatewayNode *-down-> ScriptManager : owns
    GatewayNode *-down-> EntityCache : owns
 
    ' Discovery Manager uses Node interface
@@ -236,6 +251,7 @@ The following diagram shows the relationships between the main components of the
    RESTServer --> DataAccessManager : uses
    RESTServer --> OperationManager : uses
    RESTServer --> ConfigurationManager : uses
+   RESTServer --> ScriptManager : uses
 
    ' OperationManager uses DiscoveryManager and native serialization
    OperationManager --> DiscoveryManager : uses
@@ -361,10 +377,12 @@ Main Components
    - Data endpoints: ``/components/{id}/data``, ``/components/{id}/data/{topic}``
    - Operations endpoints: ``/apps/{id}/operations``, ``/apps/{id}/operations/{op}/executions``
    - Configurations endpoints: ``/apps/{id}/configurations``, ``/apps/{id}/configurations/{param}``
+   - Scripts endpoints: ``/{entity_type}/{id}/scripts``, ``/{entity_type}/{id}/scripts/{script_id}/executions``
    - Retrieves cached entities from the GatewayNode
    - Uses DataAccessManager for runtime topic data access
    - Uses OperationManager for service/action execution
    - Uses ConfigurationManager for parameter CRUD operations
+   - Uses ScriptManager for script upload and execution
    - Runs on configurable host and port with CORS support
 
 5. **ConfigurationManager** - Manages ROS 2 node parameters
@@ -413,3 +431,12 @@ Main Components
     - ``ServiceInfo`` - Service metadata (path, name, type)
     - ``ActionInfo`` - Action metadata (path, name, type)
     - ``EntityCache`` - Thread-safe cache of discovered entities (areas, components, apps)
+
+10. **ScriptManager** - Manages diagnostic script upload, storage, and execution (SOVD 7.15)
+    - Delegates to a pluggable ``ScriptProvider`` backend (set via ``set_backend()``)
+    - Lists, uploads, and deletes scripts per entity
+    - Starts script executions as POSIX subprocesses with timeout support
+    - Tracks execution status (``prepared``, ``running``, ``completed``, ``failed``, ``terminated``)
+    - Supports termination via ``stop`` (SIGTERM) and ``forced_termination`` (SIGKILL)
+    - Built-in ``DefaultScriptProvider`` handles filesystem storage and manifest-defined scripts
+    - Supports concurrent execution limits and per-script timeout configuration

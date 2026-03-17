@@ -1189,6 +1189,112 @@ Subscribe to a specific configuration parameter:
      "duration": 120
    }
 
+Scripts
+-------
+
+Upload, manage, and execute diagnostic scripts on entities.
+*(ISO 17978-3, 7.15)*
+
+Scripts are available on **Components** and **Apps** entity types.
+The feature must be enabled by setting ``scripts.scripts_dir`` in the gateway configuration.
+
+Upload Script
+~~~~~~~~~~~~~
+
+``POST /api/v1/{entity_type}/{entity_id}/scripts``
+   Upload a diagnostic script via ``multipart/form-data``.
+
+   - **file** (required): The script file (Python, bash, or sh)
+   - **metadata** (optional): JSON with name, description, parameters_schema
+
+   Response: **201 Created** with ``Location`` header pointing to the new script.
+
+List Scripts
+~~~~~~~~~~~~
+
+``GET /api/v1/{entity_type}/{entity_id}/scripts``
+   List all scripts for an entity. Returns ``{"items": [...]}``.
+
+Get Script
+~~~~~~~~~~
+
+``GET /api/v1/{entity_type}/{entity_id}/scripts/{script_id}``
+   Get metadata for a specific script.
+
+Delete Script
+~~~~~~~~~~~~~
+
+``DELETE /api/v1/{entity_type}/{entity_id}/scripts/{script_id}``
+   Delete an uploaded script. Returns **204 No Content**.
+   Returns **409** if the script is manifest-managed or currently executing.
+
+Start Execution
+~~~~~~~~~~~~~~~
+
+``POST /api/v1/{entity_type}/{entity_id}/scripts/{script_id}/executions``
+   Start a new execution of a script.
+
+   **Request Body:**
+
+   .. code-block:: json
+
+      {
+        "execution_type": "now",
+        "parameters": {"threshold": 0.1}
+      }
+
+   .. list-table::
+      :header-rows: 1
+      :widths: 25 15 10 50
+
+      * - Attribute
+        - Type
+        - Conv
+        - Description
+      * - ``execution_type``
+        - string
+        - M
+        - When to run: ``now``, ``on_restart``, ``now_and_on_restart``, ``once_on_restart``
+      * - ``parameters``
+        - object
+        - O
+        - Input parameters for the script
+      * - ``proximity_response``
+        - string
+        - O
+        - Co-location proof token
+
+   Response: **202 Accepted** with ``Location`` header pointing to the execution status.
+
+Get Execution Status
+~~~~~~~~~~~~~~~~~~~~
+
+``GET /api/v1/{entity_type}/{entity_id}/scripts/{script_id}/executions/{execution_id}``
+   Poll the status of a script execution.
+
+   Status values: ``prepared``, ``running``, ``completed``, ``failed``, ``terminated``
+
+Terminate Execution
+~~~~~~~~~~~~~~~~~~~
+
+``PUT /api/v1/{entity_type}/{entity_id}/scripts/{script_id}/executions/{execution_id}``
+   Send a termination action to a running execution.
+
+   **Request Body:**
+
+   .. code-block:: json
+
+      {"action": "stop"}
+
+   Action values: ``stop`` (SIGTERM), ``forced_termination`` (SIGKILL).
+
+Delete Execution
+~~~~~~~~~~~~~~~~
+
+``DELETE /api/v1/{entity_type}/{entity_id}/scripts/{script_id}/executions/{execution_id}``
+   Remove a completed/terminated execution resource. Returns **204 No Content**.
+   Returns **409** if the execution is still running.
+
 Rate Limiting
 -------------
 
@@ -1621,6 +1727,7 @@ use cases benefit.
 - Bulk Data (``/bulk-data``) with custom categories and rosbag downloads
 - Software Updates (``/updates``) with async prepare/execute lifecycle
 - Cyclic Subscriptions (``/cyclic-subscriptions``) with SSE-based delivery
+- Scripts (``/scripts``) with upload, execution, and lifecycle management
 
 **Pragmatic Extensions:**
 
@@ -1678,6 +1785,12 @@ extends this to areas and functions where aggregation makes practical sense:
      - yes
      - yes
      - yes
+     - apps, components
+   * - scripts
+     - \-
+     - yes
+     - yes
+     - \-
      - apps, components
 
 Other extensions beyond SOVD:

@@ -83,7 +83,7 @@ Feedback welcome on [#265](https://github.com/selfpatch/ros2_medkit/issues/265).
 | 📋 Logs | **Available** | Log sources, entries, and configuration |
 | 🔁 Entity Lifecycle | Planned | Start, restart, shutdown control |
 | 🔐 Modes & Locking | Planned | Target mode control and resource locking |
-| 📝 Scripts | Planned | Diagnostic script upload and execution |
+| 📝 Scripts | **Available** | Diagnostic script upload and execution (SOVD 7.15) |
 | 🧹 Clear Data | Planned | Clear cached and learned diagnostic data |
 | 📞 Communication Logs | Planned | Protocol-level communication logging |
 
