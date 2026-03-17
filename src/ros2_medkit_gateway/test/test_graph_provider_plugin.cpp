@@ -234,6 +234,20 @@ class LocalHttpServer {
   int port_{-1};
 };
 
+/// RAII guard that joins a spin_some loop thread on all exit paths (including
+/// early returns from ASSERT_* macros) so we never hit std::terminate from a
+/// joinable std::thread destructor.
+struct SpinGuard {
+  std::atomic<bool> & flag;
+  std::thread & thread;
+  ~SpinGuard() {
+    flag.store(true, std::memory_order_relaxed);
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
+};
+
 class GraphProviderPluginRosTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -729,11 +743,19 @@ TEST_F(GraphProviderPluginRosTest, IntrospectDoesNotQueryFaultManagerServiceOnGa
   // on CI runners, causing executor.cancel() + join() to deadlock.
   // Service discovery (is_available/service_is_ready) works via DDS without
   // the node spinning in an executor.
+  //
+  // Use spin_some() in a loop instead of spin() so shutdown doesn't depend on
+  // DDS guard conditions waking rmw_wait() - those are unreliable on loaded CI
+  // runners and caused recurring buildfarm timeouts.
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(service_node);
-  std::thread spin_thread([&executor]() {
-    executor.spin();
+  std::atomic<bool> stop_spinning{false};
+  std::thread spin_thread([&executor, &stop_spinning]() {
+    while (!stop_spinning.load(std::memory_order_relaxed)) {
+      executor.spin_some(100ms);
+    }
   });
+  SpinGuard spin_guard{stop_spinning, spin_thread};
 
   auto * plugin = [&]() -> GraphProviderPlugin * {
     for (auto * provider : gateway_node->get_plugin_manager()->get_introspection_providers()) {
@@ -760,7 +782,8 @@ TEST_F(GraphProviderPluginRosTest, IntrospectDoesNotQueryFaultManagerServiceOnGa
 
   EXPECT_EQ(list_fault_calls.load(), 0);
 
-  executor.cancel();
+  // Explicit shutdown (SpinGuard is a safety net for early ASSERT returns)
+  stop_spinning.store(true, std::memory_order_relaxed);
   spin_thread.join();
   executor.remove_node(service_node);
   gateway_node.reset();
@@ -803,11 +826,16 @@ TEST_F(GraphProviderPluginRosTest, HttpGraphRequestDoesNotQueryFaultManagerServi
 
   // Only spin service_node - see IntrospectDoesNotQueryFaultManagerServiceOnGatewayThread
   // for rationale. gateway_node's wall timers can deadlock executor shutdown.
+  // Use spin_some() loop to avoid guard condition unreliability on CI runners.
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(service_node);
-  std::thread spin_thread([&executor]() {
-    executor.spin();
+  std::atomic<bool> stop_spinning{false};
+  std::thread spin_thread([&executor, &stop_spinning]() {
+    while (!stop_spinning.load(std::memory_order_relaxed)) {
+      executor.spin_some(100ms);
+    }
   });
+  SpinGuard spin_guard{stop_spinning, spin_thread};
 
   const auto deadline = std::chrono::steady_clock::now() + 3s;
   while (std::chrono::steady_clock::now() < deadline && !gateway_node->get_fault_manager()->is_available()) {
@@ -833,7 +861,8 @@ TEST_F(GraphProviderPluginRosTest, HttpGraphRequestDoesNotQueryFaultManagerServi
   ASSERT_EQ(res->status, 200);
   EXPECT_EQ(list_fault_calls.load(), 0);
 
-  executor.cancel();
+  // Explicit shutdown (SpinGuard is a safety net for early ASSERT returns)
+  stop_spinning.store(true, std::memory_order_relaxed);
   spin_thread.join();
   executor.remove_node(service_node);
   gateway_node.reset();
