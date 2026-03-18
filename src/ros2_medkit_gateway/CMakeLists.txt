@@ -555,6 +555,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_docs_handlers gateway_lib)
   set_tests_properties(test_docs_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=68")
 
+  # Condition evaluator tests (trigger condition interface + built-in evaluators)
+  ament_add_gtest(test_condition_evaluator test/test_condition_evaluator.cpp)
+  target_link_libraries(test_condition_evaluator gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -604,6 +608,7 @@ if(BUILD_TESTING)
       test_capability_generator
       test_route_registry
       test_docs_handlers
+      test_condition_evaluator
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
