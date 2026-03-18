@@ -103,22 +103,30 @@ tl::expected<LockInfo, LockError> LockManager::acquire(const std::string & entit
   // Check for existing lock
   auto existing_it = locks_.find(entity_id);
   if (existing_it != locks_.end()) {
-    const auto & existing = existing_it->second;
+    auto now = std::chrono::steady_clock::now();
 
-    if (!break_lock) {
-      return tl::make_unexpected(LockError{
-          "lock-conflict", "Entity is already locked by client '" + existing.client_id + "'", 409, existing.lock_id});
+    // Expired lock: silently remove and proceed with new acquisition
+    if (existing_it->second.expires_at <= now) {
+      lock_id_index_.erase(existing_it->second.lock_id);
+      locks_.erase(existing_it);
+    } else {
+      const auto & existing = existing_it->second;
+
+      if (!break_lock) {
+        return tl::make_unexpected(LockError{
+            "lock-conflict", "Entity is already locked by client '" + existing.client_id + "'", 409, existing.lock_id});
+      }
+
+      // break_lock requested - check if the existing lock is breakable
+      if (!existing.breakable) {
+        return tl::make_unexpected(
+            LockError{"lock-not-breakable", "Existing lock is not breakable", 409, existing.lock_id});
+      }
+
+      // Remove existing lock
+      lock_id_index_.erase(existing.lock_id);
+      locks_.erase(existing_it);
     }
-
-    // break_lock requested - check if the existing lock is breakable
-    if (!existing.breakable) {
-      return tl::make_unexpected(
-          LockError{"lock-not-breakable", "Existing lock is not breakable", 409, existing.lock_id});
-    }
-
-    // Remove existing lock
-    lock_id_index_.erase(existing.lock_id);
-    locks_.erase(existing_it);
   }
 
   // Create new lock
@@ -195,13 +203,19 @@ tl::expected<LockInfo, LockError> LockManager::extend(const std::string & entity
         LockError{"lock-not-found", "No lock exists for entity '" + entity_id + "'", 404, std::nullopt});
   }
 
+  // Expired lock is effectively not found
+  auto now = std::chrono::steady_clock::now();
+  if (it->second.expires_at <= now) {
+    lock_id_index_.erase(it->second.lock_id);
+    locks_.erase(it);
+    return tl::make_unexpected(
+        LockError{"lock-not-found", "Lock has expired for entity '" + entity_id + "'", 404, std::nullopt});
+  }
+
   if (it->second.client_id != client_id) {
     return tl::make_unexpected(
         LockError{"lock-not-owner", "Lock is owned by a different client", 403, it->second.lock_id});
   }
-
-  // Extend from now
-  auto now = std::chrono::steady_clock::now();
   it->second.expires_at = now + std::chrono::seconds(additional_seconds);
   it->second.expiration_seconds = additional_seconds;
 
@@ -250,8 +264,11 @@ LockAccessResult LockManager::check_access(const std::string & entity_id, const 
     bool collection_requires_lock = std::find(entity_cfg.required_scopes.begin(), entity_cfg.required_scopes.end(),
                                               collection) != entity_cfg.required_scopes.end();
     if (collection_requires_lock) {
+      auto now_phase1 = std::chrono::steady_clock::now();
       auto it = locks_.find(entity_id);
-      if (it == locks_.end() || it->second.client_id != client_id) {
+      bool has_valid_lock =
+          it != locks_.end() && it->second.client_id == client_id && it->second.expires_at > now_phase1;
+      if (!has_valid_lock) {
         return LockAccessResult{false, "", "A lock is required for " + collection + " on this entity", "lock-required"};
       }
     }
@@ -259,12 +276,18 @@ LockAccessResult LockManager::check_access(const std::string & entity_id, const 
 
   // Phase 2: Check lock conflict - walk up parent chain
   // Check the entity itself
+  auto now = std::chrono::steady_clock::now();
   auto check_entity = [&](const std::string & check_id) -> std::optional<LockAccessResult> {
     auto it = locks_.find(check_id);
     if (it == locks_.end()) {
       return std::nullopt;
     }
     const auto & lock = it->second;
+
+    // Skip expired locks (cleanup timer hasn't run yet)
+    if (lock.expires_at <= now) {
+      return std::nullopt;
+    }
 
     // Owner always has access
     if (lock.client_id == client_id) {
