@@ -907,4 +907,82 @@ TEST_F(DefaultScriptProviderTest, PathTraversalEntityIdRejected) {
   ASSERT_FALSE(result.has_value());
 }
 
+// @verifies REQ_INTEROP_046
+TEST_F(DefaultScriptProviderTest, CrossEntityExecutionAccessRejected) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  // Start execution as entity "comp1"
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "echo_py", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  auto exec_id = start->id;
+
+  // get_execution via wrong entity -> NotFound
+  auto get_wrong_entity = provider.get_execution("comp2", "echo_py", exec_id);
+  ASSERT_FALSE(get_wrong_entity.has_value());
+  EXPECT_EQ(get_wrong_entity.error().code, ScriptBackendError::NotFound);
+
+  // get_execution via wrong script -> NotFound
+  auto get_wrong_script = provider.get_execution("comp1", "other_script", exec_id);
+  ASSERT_FALSE(get_wrong_script.has_value());
+  EXPECT_EQ(get_wrong_script.error().code, ScriptBackendError::NotFound);
+
+  // control_execution via wrong entity -> NotFound
+  auto ctrl_wrong = provider.control_execution("comp2", "echo_py", exec_id, "stop");
+  ASSERT_FALSE(ctrl_wrong.has_value());
+  EXPECT_EQ(ctrl_wrong.error().code, ScriptBackendError::NotFound);
+
+  // delete_execution via wrong entity -> NotFound (wait for completion first)
+  auto final_state = wait_for_completion(provider, "comp1", "echo_py", exec_id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed");
+
+  auto del_wrong = provider.delete_execution("comp2", "echo_py", exec_id);
+  ASSERT_FALSE(del_wrong.has_value());
+  EXPECT_EQ(del_wrong.error().code, ScriptBackendError::NotFound);
+
+  // Correct entity+script should still work
+  auto get_correct = provider.get_execution("comp1", "echo_py", exec_id);
+  ASSERT_TRUE(get_correct.has_value());
+  EXPECT_EQ(get_correct->id, exec_id);
+}
+
+// @verifies REQ_INTEROP_043
+TEST_F(DefaultScriptProviderTest, DeleteScriptWithRunningExecutionBlocked) {
+  // Create a long-running sleep script on the filesystem (uploaded, not manifest)
+  auto config = make_config();
+  DefaultScriptProvider provider(config);
+
+  // Upload a script that sleeps
+  std::string content = "#!/bin/sh\nsleep 60\n";
+  auto upload = provider.upload_script("comp1", "slow.sh", content, std::nullopt);
+  ASSERT_TRUE(upload.has_value()) << upload.error().message;
+  auto script_id = upload->id;
+
+  // Start execution of the uploaded script
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", script_id, req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+  auto exec_id = start->id;
+
+  // Try to delete the script while execution is running -> AlreadyRunning
+  auto del = provider.delete_script("comp1", script_id);
+  ASSERT_FALSE(del.has_value());
+  EXPECT_EQ(del.error().code, ScriptBackendError::AlreadyRunning);
+
+  // Stop the execution
+  auto ctrl = provider.control_execution("comp1", script_id, exec_id, "forced_termination");
+  ASSERT_TRUE(ctrl.has_value());
+
+  // Wait for it to finish
+  wait_for_completion(provider, "comp1", script_id, exec_id, 5000);
+
+  // Now delete should succeed
+  auto del2 = provider.delete_script("comp1", script_id);
+  EXPECT_TRUE(del2.has_value()) << del2.error().message;
+}
+
 }  // namespace

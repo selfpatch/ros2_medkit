@@ -164,12 +164,13 @@ class DefaultScriptProvider : public ScriptProvider {
   std::string generate_execution_id();
 
   ScriptsConfig config_;
-  std::map<std::string, ScriptEntryConfig> manifest_scripts_;
   mutable std::mutex fs_mutex_;
+  std::map<std::string, ScriptEntryConfig> manifest_scripts_;
 
-  // Execution tracking
-  std::unordered_map<std::string, std::unique_ptr<ExecutionState>> executions_;
+  // Execution tracking - exec_mutex_ declared before executions_ so the mutex
+  // outlives the map (ExecutionState destructors join threads that lock it).
   mutable std::mutex exec_mutex_;
+  std::unordered_map<std::string, std::unique_ptr<ExecutionState>> executions_;
   int active_execution_count_ = 0;
 
   // Counter for ID generation
