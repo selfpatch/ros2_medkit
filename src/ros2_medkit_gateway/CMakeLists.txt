@@ -177,6 +177,8 @@ add_library(gateway_lib STATIC
   src/sqlite_trigger_store.cpp
   # Trigger management
   src/trigger_manager.cpp
+  # Trigger HTTP handlers
+  src/http/handlers/trigger_handlers.cpp
 )
 
 medkit_target_dependencies(gateway_lib
@@ -607,6 +609,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_trigger_manager test/test_trigger_manager.cpp)
   target_link_libraries(test_trigger_manager gateway_lib)
 
+  # Trigger handler tests (REST endpoints for triggers)
+  ament_add_gtest(test_trigger_handlers test/test_trigger_handlers.cpp)
+  target_link_libraries(test_trigger_handlers gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -665,6 +671,7 @@ if(BUILD_TESTING)
       test_resource_change_notifier
       test_trigger_store
       test_trigger_manager
+      test_trigger_handlers
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
