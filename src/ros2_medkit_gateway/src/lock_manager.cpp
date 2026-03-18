@@ -176,6 +176,17 @@ tl::expected<LockInfo, LockError> LockManager::extend(const std::string & entity
         LockError{"invalid-expiration", "Extension duration must be greater than 0", 400, std::nullopt});
   }
 
+  // Enforce max expiration (same cap as acquire)
+  auto entity_type_str = get_entity_type_string(entity_id);
+  auto entity_cfg = get_entity_config(entity_id, entity_type_str);
+  int max_exp = entity_cfg.max_expiration > 0 ? entity_cfg.max_expiration : config_.default_max_expiration;
+  if (additional_seconds > max_exp) {
+    return tl::make_unexpected(LockError{"invalid-expiration",
+                                         "Extension duration " + std::to_string(additional_seconds) +
+                                             "s exceeds maximum " + std::to_string(max_exp) + "s",
+                                         400, std::nullopt});
+  }
+
   std::unique_lock<std::shared_mutex> write_lock(mutex_);
 
   auto it = locks_.find(entity_id);

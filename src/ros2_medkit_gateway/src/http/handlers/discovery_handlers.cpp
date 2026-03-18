@@ -494,9 +494,12 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     }
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {
-        Cap::DATA,  Cap::OPERATIONS, Cap::CONFIGURATIONS,       Cap::FAULTS, Cap::LOGS, Cap::SUBCOMPONENTS,
-        Cap::HOSTS, Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS, Cap::LOCKS};
+    std::vector<Cap> caps = {Cap::DATA,   Cap::OPERATIONS, Cap::CONFIGURATIONS,
+                             Cap::FAULTS, Cap::LOGS,       Cap::SUBCOMPONENTS,
+                             Cap::HOSTS,  Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS};
+    if (ctx_.node() && ctx_.node()->get_lock_manager()) {
+      caps.push_back(Cap::LOCKS);
+    }
     if (!comp.depends_on.empty()) {
       caps.push_back(Cap::DEPENDS_ON);
     }
@@ -824,8 +827,11 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     }
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS,       Cap::FAULTS,
-                             Cap::LOGS, Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS, Cap::LOCKS};
+    std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS,      Cap::FAULTS,
+                             Cap::LOGS, Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS};
+    if (ctx_.node() && ctx_.node()->get_lock_manager()) {
+      caps.push_back(Cap::LOCKS);
+    }
     response["capabilities"] = CapabilityBuilder::build_capabilities("apps", app.id, caps);
     append_plugin_capabilities(response["capabilities"], "apps", app.id, SovdEntityType::APP, ctx_.node());
 

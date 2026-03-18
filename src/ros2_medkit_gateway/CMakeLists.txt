@@ -572,7 +572,7 @@ if(BUILD_TESTING)
   # Lock handlers tests
   ament_add_gtest(test_lock_handlers test/test_lock_handlers.cpp)
   target_link_libraries(test_lock_handlers gateway_lib)
-  set_tests_properties(test_lock_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=69")
+  set_tests_properties(test_lock_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=70")
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)

@@ -77,7 +77,8 @@ Acquire a lock on an entity. Requires ``X-Client-Id`` header.
 
 - ``lock_expiration`` (required): Lock TTL in seconds
 - ``scopes`` (optional): Resource collections to lock. If omitted, all collections are locked.
-  Valid scopes: ``data``, ``operations``, ``configurations``, ``faults``, ``bulk-data``, ``modes``, ``scripts``
+  Valid scopes: ``data``, ``operations``, ``configurations``, ``faults``, ``bulk-data``,
+  ``modes``, ``scripts``, ``logs``, ``cyclic-subscriptions``
 - ``break_lock`` (optional, default ``false``): If true, replaces any existing lock
 
 **Response (201 Created):**
@@ -162,8 +163,11 @@ Error Responses
      - ``forbidden``
      - Trying to extend/release a lock owned by another client
    * - 404
+     - ``entity-not-found``
+     - Entity does not exist
+   * - 404
      - ``resource-not-found``
-     - Lock or entity not found
+     - Lock ID not found on this entity
    * - 409
      - ``invalid-request``
      - Entity already locked by another client (without ``break_lock``)
