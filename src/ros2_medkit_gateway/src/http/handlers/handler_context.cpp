@@ -15,6 +15,8 @@
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/lock_manager.hpp"
 #include "ros2_medkit_gateway/models/entity_capabilities.hpp"
 #include "ros2_medkit_gateway/models/entity_types.hpp"
 
@@ -189,6 +191,45 @@ std::optional<std::string> HandlerContext::validate_collection_access(const Enti
 
   if (!caps.supports_collection(collection)) {
     return entity.error_name + " entities do not support " + to_string(collection) + " collection";
+  }
+
+  return std::nullopt;
+}
+
+std::optional<std::string> HandlerContext::validate_lock_access(const httplib::Request & req, httplib::Response & res,
+                                                                const EntityInfo & entity,
+                                                                const std::string & collection) {
+  // Phase 1: If locking disabled, allow all access
+  if (!node_) {
+    return std::nullopt;
+  }
+  auto * lock_mgr = node_->get_lock_manager();
+  if (!lock_mgr) {
+    return std::nullopt;
+  }
+
+  // Phase 2: Extract client_id from X-Client-Id header
+  auto client_id = req.get_header_value("X-Client-Id");
+
+  // Phase 3: Check lock access
+  auto result = lock_mgr->check_access(entity.id, client_id, collection);
+
+  if (!result.allowed) {
+    if (result.denied_code == "lock-required") {
+      // Lock-required enforcement: no lock held but one is required
+      send_error(res, 409, ERR_INVALID_REQUEST, result.denied_reason,
+                 json{{"details", "A lock must be held to modify this resource collection"},
+                      {"entity_id", entity.id},
+                      {"collection", collection}});
+    } else {
+      // Lock conflict: another client holds the lock
+      json params = {{"entity_id", entity.id}, {"collection", collection}};
+      if (!result.denied_by_lock_id.empty()) {
+        params["lock_id"] = result.denied_by_lock_id;
+      }
+      send_error(res, 409, ERR_LOCK_BROKEN, result.denied_reason, params);
+    }
+    return "Lock access denied for " + collection + " on entity " + entity.id;
   }
 
   return std::nullopt;

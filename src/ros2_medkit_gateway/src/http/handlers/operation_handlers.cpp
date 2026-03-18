@@ -344,6 +344,11 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
     }
     auto entity_info = *entity_opt;
 
+    // Check lock access for operations
+    if (ctx_.validate_lock_access(req, res, entity_info, "operations")) {
+      return;
+    }
+
     // Parse request body
     json body = json::object();
     if (!req.body.empty()) {
@@ -642,6 +647,12 @@ void OperationHandlers::handle_cancel_execution(const httplib::Request & req, ht
       return;
     }
 
+    // Check lock access for operations
+    auto entity_info = ctx_.get_entity_info(entity_id);
+    if (ctx_.validate_lock_access(req, res, entity_info, "operations")) {
+      return;
+    }
+
     auto operation_mgr = ctx_.node()->get_operation_manager();
     auto goal_info = operation_mgr->get_tracked_goal(execution_id);
 
@@ -709,6 +720,14 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                                  {{"details", entity_validation.error()}, {"entity_id", entity_id}});
       return;
+    }
+
+    // Check lock access for operations
+    {
+      auto entity_info = ctx_.get_entity_info(entity_id);
+      if (ctx_.validate_lock_access(req, res, entity_info, "operations")) {
+        return;
+      }
     }
 
     // Parse request body

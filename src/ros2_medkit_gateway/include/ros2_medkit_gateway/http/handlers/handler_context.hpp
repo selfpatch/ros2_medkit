@@ -184,6 +184,23 @@ class HandlerContext {
                                                                ResourceCollection collection);
 
   /**
+   * @brief Validate lock access for a mutating operation.
+   *
+   * Two-phase check:
+   * 1. If locking disabled (no LockManager), allows access
+   * 2. Extracts X-Client-Id header, checks LockManager::check_access()
+   * 3. On denial: sends HTTP error response (409 lock-broken or invalid-request)
+   *
+   * @param req HTTP request (for X-Client-Id header)
+   * @param res HTTP response (error sent on denial)
+   * @param entity Entity being accessed
+   * @param collection Resource collection being mutated (e.g. "configurations")
+   * @return std::nullopt if allowed, error message string if denied (error already sent)
+   */
+  std::optional<std::string> validate_lock_access(const httplib::Request & req, httplib::Response & res,
+                                                  const EntityInfo & entity, const std::string & collection);
+
+  /**
    * @brief Validate entity exists and matches expected route type
    *
    * Unified validation helper that:

@@ -210,6 +210,11 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
     return;
   }
 
+  // Check lock access for bulk-data
+  if (ctx_.validate_lock_access(req, res, *entity_opt, "bulk-data")) {
+    return;
+  }
+
   // Extract and validate category from path
   auto category = extract_bulk_data_category(req.path);
   if (category.empty()) {
@@ -322,6 +327,11 @@ void BulkDataHandlers::handle_delete(const httplib::Request & req, httplib::Resp
   // Validate entity type supports bulk-data collection (SOVD Table 8)
   if (auto err = HandlerContext::validate_collection_access(*entity_opt, ResourceCollection::BULK_DATA)) {
     HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    return;
+  }
+
+  // Check lock access for bulk-data
+  if (ctx_.validate_lock_access(req, res, *entity_opt, "bulk-data")) {
     return;
   }
 

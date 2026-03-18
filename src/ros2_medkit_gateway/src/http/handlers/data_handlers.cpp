@@ -207,6 +207,11 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
       return;  // Error response already sent
     }
 
+    // Check lock access for data
+    if (ctx_.validate_lock_access(req, res, *entity_opt, "data")) {
+      return;
+    }
+
     // Parse request body
     json body;
     try {

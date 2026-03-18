@@ -178,6 +178,11 @@ void LogHandlers::handle_put_logs_configuration(const httplib::Request & req, ht
     return;
   }
 
+  // Check lock access for logs
+  if (ctx_.validate_lock_access(req, res, *entity_opt, "logs")) {
+    return;
+  }
+
   auto * log_mgr = ctx_.node()->get_log_manager();
   if (!log_mgr) {
     HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "LogManager not available");

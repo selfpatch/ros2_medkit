@@ -522,6 +522,11 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     }
     auto entity_info = *entity_opt;
 
+    // Check lock access for faults
+    if (ctx_.validate_lock_access(req, res, entity_info, "faults")) {
+      return;
+    }
+
     // Validate fault code
     if (fault_code.empty() || fault_code.length() > 256) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid fault code",
@@ -572,6 +577,11 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
       return;  // Error response already sent
     }
     auto entity_info = *entity_opt;
+
+    // Check lock access for faults
+    if (ctx_.validate_lock_access(req, res, entity_info, "faults")) {
+      return;
+    }
 
     // Get all faults for this entity
     auto fault_mgr = ctx_.node()->get_fault_manager();
