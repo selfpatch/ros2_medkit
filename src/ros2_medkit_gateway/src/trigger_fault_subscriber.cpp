@@ -1,0 +1,57 @@
+// Copyright 2026 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
+
+#include "ros2_medkit_gateway/fault_manager.hpp"
+
+namespace ros2_medkit_gateway {
+
+TriggerFaultSubscriber::TriggerFaultSubscriber(rclcpp::Node * node, ResourceChangeNotifier & notifier)
+  : notifier_(notifier), logger_(node->get_logger()) {
+  subscription_ = node->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
+      "/fault_manager/events", rclcpp::QoS(100).reliable(),
+      [this](const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
+        on_fault_event(msg);
+      });
+
+  RCLCPP_INFO(logger_, "TriggerFaultSubscriber initialized, subscribed to /fault_manager/events");
+}
+
+void TriggerFaultSubscriber::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
+  // Convert fault to JSON using the same method as SSEFaultHandler
+  nlohmann::json fault_json = FaultManager::fault_to_json(msg->fault);
+  fault_json["event_type"] = msg->event_type;
+
+  // Derive entity_id from reporting_sources (first source, if available)
+  std::string entity_id;
+  if (!msg->fault.reporting_sources.empty()) {
+    entity_id = msg->fault.reporting_sources[0];
+  }
+
+  // Map event_type to ChangeType
+  ChangeType change_type = ChangeType::UPDATED;
+  if (msg->event_type == "fault_confirmed") {
+    change_type = ChangeType::CREATED;
+  } else if (msg->event_type == "fault_cleared") {
+    change_type = ChangeType::DELETED;
+  }
+
+  notifier_.notify("faults", entity_id, msg->fault.fault_code, fault_json, change_type);
+
+  RCLCPP_DEBUG(logger_, "Forwarded fault event to notifier: %s for %s (entity=%s)", msg->event_type.c_str(),
+               msg->fault.fault_code.c_str(), entity_id.c_str());
+}
+
+}  // namespace ros2_medkit_gateway
