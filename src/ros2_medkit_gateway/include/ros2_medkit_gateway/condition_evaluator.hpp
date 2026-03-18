@@ -38,6 +38,7 @@ class ConditionEvaluator {
   virtual ~ConditionEvaluator() = default;
 
   /// Evaluate whether the condition is met.
+  /// @pre validate_params(params) must have returned success before calling evaluate.
   /// @param previous The previous value (nullopt on first evaluation)
   /// @param current The current value
   /// @param params Condition-specific parameters (e.g., target_value, bounds)
@@ -129,6 +130,9 @@ class EnterRangeEvaluator : public ConditionEvaluator {
     if (!previous.has_value()) {
       return false;
     }
+    if (!previous->is_number() || !current.is_number()) {
+      return false;
+    }
     double lo = params["lower_bound"].get<double>();
     double hi = params["upper_bound"].get<double>();
     double prev_val = previous->get<double>();
@@ -153,6 +157,9 @@ class LeaveRangeEvaluator : public ConditionEvaluator {
   bool evaluate(const std::optional<nlohmann::json> & previous, const nlohmann::json & current,
                 const nlohmann::json & params) const override {
     if (!previous.has_value()) {
+      return false;
+    }
+    if (!previous->is_number() || !current.is_number()) {
       return false;
     }
     double lo = params["lower_bound"].get<double>();
