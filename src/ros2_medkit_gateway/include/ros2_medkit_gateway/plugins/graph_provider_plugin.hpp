@@ -14,23 +14,21 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
-
-#include <diagnostic_msgs/msg/diagnostic_array.hpp>
-#include <rclcpp/rclcpp.hpp>
-
 #include <deque>
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <mutex>
 #include <optional>
+#include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 
+#include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+
 namespace ros2_medkit_gateway {
 
 class PluginContext;
-class GatewayNode;
 
 class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
  public:
@@ -89,7 +87,6 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   void load_parameters();
 
   PluginContext * ctx_{nullptr};
-  GatewayNode * gateway_node_{nullptr};
 
   // Each mutex protects an independent cache/state bucket; no code path acquires more than one.
   mutable std::mutex cache_mutex_;
