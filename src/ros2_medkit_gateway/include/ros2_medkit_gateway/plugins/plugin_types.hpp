@@ -28,7 +28,7 @@
 namespace ros2_medkit_gateway {
 
 /// Current plugin API version. Plugins must export this value from plugin_api_version().
-constexpr int PLUGIN_API_VERSION = 3;
+constexpr int PLUGIN_API_VERSION = 4;
 
 /// Log severity levels for plugin logging callback
 enum class PluginLogLevel { kInfo, kWarn, kError };

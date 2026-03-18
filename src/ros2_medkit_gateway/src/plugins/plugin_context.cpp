@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 
+#include "ros2_medkit_gateway/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
@@ -21,9 +22,13 @@
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/lock_manager.hpp"
 #include "ros2_medkit_gateway/resource_sampler.hpp"
+#include "ros2_medkit_gateway/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/trigger_store.hpp"
+#include "ros2_medkit_gateway/trigger_transport_provider.hpp"
 
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
+#include <vector>
 
 namespace ros2_medkit_gateway {
 
@@ -232,6 +237,26 @@ class GatewayPluginContext : public PluginContext {
     }
   }
 
+  // ---- Trigger infrastructure ----
+
+  ResourceChangeNotifier * get_resource_change_notifier() override {
+    return node_->get_resource_change_notifier();
+  }
+
+  ConditionRegistry * get_condition_registry() override {
+    return node_->get_condition_registry();
+  }
+
+  void set_trigger_store(std::unique_ptr<TriggerStore> store) override {
+    std::lock_guard<std::mutex> lock(trigger_mutex_);
+    trigger_store_override_ = std::move(store);
+  }
+
+  void register_trigger_transport(std::shared_ptr<TriggerTransportProvider> provider) override {
+    std::lock_guard<std::mutex> lock(trigger_mutex_);
+    trigger_transports_.push_back(std::move(provider));
+  }
+
  private:
   GatewayNode * node_;
   FaultManager * fault_manager_;
@@ -240,6 +265,10 @@ class GatewayPluginContext : public PluginContext {
   mutable std::mutex capabilities_mutex_;
   std::unordered_map<SovdEntityType, std::vector<std::string>> type_capabilities_;
   std::unordered_map<std::string, std::vector<std::string>> entity_capabilities_;
+
+  mutable std::mutex trigger_mutex_;
+  std::unique_ptr<TriggerStore> trigger_store_override_;
+  std::vector<std::shared_ptr<TriggerTransportProvider>> trigger_transports_;
 };
 
 std::unique_ptr<PluginContext> make_gateway_plugin_context(GatewayNode * node, FaultManager * fault_manager,
