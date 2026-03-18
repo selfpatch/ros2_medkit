@@ -14,7 +14,9 @@
 
 import os
 
+from ament_index_python.packages import get_package_prefix
 from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import PackageNotFoundError
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -22,51 +24,51 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    # Get package directory
     pkg_dir = get_package_share_directory('ros2_medkit_gateway')
-
-    # Path to default config file
     default_config = os.path.join(pkg_dir, 'config', 'gateway_params.yaml')
 
-    # Declare launch arguments for easy overriding
+    # Resolve graph provider plugin path (optional - gateway starts without it)
+    graph_provider_path = ''
+    try:
+        graph_provider_prefix = get_package_prefix('ros2_medkit_graph_provider')
+        graph_provider_path = os.path.join(
+            graph_provider_prefix, 'lib', 'ros2_medkit_graph_provider',
+            'libros2_medkit_graph_provider_plugin.so')
+    except PackageNotFoundError:
+        pass  # Plugin not installed - gateway runs without graph provider
+
     declare_host_arg = DeclareLaunchArgument(
-        'server_host',
-        default_value='127.0.0.1',
-        description='Host to bind REST server (127.0.0.1 or 0.0.0.0)'
-    )
+        'server_host', default_value='127.0.0.1',
+        description='Host to bind REST server (127.0.0.1 or 0.0.0.0)')
 
     declare_port_arg = DeclareLaunchArgument(
-        'server_port',
-        default_value='8080',
-        description='Port for REST API'
-    )
+        'server_port', default_value='8080',
+        description='Port for REST API')
 
     declare_refresh_arg = DeclareLaunchArgument(
-        'refresh_interval_ms',
-        default_value='2000',
-        description='Cache refresh interval in milliseconds'
-    )
+        'refresh_interval_ms', default_value='2000',
+        description='Cache refresh interval in milliseconds')
 
-    # Gateway node with parameters
+    # Build parameter overrides - only inject plugin path if found
+    param_overrides = {
+        'server.host': LaunchConfiguration('server_host'),
+        'server.port': LaunchConfiguration('server_port'),
+        'refresh_interval_ms': LaunchConfiguration('refresh_interval_ms'),
+    }
+    if graph_provider_path:
+        param_overrides['plugins.graph_provider.path'] = graph_provider_path
+
     gateway_node = Node(
         package='ros2_medkit_gateway',
         executable='gateway_node',
         name='ros2_medkit_gateway',
         output='screen',
-        parameters=[
-            default_config,  # Load from YAML first
-            {  # Override with launch arguments
-                'server.host': LaunchConfiguration('server_host'),
-                'server.port': LaunchConfiguration('server_port'),
-                'refresh_interval_ms': LaunchConfiguration('refresh_interval_ms'),
-            }
-        ],
-        arguments=['--ros-args', '--log-level', 'info']
-    )
+        parameters=[default_config, param_overrides],
+        arguments=['--ros-args', '--log-level', 'info'])
 
     return LaunchDescription([
         declare_host_arg,
         declare_port_arg,
         declare_refresh_arg,
-        gateway_node
+        gateway_node,
     ])

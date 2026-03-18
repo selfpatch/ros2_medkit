@@ -302,7 +302,15 @@ ros2_medkit_gateway:
     # Plugin lifecycle: load -> configure -> set_context -> register_routes
     # Plugins that throw during any lifecycle call are disabled (not crashed).
     # Default: [] (no plugins)
-    plugins: [""]
+    plugins: ["graph_provider"]
+
+    # Graph provider plugin - path set by launch file
+    plugins.graph_provider.path: ""
+
+    # Graph provider configuration
+    plugins.graph_provider.expected_frequency_hz_default: 30.0
+    plugins.graph_provider.degraded_frequency_ratio: 0.5
+    plugins.graph_provider.drop_rate_percent_threshold: 5.0
 
     # --- Beacon Discovery Plugin (TopicBeaconPlugin) ---
     # Subscribes to /ros2_medkit/discovery and enriches discovered entities
