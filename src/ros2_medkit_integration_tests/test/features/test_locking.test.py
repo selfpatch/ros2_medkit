@@ -97,7 +97,7 @@ class TestLocking(GatewayTestCase):
     # Lock lifecycle
     # =================================================================
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_100
     def test_acquire_lock_on_app(self):
         """Acquire a lock on an app and verify the response."""
         resp = self._post_lock(
@@ -113,7 +113,7 @@ class TestLocking(GatewayTestCase):
         self.assertIn('T', data['lock_expiration'])
         self.assertIn('Z', data['lock_expiration'])
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_100
     def test_acquire_lock_with_scopes(self):
         """Acquire a scoped lock."""
         resp = self._post_lock(
@@ -125,7 +125,7 @@ class TestLocking(GatewayTestCase):
         self.assertIn('scopes', data)
         self.assertEqual(len(data['scopes']), 2)
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_101
     def test_list_locks(self):
         """Acquire then list locks."""
         resp = self._post_lock(
@@ -142,14 +142,14 @@ class TestLocking(GatewayTestCase):
         self.assertTrue(data['items'][0]['owned'])
         self.assertEqual(data['items'][0]['scopes'], ['configurations'])
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_101
     def test_list_locks_empty(self):
         """List locks when none exist returns empty items."""
         resp = self._get_locks('apps', 'temp_sensor')
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(len(resp.json()['items']), 0)
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_102
     def test_get_lock_details(self):
         """Acquire then get lock details by lock ID."""
         resp = self._post_lock(
@@ -168,7 +168,7 @@ class TestLocking(GatewayTestCase):
         self.assertEqual(resp.json()['id'], lock_id)
         self.assertTrue(resp.json()['owned'])
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_103
     def test_extend_lock(self):
         """Acquire then extend a lock's expiration."""
         resp = self._post_lock(
@@ -186,7 +186,7 @@ class TestLocking(GatewayTestCase):
         )
         self.assertEqual(resp.status_code, 204, resp.text)
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_104
     def test_release_lock(self):
         """Acquire then release a lock, verify it's gone."""
         resp = self._post_lock(
@@ -207,7 +207,7 @@ class TestLocking(GatewayTestCase):
     # Lock enforcement
     # =================================================================
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_100
     def test_lock_blocks_other_client(self):
         """Lock by client A blocks data write by client B (409)."""
         resp = self._post_lock(
@@ -224,7 +224,7 @@ class TestLocking(GatewayTestCase):
         )
         self.assertEqual(resp.status_code, 409, resp.text)
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_100
     def test_scoped_lock_allows_other_collections(self):
         """Scoped lock on configurations does not block data writes."""
         resp = self._post_lock(
@@ -246,7 +246,7 @@ class TestLocking(GatewayTestCase):
     # Lock breaking
     # =================================================================
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_100
     def test_break_lock(self):
         """Client B can break client A's lock with break_lock=true."""
         resp = self._post_lock(
@@ -266,7 +266,7 @@ class TestLocking(GatewayTestCase):
     # Owned field per client
     # =================================================================
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_101
     def test_owned_field_per_client(self):
         """The 'owned' field reflects the requesting client."""
         resp = self._post_lock(
@@ -291,7 +291,7 @@ class TestLocking(GatewayTestCase):
     # Error cases
     # =================================================================
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_100
     def test_acquire_without_client_id_returns_400(self):
         """Acquire without X-Client-Id header returns 400."""
         resp = requests.post(
@@ -301,13 +301,13 @@ class TestLocking(GatewayTestCase):
         )
         self.assertEqual(resp.status_code, 400, resp.text)
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_100
     def test_acquire_without_expiration_returns_400(self):
         """Acquire without lock_expiration returns 400."""
         resp = self._post_lock('apps', 'temp_sensor', 'client_a', {})
         self.assertEqual(resp.status_code, 400, resp.text)
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_100
     def test_already_locked_returns_409(self):
         """Second acquire by different client returns 409."""
         resp = self._post_lock(
@@ -322,7 +322,7 @@ class TestLocking(GatewayTestCase):
         )
         self.assertEqual(resp.status_code, 409, resp.text)
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_104
     def test_release_not_owner_returns_403(self):
         """Releasing another client's lock returns 403."""
         resp = self._post_lock(
@@ -335,7 +335,7 @@ class TestLocking(GatewayTestCase):
         resp = self._delete_lock('apps', 'temp_sensor', lock_id, 'client_b')
         self.assertEqual(resp.status_code, 403, resp.text)
 
-    # @verifies REQ_INTEROP
+    # @verifies REQ_INTEROP_100
     def test_nonexistent_entity_returns_404(self):
         """Acquiring lock on nonexistent entity returns 404."""
         resp = self._post_lock(
