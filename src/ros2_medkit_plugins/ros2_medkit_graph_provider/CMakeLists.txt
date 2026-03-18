@@ -85,6 +85,30 @@ if(BUILD_TESTING)
   )
   ament_clang_format(${_format_files}
     CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../../.clang-format")
+
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_graph_provider_plugin
+    test/test_graph_provider_plugin.cpp
+    src/graph_provider_plugin.cpp
+  )
+  target_include_directories(test_graph_provider_plugin PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_graph_provider_plugin
+    ros2_medkit_gateway
+    rclcpp
+    diagnostic_msgs
+    ros2_medkit_msgs
+  )
+  target_link_libraries(test_graph_provider_plugin
+    nlohmann_json::nlohmann_json
+    cpp_httplib_target
+    OpenSSL::SSL OpenSSL::Crypto
+  )
+  set_tests_properties(test_graph_provider_plugin
+    PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=70"
+  )
 endif()
 
 ament_package()
