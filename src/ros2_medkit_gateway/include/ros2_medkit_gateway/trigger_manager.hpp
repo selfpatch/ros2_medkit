@@ -128,6 +128,11 @@ class TriggerManager {
 
  private:
   /// Per-trigger runtime state.
+  ///
+  /// Threading: most fields require `mtx` for read/write access. Exceptions:
+  ///   - `info.entity_id` and `info.entity_type` are immutable after creation
+  ///     and safe to read without `mtx` (e.g. in matches_entity()).
+  ///   - `active` is atomic and can be read/written without `mtx`.
   struct TriggerState {
     TriggerInfo info;
     nlohmann::json previous_value;
@@ -160,6 +165,10 @@ class TriggerManager {
 
   /// Format a system_clock time_point as ISO 8601 string.
   static std::string to_iso8601(const std::chrono::system_clock::time_point & tp);
+
+  /// Clean up an expired trigger: remove from dispatch index and triggers_ map.
+  /// Caller must NOT hold triggers_mutex_ or state->mtx.
+  void cleanup_expired_trigger(const std::string & trigger_id, const std::shared_ptr<TriggerState> & state);
 
   /// Callback for ResourceChangeNotifier.
   void on_resource_change(const ResourceChange & change);
