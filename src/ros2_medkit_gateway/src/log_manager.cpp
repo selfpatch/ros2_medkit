@@ -20,6 +20,7 @@
 #include <sstream>
 
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/resource_change_notifier.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -186,6 +187,64 @@ void LogManager::inject_entry_for_testing(LogEntry entry) {
   if (buf.size() > max_buffer_size_) {
     buf.pop_front();
   }
+}
+
+// ---------------------------------------------------------------------------
+// add_log_entry (programmatic injection for trigger log_settings)
+// ---------------------------------------------------------------------------
+
+void LogManager::add_log_entry(const std::string & entity_id, const std::string & severity, const std::string & message,
+                               const nlohmann::json & metadata) {
+  std::string normalized = normalize_fqn(entity_id);
+
+  // Build a LogEntry using the same structure as on_rosout()
+  LogEntry entry;
+  entry.id = next_id_.fetch_add(1, std::memory_order_relaxed);
+
+  // Use wall-clock time for programmatic entries
+  auto now = std::chrono::system_clock::now();
+  auto epoch = now.time_since_epoch();
+  auto secs = std::chrono::duration_cast<std::chrono::seconds>(epoch);
+  auto nsecs = std::chrono::duration_cast<std::chrono::nanoseconds>(epoch - secs);
+
+  entry.stamp_sec = static_cast<int64_t>(secs.count());
+  entry.stamp_nanosec = static_cast<uint32_t>(nsecs.count());
+  entry.level = severity_to_level(severity);
+  if (entry.level == 0) {
+    entry.level = rcl_interfaces::msg::Log::INFO;  // fallback for invalid severity
+  }
+  entry.name = normalized;
+  entry.line = 0;
+
+  // Build message with metadata suffix
+  if (metadata.is_object() && !metadata.empty()) {
+    entry.msg = message + " " + metadata.dump();
+  } else {
+    entry.msg = message;
+  }
+
+  // Push to ring buffer (same path as on_rosout)
+  {
+    std::lock_guard<std::mutex> lock(buffers_mutex_);
+    auto & buf = buffers_[entry.name];
+    buf.push_back(entry);
+    if (buf.size() > max_buffer_size_) {
+      buf.pop_front();
+    }
+  }
+
+  // Notify observers if a notifier is set
+  if (notifier_) {
+    notifier_->notify("logs", entity_id, "", entry_to_json(entry), ChangeType::CREATED);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// set_notifier
+// ---------------------------------------------------------------------------
+
+void LogManager::set_notifier(ResourceChangeNotifier * notifier) {
+  notifier_ = notifier;
 }
 
 // ---------------------------------------------------------------------------

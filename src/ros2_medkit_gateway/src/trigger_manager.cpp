@@ -20,6 +20,7 @@
 #include <sstream>
 #include <utility>
 
+#include "ros2_medkit_gateway/log_manager.hpp"
 #include "ros2_medkit_gateway/trigger_topic_subscriber.hpp"
 
 namespace ros2_medkit_gateway {
@@ -107,6 +108,10 @@ void TriggerManager::set_entity_children_fn(EntityChildrenFn fn) {
 
 void TriggerManager::set_topic_subscriber(TriggerTopicSubscriber * subscriber) {
   topic_subscriber_ = subscriber;
+}
+
+void TriggerManager::set_log_manager(LogManager * log_manager) {
+  log_manager_ = log_manager;
 }
 
 bool TriggerManager::matches_entity(const TriggerState & state, const std::string & notification_entity_id) const {
@@ -199,8 +204,6 @@ tl::expected<TriggerInfo, std::string> TriggerManager::create(const TriggerCreat
       return tl::make_unexpected("Failed to persist trigger: " + save_result.error());
     }
   }
-
-  // TODO(Task 10): log_settings integration with LogManager
 
   auto info_copy = state->info;
 
@@ -634,6 +637,18 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
       envelope["payload"] = change.value;
 
       state->pending_event = std::move(envelope);
+
+      // log_settings: inject a log entry when the trigger fires
+      if (state->info.log_settings.has_value()) {
+        auto & ls = *state->info.log_settings;
+        if (log_manager_) {
+          log_manager_->add_log_entry(state->info.entity_id, ls.value("severity", "info"),
+                                      ls.value("marker", "Trigger fired"),
+                                      {{"trigger_id", state->info.id},
+                                       {"condition_type", state->info.condition_type},
+                                       {"resource", state->info.resource_uri}});
+        }
+      }
 
       if (!state->info.multishot) {
         state->info.status = TriggerStatus::TERMINATED;
