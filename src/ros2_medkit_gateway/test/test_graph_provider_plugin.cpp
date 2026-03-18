@@ -192,11 +192,32 @@ class FakePluginContext : public PluginContext {
     return {};
   }
 
+  IntrospectionInput get_entity_snapshot() const override {
+    return entity_snapshot_;
+  }
+
+  nlohmann::json list_all_faults() const override {
+    return all_faults_;
+  }
+
+  void register_sampler(
+      const std::string & collection,
+      std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> fn) override {
+    registered_samplers_[collection] = std::move(fn);
+  }
+
  private:
   rclcpp::Node * node_{nullptr};
   std::unordered_map<std::string, PluginEntityInfo> entities_;
   std::map<SovdEntityType, std::vector<std::string>> registered_capabilities_;
   std::unordered_map<std::string, std::vector<std::string>> entity_capabilities_;
+
+ public:
+  IntrospectionInput entity_snapshot_;
+  nlohmann::json all_faults_ = nlohmann::json::object();
+  std::unordered_map<std::string,
+                     std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)>>
+      registered_samplers_;
 };
 
 class LocalHttpServer {
