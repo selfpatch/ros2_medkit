@@ -182,6 +182,14 @@ ManifestConfig ManifestManager::get_config() const {
   return ManifestConfig{};
 }
 
+std::unordered_map<std::string, ManifestLockConfig> ManifestManager::get_lock_overrides() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (manifest_) {
+    return manifest_->lock_overrides;
+  }
+  return {};
+}
+
 std::vector<Area> ManifestManager::get_areas() const {
   std::lock_guard<std::mutex> lock(mutex_);
   if (manifest_) {

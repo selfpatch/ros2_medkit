@@ -69,14 +69,22 @@ Manifest ManifestParser::parse_string(const std::string & yaml_content) const {
   // Parse components
   if (root["components"] && root["components"].IsSequence()) {
     for (const auto & node : root["components"]) {
-      manifest.components.push_back(parse_component(node));
+      auto comp = parse_component(node);
+      if (node["lock"] && node["lock"].IsMap()) {
+        manifest.lock_overrides[comp.id] = parse_lock_config(node["lock"]);
+      }
+      manifest.components.push_back(std::move(comp));
     }
   }
 
   // Parse apps
   if (root["apps"] && root["apps"].IsSequence()) {
     for (const auto & node : root["apps"]) {
-      manifest.apps.push_back(parse_app(node));
+      auto app = parse_app(node);
+      if (node["lock"] && node["lock"].IsMap()) {
+        manifest.lock_overrides[app.id] = parse_lock_config(node["lock"]);
+      }
+      manifest.apps.push_back(std::move(app));
     }
   }
 
@@ -263,6 +271,18 @@ std::string ManifestConfig::policy_to_string(UnmanifestedNodePolicy policy) {
     default:
       return "warn";
   }
+}
+
+ManifestLockConfig ManifestParser::parse_lock_config(const YAML::Node & node) const {
+  ManifestLockConfig config;
+  config.required_scopes = get_string_vector(node, "required_scopes");
+  if (node["breakable"]) {
+    config.breakable = node["breakable"].as<bool>();
+  }
+  if (node["max_expiration"]) {
+    config.max_expiration = node["max_expiration"].as<int>();
+  }
+  return config;
 }
 
 }  // namespace discovery
