@@ -20,6 +20,7 @@
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/lock_manager.hpp"
+#include "ros2_medkit_gateway/resource_sampler.hpp"
 
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
@@ -41,7 +42,8 @@ void PluginContext::send_json(httplib::Response & res, const nlohmann::json & da
 
 class GatewayPluginContext : public PluginContext {
  public:
-  GatewayPluginContext(GatewayNode * node, FaultManager * fault_manager) : node_(node), fault_manager_(fault_manager) {
+  GatewayPluginContext(GatewayNode * node, FaultManager * fault_manager, ResourceSamplerRegistry * sampler_registry)
+    : node_(node), fault_manager_(fault_manager), sampler_registry_(sampler_registry) {
   }
 
   rclcpp::Node * node() const override {
@@ -200,17 +202,48 @@ class GatewayPluginContext : public PluginContext {
     return lock_mgr->release(entity_id, client_id);
   }
 
+  IntrospectionInput get_entity_snapshot() const override {
+    IntrospectionInput input;
+    const auto & cache = node_->get_thread_safe_cache();
+    input.areas = cache.get_areas();
+    input.components = cache.get_components();
+    input.apps = cache.get_apps();
+    input.functions = cache.get_functions();
+    return input;
+  }
+
+  nlohmann::json list_all_faults() const override {
+    if (!fault_manager_ || !fault_manager_->is_available()) {
+      return nlohmann::json::object();
+    }
+    auto result = fault_manager_->list_faults("");
+    if (result.success) {
+      return result.data;
+    }
+    return nlohmann::json::object();
+  }
+
+  void register_sampler(
+      const std::string & collection,
+      std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> fn) override {
+    if (sampler_registry_) {
+      sampler_registry_->register_sampler(collection, std::move(fn));
+    }
+  }
+
  private:
   GatewayNode * node_;
   FaultManager * fault_manager_;
+  ResourceSamplerRegistry * sampler_registry_;
 
   mutable std::mutex capabilities_mutex_;
   std::unordered_map<SovdEntityType, std::vector<std::string>> type_capabilities_;
   std::unordered_map<std::string, std::vector<std::string>> entity_capabilities_;
 };
 
-std::unique_ptr<PluginContext> make_gateway_plugin_context(GatewayNode * node, FaultManager * fault_manager) {
-  return std::make_unique<GatewayPluginContext>(node, fault_manager);
+std::unique_ptr<PluginContext> make_gateway_plugin_context(GatewayNode * node, FaultManager * fault_manager,
+                                                           ResourceSamplerRegistry * sampler_registry) {
+  return std::make_unique<GatewayPluginContext>(node, fault_manager, sampler_registry);
 }
 
 }  // namespace ros2_medkit_gateway
