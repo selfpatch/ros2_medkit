@@ -19,6 +19,7 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <thread>
@@ -26,8 +27,6 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/discovery/models/function.hpp"
@@ -636,6 +635,9 @@ TEST(GraphProviderPluginRouteTest, UsesPreviousOnlineTimestampForOfflineLastSeen
   auto offline_input = make_input({make_app("node1", {}, {}, false)}, {make_function("fn", {"node1"})});
   plugin.introspect(offline_input);
 
+  // Expose offline input to the context so get_cached_or_built_graph() rebuilds from current entity state.
+  ctx.entity_snapshot_ = offline_input;
+
   httplib::Server server;
   plugin.register_routes(server, "/api/v1");
 
@@ -940,6 +942,9 @@ TEST_F(GraphProviderPluginRosTest, SetsDiagnosticsSeenWhenNonGreenwaveMessageArr
     executor.spin_some();
 
     plugin.introspect(input);
+    // Expose input to the context so get_cached_or_built_graph() rebuilds using
+    // current diagnostics state rather than serving a pre-introspect snapshot.
+    ctx.entity_snapshot_ = input;
 
     httplib::Server server;
     plugin.register_routes(server, "/api/v1");
@@ -1004,6 +1009,9 @@ TEST_F(GraphProviderPluginRosTest, AppliesPerFunctionConfigOverridesFromNodePara
     executor.spin_some();
 
     plugin.introspect(input);
+    // Expose input to the context so get_cached_or_built_graph() rebuilds using
+    // current diagnostics state rather than serving a pre-introspect snapshot.
+    ctx.entity_snapshot_ = input;
 
     httplib::Server server;
     plugin.register_routes(server, "/api/v1");
