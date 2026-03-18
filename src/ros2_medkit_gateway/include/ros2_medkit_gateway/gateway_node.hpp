@@ -48,6 +48,7 @@
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
 #include "ros2_medkit_gateway/trigger_manager.hpp"
 #include "ros2_medkit_gateway/trigger_store.hpp"
+#include "ros2_medkit_gateway/trigger_topic_subscriber.hpp"
 #include "ros2_medkit_gateway/updates/update_manager.hpp"
 
 namespace ros2_medkit_gateway {
@@ -215,6 +216,7 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<TriggerStore> trigger_store_;
   std::unique_ptr<TriggerManager> trigger_mgr_;
   std::unique_ptr<TriggerFaultSubscriber> trigger_fault_subscriber_;
+  std::unique_ptr<TriggerTopicSubscriber> trigger_topic_subscriber_;
 
   std::unique_ptr<RESTServer> rest_server_;
 

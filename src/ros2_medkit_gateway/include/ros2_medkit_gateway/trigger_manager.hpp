@@ -35,6 +35,9 @@
 
 namespace ros2_medkit_gateway {
 
+// Forward declaration
+class TriggerTopicSubscriber;
+
 /// Request to create a new trigger.
 struct TriggerCreateRequest {
   std::string entity_id;
@@ -126,6 +129,10 @@ class TriggerManager {
   /// Set the entity hierarchy resolver. Called by GatewayNode after cache is available.
   void set_entity_children_fn(EntityChildrenFn fn);
 
+  /// Set the topic subscriber for data trigger subscriptions.
+  /// Called by GatewayNode after TriggerTopicSubscriber is created.
+  void set_topic_subscriber(TriggerTopicSubscriber * subscriber);
+
  private:
   /// Per-trigger runtime state.
   ///
@@ -201,6 +208,9 @@ class TriggerManager {
   // Hierarchy resolver
   mutable std::mutex hierarchy_mutex_;
   EntityChildrenFn entity_children_fn_;
+
+  // Data trigger topic subscriber (non-owning, optional)
+  TriggerTopicSubscriber * topic_subscriber_{nullptr};
 };
 
 }  // namespace ros2_medkit_gateway
