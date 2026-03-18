@@ -1,4 +1,4 @@
-// Copyright 2026 selfpatch
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -100,7 +100,7 @@ class ResourceChangeNotifier {
   void worker_loop();
 
   // Subscription storage (separate mutex to avoid contention with queue)
-  mutable std::mutex sub_mutex_;
+  std::mutex sub_mutex_;
   std::unordered_map<NotifierSubscriptionId, SubscriptionEntry> subscriptions_;
   std::atomic<uint64_t> next_id_{1};
 
