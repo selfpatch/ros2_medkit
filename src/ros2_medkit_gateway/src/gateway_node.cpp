@@ -551,7 +551,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
   auto loaded = plugin_mgr_->load_plugins(configs);
   plugin_mgr_->configure_plugins();
-  plugin_ctx_ = make_gateway_plugin_context(this, fault_mgr_.get());
+  plugin_ctx_ = make_gateway_plugin_context(this, fault_mgr_.get(), sampler_registry_.get());
   plugin_mgr_->set_context(*plugin_ctx_);
   RCLCPP_INFO(get_logger(), "Loaded %zu external plugin(s) and 1 built-in plugin", loaded);
 

@@ -16,12 +16,15 @@
 
 #include "ros2_medkit_gateway/lock_manager.hpp"
 #include "ros2_medkit_gateway/models/entity_types.hpp"
+#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
+#include <functional>
 #include <httplib.h>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <tl/expected.hpp>
 #include <unordered_map>
 #include <vector>
 
@@ -30,6 +33,8 @@ class Node;
 }
 
 namespace ros2_medkit_gateway {
+
+class ResourceSamplerRegistry;
 
 /**
  * @brief Entity information exposed to plugins
@@ -169,6 +174,30 @@ class PluginContext {
    * @return void on success, LockError on failure
    */
   virtual tl::expected<void, LockError> release_lock(const std::string & entity_id, const std::string & client_id) = 0;
+
+  // ---- Entity bulk access ----
+
+  /// Get a snapshot of all discovered entities (areas, components, apps, functions).
+  /// Returns an IntrospectionInput populated from the current entity cache.
+  virtual IntrospectionInput get_entity_snapshot() const {
+    return {};
+  }
+
+  // ---- All-faults access ----
+
+  /// List all faults across all entities. Returns JSON with "faults" array.
+  /// Empty object if fault manager is unavailable.
+  virtual nlohmann::json list_all_faults() const {
+    return nlohmann::json::object();
+  }
+
+  // ---- Resource sampler registration ----
+
+  /// Register a cyclic subscription sampler for a custom collection.
+  virtual void register_sampler(
+      const std::string & /*collection*/,
+      std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> /*fn*/) {
+  }
 };
 
 // Forward declarations
@@ -176,6 +205,7 @@ class GatewayNode;
 class FaultManager;
 
 /// Factory for creating the concrete gateway plugin context
-std::unique_ptr<PluginContext> make_gateway_plugin_context(GatewayNode * node, FaultManager * fault_manager);
+std::unique_ptr<PluginContext> make_gateway_plugin_context(GatewayNode * node, FaultManager * fault_manager,
+                                                           ResourceSamplerRegistry * sampler_registry = nullptr);
 
 }  // namespace ros2_medkit_gateway
