@@ -178,10 +178,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("locking.enabled", true);
   declare_parameter("locking.default_max_expiration", 3600);
   declare_parameter("locking.cleanup_interval", 30);
-  declare_parameter("locking.defaults.components.lock_required_scopes",
-                    std::vector<std::string>{"configurations", "operations"});
+  declare_parameter("locking.defaults.components.lock_required_scopes", std::vector<std::string>{""});
   declare_parameter("locking.defaults.components.breakable", true);
-  declare_parameter("locking.defaults.apps.lock_required_scopes", std::vector<std::string>{"configurations"});
+  declare_parameter("locking.defaults.apps.lock_required_scopes", std::vector<std::string>{""});
   declare_parameter("locking.defaults.apps.breakable", true);
 
   // Bulk data storage parameters
@@ -600,13 +599,25 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     lock_config.default_max_expiration = static_cast<int>(get_parameter("locking.default_max_expiration").as_int());
     lock_config.cleanup_interval = static_cast<int>(get_parameter("locking.cleanup_interval").as_int());
 
+    // Helper: parse lock_required_scopes, filtering out empty-string sentinel
+    auto parse_scopes = [&](const std::string & param_name) {
+      auto raw = get_parameter(param_name).as_string_array();
+      std::vector<std::string> scopes;
+      for (const auto & s : raw) {
+        if (!s.empty()) {
+          scopes.push_back(s);
+        }
+      }
+      return scopes;
+    };
+
     EntityLockConfig comp_config;
-    comp_config.required_scopes = get_parameter("locking.defaults.components.lock_required_scopes").as_string_array();
+    comp_config.required_scopes = parse_scopes("locking.defaults.components.lock_required_scopes");
     comp_config.breakable = get_parameter("locking.defaults.components.breakable").as_bool();
     lock_config.type_defaults["component"] = comp_config;
 
     EntityLockConfig app_config;
-    app_config.required_scopes = get_parameter("locking.defaults.apps.lock_required_scopes").as_string_array();
+    app_config.required_scopes = parse_scopes("locking.defaults.apps.lock_required_scopes");
     app_config.breakable = get_parameter("locking.defaults.apps.breakable").as_bool();
     lock_config.type_defaults["app"] = app_config;
 
