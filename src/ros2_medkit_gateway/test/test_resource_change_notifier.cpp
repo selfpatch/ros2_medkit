@@ -1,4 +1,4 @@
-// Copyright 2026 selfpatch
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -243,21 +243,24 @@ TEST(ResourceChangeNotifier, MultipleSubscribersAllCalled) {
 
   std::atomic<int> count_a{0};
   std::atomic<int> count_b{0};
+  std::atomic<int> total{0};
   std::promise<void> done;
   auto future = done.get_future();
 
-  notifier.subscribe({"faults", "", ""}, [&](const ResourceChange & /*change*/) {
-    count_a.fetch_add(1);
-    if (count_a.load() + count_b.load() == 2) {
+  auto check_done = [&]() {
+    if (total.fetch_add(1) + 1 == 2) {
       done.set_value();
     }
+  };
+
+  notifier.subscribe({"faults", "", ""}, [&](const ResourceChange & /*change*/) {
+    count_a.fetch_add(1);
+    check_done();
   });
 
   notifier.subscribe({"faults", "", ""}, [&](const ResourceChange & /*change*/) {
     count_b.fetch_add(1);
-    if (count_a.load() + count_b.load() == 2) {
-      done.set_value();
-    }
+    check_done();
   });
 
   notifier.notify("faults", "sensor", "f1", {}, ChangeType::CREATED);
