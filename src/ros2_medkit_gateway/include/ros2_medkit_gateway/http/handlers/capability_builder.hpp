@@ -56,7 +56,8 @@ class CapabilityBuilder {
     BULK_DATA,             ///< Entity has bulk data endpoints (rosbags)
     CYCLIC_SUBSCRIPTIONS,  ///< Entity has cyclic subscription endpoints
     LOCKS,                 ///< Entity has lock endpoints (components and apps only)
-    SCRIPTS                ///< Entity has diagnostic script endpoints
+    SCRIPTS,               ///< Entity has diagnostic script endpoints
+    TRIGGERS               ///< Entity has trigger endpoints (x-medkit extension)
   };
 
   /**

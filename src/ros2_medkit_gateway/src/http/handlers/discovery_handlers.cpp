@@ -151,10 +151,11 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
     response["faults"] = base_uri + "/faults";
     response["logs"] = base_uri + "/logs";
     response["bulk-data"] = base_uri + "/bulk-data";
+    response["triggers"] = base_uri + "/triggers";
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::SUBAREAS,       Cap::CONTAINS, Cap::DATA, Cap::OPERATIONS,
-                             Cap::CONFIGURATIONS, Cap::FAULTS,   Cap::LOGS, Cap::BULK_DATA};
+    std::vector<Cap> caps = {Cap::SUBAREAS, Cap::CONTAINS, Cap::DATA,      Cap::OPERATIONS, Cap::CONFIGURATIONS,
+                             Cap::FAULTS,   Cap::LOGS,     Cap::BULK_DATA, Cap::TRIGGERS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("areas", area.id, caps);
     append_plugin_capabilities(response["capabilities"], "areas", area.id, SovdEntityType::AREA, ctx_.node());
 
@@ -462,6 +463,7 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     response["logs"] = base + "/logs";
     response["bulk-data"] = base + "/bulk-data";
     response["cyclic-subscriptions"] = base + "/cyclic-subscriptions";
+    response["triggers"] = base + "/triggers";
 
     if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
       response["scripts"] = base + "/scripts";
@@ -500,7 +502,8 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::DATA,   Cap::OPERATIONS, Cap::CONFIGURATIONS,
                              Cap::FAULTS, Cap::LOGS,       Cap::SUBCOMPONENTS,
-                             Cap::HOSTS,  Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS};
+                             Cap::HOSTS,  Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS,
+                             Cap::TRIGGERS};
     if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
       caps.push_back(Cap::SCRIPTS);
     }
@@ -824,6 +827,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     response["logs"] = base_uri + "/logs";
     response["bulk-data"] = base_uri + "/bulk-data";
     response["cyclic-subscriptions"] = base_uri + "/cyclic-subscriptions";
+    response["triggers"] = base_uri + "/triggers";
 
     if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
       response["scripts"] = base_uri + "/scripts";
@@ -838,8 +842,8 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     }
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS,      Cap::FAULTS,
-                             Cap::LOGS, Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS};
+    std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS,       Cap::FAULTS,
+                             Cap::LOGS, Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS, Cap::TRIGGERS};
     if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
       caps.push_back(Cap::SCRIPTS);
     }
@@ -1052,10 +1056,11 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
     response["bulk-data"] = base_uri + "/bulk-data";
     response["x-medkit-graph"] = base_uri + "/x-medkit-graph";
     response["cyclic-subscriptions"] = base_uri + "/cyclic-subscriptions";
+    response["triggers"] = base_uri + "/triggers";
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::HOSTS,  Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS,
-                             Cap::FAULTS, Cap::LOGS, Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS};
+    std::vector<Cap> caps = {Cap::HOSTS, Cap::DATA,      Cap::OPERATIONS,           Cap::CONFIGURATIONS, Cap::FAULTS,
+                             Cap::LOGS,  Cap::BULK_DATA, Cap::CYCLIC_SUBSCRIPTIONS, Cap::TRIGGERS};
     response["capabilities"] = CapabilityBuilder::build_capabilities("functions", func.id, caps);
     append_plugin_capabilities(response["capabilities"], "functions", func.id, SovdEntityType::FUNCTION, ctx_.node());
 
