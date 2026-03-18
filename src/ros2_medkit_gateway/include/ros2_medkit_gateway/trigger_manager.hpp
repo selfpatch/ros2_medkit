@@ -1,0 +1,197 @@
+// Copyright 2026 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+#include <tl/expected.hpp>
+
+#include "ros2_medkit_gateway/condition_evaluator.hpp"
+#include "ros2_medkit_gateway/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/trigger_store.hpp"
+
+namespace ros2_medkit_gateway {
+
+/// Request to create a new trigger.
+struct TriggerCreateRequest {
+  std::string entity_id;
+  std::string entity_type;          ///< "apps", "components", "areas", "functions"
+  std::string resource_uri;         ///< "/api/v1/apps/sensor/data/temperature"
+  std::string collection;           ///< Parsed from resource_uri: "data"
+  std::string resource_path;        ///< Parsed: "temperature"
+  std::string path;                 ///< JSON Pointer: "/data"
+  std::string condition_type;       ///< "OnChange", "LeaveRange", etc.
+  nlohmann::json condition_params;  ///< e.g. {"lower_bound":20, "upper_bound":30}
+  std::string protocol = "sse";
+  bool multishot = false;
+  bool persistent = false;
+  std::optional<int> lifetime_sec;
+  std::optional<nlohmann::json> log_settings;
+};
+
+/// Configuration for TriggerManager behavior.
+struct TriggerConfig {
+  int max_triggers = 1000;
+  std::string on_restart_behavior = "reset";  ///< "reset" or "restore"
+};
+
+/// Central coordinator for triggers.
+///
+/// Owns trigger lifecycle (CRUD), subscribes to ResourceChangeNotifier for
+/// resource change events, evaluates conditions using ConditionRegistry,
+/// stores pending events for SSE stream pickup, and manages entity hierarchy
+/// matching and persistence via TriggerStore.
+class TriggerManager {
+ public:
+  TriggerManager(ResourceChangeNotifier & notifier, ConditionRegistry & conditions, TriggerStore & store,
+                 const TriggerConfig & config);
+  ~TriggerManager();
+
+  // Non-copyable
+  TriggerManager(const TriggerManager &) = delete;
+  TriggerManager & operator=(const TriggerManager &) = delete;
+
+  // --- CRUD -----------------------------------------------------------------
+
+  /// Create a new trigger. Validates condition type and params.
+  tl::expected<TriggerInfo, std::string> create(const TriggerCreateRequest & req);
+
+  /// Get a trigger by ID.
+  std::optional<TriggerInfo> get(const std::string & trigger_id);
+
+  /// List all triggers for a given entity.
+  std::vector<TriggerInfo> list(const std::string & entity_id);
+
+  /// Update a trigger's lifetime.
+  tl::expected<TriggerInfo, std::string> update(const std::string & trigger_id, int new_lifetime);
+
+  /// Remove a trigger. Returns true if found and removed.
+  bool remove(const std::string & trigger_id);
+
+  // --- SSE synchronization --------------------------------------------------
+
+  /// Block until an event is available for the given trigger, or timeout.
+  /// Returns true if woken by event/shutdown, false on timeout.
+  bool wait_for_event(const std::string & trigger_id, std::chrono::milliseconds timeout);
+
+  /// Check if a trigger is active (exists, not terminated, not expired).
+  bool is_active(const std::string & trigger_id);
+
+  /// Consume the pending event for SSE delivery. Returns nullopt if no event.
+  std::optional<nlohmann::json> consume_pending_event(const std::string & trigger_id);
+
+  // --- Callbacks ------------------------------------------------------------
+
+  /// Callback invoked when a trigger is removed.
+  using OnRemovedCallback = std::function<void(const std::string & trigger_id)>;
+  void set_on_removed(OnRemovedCallback callback);
+
+  // --- Lifecycle ------------------------------------------------------------
+
+  /// Shut down - wakes all waiting threads and marks all triggers inactive.
+  void shutdown();
+
+  /// Load persistent triggers from the store (on gateway restart).
+  void load_persistent_triggers();
+
+  // --- Hierarchy matching ---------------------------------------------------
+
+  /// Function that returns descendant entity IDs for a given parent.
+  using EntityChildrenFn =
+      std::function<std::vector<std::string>(const std::string & entity_id, const std::string & entity_type)>;
+
+  /// Set the entity hierarchy resolver. Called by GatewayNode after cache is available.
+  void set_entity_children_fn(EntityChildrenFn fn);
+
+ private:
+  /// Per-trigger runtime state.
+  struct TriggerState {
+    TriggerInfo info;
+    nlohmann::json previous_value;
+    bool has_previous_value{false};
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::atomic<bool> active{true};
+    std::optional<nlohmann::json> pending_event;
+  };
+
+  /// Generate the next trigger ID.
+  std::string generate_id();
+
+  /// Build a dispatch key from collection and entity_id.
+  static std::string dispatch_key(const std::string & collection, const std::string & entity_id);
+
+  /// Add a trigger to the dispatch index.
+  void add_to_dispatch_index(const std::string & trigger_id, const std::string & collection,
+                             const std::string & entity_id);
+
+  /// Remove a trigger from the dispatch index.
+  void remove_from_dispatch_index(const std::string & trigger_id, const std::string & collection,
+                                  const std::string & entity_id);
+
+  /// Check if the notification entity matches the trigger's entity (direct or hierarchy).
+  bool matches_entity(const TriggerState & state, const std::string & notification_entity_id) const;
+
+  /// Check if a trigger has expired.
+  bool is_expired(const TriggerState & state) const;
+
+  /// Format a system_clock time_point as ISO 8601 string.
+  static std::string to_iso8601(const std::chrono::system_clock::time_point & tp);
+
+  /// Callback for ResourceChangeNotifier.
+  void on_resource_change(const ResourceChange & change);
+
+  // Dependencies (non-owning)
+  ResourceChangeNotifier & notifier_;
+  ConditionRegistry & conditions_;
+  TriggerStore & store_;
+  TriggerConfig config_;
+
+  // Our notifier subscription
+  NotifierSubscriptionId notifier_sub_id_{0};
+
+  // Main storage
+  mutable std::mutex triggers_mutex_;
+  std::unordered_map<std::string, std::shared_ptr<TriggerState>> triggers_;
+
+  // Secondary index for O(1) dispatch: "collection:entity_id" -> set of trigger IDs
+  std::unordered_map<std::string, std::unordered_set<std::string>> dispatch_index_;
+
+  // ID generation
+  std::atomic<uint64_t> next_id_{1};
+
+  // Shutdown flag
+  std::atomic<bool> shutdown_flag_{false};
+
+  // Removal callback
+  OnRemovedCallback on_removed_;
+
+  // Hierarchy resolver
+  mutable std::mutex hierarchy_mutex_;
+  EntityChildrenFn entity_children_fn_;
+};
+
+}  // namespace ros2_medkit_gateway
