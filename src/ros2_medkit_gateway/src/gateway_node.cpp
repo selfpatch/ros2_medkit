@@ -610,6 +610,22 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     app_config.breakable = get_parameter("locking.defaults.apps.breakable").as_bool();
     lock_config.type_defaults["app"] = app_config;
 
+    // Apply per-entity lock overrides from manifest
+    auto * manifest_mgr = discovery_mgr_->get_manifest_manager();
+    if (manifest_mgr) {
+      auto overrides = manifest_mgr->get_lock_overrides();
+      for (auto & [entity_id, manifest_lock] : overrides) {
+        EntityLockConfig entity_config;
+        entity_config.required_scopes = manifest_lock.required_scopes;
+        entity_config.breakable = manifest_lock.breakable;
+        entity_config.max_expiration = manifest_lock.max_expiration;
+        lock_config.entity_overrides[entity_id] = entity_config;
+      }
+      if (!overrides.empty()) {
+        RCLCPP_INFO(get_logger(), "Lock manager: %zu entity overrides from manifest", overrides.size());
+      }
+    }
+
     lock_manager_ = std::make_unique<LockManager>(get_thread_safe_cache(), lock_config);
 
     auto cleanup_interval = lock_config.cleanup_interval;
