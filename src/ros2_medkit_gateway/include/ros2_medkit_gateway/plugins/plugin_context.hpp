@@ -102,26 +102,10 @@ class PluginContext {
 
   /// Send SOVD-compliant JSON error response
   static void send_error(httplib::Response & res, int status, const std::string & error_code,
-                         const std::string & message, const nlohmann::json & parameters = {}) {
-    res.status = status;
-    nlohmann::json error_json;
-    if (is_vendor_error_code(error_code)) {
-      error_json["error_code"] = ERR_VENDOR_ERROR;
-      error_json["vendor_code"] = error_code;
-    } else {
-      error_json["error_code"] = error_code;
-    }
-    error_json["message"] = message;
-    if (!parameters.empty()) {
-      error_json["parameters"] = parameters;
-    }
-    res.set_content(error_json.dump(2), "application/json");
-  }
+                         const std::string & message, const nlohmann::json & parameters = {});
 
   /// Send JSON success response
-  static void send_json(httplib::Response & res, const nlohmann::json & data) {
-    res.set_content(data.dump(2), "application/json");
-  }
+  static void send_json(httplib::Response & res, const nlohmann::json & data);
 
   // ---- Capability registration ----
 
