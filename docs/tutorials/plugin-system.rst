@@ -241,6 +241,9 @@ providing access to gateway data and utilities:
 - ``validate_entity_for_route(req, res, entity_id)`` - validate entity exists and matches the route type, auto-sending SOVD errors on failure
 - ``send_error()`` / ``send_json()`` - SOVD-compliant HTTP response helpers (static methods)
 - ``register_capability()`` / ``register_entity_capability()`` - register custom capabilities on entities
+- ``get_entity_snapshot()`` - returns an ``IntrospectionInput`` populated from the current entity cache
+- ``list_all_faults()`` - returns JSON object with a ``"faults"`` array containing all active faults across all entities
+- ``register_sampler(collection, fn)`` - registers a cyclic subscription sampler for a custom collection name
 
 .. code-block:: cpp
 
@@ -252,15 +255,45 @@ providing access to gateway data and utilities:
 
      // Register a capability for a specific entity
      ctx.register_entity_capability("sensor1", "x-medkit-calibration");
+
+     // Get a snapshot of all currently discovered entities
+     IntrospectionInput snapshot = ctx.get_entity_snapshot();
+
+     // Query all active faults (returns {"faults": [...]})
+     nlohmann::json all_faults = ctx.list_all_faults();
+
+     // Register a sampler so clients can subscribe to "x-medkit-metrics" cyclically
+     ctx.register_sampler("x-medkit-metrics",
+       [this](const std::string& entity_id, const std::string& /*resource_path*/)
+           -> tl::expected<nlohmann::json, std::string> {
+         auto data = collect_metrics(entity_id);
+         if (!data) return tl::make_unexpected("no data for: " + entity_id);
+         return *data;
+       });
    }
 
    PluginContext* ctx_ = nullptr;
 
+``get_entity_snapshot()`` returns an ``IntrospectionInput`` with vectors for all discovered
+areas, components, apps, and functions at the moment of the call. The snapshot is read-only
+and reflects the state of the gateway's thread-safe entity cache.
+
+``list_all_faults()`` is useful for plugins that need cross-entity fault visibility (e.g.
+mapping fault codes to topics). Returns ``{}`` if the fault manager is unavailable.
+
+``register_sampler(collection, fn)`` wires a sampler into the ``ResourceSamplerRegistry``
+so that cyclic subscriptions created for ``collection`` (e.g. ``"x-medkit-metrics"``)
+call ``fn(entity_id, resource_path)`` on each tick. The function must return
+``tl::expected<nlohmann::json, std::string>``. See `Cyclic Subscription Extensions`_
+for the lower-level registry API.
+
 .. note::
 
    The ``PluginContext`` interface is versioned alongside ``PLUGIN_API_VERSION``.
-   Additional methods (entity data access, configuration queries, etc.) may be added
-   in future versions.
+   Breaking changes to existing methods or removal of methods increment the version.
+   New non-breaking methods (like ``get_entity_snapshot``, ``list_all_faults``, and
+   ``register_sampler``) provide default no-op implementations so older plugins
+   compiled against an earlier version continue to load without modification.
 
 Custom REST Endpoints
 ---------------------
@@ -419,6 +452,98 @@ Multiple plugins can be loaded simultaneously:
 - **LogProvider**: Only the first plugin's LogProvider is used for queries (same as UpdateProvider).
   All LogProvider plugins receive ``on_log_entry()`` calls as observers.
 - **Custom routes**: All plugins can register endpoints (use unique path prefixes)
+
+Graph Provider Plugin (ros2_medkit_graph_provider)
+---------------------------------------------------
+
+The gateway ships with an optional first-party plugin that exposes a ROS 2 topic graph for
+each SOVD ``Function`` entity. It lives in a separate colcon package,
+``ros2_medkit_graph_provider``, under ``src/ros2_medkit_plugins/``.
+
+**What it does**
+
+- Registers the ``x-medkit-graph`` vendor capability on all ``Function`` entities.
+- Exposes ``GET /api/v1/functions/{id}/x-medkit-graph`` returning a graph document
+  with nodes (apps), edges (topic connections), per-edge frequency/latency/drop-rate
+  metrics (sourced from the ``/diagnostics`` topic), and an overall ``pipeline_status``
+  (``healthy``, ``degraded``, or ``broken``).
+- Supports cyclic subscriptions on the ``x-medkit-graph`` collection so clients can
+  stream live graph updates.
+
+**Package layout**
+
+.. code-block::
+
+   src/ros2_medkit_plugins/
+   └── ros2_medkit_graph_provider/
+       ├── CMakeLists.txt
+       ├── package.xml
+       ├── include/ros2_medkit_graph_provider/graph_provider_plugin.hpp
+       └── src/
+           ├── graph_provider_plugin.cpp
+           └── graph_provider_plugin_exports.cpp
+
+**Loading the plugin**
+
+The plugin is loaded via the ``gateway_params.yaml`` plugin list. The ``.so`` path is
+resolved at launch time by ``gateway.launch.py`` using ``get_package_prefix()``; if the
+package is not installed the gateway starts normally without graph functionality:
+
+.. code-block:: python
+
+   # Excerpt from gateway.launch.py
+   try:
+       graph_provider_prefix = get_package_prefix('ros2_medkit_graph_provider')
+       graph_provider_path = os.path.join(
+           graph_provider_prefix, 'lib', 'ros2_medkit_graph_provider',
+           'libros2_medkit_graph_provider_plugin.so')
+   except PackageNotFoundError:
+       pass  # Plugin not installed - gateway runs without graph provider
+
+The path is then injected into the node parameters as ``plugins.graph_provider.path``.
+
+**YAML configuration**
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       plugins: ["graph_provider"]
+
+       # Absolute path to the .so - set automatically by gateway.launch.py
+       plugins.graph_provider.path: "/opt/ros/jazzy/lib/ros2_medkit_graph_provider/libros2_medkit_graph_provider_plugin.so"
+
+       # Default expected publish frequency for topics without per-topic overrides.
+       # An edge whose measured frequency is below
+       # expected_frequency_hz_default * degraded_frequency_ratio is marked degraded.
+       plugins.graph_provider.expected_frequency_hz_default: 30.0
+
+       # Fraction of expected frequency below which an edge is "degraded" (0.0-1.0).
+       plugins.graph_provider.degraded_frequency_ratio: 0.5
+
+       # Drop-rate percentage above which an edge is marked degraded.
+       plugins.graph_provider.drop_rate_percent_threshold: 5.0
+
+Per-function overrides are also supported:
+
+.. code-block:: yaml
+
+       # Override thresholds for a specific function
+       plugins.graph_provider.function_overrides.my_pipeline.expected_frequency_hz: 10.0
+       plugins.graph_provider.function_overrides.my_pipeline.degraded_frequency_ratio: 0.3
+       plugins.graph_provider.function_overrides.my_pipeline.drop_rate_percent_threshold: 2.0
+
+**Disabling the plugin**
+
+To disable graph functionality without uninstalling the package, remove ``"graph_provider"``
+from the ``plugins`` list in your params file:
+
+.. code-block:: yaml
+
+   plugins: []
+
+Alternatively, simply do not install the ``ros2_medkit_graph_provider`` package -
+``gateway.launch.py`` will skip the plugin automatically.
 
 Error Handling
 --------------
