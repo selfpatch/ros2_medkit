@@ -132,14 +132,12 @@ constexpr const char * ERR_X_MEDKIT_UNSUPPORTED_PROTOCOL = "x-medkit-unsupported
 /// SOVD standard: client's lock was broken by another client (409)
 constexpr const char * ERR_LOCK_BROKEN = "lock-broken";
 
-// Script error codes
-constexpr const char * ERR_SCRIPT_NOT_FOUND = "resource-not-found";
+// Script error codes (vendor-specific only; generic cases use ERR_RESOURCE_NOT_FOUND / ERR_INVALID_PARAMETER)
 constexpr const char * ERR_SCRIPT_ALREADY_EXISTS = "x-medkit-script-already-exists";
 constexpr const char * ERR_SCRIPT_MANAGED = "x-medkit-managed-script";
 constexpr const char * ERR_SCRIPT_RUNNING = "x-medkit-script-running";
 constexpr const char * ERR_SCRIPT_NOT_RUNNING = "x-medkit-script-not-running";
 constexpr const char * ERR_SCRIPT_CONCURRENCY_LIMIT = "x-medkit-concurrency-limit";
-constexpr const char * ERR_SCRIPT_UNSUPPORTED_TYPE = "invalid-parameter";
 constexpr const char * ERR_SCRIPT_FILE_TOO_LARGE = "x-medkit-script-too-large";
 
 /**

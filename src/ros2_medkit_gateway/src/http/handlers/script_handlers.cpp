@@ -25,8 +25,6 @@ using json = nlohmann::json;
 namespace ros2_medkit_gateway {
 namespace handlers {
 
-static constexpr size_t kMaxScriptSizeBytes = 10 * 1024 * 1024;  // 10 MB
-
 ScriptHandlers::ScriptHandlers(HandlerContext & ctx, ScriptManager * script_manager)
   : ctx_(ctx), script_mgr_(script_manager) {
 }
@@ -51,7 +49,7 @@ bool ScriptHandlers::is_valid_resource_id(const std::string & id) {
 void ScriptHandlers::send_script_error(httplib::Response & res, const ScriptBackendErrorInfo & err) {
   switch (err.code) {
     case ScriptBackendError::NotFound:
-      HandlerContext::send_error(res, 404, ERR_SCRIPT_NOT_FOUND, err.message);
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, err.message);
       break;
     case ScriptBackendError::AlreadyExists:
       HandlerContext::send_error(res, 409, ERR_SCRIPT_ALREADY_EXISTS, err.message);
@@ -69,7 +67,7 @@ void ScriptHandlers::send_script_error(httplib::Response & res, const ScriptBack
       HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, err.message);
       break;
     case ScriptBackendError::UnsupportedType:
-      HandlerContext::send_error(res, 400, ERR_SCRIPT_UNSUPPORTED_TYPE, err.message);
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, err.message);
       break;
     case ScriptBackendError::FileTooLarge:
       HandlerContext::send_error(res, 413, ERR_SCRIPT_FILE_TOO_LARGE, err.message);
@@ -144,6 +142,11 @@ void ScriptHandlers::handle_list_scripts(const httplib::Request & req, httplib::
       return;
     }
 
+    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
+      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+      return;
+    }
+
     std::string entity_type_segment = (req.path.find("/components/") != std::string::npos) ? "components" : "apps";
     auto base_path = "/" + entity_type_segment + "/" + entity_id;
 
@@ -175,6 +178,11 @@ void ScriptHandlers::handle_upload_script(const httplib::Request & req, httplib:
       return;
     }
 
+    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
+      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+      return;
+    }
+
     auto file_it = req.files.find("file");
     if (file_it == req.files.end()) {
       HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing required multipart field: file");
@@ -182,10 +190,6 @@ void ScriptHandlers::handle_upload_script(const httplib::Request & req, httplib:
     }
 
     const auto & file_part = file_it->second;
-    if (file_part.content.size() > kMaxScriptSizeBytes) {
-      HandlerContext::send_error(res, 413, ERR_SCRIPT_FILE_TOO_LARGE, "Script file exceeds maximum allowed size");
-      return;
-    }
 
     std::optional<json> metadata;
     auto meta_it = req.files.find("metadata");
@@ -232,6 +236,11 @@ void ScriptHandlers::handle_get_script(const httplib::Request & req, httplib::Re
       return;
     }
 
+    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
+      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+      return;
+    }
+
     std::string entity_type_segment = (req.path.find("/components/") != std::string::npos) ? "components" : "apps";
     auto base_path = "/" + entity_type_segment + "/" + entity_id;
 
@@ -264,6 +273,11 @@ void ScriptHandlers::handle_delete_script(const httplib::Request & req, httplib:
       return;
     }
 
+    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
+      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+      return;
+    }
+
     auto result = script_mgr_->delete_script(entity_id, script_id);
     if (!result) {
       send_script_error(res, result.error());
@@ -290,6 +304,11 @@ void ScriptHandlers::handle_start_execution(const httplib::Request & req, httpli
     }
     auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity) {
+      return;
+    }
+
+    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
+      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
       return;
     }
 
@@ -358,6 +377,11 @@ void ScriptHandlers::handle_get_execution(const httplib::Request & req, httplib:
       return;
     }
 
+    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
+      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+      return;
+    }
+
     auto result = script_mgr_->get_execution(entity_id, script_id, execution_id);
     if (!result) {
       send_script_error(res, result.error());
@@ -389,6 +413,11 @@ void ScriptHandlers::handle_control_execution(const httplib::Request & req, http
     }
     auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity) {
+      return;
+    }
+
+    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
+      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
       return;
     }
 
@@ -437,6 +466,11 @@ void ScriptHandlers::handle_delete_execution(const httplib::Request & req, httpl
     }
     auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity) {
+      return;
+    }
+
+    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
+      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
       return;
     }
 
