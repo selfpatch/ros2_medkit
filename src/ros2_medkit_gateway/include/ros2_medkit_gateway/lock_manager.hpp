@@ -51,7 +51,6 @@ struct LockConfig {
   bool enabled = true;                ///< Whether locking is enabled at all
   int default_max_expiration = 3600;  ///< Default max lock expiration in seconds
   int cleanup_interval = 30;          ///< Interval in seconds for expired lock cleanup
-  bool lock_required = false;         ///< If true, write operations require a lock
 
   /// Per-entity-type defaults (keys: "area", "component", "app")
   std::unordered_map<std::string, EntityLockConfig> type_defaults;
@@ -119,7 +118,7 @@ struct ExpiredLockInfo {
  */
 inline const std::unordered_set<std::string> & valid_lock_scopes() {
   static const std::unordered_set<std::string> scopes = {
-      "data", "operations", "configurations", "faults", "modes", "scripts", "bulk-data",
+      "data", "operations", "configurations", "faults", "modes", "scripts", "bulk-data", "logs", "cyclic-subscriptions",
   };
   return scopes;
 }

@@ -72,7 +72,6 @@ class LockManagerTest : public ::testing::Test {
     cfg.enabled = enabled;
     cfg.default_max_expiration = 3600;
     cfg.cleanup_interval = 30;
-    cfg.lock_required = false;
     return cfg;
   }
 };
@@ -498,9 +497,12 @@ TEST_F(LockManagerTest, test_cleanup_not_expired) {
 // @verifies REQ_INTEROP_100
 TEST_F(LockManagerTest, test_lock_required_no_lock_held) {
   LockConfig cfg = make_config();
-  cfg.lock_required = true;
+  EntityLockConfig comp_cfg;
+  comp_cfg.required_scopes = {"data", "configurations"};
+  cfg.type_defaults["component"] = comp_cfg;
   LockManager mgr(cache_, cfg);
 
+  // comp1 is a component, "data" is in required_scopes -> lock required
   auto result = mgr.check_access("comp1", "client_a", "data");
   EXPECT_FALSE(result.allowed);
   EXPECT_EQ(result.denied_code, "lock-required");
@@ -509,11 +511,27 @@ TEST_F(LockManagerTest, test_lock_required_no_lock_held) {
 // @verifies REQ_INTEROP_100
 TEST_F(LockManagerTest, test_lock_required_has_lock) {
   LockConfig cfg = make_config();
-  cfg.lock_required = true;
+  EntityLockConfig comp_cfg;
+  comp_cfg.required_scopes = {"data", "configurations"};
+  cfg.type_defaults["component"] = comp_cfg;
   LockManager mgr(cache_, cfg);
 
   ASSERT_TRUE(mgr.acquire("comp1", "client_a", {}, 300).has_value());
 
+  // Client holds a lock -> access allowed
+  auto result = mgr.check_access("comp1", "client_a", "data");
+  EXPECT_TRUE(result.allowed);
+}
+
+// @verifies REQ_INTEROP_100
+TEST_F(LockManagerTest, test_lock_required_different_collection_not_blocked) {
+  LockConfig cfg = make_config();
+  EntityLockConfig comp_cfg;
+  comp_cfg.required_scopes = {"configurations"};
+  cfg.type_defaults["component"] = comp_cfg;
+  LockManager mgr(cache_, cfg);
+
+  // "data" is NOT in required_scopes -> access allowed without lock
   auto result = mgr.check_access("comp1", "client_a", "data");
   EXPECT_TRUE(result.allowed);
 }

@@ -230,11 +230,18 @@ LockAccessResult LockManager::check_access(const std::string & entity_id, const 
 
   std::shared_lock<std::shared_mutex> read_lock(mutex_);
 
-  // Phase 1: Check lock_required - if configured, a lock must be held by the client
-  if (config_.lock_required) {
-    auto it = locks_.find(entity_id);
-    if (it == locks_.end() || it->second.client_id != client_id) {
-      return LockAccessResult{false, "", "A lock is required to access this entity", "lock-required"};
+  // Phase 1: Check lock_required - if the entity's config requires a lock for this collection,
+  // the client must hold a lock to proceed
+  auto entity_type_str = get_entity_type_string(entity_id);
+  auto entity_cfg = get_entity_config(entity_id, entity_type_str);
+  if (!entity_cfg.required_scopes.empty()) {
+    bool collection_requires_lock = std::find(entity_cfg.required_scopes.begin(), entity_cfg.required_scopes.end(),
+                                              collection) != entity_cfg.required_scopes.end();
+    if (collection_requires_lock) {
+      auto it = locks_.find(entity_id);
+      if (it == locks_.end() || it->second.client_id != client_id) {
+        return LockAccessResult{false, "", "A lock is required for " + collection + " on this entity", "lock-required"};
+      }
     }
   }
 
