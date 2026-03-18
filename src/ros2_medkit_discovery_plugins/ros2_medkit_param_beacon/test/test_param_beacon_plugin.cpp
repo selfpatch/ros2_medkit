@@ -110,6 +110,16 @@ class MockPluginContext : public PluginContext {
   tl::expected<void, ros2_medkit_gateway::LockError> release_lock(const std::string &, const std::string &) override {
     return tl::make_unexpected(ros2_medkit_gateway::LockError{"lock-disabled", "Not available", 503, std::nullopt});
   }
+  ros2_medkit_gateway::ResourceChangeNotifier * get_resource_change_notifier() override {
+    return nullptr;
+  }
+  ros2_medkit_gateway::ConditionRegistry * get_condition_registry() override {
+    return nullptr;
+  }
+  void set_trigger_store(std::unique_ptr<ros2_medkit_gateway::TriggerStore>) override {
+  }
+  void register_trigger_transport(std::shared_ptr<ros2_medkit_gateway::TriggerTransportProvider>) override {
+  }
 
   struct CapReg {
     SovdEntityType type;
