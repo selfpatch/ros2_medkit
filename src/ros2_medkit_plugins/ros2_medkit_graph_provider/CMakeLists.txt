@@ -59,6 +59,11 @@ medkit_target_dependencies(ros2_medkit_graph_provider_plugin
   diagnostic_msgs
 )
 
+# Allow unresolved symbols - they resolve from the host process at runtime
+target_link_options(ros2_medkit_graph_provider_plugin PRIVATE
+  -Wl,--unresolved-symbols=ignore-all
+)
+
 target_link_libraries(ros2_medkit_graph_provider_plugin
   nlohmann_json::nlohmann_json
   cpp_httplib_target

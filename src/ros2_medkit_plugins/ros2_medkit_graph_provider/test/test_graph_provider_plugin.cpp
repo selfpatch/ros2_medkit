@@ -36,6 +36,19 @@
 using namespace std::chrono_literals;
 using namespace ros2_medkit_gateway;
 
+// Stubs for PluginContext static methods (defined in gateway_lib, not linked into tests)
+namespace ros2_medkit_gateway {
+void PluginContext::send_json(httplib::Response & res, const nlohmann::json & data) {
+  res.set_content(data.dump(), "application/json");
+}
+void PluginContext::send_error(httplib::Response & res, int status, const std::string & /*error_code*/,
+                               const std::string & message, const nlohmann::json & /*parameters*/) {
+  res.status = status;
+  nlohmann::json err = {{"error", message}};
+  res.set_content(err.dump(), "application/json");
+}
+}  // namespace ros2_medkit_gateway
+
 namespace {
 
 App make_app(const std::string & id, std::vector<std::string> publishes = {}, std::vector<std::string> subscribes = {},
