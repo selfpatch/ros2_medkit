@@ -458,6 +458,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_default_script_provider test/test_default_script_provider.cpp)
   target_link_libraries(test_default_script_provider gateway_lib)
 
+  # Add script handler tests
+  ament_add_gtest(test_script_handlers test/test_script_handlers.cpp)
+  target_link_libraries(test_script_handlers gateway_lib)
+  set_tests_properties(test_script_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=69")
+
   # Add data handler tests
   ament_add_gtest(test_data_handlers test/test_data_handlers.cpp)
   target_link_libraries(test_data_handlers gateway_lib)
@@ -612,6 +617,7 @@ if(BUILD_TESTING)
       test_update_manager
       test_script_manager
       test_default_script_provider
+      test_script_handlers
       test_data_handlers
       test_auth_handlers
       test_health_handlers
