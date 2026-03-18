@@ -112,6 +112,63 @@ TEST_F(ScriptManagerTest, NoBackend) {
   EXPECT_FALSE(no_backend.has_backend());
 }
 
+TEST(ScriptManagerNullBackendTest, ListScriptsReturnsError) {
+  ScriptManager mgr;
+  auto result = mgr.list_scripts("entity1");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::Internal);
+}
+
+TEST(ScriptManagerNullBackendTest, GetScriptReturnsError) {
+  ScriptManager mgr;
+  auto result = mgr.get_script("entity1", "script1");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::Internal);
+}
+
+TEST(ScriptManagerNullBackendTest, UploadScriptReturnsError) {
+  ScriptManager mgr;
+  auto result = mgr.upload_script("entity1", "test.py", "content", std::nullopt);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::Internal);
+}
+
+TEST(ScriptManagerNullBackendTest, DeleteScriptReturnsError) {
+  ScriptManager mgr;
+  auto result = mgr.delete_script("entity1", "script1");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::Internal);
+}
+
+TEST(ScriptManagerNullBackendTest, StartExecutionReturnsError) {
+  ScriptManager mgr;
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto result = mgr.start_execution("entity1", "script1", req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::Internal);
+}
+
+TEST(ScriptManagerNullBackendTest, GetExecutionReturnsError) {
+  ScriptManager mgr;
+  auto result = mgr.get_execution("entity1", "script1", "exec1");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::Internal);
+}
+
+TEST(ScriptManagerNullBackendTest, ControlExecutionReturnsError) {
+  ScriptManager mgr;
+  auto result = mgr.control_execution("entity1", "script1", "exec1", "stop");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::Internal);
+}
+
+TEST(ScriptManagerNullBackendTest, DeleteExecutionReturnsError) {
+  ScriptManager mgr;
+  auto result = mgr.delete_execution("entity1", "script1", "exec1");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::Internal);
+}
+
 // @verifies REQ_INTEROP_041
 TEST_F(ScriptManagerTest, ListScripts) {
   auto result = manager_->list_scripts("comp1");

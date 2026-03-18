@@ -209,7 +209,7 @@ void ScriptHandlers::handle_upload_script(const httplib::Request & req, httplib:
     }
 
     std::string entity_type_segment = (req.path.find("/components/") != std::string::npos) ? "components" : "apps";
-    auto script_path = "/api/v1/" + entity_type_segment + "/" + entity_id + "/scripts/" + result->id;
+    auto script_path = api_path("/" + entity_type_segment + "/" + entity_id + "/scripts/" + result->id);
 
     res.status = 201;
     res.set_header("Location", script_path);
@@ -345,7 +345,7 @@ void ScriptHandlers::handle_start_execution(const httplib::Request & req, httpli
 
     std::string entity_type_segment = (req.path.find("/components/") != std::string::npos) ? "components" : "apps";
     auto exec_path =
-        "/api/v1/" + entity_type_segment + "/" + entity_id + "/scripts/" + script_id + "/executions/" + result->id;
+        api_path("/" + entity_type_segment + "/" + entity_id + "/scripts/" + script_id + "/executions/" + result->id);
 
     res.status = 202;
     res.set_header("Location", exec_path);

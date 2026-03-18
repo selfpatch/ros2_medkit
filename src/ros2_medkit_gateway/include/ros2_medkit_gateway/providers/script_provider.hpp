@@ -54,7 +54,7 @@ struct ExecutionRequest {
 
 enum class ScriptBackendError {
   NotFound,
-  AlreadyExists,
+  AlreadyExists,  // Reserved for plugin implementations (e.g., SQLite registry duplicate IDs)
   ManagedScript,
   AlreadyRunning,
   NotRunning,
