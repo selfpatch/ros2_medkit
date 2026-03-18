@@ -20,6 +20,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <sys/select.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -54,6 +57,33 @@ DefaultScriptProvider::DefaultScriptProvider(const ScriptsConfig & config) : con
   if (!config_.scripts_dir.empty()) {
     std::error_code ec;
     std::filesystem::create_directories(config_.scripts_dir, ec);
+  }
+}
+
+DefaultScriptProvider::~DefaultScriptProvider() {
+  // Terminate all running executions for clean shutdown
+  std::vector<std::unique_ptr<ExecutionState>> to_join;
+  {
+    std::lock_guard<std::mutex> lock(exec_mutex_);
+    for (auto it = executions_.begin(); it != executions_.end();) {
+      auto & state = *it->second;
+      auto pid = state.pid.load();
+      if (pid > 0 && state.status == "running") {
+        kill(-pid, SIGKILL);  // Force kill process group
+        state.status = "terminated";
+      }
+      to_join.push_back(std::move(it->second));
+      it = executions_.erase(it);
+    }
+  }
+  // Join threads outside lock
+  for (auto & state : to_join) {
+    if (state->monitor_thread.joinable()) {
+      state->monitor_thread.join();
+    }
+    if (state->timeout_thread.joinable()) {
+      state->timeout_thread.join();
+    }
   }
 }
 
@@ -560,9 +590,12 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
             auto to_append = std::min(static_cast<size_t>(n), kMaxOutputSize - state_ptr->stdout_data.size());
             state_ptr->stdout_data.append(buf, to_append);
           }
-        } else {
-          stdout_open = false;
+        } else if (n == 0) {
+          stdout_open = false;  // EOF
+        } else if (errno != EINTR) {
+          stdout_open = false;  // Real error, close
         }
+        // EINTR: just retry on next select() iteration
       }
 
       if (stderr_open && FD_ISSET(stderr_fd, &read_fds)) {
@@ -572,9 +605,12 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
             auto to_append = std::min(static_cast<size_t>(n), kMaxOutputSize - state_ptr->stderr_data.size());
             state_ptr->stderr_data.append(buf, to_append);
           }
-        } else {
-          stderr_open = false;
+        } else if (n == 0) {
+          stderr_open = false;  // EOF
+        } else if (errno != EINTR) {
+          stderr_open = false;  // Real error, close
         }
+        // EINTR: just retry on next select() iteration
       }
     }
 

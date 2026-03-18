@@ -89,6 +89,7 @@ struct ExecutionState {
 class DefaultScriptProvider : public ScriptProvider {
  public:
   explicit DefaultScriptProvider(const ScriptsConfig & config);
+  ~DefaultScriptProvider() override;
 
   tl::expected<std::vector<ScriptInfo>, ScriptBackendErrorInfo> list_scripts(const std::string & entity_id) override;
 

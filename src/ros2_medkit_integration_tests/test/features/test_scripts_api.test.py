@@ -413,8 +413,17 @@ class TestScriptsExecution(GatewayTestCase):
 
         _, exec_id = self._start_execution(script_id)
 
-        # Brief pause to let the process start
-        time.sleep(0.5)
+        # Poll until execution is running
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            r = requests.get(
+                f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+                f'/executions/{exec_id}',
+                timeout=5,
+            )
+            if r.status_code == 200 and r.json().get('status') == 'running':
+                break
+            time.sleep(0.1)
 
         # Send stop action
         r = requests.put(
@@ -436,8 +445,17 @@ class TestScriptsExecution(GatewayTestCase):
 
         _, exec_id = self._start_execution(script_id)
 
-        # Brief pause to let the process start
-        time.sleep(0.5)
+        # Poll until execution is running
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            r = requests.get(
+                f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}'
+                f'/executions/{exec_id}',
+                timeout=5,
+            )
+            if r.status_code == 200 and r.json().get('status') == 'running':
+                break
+            time.sleep(0.1)
 
         # Attempt to delete while running
         r = requests.delete(
