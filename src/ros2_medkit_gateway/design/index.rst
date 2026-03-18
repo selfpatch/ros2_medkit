@@ -34,6 +34,7 @@ The following diagram shows the relationships between the main components of the
            + get_operation_manager(): OperationManager*
            + get_discovery_manager(): DiscoveryManager*
            + get_configuration_manager(): ConfigurationManager*
+           + get_lock_manager(): LockManager*
        }
 
        class DiscoveryManager {
@@ -136,6 +137,15 @@ The following diagram shows the relationships between the main components of the
            + set_parameter(): ParameterResult
        }
 
+       class LockManager {
+           + acquire(): expected<LockInfo, LockError>
+           + release(): expected<void, LockError>
+           + extend(): expected<LockInfo, LockError>
+           + check_access(): LockAccessResult
+           + cleanup_expired(): vector<ExpiredLockInfo>
+           + get_lock(): optional<LockInfo>
+       }
+
        class NativeTopicSampler {
            + discover_all_topics(): vector<TopicInfo>
            + discover_topics(): vector<TopicInfo>
@@ -215,6 +225,7 @@ The following diagram shows the relationships between the main components of the
    GatewayNode *-down-> DataAccessManager : owns
    GatewayNode *-down-> OperationManager : owns
    GatewayNode *-down-> ConfigurationManager : owns
+   GatewayNode *-down-> LockManager : owns
    GatewayNode *-down-> EntityCache : owns
 
    ' Discovery Manager uses Node interface
@@ -386,7 +397,16 @@ Main Components
    - Provides static ``yaml_to_json()`` utility for YAML to JSON conversion
    - Thread-safe and stateless design
 
-9. **Data Models** - Entity representations
+9. **LockManager** - SOVD resource locking (ISO 17978-3, Section 7.17)
+    - Transport-agnostic lock store with ``shared_mutex`` for thread safety
+    - Acquire, release, extend locks on components and apps
+    - Scoped locks restrict protection to specific resource collections
+    - Lazy parent propagation (lock on component protects child apps)
+    - Lock-required enforcement via per-entity ``required_scopes`` config
+    - Automatic expiry with cyclic subscription cleanup
+    - Plugin access via ``PluginContext::check_lock/acquire_lock/release_lock``
+
+10. **Data Models** - Entity representations
     - ``Area`` - Physical or logical domain (namespace grouping)
     - ``Component`` - Logical grouping of Apps; can be ``synthetic`` (auto-created from namespace), ``topic`` (from topic-only namespace), or ``manifest`` (explicitly defined)
     - ``App`` - Software application (ROS 2 node); individual running process linked to parent Component

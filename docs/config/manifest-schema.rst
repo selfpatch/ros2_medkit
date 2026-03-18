@@ -229,6 +229,11 @@ Schema
        depends_on: [string]    # Optional - component IDs this depends on
        subcomponents: []       # Optional - nested definitions
 
+       lock:                   # Optional - per-entity lock configuration
+         required_scopes: [string]  # Collections requiring a lock before mutation
+         breakable: boolean         # Whether locks can be broken (default: true)
+         max_expiration: integer    # Max lock TTL in seconds (0 = global default)
+
 Fields
 ~~~~~~
 
@@ -364,6 +369,11 @@ Schema
          node_name: string     # Required - ROS node name
          namespace: string     # Optional - namespace (default: /)
          topic_namespace: string  # Optional - match by topic prefix
+
+       lock:                   # Optional - per-entity lock configuration
+         required_scopes: [string]  # Collections requiring a lock before mutation
+         breakable: boolean         # Whether locks can be broken (default: true)
+         max_expiration: integer    # Max lock TTL in seconds (0 = global default)
 
 Fields
 ~~~~~~

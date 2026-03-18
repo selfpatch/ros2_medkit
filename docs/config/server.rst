@@ -503,6 +503,52 @@ Example:
        docs:
          enabled: true
 
+Locking
+-------
+
+SOVD resource locking (ISO 17978-3, Section 7.17). Clients acquire locks on
+components and apps to prevent concurrent modification.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 15 15 30
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``locking.enabled``
+     - bool
+     - ``true``
+     - Enable the LockManager and lock endpoints
+   * - ``locking.default_max_expiration``
+     - int
+     - ``3600``
+     - Maximum lock TTL in seconds
+   * - ``locking.cleanup_interval``
+     - int
+     - ``30``
+     - Seconds between expired lock cleanup sweeps
+   * - ``locking.defaults.components.lock_required_scopes``
+     - [string]
+     - ``[""]``
+     - Collections requiring a lock on components (empty = no requirement)
+   * - ``locking.defaults.components.breakable``
+     - bool
+     - ``true``
+     - Whether component locks can be broken
+   * - ``locking.defaults.apps.lock_required_scopes``
+     - [string]
+     - ``[""]``
+     - Collections requiring a lock on apps (empty = no requirement)
+   * - ``locking.defaults.apps.breakable``
+     - bool
+     - ``true``
+     - Whether app locks can be broken
+
+Per-entity overrides are configured in the manifest ``lock:`` section.
+See :doc:`manifest-schema` and :doc:`/api/locking`.
+
 See Also
 --------
 
