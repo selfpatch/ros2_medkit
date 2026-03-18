@@ -19,6 +19,7 @@
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
+#include "ros2_medkit_gateway/lock_manager.hpp"
 
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
@@ -170,6 +171,38 @@ class GatewayPluginContext : public PluginContext {
       return it->second;
     }
     return {};
+  }
+
+  bool check_lock(const std::string & entity_id, const std::string & client_id,
+                  const std::string & collection) const override {
+    auto * lock_mgr = node_->get_lock_manager();
+    if (!lock_mgr) {
+      return true;  // Locking disabled
+    }
+    auto result = lock_mgr->check_access(entity_id, client_id, collection);
+    return result.allowed;
+  }
+
+  std::string acquire_lock(const std::string & entity_id, const std::string & client_id,
+                           const std::vector<std::string> & scopes, int expiration_seconds) override {
+    auto * lock_mgr = node_->get_lock_manager();
+    if (!lock_mgr) {
+      return {};
+    }
+    auto result = lock_mgr->acquire(entity_id, client_id, scopes, expiration_seconds);
+    if (result.has_value()) {
+      return result->lock_id;
+    }
+    return {};
+  }
+
+  bool release_lock(const std::string & entity_id, const std::string & client_id) override {
+    auto * lock_mgr = node_->get_lock_manager();
+    if (!lock_mgr) {
+      return false;
+    }
+    auto result = lock_mgr->release(entity_id, client_id);
+    return result.has_value();
   }
 
  private:
