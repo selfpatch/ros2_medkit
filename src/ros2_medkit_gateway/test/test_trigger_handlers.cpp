@@ -23,13 +23,11 @@
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::handlers;
-using json = nlohmann::json;
 
 // ===========================================================================
 // parse_resource_uri tests (trigger-specific with areas support)
 // ===========================================================================
 
-// @verifies REQ_TRIGGER_001
 TEST(TriggerParseResourceUriTest, DataCollectionWithTopic) {
   auto result = TriggerHandlers::parse_resource_uri("/api/v1/apps/node1/data/temperature");
   ASSERT_TRUE(result.has_value());
@@ -39,7 +37,6 @@ TEST(TriggerParseResourceUriTest, DataCollectionWithTopic) {
   EXPECT_EQ(result->resource_path, "/temperature");
 }
 
-// @verifies REQ_TRIGGER_001
 TEST(TriggerParseResourceUriTest, AreasEntityType) {
   auto result = TriggerHandlers::parse_resource_uri("/api/v1/areas/zone1/data/temperature");
   ASSERT_TRUE(result.has_value());
@@ -120,7 +117,6 @@ TEST(TriggerParseResourceUriTest, PathTraversalAtEndRejected) {
 // trigger_to_json tests
 // ===========================================================================
 
-// @verifies REQ_TRIGGER_001
 TEST(TriggerToJsonTest, ContainsAllRequiredFields) {
   TriggerInfo info;
   info.id = "trig_1";
