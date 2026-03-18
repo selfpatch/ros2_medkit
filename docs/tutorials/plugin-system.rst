@@ -292,8 +292,9 @@ for the lower-level registry API.
    The ``PluginContext`` interface is versioned alongside ``PLUGIN_API_VERSION``.
    Breaking changes to existing methods or removal of methods increment the version.
    New non-breaking methods (like ``get_entity_snapshot``, ``list_all_faults``, and
-   ``register_sampler``) provide default no-op implementations so older plugins
-   compiled against an earlier version continue to load without modification.
+   ``register_sampler``) provide default no-op implementations so plugins that do not
+   use these methods need no code changes. However, a rebuild is still required because
+   ``plugin_api_version()`` must return the current version (exact-match check).
 
 Custom REST Endpoints
 ---------------------
@@ -559,8 +560,8 @@ Plugins export ``plugin_api_version()`` which must return the gateway's ``PLUGIN
 If the version does not match, the plugin is rejected with a clear error message suggesting
 a rebuild against matching gateway headers.
 
-The current API version is **1**. It will be incremented when breaking changes are made to
-``GatewayPlugin`` or provider interfaces.
+The current API version is **4**. It is incremented when the ``PluginContext`` vtable changes
+or breaking changes are made to ``GatewayPlugin`` or provider interfaces.
 
 Build Requirements
 ------------------

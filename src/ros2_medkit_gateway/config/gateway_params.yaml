@@ -302,12 +302,12 @@ ros2_medkit_gateway:
     # Plugin lifecycle: load -> configure -> set_context -> register_routes
     # Plugins that throw during any lifecycle call are disabled (not crashed).
     # Default: [] (no plugins)
-    plugins: ["graph_provider"]
+    plugins: [""]  # Default: no plugins. gateway.launch.py adds graph_provider automatically.
 
-    # Graph provider plugin - path set by launch file
+    # Graph provider plugin - path set by launch file when ros2_medkit_graph_provider is installed
     plugins.graph_provider.path: ""
 
-    # Graph provider configuration
+    # Graph provider configuration (used when plugin is loaded via launch file)
     plugins.graph_provider.expected_frequency_hz_default: 30.0
     plugins.graph_provider.degraded_frequency_ratio: 0.5
     plugins.graph_provider.drop_rate_percent_threshold: 5.0
