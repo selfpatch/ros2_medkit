@@ -766,6 +766,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     // Subscribe to fault events and forward to notifier
     trigger_fault_subscriber_ = std::make_unique<TriggerFaultSubscriber>(this, *resource_change_notifier_);
 
+    // Subscribe to data topics for data triggers
+    trigger_topic_subscriber_ = std::make_unique<TriggerTopicSubscriber>(this, *resource_change_notifier_);
+    trigger_mgr_->set_topic_subscriber(trigger_topic_subscriber_.get());
+
     RCLCPP_INFO(get_logger(), "Trigger subsystem: enabled (max=%d, storage=%s)", trigger_config.max_triggers,
                 storage_path.empty() ? ":memory:" : storage_path.c_str());
   } else {
@@ -1082,19 +1086,23 @@ GatewayNode::~GatewayNode() {
   if (transport_registry_) {
     transport_registry_->shutdown_all(*subscription_mgr_);
   }
-  // 3. Shutdown trigger subsystem (wakes SSE trigger streams)
+  // 3. Shutdown trigger topic subscriber (stops producing data notifications)
+  if (trigger_topic_subscriber_) {
+    trigger_topic_subscriber_->shutdown();
+  }
+  // 4. Shutdown trigger subsystem (wakes SSE trigger streams)
   if (trigger_mgr_) {
     trigger_mgr_->shutdown();
   }
-  // 4. Shutdown resource change notifier (stops worker thread)
+  // 5. Shutdown resource change notifier (stops worker thread)
   if (resource_change_notifier_) {
     resource_change_notifier_->shutdown();
   }
-  // 5. Shutdown plugins
+  // 6. Shutdown plugins
   if (plugin_mgr_) {
     plugin_mgr_->shutdown_all();
   }
-  // 6. Normal member destruction (managers safe - all transports stopped)
+  // 7. Normal member destruction (managers safe - all transports stopped)
 }
 
 const ThreadSafeEntityCache & GatewayNode::get_thread_safe_cache() const {
