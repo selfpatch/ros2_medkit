@@ -151,7 +151,9 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
 
   auto result = trigger_mgr_.create(create_req);
   if (!result) {
-    // Distinguish between validation errors and capacity errors
+    // Distinguish between validation errors (400) and capacity errors (503).
+    // NOTE: String matching on TriggerManager error messages - coupled to the exact
+    // error text in trigger_manager.cpp::create(). If those strings change, update here.
     const auto & err = result.error();
     if (err.find("Maximum trigger capacity") != std::string::npos) {
       HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, err);
@@ -238,6 +240,12 @@ void TriggerHandlers::handle_update(const httplib::Request & req, httplib::Respo
 
   int new_lifetime = body["lifetime"].get<int>();
 
+  if (new_lifetime <= 0) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Lifetime must be a positive integer",
+                               {{"parameter", "lifetime"}, {"value", new_lifetime}});
+    return;
+  }
+
   // Verify trigger exists and belongs to this entity before updating
   auto existing = trigger_mgr_.get(trigger_id);
   if (!existing || existing->entity_id != entity_id) {
@@ -247,13 +255,8 @@ void TriggerHandlers::handle_update(const httplib::Request & req, httplib::Respo
 
   auto result = trigger_mgr_.update(trigger_id, new_lifetime);
   if (!result) {
-    // TriggerManager::update returns error for negative lifetime or not found
-    if (result.error().find("Trigger not found") != std::string::npos) {
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", {{"trigger_id", trigger_id}});
-    } else {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, result.error(),
-                                 {{"parameter", "lifetime"}, {"value", new_lifetime}});
-    }
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, result.error(),
+                               {{"parameter", "lifetime"}, {"value", new_lifetime}});
     return;
   }
 
@@ -320,7 +323,14 @@ void TriggerHandlers::handle_events(const httplib::Request & req, httplib::Respo
     return;
   }
 
+  // SSE headers for proxy compatibility (matches sse_fault_handler pattern)
+  res.set_header("Cache-Control", "no-cache");
+  res.set_header("X-Accel-Buffering", "no");
+
   auto tracker = client_tracker_;
+  // NOTE: trigger_mgr_ is captured by reference. TriggerHandlers must outlive all SSE
+  // connections. This is guaranteed because GatewayNode destroys the REST server
+  // (closing all connections) before destroying managers. See shutdown lifecycle in design spec.
   auto & mgr = trigger_mgr_;
   auto tid = trigger_id;
 
