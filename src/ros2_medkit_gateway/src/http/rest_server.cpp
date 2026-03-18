@@ -261,6 +261,10 @@ void RESTServer::setup_global_error_handlers() {
   srv->set_exception_handler(HttplibExceptionHandlerAdapter{});
 }
 
+void RESTServer::set_trigger_handlers(TriggerManager & trigger_mgr) {
+  trigger_handlers_ = std::make_unique<handlers::TriggerHandlers>(*handler_ctx_, trigger_mgr, sse_client_tracker_);
+}
+
 RESTServer::~RESTServer() {
   stop();
 }
@@ -608,6 +612,80 @@ void RESTServer::setup_routes() {
           .tag("Bulk Data")
           .summary(std::string("Delete bulk-data file for ") + et.singular + " (not supported)")
           .response(405, "Method not allowed");
+    }
+
+    // --- Triggers (ALL entity types - x-medkit extension beyond SOVD) ---
+    {
+      auto trigger_501 = [](auto & /*req*/, auto & res) {
+        handlers::HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Triggers not available");
+      };
+
+      // SSE events stream - registered before CRUD routes
+      reg.get(entity_path + "/triggers/{trigger_id}/events",
+              [this, trigger_501](auto & req, auto & res) {
+                if (!trigger_handlers_) {
+                  trigger_501(req, res);
+                  return;
+                }
+                trigger_handlers_->handle_events(req, res);
+              })
+          .tag("Triggers")
+          .summary(std::string("SSE events for trigger on ") + et.singular);
+
+      reg.post(entity_path + "/triggers",
+               [this, trigger_501](auto & req, auto & res) {
+                 if (!trigger_handlers_) {
+                   trigger_501(req, res);
+                   return;
+                 }
+                 trigger_handlers_->handle_create(req, res);
+               })
+          .tag("Triggers")
+          .summary(std::string("Create trigger for ") + et.singular);
+
+      reg.get(entity_path + "/triggers",
+              [this, trigger_501](auto & req, auto & res) {
+                if (!trigger_handlers_) {
+                  trigger_501(req, res);
+                  return;
+                }
+                trigger_handlers_->handle_list(req, res);
+              })
+          .tag("Triggers")
+          .summary(std::string("List triggers for ") + et.singular);
+
+      reg.get(entity_path + "/triggers/{trigger_id}",
+              [this, trigger_501](auto & req, auto & res) {
+                if (!trigger_handlers_) {
+                  trigger_501(req, res);
+                  return;
+                }
+                trigger_handlers_->handle_get(req, res);
+              })
+          .tag("Triggers")
+          .summary(std::string("Get trigger for ") + et.singular);
+
+      reg.put(entity_path + "/triggers/{trigger_id}",
+              [this, trigger_501](auto & req, auto & res) {
+                if (!trigger_handlers_) {
+                  trigger_501(req, res);
+                  return;
+                }
+                trigger_handlers_->handle_update(req, res);
+              })
+          .tag("Triggers")
+          .summary(std::string("Update trigger for ") + et.singular);
+
+      reg.del(entity_path + "/triggers/{trigger_id}",
+              [this, trigger_501](auto & req, auto & res) {
+                if (!trigger_handlers_) {
+                  trigger_501(req, res);
+                  return;
+                }
+                trigger_handlers_->handle_delete(req, res);
+              })
+          .tag("Triggers")
+          .summary(std::string("Delete trigger for ") + et.singular);
     }
 
     // --- Cyclic Subscriptions (apps, components, and functions) ---

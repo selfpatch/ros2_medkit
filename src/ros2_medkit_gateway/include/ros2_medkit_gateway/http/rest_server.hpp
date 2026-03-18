@@ -41,6 +41,7 @@ class RouteRegistry;
 namespace ros2_medkit_gateway {
 
 class GatewayNode;
+class TriggerManager;
 
 /**
  * @brief REST API server for ROS 2 Medkit Gateway.
@@ -65,6 +66,10 @@ class RESTServer {
 
   void start();
   void stop();
+
+  /// Set trigger handlers (called by GatewayNode after TriggerManager is created).
+  /// Creates TriggerHandlers using the existing handler context and SSE client tracker.
+  void set_trigger_handlers(TriggerManager & trigger_mgr);
 
   /// Check if TLS/HTTPS is enabled
   bool is_tls_enabled() const {
@@ -111,6 +116,7 @@ class RESTServer {
   std::unique_ptr<handlers::LockHandlers> lock_handlers_;
   std::unique_ptr<handlers::ScriptHandlers> script_handlers_;
   std::unique_ptr<handlers::DocsHandlers> docs_handlers_;
+  std::unique_ptr<handlers::TriggerHandlers> trigger_handlers_;
 
   // Route registry: single source of truth for routes + OpenAPI metadata
   std::unique_ptr<openapi::RouteRegistry> route_registry_;

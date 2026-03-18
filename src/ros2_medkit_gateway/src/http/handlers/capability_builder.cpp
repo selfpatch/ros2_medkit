@@ -51,6 +51,8 @@ std::string CapabilityBuilder::capability_to_name(Capability cap) {
       return "locks";
     case Capability::SCRIPTS:
       return "scripts";
+    case Capability::TRIGGERS:
+      return "triggers";
     default:
       return "unknown";
   }
