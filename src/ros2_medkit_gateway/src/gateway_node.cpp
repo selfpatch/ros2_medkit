@@ -22,7 +22,6 @@
 #include <unordered_set>
 
 #include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
-#include "ros2_medkit_gateway/plugins/graph_provider_plugin.hpp"
 
 using namespace std::chrono_literals;
 
@@ -495,7 +494,6 @@ GatewayNode::GatewayNode() : Node("ros2_medkit_gateway") {
   // Initialize plugin manager
   plugin_mgr_ = std::make_unique<PluginManager>();
   plugin_mgr_->set_registries(*sampler_registry_, *transport_registry_);
-  plugin_mgr_->add_plugin(std::make_unique<GraphProviderPlugin>());
   auto plugin_names = get_parameter("plugins").as_string_array();
   plugin_names.erase(std::remove_if(plugin_names.begin(), plugin_names.end(),
                                     [](const auto & item) {
