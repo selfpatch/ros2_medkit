@@ -25,6 +25,7 @@
 
 #include "ros2_medkit_gateway/auth/auth_config.hpp"
 #include "ros2_medkit_gateway/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/configuration_manager.hpp"
 #include "ros2_medkit_gateway/data_access_manager.hpp"
@@ -39,10 +40,13 @@
 #include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/resource_change_notifier.hpp"
 #include "ros2_medkit_gateway/resource_sampler.hpp"
 #include "ros2_medkit_gateway/script_manager.hpp"
 #include "ros2_medkit_gateway/subscription_manager.hpp"
 #include "ros2_medkit_gateway/subscription_transport.hpp"
+#include "ros2_medkit_gateway/trigger_manager.hpp"
+#include "ros2_medkit_gateway/trigger_store.hpp"
 #include "ros2_medkit_gateway/updates/update_manager.hpp"
 
 namespace ros2_medkit_gateway {
@@ -150,6 +154,24 @@ class GatewayNode : public rclcpp::Node {
    */
   std::shared_ptr<SSEClientTracker> get_sse_client_tracker() const;
 
+  /**
+   * @brief Get the ResourceChangeNotifier instance
+   * @return Raw pointer to ResourceChangeNotifier (valid for lifetime of GatewayNode)
+   */
+  ResourceChangeNotifier * get_resource_change_notifier() const;
+
+  /**
+   * @brief Get the TriggerManager instance
+   * @return Raw pointer to TriggerManager (valid for lifetime of GatewayNode), or nullptr if disabled
+   */
+  TriggerManager * get_trigger_manager() const;
+
+  /**
+   * @brief Get the ConditionRegistry instance
+   * @return Raw pointer to ConditionRegistry (valid for lifetime of GatewayNode)
+   */
+  ConditionRegistry * get_condition_registry() const;
+
  private:
   void refresh_cache();
   void start_rest_server();
@@ -185,6 +207,13 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<ScriptManager> script_mgr_;
   std::unique_ptr<UpdateManager> update_mgr_;
   std::unique_ptr<LockManager> lock_manager_;
+
+  // Trigger infrastructure (destroyed after rest_server_)
+  std::unique_ptr<ResourceChangeNotifier> resource_change_notifier_;
+  std::unique_ptr<ConditionRegistry> condition_registry_;
+  std::unique_ptr<TriggerStore> trigger_store_;
+  std::unique_ptr<TriggerManager> trigger_mgr_;
+
   std::unique_ptr<RESTServer> rest_server_;
 
   // Cache with thread safety

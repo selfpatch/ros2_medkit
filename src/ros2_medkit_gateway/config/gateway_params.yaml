@@ -371,6 +371,34 @@ ros2_medkit_gateway:
       # Oldest completed entries are evicted when this limit is exceeded.
       max_execution_history: 100
 
+    # Trigger Configuration
+    # SOVD-compliant condition-based triggers for resource change notifications.
+    # Triggers monitor resource collections (data, faults, etc.) and fire events
+    # when conditions are met (OnChange, OnChangeTo, EnterRange, LeaveRange).
+    triggers:
+      # Enable/disable the trigger subsystem
+      # When false, trigger endpoints return 501
+      # Default: true
+      enabled: true
+
+      # Maximum number of concurrent triggers across all entities
+      # Returns HTTP 503 when this limit is reached
+      # Default: 1000
+      max_triggers: 1000
+
+      # Behavior on gateway restart for persistent triggers
+      # Options:
+      #   - "reset": Clear all triggers on restart (default)
+      #   - "restore": Reload persistent triggers from storage
+      on_restart_behavior: "reset"
+
+      # Trigger persistence storage
+      storage:
+        # Path to SQLite database file for persistent triggers
+        # Empty string = in-memory only (default for development)
+        # Example: "/var/lib/ros2_medkit/triggers.db"
+        path: ""
+
     # OpenAPI Documentation Endpoints
     # Controls the /docs endpoints that serve OpenAPI capability descriptions
     docs:

@@ -22,6 +22,7 @@
 #include <unordered_set>
 
 #include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
+#include "ros2_medkit_gateway/sqlite_trigger_store.hpp"
 
 using namespace std::chrono_literals;
 
@@ -177,6 +178,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("scripts.default_timeout_sec", 300);
   declare_parameter("scripts.max_execution_history", 100);
   declare_parameter("scripts.allow_uploads", true);
+
+  // Trigger subsystem parameters
+  declare_parameter("triggers.enabled", true);
+  declare_parameter("triggers.max_triggers", 1000);
+  declare_parameter("triggers.on_restart_behavior", "reset");
+  declare_parameter("triggers.storage.path", "");
 
   // Plugin framework parameters
   declare_parameter("plugins", std::vector<std::string>{});
@@ -702,6 +709,60 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     }
   }
 
+  // --- Trigger infrastructure ---
+  resource_change_notifier_ = std::make_unique<ResourceChangeNotifier>();
+
+  condition_registry_ = std::make_unique<ConditionRegistry>();
+  condition_registry_->register_condition("OnChange", std::make_shared<OnChangeEvaluator>());
+  condition_registry_->register_condition("OnChangeTo", std::make_shared<OnChangeToEvaluator>());
+  condition_registry_->register_condition("EnterRange", std::make_shared<EnterRangeEvaluator>());
+  condition_registry_->register_condition("LeaveRange", std::make_shared<LeaveRangeEvaluator>());
+
+  auto triggers_enabled = get_parameter("triggers.enabled").as_bool();
+  if (triggers_enabled) {
+    auto storage_path = get_parameter("triggers.storage.path").as_string();
+    if (storage_path.empty()) {
+      trigger_store_ = std::make_unique<SqliteTriggerStore>(":memory:");
+    } else {
+      trigger_store_ = std::make_unique<SqliteTriggerStore>(storage_path);
+    }
+
+    TriggerConfig trigger_config;
+    trigger_config.max_triggers = static_cast<int>(get_parameter("triggers.max_triggers").as_int());
+    trigger_config.on_restart_behavior = get_parameter("triggers.on_restart_behavior").as_string();
+
+    trigger_mgr_ = std::make_unique<TriggerManager>(*resource_change_notifier_, *condition_registry_, *trigger_store_,
+                                                    trigger_config);
+
+    // Set entity hierarchy resolver using thread-safe cache
+    trigger_mgr_->set_entity_children_fn(
+        [this](const std::string & entity_id, const std::string & entity_type) -> std::vector<std::string> {
+          const auto & cache = get_thread_safe_cache();
+          if (entity_type == "components") {
+            return cache.get_apps_for_component(entity_id);
+          } else if (entity_type == "areas") {
+            auto comps = cache.get_components_for_area(entity_id);
+            std::vector<std::string> all_apps;
+            for (const auto & comp_id : comps) {
+              auto apps = cache.get_apps_for_component(comp_id);
+              all_apps.insert(all_apps.end(), apps.begin(), apps.end());
+            }
+            return all_apps;
+          } else if (entity_type == "functions") {
+            return cache.get_apps_for_function(entity_id);
+          }
+          return {};
+        });
+
+    // Load persistent triggers
+    trigger_mgr_->load_persistent_triggers();
+
+    RCLCPP_INFO(get_logger(), "Trigger subsystem: enabled (max=%d, storage=%s)", trigger_config.max_triggers,
+                storage_path.empty() ? ":memory:" : storage_path.c_str());
+  } else {
+    RCLCPP_INFO(get_logger(), "Trigger subsystem: disabled");
+  }
+
   // Register built-in resource samplers
   sampler_registry_->register_sampler(
       "data",
@@ -990,6 +1051,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Start REST server with configured host, port, CORS, auth, and TLS
   rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_, auth_config_,
                                               rate_limit_config_, tls_config_);
+
+  // Wire trigger handlers into REST server
+  if (trigger_mgr_) {
+    rest_server_->set_trigger_handlers(*trigger_mgr_);
+  }
+
   start_rest_server();
 
   std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";
@@ -1006,11 +1073,19 @@ GatewayNode::~GatewayNode() {
   if (transport_registry_) {
     transport_registry_->shutdown_all(*subscription_mgr_);
   }
-  // 3. Shutdown plugins
+  // 3. Shutdown trigger subsystem (wakes SSE trigger streams)
+  if (trigger_mgr_) {
+    trigger_mgr_->shutdown();
+  }
+  // 4. Shutdown resource change notifier (stops worker thread)
+  if (resource_change_notifier_) {
+    resource_change_notifier_->shutdown();
+  }
+  // 5. Shutdown plugins
   if (plugin_mgr_) {
     plugin_mgr_->shutdown_all();
   }
-  // 4. Normal member destruction (managers safe - all transports stopped)
+  // 6. Normal member destruction (managers safe - all transports stopped)
 }
 
 const ThreadSafeEntityCache & GatewayNode::get_thread_safe_cache() const {
@@ -1075,6 +1150,18 @@ TransportRegistry * GatewayNode::get_transport_registry() const {
 
 std::shared_ptr<SSEClientTracker> GatewayNode::get_sse_client_tracker() const {
   return sse_client_tracker_;
+}
+
+ResourceChangeNotifier * GatewayNode::get_resource_change_notifier() const {
+  return resource_change_notifier_.get();
+}
+
+TriggerManager * GatewayNode::get_trigger_manager() const {
+  return trigger_mgr_.get();
+}
+
+ConditionRegistry * GatewayNode::get_condition_registry() const {
+  return condition_registry_.get();
 }
 
 void GatewayNode::refresh_cache() {
