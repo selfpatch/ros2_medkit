@@ -46,6 +46,7 @@ find_package(ament_index_cpp REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 find_package(ros2_medkit_serialization REQUIRED)
+find_package(SQLite3 REQUIRED)
 
 # GenericClient compat shim dependencies (needed explicitly for Humble,
 # transitively available on Iron+/Jazzy but harmless to declare unconditionally)
@@ -167,6 +168,8 @@ add_library(gateway_lib STATIC
   src/openapi/path_resolver.cpp
   src/openapi/capability_generator.cpp
   src/openapi/route_registry.cpp
+  # Trigger persistence
+  src/sqlite_trigger_store.cpp
 )
 
 medkit_target_dependencies(gateway_lib
@@ -191,6 +194,7 @@ target_link_libraries(gateway_lib
   OpenSSL::Crypto
   tl::expected
   jwt-cpp::jwt-cpp
+  SQLite::SQLite3
   ${CMAKE_DL_LIBS}
 )
 
@@ -564,6 +568,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_resource_change_notifier test/test_resource_change_notifier.cpp)
   target_link_libraries(test_resource_change_notifier gateway_lib)
 
+  # Trigger store tests (SQLite persistence for triggers)
+  ament_add_gtest(test_trigger_store test/test_trigger_store.cpp)
+  target_link_libraries(test_trigger_store gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -615,6 +623,7 @@ if(BUILD_TESTING)
       test_docs_handlers
       test_condition_evaluator
       test_resource_change_notifier
+      test_trigger_store
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
