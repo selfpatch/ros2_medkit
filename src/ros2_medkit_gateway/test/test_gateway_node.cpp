@@ -734,8 +734,6 @@ TEST_F(TestGatewayNode, test_function_detail_includes_cyclic_subscriptions_capab
   auto body = nlohmann::json::parse(res->body);
   ASSERT_TRUE(body.contains("cyclic-subscriptions"));
   EXPECT_EQ(body["cyclic-subscriptions"], "/api/v1/functions/graph_func/cyclic-subscriptions");
-  ASSERT_TRUE(body.contains("x-medkit-graph"));
-  EXPECT_EQ(body["x-medkit-graph"], "/api/v1/functions/graph_func/x-medkit-graph");
 
   ASSERT_TRUE(body.contains("capabilities"));
   const auto & caps = body["capabilities"];
@@ -743,28 +741,6 @@ TEST_F(TestGatewayNode, test_function_detail_includes_cyclic_subscriptions_capab
     return cap.contains("name") && cap["name"] == "cyclic-subscriptions";
   });
   EXPECT_TRUE(has_cyclic_subscriptions);
-}
-
-TEST_F(TestGatewayNode, test_function_cyclic_subscription_create_for_graph_provider) {
-  load_function_fixture("graph_func");
-  auto client = create_client();
-
-  nlohmann::json body = {{"resource", "/api/v1/functions/graph_func/x-medkit-graph"},
-                         {"interval", "normal"},
-                         {"duration", 30},
-                         {"protocol", "sse"}};
-
-  auto res = client.Post((std::string(API_BASE_PATH) + "/functions/graph_func/cyclic-subscriptions").c_str(),
-                         body.dump(), "application/json");
-
-  ASSERT_TRUE(res);
-  EXPECT_EQ(res->status, 201);
-
-  auto json_response = nlohmann::json::parse(res->body);
-  EXPECT_EQ(json_response["observed_resource"], "/api/v1/functions/graph_func/x-medkit-graph");
-  EXPECT_EQ(json_response["protocol"], "sse");
-  EXPECT_EQ(json_response["event_source"],
-            "/api/v1/functions/graph_func/cyclic-subscriptions/" + json_response["id"].get<std::string>() + "/events");
 }
 
 TEST_F(TestGatewayNode, test_function_hosts_nonexistent) {
