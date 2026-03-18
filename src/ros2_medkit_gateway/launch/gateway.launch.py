@@ -35,7 +35,8 @@ def generate_launch_description():
             graph_provider_prefix, 'lib', 'ros2_medkit_graph_provider',
             'libros2_medkit_graph_provider_plugin.so')
     except PackageNotFoundError:
-        pass  # Plugin not installed - gateway runs without graph provider
+        print('[gateway.launch.py] ros2_medkit_graph_provider not installed '
+              '- graph endpoints will not be available')
 
     declare_host_arg = DeclareLaunchArgument(
         'server_host', default_value='127.0.0.1',
@@ -56,6 +57,7 @@ def generate_launch_description():
         'refresh_interval_ms': LaunchConfiguration('refresh_interval_ms'),
     }
     if graph_provider_path:
+        param_overrides['plugins'] = ['graph_provider']
         param_overrides['plugins.graph_provider.path'] = graph_provider_path
 
     gateway_node = Node(

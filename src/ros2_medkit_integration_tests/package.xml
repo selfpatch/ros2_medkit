@@ -34,6 +34,7 @@
   <test_depend>ros2_medkit_linux_introspection</test_depend>
   <test_depend>ros2_medkit_topic_beacon</test_depend>
   <test_depend>ros2_medkit_param_beacon</test_depend>
+  <test_depend>ros2_medkit_graph_provider</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

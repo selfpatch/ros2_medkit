@@ -533,7 +533,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
         continue;
       }
       auto path_param = "plugins." + pname + ".path";
-      declare_parameter(path_param, std::string(""));
+      rcl_interfaces::msg::ParameterDescriptor path_desc;
+      path_desc.read_only = true;
+      path_desc.description = "Absolute path to plugin .so file";
+      declare_parameter(path_param, std::string(""), path_desc);
       auto path = get_parameter(path_param).as_string();
       if (path.empty()) {
         RCLCPP_ERROR(get_logger(), "Plugin '%s' has no path configured", pname.c_str());
@@ -551,7 +554,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   plugin_mgr_->configure_plugins();
   plugin_ctx_ = make_gateway_plugin_context(this, fault_mgr_.get(), sampler_registry_.get());
   plugin_mgr_->set_context(*plugin_ctx_);
-  RCLCPP_INFO(get_logger(), "Loaded %zu external plugin(s) and 1 built-in plugin", loaded);
+  RCLCPP_INFO(get_logger(), "Loaded %zu plugin(s)", loaded);
 
   // Register IntrospectionProvider plugins as pipeline layers (hybrid mode only)
   if (discovery_mgr_->get_mode() == DiscoveryMode::HYBRID) {
