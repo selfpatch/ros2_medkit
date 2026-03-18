@@ -174,6 +174,24 @@ TEST_F(TriggerManagerTest, Update_NonExisting) {
   EXPECT_FALSE(result.has_value());
 }
 
+TEST_F(TriggerManagerTest, Update_NegativeLifetimeRejected) {
+  auto created = manager_->create(make_request());
+  ASSERT_TRUE(created.has_value());
+
+  auto result = manager_->update(created->id, -1);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("positive"), std::string::npos);
+}
+
+TEST_F(TriggerManagerTest, Update_ZeroLifetimeRejected) {
+  auto created = manager_->create(make_request());
+  ASSERT_TRUE(created.has_value());
+
+  auto result = manager_->update(created->id, 0);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("positive"), std::string::npos);
+}
+
 // @verifies REQ_TRIGGER_001
 TEST_F(TriggerManagerTest, Remove_ExistingTrigger) {
   auto created = manager_->create(make_request());
@@ -201,8 +219,8 @@ TEST_F(TriggerManagerTest, SingleShot_NotifyMatchingChange) {
   // Notify a matching resource change
   notifier_.notify("data", "sensor", "temperature", json(42.0));
 
-  // Give the async notifier time to process
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  // Wait for event via synchronization primitive instead of sleeping
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event.has_value());
@@ -224,14 +242,14 @@ TEST_F(TriggerManagerTest, Multishot_NotifyTwice) {
 
   // First change
   notifier_.notify("data", "sensor", "temperature", json(42.0));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event1 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event1.has_value());
 
   // Second change
   notifier_.notify("data", "sensor", "temperature", json(43.0));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event2 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event2.has_value());
@@ -243,13 +261,16 @@ TEST_F(TriggerManagerTest, Multishot_NotifyTwice) {
 // @verifies REQ_TRIGGER_002
 TEST_F(TriggerManagerTest, LifetimeExpiry) {
   auto req = make_request();
+  // Use a very short lifetime so the test doesn't block long
   req.lifetime_sec = 1;
   auto created = manager_->create(req);
   ASSERT_TRUE(created.has_value());
 
   EXPECT_TRUE(manager_->is_active(created->id));
 
-  std::this_thread::sleep_for(std::chrono::seconds(2));
+  // Sleep just past expiry - short sleep is acceptable here since we are
+  // verifying that the trigger expires after its lifetime elapses
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
 
   EXPECT_FALSE(manager_->is_active(created->id));
 }
@@ -278,7 +299,7 @@ TEST_F(TriggerManagerTest, Hierarchy_ComponentToApp) {
 
   // Notify from a child app "sensor" - should fire the trigger
   notifier_.notify("data", "sensor", "temperature", json(42.0));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event.has_value());
@@ -304,7 +325,7 @@ TEST_F(TriggerManagerTest, Hierarchy_AreaToApp) {
 
   // Notify from nested app "lidar"
   notifier_.notify("data", "lidar", "temperature", json(55.0));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event.has_value());
@@ -327,6 +348,8 @@ TEST_F(TriggerManagerTest, Hierarchy_NoMatchForUnrelatedEntity) {
 
   // Notify from unrelated entity "other_entity"
   notifier_.notify("data", "other_entity", "temperature", json(42.0));
+
+  // Short sleep is acceptable here - we are verifying that NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
   auto event = manager_->consume_pending_event(created->id);
@@ -364,7 +387,7 @@ TEST_F(TriggerManagerTest, EventEnvelopeFormat) {
   ASSERT_TRUE(created.has_value());
 
   notifier_.notify("data", "sensor", "temperature", json(42.0));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event.has_value());
@@ -387,7 +410,7 @@ TEST_F(TriggerManagerTest, ConsumePendingEvent_ClearsEvent) {
   ASSERT_TRUE(created.has_value());
 
   notifier_.notify("data", "sensor", "temperature", json(42.0));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event1 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event1.has_value());
@@ -475,7 +498,7 @@ TEST_F(TriggerManagerTest, JsonPointer_ExtractsSubElement) {
   // The change value has a "data" field
   json value = {{"data", 42.0}, {"metadata", "ignored"}};
   notifier_.notify("data", "sensor", "temperature", value);
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event.has_value());
@@ -490,7 +513,7 @@ TEST_F(TriggerManagerTest, JsonPointer_EmptyPathUsesFullValue) {
   ASSERT_TRUE(created.has_value());
 
   notifier_.notify("data", "sensor", "temperature", json(42.0));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event.has_value());
@@ -509,25 +532,27 @@ TEST_F(TriggerManagerTest, OnChangeTo_FiresOnlyWhenTargetReached) {
 
   // First notification: value is 100, no previous -> fires (target match, first eval)
   notifier_.notify("data", "sensor", "temperature", json(100));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
   auto event1 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event1.has_value());
 
   // Second notification: value stays 100 -> does NOT fire (no change)
   notifier_.notify("data", "sensor", "temperature", json(100));
+  // Short sleep is acceptable - verifying NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   auto event2 = manager_->consume_pending_event(created->id);
   EXPECT_FALSE(event2.has_value());
 
   // Third notification: value goes to 50 -> does NOT fire (not target)
   notifier_.notify("data", "sensor", "temperature", json(50));
+  // Short sleep is acceptable - verifying NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   auto event3 = manager_->consume_pending_event(created->id);
   EXPECT_FALSE(event3.has_value());
 
   // Fourth notification: back to 100 -> fires (transition to target)
   notifier_.notify("data", "sensor", "temperature", json(100));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
   auto event4 = manager_->consume_pending_event(created->id);
   EXPECT_TRUE(event4.has_value());
 }
@@ -541,13 +566,14 @@ TEST_F(TriggerManagerTest, EnterRange_FiresOnTransition) {
 
   // First notification: value = 10, no previous -> EnterRange returns false (needs transition)
   notifier_.notify("data", "sensor", "temperature", json(10));
+  // Short sleep is acceptable - verifying NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   auto event1 = manager_->consume_pending_event(created->id);
   EXPECT_FALSE(event1.has_value());
 
   // Second notification: 10 -> 25 (enters range) -> fires
   notifier_.notify("data", "sensor", "temperature", json(25));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
   auto event2 = manager_->consume_pending_event(created->id);
   EXPECT_TRUE(event2.has_value());
 }
@@ -564,6 +590,8 @@ TEST_F(TriggerManagerTest, NoFireForDifferentCollection) {
 
   // Notify with different collection "faults"
   notifier_.notify("faults", "sensor", "temperature", json("fault_data"));
+
+  // Short sleep is acceptable - verifying NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
   auto event = manager_->consume_pending_event(created->id);
@@ -578,6 +606,8 @@ TEST_F(TriggerManagerTest, NoFireForDifferentResourcePath) {
 
   // Notify with different resource path "humidity"
   notifier_.notify("data", "sensor", "humidity", json(65.0));
+
+  // Short sleep is acceptable - verifying NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
   auto event = manager_->consume_pending_event(created->id);

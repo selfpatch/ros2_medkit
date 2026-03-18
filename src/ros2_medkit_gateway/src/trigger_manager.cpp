@@ -161,16 +161,9 @@ tl::expected<TriggerInfo, std::string> TriggerManager::create(const TriggerCreat
     return tl::make_unexpected(validation.error());
   }
 
-  std::lock_guard<std::mutex> lock(triggers_mutex_);
-
-  // Check capacity
-  if (triggers_.size() >= static_cast<size_t>(config_.max_triggers)) {
-    return tl::make_unexpected("Maximum trigger capacity (" + std::to_string(config_.max_triggers) + ") reached");
-  }
-
   auto now = std::chrono::system_clock::now();
 
-  // Build TriggerInfo
+  // Build TriggerInfo outside the lock - generate_id() uses atomic next_id_
   auto state = std::make_shared<TriggerState>();
   state->info.id = generate_id();
   state->info.entity_id = req.entity_id;
@@ -193,7 +186,7 @@ tl::expected<TriggerInfo, std::string> TriggerManager::create(const TriggerCreat
     state->info.expires_at = now + std::chrono::seconds(req.lifetime_sec.value());
   }
 
-  // Persist if requested
+  // Persist before inserting into memory - if persistence fails, nothing is in-memory
   if (req.persistent) {
     auto save_result = store_.save(state->info);
     if (!save_result.has_value()) {
@@ -204,8 +197,22 @@ tl::expected<TriggerInfo, std::string> TriggerManager::create(const TriggerCreat
   // TODO(Task 10): log_settings integration with LogManager
 
   auto info_copy = state->info;
-  add_to_dispatch_index(state->info.id, state->info.collection, state->info.entity_id);
-  triggers_[state->info.id] = std::move(state);
+
+  {
+    std::lock_guard<std::mutex> lock(triggers_mutex_);
+
+    // Check capacity under the lock
+    if (triggers_.size() >= static_cast<size_t>(config_.max_triggers)) {
+      // Clean up persisted record if we just saved one
+      if (req.persistent) {
+        (void)store_.remove(state->info.id);
+      }
+      return tl::make_unexpected("Maximum trigger capacity (" + std::to_string(config_.max_triggers) + ") reached");
+    }
+
+    add_to_dispatch_index(state->info.id, state->info.collection, state->info.entity_id);
+    triggers_[state->info.id] = std::move(state);
+  }
 
   return info_copy;
 }
@@ -237,6 +244,10 @@ std::vector<TriggerInfo> TriggerManager::list(const std::string & entity_id) {
 }
 
 tl::expected<TriggerInfo, std::string> TriggerManager::update(const std::string & trigger_id, int new_lifetime) {
+  if (new_lifetime <= 0) {
+    return tl::make_unexpected("Lifetime must be positive, got: " + std::to_string(new_lifetime));
+  }
+
   std::shared_ptr<TriggerState> state;
   {
     std::lock_guard<std::mutex> lock(triggers_mutex_);
@@ -267,6 +278,8 @@ bool TriggerManager::remove(const std::string & trigger_id) {
   std::shared_ptr<TriggerState> state;
   std::string collection;
   std::string entity_id;
+  bool persistent = false;
+  OnRemovedCallback on_removed_copy;
   {
     std::lock_guard<std::mutex> lock(triggers_mutex_);
     auto it = triggers_.find(trigger_id);
@@ -278,25 +291,24 @@ bool TriggerManager::remove(const std::string & trigger_id) {
       std::lock_guard<std::mutex> sub_lock(state->mtx);
       collection = state->info.collection;
       entity_id = state->info.entity_id;
+      persistent = state->info.persistent;
     }
     remove_from_dispatch_index(trigger_id, collection, entity_id);
     triggers_.erase(it);
+    on_removed_copy = on_removed_;  // Copy under lock to avoid data race
   }
 
   // Mark inactive and wake any waiting SSE stream
   state->active.store(false);
   state->cv.notify_all();
 
-  // Remove from persistent store if applicable
-  {
-    std::lock_guard<std::mutex> sub_lock(state->mtx);
-    if (state->info.persistent) {
-      (void)store_.remove(trigger_id);
-    }
+  // Remove from persistent store if applicable (outside triggers_mutex_)
+  if (persistent) {
+    (void)store_.remove(trigger_id);
   }
 
-  if (on_removed_) {
-    on_removed_(trigger_id);
+  if (on_removed_copy) {
+    on_removed_copy(trigger_id);
   }
 
   return true;
@@ -324,6 +336,38 @@ bool TriggerManager::wait_for_event(const std::string & trigger_id, std::chrono:
   return woken;
 }
 
+void TriggerManager::cleanup_expired_trigger(const std::string & trigger_id,
+                                             const std::shared_ptr<TriggerState> & state) {
+  // Caller must NOT hold triggers_mutex_ or state->mtx.
+  // Mark terminated under state lock, then clean up under triggers lock.
+  bool persistent = false;
+  std::string collection;
+  std::string entity_id;
+  {
+    std::lock_guard<std::mutex> sub_lock(state->mtx);
+    state->info.status = TriggerStatus::TERMINATED;
+    state->active.store(false);
+    persistent = state->info.persistent;
+    collection = state->info.collection;
+    entity_id = state->info.entity_id;
+  }
+  state->cv.notify_all();
+
+  // Persist status change (outside all locks)
+  if (persistent) {
+    nlohmann::json fields;
+    fields["status"] = "TERMINATED";
+    (void)store_.update(trigger_id, fields);
+  }
+
+  // Remove from dispatch index and triggers map
+  {
+    std::lock_guard<std::mutex> lock(triggers_mutex_);
+    remove_from_dispatch_index(trigger_id, collection, entity_id);
+    triggers_.erase(trigger_id);
+  }
+}
+
 bool TriggerManager::is_active(const std::string & trigger_id) {
   std::shared_ptr<TriggerState> state;
   {
@@ -335,30 +379,25 @@ bool TriggerManager::is_active(const std::string & trigger_id) {
     state = it->second;
   }
 
-  std::lock_guard<std::mutex> sub_lock(state->mtx);
+  {
+    std::lock_guard<std::mutex> sub_lock(state->mtx);
 
-  if (!state->active.load()) {
-    return false;
-  }
-
-  if (state->info.status == TriggerStatus::TERMINATED) {
-    return false;
-  }
-
-  // Check expiry
-  if (is_expired(*state)) {
-    state->info.status = TriggerStatus::TERMINATED;
-    state->active.store(false);
-    state->cv.notify_all();
-    if (state->info.persistent) {
-      nlohmann::json fields;
-      fields["status"] = "TERMINATED";
-      (void)store_.update(state->info.id, fields);
+    if (!state->active.load()) {
+      return false;
     }
-    return false;
+
+    if (state->info.status == TriggerStatus::TERMINATED) {
+      return false;
+    }
+
+    if (!is_expired(*state)) {
+      return true;
+    }
   }
 
-  return true;
+  // Expired: clean up fully (releases state->mtx first, then re-acquires locks as needed)
+  cleanup_expired_trigger(trigger_id, state);
+  return false;
 }
 
 std::optional<nlohmann::json> TriggerManager::consume_pending_event(const std::string & trigger_id) {
@@ -387,6 +426,7 @@ std::optional<nlohmann::json> TriggerManager::consume_pending_event(const std::s
 // ---------------------------------------------------------------------------
 
 void TriggerManager::set_on_removed(OnRemovedCallback callback) {
+  std::lock_guard<std::mutex> lock(triggers_mutex_);
   on_removed_ = std::move(callback);
 }
 
@@ -494,17 +534,10 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
       continue;
     }
 
-    // Check expiry
+    // Check expiry - clean up fully (remove from dispatch index + triggers map)
     if (is_expired(*state)) {
-      state->info.status = TriggerStatus::TERMINATED;
-      state->active.store(false);
       sub_lock.unlock();
-      state->cv.notify_all();
-      if (state->info.persistent) {
-        nlohmann::json fields;
-        fields["status"] = "TERMINATED";
-        (void)store_.update(trigger_id, fields);
-      }
+      cleanup_expired_trigger(trigger_id, state);
       continue;
     }
 
