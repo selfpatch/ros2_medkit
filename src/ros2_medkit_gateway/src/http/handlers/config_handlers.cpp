@@ -528,6 +528,11 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
       return;  // Error response already sent
     }
 
+    // Check lock access for configurations
+    if (ctx_.validate_lock_access(req, res, *entity_opt, "configurations")) {
+      return;
+    }
+
     // Get aggregated configurations info
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto agg_configs = cache.get_entity_configurations(entity_id);
@@ -621,6 +626,11 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
       return;  // Error response already sent
     }
 
+    // Check lock access for configurations
+    if (ctx_.validate_lock_access(req, res, *entity_opt, "configurations")) {
+      return;
+    }
+
     // Get aggregated configurations info
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto agg_configs = cache.get_entity_configurations(entity_id);
@@ -696,6 +706,11 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
       return;  // Error response already sent
+    }
+
+    // Check lock access for configurations
+    if (ctx_.validate_lock_access(req, res, *entity_opt, "configurations")) {
+      return;
     }
 
     // Get aggregated configurations info
