@@ -284,6 +284,17 @@ tl::expected<void, ScriptBackendErrorInfo> DefaultScriptProvider::delete_script(
         ScriptBackendErrorInfo{ScriptBackendError::ManagedScript, "Cannot delete managed script: " + script_id});
   }
 
+  // Check if any execution is still running for this script
+  {
+    std::lock_guard<std::mutex> lock(exec_mutex_);
+    for (const auto & [exec_id, exec_state] : executions_) {
+      if (exec_state->entity_id == entity_id && exec_state->script_id == script_id && exec_state->status == "running") {
+        return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::AlreadyRunning,
+                                                          "Cannot delete script with running execution: " + exec_id});
+      }
+    }
+  }
+
   std::lock_guard<std::mutex> lock(fs_mutex_);
 
   auto dir = script_dir_path(entity_id, script_id);
@@ -665,7 +676,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
 }
 
 tl::expected<ExecutionInfo, ScriptBackendErrorInfo>
-DefaultScriptProvider::get_execution(const std::string & /*entity_id*/, const std::string & /*script_id*/,
+DefaultScriptProvider::get_execution(const std::string & entity_id, const std::string & script_id,
                                      const std::string & execution_id) {
   std::lock_guard<std::mutex> lock(exec_mutex_);
 
@@ -675,11 +686,17 @@ DefaultScriptProvider::get_execution(const std::string & /*entity_id*/, const st
         ScriptBackendErrorInfo{ScriptBackendError::NotFound, "Execution not found: " + execution_id});
   }
 
-  return state_to_info(*it->second);
+  auto & state = *it->second;
+  if (state.entity_id != entity_id || state.script_id != script_id) {
+    return tl::make_unexpected(
+        ScriptBackendErrorInfo{ScriptBackendError::NotFound, "Execution not found: " + execution_id});
+  }
+
+  return state_to_info(state);
 }
 
 tl::expected<ExecutionInfo, ScriptBackendErrorInfo>
-DefaultScriptProvider::control_execution(const std::string & /*entity_id*/, const std::string & /*script_id*/,
+DefaultScriptProvider::control_execution(const std::string & entity_id, const std::string & script_id,
                                          const std::string & execution_id, const std::string & action) {
   std::lock_guard<std::mutex> lock(exec_mutex_);
 
@@ -690,6 +707,11 @@ DefaultScriptProvider::control_execution(const std::string & /*entity_id*/, cons
   }
 
   auto & state = *it->second;
+
+  if (state.entity_id != entity_id || state.script_id != script_id) {
+    return tl::make_unexpected(
+        ScriptBackendErrorInfo{ScriptBackendError::NotFound, "Execution not found: " + execution_id});
+  }
 
   if (state.status != "running") {
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::NotRunning,
@@ -718,8 +740,8 @@ DefaultScriptProvider::control_execution(const std::string & /*entity_id*/, cons
   return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::InvalidInput, "Unknown action: " + action});
 }
 
-tl::expected<void, ScriptBackendErrorInfo> DefaultScriptProvider::delete_execution(const std::string & /*entity_id*/,
-                                                                                   const std::string & /*script_id*/,
+tl::expected<void, ScriptBackendErrorInfo> DefaultScriptProvider::delete_execution(const std::string & entity_id,
+                                                                                   const std::string & script_id,
                                                                                    const std::string & execution_id) {
   std::unique_ptr<ExecutionState> owned;
   {
@@ -732,6 +754,12 @@ tl::expected<void, ScriptBackendErrorInfo> DefaultScriptProvider::delete_executi
     }
 
     auto & state = *it->second;
+
+    if (state.entity_id != entity_id || state.script_id != script_id) {
+      return tl::make_unexpected(
+          ScriptBackendErrorInfo{ScriptBackendError::NotFound, "Execution not found: " + execution_id});
+    }
+
     if (state.status == "running") {
       return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::AlreadyRunning,
                                                         "Cannot delete running execution. Stop it first."});
