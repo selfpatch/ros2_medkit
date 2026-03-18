@@ -133,6 +133,55 @@ class PluginContext {
 
   /// Get plugin-registered capabilities for a specific entity
   virtual std::vector<std::string> get_entity_capabilities(const std::string & entity_id) const = 0;
+
+  // ---- Locking (default implementations for backward compatibility) ----
+
+  /**
+   * @brief Check if a lock blocks access to a collection on an entity.
+   *
+   * @param entity_id Entity to check
+   * @param client_id Client requesting access
+   * @param collection Resource collection being accessed (e.g. "configurations")
+   * @return true if access is allowed, false if denied
+   */
+  virtual bool check_lock(const std::string & entity_id, const std::string & client_id,
+                          const std::string & collection) const {
+    (void)entity_id;
+    (void)client_id;
+    (void)collection;
+    return true;  // Default: locking not available, allow all
+  }
+
+  /**
+   * @brief Acquire a lock on an entity.
+   *
+   * @param entity_id Entity to lock
+   * @param client_id Client acquiring the lock
+   * @param scopes Optional lock scopes (empty = all collections)
+   * @param expiration_seconds Lock TTL in seconds
+   * @return Lock ID on success, empty string on failure
+   */
+  virtual std::string acquire_lock(const std::string & entity_id, const std::string & client_id,
+                                   const std::vector<std::string> & scopes, int expiration_seconds) {
+    (void)entity_id;
+    (void)client_id;
+    (void)scopes;
+    (void)expiration_seconds;
+    return {};  // Default: locking not available
+  }
+
+  /**
+   * @brief Release a lock on an entity.
+   *
+   * @param entity_id Entity to unlock
+   * @param client_id Client releasing the lock
+   * @return true if released, false if not found or not owner
+   */
+  virtual bool release_lock(const std::string & entity_id, const std::string & client_id) {
+    (void)entity_id;
+    (void)client_id;
+    return false;  // Default: locking not available
+  }
 };
 
 // Forward declarations
