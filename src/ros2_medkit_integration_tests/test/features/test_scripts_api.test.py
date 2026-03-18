@@ -45,7 +45,8 @@ from ros2_medkit_test_utils.launch_helpers import create_demo_nodes, get_coverag
 PORT_WITH_SCRIPTS = get_test_port(0)
 PORT_NO_SCRIPTS = get_test_port(1)
 
-SCRIPTS_DIR = tempfile.mkdtemp(prefix='medkit_scripts_test_')
+_SCRIPTS_TMPDIR = tempfile.TemporaryDirectory(prefix='medkit_scripts_test_')
+SCRIPTS_DIR = _SCRIPTS_TMPDIR.name
 
 # Simple inline scripts for testing
 PYTHON_SCRIPT = '#!/usr/bin/env python3\nimport json\nprint(json.dumps({"result": "ok"}))\n'

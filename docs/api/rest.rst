@@ -1264,6 +1264,13 @@ Start Execution
         - O
         - Co-location proof token
 
+   .. note::
+
+      The built-in script backend supports only ``now``. Other execution types
+      (``on_restart``, ``now_and_on_restart``, ``once_on_restart``) require a
+      plugin-provided ScriptProvider and will return 400 ``invalid-parameter``
+      if not supported.
+
    Response: **202 Accepted** with ``Location`` header pointing to the execution status.
 
 Get Execution Status
