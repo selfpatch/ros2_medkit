@@ -74,8 +74,8 @@ void ResourceChangeNotifier::shutdown() {
 }
 
 bool ResourceChangeNotifier::matches_filter(const NotifierFilter & filter, const ResourceChange & change) {
-  // Collection must match exactly (required field)
-  if (filter.collection != change.collection) {
+  // Empty collection = match all; non-empty = exact match
+  if (!filter.collection.empty() && filter.collection != change.collection) {
     return false;
   }
   // Empty entity_id = match all; non-empty = exact match
