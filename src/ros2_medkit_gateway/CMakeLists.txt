@@ -34,7 +34,6 @@ set(GATEWAY_VERSION "${CMAKE_MATCH_1}")
 # Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(diagnostic_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -160,7 +159,6 @@ add_library(gateway_lib STATIC
   src/plugins/plugin_context.cpp
   src/plugins/plugin_loader.cpp
   src/plugins/plugin_manager.cpp
-  src/plugins/graph_provider_plugin.cpp
   # OpenAPI documentation module
   src/openapi/schema_builder.cpp
   src/openapi/path_builder.cpp
@@ -172,7 +170,6 @@ add_library(gateway_lib STATIC
 
 medkit_target_dependencies(gateway_lib
   rclcpp
-  diagnostic_msgs
   std_msgs
   std_srvs
   rcl_interfaces
@@ -378,11 +375,6 @@ if(BUILD_TESTING)
   # Add merge pipeline tests
   ament_add_gtest(test_merge_pipeline test/test_merge_pipeline.cpp)
   target_link_libraries(test_merge_pipeline gateway_lib)
-
-  # Add graph provider plugin tests
-  ament_add_gtest(test_graph_provider_plugin test/test_graph_provider_plugin.cpp)
-  target_link_libraries(test_graph_provider_plugin gateway_lib)
-  set_tests_properties(test_graph_provider_plugin PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=70")
 
   # Add capability builder tests
   ament_add_gtest(test_capability_builder test/test_capability_builder.cpp)
@@ -614,7 +606,6 @@ if(BUILD_TESTING)
       test_log_manager
       test_log_handlers
       test_merge_pipeline
-      test_graph_provider_plugin
       test_runtime_linker
       test_route_descriptions
       test_schema_builder
