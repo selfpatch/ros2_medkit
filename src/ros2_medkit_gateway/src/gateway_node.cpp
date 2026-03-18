@@ -763,6 +763,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     }
     operation_mgr_->set_notifier(resource_change_notifier_.get());
 
+    // Wire LogManager <-> TriggerManager for log_settings integration
+    if (log_mgr_) {
+      trigger_mgr_->set_log_manager(log_mgr_.get());
+      log_mgr_->set_notifier(resource_change_notifier_.get());
+    }
+
     // Subscribe to fault events and forward to notifier
     trigger_fault_subscriber_ = std::make_unique<TriggerFaultSubscriber>(this, *resource_change_notifier_);
 

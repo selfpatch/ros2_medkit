@@ -35,7 +35,8 @@
 
 namespace ros2_medkit_gateway {
 
-// Forward declaration
+// Forward declarations
+class LogManager;
 class TriggerTopicSubscriber;
 
 /// Request to create a new trigger.
@@ -133,6 +134,10 @@ class TriggerManager {
   /// Called by GatewayNode after TriggerTopicSubscriber is created.
   void set_topic_subscriber(TriggerTopicSubscriber * subscriber);
 
+  /// Set the LogManager for trigger log_settings integration.
+  /// Called by GatewayNode after both TriggerManager and LogManager are available.
+  void set_log_manager(LogManager * log_manager);
+
  private:
   /// Per-trigger runtime state.
   ///
@@ -211,6 +216,9 @@ class TriggerManager {
 
   // Data trigger topic subscriber (non-owning, optional)
   TriggerTopicSubscriber * topic_subscriber_{nullptr};
+
+  // LogManager for log_settings integration (non-owning, optional)
+  LogManager * log_manager_{nullptr};
 };
 
 }  // namespace ros2_medkit_gateway

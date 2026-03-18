@@ -33,7 +33,8 @@ namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
 
-class PluginManager;  // forward declaration — full include in .cpp
+class PluginManager;           // forward declaration — full include in .cpp
+class ResourceChangeNotifier;  // forward declaration
 
 /**
  * @brief Manages /rosout log collection via the default ring-buffer backend.
@@ -102,6 +103,25 @@ class LogManager {
   std::string update_config(const std::string & entity_id, const std::optional<std::string> & severity_filter,
                             const std::optional<size_t> & max_entries);
 
+  /**
+   * @brief Programmatically add a log entry (e.g. from trigger log_settings)
+   *
+   * Creates a LogEntry and pushes it to the internal ring buffer using the
+   * same path as on_rosout(). If a ResourceChangeNotifier is set, emits a
+   * "logs" CREATED notification so triggers can observe log changes.
+   *
+   * @param entity_id  Entity to associate the log with (used as logger name)
+   * @param severity   SOVD severity string (debug, info, warning, error, fatal)
+   * @param message    Human-readable log message
+   * @param metadata   Additional JSON metadata stored in the message (appended)
+   */
+  void add_log_entry(const std::string & entity_id, const std::string & severity, const std::string & message,
+                     const nlohmann::json & metadata);
+
+  /// Set the ResourceChangeNotifier for emitting log change events.
+  /// Called by GatewayNode after both LogManager and the notifier are available.
+  void set_notifier(ResourceChangeNotifier * notifier);
+
   // ---- Static utilities (no ROS 2 required — safe in unit tests) ----
 
   /// Convert ROS 2 uint8 log level -> SOVD severity string ("debug" for unknown levels)
@@ -137,6 +157,7 @@ class LogManager {
 
   rclcpp::Node * node_;
   PluginManager * plugin_mgr_;
+  ResourceChangeNotifier * notifier_ = nullptr;
   size_t max_buffer_size_;
 
   rclcpp::Subscription<rcl_interfaces::msg::Log>::SharedPtr rosout_sub_;
