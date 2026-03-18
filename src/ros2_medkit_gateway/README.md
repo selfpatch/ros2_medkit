@@ -12,6 +12,7 @@ The ROS 2 Medkit Gateway exposes ROS 2 system information and data through a RES
 - **REST API**: Standard HTTP/JSON interface
 - **Real-time updates**: Configurable cache refresh for up-to-date system state
 - **Bulk Data Management**: Upload, download, list, and delete bulk data files (calibration, firmware, etc.)
+- **Resource Locking**: SOVD-compliant entity locking with scoped access control, lock breaking, and automatic expiry
 
 ## Endpoints
 
@@ -72,6 +73,14 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `GET /api/v1/apps/{app_id}/logs/configuration` - Get log configuration for an app
 - `PUT /api/v1/components/{component_id}/logs/configuration` - Update log configuration for a component
 - `PUT /api/v1/apps/{app_id}/logs/configuration` - Update log configuration for an app
+
+### Locking Endpoints
+
+- `POST /api/v1/{components|apps}/{id}/locks` - Acquire a lock on an entity
+- `GET /api/v1/{components|apps}/{id}/locks` - List active locks on an entity
+- `GET /api/v1/{components|apps}/{id}/locks/{lock_id}` - Get lock details
+- `PUT /api/v1/{components|apps}/{id}/locks/{lock_id}` - Extend lock expiration
+- `DELETE /api/v1/{components|apps}/{id}/locks/{lock_id}` - Release a lock
 
 ### API Reference
 
