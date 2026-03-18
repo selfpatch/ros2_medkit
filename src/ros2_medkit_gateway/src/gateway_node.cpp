@@ -633,7 +633,22 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       auto expired = lock_manager_->cleanup_expired();
       for (const auto & info : expired) {
         RCLCPP_INFO(get_logger(), "Lock %s expired on entity %s", info.lock_id.c_str(), info.entity_id.c_str());
-        // TODO: temporary resource cleanup (Task 9)
+
+        // Clean up temporary resources within expired lock scope
+        auto scope_includes = [&](const std::string & collection) {
+          return info.scopes.empty() ||
+                 std::find(info.scopes.begin(), info.scopes.end(), collection) != info.scopes.end();
+        };
+
+        // Remove cyclic subscriptions for the entity
+        if (scope_includes("cyclic-subscriptions") && subscription_mgr_) {
+          auto subs = subscription_mgr_->list(info.entity_id);
+          for (const auto & sub : subs) {
+            if (subscription_mgr_->remove(sub.id)) {
+              RCLCPP_INFO(get_logger(), "Removed subscription %s on lock expiry", sub.id.c_str());
+            }
+          }
+        }
       }
     });
 

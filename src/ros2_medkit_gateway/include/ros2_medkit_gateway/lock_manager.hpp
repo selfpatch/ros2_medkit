@@ -102,9 +102,10 @@ struct LockAccessResult {
  * @brief Information about an expired lock (returned from cleanup)
  */
 struct ExpiredLockInfo {
-  std::string lock_id;    ///< Lock ID that expired
-  std::string entity_id;  ///< Entity that was locked
-  std::string client_id;  ///< Client that held the lock
+  std::string lock_id;              ///< Lock ID that expired
+  std::string entity_id;            ///< Entity that was locked
+  std::string client_id;            ///< Client that held the lock
+  std::vector<std::string> scopes;  ///< Lock scopes (empty = all collections)
 };
 
 // =========================================================================

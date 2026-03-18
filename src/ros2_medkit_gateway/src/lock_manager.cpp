@@ -303,7 +303,8 @@ std::vector<ExpiredLockInfo> LockManager::cleanup_expired() {
   auto it = locks_.begin();
   while (it != locks_.end()) {
     if (it->second.expires_at <= now) {
-      expired.push_back(ExpiredLockInfo{it->second.lock_id, it->second.entity_id, it->second.client_id});
+      expired.push_back(
+          ExpiredLockInfo{it->second.lock_id, it->second.entity_id, it->second.client_id, it->second.scopes});
       lock_id_index_.erase(it->second.lock_id);
       it = locks_.erase(it);
     } else {
