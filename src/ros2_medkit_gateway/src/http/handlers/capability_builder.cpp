@@ -47,6 +47,8 @@ std::string CapabilityBuilder::capability_to_name(Capability cap) {
       return "bulk-data";
     case Capability::CYCLIC_SUBSCRIPTIONS:
       return "cyclic-subscriptions";
+    case Capability::LOCKS:
+      return "locks";
     default:
       return "unknown";
   }
