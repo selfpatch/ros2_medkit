@@ -23,3 +23,4 @@ for diagnostic interoperability.
    lifecycle
    updates
    auth
+   locking
