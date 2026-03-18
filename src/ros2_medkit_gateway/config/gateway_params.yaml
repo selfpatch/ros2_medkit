@@ -376,14 +376,17 @@ ros2_medkit_gateway:
       client_max_idle_seconds: 600
 
 # Locking configuration (SOVD resource locking, ISO 17978-3 Section 7.17)
+# lock_required_scopes: collections that REQUIRE a lock before mutation.
+# Default [""] means no enforcement. Set e.g. [configurations, operations]
+# to require locks for those collections. Per-entity overrides via manifest lock: section.
 locking:
   enabled: true
   default_max_expiration: 3600        # max allowed TTL in seconds
   cleanup_interval: 30                # seconds between cleanup sweeps
   defaults:
     components:
-      lock_required_scopes: [configurations, operations]
+      lock_required_scopes: [""]      # empty = no lock required by default
       breakable: true
     apps:
-      lock_required_scopes: [configurations]
+      lock_required_scopes: [""]      # empty = no lock required by default
       breakable: true

@@ -231,7 +231,8 @@ LockAccessResult LockManager::check_access(const std::string & entity_id, const 
   std::shared_lock<std::shared_mutex> read_lock(mutex_);
 
   // Phase 1: Check lock_required - if the entity's config requires a lock for this collection,
-  // the client must hold a lock to proceed
+  // the client must hold a lock to proceed. Enforcement is opt-in via manifest lock: section
+  // (no default required_scopes in gateway_params.yaml).
   auto entity_type_str = get_entity_type_string(entity_id);
   auto entity_cfg = get_entity_config(entity_id, entity_type_str);
   if (!entity_cfg.required_scopes.empty()) {
