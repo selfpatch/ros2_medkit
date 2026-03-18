@@ -20,6 +20,7 @@
 #include <set>
 #include <sstream>
 
+#include "ros2_medkit_gateway/resource_change_notifier.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/message_cleanup.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"
@@ -42,6 +43,10 @@ OperationManager::OperationManager(rclcpp::Node * node, DiscoveryManager * disco
   , service_call_timeout_sec_(
         static_cast<int>(node->declare_parameter<int64_t>("service_call_timeout_sec", kDefaultServiceCallTimeoutSec))) {
   RCLCPP_INFO(node_->get_logger(), "OperationManager initialized with native serialization");
+}
+
+void OperationManager::set_notifier(ResourceChangeNotifier * notifier) {
+  notifier_ = notifier;
 }
 
 bool OperationManager::is_valid_message_type(const std::string & type) {
@@ -886,6 +891,14 @@ void OperationManager::on_action_status(const std::string & action_path,
                     action_status_to_string(it->second.status).c_str(), action_status_to_string(new_status).c_str());
         it->second.status = new_status;
         it->second.last_update = std::chrono::system_clock::now();
+
+        if (notifier_) {
+          nlohmann::json goal_json;
+          goal_json["goal_id"] = goal_id;
+          goal_json["action_path"] = it->second.action_path;
+          goal_json["status"] = action_status_to_string(new_status);
+          notifier_->notify("operations", it->second.action_path, goal_id, goal_json);
+        }
       }
     }
   }

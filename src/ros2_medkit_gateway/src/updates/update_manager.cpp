@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/updates/update_manager.hpp"
 
+#include "ros2_medkit_gateway/resource_change_notifier.hpp"
+
 namespace ros2_medkit_gateway {
 
 UpdateManager::UpdateManager() = default;
@@ -42,8 +44,19 @@ void UpdateManager::set_backend(UpdateProvider * backend) {
   backend_ = backend;
 }
 
+void UpdateManager::set_notifier(ResourceChangeNotifier * notifier) {
+  notifier_ = notifier;
+}
+
 bool UpdateManager::has_backend() const {
   return backend_ != nullptr;
+}
+
+void UpdateManager::notify_status_change(const std::string & id, const UpdateStatusInfo & status) {
+  if (!notifier_) {
+    return;
+  }
+  notifier_->notify("updates", id, id, update_status_to_json(status));
 }
 
 tl::expected<std::vector<std::string>, UpdateError> UpdateManager::list_updates(const UpdateFilter & filter) {
@@ -276,35 +289,51 @@ void UpdateManager::run_prepare(const std::string & id) {
       state = states_[id].get();
       state->status.status = UpdateStatus::InProgress;
     }
+    notify_status_change(id, state->status);
 
     UpdateProgressReporter reporter(state->status, mutex_);
     auto result = backend_->prepare(id, reporter);
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (result) {
-      state->status.status = UpdateStatus::Completed;
-      state->phase = UpdatePhase::Prepared;
-    } else {
-      state->status.status = UpdateStatus::Failed;
-      state->status.error_message = result.error().message;
-      state->phase = UpdatePhase::Failed;
+    UpdateStatusInfo snapshot;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (result) {
+        state->status.status = UpdateStatus::Completed;
+        state->phase = UpdatePhase::Prepared;
+      } else {
+        state->status.status = UpdateStatus::Failed;
+        state->status.error_message = result.error().message;
+        state->phase = UpdatePhase::Failed;
+      }
+      snapshot = state->status;
     }
+    notify_status_change(id, snapshot);
   } catch (const std::exception & e) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = states_.find(id);
-    if (it != states_.end() && it->second) {
-      it->second->status.status = UpdateStatus::Failed;
-      it->second->status.error_message = std::string("Exception: ") + e.what();
-      it->second->phase = UpdatePhase::Failed;
+    UpdateStatusInfo snapshot;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto it = states_.find(id);
+      if (it != states_.end() && it->second) {
+        it->second->status.status = UpdateStatus::Failed;
+        it->second->status.error_message = std::string("Exception: ") + e.what();
+        it->second->phase = UpdatePhase::Failed;
+        snapshot = it->second->status;
+      }
     }
+    notify_status_change(id, snapshot);
   } catch (...) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = states_.find(id);
-    if (it != states_.end() && it->second) {
-      it->second->status.status = UpdateStatus::Failed;
-      it->second->status.error_message = "Unknown exception during prepare";
-      it->second->phase = UpdatePhase::Failed;
+    UpdateStatusInfo snapshot;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto it = states_.find(id);
+      if (it != states_.end() && it->second) {
+        it->second->status.status = UpdateStatus::Failed;
+        it->second->status.error_message = "Unknown exception during prepare";
+        it->second->phase = UpdatePhase::Failed;
+        snapshot = it->second->status;
+      }
     }
+    notify_status_change(id, snapshot);
   }
 }
 
@@ -316,35 +345,51 @@ void UpdateManager::run_execute(const std::string & id) {
       state = states_[id].get();
       state->status.status = UpdateStatus::InProgress;
     }
+    notify_status_change(id, state->status);
 
     UpdateProgressReporter reporter(state->status, mutex_);
     auto result = backend_->execute(id, reporter);
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (result) {
-      state->status.status = UpdateStatus::Completed;
-      state->phase = UpdatePhase::Executed;
-    } else {
-      state->status.status = UpdateStatus::Failed;
-      state->status.error_message = result.error().message;
-      state->phase = UpdatePhase::Failed;
+    UpdateStatusInfo snapshot;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (result) {
+        state->status.status = UpdateStatus::Completed;
+        state->phase = UpdatePhase::Executed;
+      } else {
+        state->status.status = UpdateStatus::Failed;
+        state->status.error_message = result.error().message;
+        state->phase = UpdatePhase::Failed;
+      }
+      snapshot = state->status;
     }
+    notify_status_change(id, snapshot);
   } catch (const std::exception & e) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = states_.find(id);
-    if (it != states_.end() && it->second) {
-      it->second->status.status = UpdateStatus::Failed;
-      it->second->status.error_message = std::string("Exception: ") + e.what();
-      it->second->phase = UpdatePhase::Failed;
+    UpdateStatusInfo snapshot;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto it = states_.find(id);
+      if (it != states_.end() && it->second) {
+        it->second->status.status = UpdateStatus::Failed;
+        it->second->status.error_message = std::string("Exception: ") + e.what();
+        it->second->phase = UpdatePhase::Failed;
+        snapshot = it->second->status;
+      }
     }
+    notify_status_change(id, snapshot);
   } catch (...) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = states_.find(id);
-    if (it != states_.end() && it->second) {
-      it->second->status.status = UpdateStatus::Failed;
-      it->second->status.error_message = "Unknown exception during execute";
-      it->second->phase = UpdatePhase::Failed;
+    UpdateStatusInfo snapshot;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto it = states_.find(id);
+      if (it != states_.end() && it->second) {
+        it->second->status.status = UpdateStatus::Failed;
+        it->second->status.error_message = "Unknown exception during execute";
+        it->second->phase = UpdatePhase::Failed;
+        snapshot = it->second->status;
+      }
     }
+    notify_status_change(id, snapshot);
   }
 }
 
@@ -356,16 +401,22 @@ void UpdateManager::run_automated(const std::string & id) {
       state = states_[id].get();
       state->status.status = UpdateStatus::InProgress;
     }
+    notify_status_change(id, state->status);
 
     // Phase 1: Prepare
     UpdateProgressReporter reporter(state->status, mutex_);
     auto prep_result = backend_->prepare(id, reporter);
 
     if (!prep_result) {
-      std::lock_guard<std::mutex> lock(mutex_);
-      state->status.status = UpdateStatus::Failed;
-      state->status.error_message = prep_result.error().message;
-      state->phase = UpdatePhase::Failed;
+      UpdateStatusInfo snapshot;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state->status.status = UpdateStatus::Failed;
+        state->status.error_message = prep_result.error().message;
+        state->phase = UpdatePhase::Failed;
+        snapshot = state->status;
+      }
+      notify_status_change(id, snapshot);
       return;
     }
 
@@ -379,31 +430,46 @@ void UpdateManager::run_automated(const std::string & id) {
 
     auto exec_result = backend_->execute(id, reporter);
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (exec_result) {
-      state->status.status = UpdateStatus::Completed;
-      state->phase = UpdatePhase::Executed;
-    } else {
-      state->status.status = UpdateStatus::Failed;
-      state->status.error_message = exec_result.error().message;
-      state->phase = UpdatePhase::Failed;
+    UpdateStatusInfo snapshot;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (exec_result) {
+        state->status.status = UpdateStatus::Completed;
+        state->phase = UpdatePhase::Executed;
+      } else {
+        state->status.status = UpdateStatus::Failed;
+        state->status.error_message = exec_result.error().message;
+        state->phase = UpdatePhase::Failed;
+      }
+      snapshot = state->status;
     }
+    notify_status_change(id, snapshot);
   } catch (const std::exception & e) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = states_.find(id);
-    if (it != states_.end() && it->second) {
-      it->second->status.status = UpdateStatus::Failed;
-      it->second->status.error_message = std::string("Exception: ") + e.what();
-      it->second->phase = UpdatePhase::Failed;
+    UpdateStatusInfo snapshot;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto it = states_.find(id);
+      if (it != states_.end() && it->second) {
+        it->second->status.status = UpdateStatus::Failed;
+        it->second->status.error_message = std::string("Exception: ") + e.what();
+        it->second->phase = UpdatePhase::Failed;
+        snapshot = it->second->status;
+      }
     }
+    notify_status_change(id, snapshot);
   } catch (...) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = states_.find(id);
-    if (it != states_.end() && it->second) {
-      it->second->status.status = UpdateStatus::Failed;
-      it->second->status.error_message = "Unknown exception during automated update";
-      it->second->phase = UpdatePhase::Failed;
+    UpdateStatusInfo snapshot;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto it = states_.find(id);
+      if (it != states_.end() && it->second) {
+        it->second->status.status = UpdateStatus::Failed;
+        it->second->status.error_message = "Unknown exception during automated update";
+        it->second->phase = UpdatePhase::Failed;
+        snapshot = it->second->status;
+      }
     }
+    notify_status_change(id, snapshot);
   }
 }
 

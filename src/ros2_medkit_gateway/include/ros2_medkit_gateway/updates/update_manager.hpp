@@ -29,6 +29,8 @@
 
 namespace ros2_medkit_gateway {
 
+class ResourceChangeNotifier;
+
 /// Error codes for UpdateManager operations - replaces string matching
 enum class UpdateErrorCode {
   NotFound,        // Package does not exist
@@ -69,6 +71,9 @@ class UpdateManager {
   /// Must be called before any update operations; operations return NoBackend error until set.
   void set_backend(UpdateProvider * backend);
 
+  /// Set optional notifier for broadcasting update status changes to trigger subsystem.
+  void set_notifier(ResourceChangeNotifier * notifier);
+
   /// Check if a backend is loaded
   bool has_backend() const;
 
@@ -88,6 +93,10 @@ class UpdateManager {
 
  private:
   UpdateProvider * backend_ = nullptr;
+  ResourceChangeNotifier * notifier_ = nullptr;
+
+  /// Notify the trigger subsystem of an update status change.
+  void notify_status_change(const std::string & id, const UpdateStatusInfo & status);
 
   struct PackageState {
     UpdatePhase phase = UpdatePhase::None;

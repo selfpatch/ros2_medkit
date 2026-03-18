@@ -36,6 +36,8 @@
 
 namespace ros2_medkit_gateway {
 
+class ResourceChangeNotifier;
+
 using json = nlohmann::json;
 
 /// Result of a synchronous service call
@@ -98,6 +100,9 @@ struct ActionGoalInfo {
 class OperationManager {
  public:
   explicit OperationManager(rclcpp::Node * node, DiscoveryManager * discovery_manager);
+
+  /// Set optional notifier for broadcasting operation status changes to trigger subsystem.
+  void set_notifier(ResourceChangeNotifier * notifier);
 
   /// Call a ROS2 service synchronously
   /// @param service_path Full service path (e.g., "/powertrain/engine/calibrate")
@@ -240,6 +245,7 @@ class OperationManager {
 
   rclcpp::Node * node_;
   DiscoveryManager * discovery_manager_;
+  ResourceChangeNotifier * notifier_ = nullptr;
 
   /// Random number generator for UUID generation
   std::mt19937 rng_;

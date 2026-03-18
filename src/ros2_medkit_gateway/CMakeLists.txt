@@ -177,6 +177,8 @@ add_library(gateway_lib STATIC
   src/sqlite_trigger_store.cpp
   # Trigger management
   src/trigger_manager.cpp
+  # Trigger fault subscriber (ROS 2 topic -> notifier bridge)
+  src/trigger_fault_subscriber.cpp
   # Trigger HTTP handlers
   src/http/handlers/trigger_handlers.cpp
 )

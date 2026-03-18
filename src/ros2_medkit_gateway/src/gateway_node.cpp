@@ -757,6 +757,15 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     // Load persistent triggers
     trigger_mgr_->load_persistent_triggers();
 
+    // Wire notifier to managers so they emit events for trigger evaluation
+    if (update_mgr_) {
+      update_mgr_->set_notifier(resource_change_notifier_.get());
+    }
+    operation_mgr_->set_notifier(resource_change_notifier_.get());
+
+    // Subscribe to fault events and forward to notifier
+    trigger_fault_subscriber_ = std::make_unique<TriggerFaultSubscriber>(this, *resource_change_notifier_);
+
     RCLCPP_INFO(get_logger(), "Trigger subsystem: enabled (max=%d, storage=%s)", trigger_config.max_triggers,
                 storage_path.empty() ? ":memory:" : storage_path.c_str());
   } else {
