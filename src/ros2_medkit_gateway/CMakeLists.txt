@@ -92,6 +92,7 @@ add_library(gateway_lib STATIC
   src/log_manager.cpp
   src/subscription_manager.cpp
   src/lock_manager.cpp
+  src/resource_change_notifier.cpp
   src/resource_sampler.cpp
   src/subscription_transport.cpp
   # Entity resource model
@@ -588,6 +589,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_condition_evaluator test/test_condition_evaluator.cpp)
   target_link_libraries(test_condition_evaluator gateway_lib)
 
+  # Resource change notifier tests (async notification hub for triggers)
+  ament_add_gtest(test_resource_change_notifier test/test_resource_change_notifier.cpp)
+  target_link_libraries(test_resource_change_notifier gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -643,6 +648,7 @@ if(BUILD_TESTING)
       test_lock_manager
       test_lock_handlers
       test_condition_evaluator
+      test_resource_change_notifier
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
