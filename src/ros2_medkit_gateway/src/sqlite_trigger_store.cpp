@@ -19,6 +19,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace ros2_medkit_gateway {
 
@@ -289,6 +290,10 @@ tl::expected<void, std::string> SqliteTriggerStore::update(const std::string & i
     return tl::make_unexpected("update: fields must be a non-empty JSON object");
   }
 
+  // Allowlist of mutable columns to prevent arbitrary column modification
+  static const std::unordered_set<std::string> allowed_columns = {
+      "status", "lifetime_sec", "expires_at", "condition_params", "condition_type", "protocol", "multishot"};
+
   try {
     // Build SET clause dynamically from supplied keys
     std::string sql = "UPDATE triggers SET ";
@@ -296,6 +301,9 @@ tl::expected<void, std::string> SqliteTriggerStore::update(const std::string & i
 
     bool first = true;
     for (auto it = fields.begin(); it != fields.end(); ++it) {
+      if (allowed_columns.find(it.key()) == allowed_columns.end()) {
+        return tl::make_unexpected("update: column '" + it.key() + "' is not updatable");
+      }
       if (!first) {
         sql += ", ";
       }
@@ -392,7 +400,11 @@ tl::expected<std::vector<TriggerInfo>, std::string> SqliteTriggerStore::load_all
       t.resource_path = stmt.column_text(5);
       t.path = stmt.column_text(6);
       t.condition_type = stmt.column_text(7);
-      t.condition_params = nlohmann::json::parse(stmt.column_text(8), nullptr, false);
+      auto cond = nlohmann::json::parse(stmt.column_text(8), nullptr, false);
+      if (cond.is_discarded()) {
+        return tl::make_unexpected(std::string("load_all: corrupt condition_params for trigger '") + t.id + "'");
+      }
+      t.condition_params = std::move(cond);
       t.protocol = stmt.column_text(9);
       t.multishot = stmt.column_int(10) != 0;
       t.persistent = stmt.column_int(11) != 0;

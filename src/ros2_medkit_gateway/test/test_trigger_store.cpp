@@ -217,6 +217,20 @@ TEST(TriggerStore, UpdateFields) {
   ASSERT_TRUE(loaded.has_value());
   ASSERT_EQ(loaded->size(), 1u);
   EXPECT_EQ(loaded->at(0).status, TriggerStatus::TERMINATED);
+  ASSERT_TRUE(loaded->at(0).lifetime_sec.has_value());
+  EXPECT_EQ(loaded->at(0).lifetime_sec.value(), 7200);
+}
+
+TEST(TriggerStore, UpdateDisallowedColumn) {
+  SqliteTriggerStore store(":memory:");
+  auto t = make_trigger("upd_deny");
+  ASSERT_TRUE(store.save(t).has_value());
+
+  // Attempt to change primary key - should be rejected
+  nlohmann::json fields = {{"id", "new_id"}};
+  auto result = store.update("upd_deny", fields);
+  EXPECT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("not updatable"), std::string::npos);
 }
 
 TEST(TriggerStore, UpdateNonexistent) {
