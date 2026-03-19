@@ -32,8 +32,7 @@ struct TriggerEventDelivery {
 /// Abstract transport backend for delivering trigger events to subscribers.
 ///
 /// Plugins implement this interface to provide alternative delivery protocols
-/// beyond the built-in SSE transport. Register via
-/// PluginContext::register_trigger_transport().
+/// beyond the built-in SSE transport.
 ///
 /// @par Thread Safety
 /// deliver_event() may be called from multiple threads concurrently.
