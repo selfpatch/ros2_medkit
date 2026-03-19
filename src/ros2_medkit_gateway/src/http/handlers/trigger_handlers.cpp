@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <regex>
+#include <unordered_set>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -98,15 +99,50 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
     return;
   }
 
+  // Validate collection
+  static const std::unordered_set<std::string> known_collections = {"data",    "faults", "operations", "configurations",
+                                                                    "updates", "logs",   "bulk-data"};
+  if (known_collections.find(parsed->collection) == known_collections.end() &&
+      parsed->collection.substr(0, 2) != "x-") {
+    HandlerContext::send_error(
+        res, 400, ERR_INVALID_PARAMETER,
+        "Unknown collection. Supported: data, faults, operations, configurations, updates, logs, bulk-data, or x-* "
+        "vendor extensions",
+        {{"parameter", "resource"}, {"collection", parsed->collection}});
+    return;
+  }
+
   // Parse optional fields
   std::string path;
   if (body.contains("path") && body["path"].is_string()) {
     path = body["path"].get<std::string>();
   }
 
+  // Validate JSON Pointer path
+  if (!path.empty()) {
+    if (path.size() > 1024) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Path too long (max 1024)", {{"parameter", "path"}});
+      return;
+    }
+    try {
+      (void)nlohmann::json::json_pointer(path);
+    } catch (const nlohmann::json::exception &) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid JSON Pointer in 'path'",
+                                 {{"parameter", "path"}, {"value", path}});
+      return;
+    }
+  }
+
   std::string protocol = "sse";
   if (body.contains("protocol") && body["protocol"].is_string()) {
     protocol = body["protocol"].get<std::string>();
+  }
+
+  // Validate protocol
+  if (protocol != "sse") {
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unsupported protocol. Supported: 'sse'",
+                               {{"parameter", "protocol"}, {"value", protocol}});
+    return;
   }
 
   bool multishot = false;
@@ -382,13 +418,18 @@ void TriggerHandlers::handle_events(const httplib::Request & req, httplib::Respo
             continue;
           }
 
-          // Try to consume pending event
-          auto event = mgr.consume_pending_event(tid);
-          if (event.has_value()) {
+          // Drain all pending events per wakeup (C2 fix: bounded queue can
+          // accumulate multiple events between wakeups for multishot triggers)
+          bool write_ok = true;
+          while (auto event = mgr.consume_pending_event(tid)) {
             std::string frame = "data: " + event->dump() + "\n\n";
             if (!sink.write(frame.c_str(), frame.size())) {
+              write_ok = false;
               break;
             }
+          }
+          if (!write_ok) {
+            break;
           }
         }
 
