@@ -59,6 +59,7 @@ TEST(ConditionEvaluator, OnChange_SameStrings) {
   EXPECT_FALSE(eval.evaluate(prev, curr, json::object()));
 }
 
+// @verifies REQ_INTEROP_029
 TEST(ConditionEvaluator, OnChange_ValidateParams) {
   OnChangeEvaluator eval;
   // OnChange has no required params
@@ -117,6 +118,7 @@ TEST(ConditionEvaluator, OnChangeTo_StringTarget) {
   EXPECT_TRUE(eval.evaluate(prev, curr, params));
 }
 
+// @verifies REQ_INTEROP_029
 TEST(ConditionEvaluator, OnChangeTo_ValidateParams_MissingTarget) {
   OnChangeToEvaluator eval;
   auto result = eval.validate_params(json::object());
@@ -124,6 +126,7 @@ TEST(ConditionEvaluator, OnChangeTo_ValidateParams_MissingTarget) {
   EXPECT_NE(result.error().find("target_value"), std::string::npos);
 }
 
+// @verifies REQ_INTEROP_029
 TEST(ConditionEvaluator, OnChangeTo_ValidateParams_Valid) {
   OnChangeToEvaluator eval;
   json params = {{"target_value", 42}};

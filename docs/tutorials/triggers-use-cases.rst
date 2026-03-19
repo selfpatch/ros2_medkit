@@ -273,6 +273,20 @@ Note the use of ``/components/`` instead of ``/apps/`` - this monitors faults
 at the component level, which aggregates faults from all apps within the
 component.
 
+.. note::
+
+   In runtime-only discovery mode (the default), components are synthesized
+   from ROS 2 namespaces. The ``engine`` component is auto-created from nodes
+   running under the ``/powertrain/engine`` namespace. Verify it exists first:
+
+   .. code-block:: bash
+
+      curl http://localhost:8080/api/v1/components | jq '.items[].id'
+
+   If ``engine`` does not appear, the demo nodes may not be running or the
+   namespace grouping may differ. Adjust ``engine`` to match the actual
+   component ID shown.
+
 .. code-block:: bash
 
    curl -X POST http://localhost:8080/api/v1/components/engine/triggers \
@@ -347,7 +361,7 @@ Step 1: Start gateway in manifest mode
    ros2 launch ros2_medkit_gateway gateway.launch.py \
      server_host:=0.0.0.0 \
      discovery_mode:=manifest_only \
-     manifest_path:=/path/to/demo_nodes_manifest.yaml
+     manifest_path:=$(ros2 pkg prefix ros2_medkit_gateway)/share/ros2_medkit_gateway/config/examples/demo_nodes_manifest.yaml
 
 Step 2: Create the area-level fault trigger
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -457,6 +471,14 @@ or ``"multishot": false`` (default) to auto-terminate after the first event.
 **Hierarchy scoping**: area-level triggers catch changes from all entities
 within the area, while app-level triggers only catch changes for that
 specific app. This allows layered monitoring at different granularity levels.
+
+.. note::
+
+   **SOVD compliance**: The SOVD specification defines ``/triggers`` for
+   apps and components only. ros2_medkit extends this to areas and functions.
+   Script executions and software update locks are not yet observable as
+   trigger resources - triggers currently support the ``data``, ``faults``,
+   and ``updates`` collections.
 
 See Also
 --------
