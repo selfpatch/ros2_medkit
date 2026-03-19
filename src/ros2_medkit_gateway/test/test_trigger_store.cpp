@@ -65,6 +65,7 @@ TEST(TriggerStore, LoadAllEmptyDb) {
 // save + load_all round-trip
 // ===========================================================================
 
+// @verifies REQ_INTEROP_029
 TEST(TriggerStore, SaveAndLoadRoundTrip) {
   SqliteTriggerStore store(":memory:");
 
@@ -338,6 +339,7 @@ TEST(TriggerStore, RemoveDeletesState) {
 // File-based database persistence
 // ===========================================================================
 
+// @verifies REQ_INTEROP_029
 TEST(TriggerStore, FilePersistence) {
   std::string path = "/tmp/test_trigger_store_persist.db";
   std::remove(path.c_str());

@@ -30,6 +30,7 @@ using namespace ros2_medkit_gateway;
 
 // --- Subscribe + Notify ---
 
+// @verifies REQ_INTEROP_097
 TEST(ResourceChangeNotifier, SubscribeAndNotify) {
   ResourceChangeNotifier notifier;
 
@@ -213,6 +214,7 @@ TEST(ResourceChangeNotifier, Unsubscribe) {
 
 // --- Async dispatch: notify() returns quickly even with slow callback ---
 
+// @verifies REQ_INTEROP_097
 TEST(ResourceChangeNotifier, AsyncDispatchNonBlocking) {
   ResourceChangeNotifier notifier;
 

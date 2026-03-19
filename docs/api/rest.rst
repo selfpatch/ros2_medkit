@@ -1481,7 +1481,7 @@ Get Trigger
 
    **Response 200:** Same schema as creation response.
 
-   - **404** ``ERR_RESOURCE_NOT_FOUND`` - Trigger not found or belongs to a different entity
+   - **404** ``resource-not-found`` - Trigger not found or belongs to a different entity
 
 Update Trigger
 ~~~~~~~~~~~~~~
@@ -1501,7 +1501,7 @@ Update Trigger
    **Response 200:** Updated trigger object (same schema as creation response).
 
    - **400** ``invalid-parameter`` - Missing or invalid ``lifetime``
-   - **404** ``ERR_RESOURCE_NOT_FOUND`` - Trigger not found
+   - **404** ``resource-not-found`` - Trigger not found
 
 Delete Trigger
 ~~~~~~~~~~~~~~
@@ -1510,7 +1510,7 @@ Delete Trigger
    Remove a trigger. Any active SSE connection for this trigger is closed.
 
    - **204** No Content - Trigger deleted
-   - **404** ``ERR_RESOURCE_NOT_FOUND`` - Trigger not found
+   - **404** ``resource-not-found`` - Trigger not found
 
 Trigger Events (SSE Stream)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1562,7 +1562,7 @@ Trigger Events (SSE Stream)
 
       curl -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_001/events
 
-   - **404** ``ERR_RESOURCE_NOT_FOUND`` - Trigger not found or expired
+   - **404** ``resource-not-found`` - Trigger not found or expired
    - **503** ``service-unavailable`` - Maximum SSE client limit reached
 
 Trigger Conditions
