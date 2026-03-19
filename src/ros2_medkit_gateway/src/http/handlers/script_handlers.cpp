@@ -37,6 +37,10 @@ bool ScriptHandlers::check_backend(httplib::Response & res) {
   return true;
 }
 
+std::string ScriptHandlers::entity_type_from_path(const httplib::Request & req) {
+  return (req.path.find("/components/") != std::string::npos) ? "components" : "apps";
+}
+
 bool ScriptHandlers::is_valid_resource_id(const std::string & id) {
   if (id.empty() || id.size() > 256) {
     return false;
@@ -147,7 +151,7 @@ void ScriptHandlers::handle_list_scripts(const httplib::Request & req, httplib::
       return;
     }
 
-    std::string entity_type_segment = (req.path.find("/components/") != std::string::npos) ? "components" : "apps";
+    auto entity_type_segment = entity_type_from_path(req);
     auto base_path = "/" + entity_type_segment + "/" + entity_id;
 
     auto result = script_mgr_->list_scripts(entity_id);
@@ -160,7 +164,14 @@ void ScriptHandlers::handle_list_scripts(const httplib::Request & req, httplib::
     for (const auto & info : *result) {
       items.push_back(script_info_to_json(info, base_path));
     }
-    HandlerContext::send_json(res, json{{"items", items}});
+
+    json response;
+    response["items"] = items;
+
+    auto self_href = api_path("/" + entity_type_segment + "/" + entity_id + "/scripts");
+    response["_links"] = {{"self", self_href}, {"parent", api_path("/" + entity_type_segment + "/" + entity_id)}};
+
+    HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
   }
@@ -180,6 +191,12 @@ void ScriptHandlers::handle_upload_script(const httplib::Request & req, httplib:
 
     if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
       HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+      return;
+    }
+
+    if (!req.has_header("Content-Type") ||
+        req.get_header_value("Content-Type").find("multipart/form-data") == std::string::npos) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Expected Content-Type: multipart/form-data");
       return;
     }
 
@@ -208,7 +225,7 @@ void ScriptHandlers::handle_upload_script(const httplib::Request & req, httplib:
       return;
     }
 
-    std::string entity_type_segment = (req.path.find("/components/") != std::string::npos) ? "components" : "apps";
+    auto entity_type_segment = entity_type_from_path(req);
     auto script_path = api_path("/" + entity_type_segment + "/" + entity_id + "/scripts/" + result->id);
 
     res.status = 201;
@@ -241,7 +258,7 @@ void ScriptHandlers::handle_get_script(const httplib::Request & req, httplib::Re
       return;
     }
 
-    std::string entity_type_segment = (req.path.find("/components/") != std::string::npos) ? "components" : "apps";
+    auto entity_type_segment = entity_type_from_path(req);
     auto base_path = "/" + entity_type_segment + "/" + entity_id;
 
     auto result = script_mgr_->get_script(entity_id, script_id);
@@ -343,7 +360,7 @@ void ScriptHandlers::handle_start_execution(const httplib::Request & req, httpli
       return;
     }
 
-    std::string entity_type_segment = (req.path.find("/components/") != std::string::npos) ? "components" : "apps";
+    auto entity_type_segment = entity_type_from_path(req);
     auto exec_path =
         api_path("/" + entity_type_segment + "/" + entity_id + "/scripts/" + script_id + "/executions/" + result->id);
 

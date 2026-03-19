@@ -472,6 +472,7 @@ TEST_F(ScriptHandlersErrorMappingTest, UploadReturns201WithLocation) {
   mock_provider_->succeed = true;
 
   auto req = make_list_request("components", "ecu");
+  req.set_header("Content-Type", "multipart/form-data; boundary=----WebKitFormBoundary");
   // Upload needs multipart file data
   httplib::MultipartFormData file_part;
   file_part.name = "file";
@@ -490,6 +491,27 @@ TEST_F(ScriptHandlersErrorMappingTest, UploadReturns201WithLocation) {
   auto body = json::parse(res.body);
   EXPECT_EQ(body["id"], "uploaded_001");
   EXPECT_EQ(body["name"], "Uploaded Script");
+}
+
+// @verifies REQ_INTEROP_040
+TEST_F(ScriptHandlersErrorMappingTest, UploadRejectsWrongContentType) {
+  mock_provider_->succeed = true;
+
+  auto req = make_list_request("components", "ecu");
+  // No Content-Type header set - should be rejected
+  httplib::MultipartFormData file_part;
+  file_part.name = "file";
+  file_part.filename = "diag.py";
+  file_part.content = "#!/usr/bin/env python3\nprint('hello')";
+  file_part.content_type = "application/octet-stream";
+  req.files.emplace("file", file_part);
+
+  httplib::Response res;
+  handlers_->handle_upload_script(req, res);
+
+  EXPECT_EQ(res.status, 400);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
 }
 
 // @verifies REQ_INTEROP_044
