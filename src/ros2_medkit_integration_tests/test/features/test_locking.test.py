@@ -23,6 +23,7 @@ Tests cover:
 - Error cases (missing header, invalid body)
 """
 
+import time
 import unittest
 
 import launch_testing
@@ -34,12 +35,13 @@ from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
 
 def generate_test_description():
-    """Launch gateway with locking enabled and demo nodes."""
+    """Launch gateway with locking enabled and short cleanup interval."""
     return create_test_launch(
         demo_nodes=['temp_sensor', 'calibration'],
         gateway_params={
             'locking.enabled': True,
             'locking.default_max_expiration': 3600,
+            'locking.cleanup_interval': 1,
         },
         fault_manager=False,
     )
@@ -334,6 +336,36 @@ class TestLocking(GatewayTestCase):
 
         resp = self._delete_lock('apps', 'temp_sensor', lock_id, 'client_b')
         self.assertEqual(resp.status_code, 403, resp.text)
+
+    # =================================================================
+    # Lock expiration
+    # =================================================================
+
+    # @verifies REQ_INTEROP_100
+    def test_lock_expires_automatically(self):
+        """Lock with short TTL expires and no longer blocks access."""
+        # Acquire with 2s TTL
+        resp = self._post_lock(
+            'apps', 'temp_sensor', 'client_a',
+            {'lock_expiration': 2},
+        )
+        self.assertEqual(resp.status_code, 201, resp.text)
+
+        # Immediately: lock should exist
+        resp = self._get_locks('apps', 'temp_sensor')
+        self.assertEqual(len(resp.json()['items']), 1)
+
+        # Wait for expiry + cleanup (TTL=2s, cleanup_interval=1s)
+        time.sleep(4)
+
+        # Lock should be gone
+        resp = self._get_locks('apps', 'temp_sensor')
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(len(resp.json()['items']), 0)
+
+    # =================================================================
+    # Error cases
+    # =================================================================
 
     # @verifies REQ_INTEROP_100
     def test_nonexistent_entity_returns_404(self):
