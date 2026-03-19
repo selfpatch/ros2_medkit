@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/lock_manager.hpp"
 #include "ros2_medkit_gateway/models/entity_types.hpp"
 
 #include <httplib.h>
@@ -134,7 +135,7 @@ class PluginContext {
   /// Get plugin-registered capabilities for a specific entity
   virtual std::vector<std::string> get_entity_capabilities(const std::string & entity_id) const = 0;
 
-  // ---- Locking (default implementations for backward compatibility) ----
+  // ---- Locking ----
 
   /**
    * @brief Check if a lock blocks access to a collection on an entity.
@@ -142,15 +143,10 @@ class PluginContext {
    * @param entity_id Entity to check
    * @param client_id Client requesting access
    * @param collection Resource collection being accessed (e.g. "configurations")
-   * @return true if access is allowed, false if denied
+   * @return LockAccessResult with allowed/denied status and details
    */
-  virtual bool check_lock(const std::string & entity_id, const std::string & client_id,
-                          const std::string & collection) const {
-    (void)entity_id;
-    (void)client_id;
-    (void)collection;
-    return true;  // Default: locking not available, allow all
-  }
+  virtual LockAccessResult check_lock(const std::string & entity_id, const std::string & client_id,
+                                      const std::string & collection) const = 0;
 
   /**
    * @brief Acquire a lock on an entity.
@@ -159,29 +155,20 @@ class PluginContext {
    * @param client_id Client acquiring the lock
    * @param scopes Optional lock scopes (empty = all collections)
    * @param expiration_seconds Lock TTL in seconds
-   * @return Lock ID on success, empty string on failure
+   * @return LockInfo on success, LockError on failure
    */
-  virtual std::string acquire_lock(const std::string & entity_id, const std::string & client_id,
-                                   const std::vector<std::string> & scopes, int expiration_seconds) {
-    (void)entity_id;
-    (void)client_id;
-    (void)scopes;
-    (void)expiration_seconds;
-    return {};  // Default: locking not available
-  }
+  virtual tl::expected<LockInfo, LockError> acquire_lock(const std::string & entity_id, const std::string & client_id,
+                                                         const std::vector<std::string> & scopes,
+                                                         int expiration_seconds) = 0;
 
   /**
    * @brief Release a lock on an entity.
    *
    * @param entity_id Entity to unlock
    * @param client_id Client releasing the lock
-   * @return true if released, false if not found or not owner
+   * @return void on success, LockError on failure
    */
-  virtual bool release_lock(const std::string & entity_id, const std::string & client_id) {
-    (void)entity_id;
-    (void)client_id;
-    return false;  // Default: locking not available
-  }
+  virtual tl::expected<void, LockError> release_lock(const std::string & entity_id, const std::string & client_id) = 0;
 };
 
 // Forward declarations

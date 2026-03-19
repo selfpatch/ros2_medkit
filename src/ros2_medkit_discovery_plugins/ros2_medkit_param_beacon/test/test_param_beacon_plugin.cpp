@@ -99,6 +99,17 @@ class MockPluginContext : public PluginContext {
   std::vector<std::string> get_entity_capabilities(const std::string &) const override {
     return {};
   }
+  ros2_medkit_gateway::LockAccessResult check_lock(const std::string &, const std::string &,
+                                                   const std::string &) const override {
+    return ros2_medkit_gateway::LockAccessResult{true, "", "", ""};
+  }
+  tl::expected<ros2_medkit_gateway::LockInfo, ros2_medkit_gateway::LockError>
+  acquire_lock(const std::string &, const std::string &, const std::vector<std::string> &, int) override {
+    return tl::make_unexpected(ros2_medkit_gateway::LockError{"lock-disabled", "Not available", 503, std::nullopt});
+  }
+  tl::expected<void, ros2_medkit_gateway::LockError> release_lock(const std::string &, const std::string &) override {
+    return tl::make_unexpected(ros2_medkit_gateway::LockError{"lock-disabled", "Not available", 503, std::nullopt});
+  }
 
   struct CapReg {
     SovdEntityType type;

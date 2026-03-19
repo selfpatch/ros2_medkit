@@ -280,7 +280,7 @@ ManifestLockConfig ManifestParser::parse_lock_config(const YAML::Node & node) co
     config.breakable = node["breakable"].as<bool>();
   }
   if (node["max_expiration"]) {
-    config.max_expiration = node["max_expiration"].as<int>();
+    config.max_expiration = std::max(0, node["max_expiration"].as<int>());
   }
   return config;
 }
