@@ -150,8 +150,10 @@ std::string TriggerManager::to_iso8601(const std::chrono::system_clock::time_poi
   std::tm tm_val{};
   gmtime_r(&time_t_val, &tm_val);
 
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count() % 1000;
+
   std::ostringstream oss;
-  oss << std::put_time(&tm_val, "%Y-%m-%dT%H:%M:%S") << "Z";
+  oss << std::put_time(&tm_val, "%Y-%m-%dT%H:%M:%S") << "." << std::setw(3) << std::setfill('0') << ms << "Z";
   return oss.str();
 }
 
@@ -353,13 +355,20 @@ bool TriggerManager::wait_for_event(const std::string & trigger_id, std::chrono:
 
   std::unique_lock<std::mutex> sub_lock(state->mtx);
   bool woken = state->cv.wait_for(sub_lock, timeout, [&]() {
-    return state->pending_event.has_value() || !state->active.load() || shutdown_flag_.load();
+    return !state->pending_events.empty() || !state->active.load() || shutdown_flag_.load();
   });
   return woken;
 }
 
 void TriggerManager::cleanup_expired_trigger(const std::string & trigger_id,
                                              const std::shared_ptr<TriggerState> & state) {
+  // Guard: only one thread may clean up a given trigger (I7 fix).
+  // Both is_active() (SSE handler) and on_resource_change() (notifier worker) can
+  // call this concurrently. The atomic exchange ensures exactly one proceeds.
+  if (!state->active.exchange(false)) {
+    return;  // Another thread already cleaned up
+  }
+
   // Caller must NOT hold triggers_mutex_ or state->mtx.
   // Mark terminated under state lock, then clean up under triggers lock.
   bool persistent = false;
@@ -369,7 +378,6 @@ void TriggerManager::cleanup_expired_trigger(const std::string & trigger_id,
   {
     std::lock_guard<std::mutex> sub_lock(state->mtx);
     state->info.status = TriggerStatus::TERMINATED;
-    state->active.store(false);
     persistent = state->info.persistent;
     collection = state->info.collection;
     entity_id = state->info.entity_id;
@@ -389,11 +397,18 @@ void TriggerManager::cleanup_expired_trigger(const std::string & trigger_id,
     (void)store_.update(trigger_id, fields);
   }
 
-  // Remove from dispatch index and triggers map
+  // Remove from dispatch index and triggers map; capture callback under lock
+  OnRemovedCallback on_removed_copy;
   {
     std::lock_guard<std::mutex> lock(triggers_mutex_);
     remove_from_dispatch_index(trigger_id, collection, entity_id);
     triggers_.erase(trigger_id);
+    on_removed_copy = on_removed_;
+  }
+
+  // Fire on_removed callback (I8 fix) - consistent with remove()
+  if (on_removed_copy) {
+    on_removed_copy(trigger_id);
   }
 }
 
@@ -441,12 +456,12 @@ std::optional<nlohmann::json> TriggerManager::consume_pending_event(const std::s
   }
 
   std::lock_guard<std::mutex> sub_lock(state->mtx);
-  if (!state->pending_event.has_value()) {
+  if (state->pending_events.empty()) {
     return std::nullopt;
   }
 
-  auto event = std::move(state->pending_event.value());
-  state->pending_event.reset();
+  auto event = std::move(state->pending_events.front());
+  state->pending_events.pop_front();
   return event;
 }
 
@@ -522,6 +537,13 @@ void TriggerManager::load_persistent_triggers() {
 
 void TriggerManager::on_resource_change(const ResourceChange & change) {
   if (shutdown_flag_.load()) {
+    return;
+  }
+
+  // I5 fix: prevent recursive trigger evaluation. The notifier worker is
+  // single-threaded, so if log_manager_->add_log_entry() triggers a notification
+  // that re-enters on_resource_change(), we break the cycle here.
+  if (evaluating_trigger_) {
     return;
   }
 
@@ -626,43 +648,74 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
     state->previous_value = extracted_value;
     state->has_previous_value = true;
 
-    // Persist state if configured for restore
-    if (config_.on_restart_behavior == "restore" && state->info.persistent) {
-      (void)store_.save_state(trigger_id, extracted_value);
-    }
-
     if (fired) {
       // Build EventEnvelope
+      auto event_id = state->event_counter.fetch_add(1) + 1;
       nlohmann::json envelope;
+      envelope["event_id"] = event_id;
       envelope["timestamp"] = to_iso8601(std::chrono::system_clock::now());
       envelope["payload"] = change.value;
 
-      state->pending_event = std::move(envelope);
-
-      // log_settings: inject a log entry when the trigger fires
-      if (state->info.log_settings.has_value()) {
-        auto & ls = *state->info.log_settings;
-        if (log_manager_) {
-          log_manager_->add_log_entry(state->info.entity_id, ls.value("severity", "info"),
-                                      ls.value("marker", "Trigger fired"),
-                                      {{"trigger_id", state->info.id},
-                                       {"condition_type", state->info.condition_type},
-                                       {"resource", state->info.resource_uri}});
-        }
+      // C2 fix: push to bounded deque instead of overwriting single optional.
+      // Drop oldest events when queue is full to prevent unbounded growth.
+      state->pending_events.push_back(std::move(envelope));
+      if (state->pending_events.size() > TriggerState::kMaxPendingEvents) {
+        state->pending_events.pop_front();
       }
 
-      if (!state->info.multishot) {
+      // I6 fix: capture data under lock, then release before doing I/O.
+      // This prevents store_.save_state() and log_manager_->add_log_entry()
+      // from blocking SSE consumers that need state->mtx.
+      bool should_persist_state = (config_.on_restart_behavior == "restore" && state->info.persistent);
+      auto previous_value_copy = extracted_value;
+      bool should_terminate = !state->info.multishot;
+      auto tid_copy = state->info.id;
+      auto log_settings_copy = state->info.log_settings;
+      auto entity_id_copy = state->info.entity_id;
+      auto condition_type_copy = state->info.condition_type;
+      auto resource_uri_copy = state->info.resource_uri;
+      bool is_persistent = state->info.persistent;
+
+      if (should_terminate) {
         state->info.status = TriggerStatus::TERMINATED;
         state->active.store(false);
-        if (state->info.persistent) {
-          nlohmann::json fields;
-          fields["status"] = "TERMINATED";
-          (void)store_.update(trigger_id, fields);
-        }
       }
 
       sub_lock.unlock();
+
+      // Wake SSE consumers
       state->cv.notify_all();
+
+      // I/O operations outside state->mtx (I6 fix)
+      if (should_persist_state) {
+        (void)store_.save_state(tid_copy, previous_value_copy);
+      }
+
+      if (should_terminate && is_persistent) {
+        nlohmann::json fields;
+        fields["status"] = "TERMINATED";
+        (void)store_.update(tid_copy, fields);
+      }
+
+      // I5 fix: set guard before log entry to prevent recursive notification
+      if (log_settings_copy.has_value() && log_manager_) {
+        auto & ls = *log_settings_copy;
+        evaluating_trigger_ = true;
+        log_manager_->add_log_entry(
+            entity_id_copy, ls.value("severity", "info"), ls.value("marker", "Trigger fired"),
+            {{"trigger_id", tid_copy}, {"condition_type", condition_type_copy}, {"resource", resource_uri_copy}});
+        evaluating_trigger_ = false;
+      }
+    } else {
+      // Condition didn't fire - persist state if needed (I6: still move I/O outside lock)
+      bool should_persist_state = (config_.on_restart_behavior == "restore" && state->info.persistent);
+      auto previous_value_copy = extracted_value;
+      auto tid_copy = trigger_id;
+      sub_lock.unlock();
+
+      if (should_persist_state) {
+        (void)store_.save_state(tid_copy, previous_value_copy);
+      }
     }
   }
 }
