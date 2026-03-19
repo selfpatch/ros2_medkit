@@ -116,7 +116,7 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         {"bulk_data", true},
         {"cyclic_subscriptions", true},
         {"locking", ctx_.node() && ctx_.node()->get_lock_manager() != nullptr},
-        {"triggers", true},
+        {"triggers", ctx_.node() && ctx_.node()->get_trigger_manager() != nullptr},
         {"updates", ctx_.node() && ctx_.node()->get_update_manager() != nullptr},
         {"authentication", auth_config.enabled},
         {"tls", tls_config.enabled},

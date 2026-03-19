@@ -422,7 +422,11 @@ void TriggerHandlers::handle_events(const httplib::Request & req, httplib::Respo
           // accumulate multiple events between wakeups for multishot triggers)
           bool write_ok = true;
           while (auto event = mgr.consume_pending_event(tid)) {
-            std::string frame = "data: " + event->dump() + "\n\n";
+            std::string frame;
+            if (event->contains("event_id")) {
+              frame = "id: " + std::to_string((*event)["event_id"].get<uint64_t>()) + "\n";
+            }
+            frame += "data: " + event->dump() + "\n\n";
             if (!sink.write(frame.c_str(), frame.size())) {
               write_ok = false;
               break;
@@ -471,6 +475,10 @@ json TriggerHandlers::trigger_to_json(const TriggerInfo & info, const std::strin
 
   if (!info.path.empty()) {
     j["path"] = info.path;
+  }
+
+  if (info.log_settings.has_value()) {
+    j["log_settings"] = *info.log_settings;
   }
 
   return j;

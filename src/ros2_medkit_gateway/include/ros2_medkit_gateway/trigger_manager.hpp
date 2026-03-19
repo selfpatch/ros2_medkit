@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -153,7 +154,9 @@ class TriggerManager {
     std::mutex mtx;
     std::condition_variable cv;
     std::atomic<bool> active{true};
-    std::optional<nlohmann::json> pending_event;
+    std::deque<nlohmann::json> pending_events;
+    static constexpr size_t kMaxPendingEvents = 100;
+    std::atomic<uint64_t> event_counter{0};
   };
 
   /// Generate the next trigger ID.
@@ -220,6 +223,11 @@ class TriggerManager {
 
   // LogManager for log_settings integration (non-owning, optional)
   LogManager * log_manager_{nullptr};
+
+  // Recursive loop prevention: set when evaluating a trigger fires a log entry
+  // that would re-enter on_resource_change(). Only accessed from the notifier
+  // worker thread (single-threaded dispatch), so no synchronization needed.
+  bool evaluating_trigger_{false};
 };
 
 }  // namespace ros2_medkit_gateway
