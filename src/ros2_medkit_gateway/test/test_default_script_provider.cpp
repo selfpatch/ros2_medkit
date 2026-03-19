@@ -997,6 +997,19 @@ TEST_F(DefaultScriptProviderTest, UploadExceedingFileSizeRejected) {
   EXPECT_EQ(result.error().code, ScriptBackendError::FileTooLarge);
 }
 
+// @verifies REQ_INTEROP_040
+TEST_F(DefaultScriptProviderTest, UploadDisabledReturnsError) {
+  auto config = make_config();
+  config.allow_uploads = false;
+  DefaultScriptProvider provider(config);
+
+  std::string content = "#!/usr/bin/env python3\nprint('hello')";
+  auto result = provider.upload_script("comp1", "test.py", content, std::nullopt);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::InvalidInput);
+  EXPECT_NE(result.error().message.find("disabled"), std::string::npos);
+}
+
 // @verifies REQ_INTEROP_047
 TEST_F(DefaultScriptProviderTest, ControlCompletedExecutionReturnsNotRunning) {
   auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");

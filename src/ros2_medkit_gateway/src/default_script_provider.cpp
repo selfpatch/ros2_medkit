@@ -210,6 +210,11 @@ tl::expected<ScriptInfo, ScriptBackendErrorInfo> DefaultScriptProvider::get_scri
 tl::expected<ScriptUploadResult, ScriptBackendErrorInfo>
 DefaultScriptProvider::upload_script(const std::string & entity_id, const std::string & filename,
                                      const std::string & content, const std::optional<nlohmann::json> & metadata) {
+  if (!config_.allow_uploads) {
+    return tl::make_unexpected(
+        ScriptBackendErrorInfo{ScriptBackendError::InvalidInput, "Script uploads are disabled by configuration"});
+  }
+
   std::lock_guard<std::mutex> lock(fs_mutex_);
 
   if (config_.scripts_dir.empty()) {

@@ -350,6 +350,9 @@ ros2_medkit_gateway:
     scripts:
       # Directory for storing uploaded scripts. Empty = feature disabled.
       scripts_dir: ""
+      # Allow uploading scripts via HTTP. Set to false for hardened deployments
+      # that only use manifest-defined scripts.
+      allow_uploads: true
       # Maximum uploaded script file size in megabytes
       max_file_size_mb: 10
       # Maximum number of scripts executing concurrently
