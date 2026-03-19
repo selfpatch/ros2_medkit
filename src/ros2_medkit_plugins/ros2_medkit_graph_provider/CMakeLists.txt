@@ -112,7 +112,7 @@ if(BUILD_TESTING)
     OpenSSL::SSL OpenSSL::Crypto
   )
   set_tests_properties(test_graph_provider_plugin
-    PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=70"
+    PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=77"
   )
 endif()
 
