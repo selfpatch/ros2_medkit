@@ -405,6 +405,15 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
     stdin_data = request.parameters.value().dump();
   }
 
+  // Check stdin data size limit (POSIX pipe buffer is typically 64 KB)
+  constexpr size_t kMaxStdinSize = 64 * 1024;
+  if (stdin_data.size() > kMaxStdinSize) {
+    std::lock_guard<std::mutex> lock(exec_mutex_);
+    active_execution_count_--;
+    return tl::make_unexpected(
+        ScriptBackendErrorInfo{ScriptBackendError::InvalidInput, "Parameters JSON exceeds maximum stdin size (64 KB)"});
+  }
+
   // Create pipes for stdout, stderr, and optionally stdin
   int stdout_pipe[2];
   int stderr_pipe[2];
@@ -708,6 +717,16 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
     });
   }
 
+  // Evict oldest completed executions if history exceeds limit
+  {
+    std::vector<std::unique_ptr<ExecutionState>> to_evict;
+    {
+      std::lock_guard<std::mutex> lock(exec_mutex_);
+      evict_old_executions(to_evict);
+    }
+    // to_evict destructors run here, outside the lock
+  }
+
   // Return initial ExecutionInfo
   ExecutionInfo info;
   info.id = exec_id;
@@ -914,10 +933,12 @@ std::string DefaultScriptProvider::detect_format(const std::string & filename) {
 std::string DefaultScriptProvider::now_iso8601() {
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
   std::tm tm_buf{};
   gmtime_r(&time_t_now, &tm_buf);
   std::ostringstream oss;
-  oss << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%SZ");
+  oss << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%S");
+  oss << '.' << std::setfill('0') << std::setw(3) << ms.count() << 'Z';
   return oss.str();
 }
 
@@ -1038,6 +1059,47 @@ std::vector<std::string> DefaultScriptProvider::build_command_args(const nlohman
   }
 
   return result;
+}
+
+void DefaultScriptProvider::evict_old_executions(std::vector<std::unique_ptr<ExecutionState>> & to_evict) {
+  // Called with exec_mutex_ already held by caller.
+  // Evicts the oldest completed entries (by completed_at timestamp) when the
+  // number of non-running entries exceeds config_.max_execution_history.
+  while (true) {
+    int completed_count = 0;
+    for (const auto & [id, state] : executions_) {
+      if (state->status != "running") {
+        completed_count++;
+      }
+    }
+
+    if (completed_count <= config_.max_execution_history) {
+      break;
+    }
+
+    // Find oldest completed entry by completed_at timestamp.
+    // When timestamps are equal (sub-second completions), break ties by
+    // execution ID (lexicographic order of "exec_N" reflects creation order).
+    std::string oldest_id;
+    std::string oldest_time = "9999";  // Far future sentinel
+    for (const auto & [id, state] : executions_) {
+      if (state->status != "running" && state->completed_at.has_value()) {
+        if (oldest_id.empty() || *state->completed_at < oldest_time ||
+            (*state->completed_at == oldest_time && id < oldest_id)) {
+          oldest_time = *state->completed_at;
+          oldest_id = id;
+        }
+      }
+    }
+
+    if (oldest_id.empty()) {
+      break;
+    }
+
+    auto it = executions_.find(oldest_id);
+    to_evict.push_back(std::move(it->second));
+    executions_.erase(it);
+  }
 }
 
 ExecutionInfo DefaultScriptProvider::state_to_info(const ExecutionState & state) {
