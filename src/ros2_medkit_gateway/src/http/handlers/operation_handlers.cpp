@@ -434,7 +434,7 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
         action_type = body["type"].get<std::string>();
       }
 
-      auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data);
+      auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data, entity_id);
 
       if (action_result.success && action_result.goal_accepted) {
         // Return 202 Accepted with Location header for async operations

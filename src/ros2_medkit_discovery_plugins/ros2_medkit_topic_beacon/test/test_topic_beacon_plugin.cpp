@@ -104,11 +104,6 @@ class MockPluginContext : public PluginContext {
   ros2_medkit_gateway::ConditionRegistry * get_condition_registry() override {
     return nullptr;
   }
-  void set_trigger_store(std::unique_ptr<ros2_medkit_gateway::TriggerStore>) override {
-  }
-  void register_trigger_transport(std::shared_ptr<ros2_medkit_gateway::TriggerTransportProvider>) override {
-  }
-
   ros2_medkit_gateway::LockAccessResult check_lock(const std::string &, const std::string &,
                                                    const std::string &) const override {
     return ros2_medkit_gateway::LockAccessResult{true, "", "", ""};

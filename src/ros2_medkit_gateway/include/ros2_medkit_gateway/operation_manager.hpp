@@ -89,6 +89,7 @@ struct ActionGoalInfo {
   std::string goal_id;
   std::string action_path;  // e.g., /powertrain/engine/long_calibration
   std::string action_type;  // e.g., example_interfaces/action/Fibonacci
+  std::string entity_id;    // SOVD entity ID (e.g., engine) for trigger notifications
   ActionGoalStatus status;
   json last_feedback;
   std::chrono::system_clock::time_point created_at;
@@ -140,9 +141,10 @@ class OperationManager {
   /// @param action_path Full action path (e.g., "/powertrain/engine/long_calibration")
   /// @param action_type Action type (e.g., "example_interfaces/action/Fibonacci")
   /// @param goal JSON goal data
+  /// @param entity_id SOVD entity ID for trigger notifications (e.g., "engine")
   /// @return ActionSendGoalResult with goal_id or error
   ActionSendGoalResult send_action_goal(const std::string & action_path, const std::string & action_type,
-                                        const json & goal);
+                                        const json & goal, const std::string & entity_id = "");
 
   /// Send a goal to an action using component namespace and operation name
   /// Uses discovery cache to resolve action path and type if not provided
@@ -150,9 +152,11 @@ class OperationManager {
   /// @param operation_name Operation name (e.g., "long_calibration")
   /// @param action_type Optional action type override
   /// @param goal JSON goal data
+  /// @param entity_id SOVD entity ID for trigger notifications (e.g., "engine")
   /// @return ActionSendGoalResult with goal_id or error
   ActionSendGoalResult send_component_action_goal(const std::string & component_ns, const std::string & operation_name,
-                                                  const std::optional<std::string> & action_type, const json & goal);
+                                                  const std::optional<std::string> & action_type, const json & goal,
+                                                  const std::string & entity_id = "");
 
   /// Cancel a running action goal using ros2 action cancel
   /// @param action_path Full action path
@@ -231,7 +235,8 @@ class OperationManager {
   json uuid_bytes_to_json_array(const std::array<uint8_t, 16> & uuid);
 
   /// Track a new goal
-  void track_goal(const std::string & goal_id, const std::string & action_path, const std::string & action_type);
+  void track_goal(const std::string & goal_id, const std::string & action_path, const std::string & action_type,
+                  const std::string & entity_id);
 
   /// Get or create a cached GenericServiceClient for a service
   compat::GenericServiceClient::SharedPtr get_or_create_service_client(const std::string & service_path,
