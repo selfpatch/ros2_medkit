@@ -78,6 +78,7 @@ Feedback welcome on [#265](https://github.com/selfpatch/ros2_medkit/issues/265).
 | 🚨 Faults | **Available** | Query, inspect, and clear faults with environment data and snapshots |
 | 📦 Bulk Data | **Available** | Upload, download, and manage files (calibration, firmware, rosbags) |
 | 📡 Subscriptions | **Available** | Stream live data and fault events via SSE |
+| 🎯 Triggers | **Available** | Condition-based push notifications for resource changes |
 | 🔄 Software Updates | **Available** | Async prepare/execute lifecycle with pluggable backends |
 | 🔒 Authentication | **Available** | JWT-based RBAC (viewer, operator, configurator, admin) |
 | 📋 Logs | **Available** | Log sources, entries, and configuration |

@@ -1366,8 +1366,8 @@ Create Trigger
         "persistent": false,
         "lifetime": 300,
         "log_settings": {
-          "severity_filter": "warning",
-          "max_entries": 500
+          "severity": "warning",
+          "marker": "Temperature threshold exceeded"
         }
       }
 
@@ -1411,9 +1411,11 @@ Create Trigger
           duration. Must be a positive integer. Omit for no expiry.
       * - ``log_settings``
         - No
-        - Temporary log configuration applied when the trigger fires.
-          Accepts ``severity_filter`` and ``max_entries`` (same schema as
-          ``PUT /{entity}/logs/configuration``).
+        - Temporary log entry injected when the trigger fires.
+          Accepts ``severity`` (log level: ``debug``, ``info``, ``warning``,
+          ``error``, ``fatal``; default: ``info``) and ``marker`` (descriptive
+          message text; default: ``"Trigger fired"``). The log entry includes
+          trigger metadata (trigger ID, condition type, resource URI).
 
    **Response 201 Created:**
 
