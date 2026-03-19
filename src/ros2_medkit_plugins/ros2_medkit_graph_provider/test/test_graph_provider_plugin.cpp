@@ -202,8 +202,9 @@ class FakePluginContext : public PluginContext {
 
   void register_sampler(
       const std::string & collection,
-      std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> fn) override {
-    registered_samplers_[collection] = std::move(fn);
+      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> & fn)
+      override {
+    registered_samplers_[collection] = fn;
   }
 
  private:

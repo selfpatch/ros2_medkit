@@ -225,9 +225,10 @@ class GatewayPluginContext : public PluginContext {
 
   void register_sampler(
       const std::string & collection,
-      std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> fn) override {
+      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> & fn)
+      override {
     if (sampler_registry_) {
-      sampler_registry_->register_sampler(collection, std::move(fn));
+      sampler_registry_->register_sampler(collection, fn);
     }
   }
 

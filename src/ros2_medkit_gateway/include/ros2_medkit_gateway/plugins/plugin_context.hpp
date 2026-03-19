@@ -197,7 +197,8 @@ class PluginContext {
   /// Register a cyclic subscription sampler for a custom collection.
   virtual void register_sampler(
       const std::string & /*collection*/,
-      std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> /*fn*/) {
+      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> &
+      /*fn*/) {
   }
 };
 
