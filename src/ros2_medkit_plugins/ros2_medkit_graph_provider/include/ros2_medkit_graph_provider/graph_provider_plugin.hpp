@@ -87,6 +87,7 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   void load_parameters();
 
   PluginContext * ctx_{nullptr};
+  nlohmann::json plugin_config_;
 
   // Each mutex protects an independent cache/state bucket; no code path acquires more than one.
   mutable std::mutex cache_mutex_;

@@ -38,6 +38,11 @@ def generate_launch_description():
         print('[gateway.launch.py] ros2_medkit_graph_provider not installed '
               '- graph endpoints will not be available')
 
+    if graph_provider_path and not os.path.isfile(graph_provider_path):
+        print('[gateway.launch.py] WARNING: graph provider .so not found at '
+              f'{graph_provider_path} - plugin will not load')
+        graph_provider_path = ''
+
     declare_host_arg = DeclareLaunchArgument(
         'server_host', default_value='127.0.0.1',
         description='Host to bind REST server (127.0.0.1 or 0.0.0.0)')
