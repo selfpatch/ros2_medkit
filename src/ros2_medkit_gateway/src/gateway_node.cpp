@@ -754,6 +754,13 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
           return {};
         });
 
+    // Set entity existence checker for orphan sweep
+    trigger_mgr_->set_entity_exists_fn(
+        [this](const std::string & entity_id, const std::string & /*entity_type*/) -> bool {
+          const auto & cache = get_thread_safe_cache();
+          return cache.find_entity(entity_id).has_value();
+        });
+
     // Load persistent triggers
     trigger_mgr_->load_persistent_triggers();
 
@@ -1052,6 +1059,11 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Setup periodic refresh with configurable interval
   refresh_timer_ = create_wall_timer(std::chrono::milliseconds(refresh_interval_ms_), [this]() {
     refresh_cache();
+
+    // Sweep triggers whose entities disappeared from discovery
+    if (trigger_mgr_) {
+      trigger_mgr_->sweep_orphaned_triggers();
+    }
   });
 
   // Setup periodic cleanup of old action goals (every 60 seconds, remove goals older than 5 minutes)

@@ -140,6 +140,20 @@ class TriggerManager {
   /// Called by GatewayNode after both TriggerManager and LogManager are available.
   void set_log_manager(LogManager * log_manager);
 
+  // --- Entity existence check (for orphan sweep) ----------------------------
+
+  /// Function that checks whether an entity still exists in the discovery cache.
+  using EntityExistsFn = std::function<bool(const std::string & entity_id, const std::string & entity_type)>;
+
+  /// Set the entity existence checker. Called by GatewayNode after cache is available.
+  void set_entity_exists_fn(EntityExistsFn fn);
+
+  /// Remove triggers whose entities no longer exist in discovery.
+  ///
+  /// Two-phase approach to avoid deadlock: collect orphaned IDs under lock,
+  /// then call remove() (which re-acquires triggers_mutex_) outside the lock.
+  void sweep_orphaned_triggers();
+
  private:
   /// Per-trigger runtime state.
   ///
@@ -223,6 +237,10 @@ class TriggerManager {
 
   // LogManager for log_settings integration (non-owning, optional)
   LogManager * log_manager_{nullptr};
+
+  // Entity existence checker (for orphan sweep)
+  mutable std::mutex entity_exists_mutex_;
+  EntityExistsFn entity_exists_fn_;
 
   // Recursive loop prevention: set when evaluating a trigger fires a log entry
   // that would re-enter on_resource_change(). Only accessed from the notifier
