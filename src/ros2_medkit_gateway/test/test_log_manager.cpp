@@ -312,6 +312,59 @@ TEST_F(LogManagerBufferTest, GetLogsPrefixMatchesDotNotationLoggerNames) {
   ASSERT_EQ(result->size(), 2u);
 }
 
+// ============================================================
+// add_log_entry() tests (I12)
+// ============================================================
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerBufferTest, AddLogEntry_EntryRetrievable) {
+  mgr_->add_log_entry("my_node", "info", "trigger fired", json::object());
+
+  // The entry must appear in get_logs() for the matching node
+  auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 1u);
+  EXPECT_EQ((*result)[0]["severity"], "info");
+  EXPECT_EQ((*result)[0]["message"], "trigger fired");
+}
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerBufferTest, AddLogEntry_InvalidSeverityFallsBackToInfo) {
+  // "verbose" is not a valid SOVD severity; implementation falls back to INFO (level 20)
+  mgr_->add_log_entry("my_node", "verbose", "test message", json::object());
+
+  auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 1u);
+  // severity_to_level("verbose") == 0 -> falls back to rcl_interfaces::msg::Log::INFO (20) -> "info"
+  EXPECT_EQ((*result)[0]["severity"], "info");
+}
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerBufferTest, AddLogEntry_MetadataAppendedToMessage) {
+  json meta = {{"trigger_id", "trig_1"}, {"entity", "sensor"}};
+  mgr_->add_log_entry("my_node", "warning", "threshold exceeded", meta);
+
+  auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 1u);
+  // Message should contain the metadata JSON suffix
+  std::string msg = (*result)[0]["message"].get<std::string>();
+  EXPECT_NE(msg.find("threshold exceeded"), std::string::npos);
+  EXPECT_NE(msg.find("trig_1"), std::string::npos);
+}
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerBufferTest, AddLogEntry_EmptyMetadataNoSuffix) {
+  mgr_->add_log_entry("my_node", "debug", "clean message", json::object());
+
+  auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->size(), 1u);
+  // With empty metadata the message must be exactly the provided string
+  EXPECT_EQ((*result)[0]["message"], "clean message");
+}
+
 // @verifies REQ_INTEROP_064
 TEST_F(LogManagerBufferTest, UpdateConfigRejectsInvalidSeverity) {
   auto err = mgr_->update_config("e", std::string("verbose"), std::nullopt);

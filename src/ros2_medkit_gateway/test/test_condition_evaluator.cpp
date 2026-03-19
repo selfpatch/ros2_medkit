@@ -231,6 +231,18 @@ TEST(ConditionEvaluator, EnterRange_FloatingPoint) {
   EXPECT_TRUE(eval.evaluate(prev, curr, params));
 }
 
+// @verifies REQ_INTEROP_097
+TEST(ConditionEvaluator, EnterRange_NonNumericReturnsFalse) {
+  EnterRangeEvaluator eval;
+  json params = {{"lower_bound", 10}, {"upper_bound", 20}};
+  // Non-numeric current value
+  EXPECT_FALSE(eval.evaluate(json(5), json("hello"), params));
+  // Non-numeric previous value
+  EXPECT_FALSE(eval.evaluate(json("world"), json(15), params));
+  // Boolean previous value (booleans are not_number() in nlohmann/json by type check)
+  EXPECT_FALSE(eval.evaluate(json(true), json(15), params));
+}
+
 // ===========================================================================
 // LeaveRangeEvaluator Tests
 // ===========================================================================
@@ -286,6 +298,18 @@ TEST(ConditionEvaluator, LeaveRange_ValidateParams_LowerGreaterThanUpper) {
   json params = {{"lower_bound", 30}, {"upper_bound", 10}};
   auto result = eval.validate_params(params);
   EXPECT_FALSE(result.has_value());
+}
+
+// @verifies REQ_INTEROP_097
+TEST(ConditionEvaluator, LeaveRange_NonNumericReturnsFalse) {
+  LeaveRangeEvaluator eval;
+  json params = {{"lower_bound", 10}, {"upper_bound", 20}};
+  // Non-numeric current value
+  EXPECT_FALSE(eval.evaluate(json(15), json("hello"), params));
+  // Non-numeric previous value
+  EXPECT_FALSE(eval.evaluate(json("world"), json(25), params));
+  // Boolean previous value
+  EXPECT_FALSE(eval.evaluate(json(true), json(25), params));
 }
 
 // ===========================================================================
