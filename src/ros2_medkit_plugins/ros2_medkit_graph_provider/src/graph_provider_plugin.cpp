@@ -306,7 +306,8 @@ std::string GraphProviderPlugin::name() const {
   return "graph-provider";
 }
 
-void GraphProviderPlugin::configure(const nlohmann::json & /*config*/) {
+void GraphProviderPlugin::configure(const nlohmann::json & config) {
+  plugin_config_ = config;
 }
 
 void GraphProviderPlugin::set_context(PluginContext & context) {
@@ -613,59 +614,39 @@ GraphProviderPlugin::GraphBuildState GraphProviderPlugin::build_state_snapshot(c
 }
 
 void GraphProviderPlugin::load_parameters() {
-  if (!ctx_ || !ctx_->node()) {
-    return;
-  }
-
-  auto * node = ctx_->node();
-
-  const auto declare_if_needed = [node](const std::string & name, double default_value) {
-    if (!node->has_parameter(name)) {
-      node->declare_parameter(name, default_value);
+  auto get_config_double = [this](const std::string & key, double default_val) -> double {
+    if (plugin_config_.contains(key) && plugin_config_[key].is_number()) {
+      return plugin_config_[key].get<double>();
     }
+    return default_val;
   };
 
-  declare_if_needed("graph_provider.expected_frequency_hz_default", 30.0);
-  declare_if_needed("graph_provider.degraded_frequency_ratio", 0.5);
-  declare_if_needed("graph_provider.drop_rate_percent_threshold", 5.0);
-
   ConfigOverrides new_config;
-  new_config.defaults.expected_frequency_hz_default =
-      node->get_parameter("graph_provider.expected_frequency_hz_default").as_double();
-  new_config.defaults.degraded_frequency_ratio =
-      node->get_parameter("graph_provider.degraded_frequency_ratio").as_double();
-  new_config.defaults.drop_rate_percent_threshold =
-      node->get_parameter("graph_provider.drop_rate_percent_threshold").as_double();
+  new_config.defaults.expected_frequency_hz_default = get_config_double("expected_frequency_hz_default", 30.0);
+  new_config.defaults.degraded_frequency_ratio = get_config_double("degraded_frequency_ratio", 0.5);
+  new_config.defaults.drop_rate_percent_threshold = get_config_double("drop_rate_percent_threshold", 5.0);
 
-  const auto overrides = node->get_node_parameters_interface()->get_parameter_overrides();
-  const std::string prefix = "graph_provider.function_overrides.";
-  for (const auto & [name, value] : overrides) {
-    if (name.rfind(prefix, 0) != 0) {
+  // Per-function overrides from config (keys like "function_overrides.<func>.<field>")
+  const std::string prefix = "function_overrides.";
+  for (const auto & [key, value] : plugin_config_.items()) {
+    if (key.rfind(prefix, 0) != 0 || !value.is_number()) {
       continue;
     }
 
-    const auto remainder = name.substr(prefix.size());
-    const auto split = remainder.rfind('.');
-    if (split == std::string::npos) {
+    const auto remainder = key.substr(prefix.size());
+    const auto dot = remainder.rfind('.');
+    if (dot == std::string::npos) {
       continue;
     }
 
-    const auto function_id = remainder.substr(0, split);
-    const auto field = remainder.substr(split + 1);
+    const auto function_id = remainder.substr(0, dot);
+    const auto field = remainder.substr(dot + 1);
 
     auto [config_it, inserted] = new_config.by_function.emplace(function_id, new_config.defaults);
     auto & function_config = config_it->second;
     (void)inserted;
 
-    if (value.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE &&
-        value.get_type() != rclcpp::ParameterType::PARAMETER_INTEGER) {
-      continue;
-    }
-
-    const double numeric_value = value.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE
-                                     ? value.get<double>()
-                                     : static_cast<double>(value.get<int64_t>());
-
+    const double numeric_value = value.get<double>();
     if (field == "expected_frequency_hz") {
       function_config.expected_frequency_hz_default = numeric_value;
     } else if (field == "degraded_frequency_ratio") {
