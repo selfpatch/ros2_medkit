@@ -164,9 +164,9 @@ class TestTriggersPersistent(GatewayTestCase):
     @classmethod
     def setUpClass(cls):
         """Wait for both gateways and the demo node."""
-        _wait_for_health(BASE_URL_PRIMARY)
-        _wait_for_health(BASE_URL_SECONDARY)
-        _wait_for_app(BASE_URL_PRIMARY, APP_ID)
+        _wait_for_health(BASE_URL_PRIMARY, timeout=60.0)
+        _wait_for_health(BASE_URL_SECONDARY, timeout=60.0)
+        _wait_for_app(BASE_URL_PRIMARY, APP_ID, timeout=60.0)
 
     # ------------------------------------------------------------------
     # Test 01: create a persistent trigger on the PRIMARY gateway
