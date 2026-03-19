@@ -40,7 +40,7 @@ struct TriggerInfo {
   std::string condition_type;                  ///< "OnChange", "LeaveRange", "x-custom", etc.
   nlohmann::json condition_params;             ///< e.g. {"lower_bound":20, "upper_bound":30}
   std::string protocol;                        ///< Delivery protocol (e.g. "sse")
-  bool multishot{true};                        ///< false = fire once then terminate
+  bool multishot{false};                       ///< false = fire once then terminate
   bool persistent{false};                      ///< Survives gateway restart
   std::optional<int> lifetime_sec;             ///< Optional TTL in seconds
   std::optional<nlohmann::json> log_settings;  ///< Optional logging configuration
