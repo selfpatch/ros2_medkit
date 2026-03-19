@@ -564,7 +564,7 @@ if(BUILD_TESTING)
   # Capability generator tests (OpenAPI spec generation engine)
   ament_add_gtest(test_capability_generator test/test_capability_generator.cpp)
   target_link_libraries(test_capability_generator gateway_lib)
-  set_tests_properties(test_capability_generator PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=67")
+  set_tests_properties(test_capability_generator PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=74")
 
   # Route registry tests (OpenAPI route registration and path conversion)
   ament_add_gtest(test_route_registry test/test_route_registry.cpp)
@@ -582,7 +582,7 @@ if(BUILD_TESTING)
   # Lock handlers tests
   ament_add_gtest(test_lock_handlers test/test_lock_handlers.cpp)
   target_link_libraries(test_lock_handlers gateway_lib)
-  set_tests_properties(test_lock_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=70")
+  set_tests_properties(test_lock_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=73")
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
