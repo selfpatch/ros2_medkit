@@ -32,6 +32,8 @@
 #include <thread>
 #include <vector>
 
+#include <rclcpp/logging.hpp>
+
 namespace ros2_medkit_gateway {
 
 // --- ExecutionState destructor ---
@@ -51,6 +53,18 @@ DefaultScriptProvider::DefaultScriptProvider(const ScriptsConfig & config) : con
   // Populate manifest_scripts_ from config entries
   for (const auto & entry : config_.entries) {
     manifest_scripts_[entry.id] = entry;
+  }
+
+  // Validate manifest script paths at construction time
+  for (const auto & [id, entry] : manifest_scripts_) {
+    if (!entry.path.empty()) {
+      std::error_code ec;
+      if (!std::filesystem::exists(entry.path, ec) || !std::filesystem::is_regular_file(entry.path, ec)) {
+        RCLCPP_WARN(rclcpp::get_logger("default_script_provider"),
+                    "Manifest script '%s' path does not exist or is not a regular file: %s", id.c_str(),
+                    entry.path.c_str());
+      }
+    }
   }
 
   // Ensure the scripts directory exists
@@ -319,18 +333,19 @@ tl::expected<void, ScriptBackendErrorInfo> DefaultScriptProvider::delete_script(
         ScriptBackendErrorInfo{ScriptBackendError::ManagedScript, "Cannot delete managed script: " + script_id});
   }
 
-  // Check if any execution is still running for this script
-  {
-    std::lock_guard<std::mutex> lock(exec_mutex_);
-    for (const auto & [exec_id, exec_state] : executions_) {
-      if (exec_state->entity_id == entity_id && exec_state->script_id == script_id && exec_state->status == "running") {
-        return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::AlreadyRunning,
-                                                          "Cannot delete script with running execution: " + exec_id});
-      }
+  // Hold exec_mutex_ then fs_mutex_ to close the TOCTOU gap between
+  // checking for running executions and deleting the script on disk.
+  // Lock ordering: exec_mutex_ -> fs_mutex_ (consistent with all other methods).
+  std::lock_guard<std::mutex> exec_lock(exec_mutex_);
+
+  for (const auto & [exec_id, exec_state] : executions_) {
+    if (exec_state->entity_id == entity_id && exec_state->script_id == script_id && exec_state->status == "running") {
+      return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::AlreadyRunning,
+                                                        "Cannot delete script with running execution: " + exec_id});
     }
   }
 
-  std::lock_guard<std::mutex> lock(fs_mutex_);
+  std::lock_guard<std::mutex> fs_lock(fs_mutex_);
 
   auto dir = script_dir_path(entity_id, script_id);
   if (dir.empty()) {
@@ -704,7 +719,8 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
         if (state_ptr->pid.load() <= 0) {
           return;
         }
-        if (kill(child_pid, 0) != 0) {
+        // Re-check pid before probing - process may have been reaped since last check
+        if (state_ptr->pid.load() > 0 && kill(child_pid, 0) != 0) {
           return;  // Process exited after SIGTERM
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -874,11 +890,15 @@ std::filesystem::path DefaultScriptProvider::script_dir_path(const std::string &
 }
 
 std::string DefaultScriptProvider::generate_id() {
-  return "script_" + std::to_string(id_counter_++);
+  auto now = std::chrono::steady_clock::now().time_since_epoch();
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+  return "script_" + std::to_string(ms) + "_" + std::to_string(id_counter_++);
 }
 
 std::string DefaultScriptProvider::generate_execution_id() {
-  return "exec_" + std::to_string(exec_id_counter_++);
+  auto now = std::chrono::steady_clock::now().time_since_epoch();
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+  return "exec_" + std::to_string(ms) + "_" + std::to_string(exec_id_counter_++);
 }
 
 bool DefaultScriptProvider::is_manifest_script(const std::string & script_id) const {
