@@ -114,6 +114,34 @@ void TriggerManager::set_log_manager(LogManager * log_manager) {
   log_manager_ = log_manager;
 }
 
+void TriggerManager::set_entity_exists_fn(EntityExistsFn fn) {
+  std::lock_guard<std::mutex> lock(entity_exists_mutex_);
+  entity_exists_fn_ = std::move(fn);
+}
+
+void TriggerManager::sweep_orphaned_triggers() {
+  // Phase 1: collect orphaned trigger IDs under lock
+  std::vector<std::string> orphaned;
+  {
+    std::lock_guard<std::mutex> lock(triggers_mutex_);
+    std::lock_guard<std::mutex> elock(entity_exists_mutex_);
+    if (!entity_exists_fn_) {
+      return;
+    }
+    for (const auto & [id, state] : triggers_) {
+      // entity_id and entity_type are immutable after creation - safe to read without state->mtx
+      if (state->active.load() && !entity_exists_fn_(state->info.entity_id, state->info.entity_type)) {
+        orphaned.push_back(id);
+      }
+    }
+  }
+
+  // Phase 2: remove without holding triggers_mutex_ (remove() re-acquires it)
+  for (const auto & id : orphaned) {
+    remove(id);
+  }
+}
+
 bool TriggerManager::matches_entity(const TriggerState & state, const std::string & notification_entity_id) const {
   // Direct match
   if (state.info.entity_id == notification_entity_id) {

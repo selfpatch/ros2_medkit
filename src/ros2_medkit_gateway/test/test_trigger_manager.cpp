@@ -915,3 +915,97 @@ TEST(LoadPersistentTriggers, NewTriggerIdIsHigherThanRestoredId) {
   manager.shutdown();
   notifier.shutdown();
 }
+
+// ===========================================================================
+// Entity orphan sweep tests (I10 fix)
+// ===========================================================================
+
+TEST_F(TriggerManagerTest, Sweep_RemovesOrphanedTriggers) {
+  auto r1 = make_request("alive_app");
+  auto r2 = make_request("gone_app");
+  auto created1 = manager_->create(r1);
+  auto created2 = manager_->create(r2);
+  ASSERT_TRUE(created1.has_value());
+  ASSERT_TRUE(created2.has_value());
+
+  // alive_app exists, gone_app doesn't
+  manager_->set_entity_exists_fn([](const std::string & id, const std::string & /*entity_type*/) {
+    return id != "gone_app";
+  });
+
+  manager_->sweep_orphaned_triggers();
+
+  EXPECT_FALSE(manager_->list("alive_app").empty());
+  EXPECT_TRUE(manager_->list("gone_app").empty());
+}
+
+TEST_F(TriggerManagerTest, Sweep_FiresOnRemovedCallback) {
+  auto req = make_request("doomed_app");
+  auto created = manager_->create(req);
+  ASSERT_TRUE(created.has_value());
+
+  std::string removed_id;
+  manager_->set_on_removed([&](const std::string & id) {
+    removed_id = id;
+  });
+  manager_->set_entity_exists_fn([](const std::string & /*id*/, const std::string & /*entity_type*/) {
+    return false;
+  });
+
+  manager_->sweep_orphaned_triggers();
+  EXPECT_EQ(removed_id, created->id);
+}
+
+TEST_F(TriggerManagerTest, Sweep_NoopWithoutEntityExistsFn) {
+  auto req = make_request("sensor");
+  auto created = manager_->create(req);
+  ASSERT_TRUE(created.has_value());
+
+  // No entity_exists_fn set - sweep should not crash or remove anything
+  manager_->sweep_orphaned_triggers();
+  EXPECT_FALSE(manager_->list("sensor").empty());
+}
+
+TEST_F(TriggerManagerTest, Sweep_SkipsInactiveTriggers) {
+  auto req = make_request("gone_app");
+  req.multishot = false;
+  auto created = manager_->create(req);
+  ASSERT_TRUE(created.has_value());
+
+  // Fire the single-shot trigger so it becomes TERMINATED
+  notifier_.notify("data", "gone_app", "/temperature", json(42.0));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
+
+  // All entities "gone" - but terminated trigger was already cleaned up by
+  // on_resource_change, so sweep should not crash
+  manager_->set_entity_exists_fn([](const std::string & /*id*/, const std::string & /*entity_type*/) {
+    return false;
+  });
+
+  // Should not crash
+  manager_->sweep_orphaned_triggers();
+}
+
+TEST_F(TriggerManagerTest, Sweep_FreesCapacitySlots) {
+  // Fill capacity (max_triggers = 10)
+  for (int i = 0; i < 10; ++i) {
+    auto r = manager_->create(make_request("entity_" + std::to_string(i)));
+    ASSERT_TRUE(r.has_value()) << "Trigger " << i << " should succeed: " << r.error();
+  }
+
+  // Capacity full
+  auto overflow = manager_->create(make_request("overflow"));
+  ASSERT_FALSE(overflow.has_value());
+
+  // Sweep removes 5 entities (entity_5 through entity_9)
+  manager_->set_entity_exists_fn([](const std::string & id, const std::string & /*entity_type*/) {
+    // entity_0 through entity_4 exist; entity_5+ don't
+    return id.size() > 7 && id.back() < '5';
+  });
+
+  manager_->sweep_orphaned_triggers();
+
+  // Now we should have 5 slots free
+  auto after_sweep = manager_->create(make_request("new_entity"));
+  EXPECT_TRUE(after_sweep.has_value()) << "Should have capacity after sweep: " << after_sweep.error();
+}
