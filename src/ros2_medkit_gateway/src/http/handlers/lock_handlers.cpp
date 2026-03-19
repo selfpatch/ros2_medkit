@@ -171,11 +171,16 @@ void LockHandlers::handle_acquire_lock(const httplib::Request & req, httplib::Re
         }
         auto scope_str = scope.get<std::string>();
         if (valid_lock_scopes().find(scope_str) == valid_lock_scopes().end()) {
-          HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unknown lock scope: " + scope_str,
-                                     json{{"details",
-                                           "Valid scopes: data, operations, configurations, faults, modes, "
-                                           "scripts, bulk-data"},
-                                          {"invalid_scope", scope_str}});
+          HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unknown lock scope: " + scope_str, [&]() {
+            std::string scope_list;
+            for (const auto & s : valid_lock_scopes()) {
+              if (!scope_list.empty()) {
+                scope_list += ", ";
+              }
+              scope_list += s;
+            }
+            return json{{"details", "Valid scopes: " + scope_list}, {"invalid_scope", scope_str}};
+          }());
           return;
         }
         scopes.push_back(scope_str);
@@ -194,6 +199,7 @@ void LockHandlers::handle_acquire_lock(const httplib::Request & req, httplib::Re
     if (result.has_value()) {
       auto response = lock_to_json(*result, client_id);
       res.status = 201;
+      res.set_header("Location", req.path + "/" + result->lock_id);
       res.set_content(response.dump(2), "application/json");
     } else {
       const auto & err = result.error();

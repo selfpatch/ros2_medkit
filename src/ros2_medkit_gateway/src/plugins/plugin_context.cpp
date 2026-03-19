@@ -173,36 +173,31 @@ class GatewayPluginContext : public PluginContext {
     return {};
   }
 
-  bool check_lock(const std::string & entity_id, const std::string & client_id,
-                  const std::string & collection) const override {
+  LockAccessResult check_lock(const std::string & entity_id, const std::string & client_id,
+                              const std::string & collection) const override {
     auto * lock_mgr = node_->get_lock_manager();
     if (!lock_mgr) {
-      return true;  // Locking disabled
+      return LockAccessResult{true, "", "", ""};
     }
-    auto result = lock_mgr->check_access(entity_id, client_id, collection);
-    return result.allowed;
+    return lock_mgr->check_access(entity_id, client_id, collection);
   }
 
-  std::string acquire_lock(const std::string & entity_id, const std::string & client_id,
-                           const std::vector<std::string> & scopes, int expiration_seconds) override {
+  tl::expected<LockInfo, LockError> acquire_lock(const std::string & entity_id, const std::string & client_id,
+                                                 const std::vector<std::string> & scopes,
+                                                 int expiration_seconds) override {
     auto * lock_mgr = node_->get_lock_manager();
     if (!lock_mgr) {
-      return {};
+      return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled", 503, std::nullopt});
     }
-    auto result = lock_mgr->acquire(entity_id, client_id, scopes, expiration_seconds);
-    if (result.has_value()) {
-      return result->lock_id;
-    }
-    return {};
+    return lock_mgr->acquire(entity_id, client_id, scopes, expiration_seconds);
   }
 
-  bool release_lock(const std::string & entity_id, const std::string & client_id) override {
+  tl::expected<void, LockError> release_lock(const std::string & entity_id, const std::string & client_id) override {
     auto * lock_mgr = node_->get_lock_manager();
     if (!lock_mgr) {
-      return false;
+      return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled", 503, std::nullopt});
     }
-    auto result = lock_mgr->release(entity_id, client_id);
-    return result.has_value();
+    return lock_mgr->release(entity_id, client_id);
   }
 
  private:
