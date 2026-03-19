@@ -36,6 +36,7 @@ The following diagram shows the relationships between the main components of the
            + get_configuration_manager(): ConfigurationManager*
            + get_lock_manager(): LockManager*
            + get_script_manager(): ScriptManager*
+           + get_trigger_manager(): TriggerManager*
        }
 
        class DiscoveryManager {
@@ -215,6 +216,52 @@ The following diagram shows the relationships between the main components of the
            + type: string
        }
 
+       class TriggerManager {
+           + create(): expected<TriggerInfo, string>
+           + get(): optional<TriggerInfo>
+           + list(): vector<TriggerInfo>
+           + update(): expected<TriggerInfo, string>
+           + remove(): bool
+           + wait_for_event(): bool
+           + consume_pending_event(): optional<json>
+           + load_persistent_triggers(): void
+           + shutdown(): void
+       }
+
+       class ResourceChangeNotifier {
+           + subscribe(): NotifierSubscriptionId
+           + unsubscribe(): void
+           + notify(): void
+           + shutdown(): void
+       }
+
+       class ConditionRegistry {
+           + register_condition(): void
+           + get(): shared_ptr<ConditionEvaluator>
+           + has(): bool
+       }
+
+       interface ConditionEvaluator <<interface>> {
+           + evaluate(): bool
+           + validate_params(): expected<void, string>
+       }
+
+       interface TriggerStore <<interface>> {
+           + save(): expected<void, string>
+           + update(): expected<void, string>
+           + remove(): expected<void, string>
+           + load_all(): expected<vector<TriggerInfo>, string>
+       }
+
+       class SqliteTriggerStore {
+           - db_path_: string
+       }
+
+       class TriggerTopicSubscriber {
+           + subscribe_topic(): void
+           + unsubscribe_topic(): void
+       }
+
        class EntityCache {
            + areas: vector<Area>
            + components: vector<Component>
@@ -305,6 +352,20 @@ The following diagram shows the relationships between the main components of the
    Area ..> JSON : serializes to
    Component ..> JSON : serializes to
    App ..> JSON : serializes to
+
+   ' Trigger subsystem
+   GatewayNode *-down-> TriggerManager : owns
+   GatewayNode *-down-> ResourceChangeNotifier : owns
+   GatewayNode *-down-> ConditionRegistry : owns
+   GatewayNode *-down-> TriggerTopicSubscriber : owns
+   TriggerManager --> ResourceChangeNotifier : subscribes to
+   TriggerManager --> ConditionRegistry : evaluates with
+   TriggerManager --> TriggerStore : persists via
+   TriggerManager --> TriggerTopicSubscriber : manages data subscriptions
+   SqliteTriggerStore .up.|> TriggerStore : implements
+   ConditionRegistry o--> ConditionEvaluator : contains many
+   RESTServer --> TriggerManager : uses
+   TriggerTopicSubscriber --> "rclcpp::Node" : uses
 
    @enduml
 
@@ -440,3 +501,46 @@ Main Components
     - Supports termination via ``stop`` (SIGTERM) and ``forced_termination`` (SIGKILL)
     - Built-in ``DefaultScriptProvider`` handles filesystem storage and manifest-defined scripts
     - Supports concurrent execution limits and per-script timeout configuration
+
+Triggers
+--------
+
+The trigger subsystem implements SOVD condition-based resource change notifications.
+It consists of five main components:
+
+1. **TriggerManager** - Central coordinator for trigger lifecycle (CRUD), condition
+   evaluation, and event dispatch.
+
+   - Subscribes to ``ResourceChangeNotifier`` for resource change events
+   - Evaluates conditions using registered ``ConditionEvaluator`` instances via the ``ConditionRegistry``
+   - Uses O(1) dispatch indexing by ``{collection, entity_id}`` for efficient notification matching
+   - Supports entity hierarchy matching (area-level triggers catch descendant changes)
+   - Manages pending events for SSE stream pickup with per-trigger mutexes
+   - Persists triggers via the ``TriggerStore`` interface
+
+2. **ResourceChangeNotifier** - Async notification hub for resource changes.
+
+   - Producers (FaultManager, DataAccessManager, UpdateManager, OperationManager, LogManager) call ``notify()``
+   - Observers (TriggerManager) register callbacks with filters
+   - ``notify()`` is non-blocking - pushes to an internal queue processed by a dedicated worker thread
+   - Filters support collection, entity_id, and resource_path matching
+
+3. **ConditionRegistry** - Thread-safe registry for condition evaluators.
+
+   - Built-in SOVD types: ``OnChange``, ``OnChangeTo``, ``EnterRange``, ``LeaveRange``
+   - Plugins register custom evaluators with ``x-`` prefixed names
+   - Uses ``shared_mutex`` for concurrent read access during evaluation
+
+4. **TriggerStore** / **SqliteTriggerStore** - Persistence backend for triggers.
+
+   - Abstract ``TriggerStore`` interface allows plugin-provided backends
+   - Default ``SqliteTriggerStore`` uses SQLite for persistent triggers
+   - Stores trigger metadata, condition parameters, and evaluator state (previous values)
+   - Supports partial updates for status changes and lifetime extensions
+
+5. **TriggerTopicSubscriber** - Manages ROS 2 topic subscriptions for data triggers.
+
+   - Creates ``rclcpp::GenericSubscription`` instances for monitored data topics
+   - Reference-counted: multiple triggers on the same topic share one subscription
+   - Publishes data changes to ``ResourceChangeNotifier`` for condition evaluation
+   - Automatically unsubscribes when the last trigger for a topic is removed
