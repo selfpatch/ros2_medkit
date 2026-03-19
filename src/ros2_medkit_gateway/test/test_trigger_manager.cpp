@@ -84,7 +84,7 @@ class TriggerManagerTest : public ::testing::Test {
 // CRUD Tests
 // ===========================================================================
 
-// @verifies REQ_TRIGGER_001
+// @verifies REQ_INTEROP_029
 TEST_F(TriggerManagerTest, Create_ValidOnChangeTrigger) {
   auto result = manager_->create(make_request());
   ASSERT_TRUE(result.has_value()) << result.error();
@@ -96,7 +96,7 @@ TEST_F(TriggerManagerTest, Create_ValidOnChangeTrigger) {
   EXPECT_EQ(result->status, TriggerStatus::ACTIVE);
 }
 
-// @verifies REQ_TRIGGER_001
+// @verifies REQ_INTEROP_029
 TEST_F(TriggerManagerTest, Create_InvalidConditionType) {
   auto req = make_request("sensor", "NonexistentCondition");
   auto result = manager_->create(req);
@@ -104,7 +104,7 @@ TEST_F(TriggerManagerTest, Create_InvalidConditionType) {
   EXPECT_NE(result.error().find("condition"), std::string::npos);
 }
 
-// @verifies REQ_TRIGGER_001
+// @verifies REQ_INTEROP_029
 TEST_F(TriggerManagerTest, Create_InvalidParams) {
   // EnterRange requires lower_bound <= upper_bound
   json params = {{"lower_bound", 30}, {"upper_bound", 10}};
@@ -114,7 +114,7 @@ TEST_F(TriggerManagerTest, Create_InvalidParams) {
   EXPECT_NE(result.error().find("lower_bound"), std::string::npos);
 }
 
-// @verifies REQ_TRIGGER_001
+// @verifies REQ_INTEROP_029
 TEST_F(TriggerManagerTest, Create_MaxTriggersExceeded) {
   for (int i = 0; i < 10; ++i) {
     auto r = manager_->create(make_request("entity_" + std::to_string(i)));
@@ -125,7 +125,7 @@ TEST_F(TriggerManagerTest, Create_MaxTriggersExceeded) {
   EXPECT_NE(result.error().find("capacity"), std::string::npos);
 }
 
-// @verifies REQ_TRIGGER_001
+// @verifies REQ_INTEROP_096
 TEST_F(TriggerManagerTest, Get_Existing) {
   auto created = manager_->create(make_request());
   ASSERT_TRUE(created.has_value());
@@ -141,7 +141,7 @@ TEST_F(TriggerManagerTest, Get_NonExisting) {
   EXPECT_FALSE(fetched.has_value());
 }
 
-// @verifies REQ_TRIGGER_001
+// @verifies REQ_INTEROP_030
 TEST_F(TriggerManagerTest, List_ReturnsTriggersForEntity) {
   (void)manager_->create(make_request("sensor"));
   (void)manager_->create(make_request("sensor"));
@@ -157,7 +157,7 @@ TEST_F(TriggerManagerTest, List_ReturnsTriggersForEntity) {
   EXPECT_TRUE(empty.empty());
 }
 
-// @verifies REQ_TRIGGER_001
+// @verifies REQ_INTEROP_031
 TEST_F(TriggerManagerTest, Update_ChangeLifetime) {
   auto req = make_request();
   req.lifetime_sec = 300;
@@ -193,7 +193,7 @@ TEST_F(TriggerManagerTest, Update_ZeroLifetimeRejected) {
   EXPECT_NE(result.error().find("positive"), std::string::npos);
 }
 
-// @verifies REQ_TRIGGER_001
+// @verifies REQ_INTEROP_032
 TEST_F(TriggerManagerTest, Remove_ExistingTrigger) {
   auto created = manager_->create(make_request());
   ASSERT_TRUE(created.has_value());
@@ -210,7 +210,7 @@ TEST_F(TriggerManagerTest, Remove_NonExisting) {
 // Event Evaluation Tests
 // ===========================================================================
 
-// @verifies REQ_TRIGGER_002
+// @verifies REQ_INTEROP_097
 TEST_F(TriggerManagerTest, SingleShot_NotifyMatchingChange) {
   auto req = make_request("sensor", "OnChange");
   req.multishot = false;
@@ -234,7 +234,7 @@ TEST_F(TriggerManagerTest, SingleShot_NotifyMatchingChange) {
   EXPECT_EQ(info->status, TriggerStatus::TERMINATED);
 }
 
-// @verifies REQ_TRIGGER_002
+// @verifies REQ_INTEROP_097
 TEST_F(TriggerManagerTest, Multishot_NotifyTwice) {
   auto req = make_request("sensor", "OnChange");
   req.multishot = true;
@@ -259,7 +259,7 @@ TEST_F(TriggerManagerTest, Multishot_NotifyTwice) {
   EXPECT_TRUE(manager_->is_active(created->id));
 }
 
-// @verifies REQ_TRIGGER_002
+// @verifies REQ_INTEROP_029
 TEST_F(TriggerManagerTest, LifetimeExpiry) {
   auto req = make_request();
   // Use a very short lifetime so the test doesn't block long
@@ -280,7 +280,7 @@ TEST_F(TriggerManagerTest, LifetimeExpiry) {
 // Hierarchy Matching Tests
 // ===========================================================================
 
-// @verifies REQ_TRIGGER_003
+// @verifies REQ_INTEROP_029
 TEST_F(TriggerManagerTest, Hierarchy_ComponentToApp) {
   // Set up hierarchy: component "chassis" contains app "sensor"
   manager_->set_entity_children_fn(
@@ -306,7 +306,7 @@ TEST_F(TriggerManagerTest, Hierarchy_ComponentToApp) {
   ASSERT_TRUE(event.has_value());
 }
 
-// @verifies REQ_TRIGGER_003
+// @verifies REQ_INTEROP_029
 TEST_F(TriggerManagerTest, Hierarchy_AreaToApp) {
   // Set up hierarchy: area "navigation" contains apps
   manager_->set_entity_children_fn(
@@ -361,7 +361,7 @@ TEST_F(TriggerManagerTest, Hierarchy_NoMatchForUnrelatedEntity) {
 // Callback Tests
 // ===========================================================================
 
-// @verifies REQ_TRIGGER_001
+// @verifies REQ_INTEROP_032
 TEST_F(TriggerManagerTest, OnRemovedCallback) {
   std::vector<std::string> removed_ids;
   manager_->set_on_removed([&](const std::string & trigger_id) {
@@ -381,7 +381,7 @@ TEST_F(TriggerManagerTest, OnRemovedCallback) {
 // Event Envelope Tests
 // ===========================================================================
 
-// @verifies REQ_TRIGGER_002
+// @verifies REQ_INTEROP_097
 TEST_F(TriggerManagerTest, EventEnvelopeFormat) {
   auto req = make_request("sensor", "OnChange");
   auto created = manager_->create(req);
@@ -488,7 +488,7 @@ TEST_F(TriggerManagerTest, Shutdown_WakesWaitingThreads) {
 // JSON Pointer Extraction Tests
 // ===========================================================================
 
-// @verifies REQ_TRIGGER_002
+// @verifies REQ_INTEROP_097
 TEST_F(TriggerManagerTest, JsonPointer_ExtractsSubElement) {
   auto req = make_request("sensor", "OnChange");
   req.path = "/data";
@@ -640,6 +640,77 @@ TEST_F(TriggerManagerTest, ResolvedTopicName_EmptyWhenUnresolved) {
   auto fetched = manager_->get(created->id);
   ASSERT_TRUE(fetched.has_value());
   EXPECT_TRUE(fetched->resolved_topic_name.empty());
+}
+
+// ===========================================================================
+// Multi-entity notification tests (I1 fix)
+// ===========================================================================
+
+// ===========================================================================
+// Bounded queue tests (C2 fix)
+// ===========================================================================
+
+TEST_F(TriggerManagerTest, MultishotRapidEvents_AllConsumed) {
+  auto req = make_request("sensor", "OnChange");
+  req.multishot = true;
+  auto created = manager_->create(req);
+  ASSERT_TRUE(created.has_value());
+
+  // Fire 3 events in rapid succession
+  notifier_.notify("data", "sensor", "/temperature", json(10.0));
+  notifier_.notify("data", "sensor", "/temperature", json(20.0));
+  notifier_.notify("data", "sensor", "/temperature", json(30.0));
+
+  // Wait for events to be processed
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
+
+  // All 3 events should be consumable
+  auto event1 = manager_->consume_pending_event(created->id);
+  ASSERT_TRUE(event1.has_value());
+  EXPECT_EQ((*event1)["payload"], json(10.0));
+
+  auto event2 = manager_->consume_pending_event(created->id);
+  ASSERT_TRUE(event2.has_value());
+  EXPECT_EQ((*event2)["payload"], json(20.0));
+
+  auto event3 = manager_->consume_pending_event(created->id);
+  ASSERT_TRUE(event3.has_value());
+  EXPECT_EQ((*event3)["payload"], json(30.0));
+
+  // No more events
+  auto event4 = manager_->consume_pending_event(created->id);
+  EXPECT_FALSE(event4.has_value());
+
+  // Trigger should still be active
+  EXPECT_TRUE(manager_->is_active(created->id));
+}
+
+// ===========================================================================
+// Expired trigger on_removed callback (I8 fix)
+// ===========================================================================
+
+TEST_F(TriggerManagerTest, ExpiredTrigger_FiresOnRemovedCallback) {
+  std::vector<std::string> removed_ids;
+  manager_->set_on_removed([&](const std::string & trigger_id) {
+    removed_ids.push_back(trigger_id);
+  });
+
+  auto req = make_request();
+  req.lifetime_sec = 1;
+  auto created = manager_->create(req);
+  ASSERT_TRUE(created.has_value());
+
+  EXPECT_TRUE(manager_->is_active(created->id));
+
+  // Wait for expiry
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+
+  // is_active triggers cleanup for expired triggers
+  EXPECT_FALSE(manager_->is_active(created->id));
+
+  // on_removed should have been called
+  ASSERT_EQ(removed_ids.size(), 1u);
+  EXPECT_EQ(removed_ids[0], created->id);
 }
 
 // ===========================================================================

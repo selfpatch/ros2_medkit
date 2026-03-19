@@ -270,7 +270,7 @@ Configure limits for SSE-based streaming (fault events and cyclic subscriptions)
    * - ``sse.max_clients``
      - int
      - ``10``
-     - Maximum number of concurrent SSE connections (fault stream + cyclic subscription streams combined).
+     - Maximum number of concurrent SSE connections (fault stream, cyclic subscription streams, and trigger event streams combined).
    * - ``sse.max_subscriptions``
      - int
      - ``100``
@@ -290,6 +290,54 @@ Example:
          max_clients: 10
          max_subscriptions: 100
          max_duration_sec: 3600
+
+Triggers
+--------
+
+Configure condition-based push notifications for resource changes.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 25 35
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``triggers.enabled``
+     - bool
+     - ``true``
+     - Enable/disable the trigger subsystem. When disabled, trigger endpoints
+       return HTTP 501.
+   * - ``triggers.max_triggers``
+     - int
+     - ``1000``
+     - Maximum number of concurrent triggers across all entities. Returns
+       HTTP 503 when this limit is reached.
+   * - ``triggers.on_restart_behavior``
+     - string
+     - ``"reset"``
+     - Behavior on gateway restart for persistent triggers. ``"reset"`` clears
+       all triggers on restart. ``"restore"`` reloads persistent triggers from
+       the storage database.
+   * - ``triggers.storage.path``
+     - string
+     - ``""``
+     - Path to SQLite database for persistent trigger storage. When empty
+       (default), triggers are stored in-memory only and lost on restart.
+
+Example:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       triggers:
+         enabled: true
+         max_triggers: 1000
+         on_restart_behavior: "restore"
+         storage:
+           path: "/var/lib/ros2_medkit/triggers.db"
 
 Rate Limiting
 -------------
@@ -455,6 +503,11 @@ Complete Example
          max_clients: 10
          max_subscriptions: 100
          max_duration_sec: 3600
+
+       triggers:
+         enabled: true
+         max_triggers: 1000
+         on_restart_behavior: "reset"
 
        logs:
          buffer_size: 200
