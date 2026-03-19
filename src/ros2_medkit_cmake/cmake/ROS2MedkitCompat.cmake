@@ -19,8 +19,8 @@
 # Centralizes all dependency resolution workarounds for supporting multiple
 # ROS 2 distributions (Humble, Jazzy, Rolling) in a single place.
 #
-# Usage (in each package's CMakeLists.txt, after find_package(ament_cmake)):
-#   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake")
+# Usage (in each package's CMakeLists.txt):
+#   find_package(ros2_medkit_cmake REQUIRED)
 #   include(ROS2MedkitCompat)
 #
 # Macros provided:

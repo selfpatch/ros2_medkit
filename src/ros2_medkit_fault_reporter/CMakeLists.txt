@@ -19,7 +19,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake")
+find_package(ros2_medkit_cmake REQUIRED)
 include(ROS2MedkitCcache)
 include(ROS2MedkitLinting)
 
@@ -37,8 +37,6 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 
-# Multi-distro compatibility (Humble / Jazzy / Rolling)
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake")
 include(ROS2MedkitCompat)
 
 find_package(rclcpp REQUIRED)

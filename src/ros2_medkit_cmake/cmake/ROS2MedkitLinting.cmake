@@ -25,7 +25,7 @@ include_guard(GLOBAL)
 option(ENABLE_CLANG_TIDY "Register clang-tidy as a CTest target" OFF)
 
 # Capture at include-time: inside a function CMAKE_CURRENT_LIST_DIR resolves to the caller.
-set(_ROS2_MEDKIT_CLANG_TIDY_CONFIG "${CMAKE_CURRENT_LIST_DIR}/../.clang-tidy")
+set(_ROS2_MEDKIT_CLANG_TIDY_CONFIG "${CMAKE_CURRENT_LIST_DIR}/.clang-tidy")
 
 function(ros2_medkit_clang_tidy)
   if(NOT ENABLE_CLANG_TIDY)
