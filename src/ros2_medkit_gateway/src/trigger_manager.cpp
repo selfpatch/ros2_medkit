@@ -182,6 +182,7 @@ tl::expected<TriggerInfo, std::string> TriggerManager::create(const TriggerCreat
   state->info.resource_uri = req.resource_uri;
   state->info.collection = req.collection;
   state->info.resource_path = req.resource_path;
+  state->info.resolved_topic_name = req.resolved_topic_name;
   state->info.path = req.path;
   state->info.condition_type = req.condition_type;
   state->info.condition_params = req.condition_params;
@@ -224,8 +225,8 @@ tl::expected<TriggerInfo, std::string> TriggerManager::create(const TriggerCreat
   }
 
   // Subscribe to topic for data triggers
-  if (topic_subscriber_ && req.collection == "data") {
-    topic_subscriber_->subscribe(req.resource_path, req.entity_id);
+  if (topic_subscriber_ && req.collection == "data" && !req.resolved_topic_name.empty()) {
+    topic_subscriber_->subscribe(req.resolved_topic_name, req.resource_path, req.entity_id);
   }
 
   return info_copy;
@@ -292,7 +293,7 @@ bool TriggerManager::remove(const std::string & trigger_id) {
   std::shared_ptr<TriggerState> state;
   std::string collection;
   std::string entity_id;
-  std::string resource_path;
+  std::string resolved_topic_name;
   bool persistent = false;
   OnRemovedCallback on_removed_copy;
   {
@@ -306,7 +307,7 @@ bool TriggerManager::remove(const std::string & trigger_id) {
       std::lock_guard<std::mutex> sub_lock(state->mtx);
       collection = state->info.collection;
       entity_id = state->info.entity_id;
-      resource_path = state->info.resource_path;
+      resolved_topic_name = state->info.resolved_topic_name;
       persistent = state->info.persistent;
     }
     remove_from_dispatch_index(trigger_id, collection, entity_id);
@@ -319,8 +320,8 @@ bool TriggerManager::remove(const std::string & trigger_id) {
   state->cv.notify_all();
 
   // Unsubscribe from topic for data triggers
-  if (topic_subscriber_ && collection == "data") {
-    topic_subscriber_->unsubscribe(resource_path);
+  if (topic_subscriber_ && collection == "data" && !resolved_topic_name.empty()) {
+    topic_subscriber_->unsubscribe(resolved_topic_name, entity_id);
   }
 
   // Remove from persistent store if applicable (outside triggers_mutex_)
@@ -364,7 +365,7 @@ void TriggerManager::cleanup_expired_trigger(const std::string & trigger_id,
   bool persistent = false;
   std::string collection;
   std::string entity_id;
-  std::string resource_path;
+  std::string resolved_topic_name;
   {
     std::lock_guard<std::mutex> sub_lock(state->mtx);
     state->info.status = TriggerStatus::TERMINATED;
@@ -372,13 +373,13 @@ void TriggerManager::cleanup_expired_trigger(const std::string & trigger_id,
     persistent = state->info.persistent;
     collection = state->info.collection;
     entity_id = state->info.entity_id;
-    resource_path = state->info.resource_path;
+    resolved_topic_name = state->info.resolved_topic_name;
   }
   state->cv.notify_all();
 
   // Unsubscribe from topic for expired data triggers
-  if (topic_subscriber_ && collection == "data") {
-    topic_subscriber_->unsubscribe(resource_path);
+  if (topic_subscriber_ && collection == "data" && !resolved_topic_name.empty()) {
+    topic_subscriber_->unsubscribe(resolved_topic_name, entity_id);
   }
 
   // Persist status change (outside all locks)

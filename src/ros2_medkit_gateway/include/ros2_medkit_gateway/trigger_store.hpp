@@ -34,7 +34,8 @@ struct TriggerInfo {
   std::string entity_type;                     ///< "apps" | "components" | "areas" | "functions"
   std::string resource_uri;                    ///< Full URI (e.g. "/api/v1/apps/temp_sensor/data/temperature")
   std::string collection;                      ///< Parsed collection segment (e.g. "data")
-  std::string resource_path;                   ///< Parsed resource name (e.g. "temperature")
+  std::string resource_path;                   ///< Parsed resource name (e.g. "/temperature")
+  std::string resolved_topic_name;             ///< Full ROS 2 topic (e.g. "/sensor/temperature"), empty if unresolved
   std::string path;                            ///< JSON Pointer within the resource (e.g. "/data")
   std::string condition_type;                  ///< "OnChange", "LeaveRange", "x-custom", etc.
   nlohmann::json condition_params;             ///< e.g. {"lower_bound":20, "upper_bound":30}

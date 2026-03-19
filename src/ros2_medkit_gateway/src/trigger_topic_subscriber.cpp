@@ -33,19 +33,23 @@ TriggerTopicSubscriber::~TriggerTopicSubscriber() {
   shutdown();
 }
 
-void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std::string & entity_id) {
+void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std::string & resource_path,
+                                       const std::string & entity_id) {
   if (shutdown_flag_.load()) {
     return;
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // If already subscribed, increment ref count
+  // If already subscribed, add entity_id and increment ref count
   auto it = subscriptions_.find(topic_name);
   if (it != subscriptions_.end()) {
     it->second.ref_count++;
-    RCLCPP_DEBUG(node_->get_logger(), "TriggerTopicSubscriber: incremented ref_count for '%s' to %d",
-                 topic_name.c_str(), it->second.ref_count);
+    it->second.entity_ids.insert(entity_id);
+    RCLCPP_DEBUG(node_->get_logger(),
+                 "TriggerTopicSubscriber: incremented ref_count for '%s' to %d, "
+                 "entity_ids count=%zu",
+                 topic_name.c_str(), it->second.ref_count, it->second.entity_ids.size());
     return;
   }
 
@@ -66,9 +70,10 @@ void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std
   // Use SensorDataQoS (best effort) as default - matches NativeTopicSampler pattern.
   rclcpp::QoS qos = rclcpp::SensorDataQoS();
 
-  // Capture topic_name, entity_id, and msg_type by value for the callback
+  // Capture topic_name and msg_type by value for the callback.
+  // Entity IDs are read from subscriptions_ under lock in the callback.
   // NOLINTNEXTLINE(performance-unnecessary-value-param) - GenericSubscription requires value type in callback
-  auto callback = [this, topic_name, entity_id, msg_type](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+  auto callback = [this, topic_name, msg_type](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
     if (shutdown_flag_.load()) {
       return;
     }
@@ -77,8 +82,23 @@ void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std
       // Deserialize CDR data to JSON
       nlohmann::json data_json = serializer_->deserialize(msg_type, *msg);
 
-      // Forward to notifier for trigger evaluation
-      notifier_.notify("data", entity_id, topic_name, data_json, ChangeType::UPDATED);
+      // Read current entity_ids and resource_path under lock
+      std::unordered_set<std::string> current_entity_ids;
+      std::string current_resource_path;
+      {
+        std::lock_guard<std::mutex> cb_lock(mutex_);
+        auto sub_it = subscriptions_.find(topic_name);
+        if (sub_it == subscriptions_.end()) {
+          return;
+        }
+        current_entity_ids = sub_it->second.entity_ids;
+        current_resource_path = sub_it->second.resource_path;
+      }
+
+      // Emit one notification per entity_id, using resource_path (not topic_name)
+      for (const auto & eid : current_entity_ids) {
+        notifier_.notify("data", eid, current_resource_path, data_json, ChangeType::UPDATED);
+      }
 
     } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
       RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
@@ -100,18 +120,19 @@ void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std
     SubscriptionEntry entry;
     entry.subscription = std::move(subscription);
     entry.ref_count = 1;
-    entry.entity_id = entity_id;
+    entry.resource_path = resource_path;
+    entry.entity_ids.insert(entity_id);
     subscriptions_[topic_name] = std::move(entry);
 
-    RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: subscribed to '%s' (type=%s, entity=%s)",
-                topic_name.c_str(), msg_type.c_str(), entity_id.c_str());
+    RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: subscribed to '%s' (type=%s, entity=%s, resource=%s)",
+                topic_name.c_str(), msg_type.c_str(), entity_id.c_str(), resource_path.c_str());
   } catch (const std::exception & e) {
     RCLCPP_ERROR(node_->get_logger(), "TriggerTopicSubscriber: failed to create subscription for '%s': %s",
                  topic_name.c_str(), e.what());
   }
 }
 
-void TriggerTopicSubscriber::unsubscribe(const std::string & topic_name) {
+void TriggerTopicSubscriber::unsubscribe(const std::string & topic_name, const std::string & entity_id) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = subscriptions_.find(topic_name);
@@ -120,13 +141,17 @@ void TriggerTopicSubscriber::unsubscribe(const std::string & topic_name) {
   }
 
   it->second.ref_count--;
+  it->second.entity_ids.erase(entity_id);
+
   if (it->second.ref_count <= 0) {
     RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: unsubscribed from '%s' (ref_count reached 0)",
                 topic_name.c_str());
     subscriptions_.erase(it);
   } else {
-    RCLCPP_DEBUG(node_->get_logger(), "TriggerTopicSubscriber: decremented ref_count for '%s' to %d",
-                 topic_name.c_str(), it->second.ref_count);
+    RCLCPP_DEBUG(node_->get_logger(),
+                 "TriggerTopicSubscriber: decremented ref_count for '%s' to %d, "
+                 "entity_ids count=%zu",
+                 topic_name.c_str(), it->second.ref_count, it->second.entity_ids.size());
   }
 }
 

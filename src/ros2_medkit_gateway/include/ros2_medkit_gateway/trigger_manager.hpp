@@ -46,6 +46,7 @@ struct TriggerCreateRequest {
   std::string resource_uri;         ///< "/api/v1/apps/sensor/data/temperature"
   std::string collection;           ///< Parsed from resource_uri: "data"
   std::string resource_path;        ///< Parsed: "temperature"
+  std::string resolved_topic_name;  ///< Full ROS 2 topic (e.g. "/sensor/temperature"), empty if unresolved
   std::string path;                 ///< JSON Pointer: "/data"
   std::string condition_type;       ///< "OnChange", "LeaveRange", etc.
   nlohmann::json condition_params;  ///< e.g. {"lower_bound":20, "upper_bound":30}

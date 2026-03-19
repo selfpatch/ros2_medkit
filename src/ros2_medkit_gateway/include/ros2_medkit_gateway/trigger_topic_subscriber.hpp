@@ -19,6 +19,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -59,27 +60,29 @@ class TriggerTopicSubscriber {
   /**
    * @brief Subscribe to a topic for data trigger monitoring.
    *
-   * If the topic is already subscribed, increments the ref count.
-   * Otherwise, creates a GenericSubscription that deserializes messages
-   * to JSON and forwards them to the notifier.
+   * If the topic is already subscribed, adds the entity_id to the set and
+   * increments the ref count. Otherwise, creates a GenericSubscription that
+   * deserializes messages to JSON and forwards them to the notifier.
    *
    * If the topic type cannot be determined (e.g., no publishers yet),
    * logs a warning and skips subscription creation.
    *
    * @param topic_name ROS 2 topic name (e.g., "/sensor/temperature")
+   * @param resource_path Resource path for notification matching (e.g., "/temperature")
    * @param entity_id Entity ID for the notification (e.g., "temp_sensor")
    */
-  void subscribe(const std::string & topic_name, const std::string & entity_id);
+  void subscribe(const std::string & topic_name, const std::string & resource_path, const std::string & entity_id);
 
   /**
-   * @brief Unsubscribe from a topic.
+   * @brief Unsubscribe an entity from a topic.
    *
-   * Decrements the ref count. If it reaches zero, the ROS 2 subscription
-   * is destroyed.
+   * Decrements the ref count and removes the entity_id from the set.
+   * If the ref count reaches zero, the ROS 2 subscription is destroyed.
    *
    * @param topic_name ROS 2 topic name to unsubscribe from
+   * @param entity_id Entity ID to remove from the subscription
    */
-  void unsubscribe(const std::string & topic_name);
+  void unsubscribe(const std::string & topic_name, const std::string & entity_id);
 
   /**
    * @brief Shutdown all subscriptions.
@@ -89,11 +92,12 @@ class TriggerTopicSubscriber {
   void shutdown();
 
  private:
-  /// Per-topic subscription state with ref counting.
+  /// Per-topic subscription state with ref counting and multi-entity support.
   struct SubscriptionEntry {
     rclcpp::GenericSubscription::SharedPtr subscription;
     int ref_count = 0;
-    std::string entity_id;
+    std::string resource_path;                   ///< Resource path for notifications (e.g., "/temperature")
+    std::unordered_set<std::string> entity_ids;  ///< All entities watching this topic
   };
 
   rclcpp::Node * node_;
