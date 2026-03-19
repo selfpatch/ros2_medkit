@@ -34,7 +34,9 @@ set(GATEWAY_VERSION "${CMAKE_MATCH_1}")
 # Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
+find_package(example_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -461,6 +463,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_health_handlers test/test_health_handlers.cpp)
   target_link_libraries(test_health_handlers gateway_lib)
 
+  # Add operation handler tests
+  ament_add_gtest(test_operation_handlers test/test_operation_handlers.cpp)
+  target_link_libraries(test_operation_handlers gateway_lib)
+  medkit_target_dependencies(test_operation_handlers rclcpp rclcpp_action std_srvs example_interfaces)
+  set_tests_properties(test_operation_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=69")
+
   # Demo update backend plugin (.so for integration tests)
   add_library(test_update_backend MODULE
     test/demo_nodes/test_update_backend.cpp
@@ -589,6 +597,7 @@ if(BUILD_TESTING)
       test_data_handlers
       test_auth_handlers
       test_health_handlers
+      test_operation_handlers
       test_plugin_loader
       test_plugin_manager
       test_log_manager
