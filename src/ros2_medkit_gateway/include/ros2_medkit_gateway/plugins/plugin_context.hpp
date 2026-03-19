@@ -40,8 +40,6 @@ class ResourceSamplerRegistry;
 // Forward declarations for trigger-related types
 class ResourceChangeNotifier;
 class ConditionRegistry;
-class TriggerStore;
-class TriggerTransportProvider;
 
 /**
  * @brief Entity information exposed to plugins
@@ -224,28 +222,6 @@ class PluginContext {
    * Plugins should guard against nullptr before use.
    */
   virtual ConditionRegistry * get_condition_registry() = 0;
-
-  /**
-   * @brief Replace the gateway's trigger persistence backend.
-   *
-   * Called by plugins that provide an alternative TriggerStore (e.g. a
-   * remote database). Must be called before the gateway starts processing
-   * trigger requests. Passing nullptr resets to no store (triggers disabled).
-   *
-   * @param store Owning pointer to the new store.
-   */
-  virtual void set_trigger_store(std::unique_ptr<TriggerStore> store) = 0;
-
-  /**
-   * @brief Register a custom trigger transport provider.
-   *
-   * The provider's protocol_name() must be unique among registered transports.
-   * Registered providers are consulted during event dispatch when a trigger's
-   * protocol matches.
-   *
-   * @param provider Shared pointer to the transport provider.
-   */
-  virtual void register_trigger_transport(std::shared_ptr<TriggerTransportProvider> provider) = 0;
 };
 
 // Forward declarations

@@ -233,12 +233,6 @@ class FakePluginContext : public PluginContext {
     return nullptr;
   }
 
-  void set_trigger_store(std::unique_ptr<TriggerStore> /*store*/) override {
-  }
-
-  void register_trigger_transport(std::shared_ptr<TriggerTransportProvider> /*provider*/) override {
-  }
-
  private:
   rclcpp::Node * node_{nullptr};
   std::unordered_map<std::string, PluginEntityInfo> entities_;
