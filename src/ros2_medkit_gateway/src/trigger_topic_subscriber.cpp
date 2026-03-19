@@ -26,6 +26,12 @@ TriggerTopicSubscriber::TriggerTopicSubscriber(rclcpp::Node * node, ResourceChan
   if (!node_) {
     throw std::invalid_argument("TriggerTopicSubscriber requires a valid node pointer");
   }
+
+  // Create a wall timer that retries pending subscriptions every kRetryIntervalSec seconds.
+  retry_timer_ = node_->create_wall_timer(std::chrono::seconds(kRetryIntervalSec), [this]() {
+    retry_pending_subscriptions();
+  });
+
   RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber initialized");
 }
 
@@ -53,19 +59,37 @@ void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std
     return;
   }
 
+  // If already pending, add entity_id to the pending entry
+  auto pit = pending_.find(topic_name);
+  if (pit != pending_.end()) {
+    pit->second.entity_ids.insert(entity_id);
+    RCLCPP_DEBUG(node_->get_logger(), "TriggerTopicSubscriber: added entity '%s' to pending subscription for '%s'",
+                 entity_id.c_str(), topic_name.c_str());
+    return;
+  }
+
   // Determine topic type from the ROS 2 graph
   auto topic_names_and_types = node_->get_topic_names_and_types();
   auto type_it = topic_names_and_types.find(topic_name);
   if (type_it == topic_names_and_types.end() || type_it->second.empty()) {
     RCLCPP_WARN(node_->get_logger(),
                 "TriggerTopicSubscriber: cannot determine type for topic '%s' "
-                "(no publishers yet), skipping subscription",
+                "(no publishers yet), queuing for retry",
                 topic_name.c_str());
+    auto & pending = pending_[topic_name];
+    pending.resource_path = resource_path;
+    pending.entity_ids.insert(entity_id);
+    pending.created_at = std::chrono::steady_clock::now();
     return;
   }
 
   const std::string & msg_type = type_it->second[0];
+  create_subscription_internal(topic_name, msg_type, resource_path, {entity_id});
+}
 
+void TriggerTopicSubscriber::create_subscription_internal(const std::string & topic_name, const std::string & msg_type,
+                                                          const std::string & resource_path,
+                                                          const std::unordered_set<std::string> & entity_ids) {
   // Create a GenericSubscription that deserializes and forwards to notifier.
   // Use SensorDataQoS (best effort) as default - matches NativeTopicSampler pattern.
   rclcpp::QoS qos = rclcpp::SensorDataQoS();
@@ -119,13 +143,13 @@ void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std
 
     SubscriptionEntry entry;
     entry.subscription = std::move(subscription);
-    entry.ref_count = 1;
+    entry.ref_count = static_cast<int>(entity_ids.size());
     entry.resource_path = resource_path;
-    entry.entity_ids.insert(entity_id);
+    entry.entity_ids = entity_ids;
     subscriptions_[topic_name] = std::move(entry);
 
-    RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: subscribed to '%s' (type=%s, entity=%s, resource=%s)",
-                topic_name.c_str(), msg_type.c_str(), entity_id.c_str(), resource_path.c_str());
+    RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: subscribed to '%s' (type=%s, entities=%zu, resource=%s)",
+                topic_name.c_str(), msg_type.c_str(), entity_ids.size(), resource_path.c_str());
   } catch (const std::exception & e) {
     RCLCPP_ERROR(node_->get_logger(), "TriggerTopicSubscriber: failed to create subscription for '%s': %s",
                  topic_name.c_str(), e.what());
@@ -134,6 +158,19 @@ void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std
 
 void TriggerTopicSubscriber::unsubscribe(const std::string & topic_name, const std::string & entity_id) {
   std::lock_guard<std::mutex> lock(mutex_);
+
+  // Check pending subscriptions first
+  auto pit = pending_.find(topic_name);
+  if (pit != pending_.end()) {
+    pit->second.entity_ids.erase(entity_id);
+    if (pit->second.entity_ids.empty()) {
+      RCLCPP_INFO(node_->get_logger(),
+                  "TriggerTopicSubscriber: removed pending subscription for '%s' (no entities remaining)",
+                  topic_name.c_str());
+      pending_.erase(pit);
+    }
+    return;
+  }
 
   auto it = subscriptions_.find(topic_name);
   if (it == subscriptions_.end()) {
@@ -160,9 +197,60 @@ void TriggerTopicSubscriber::shutdown() {
     return;  // Already shut down
   }
 
+  if (retry_timer_) {
+    retry_timer_->cancel();
+    retry_timer_.reset();
+  }
+
   std::lock_guard<std::mutex> lock(mutex_);
+  pending_.clear();
   subscriptions_.clear();
   RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: shutdown complete");
+}
+
+void TriggerTopicSubscriber::retry_pending_subscriptions() {
+  if (shutdown_flag_.load()) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (pending_.empty()) {
+    return;
+  }
+
+  auto now = std::chrono::steady_clock::now();
+  std::vector<std::string> resolved;
+  std::vector<std::string> expired;
+
+  // Query the ROS 2 graph once for all pending topics
+  auto topic_names_and_types = node_->get_topic_names_and_types();
+
+  for (auto & [topic_name, pending] : pending_) {
+    // Check timeout
+    if (now - pending.created_at > std::chrono::seconds(kPendingTimeoutSec)) {
+      RCLCPP_ERROR(node_->get_logger(), "TriggerTopicSubscriber: topic '%s' type not available after %ds, giving up",
+                   topic_name.c_str(), kPendingTimeoutSec);
+      expired.push_back(topic_name);
+      continue;
+    }
+
+    // Try to resolve topic type
+    auto type_it = topic_names_and_types.find(topic_name);
+    if (type_it != topic_names_and_types.end() && !type_it->second.empty()) {
+      // Topic type is now available - create the subscription
+      create_subscription_internal(topic_name, type_it->second[0], pending.resource_path, pending.entity_ids);
+      resolved.push_back(topic_name);
+    }
+  }
+
+  for (const auto & name : resolved) {
+    RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: resolved pending subscription for '%s'", name.c_str());
+    pending_.erase(name);
+  }
+  for (const auto & name : expired) {
+    pending_.erase(name);
+  }
 }
 
 }  // namespace ros2_medkit_gateway
