@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/operation_handlers.hpp"
 
 using json = nlohmann::json;
@@ -64,6 +65,7 @@ json parse_json(const httplib::Response & res) {
 int reserve_local_port() {
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) {
+    ADD_FAILURE() << "Failed to create socket for test port reservation: " << std::strerror(errno);
     return 0;
   }
 
@@ -73,12 +75,14 @@ int reserve_local_port() {
   addr.sin_port = 0;
 
   if (bind(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+    ADD_FAILURE() << "Failed to bind socket for test port reservation: " << std::strerror(errno);
     close(sock);
     return 0;
   }
 
   socklen_t addr_len = sizeof(addr);
   if (getsockname(sock, reinterpret_cast<sockaddr *>(&addr), &addr_len) != 0) {
+    ADD_FAILURE() << "Failed to inspect reserved test port: " << std::strerror(errno);
     close(sock);
     return 0;
   }
@@ -192,7 +196,7 @@ TEST_F(OperationHandlersValidationTest, ListOperationsMissingMatchesReturns400) 
 
   EXPECT_EQ(res.status, 400);
   auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], "invalid-request");
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
 }
 
 TEST_F(OperationHandlersValidationTest, ListOperationsInvalidEntityReturns400) {
@@ -204,7 +208,7 @@ TEST_F(OperationHandlersValidationTest, ListOperationsInvalidEntityReturns400) {
 
   EXPECT_EQ(res.status, 400);
   auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], "invalid-parameter");
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_PARAMETER);
 }
 
 class OperationHandlersFixtureTest : public ::testing::Test {
@@ -370,7 +374,7 @@ TEST_F(OperationHandlersFixtureTest, ListOperationsUnknownEntityReturns404) {
 
   EXPECT_EQ(res.status, 404);
   auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], "entity-not-found");
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_ENTITY_NOT_FOUND);
 }
 
 TEST_F(OperationHandlersFixtureTest, GetOperationReturnsActionMetadata) {
@@ -397,7 +401,7 @@ TEST_F(OperationHandlersFixtureTest, GetOperationUnknownOperationReturns404) {
 
   EXPECT_EQ(res.status, 404);
   auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], "operation-not-found");
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_OPERATION_NOT_FOUND);
 }
 
 TEST_F(OperationHandlersFixtureTest, CreateExecutionOnServiceReturnsSynchronousResponse) {
@@ -458,7 +462,7 @@ TEST_F(OperationHandlersFixtureTest, CancelExecutionUnknownIdReturns404) {
 
   EXPECT_EQ(res.status, 404);
   auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], "resource-not-found");
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND);
 }
 
 TEST_F(OperationHandlersFixtureTest, UpdateExecutionStopReturnsAcceptedAndLocation) {
@@ -494,5 +498,5 @@ TEST_F(OperationHandlersFixtureTest, UpdateExecutionMissingCapabilityReturns400)
 
   EXPECT_EQ(res.status, 400);
   auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], "invalid-parameter");
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_PARAMETER);
 }
