@@ -1209,6 +1209,12 @@ Upload Script
 
    Response: **201 Created** with ``Location`` header pointing to the new script.
 
+   .. note::
+
+      Uploads can be disabled by setting ``scripts.allow_uploads: false`` in the
+      gateway configuration. When disabled, POST returns 400. Pre-deployed
+      manifest scripts remain available for execution.
+
 List Scripts
 ~~~~~~~~~~~~
 

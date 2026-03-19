@@ -47,6 +47,7 @@ struct ScriptsConfig {
   int max_file_size_mb = 10;
   int max_concurrent_executions = 5;
   int default_timeout_sec = 300;
+  bool allow_uploads = true;
   std::vector<std::string> supported_execution_types = {"now"};
   std::vector<ScriptEntryConfig> entries;
 };
