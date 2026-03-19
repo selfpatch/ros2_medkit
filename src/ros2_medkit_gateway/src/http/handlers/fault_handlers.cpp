@@ -641,16 +641,53 @@ void FaultHandlers::handle_clear_all_faults_global(const httplib::Request & req,
       return;
     }
 
-    // Clear each fault
+    // Build FQN-to-entity-ID map for lock checking
+    auto * lock_mgr = ctx_.node() ? ctx_.node()->get_lock_manager() : nullptr;
+    std::unordered_map<std::string, std::string> fqn_to_entity;
+    if (lock_mgr) {
+      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      for (const auto & app : cache.get_apps()) {
+        auto fqn = app.effective_fqn();
+        if (!fqn.empty()) {
+          fqn_to_entity[fqn] = app.id;
+        }
+      }
+    }
+
+    auto client_id = req.get_header_value("X-Client-Id");
+
+    // Clear each fault, skipping those on locked entities
     if (faults_result.data.contains("faults") && faults_result.data["faults"].is_array()) {
       for (const auto & fault : faults_result.data["faults"]) {
-        if (fault.contains("fault_code")) {
-          std::string fault_code = fault["fault_code"].get<std::string>();
-          auto clear_result = fault_mgr->clear_fault(fault_code);
-          if (!clear_result.success) {
-            RCLCPP_WARN(HandlerContext::logger(), "Failed to clear fault '%s': %s", fault_code.c_str(),
-                        clear_result.error_message.c_str());
+        if (!fault.contains("fault_code")) {
+          continue;
+        }
+
+        // Check if any reporting source is on a locked entity
+        bool blocked = false;
+        if (lock_mgr && fault.contains("reporting_sources")) {
+          for (const auto & src : fault["reporting_sources"]) {
+            auto src_str = src.get<std::string>();
+            auto it = fqn_to_entity.find(src_str);
+            if (it != fqn_to_entity.end()) {
+              auto access = lock_mgr->check_access(it->second, client_id, "faults");
+              if (!access.allowed) {
+                blocked = true;
+                break;
+              }
+            }
           }
+        }
+
+        if (blocked) {
+          continue;  // Skip faults on locked entities
+        }
+
+        std::string fault_code = fault["fault_code"].get<std::string>();
+        auto clear_result = fault_mgr->clear_fault(fault_code);
+        if (!clear_result.success) {
+          RCLCPP_WARN(HandlerContext::logger(), "Failed to clear fault '%s': %s", fault_code.c_str(),
+                      clear_result.error_message.c_str());
         }
       }
     }
