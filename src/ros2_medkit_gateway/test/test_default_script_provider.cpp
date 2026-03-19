@@ -1033,4 +1033,66 @@ TEST_F(DefaultScriptProviderTest, ControlCompletedExecutionReturnsNotRunning) {
   EXPECT_EQ(ctrl.error().code, ScriptBackendError::NotRunning);
 }
 
+TEST_F(DefaultScriptProviderTest, ExecutionHistoryEviction) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  auto config = make_config({entry});
+  config.max_execution_history = 2;  // Keep at most 2 completed executions
+  DefaultScriptProvider provider(config);
+
+  // Start 5 executions sequentially, waiting for each to complete.
+  // Eviction runs during start_execution, so:
+  //   start 0-2: no eviction (completed count <= 2)
+  //   start 3: evicts exec 0 (completed count was 3)
+  //   start 4: evicts exec 1 (completed count was 3)
+  // After all complete: execs 2, 3, 4 remain (3 entries, the last
+  // completion brings it to max+1 since no subsequent start triggers eviction).
+  std::vector<std::string> exec_ids;
+  for (int i = 0; i < 5; ++i) {
+    ExecutionRequest req{"now", std::nullopt, std::nullopt};
+    auto start = provider.start_execution("comp1", "echo_py", req);
+    ASSERT_TRUE(start.has_value()) << "exec " << i << ": " << start.error().message;
+    exec_ids.push_back(start->id);
+
+    auto final_state = wait_for_completion(provider, "comp1", "echo_py", start->id);
+    ASSERT_TRUE(final_state.has_value());
+    EXPECT_EQ(final_state->status, "completed")
+        << "exec " << i << " error: " << (final_state->error.has_value() ? final_state->error->dump() : "none");
+  }
+
+  // The 2 oldest (exec_ids[0], exec_ids[1]) should have been evicted
+  auto get0 = provider.get_execution("comp1", "echo_py", exec_ids[0]);
+  EXPECT_FALSE(get0.has_value()) << "Expected exec_ids[0] to be evicted";
+
+  auto get1 = provider.get_execution("comp1", "echo_py", exec_ids[1]);
+  EXPECT_FALSE(get1.has_value()) << "Expected exec_ids[1] to be evicted";
+
+  // The 3 newest (exec_ids[2], exec_ids[3], exec_ids[4]) should still be accessible
+  auto get2 = provider.get_execution("comp1", "echo_py", exec_ids[2]);
+  EXPECT_TRUE(get2.has_value()) << "Expected exec_ids[2] to be kept";
+
+  auto get3 = provider.get_execution("comp1", "echo_py", exec_ids[3]);
+  EXPECT_TRUE(get3.has_value()) << "Expected exec_ids[3] to be kept";
+
+  auto get4 = provider.get_execution("comp1", "echo_py", exec_ids[4]);
+  EXPECT_TRUE(get4.has_value()) << "Expected exec_ids[4] to be kept";
+}
+
+TEST_F(DefaultScriptProviderTest, StdinSizeLimitExceeded) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  // No args config -> parameters will be passed via stdin JSON
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  // Create a JSON object larger than 64 KB
+  json params;
+  std::string large_value(70000, 'x');  // 70 KB string
+  params["data"] = large_value;
+
+  ExecutionRequest req{"now", params, std::nullopt};
+  auto result = provider.start_execution("comp1", "echo_py", req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::InvalidInput);
+  EXPECT_NE(result.error().message.find("stdin size"), std::string::npos);
+}
+
 }  // namespace

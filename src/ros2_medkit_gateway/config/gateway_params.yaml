@@ -359,6 +359,9 @@ ros2_medkit_gateway:
       max_concurrent_executions: 5
       # Default timeout per execution in seconds
       default_timeout_sec: 300
+      # Maximum number of completed executions to keep in memory.
+      # Oldest completed entries are evicted when this limit is exceeded.
+      max_execution_history: 100
 
     # OpenAPI Documentation Endpoints
     # Controls the /docs endpoints that serve OpenAPI capability descriptions

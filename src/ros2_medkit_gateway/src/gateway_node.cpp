@@ -176,6 +176,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("scripts.max_file_size_mb", 10);
   declare_parameter("scripts.max_concurrent_executions", 5);
   declare_parameter("scripts.default_timeout_sec", 300);
+  declare_parameter("scripts.max_execution_history", 100);
   declare_parameter("scripts.allow_uploads", true);
 
   // Plugin framework parameters
@@ -691,6 +692,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       scripts_config.max_concurrent_executions =
           static_cast<int>(get_parameter("scripts.max_concurrent_executions").as_int());
       scripts_config.default_timeout_sec = static_cast<int>(get_parameter("scripts.default_timeout_sec").as_int());
+      scripts_config.max_execution_history = static_cast<int>(get_parameter("scripts.max_execution_history").as_int());
       scripts_config.allow_uploads = get_parameter("scripts.allow_uploads").as_bool();
 
       default_script_provider_ = std::make_unique<DefaultScriptProvider>(scripts_config);

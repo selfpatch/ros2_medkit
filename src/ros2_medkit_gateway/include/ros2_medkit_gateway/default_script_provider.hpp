@@ -47,6 +47,7 @@ struct ScriptsConfig {
   int max_file_size_mb = 10;
   int max_concurrent_executions = 5;
   int default_timeout_sec = 300;
+  int max_execution_history = 100;
   bool allow_uploads = true;
   std::vector<std::string> supported_execution_types = {"now"};
   std::vector<ScriptEntryConfig> entries;
@@ -174,6 +175,11 @@ class DefaultScriptProvider : public ScriptProvider {
   mutable std::mutex exec_mutex_;
   std::unordered_map<std::string, std::unique_ptr<ExecutionState>> executions_;
   int active_execution_count_ = 0;
+
+  /// Evicts oldest completed executions when the history exceeds max_execution_history.
+  /// Called with exec_mutex_ already held. Moves evicted states into `to_evict` so
+  /// the caller can let them destruct outside the lock.
+  void evict_old_executions(std::vector<std::unique_ptr<ExecutionState>> & to_evict);
 
   // Counter for ID generation
   std::atomic<int> id_counter_{0};
