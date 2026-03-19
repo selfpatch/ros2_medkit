@@ -19,6 +19,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/models/entity_types.hpp"
@@ -133,6 +134,33 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
     log_settings = body["log_settings"];
   }
 
+  // For data triggers, resolve the resource_path URI segment to a full ROS 2 topic name.
+  // The resource_path from parse_resource_uri is e.g. "/temperature" (URI segment), but the
+  // ROS 2 topic name is e.g. "/sensor/temperature". We look up the entity's topics from the
+  // cache and find the one whose name ends with the resource_path.
+  std::string resolved_topic_name;
+  if (parsed->collection == "data" && !parsed->resource_path.empty()) {
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto aggregated = cache.get_entity_data(entity_id);
+    for (const auto & topic : aggregated.topics) {
+      // Match: topic.name ends with the resource_path (e.g., topic "/sensor/temperature"
+      // ends with "/temperature"). Also accept exact match.
+      if (topic.name == parsed->resource_path ||
+          (topic.name.size() > parsed->resource_path.size() &&
+           topic.name.compare(topic.name.size() - parsed->resource_path.size(), parsed->resource_path.size(),
+                              parsed->resource_path) == 0)) {
+        resolved_topic_name = topic.name;
+        break;
+      }
+    }
+    if (resolved_topic_name.empty()) {
+      RCLCPP_WARN(HandlerContext::logger(),
+                  "Could not resolve resource_path '%s' to a ROS 2 topic for entity '%s'. "
+                  "Topic subscription will be attempted when topic becomes available.",
+                  parsed->resource_path.c_str(), entity_id.c_str());
+    }
+  }
+
   // Build create request
   TriggerCreateRequest create_req;
   create_req.entity_id = entity_id;
@@ -140,6 +168,7 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
   create_req.resource_uri = resource;
   create_req.collection = parsed->collection;
   create_req.resource_path = parsed->resource_path;
+  create_req.resolved_topic_name = resolved_topic_name;
   create_req.path = path;
   create_req.condition_type = condition_type;
   create_req.condition_params = condition_params;
