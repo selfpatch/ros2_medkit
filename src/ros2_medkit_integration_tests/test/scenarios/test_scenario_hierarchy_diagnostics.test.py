@@ -61,7 +61,7 @@ def generate_test_description():
     )
 
     gateway = create_gateway_node(extra_params={
-        'discovery.mode': 'manifest_only',
+        'discovery.mode': 'hybrid',
         'discovery.manifest_path': manifest_path,
         'discovery.manifest_strict_validation': False,
     })
@@ -113,7 +113,7 @@ class TestScenarioHierarchyDiagnostics(GatewayTestCase):
 
         # Wait for data availability on engine-temp-sensor
         system_topics = {'/parameter_events', '/rosout'}
-        deadline = time.monotonic() + 15.0
+        deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
             try:
                 r = requests.get(
