@@ -82,6 +82,7 @@ class TestTriggersLogs(GatewayTestCase):
     # CRUD operations
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_029
     def test_01_create_logs_trigger(self):
         """POST creates a trigger on logs collection."""
         trig = self._create_logs_trigger(lifetime=120)
@@ -105,6 +106,7 @@ class TestTriggersLogs(GatewayTestCase):
             trig['trigger_condition']['condition_type'], 'OnChange'
         )
 
+    # @verifies REQ_INTEROP_030
     def test_02_list_logs_triggers(self):
         """GET /triggers lists log triggers for the entity."""
         trig = self._create_logs_trigger(lifetime=60)
@@ -120,6 +122,7 @@ class TestTriggersLogs(GatewayTestCase):
         ids = [item['id'] for item in data['items']]
         self.assertIn(trig['id'], ids)
 
+    # @verifies REQ_INTEROP_096
     def test_03_get_logs_trigger(self):
         """GET /triggers/{id} returns log trigger details."""
         trig = self._create_logs_trigger(lifetime=60)
@@ -138,6 +141,7 @@ class TestTriggersLogs(GatewayTestCase):
             '/api/v1/apps/temp_sensor/logs'
         )
 
+    # @verifies REQ_INTEROP_031
     def test_04_update_logs_trigger_lifetime(self):
         """PUT /triggers/{id} updates log trigger lifetime."""
         trig = self._create_logs_trigger(lifetime=30)
@@ -153,6 +157,7 @@ class TestTriggersLogs(GatewayTestCase):
         self.assertEqual(data['lifetime'], 300)
         self.assertEqual(data['id'], trig['id'])
 
+    # @verifies REQ_INTEROP_032
     def test_05_delete_logs_trigger(self):
         """DELETE /triggers/{id} removes the log trigger."""
         trig = self._create_logs_trigger()
@@ -186,6 +191,7 @@ class TestTriggersLogs(GatewayTestCase):
     # SSE event delivery for log triggers
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_097
     def test_10_sse_endpoint_connects_for_log_trigger(self):
         """SSE events endpoint accepts connections for log triggers.
 
@@ -224,6 +230,7 @@ class TestTriggersLogs(GatewayTestCase):
         )
         thread.join(timeout=5)
 
+    # @verifies REQ_INTEROP_097
     def test_11_sse_log_event_headers(self):
         """SSE events endpoint for logs returns correct headers."""
         trig = self._create_logs_trigger(lifetime=60)

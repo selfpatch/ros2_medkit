@@ -85,6 +85,7 @@ class TestTriggersUpdates(GatewayTestCase):
     # CRUD operations
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_029
     def test_01_create_updates_trigger(self):
         """POST creates a trigger on updates collection."""
         trig = self._create_updates_trigger(lifetime=120)
@@ -102,6 +103,7 @@ class TestTriggersUpdates(GatewayTestCase):
         self.assertIn('event_source', trig)
         self.assertTrue(trig['event_source'].endswith('/events'))
 
+    # @verifies REQ_INTEROP_030
     def test_02_list_updates_triggers(self):
         """GET /triggers lists updates triggers for the entity."""
         trig1 = self._create_updates_trigger(lifetime=60)
@@ -120,6 +122,7 @@ class TestTriggersUpdates(GatewayTestCase):
         self.assertIn(trig1['id'], ids)
         self.assertIn(trig2['id'], ids)
 
+    # @verifies REQ_INTEROP_096
     def test_03_get_updates_trigger(self):
         """GET /triggers/{id} returns updates trigger details."""
         trig = self._create_updates_trigger(lifetime=60)
@@ -141,6 +144,7 @@ class TestTriggersUpdates(GatewayTestCase):
             data['trigger_condition']['condition_type'], 'OnChange'
         )
 
+    # @verifies REQ_INTEROP_031
     def test_04_update_updates_trigger_lifetime(self):
         """PUT /triggers/{id} updates the trigger lifetime."""
         trig = self._create_updates_trigger(lifetime=30)
@@ -157,6 +161,7 @@ class TestTriggersUpdates(GatewayTestCase):
         self.assertEqual(data['id'], trig['id'])
         self.assertEqual(data['status'], 'active')
 
+    # @verifies REQ_INTEROP_032
     def test_05_delete_updates_trigger(self):
         """DELETE /triggers/{id} removes the updates trigger."""
         trig = self._create_updates_trigger()
@@ -190,6 +195,7 @@ class TestTriggersUpdates(GatewayTestCase):
     # SSE endpoint validation
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_097
     def test_10_events_endpoint_returns_sse_headers(self):
         """SSE events endpoint returns correct content-type headers."""
         trig = self._create_updates_trigger(lifetime=60)
@@ -208,6 +214,7 @@ class TestTriggersUpdates(GatewayTestCase):
         except requests.exceptions.ReadTimeout:
             pass  # Expected - SSE keeps connection open
 
+    # @verifies REQ_INTEROP_097
     def test_11_events_for_nonexistent_trigger_returns_404(self):
         """GET /events for a nonexistent trigger returns 404."""
         r = requests.get(

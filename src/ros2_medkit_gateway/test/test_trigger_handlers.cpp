@@ -117,6 +117,9 @@ TEST(TriggerParseResourceUriTest, PathTraversalAtEndRejected) {
 // trigger_to_json tests
 // ===========================================================================
 
+// @verifies REQ_INTEROP_029
+// @verifies REQ_INTEROP_096
+// @verifies REQ_INTEROP_097
 TEST(TriggerToJsonTest, ContainsAllRequiredFields) {
   TriggerInfo info;
   info.id = "trig_1";
@@ -209,6 +212,12 @@ TEST(TriggerToJsonTest, TerminatedStatus) {
 // Error response format tests
 // ===========================================================================
 
+// @verifies REQ_INTEROP_029
+// @verifies REQ_INTEROP_030
+// @verifies REQ_INTEROP_031
+// @verifies REQ_INTEROP_032
+// @verifies REQ_INTEROP_096
+// @verifies REQ_INTEROP_097
 TEST(TriggerErrorTest, InvalidParameterErrorFormat) {
   httplib::Response res;
   HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid condition type",
@@ -239,6 +248,7 @@ TEST(TriggerErrorTest, ServiceUnavailableErrorFormat) {
 // SSEClientTracker limit test
 // ===========================================================================
 
+// @verifies REQ_INTEROP_097
 TEST(TriggerSSETrackerTest, ClientLimitEnforced) {
   auto tracker = std::make_shared<SSEClientTracker>(2);
 
@@ -259,6 +269,7 @@ TEST(TriggerSSETrackerTest, ClientLimitEnforced) {
 // InvalidResourceUri error (vendor-specific)
 // ===========================================================================
 
+// @verifies REQ_INTEROP_029
 TEST(TriggerErrorTest, InvalidResourceUriVendorError) {
   httplib::Response res;
   HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI, "Invalid resource URI: bad format",

@@ -87,6 +87,7 @@ class TestTriggersFaults(GatewayTestCase):
     # CRUD on faults triggers
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_029
     def test_01_create_fault_trigger_returns_201(self):
         """POST creates a trigger on faults collection with correct schema."""
         trig = self._create_fault_trigger(lifetime=120)
@@ -104,6 +105,7 @@ class TestTriggersFaults(GatewayTestCase):
         self.assertIn('event_source', trig)
         self.assertTrue(trig['event_source'].endswith('/events'))
 
+    # @verifies REQ_INTEROP_030
     def test_02_list_fault_triggers(self):
         """GET /triggers lists fault triggers for the entity."""
         trig = self._create_fault_trigger(lifetime=60)
@@ -119,6 +121,7 @@ class TestTriggersFaults(GatewayTestCase):
         ids = [item['id'] for item in data['items']]
         self.assertIn(trig['id'], ids)
 
+    # @verifies REQ_INTEROP_096
     def test_03_get_fault_trigger(self):
         """GET /triggers/{id} returns fault trigger details."""
         trig = self._create_fault_trigger(lifetime=60)
@@ -133,6 +136,7 @@ class TestTriggersFaults(GatewayTestCase):
         self.assertEqual(data['id'], trig['id'])
         self.assertEqual(data['status'], 'active')
 
+    # @verifies REQ_INTEROP_031
     def test_04_update_fault_trigger_lifetime(self):
         """PUT /triggers/{id} updates fault trigger lifetime."""
         trig = self._create_fault_trigger(lifetime=30)
@@ -146,6 +150,7 @@ class TestTriggersFaults(GatewayTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()['lifetime'], 600)
 
+    # @verifies REQ_INTEROP_032
     def test_05_delete_fault_trigger(self):
         """DELETE /triggers/{id} removes the fault trigger."""
         trig = self._create_fault_trigger()
@@ -166,6 +171,7 @@ class TestTriggersFaults(GatewayTestCase):
     # SSE events for fault triggers
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_097
     def test_10_sse_endpoint_connects_and_streams(self):
         """SSE events endpoint accepts connections and streams keepalives.
 
@@ -207,6 +213,7 @@ class TestTriggersFaults(GatewayTestCase):
         )
         thread.join(timeout=10)
 
+    # @verifies REQ_INTEROP_097
     def test_11_sse_fault_event_has_correct_headers(self):
         """SSE events endpoint for faults returns correct headers."""
         trig = self._create_fault_trigger(lifetime=60)
