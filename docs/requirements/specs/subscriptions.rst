@@ -45,28 +45,42 @@ Subscriptions
 
 .. req:: POST /{entity}/triggers
    :id: REQ_INTEROP_029
-   :status: open
+   :status: verified
    :tags: Subscriptions
 
    The endpoint shall create a new trigger definition on the addressed entity.
 
 .. req:: GET /{entity}/triggers
    :id: REQ_INTEROP_030
-   :status: open
+   :status: verified
    :tags: Subscriptions
 
    The endpoint shall list all trigger definitions configured on the addressed entity.
 
 .. req:: PUT /{entity}/triggers/{id}
    :id: REQ_INTEROP_031
-   :status: open
+   :status: verified
    :tags: Subscriptions
 
    The endpoint shall update the addressed trigger definition on the entity.
 
 .. req:: DELETE /{entity}/triggers/{id}
    :id: REQ_INTEROP_032
-   :status: open
+   :status: verified
    :tags: Subscriptions
 
    The endpoint shall delete the addressed trigger definition from the entity.
+
+.. req:: GET /{entity}/triggers/{id}
+   :id: REQ_INTEROP_096
+   :status: verified
+   :tags: Subscriptions
+
+   The endpoint shall return the configuration and status of the addressed trigger definition.
+
+.. req:: GET /{entity}/triggers/{id}/events
+   :id: REQ_INTEROP_097
+   :status: verified
+   :tags: Subscriptions
+
+   The endpoint shall open an SSE (Server-Sent Events) stream that delivers trigger events when the configured condition fires. Each event shall be an EventEnvelope containing a UTC timestamp and a payload. The stream shall auto-close when the trigger is deleted, the client disconnects, or the trigger lifetime expires.

@@ -172,6 +172,7 @@ class TestTriggersPersistent(GatewayTestCase):
     # Test 01: create a persistent trigger on the PRIMARY gateway
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_029
     def test_01_create_persistent_trigger(self):
         """POST persistent=true trigger on primary gateway returns 201.
 
@@ -206,6 +207,7 @@ class TestTriggersPersistent(GatewayTestCase):
     # Test 02: trigger is listed on the PRIMARY gateway
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_030
     def test_02_trigger_listed_on_primary(self):
         """Persistent trigger appears in the listing on the primary gateway."""
         self.assertTrue(
@@ -268,6 +270,7 @@ class TestTriggersPersistent(GatewayTestCase):
     # Test 04: verify restored trigger fields match original
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_096
     def test_04_restored_trigger_fields_match(self):
         """Fields of the restored trigger match what was originally created."""
         self.assertTrue(
@@ -332,6 +335,7 @@ class TestTriggersPersistent(GatewayTestCase):
     # Test 06: delete persistent trigger via secondary, gone from primary too
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_032
     def test_06_delete_via_secondary_removes_from_store(self):
         """DELETE on secondary removes the persistent trigger from the shared DB.
 

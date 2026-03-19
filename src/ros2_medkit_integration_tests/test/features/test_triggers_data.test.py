@@ -124,6 +124,7 @@ class TestTriggersData(GatewayTestCase):
     # CRUD operations
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_029
     def test_01_create_trigger_returns_201_with_correct_schema(self):
         """POST creates trigger with correct schema response."""
         trig = self._create_trigger(multishot=True, lifetime=120)
@@ -147,6 +148,7 @@ class TestTriggersData(GatewayTestCase):
             trig['trigger_condition']['condition_type'], 'OnChange'
         )
 
+    # @verifies REQ_INTEROP_030
     def test_02_list_triggers_returns_created_trigger(self):
         """GET /triggers returns list with the created trigger."""
         trig = self._create_trigger()
@@ -163,6 +165,7 @@ class TestTriggersData(GatewayTestCase):
         ids = [item['id'] for item in data['items']]
         self.assertIn(trig['id'], ids)
 
+    # @verifies REQ_INTEROP_096
     def test_03_get_single_trigger(self):
         """GET /triggers/{id} returns the trigger details."""
         trig = self._create_trigger()
@@ -179,6 +182,7 @@ class TestTriggersData(GatewayTestCase):
         self.assertEqual(data['status'], 'active')
         self.assertEqual(data['observed_resource'], self.resource_uri)
 
+    # @verifies REQ_INTEROP_031
     def test_04_update_trigger_lifetime(self):
         """PUT /triggers/{id} updates the lifetime."""
         trig = self._create_trigger(lifetime=60)
@@ -192,6 +196,7 @@ class TestTriggersData(GatewayTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()['lifetime'], 300)
 
+    # @verifies REQ_INTEROP_032
     def test_05_delete_trigger_returns_204(self):
         """DELETE /triggers/{id} returns 204 and removes the trigger."""
         trig = self._create_trigger()
@@ -226,6 +231,7 @@ class TestTriggersData(GatewayTestCase):
     # SSE event delivery
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_097
     def test_10_sse_stream_returns_correct_headers(self):
         """The SSE events endpoint returns text/event-stream content type."""
         trig = self._create_trigger(lifetime=60)
@@ -245,6 +251,7 @@ class TestTriggersData(GatewayTestCase):
         except requests.exceptions.ReadTimeout:
             pass  # Expected - SSE keeps connection open
 
+    # @verifies REQ_INTEROP_097
     def test_11_sse_stream_delivers_data_events(self):
         """SSE stream delivers events when topic data changes.
 
@@ -293,6 +300,8 @@ class TestTriggersData(GatewayTestCase):
             self.assertIn('timestamp', event, 'EventEnvelope must have timestamp')
             self.assertIn('payload', event, 'EventEnvelope must have payload')
 
+    # @verifies REQ_INTEROP_032
+    # @verifies REQ_INTEROP_097
     def test_12_sse_stream_closes_on_trigger_delete(self):
         """When a trigger is deleted, the SSE stream closes gracefully."""
         trig = self._create_trigger(multishot=True, lifetime=60)
@@ -523,6 +532,7 @@ class TestTriggersData(GatewayTestCase):
         )
         self.assertEqual(r.status_code, 404)
 
+    # @verifies REQ_INTEROP_097
     def test_27_events_for_nonexistent_trigger_returns_404(self):
         """GET /events for a non-existent trigger returns 404."""
         r = requests.get(

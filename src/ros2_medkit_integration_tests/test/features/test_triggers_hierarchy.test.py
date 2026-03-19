@@ -107,6 +107,7 @@ class TestTriggersHierarchy(GatewayTestCase):
     # Component -> App hierarchy
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_029
     def test_01_component_trigger_created_successfully(self):
         """Create trigger on component that hosts apps."""
         # temp-sensor-hw hosts engine-temp-sensor app
@@ -261,6 +262,7 @@ class TestTriggersHierarchy(GatewayTestCase):
     # CRUD on hierarchy triggers
     # ------------------------------------------------------------------
 
+    # @verifies REQ_INTEROP_030
     def test_05_list_triggers_on_area(self):
         """GET /areas/{id}/triggers returns triggers for the area."""
         resource = '/api/v1/areas/engine/data'
@@ -291,6 +293,7 @@ class TestTriggersHierarchy(GatewayTestCase):
         ids = [item['id'] for item in data['items']]
         self.assertIn(trig['id'], ids)
 
+    # @verifies REQ_INTEROP_032
     def test_06_delete_trigger_on_function(self):
         """DELETE removes trigger from function entity."""
         resource = '/api/v1/functions/engine-monitoring/data'

@@ -10,7 +10,7 @@ Discovery
 
 .. req:: GET /{any}/docs
    :id: REQ_INTEROP_002
-   :status: open
+   :status: verified
    :tags: Discovery
 
    The endpoint shall provide human- and machine-readable documentation of the addressed resource and its capabilities.
