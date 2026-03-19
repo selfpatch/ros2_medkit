@@ -985,4 +985,39 @@ TEST_F(DefaultScriptProviderTest, DeleteScriptWithRunningExecutionBlocked) {
   EXPECT_TRUE(del2.has_value()) << del2.error().message;
 }
 
+// @verifies REQ_INTEROP_040
+TEST_F(DefaultScriptProviderTest, UploadExceedingFileSizeRejected) {
+  auto config = make_config();
+  config.max_file_size_mb = 0;  // Zero MB limit - any content exceeds it
+  DefaultScriptProvider provider(config);
+
+  std::string content = "#!/usr/bin/env python3\nprint('hello')";
+  auto result = provider.upload_script("comp1", "test.py", content, std::nullopt);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, ScriptBackendError::FileTooLarge);
+}
+
+// @verifies REQ_INTEROP_047
+TEST_F(DefaultScriptProviderTest, ControlCompletedExecutionReturnsNotRunning) {
+  auto entry = make_real_script_entry("echo_py", "echo_params.py", "python");
+  auto config = make_config({entry});
+  DefaultScriptProvider provider(config);
+
+  // Start a fast script
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "echo_py", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  // Wait for completion
+  auto final_state = wait_for_completion(provider, "comp1", "echo_py", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed")
+      << "error: " << (final_state->error.has_value() ? final_state->error->dump() : "none");
+
+  // Attempt to stop the completed execution -> NotRunning
+  auto ctrl = provider.control_execution("comp1", "echo_py", start->id, "stop");
+  ASSERT_FALSE(ctrl.has_value());
+  EXPECT_EQ(ctrl.error().code, ScriptBackendError::NotRunning);
+}
+
 }  // namespace

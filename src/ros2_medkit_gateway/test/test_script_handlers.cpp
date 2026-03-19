@@ -191,6 +191,16 @@ httplib::Request make_script_request(const std::string & entity_type, const std:
   return req;
 }
 
+httplib::Request make_execution_request(const std::string & entity_type, const std::string & entity_id,
+                                        const std::string & script_id, const std::string & execution_id) {
+  httplib::Request req;
+  req.path = "/api/v1/" + entity_type + "/" + entity_id + "/scripts/" + script_id + "/executions/" + execution_id;
+  std::string pattern = "/api/v1/" + entity_type + "/([^/]+)/scripts/([^/]+)/executions/([^/]+)";
+  std::regex re(pattern);
+  std::regex_match(req.path, req.matches, re);
+  return req;
+}
+
 }  // namespace
 
 // =============================================================================
@@ -511,4 +521,120 @@ TEST_F(ScriptHandlersErrorMappingTest, DeleteReturns204) {
   handlers_->handle_delete_script(req, res);
 
   EXPECT_EQ(res.status, 204);
+}
+
+// =============================================================================
+// Adversarial input validation for is_valid_resource_id
+// =============================================================================
+
+TEST_F(ScriptHandlersErrorMappingTest, PathTraversalScriptIdRejected) {
+  // GET /apps/{entity}/scripts/../../../etc/passwd -> 400
+  auto req = make_script_request("components", "ecu", "../../../etc/passwd");
+  httplib::Response res;
+  handlers_->handle_get_script(req, res);
+  EXPECT_EQ(res.status, 400);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_PARAMETER);
+}
+
+TEST_F(ScriptHandlersErrorMappingTest, ShellMetacharsRejected) {
+  auto req = make_script_request("components", "ecu", "test;rm");
+  httplib::Response res;
+  handlers_->handle_get_script(req, res);
+  EXPECT_EQ(res.status, 400);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_PARAMETER);
+}
+
+TEST_F(ScriptHandlersErrorMappingTest, OverlongScriptIdRejected) {
+  auto req = make_script_request("components", "ecu", std::string(257, 'a'));
+  httplib::Response res;
+  handlers_->handle_get_script(req, res);
+  EXPECT_EQ(res.status, 400);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_PARAMETER);
+}
+
+TEST_F(ScriptHandlersErrorMappingTest, ValidScriptIdWithSpecialCharsAccepted) {
+  // Valid ID with underscore and hyphen passes validation (gets 404 from mock provider)
+  mock_provider_->succeed = false;
+  mock_provider_->error_code = ScriptBackendError::NotFound;
+  mock_provider_->error_message = "not found";
+
+  auto req = make_script_request("components", "ecu", "my-script_01");
+  httplib::Response res;
+  handlers_->handle_get_script(req, res);
+  // Should NOT be 400 - it passes validation and reaches the provider (which returns 404)
+  EXPECT_EQ(res.status, 404);
+}
+
+// =============================================================================
+// Control execution validation
+// =============================================================================
+
+TEST_F(ScriptHandlersErrorMappingTest, ControlExecutionMissingActionField) {
+  mock_provider_->succeed = true;
+
+  auto req = make_execution_request("components", "ecu", "test_script", "exec_001");
+  req.body = R"({})";
+
+  httplib::Response res;
+  handlers_->handle_control_execution(req, res);
+
+  EXPECT_EQ(res.status, 400);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
+  EXPECT_NE(body["message"].get<std::string>().find("action"), std::string::npos);
+}
+
+TEST_F(ScriptHandlersErrorMappingTest, ControlExecutionBogusAction) {
+  // The handler validates JSON structure but delegates action validation to the provider.
+  // The mock provider succeeds, so this tests that a real provider would reject unknown actions.
+  // Use the error mock to simulate InvalidInput from the provider.
+  mock_provider_->succeed = false;
+  mock_provider_->error_code = ScriptBackendError::InvalidInput;
+  mock_provider_->error_message = "Unknown action: bogus";
+
+  auto req = make_execution_request("components", "ecu", "test_script", "exec_001");
+  req.body = R"({"action": "bogus"})";
+
+  httplib::Response res;
+  handlers_->handle_control_execution(req, res);
+
+  EXPECT_EQ(res.status, 400);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
+}
+
+TEST_F(ScriptHandlersErrorMappingTest, ControlExecutionInvalidJson) {
+  auto req = make_execution_request("components", "ecu", "test_script", "exec_001");
+  req.body = "not json";
+
+  httplib::Response res;
+  handlers_->handle_control_execution(req, res);
+
+  EXPECT_EQ(res.status, 400);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
+}
+
+TEST_F(ScriptHandlersErrorMappingTest, ControlExecutionEmptyAction) {
+  auto req = make_execution_request("components", "ecu", "test_script", "exec_001");
+  req.body = R"({"action": ""})";
+
+  httplib::Response res;
+  handlers_->handle_control_execution(req, res);
+
+  EXPECT_EQ(res.status, 400);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
+}
+
+TEST_F(ScriptHandlersErrorMappingTest, NotRunningMapsTo409) {
+  httplib::Response res;
+  call_get_script_with_error(ScriptBackendError::NotRunning, res);
+  EXPECT_EQ(res.status, 409);
+  auto body = json::parse(res.body);
+  EXPECT_EQ(body["error_code"], "vendor-error");
+  EXPECT_EQ(body["vendor_code"], ros2_medkit_gateway::ERR_SCRIPT_NOT_RUNNING);
 }
