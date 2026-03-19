@@ -46,6 +46,7 @@ Server Capabilities
           "logs": true,
           "bulk_data": true,
           "cyclic_subscriptions": true,
+          "triggers": true,
           "updates": false,
           "authentication": false,
           "tls": false
@@ -111,8 +112,8 @@ Areas
 
       **ros2_medkit extension:** Areas support resource collections beyond the SOVD spec,
       which only defines them for apps and components. Areas provide ``/data``, ``/operations``,
-      ``/configurations``, ``/faults``, ``/logs`` (namespace prefix aggregation), and read-only
-      ``/bulk-data``. See :ref:`sovd-compliance` for details.
+      ``/configurations``, ``/faults``, ``/logs`` (namespace prefix aggregation), read-only
+      ``/bulk-data``, and ``/triggers``. See :ref:`sovd-compliance` for details.
 
 Components
 ~~~~~~~~~~
@@ -235,9 +236,9 @@ Functions
       **ros2_medkit extension:** Functions support resource collections beyond the SOVD spec.
       ``/data`` and ``/operations`` aggregate from hosted apps (per SOVD). Additionally,
       ``/configurations``, ``/faults``, ``/logs`` aggregate from hosts, read-only
-      ``/bulk-data`` is available, ``/cyclic-subscriptions`` is supported, and
-      the vendor resource ``/x-medkit-graph`` exposes a function-scoped graph snapshot.
-      See :ref:`sovd-compliance` for details.
+      ``/bulk-data`` is available, ``/cyclic-subscriptions`` and ``/triggers`` are
+      supported, and the vendor resource ``/x-medkit-graph`` exposes a function-scoped
+      graph snapshot. See :ref:`sovd-compliance` for details.
 
 Data Endpoints
 --------------
@@ -1308,6 +1309,340 @@ Delete Execution
    Remove a completed/terminated execution resource. Returns **204 No Content**.
    Returns **409** if the execution is still running.
 
+Triggers
+--------
+
+Triggers provide condition-based push notifications for resource changes via
+Server-Sent Events (SSE). Unlike cyclic subscriptions - which poll a resource
+at a fixed interval and push every sample - triggers evaluate a condition
+against each change and only fire when the condition is met.
+
+**Key differences from Cyclic Subscriptions:**
+
+- Cyclic subscriptions push data at a fixed interval (``fast``/``normal``/``slow``)
+  regardless of whether the value changed
+- Triggers are event-driven: they only fire when a specific condition is satisfied
+  (e.g., value changed, entered a range, reached a threshold)
+- Triggers support persistence across gateway restarts (``persistent: true``)
+- Triggers can be one-shot (fire once, then auto-terminate) or multishot (continuous)
+
+**Supported entity types:** ``/areas``, ``/components``, ``/apps``, ``/functions``
+
+.. note::
+
+   **ros2_medkit extension:** SOVD defines triggers for apps and components only.
+   ros2_medkit extends trigger support to areas and functions, allowing
+   hierarchy-scoped monitoring. Area-level triggers catch changes from all
+   descendant entities within the area.
+
+**Observable resource collections:**
+
+- ``data`` - Topic data changes (driven by ``TriggerTopicSubscriber``)
+- ``faults`` - Fault state transitions (created, updated, cleared)
+- ``operations`` - Operation execution completions
+- ``updates`` - Software update status changes
+- ``logs`` - Log entries matching configured severity (x-medkit extension)
+
+Create Trigger
+~~~~~~~~~~~~~~
+
+``POST /api/v1/{entity_type}/{entity_id}/triggers``
+   Create a new condition-based trigger.
+
+   **Request Body:**
+
+   .. code-block:: json
+
+      {
+        "resource": "/api/v1/apps/temp_sensor/data/powertrain%2Fengine%2Ftemperature",
+        "trigger_condition": {
+          "condition_type": "LeaveRange",
+          "lower_bound": 20.0,
+          "upper_bound": 80.0
+        },
+        "path": "/data",
+        "protocol": "sse",
+        "multishot": true,
+        "persistent": false,
+        "lifetime": 300,
+        "log_settings": {
+          "severity_filter": "warning",
+          "max_entries": 500
+        }
+      }
+
+   **Fields:**
+
+   .. list-table::
+      :header-rows: 1
+      :widths: 20 10 70
+
+      * - Field
+        - Required
+        - Description
+      * - ``resource``
+        - Yes
+        - Full SOVD resource URI to observe (e.g. ``/api/v1/apps/{id}/data/{topic}``,
+          ``/api/v1/apps/{id}/faults``, ``/api/v1/areas/{id}/faults``).
+          Must reference the same entity as the route.
+      * - ``trigger_condition``
+        - Yes
+        - Object with ``condition_type`` and condition-specific parameters.
+          See `Trigger Conditions`_ below.
+      * - ``path``
+        - No
+        - JSON Pointer within the resource payload to evaluate. When set, the
+          condition is evaluated against the value at this path instead of the
+          full payload.
+      * - ``protocol``
+        - No
+        - Transport protocol. Only ``"sse"`` is supported. Default: ``"sse"``.
+      * - ``multishot``
+        - No
+        - If ``true``, the trigger fires repeatedly. If ``false``, the trigger
+          auto-terminates after the first event. Default: ``false``.
+      * - ``persistent``
+        - No
+        - If ``true``, the trigger survives gateway restarts (when
+          ``on_restart_behavior`` is ``"restore"``). Default: ``false``.
+      * - ``lifetime``
+        - No
+        - Time-to-live in seconds. The trigger auto-terminates after this
+          duration. Must be a positive integer. Omit for no expiry.
+      * - ``log_settings``
+        - No
+        - Temporary log configuration applied when the trigger fires.
+          Accepts ``severity_filter`` and ``max_entries`` (same schema as
+          ``PUT /{entity}/logs/configuration``).
+
+   **Response 201 Created:**
+
+   .. code-block:: json
+
+      {
+        "id": "trig_001",
+        "status": "active",
+        "observed_resource": "/api/v1/apps/temp_sensor/data/powertrain%2Fengine%2Ftemperature",
+        "event_source": "/api/v1/apps/temp_sensor/triggers/trig_001/events",
+        "protocol": "sse",
+        "trigger_condition": {
+          "condition_type": "LeaveRange",
+          "lower_bound": 20.0,
+          "upper_bound": 80.0
+        },
+        "multishot": true,
+        "persistent": false,
+        "lifetime": 300
+      }
+
+   **Error Responses:**
+
+   - **400** ``invalid-parameter`` - Missing or invalid ``resource``, ``trigger_condition``,
+     ``condition_type``, ``lifetime``, or condition-specific parameters
+   - **400** ``x-medkit-invalid-resource-uri`` - Malformed resource URI or path traversal
+   - **400** ``x-medkit-entity-mismatch`` - Resource URI references a different entity than
+     the route
+   - **503** ``service-unavailable`` - Maximum trigger capacity reached
+     (configurable via ``triggers.max_triggers``)
+
+List Triggers
+~~~~~~~~~~~~~
+
+``GET /api/v1/{entity_type}/{entity_id}/triggers``
+   List all triggers for an entity.
+
+   **Response 200:**
+
+   .. code-block:: json
+
+      {
+        "items": [
+          {
+            "id": "trig_001",
+            "status": "active",
+            "observed_resource": "/api/v1/apps/temp_sensor/faults",
+            "event_source": "/api/v1/apps/temp_sensor/triggers/trig_001/events",
+            "protocol": "sse",
+            "trigger_condition": {"condition_type": "OnChange"},
+            "multishot": true,
+            "persistent": false,
+            "lifetime": 300
+          }
+        ]
+      }
+
+Get Trigger
+~~~~~~~~~~~
+
+``GET /api/v1/{entity_type}/{entity_id}/triggers/{trigger_id}``
+   Get details of a single trigger.
+
+   **Response 200:** Same schema as creation response.
+
+   - **404** ``ERR_RESOURCE_NOT_FOUND`` - Trigger not found or belongs to a different entity
+
+Update Trigger
+~~~~~~~~~~~~~~
+
+``PUT /api/v1/{entity_type}/{entity_id}/triggers/{trigger_id}``
+   Update the lifetime of an existing trigger. Updating ``lifetime`` resets the
+   expiry timer from the current time.
+
+   **Request Body:**
+
+   .. code-block:: json
+
+      {
+        "lifetime": 600
+      }
+
+   **Response 200:** Updated trigger object (same schema as creation response).
+
+   - **400** ``invalid-parameter`` - Missing or invalid ``lifetime``
+   - **404** ``ERR_RESOURCE_NOT_FOUND`` - Trigger not found
+
+Delete Trigger
+~~~~~~~~~~~~~~
+
+``DELETE /api/v1/{entity_type}/{entity_id}/triggers/{trigger_id}``
+   Remove a trigger. Any active SSE connection for this trigger is closed.
+
+   - **204** No Content - Trigger deleted
+   - **404** ``ERR_RESOURCE_NOT_FOUND`` - Trigger not found
+
+Trigger Events (SSE Stream)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``GET /api/v1/{entity_type}/{entity_id}/triggers/{trigger_id}/events``
+   SSE event stream for a trigger. Connect to receive events when the trigger
+   condition is met. The stream sends keepalive comments every 15 seconds.
+
+   **Response Headers:**
+
+   .. code-block:: text
+
+      Content-Type: text/event-stream
+      Cache-Control: no-cache
+
+   **EventEnvelope format:**
+
+   Each event is delivered as an SSE ``data:`` frame containing a JSON
+   EventEnvelope:
+
+   .. code-block:: text
+
+      data: {"timestamp":"2026-03-19T10:30:00.250Z","payload":{"data":{"data":85.5}}}
+
+   When an error occurs during evaluation:
+
+   .. code-block:: text
+
+      data: {"timestamp":"2026-03-19T10:30:00.250Z","error":"Failed to read resource"}
+
+   **EventEnvelope fields:**
+
+   - ``timestamp`` (string) - ISO 8601 timestamp of when the event was generated
+   - ``payload`` (object) - The resource value that satisfied the condition (present on success)
+   - ``error`` (string) - Error description (present on failure, mutually exclusive with payload)
+
+   The stream closes when:
+
+   - The trigger's ``lifetime`` expires
+   - The trigger is deleted
+   - A one-shot trigger fires (``multishot: false``)
+   - The client disconnects
+   - The gateway shuts down
+   - Maximum SSE client limit is reached (503 on connect)
+
+   **Example:**
+
+   .. code-block:: bash
+
+      curl -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_001/events
+
+   - **404** ``ERR_RESOURCE_NOT_FOUND`` - Trigger not found or expired
+   - **503** ``service-unavailable`` - Maximum SSE client limit reached
+
+Trigger Conditions
+~~~~~~~~~~~~~~~~~~
+
+The ``trigger_condition`` object in the creation request specifies when the
+trigger fires. Four standard condition types are supported:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 32 50
+
+   * - Condition Type
+     - Parameters
+     - Behavior
+   * - ``OnChange``
+     - (none)
+     - Fires whenever the current value differs from the previous value.
+       First evaluation always fires.
+   * - ``OnChangeTo``
+     - ``target_value`` (any JSON value, required)
+     - Fires when the current value equals the target AND differs from the
+       previous value. First evaluation checks target only.
+   * - ``EnterRange``
+     - ``lower_bound`` (number, required), ``upper_bound`` (number, required)
+     - Fires when a numeric value transitions from outside the inclusive range
+       [lower_bound, upper_bound] to inside it. Requires a previous value
+       (first evaluation does not fire).
+   * - ``LeaveRange``
+     - ``lower_bound`` (number, required), ``upper_bound`` (number, required)
+     - Fires when a numeric value transitions from inside the inclusive range
+       [lower_bound, upper_bound] to outside it. Requires a previous value
+       (first evaluation does not fire).
+
+Plugins can register custom condition evaluators with ``x-`` prefixed names
+(e.g., ``x-threshold-count``) via the ``ConditionRegistry``.
+
+Configuration
+~~~~~~~~~~~~~
+
+Configure triggers in ``gateway_params.yaml``:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       triggers:
+         # Enable/disable the trigger subsystem (default: true)
+         # When false, trigger endpoints return 501
+         enabled: true
+
+         # Maximum concurrent triggers across all entities (default: 1000)
+         # Returns HTTP 503 when this limit is reached
+         max_triggers: 1000
+
+         # Behavior on gateway restart for persistent triggers
+         # "reset": Clear all triggers on restart (default)
+         # "restore": Reload persistent triggers from storage
+         on_restart_behavior: "reset"
+
+         # Trigger persistence storage
+         storage:
+           # Path to SQLite database for persistent triggers
+           # Empty string = in-memory only (default)
+           # Example: "/var/lib/ros2_medkit/triggers.db"
+           path: ""
+
+Persistence
+~~~~~~~~~~~
+
+Triggers created with ``"persistent": true`` are stored in a SQLite database.
+On gateway restart, their behavior depends on the ``on_restart_behavior``
+configuration:
+
+- **reset** (default): All triggers are cleared on restart, regardless of
+  the ``persistent`` flag. This is the safest option for development.
+- **restore**: Persistent triggers are reloaded from the database. Their
+  ``previous_value`` state is preserved, allowing range-based conditions
+  (EnterRange, LeaveRange) to evaluate correctly without losing context.
+
+Non-persistent triggers are always cleared on restart.
+
 Rate Limiting
 -------------
 
@@ -1741,6 +2076,7 @@ use cases benefit.
 - Software Updates (``/updates``) with async prepare/execute lifecycle
 - Cyclic Subscriptions (``/cyclic-subscriptions``) with SSE-based delivery
 - Scripts (``/scripts``) with upload, execution, and lifecycle management
+- Triggers (``/triggers``) with condition-based push notifications
 
 **Pragmatic Extensions:**
 
@@ -1805,6 +2141,12 @@ extends this to areas and functions where aggregation makes practical sense:
      - yes
      - \-
      - apps, components
+   * - triggers
+     - yes (x-medkit)
+     - yes
+     - yes
+     - yes (x-medkit)
+     - apps, components
 
 Other extensions beyond SOVD:
 
@@ -1835,7 +2177,7 @@ OpenAPI spec describing the available operations at that level.
 ``GET /api/v1/{entity-type}/{entity-id}/docs``
    Returns a spec for a specific entity, including all resource collection
    endpoints supported by that entity (data, operations, configurations, faults,
-   logs, bulk-data, cyclic-subscriptions).
+   logs, bulk-data, cyclic-subscriptions, triggers).
 
 ``GET /api/v1/{entity-type}/{entity-id}/{resource}/docs``
    Returns a spec for a specific resource collection, with detailed schemas

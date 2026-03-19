@@ -22,6 +22,7 @@ Step-by-step guides for common use cases with ros2_medkit.
    mcp-server
    plugin-system
    linux-introspection
+   triggers-use-cases
 
 Demos
 -----
@@ -92,3 +93,6 @@ Advanced Tutorials
 
 :doc:`linux-introspection`
    Enrich discovery with Linux process, systemd, and container metadata.
+
+:doc:`triggers-use-cases`
+   Set up multi-trigger monitoring scenarios for OTA updates, thermal protection, and fleet diagnostics.
