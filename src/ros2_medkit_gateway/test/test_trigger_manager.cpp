@@ -748,3 +748,170 @@ TEST_F(TriggerManagerTest, MultiEntity_SameResourcePathDifferentEntities) {
   auto event3 = manager_->consume_pending_event(created2->id);
   EXPECT_TRUE(event3.has_value());
 }
+
+// ===========================================================================
+// load_persistent_triggers() tests (I11)
+// ===========================================================================
+
+/// Helper: build a TriggerInfo for direct store insertion (mirrors TriggerManager::create internals).
+static TriggerInfo make_persistent_trigger(const std::string & id, const std::string & entity_id = "sensor",
+                                           TriggerStatus status = TriggerStatus::ACTIVE,
+                                           std::optional<std::chrono::system_clock::time_point> expires_at = {}) {
+  TriggerInfo info;
+  info.id = id;
+  info.entity_id = entity_id;
+  info.entity_type = "apps";
+  info.resource_uri = "/api/v1/apps/" + entity_id + "/data/temperature";
+  info.collection = "data";
+  info.resource_path = "/temperature";
+  info.resolved_topic_name = "/" + entity_id + "/temperature";
+  info.path = "";
+  info.condition_type = "OnChange";
+  info.condition_params = json::object();
+  info.protocol = "sse";
+  info.multishot = true;
+  info.persistent = true;
+  info.status = status;
+  info.created_at = std::chrono::system_clock::now();
+  info.expires_at = expires_at;
+  return info;
+}
+
+// @verifies REQ_INTEROP_029
+TEST(LoadPersistentTriggers, RestoreBehaviorLoadsActiveTrigger) {
+  ResourceChangeNotifier notifier;
+  ConditionRegistry registry;
+  registry.register_condition("OnChange", std::make_shared<OnChangeEvaluator>());
+
+  // Pre-populate store with one ACTIVE trigger
+  SqliteTriggerStore store(":memory:");
+  auto info = make_persistent_trigger("trig_42");
+  ASSERT_TRUE(store.save(info).has_value());
+
+  // Create manager with restore behavior
+  TriggerConfig config;
+  config.max_triggers = 100;
+  config.on_restart_behavior = "restore";
+  TriggerManager manager(notifier, registry, store, config);
+
+  manager.load_persistent_triggers();
+
+  // Trigger should be visible via get()
+  auto fetched = manager.get("trig_42");
+  ASSERT_TRUE(fetched.has_value()) << "Trigger should have been restored";
+  EXPECT_EQ(fetched->entity_id, "sensor");
+  EXPECT_EQ(fetched->status, TriggerStatus::ACTIVE);
+  EXPECT_TRUE(manager.is_active("trig_42"));
+
+  manager.shutdown();
+  notifier.shutdown();
+}
+
+// @verifies REQ_INTEROP_029
+TEST(LoadPersistentTriggers, ResetBehaviorDoesNotRestoreTriggers) {
+  ResourceChangeNotifier notifier;
+  ConditionRegistry registry;
+  registry.register_condition("OnChange", std::make_shared<OnChangeEvaluator>());
+
+  SqliteTriggerStore store(":memory:");
+  auto info = make_persistent_trigger("trig_99");
+  ASSERT_TRUE(store.save(info).has_value());
+
+  TriggerConfig config;
+  config.max_triggers = 100;
+  config.on_restart_behavior = "reset";  // default - no restore
+  TriggerManager manager(notifier, registry, store, config);
+
+  manager.load_persistent_triggers();
+
+  // Trigger must NOT appear (reset mode skips restore)
+  auto fetched = manager.get("trig_99");
+  EXPECT_FALSE(fetched.has_value());
+
+  manager.shutdown();
+  notifier.shutdown();
+}
+
+// @verifies REQ_INTEROP_029
+TEST(LoadPersistentTriggers, ExpiredTriggerMarkedTerminatedOnLoad) {
+  ResourceChangeNotifier notifier;
+  ConditionRegistry registry;
+  registry.register_condition("OnChange", std::make_shared<OnChangeEvaluator>());
+
+  SqliteTriggerStore store(":memory:");
+
+  // Trigger that expired 5 seconds in the past
+  auto past = std::chrono::system_clock::now() - std::chrono::seconds(5);
+  auto info = make_persistent_trigger("trig_expired", "sensor", TriggerStatus::ACTIVE, past);
+  ASSERT_TRUE(store.save(info).has_value());
+
+  TriggerConfig config;
+  config.max_triggers = 100;
+  config.on_restart_behavior = "restore";
+  TriggerManager manager(notifier, registry, store, config);
+
+  manager.load_persistent_triggers();
+
+  // The expired trigger must NOT be live (load skips it and marks it TERMINATED in store)
+  EXPECT_FALSE(manager.is_active("trig_expired"));
+
+  // Verify store has been updated to TERMINATED
+  auto loaded = store.load_all();
+  ASSERT_TRUE(loaded.has_value());
+  auto it = std::find_if(loaded->begin(), loaded->end(), [](const TriggerInfo & t) {
+    return t.id == "trig_expired";
+  });
+  ASSERT_NE(it, loaded->end());
+  EXPECT_EQ(it->status, TriggerStatus::TERMINATED);
+
+  manager.shutdown();
+  notifier.shutdown();
+}
+
+// @verifies REQ_INTEROP_029
+TEST(LoadPersistentTriggers, NewTriggerIdIsHigherThanRestoredId) {
+  ResourceChangeNotifier notifier;
+  ConditionRegistry registry;
+  registry.register_condition("OnChange", std::make_shared<OnChangeEvaluator>());
+
+  SqliteTriggerStore store(":memory:");
+
+  // Store a trigger with a high numeric ID to force ID counter bump
+  auto info = make_persistent_trigger("trig_1000");
+  ASSERT_TRUE(store.save(info).has_value());
+
+  TriggerConfig config;
+  config.max_triggers = 200;
+  config.on_restart_behavior = "restore";
+  TriggerManager manager(notifier, registry, store, config);
+
+  manager.load_persistent_triggers();
+
+  // Create a new trigger after loading - its ID must be > 1000 to avoid collision
+  TriggerCreateRequest req;
+  req.entity_id = "new_sensor";
+  req.entity_type = "apps";
+  req.resource_uri = "/api/v1/apps/new_sensor/data/temperature";
+  req.collection = "data";
+  req.resource_path = "/temperature";
+  req.resolved_topic_name = "/new_sensor/temperature";
+  req.path = "";
+  req.condition_type = "OnChange";
+  req.condition_params = json::object();
+  req.protocol = "sse";
+  req.multishot = false;
+  req.persistent = false;
+
+  auto created = manager.create(req);
+  ASSERT_TRUE(created.has_value()) << created.error();
+
+  // Extract numeric suffix from "trig_N"
+  const std::string & new_id = created->id;
+  auto pos = new_id.find('_');
+  ASSERT_NE(pos, std::string::npos);
+  uint64_t new_num = std::stoull(new_id.substr(pos + 1));
+  EXPECT_GT(new_num, 1000u) << "New trigger ID (" << new_id << ") must be higher than restored trig_1000";
+
+  manager.shutdown();
+  notifier.shutdown();
+}
