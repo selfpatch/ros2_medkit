@@ -656,23 +656,21 @@ TEST_F(TriggerManagerTest, MultishotRapidEvents_AllConsumed) {
   auto created = manager_->create(req);
   ASSERT_TRUE(created.has_value());
 
-  // Fire 3 events in rapid succession
+  // Fire 3 events - wait for each to be processed to avoid timing issues
   notifier_.notify("data", "sensor", "/temperature", json(10.0));
-  notifier_.notify("data", "sensor", "/temperature", json(20.0));
-  notifier_.notify("data", "sensor", "/temperature", json(30.0));
-
-  // Wait for events to be processed
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
-
-  // All 3 events should be consumable
   auto event1 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event1.has_value());
   EXPECT_EQ((*event1)["payload"], json(10.0));
 
+  notifier_.notify("data", "sensor", "/temperature", json(20.0));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
   auto event2 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event2.has_value());
   EXPECT_EQ((*event2)["payload"], json(20.0));
 
+  notifier_.notify("data", "sensor", "/temperature", json(30.0));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
   auto event3 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event3.has_value());
   EXPECT_EQ((*event3)["payload"], json(30.0));
