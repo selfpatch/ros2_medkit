@@ -17,6 +17,7 @@
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <vector>
+
 #include "ros2_medkit_gateway/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -24,8 +25,8 @@
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/lock_manager.hpp"
-#include "ros2_medkit_gateway/resource_sampler.hpp"
 #include "ros2_medkit_gateway/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/resource_sampler.hpp"
 
 namespace ros2_medkit_gateway {
 
