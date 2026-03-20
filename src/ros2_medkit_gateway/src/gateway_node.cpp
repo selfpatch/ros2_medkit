@@ -711,6 +711,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
   // --- Trigger infrastructure ---
   resource_change_notifier_ = std::make_unique<ResourceChangeNotifier>();
+  resource_change_notifier_->set_error_logger([this](const std::string & msg) {
+    RCLCPP_WARN(get_logger(), "ResourceChangeNotifier: %s", msg.c_str());
+  });
 
   condition_registry_ = std::make_unique<ConditionRegistry>();
   condition_registry_->register_condition("OnChange", std::make_shared<OnChangeEvaluator>());
