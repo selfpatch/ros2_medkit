@@ -695,7 +695,7 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
       // This prevents store_.save_state() and log_manager_->add_log_entry()
       // from blocking SSE consumers that need state->mtx.
       bool should_persist_state = (config_.on_restart_behavior == "restore" && state->info.persistent);
-      auto previous_value_copy = extracted_value;
+      const auto & previous_value_copy = extracted_value;
       bool should_terminate = !state->info.multishot;
       auto tid_copy = state->info.id;
       auto log_settings_copy = state->info.log_settings;
@@ -737,7 +737,7 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
     } else {
       // Condition didn't fire - persist state if needed (I6: still move I/O outside lock)
       bool should_persist_state = (config_.on_restart_behavior == "restore" && state->info.persistent);
-      auto previous_value_copy = extracted_value;
+      const auto & previous_value_copy = extracted_value;
       auto tid_copy = trigger_id;
       sub_lock.unlock();
 
