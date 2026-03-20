@@ -500,10 +500,9 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     }
 
     using Cap = CapabilityBuilder::Capability;
-    std::vector<Cap> caps = {Cap::DATA,   Cap::OPERATIONS, Cap::CONFIGURATIONS,
-                             Cap::FAULTS, Cap::LOGS,       Cap::SUBCOMPONENTS,
-                             Cap::HOSTS,  Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS,
-                             Cap::TRIGGERS};
+    std::vector<Cap> caps = {
+        Cap::DATA,  Cap::OPERATIONS, Cap::CONFIGURATIONS,       Cap::FAULTS,  Cap::LOGS, Cap::SUBCOMPONENTS,
+        Cap::HOSTS, Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS, Cap::TRIGGERS};
     if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
       caps.push_back(Cap::SCRIPTS);
     }
