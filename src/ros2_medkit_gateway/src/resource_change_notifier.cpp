@@ -126,9 +126,9 @@ void ResourceChangeNotifier::worker_loop() {
         try {
           entry.callback(change);
         } catch (const std::exception & e) {
-          std::cerr << "[ResourceChangeNotifier] Exception in subscriber callback: " << e.what() << std::endl;
+          std::cerr << "[ResourceChangeNotifier] Exception in subscriber callback: " << e.what() << '\n';
         } catch (...) {
-          std::cerr << "[ResourceChangeNotifier] Unknown exception in subscriber callback" << std::endl;
+          std::cerr << "[ResourceChangeNotifier] Unknown exception in subscriber callback" << '\n';
         }
       }
     }
