@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -115,6 +116,9 @@ inline tl::expected<void, std::string> validate_range_params(const nlohmann::jso
   if (lo > hi) {
     return tl::make_unexpected(std::string("'lower_bound' must be <= 'upper_bound'"));
   }
+  if (!std::isfinite(lo) || !std::isfinite(hi)) {
+    return tl::make_unexpected(std::string("Bounds must be finite numbers (no NaN or Infinity)"));
+  }
   return {};
 }
 
@@ -138,6 +142,9 @@ class EnterRangeEvaluator : public ConditionEvaluator {
     double hi = params["upper_bound"].get<double>();
     double prev_val = previous->get<double>();
     double curr_val = current.get<double>();
+    if (std::isnan(prev_val) || std::isnan(curr_val)) {
+      return false;
+    }
 
     bool was_outside = prev_val < lo || prev_val > hi;
     bool is_inside = curr_val >= lo && curr_val <= hi;
@@ -167,6 +174,9 @@ class LeaveRangeEvaluator : public ConditionEvaluator {
     double hi = params["upper_bound"].get<double>();
     double prev_val = previous->get<double>();
     double curr_val = current.get<double>();
+    if (std::isnan(prev_val) || std::isnan(curr_val)) {
+      return false;
+    }
 
     bool was_inside = prev_val >= lo && prev_val <= hi;
     bool is_outside = curr_val < lo || curr_val > hi;

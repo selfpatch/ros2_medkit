@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <memory>
 #include <optional>
 
@@ -246,6 +247,27 @@ TEST(ConditionEvaluator, EnterRange_NonNumericReturnsFalse) {
   EXPECT_FALSE(eval.evaluate(json(true), json(15), params));
 }
 
+TEST(ConditionEvaluator, EnterRange_NaN_ReturnsFalse) {
+  EnterRangeEvaluator eval;
+  json params = {{"lower_bound", 10}, {"upper_bound", 20}};
+  EXPECT_FALSE(eval.evaluate(json(5.0), json(std::numeric_limits<double>::quiet_NaN()), params));
+  EXPECT_FALSE(eval.evaluate(json(std::numeric_limits<double>::quiet_NaN()), json(15.0), params));
+}
+
+TEST(ConditionEvaluator, EnterRange_ValidateParams_RejectsNaN) {
+  EnterRangeEvaluator eval;
+  json params = {{"lower_bound", std::numeric_limits<double>::quiet_NaN()}, {"upper_bound", 20}};
+  auto result = eval.validate_params(params);
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(ConditionEvaluator, EnterRange_ValidateParams_RejectsInfinity) {
+  EnterRangeEvaluator eval;
+  json params = {{"lower_bound", 10}, {"upper_bound", std::numeric_limits<double>::infinity()}};
+  auto result = eval.validate_params(params);
+  EXPECT_FALSE(result.has_value());
+}
+
 // ===========================================================================
 // LeaveRangeEvaluator Tests
 // ===========================================================================
@@ -313,6 +335,12 @@ TEST(ConditionEvaluator, LeaveRange_NonNumericReturnsFalse) {
   EXPECT_FALSE(eval.evaluate(json("world"), json(25), params));
   // Boolean previous value
   EXPECT_FALSE(eval.evaluate(json(true), json(25), params));
+}
+
+TEST(ConditionEvaluator, LeaveRange_NaN_ReturnsFalse) {
+  LeaveRangeEvaluator eval;
+  json params = {{"lower_bound", 10}, {"upper_bound", 20}};
+  EXPECT_FALSE(eval.evaluate(json(15.0), json(std::numeric_limits<double>::quiet_NaN()), params));
 }
 
 // ===========================================================================
