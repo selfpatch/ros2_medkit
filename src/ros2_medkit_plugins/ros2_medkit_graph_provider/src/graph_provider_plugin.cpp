@@ -343,6 +343,22 @@ void GraphProviderPlugin::register_routes(httplib::Server & server, const std::s
                  return;
                }
 
+               // Check lock access for vendor extension collection
+               auto client_id = req.get_header_value("X-Client-Id");
+               auto lock_result = ctx_->check_lock(function_id, client_id, "x-medkit-graph");
+               if (!lock_result.allowed) {
+                 nlohmann::json params = {{"entity_id", function_id}, {"collection", "x-medkit-graph"}};
+                 if (!lock_result.denied_by_lock_id.empty()) {
+                   params["lock_id"] = lock_result.denied_by_lock_id;
+                 }
+                 if (lock_result.denied_code == "lock-required") {
+                   PluginContext::send_error(res, 409, ERR_INVALID_REQUEST, lock_result.denied_reason, params);
+                 } else {
+                   PluginContext::send_error(res, 409, ERR_LOCK_BROKEN, lock_result.denied_reason, params);
+                 }
+                 return;
+               }
+
                auto payload = get_cached_or_built_graph(function_id);
                if (!payload.has_value()) {
                  PluginContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Graph snapshot not available",

@@ -194,6 +194,22 @@ class FakePluginContext : public PluginContext {
     return {};
   }
 
+  LockAccessResult check_lock(const std::string & /*entity_id*/, const std::string & /*client_id*/,
+                              const std::string & /*collection*/) const override {
+    return LockAccessResult{true, "", "", ""};
+  }
+
+  tl::expected<LockInfo, LockError> acquire_lock(const std::string & /*entity_id*/, const std::string & /*client_id*/,
+                                                 const std::vector<std::string> & /*scopes*/,
+                                                 int /*expiration_seconds*/) override {
+    return tl::make_unexpected(LockError{"lock-disabled", "Locking not available in test", 503, std::nullopt});
+  }
+
+  tl::expected<void, LockError> release_lock(const std::string & /*entity_id*/,
+                                             const std::string & /*client_id*/) override {
+    return tl::make_unexpected(LockError{"lock-disabled", "Locking not available in test", 503, std::nullopt});
+  }
+
   IntrospectionInput get_entity_snapshot() const override {
     return entity_snapshot_;
   }
