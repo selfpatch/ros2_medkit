@@ -14,7 +14,6 @@
 
 #include "ros2_medkit_gateway/resource_change_notifier.hpp"
 
-#include <iostream>
 #include <utility>
 #include <vector>
 
@@ -126,13 +125,21 @@ void ResourceChangeNotifier::worker_loop() {
         try {
           entry.callback(change);
         } catch (const std::exception & e) {
-          std::cerr << "[ResourceChangeNotifier] Exception in subscriber callback: " << e.what() << '\n';
+          if (error_logger_) {
+            error_logger_(std::string("Exception in subscriber callback: ") + e.what());
+          }
         } catch (...) {
-          std::cerr << "[ResourceChangeNotifier] Unknown exception in subscriber callback" << '\n';
+          if (error_logger_) {
+            error_logger_("Unknown exception in subscriber callback");
+          }
         }
       }
     }
   }
+}
+
+void ResourceChangeNotifier::set_error_logger(ErrorLoggerFn fn) {
+  error_logger_ = std::move(fn);
 }
 
 }  // namespace ros2_medkit_gateway

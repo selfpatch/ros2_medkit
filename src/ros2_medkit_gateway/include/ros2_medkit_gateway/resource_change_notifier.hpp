@@ -87,6 +87,11 @@ class ResourceChangeNotifier {
   /// Safe to call multiple times.
   void shutdown();
 
+  /// Set an optional error logger for subscriber callback exceptions.
+  /// Must be called before concurrent use (typically from GatewayNode init).
+  using ErrorLoggerFn = std::function<void(const std::string &)>;
+  void set_error_logger(ErrorLoggerFn fn);
+
  private:
   struct SubscriptionEntry {
     NotifierFilter filter;
@@ -112,6 +117,9 @@ class ResourceChangeNotifier {
   // Worker thread lifecycle
   std::atomic<bool> shutdown_flag_{false};
   std::thread worker_thread_;
+
+  // Optional error logger (set once before concurrent use)
+  ErrorLoggerFn error_logger_;
 };
 
 }  // namespace ros2_medkit_gateway
