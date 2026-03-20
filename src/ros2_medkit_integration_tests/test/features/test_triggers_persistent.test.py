@@ -138,18 +138,14 @@ def _wait_for_health(base_url, *, timeout=30.0):
 
 def _wait_for_app(base_url, app_id, *, timeout=60.0):
     """Poll /apps until the given app_id is discovered."""
-    import sys
     deadline = time.monotonic() + timeout
-    attempt = 0
     while time.monotonic() < deadline:
-        attempt += 1
         try:
             r = requests.get(f'{base_url}/apps/{app_id}', timeout=2)
-            print(f'_wait_for_app attempt {attempt}: {r.status_code}', file=sys.stderr)
             if r.status_code == 200:
                 return
-        except requests.exceptions.RequestException as e:
-            print(f'_wait_for_app attempt {attempt}: {e}', file=sys.stderr)
+        except requests.exceptions.RequestException:
+            pass
         time.sleep(1.0)
     raise AssertionError(
         f'App {app_id!r} not discovered at {base_url} after {timeout}s'
