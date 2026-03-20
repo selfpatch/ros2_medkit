@@ -595,7 +595,7 @@ if(BUILD_TESTING)
   # Lock handlers tests
   ament_add_gtest(test_lock_handlers test/test_lock_handlers.cpp)
   target_link_libraries(test_lock_handlers gateway_lib)
-  set_tests_properties(test_lock_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=77")
+  set_tests_properties(test_lock_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=78")
 
   # Condition evaluator tests (trigger condition interface + built-in evaluators)
   ament_add_gtest(test_condition_evaluator test/test_condition_evaluator.cpp)
