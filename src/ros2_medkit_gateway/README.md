@@ -82,6 +82,15 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `PUT /api/v1/{components|apps}/{id}/locks/{lock_id}` - Extend lock expiration
 - `DELETE /api/v1/{components|apps}/{id}/locks/{lock_id}` - Release a lock
 
+### Trigger Endpoints
+
+- `POST /api/v1/{entity}/{id}/triggers` - Create a trigger with conditions
+- `GET /api/v1/{entity}/{id}/triggers` - List active triggers
+- `GET /api/v1/{entity}/{id}/triggers/{trigger_id}` - Get trigger details
+- `PUT /api/v1/{entity}/{id}/triggers/{trigger_id}` - Update trigger conditions
+- `DELETE /api/v1/{entity}/{id}/triggers/{trigger_id}` - Delete a trigger
+- `GET /api/v1/{entity}/{id}/triggers/{trigger_id}/events` - SSE stream of trigger events
+
 ### Scripts Endpoints
 
 - `GET /api/v1/{entity}/{id}/scripts` - List available diagnostic scripts

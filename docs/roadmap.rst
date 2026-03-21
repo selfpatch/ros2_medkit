@@ -86,7 +86,7 @@ and define triggers for event-driven workflows.
 
 - [x] Scripts (8 endpoints) - upload, execute, and manage diagnostic scripts
 - [x] Cyclic Subscriptions (6 endpoints) - periodic push-based resource delivery via SSE
-- [ ] Triggers - event-driven subscriptions
+- [x] Triggers (6 endpoints) - condition-based push notifications with hierarchy matching
 - [ ] Datasets (4 endpoints) - dynamic data lists for subscription
 
 `MS4 on GitHub <https://github.com/selfpatch/ros2_medkit/milestone/4>`_
@@ -153,7 +153,7 @@ With most of the SOVD API surface covered, the project is shifting focus toward
 production readiness and ecosystem integration:
 
 **Remaining SOVD Coverage**
-   Complete the remaining specification endpoints: triggers, communication logs,
+   Complete the remaining specification endpoints: communication logs,
    clear data, datasets, lifecycle management, and entity operating modes.
 
 **Code Hardening**

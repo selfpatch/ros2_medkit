@@ -40,7 +40,7 @@ cd selfpatch_demos/demos/turtlebot3_integration
 # → API: http://localhost:8080/api/v1/  Web UI: http://localhost:3000
 ```
 
-Open `http://localhost:3000` in your browser to see the diagnostic web UI - a browsable entity tree showing the TurtleBot3 Nav2 stack with live faults, topic data, and parameter access. The `--headless` flag skips the Gazebo 3D view, but the REST API and web UI work normally.
+Open `http://localhost:3000` in your browser. You will see a TurtleBot3 with Nav2, organized into a browsable entity tree with live faults, topic data, and parameter access.
 
 **Build from source** (ROS 2 Jazzy, Humble, or Rolling):
 
