@@ -158,7 +158,7 @@ Apps
    Get capabilities for a single discovered app.
 
 ``GET /api/v1/apps/{app_id}/is-located-on``
-   Return the host component reference for an app.
+   Return the parent component that hosts this app.
 
    The response follows the standard ``items`` wrapper and returns:
 

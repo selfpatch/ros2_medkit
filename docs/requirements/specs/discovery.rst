@@ -99,6 +99,13 @@ Discovery
 
    Beacon hints shall follow an ACTIVE, STALE, EXPIRED lifecycle based on configurable TTL and expiry durations.
 
+.. req:: GET /apps/{id}/is-located-on
+   :id: REQ_INTEROP_105
+   :status: verified
+   :tags: Discovery
+
+   The endpoint shall return the component that hosts the addressed application.
+
 .. req:: Vendor endpoints expose beacon data
    :id: REQ_DISCO_BEACON_04
    :status: verified
