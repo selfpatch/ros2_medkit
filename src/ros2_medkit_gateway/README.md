@@ -33,6 +33,7 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `GET /api/v1/components/{component_id}/hosts` - List apps hosted on a component
 - `GET /api/v1/components/{component_id}/depends-on` - List component dependencies
 - `GET /api/v1/areas/{area_id}/components` - List components within a specific area
+- `GET /api/v1/apps/{app_id}/is-located-on` - Get the component hosting this app
 
 ### Component Data Endpoints
 
