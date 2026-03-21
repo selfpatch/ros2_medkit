@@ -17,6 +17,9 @@ Plugins implement the ``GatewayPlugin`` C++ base class plus one or more typed pr
 - **LogProvider** - replaces or augments the default ``/rosout`` log backend.
   Can operate in observer mode (receives log entries) or full-ingestion mode
   (owns the entire log pipeline). See the ``/logs`` endpoints in :doc:`/api/rest`.
+- **ScriptProvider** - replaces or augments the default filesystem-based script backend.
+  Plugins can provide script listings, create custom scripts, and execute them using
+  alternative runtimes. See the ``/scripts`` endpoints in :doc:`/api/rest`.
 
 A single plugin can implement multiple provider interfaces. For example, a "systemd" plugin
 could provide both introspection (discover systemd units) and updates (manage service restarts).
@@ -126,7 +129,7 @@ Writing a Plugin
      return static_cast<MyPlugin*>(p);
    }
 
-The ``get_update_provider`` (and ``get_introspection_provider``, ``get_log_provider``) functions use ``extern "C"``
+The ``get_update_provider`` (and ``get_introspection_provider``, ``get_log_provider``, ``get_script_provider``) functions use ``extern "C"``
 to avoid RTTI issues across shared library boundaries. The ``static_cast`` is safe because
 these functions execute inside the plugin's own ``.so`` where the type hierarchy is known.
 
@@ -222,7 +225,7 @@ Plugin Lifecycle
 1. ``dlopen`` loads the ``.so`` with ``RTLD_NOW | RTLD_LOCAL``
 2. ``plugin_api_version()`` is checked against the gateway's ``PLUGIN_API_VERSION``
 3. ``create_plugin()`` factory function creates the plugin instance
-4. Provider interfaces are queried via ``get_update_provider()`` / ``get_introspection_provider()`` / ``get_log_provider()``
+4. Provider interfaces are queried via ``get_update_provider()`` / ``get_introspection_provider()`` / ``get_log_provider()`` / ``get_script_provider()``
 5. ``configure()`` is called with per-plugin JSON config
 6. ``set_context()`` provides ``PluginContext`` with ROS 2 node, entity cache, faults, and HTTP utilities
 7. ``register_routes()`` allows registering custom REST endpoints
@@ -241,6 +244,8 @@ providing access to gateway data and utilities:
 - ``validate_entity_for_route(req, res, entity_id)`` - validate entity exists and matches the route type, auto-sending SOVD errors on failure
 - ``send_error()`` / ``send_json()`` - SOVD-compliant HTTP response helpers (static methods)
 - ``register_capability()`` / ``register_entity_capability()`` - register custom capabilities on entities
+- ``check_lock(entity_id, client_id, collection)`` - verify lock access before mutating operations; returns ``LockAccessResult`` with ``allowed`` flag and denial details
+- ``acquire_lock()`` / ``release_lock()`` - acquire and release entity locks with optional scope and TTL
 - ``get_entity_snapshot()`` - returns an ``IntrospectionInput`` populated from the current entity cache
 - ``list_all_faults()`` - returns JSON object with a ``"faults"`` array containing all active faults across all entities
 - ``register_sampler(collection, fn)`` - registers a cyclic subscription sampler for a custom collection name
@@ -291,10 +296,84 @@ for the lower-level registry API.
 
    The ``PluginContext`` interface is versioned alongside ``PLUGIN_API_VERSION``.
    Breaking changes to existing methods or removal of methods increment the version.
-   New non-breaking methods (like ``get_entity_snapshot``, ``list_all_faults``, and
-   ``register_sampler``) provide default no-op implementations so plugins that do not
-   use these methods need no code changes. However, a rebuild is still required because
-   ``plugin_api_version()`` must return the current version (exact-match check).
+   New non-breaking methods (like ``check_lock``, ``get_entity_snapshot``,
+   ``list_all_faults``, and ``register_sampler``) provide default no-op implementations
+   so plugins that do not use these methods need no code changes. However, a rebuild is
+   still required because ``plugin_api_version()`` must return the current version
+   (exact-match check).
+
+PluginContext API (v4)
+----------------------
+
+Version 4 of the plugin API introduced several new methods on ``PluginContext``.
+These methods have default no-op implementations, so existing plugins continue to
+compile without changes (though a rebuild is required to match the new
+``PLUGIN_API_VERSION``).
+
+**check_lock(entity_id, client_id, collection)**
+
+Verify whether a lock blocks access to a resource collection on an entity. Plugins
+that perform mutating operations (writing configurations, executing scripts, etc.)
+should call this before proceeding:
+
+.. code-block:: cpp
+
+   auto result = ctx_->check_lock(entity_id, client_id, "configurations");
+   if (!result.allowed) {
+     PluginContext::send_error(res, 409, result.denied_code, result.denied_reason);
+     return;
+   }
+
+The returned ``LockAccessResult`` contains an ``allowed`` flag and, when denied,
+``denied_by_lock_id``, ``denied_code``, and ``denied_reason`` fields. Companion
+methods ``acquire_lock()`` and ``release_lock()`` let plugins manage locks directly.
+
+**get_entity_snapshot()**
+
+Returns an ``IntrospectionInput`` populated from the current entity cache. The
+snapshot contains read-only vectors for all discovered areas, components, apps, and
+functions at the moment of the call:
+
+.. code-block:: cpp
+
+   IntrospectionInput snapshot = ctx_->get_entity_snapshot();
+   for (const auto& app : snapshot.apps) {
+     RCLCPP_INFO(ctx_->node()->get_logger(), "App: %s", app.id.c_str());
+   }
+
+This is useful for plugins that need a consistent view of all entities without
+subscribing to discovery events.
+
+**list_all_faults()**
+
+Returns a JSON object with a ``"faults"`` array containing all active faults across
+all entities. Returns an empty object if the fault manager is unavailable:
+
+.. code-block:: cpp
+
+   nlohmann::json faults = ctx_->list_all_faults();
+   for (const auto& fault : faults.value("faults", nlohmann::json::array())) {
+     // Process each fault
+   }
+
+**register_sampler(collection, fn)**
+
+Registers a cyclic subscription sampler for a custom collection name. Once
+registered, clients can create cyclic subscriptions on that collection for any
+entity:
+
+.. code-block:: cpp
+
+   ctx_->register_sampler("x-medkit-metrics",
+     [this](const std::string& entity_id, const std::string& /*resource_path*/)
+         -> tl::expected<nlohmann::json, std::string> {
+       auto data = collect_metrics(entity_id);
+       if (!data) return tl::make_unexpected("no data for: " + entity_id);
+       return *data;
+     });
+
+This is a convenience wrapper around the lower-level ``ResourceSamplerRegistry``
+API described in `Cyclic Subscription Extensions`_.
 
 Custom REST Endpoints
 ---------------------
@@ -439,6 +518,127 @@ New entities in ``new_entities`` only appear in responses when
 ``allow_new_entities`` is true in the plugin configuration (or an equivalent
 policy is set).
 
+ScriptProvider Example
+----------------------
+
+A ``ScriptProvider`` replaces the built-in filesystem-based script backend with a
+custom implementation. This is useful for plugins that store scripts in a database,
+fetch them from a remote service, or execute them in a sandboxed runtime.
+
+The interface mirrors the ``/scripts`` REST endpoints - list, get, upload, delete,
+execute, and control executions:
+
+.. code-block:: cpp
+
+   #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+   #include "ros2_medkit_gateway/providers/script_provider.hpp"
+
+   using namespace ros2_medkit_gateway;
+
+   class MyScriptPlugin : public GatewayPlugin, public ScriptProvider {
+    public:
+     std::string name() const override { return "my_scripts"; }
+
+     void configure(const nlohmann::json& /*config*/) override {}
+
+     void shutdown() override {}
+
+     // ScriptProvider: list scripts available for an entity
+     tl::expected<std::vector<ScriptInfo>, ScriptBackendErrorInfo>
+     list_scripts(const std::string& /*entity_id*/) override {
+       return std::vector<ScriptInfo>{};
+     }
+
+     // ScriptProvider: get metadata for a specific script
+     tl::expected<ScriptInfo, ScriptBackendErrorInfo>
+     get_script(const std::string& /*entity_id*/, const std::string& script_id) override {
+       return tl::make_unexpected(
+         ScriptBackendErrorInfo{ScriptBackendError::NotFound, "not found: " + script_id});
+     }
+
+     // ScriptProvider: upload a new script
+     tl::expected<ScriptUploadResult, ScriptBackendErrorInfo>
+     upload_script(const std::string& /*entity_id*/, const std::string& /*filename*/,
+                   const std::string& /*content*/,
+                   const std::optional<nlohmann::json>& /*metadata*/) override {
+       return tl::make_unexpected(
+         ScriptBackendErrorInfo{ScriptBackendError::UnsupportedType, "uploads not supported"});
+     }
+
+     // ScriptProvider: delete a script
+     tl::expected<void, ScriptBackendErrorInfo>
+     delete_script(const std::string& /*entity_id*/, const std::string& /*script_id*/) override {
+       return {};
+     }
+
+     // ScriptProvider: start executing a script
+     tl::expected<ExecutionInfo, ScriptBackendErrorInfo>
+     start_execution(const std::string& /*entity_id*/, const std::string& /*script_id*/,
+                     const ExecutionRequest& /*request*/) override {
+       return tl::make_unexpected(
+         ScriptBackendErrorInfo{ScriptBackendError::NotFound, "no scripts available"});
+     }
+
+     // ScriptProvider: query execution status
+     tl::expected<ExecutionInfo, ScriptBackendErrorInfo>
+     get_execution(const std::string& /*entity_id*/, const std::string& /*script_id*/,
+                   const std::string& /*execution_id*/) override {
+       return tl::make_unexpected(
+         ScriptBackendErrorInfo{ScriptBackendError::NotFound, "no executions"});
+     }
+
+     // ScriptProvider: control a running execution (stop or force-terminate)
+     tl::expected<ExecutionInfo, ScriptBackendErrorInfo>
+     control_execution(const std::string& /*entity_id*/, const std::string& /*script_id*/,
+                       const std::string& /*execution_id*/,
+                       const std::string& /*action*/) override {
+       return tl::make_unexpected(
+         ScriptBackendErrorInfo{ScriptBackendError::NotRunning, "no running execution"});
+     }
+
+     // ScriptProvider: delete a completed execution record
+     tl::expected<void, ScriptBackendErrorInfo>
+     delete_execution(const std::string& /*entity_id*/, const std::string& /*script_id*/,
+                      const std::string& /*execution_id*/) override {
+       return {};
+     }
+   };
+
+   // Required exports
+   extern "C" GATEWAY_PLUGIN_EXPORT int plugin_api_version() {
+     return PLUGIN_API_VERSION;
+   }
+
+   extern "C" GATEWAY_PLUGIN_EXPORT GatewayPlugin* create_plugin() {
+     return new MyScriptPlugin();
+   }
+
+   // Required for ScriptProvider detection
+   extern "C" GATEWAY_PLUGIN_EXPORT ScriptProvider* get_script_provider(GatewayPlugin* p) {
+     return static_cast<MyScriptPlugin*>(p);
+   }
+
+When a plugin ScriptProvider is detected, it replaces the built-in
+``DefaultScriptProvider``. Only the first ScriptProvider plugin is used
+(same semantics as UpdateProvider). All 8 methods must be implemented -
+the ``ScriptManager`` wraps calls with null-safety and exception isolation.
+
+**Configuration** - enable scripts and load the plugin:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       plugins: ["my_scripts"]
+       plugins.my_scripts.path: "/opt/ros2_medkit/lib/libmy_scripts.so"
+
+       scripts:
+         scripts_dir: "/var/lib/ros2_medkit/scripts"
+
+The ``scripts.scripts_dir`` parameter must be set for the scripts subsystem to
+initialize, even when using a plugin backend. The plugin replaces how scripts are
+stored and executed, but the subsystem must be enabled first.
+
 Multiple Plugins
 ----------------
 
@@ -452,6 +652,7 @@ Multiple plugins can be loaded simultaneously:
   their own discovered entities and metadata.
 - **LogProvider**: Only the first plugin's LogProvider is used for queries (same as UpdateProvider).
   All LogProvider plugins receive ``on_log_entry()`` calls as observers.
+- **ScriptProvider**: Only the first plugin's ScriptProvider is used (same as UpdateProvider).
 - **Custom routes**: All plugins can register endpoints (use unique path prefixes)
 
 Graph Provider Plugin (ros2_medkit_graph_provider)
