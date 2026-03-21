@@ -31,6 +31,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SRC_DIR="${REPO_ROOT}/src"
 VERSION_HPP="${SRC_DIR}/ros2_medkit_gateway/include/ros2_medkit_gateway/version.hpp"
+CONF_PY="${REPO_ROOT}/docs/conf.py"
+DOCS_PYPROJECT="${REPO_ROOT}/docs/pyproject.toml"
 
 usage() {
     echo "Usage: $0 {bump <version>|verify [<version>]}"
@@ -90,8 +92,23 @@ cmd_bump() {
         echo "  WARNING: version.hpp not found at ${VERSION_HPP}"
     fi
 
+    # Update docs/conf.py version and release
+    if [ -f "$CONF_PY" ]; then
+        local old_conf
+        old_conf=$(grep -oP '^version = "\K[0-9]+\.[0-9]+\.[0-9]+' "$CONF_PY" || echo "unknown")
+        sed -i "s|^version = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"|version = \"${target_version}\"|" "$CONF_PY"
+        sed -i "s|^release = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"|release = \"${target_version}\"|" "$CONF_PY"
+        echo "  docs/conf.py: ${old_conf} -> ${target_version}"
+    fi
+
+    # Update docs/pyproject.toml version
+    if [ -f "$DOCS_PYPROJECT" ]; then
+        sed -i "s|^version = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"|version = \"${target_version}\"|" "$DOCS_PYPROJECT"
+        echo "  docs/pyproject.toml: -> ${target_version}"
+    fi
+
     echo ""
-    echo "Bumped ${count} packages + version.hpp to ${target_version}."
+    echo "Bumped ${count} packages + version.hpp + docs to ${target_version}."
     echo ""
     echo "Run '$0 verify ${target_version}' to confirm."
 }
@@ -132,6 +149,32 @@ cmd_verify() {
             echo "  OK: version.hpp fallback = ${hpp_version}"
         fi
         versions_seen+=("$hpp_version")
+    fi
+
+    # Check docs/conf.py
+    if [ -f "$CONF_PY" ]; then
+        local conf_version
+        conf_version=$(grep -oP '^version = "\K[0-9]+\.[0-9]+\.[0-9]+' "$CONF_PY" || echo "unknown")
+        if [ -n "$expected_version" ] && [ "$conf_version" != "$expected_version" ]; then
+            echo "  MISMATCH: docs/conf.py is ${conf_version}, expected ${expected_version}"
+            all_ok=false
+        else
+            echo "  OK: docs/conf.py = ${conf_version}"
+        fi
+        versions_seen+=("$conf_version")
+    fi
+
+    # Check docs/pyproject.toml
+    if [ -f "$DOCS_PYPROJECT" ]; then
+        local pyproject_version
+        pyproject_version=$(grep -oP '^version = "\K[0-9]+\.[0-9]+\.[0-9]+' "$DOCS_PYPROJECT" || echo "unknown")
+        if [ -n "$expected_version" ] && [ "$pyproject_version" != "$expected_version" ]; then
+            echo "  MISMATCH: docs/pyproject.toml is ${pyproject_version}, expected ${expected_version}"
+            all_ok=false
+        else
+            echo "  OK: docs/pyproject.toml = ${pyproject_version}"
+        fi
+        versions_seen+=("$pyproject_version")
     fi
 
     # Check consistency if no expected version given
