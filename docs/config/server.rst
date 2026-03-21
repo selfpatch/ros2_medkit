@@ -497,6 +497,13 @@ default for local development.
    - **configurator** - Operator + modify/reset configurations
    - **admin** - Full access including auth management
 
+.. danger::
+
+   The example below uses **placeholder secrets for illustration only**.
+   In production, generate secrets with ``openssl rand -base64 32`` and
+   never commit them to configuration files. Use environment variable
+   substitution or a secrets manager.
+
 Example:
 
 .. code-block:: yaml
@@ -505,11 +512,11 @@ Example:
      ros__parameters:
        auth:
          enabled: true
-         jwt_secret: "my-secret-key"
+         jwt_secret: "CHANGE-ME-use-openssl-rand-base64-32"
          jwt_algorithm: "HS256"
          require_auth_for: "write"
          token_expiry_seconds: 3600
-         clients: ["admin:admin_secret_123:admin", "viewer:viewer_pass:viewer"]
+         clients: ["admin:REPLACE_WITH_STRONG_SECRET:admin", "viewer:REPLACE_WITH_STRONG_SECRET:viewer"]
 
 See :doc:`/tutorials/authentication` for a complete setup tutorial.
 
@@ -640,10 +647,10 @@ Complete Example
 
        auth:
          enabled: true
-         jwt_secret: "my-secret-key"
+         jwt_secret: "CHANGE-ME-use-openssl-rand-base64-32"
          jwt_algorithm: "HS256"
          require_auth_for: "write"
-         clients: ["admin:admin_secret_123:admin"]
+         clients: ["admin:REPLACE_WITH_STRONG_SECRET:admin"]
 
        rate_limiting:
          enabled: false
