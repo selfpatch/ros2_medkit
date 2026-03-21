@@ -216,14 +216,11 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
 
   auto result = trigger_mgr_.create(create_req);
   if (!result) {
-    // Distinguish between validation errors (400) and capacity errors (503).
-    // NOTE: String matching on TriggerManager error messages - coupled to the exact
-    // error text in trigger_manager.cpp::create(). If those strings change, update here.
-    const auto & err = result.error();
-    if (err.find("Maximum trigger capacity") != std::string::npos) {
-      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, err);
+    if (result.error().code == TriggerError::CapacityExceeded) {
+      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, result.error().message);
     } else {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, err, {{"parameter", "trigger_condition"}});
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, result.error().message,
+                                 {{"parameter", "trigger_condition"}});
     }
     return;
   }
@@ -320,8 +317,13 @@ void TriggerHandlers::handle_update(const httplib::Request & req, httplib::Respo
 
   auto result = trigger_mgr_.update(trigger_id, new_lifetime);
   if (!result) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, result.error(),
-                               {{"parameter", "lifetime"}, {"value", new_lifetime}});
+    if (result.error().code == TriggerError::NotFound) {
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, result.error().message,
+                                 {{"trigger_id", trigger_id}});
+    } else {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, result.error().message,
+                                 {{"parameter", "lifetime"}, {"value", new_lifetime}});
+    }
     return;
   }
 
