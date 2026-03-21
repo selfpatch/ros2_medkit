@@ -125,6 +125,11 @@ class DiscoveryHandlers {
    */
   void handle_app_depends_on(const httplib::Request & req, httplib::Response & res);
 
+  /**
+   * @brief Handle GET /apps/{app-id}/is-located-on - get parent component.
+   */
+  void handle_app_is_located_on(const httplib::Request & req, httplib::Response & res);
+
   // =========================================================================
   // Function endpoints
   // =========================================================================

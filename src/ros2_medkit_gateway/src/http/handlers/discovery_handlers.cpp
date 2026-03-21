@@ -951,6 +951,66 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
   }
 }
 
+void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, httplib::Response & res) {
+  try {
+    if (req.matches.size() < 2) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
+      return;
+    }
+
+    std::string app_id = req.matches[1];
+
+    auto validation_result = ctx_.validate_entity_id(app_id);
+    if (!validation_result) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid app ID",
+                                 {{"details", validation_result.error()}, {"app_id", app_id}});
+      return;
+    }
+
+    auto discovery = ctx_.node()->get_discovery_manager();
+    auto app_opt = discovery->get_app(app_id);
+
+    if (!app_opt) {
+      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
+      return;
+    }
+
+    json items = json::array();
+    const auto & app = *app_opt;
+
+    if (!app.component_id.empty()) {
+      auto component_opt = discovery->get_component(app.component_id);
+      if (component_opt) {
+        json item;
+        item["id"] = component_opt->id;
+        item["name"] = component_opt->name.empty() ? component_opt->id : component_opt->name;
+        item["href"] = "/api/v1/components/" + component_opt->id;
+        items.push_back(item);
+      } else {
+        RCLCPP_WARN(HandlerContext::logger(), "App '%s' references unknown component '%s'", app_id.c_str(),
+                    app.component_id.c_str());
+      }
+    }
+
+    json response;
+    response["items"] = items;
+
+    XMedkit resp_ext;
+    resp_ext.add("total_count", items.size());
+    response["x-medkit"] = resp_ext.build();
+
+    json links;
+    links["self"] = "/api/v1/apps/" + app_id + "/is-located-on";
+    links["app"] = "/api/v1/apps/" + app_id;
+    response["_links"] = links;
+
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_app_is_located_on: %s", e.what());
+  }
+}
+
 // =============================================================================
 // Function handlers
 // =============================================================================

@@ -82,6 +82,9 @@ apps:
     name: "Mapper"
     is_located_on: "lidar_unit"
     depends_on: ["planner", "ghost_app"]
+  - id: "standalone"
+    name: "Standalone"
+    description: "Standalone app without a hosting component"
 functions:
   - id: "navigation"
     name: "Navigation"
@@ -229,7 +232,7 @@ class DiscoveryHandlersFixtureTest : public ::testing::Test {
     auto apps = suite_node_->get_discovery_manager()->discover_apps();
     auto functions = suite_node_->get_discovery_manager()->discover_functions();
 
-    ASSERT_EQ(apps.size(), 2u);
+    ASSERT_EQ(apps.size(), 3u);
     apps[0].is_online = true;
     apps[0].bound_fqn = "/vehicle/main_ecu/planner";
     apps[1].bound_fqn = "/sensors/lidar_unit/mapper";
@@ -566,7 +569,7 @@ TEST_F(DiscoveryHandlersFixtureTest, ListAppsReturnsSeededMetadata) {
   handlers_->handle_list_apps(req, res);
 
   auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 2);
+  ASSERT_EQ(body["items"].size(), 3);
   EXPECT_EQ(body["items"][0]["id"], "planner");
   EXPECT_EQ(body["items"][0]["x-medkit"]["component_id"], "main_ecu");
   EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], true);
@@ -599,6 +602,57 @@ TEST_F(DiscoveryHandlersFixtureTest, GetAppReturnsLinksAndCapabilities) {
   EXPECT_EQ(body["_links"]["depends-on"][1], "/api/v1/apps/ghost_app");
   EXPECT_EQ(body["x-medkit"]["source"], "manifest");
   EXPECT_EQ(body["x-medkit"]["is_online"], false);
+}
+
+// @verifies REQ_INTEROP_003
+TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsParentComponent) {
+  auto req = make_request_with_match("/api/v1/apps/mapper/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
+  httplib::Response res;
+
+  handlers_->handle_app_is_located_on(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 1);
+  EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
+  EXPECT_EQ(body["items"][0]["name"], "Lidar Unit");
+  EXPECT_EQ(body["items"][0]["href"], "/api/v1/components/lidar_unit");
+  EXPECT_EQ(body["x-medkit"]["total_count"], 1);
+  EXPECT_EQ(body["_links"]["self"], "/api/v1/apps/mapper/is-located-on");
+  EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/mapper");
+}
+
+// @verifies REQ_INTEROP_003
+TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsEmptyWhenAppHasNoComponent) {
+  auto req = make_request_with_match("/api/v1/apps/standalone/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
+  httplib::Response res;
+
+  handlers_->handle_app_is_located_on(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_TRUE(body["items"].empty());
+  EXPECT_EQ(body["x-medkit"]["total_count"], 0);
+  EXPECT_EQ(body["_links"]["self"], "/api/v1/apps/standalone/is-located-on");
+  EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/standalone");
+}
+
+// @verifies REQ_INTEROP_003
+TEST_F(DiscoveryHandlersValidationTest, AppIsLocatedOnInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/apps/bad/id/is-located-on", R"(/api/v1/apps/(.+)/is-located-on)");
+  httplib::Response res;
+
+  handlers_.handle_app_is_located_on(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+// @verifies REQ_INTEROP_003
+TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnUnknownAppReturns404) {
+  auto req = make_request_with_match("/api/v1/apps/unknown/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
+  httplib::Response res;
+
+  handlers_->handle_app_is_located_on(req, res);
+
+  EXPECT_EQ(res.status, 404);
 }
 
 // @verifies REQ_INTEROP_009
