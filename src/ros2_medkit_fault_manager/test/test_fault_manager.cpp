@@ -1014,7 +1014,7 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsExtendedDataRecords) {
   EXPECT_NE(edr.last_occurrence_ns, 0);
 }
 
-// @verifies REQ_INTEROP_071
+// @verifies REQ_INTEROP_012
 TEST_F(FaultEventPublishingTest, ListFaultsForEntitySuccess) {
   // Report faults from different sources
   ASSERT_TRUE(call_report_fault("MOTOR_FAULT", Fault::SEVERITY_ERROR, "/powertrain/motor_controller"));
@@ -1038,7 +1038,7 @@ TEST_F(FaultEventPublishingTest, ListFaultsForEntitySuccess) {
   EXPECT_FALSE(codes.count("BRAKE_FAULT"));
 }
 
-// @verifies REQ_INTEROP_071
+// @verifies REQ_INTEROP_012
 TEST_F(FaultEventPublishingTest, ListFaultsForEntityEmptyResult) {
   // Report faults from a different entity
   ASSERT_TRUE(call_report_fault("SOME_FAULT", Fault::SEVERITY_ERROR, "/some/other_entity"));
@@ -1051,7 +1051,7 @@ TEST_F(FaultEventPublishingTest, ListFaultsForEntityEmptyResult) {
   EXPECT_TRUE(response->faults.empty());
 }
 
-// @verifies REQ_INTEROP_071
+// @verifies REQ_INTEROP_012
 TEST_F(FaultEventPublishingTest, ListFaultsForEntityWithEmptyId) {
   auto response = call_list_faults_for_entity("");
   ASSERT_TRUE(response.has_value());

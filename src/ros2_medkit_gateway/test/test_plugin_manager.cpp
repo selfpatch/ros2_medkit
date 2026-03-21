@@ -162,7 +162,6 @@ class MockThrowOnShutdown : public GatewayPlugin {
   }
 };
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, EmptyManagerHasNoPlugins) {
   PluginManager mgr;
   EXPECT_FALSE(mgr.has_plugins());
@@ -171,7 +170,6 @@ TEST(PluginManagerTest, EmptyManagerHasNoPlugins) {
   EXPECT_TRUE(mgr.get_introspection_providers().empty());
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, AddPluginAndDispatch) {
   PluginManager mgr;
   auto plugin = std::make_unique<MockPlugin>();
@@ -186,7 +184,6 @@ TEST(PluginManagerTest, AddPluginAndDispatch) {
   EXPECT_EQ(mgr.get_introspection_providers().size(), 1u);
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, ConfigurePassesConfig) {
   PluginManager mgr;
   auto plugin = std::make_unique<MockPlugin>();
@@ -200,7 +197,6 @@ TEST(PluginManagerTest, ConfigurePassesConfig) {
   EXPECT_TRUE(raw->config_.empty());
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, LoadPluginsForwardsConfig) {
   // load_plugins() should forward the PluginConfig.config to configure()
   PluginManager mgr;
@@ -212,7 +208,6 @@ TEST(PluginManagerTest, LoadPluginsForwardsConfig) {
   EXPECT_EQ(configs[0].config["timeout_ms"], 5000);
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, ShutdownCallsAllPlugins) {
   PluginManager mgr;
   auto plugin = std::make_unique<MockPlugin>();
@@ -223,7 +218,6 @@ TEST(PluginManagerTest, ShutdownCallsAllPlugins) {
   EXPECT_TRUE(raw->shutdown_called_);
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, MultiCapabilityPluginDispatchedToBoth) {
   PluginManager mgr;
   mgr.add_plugin(std::make_unique<MockPlugin>());
@@ -232,7 +226,6 @@ TEST(PluginManagerTest, MultiCapabilityPluginDispatchedToBoth) {
   EXPECT_EQ(mgr.get_introspection_providers().size(), 1u);
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, IntrospectionOnlyPluginNotUpdateProvider) {
   PluginManager mgr;
   mgr.add_plugin(std::make_unique<MockIntrospectionOnly>());
@@ -241,7 +234,6 @@ TEST(PluginManagerTest, IntrospectionOnlyPluginNotUpdateProvider) {
   EXPECT_EQ(mgr.get_introspection_providers().size(), 1u);
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, MultipleIntrospectionProviders) {
   PluginManager mgr;
   mgr.add_plugin(std::make_unique<MockPlugin>());
@@ -250,7 +242,6 @@ TEST(PluginManagerTest, MultipleIntrospectionProviders) {
   EXPECT_EQ(mgr.get_introspection_providers().size(), 2u);
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, DuplicateUpdateProviderFirstWins) {
   PluginManager mgr;
   auto first = std::make_unique<MockPlugin>();
@@ -262,7 +253,6 @@ TEST(PluginManagerTest, DuplicateUpdateProviderFirstWins) {
   EXPECT_EQ(mgr.get_update_provider(), static_cast<UpdateProvider *>(first_raw));
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, ThrowingPluginDisabledDuringConfigure) {
   PluginManager mgr;
   mgr.add_plugin(std::make_unique<MockThrowingPlugin>());
@@ -278,7 +268,6 @@ TEST(PluginManagerTest, ThrowingPluginDisabledDuringConfigure) {
   EXPECT_NE(mgr.get_update_provider(), nullptr);
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, LoadNonexistentPluginReturnsZero) {
   PluginManager mgr;
   std::vector<PluginConfig> configs = {{"nonexistent", "/nonexistent/path.so", json::object()}};
@@ -287,7 +276,6 @@ TEST(PluginManagerTest, LoadNonexistentPluginReturnsZero) {
   EXPECT_FALSE(mgr.has_plugins());
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, ThrowOnSetContextDisablesPlugin) {
   PluginManager mgr;
   mgr.add_plugin(std::make_unique<MockThrowOnSetContext>());
@@ -308,7 +296,6 @@ TEST(PluginManagerTest, ThrowOnSetContextDisablesPlugin) {
   EXPECT_EQ(mgr.plugin_names()[0], "mock");
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, ThrowOnRegisterRoutesDisablesPlugin) {
   PluginManager mgr;
   mgr.add_plugin(std::make_unique<MockThrowOnRegisterRoutes>());
@@ -325,7 +312,6 @@ TEST(PluginManagerTest, ThrowOnRegisterRoutesDisablesPlugin) {
   EXPECT_EQ(mgr.plugin_names()[0], "introspection_only");
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, ShutdownAllIdempotent) {
   PluginManager mgr;
   auto plugin = std::make_unique<MockPlugin>();
@@ -341,7 +327,6 @@ TEST(PluginManagerTest, ShutdownAllIdempotent) {
   EXPECT_FALSE(raw->shutdown_called_);
 }
 
-// @verifies REQ_INTEROP_012
 TEST(PluginManagerTest, ShutdownSwallowsExceptions) {
   PluginManager mgr;
   mgr.add_plugin(std::make_unique<MockThrowOnShutdown>());
