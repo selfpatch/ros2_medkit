@@ -437,6 +437,82 @@ Example:
 
 See :doc:`/api/rest` for rate limiting response headers and 429 behavior.
 
+Authentication
+--------------
+
+JWT-based authentication with Role-Based Access Control (RBAC). Disabled by
+default for local development.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 10 25 30
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``auth.enabled``
+     - bool
+     - ``false``
+     - Enable/disable JWT authentication.
+   * - ``auth.jwt_secret``
+     - string
+     - ``""``
+     - JWT signing secret. For HS256: the shared secret string. For RS256: path to the private key file (PEM format).
+   * - ``auth.jwt_public_key``
+     - string
+     - ``""``
+     - Path to public key file for RS256. Required for RS256, optional for HS256.
+   * - ``auth.jwt_algorithm``
+     - string
+     - ``"HS256"``
+     - JWT signing algorithm: ``"HS256"`` (symmetric) or ``"RS256"`` (asymmetric).
+   * - ``auth.token_expiry_seconds``
+     - int
+     - ``3600``
+     - Access token validity period in seconds (1 hour).
+   * - ``auth.refresh_token_expiry_seconds``
+     - int
+     - ``86400``
+     - Refresh token validity period in seconds (24 hours). Must be >= ``token_expiry_seconds``.
+   * - ``auth.require_auth_for``
+     - string
+     - ``"write"``
+     - When to require authentication: ``"none"`` (auth endpoints still available), ``"write"`` (POST/PUT/DELETE only), or ``"all"`` (every request).
+   * - ``auth.issuer``
+     - string
+     - ``"ros2_medkit_gateway"``
+     - JWT issuer claim (``iss`` field in tokens).
+   * - ``auth.clients``
+     - string[]
+     - ``[]``
+     - Pre-configured clients as ``"client_id:client_secret:role"`` strings.
+
+.. note::
+
+   RBAC roles and their permissions:
+
+   - **viewer** - Read-only access (GET on areas, components, data, faults)
+   - **operator** - Viewer + trigger operations, acknowledge faults, publish data
+   - **configurator** - Operator + modify/reset configurations
+   - **admin** - Full access including auth management
+
+Example:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       auth:
+         enabled: true
+         jwt_secret: "my-secret-key"
+         jwt_algorithm: "HS256"
+         require_auth_for: "write"
+         token_expiry_seconds: 3600
+         clients: ["admin:admin_secret_123:admin", "viewer:viewer_pass:viewer"]
+
+See :doc:`/tutorials/authentication` for a complete setup tutorial.
+
 Plugin Framework
 ----------------
 
@@ -562,8 +638,20 @@ Complete Example
        updates:
          enabled: true
 
+       auth:
+         enabled: true
+         jwt_secret: "my-secret-key"
+         jwt_algorithm: "HS256"
+         require_auth_for: "write"
+         clients: ["admin:admin_secret_123:admin"]
+
        rate_limiting:
          enabled: false
+
+       scripts:
+         scripts_dir: "/var/ros2_medkit/scripts"
+         allow_uploads: true
+         max_concurrent_executions: 5
 
 API Documentation
 -----------------
@@ -599,6 +687,59 @@ Example:
      ros__parameters:
        docs:
          enabled: true
+
+Scripts
+-------
+
+Diagnostic scripts: upload, manage, and execute scripts on entities. Set
+``scripts.scripts_dir`` to a directory path to enable the feature. When left
+empty, all script endpoints return HTTP 501.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 10 15 40
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``scripts.scripts_dir``
+     - string
+     - ``""``
+     - Directory for storing uploaded scripts. Empty string disables the feature.
+   * - ``scripts.allow_uploads``
+     - bool
+     - ``true``
+     - Allow uploading scripts via HTTP. Set to ``false`` for hardened deployments that only use manifest-defined scripts.
+   * - ``scripts.max_file_size_mb``
+     - int
+     - ``10``
+     - Maximum uploaded script file size in megabytes.
+   * - ``scripts.max_concurrent_executions``
+     - int
+     - ``5``
+     - Maximum number of scripts executing concurrently.
+   * - ``scripts.default_timeout_sec``
+     - int
+     - ``300``
+     - Default timeout per execution in seconds (5 minutes).
+   * - ``scripts.max_execution_history``
+     - int
+     - ``100``
+     - Maximum number of completed executions to keep in memory. Oldest completed entries are evicted when this limit is exceeded.
+
+Example:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       scripts:
+         scripts_dir: "/var/ros2_medkit/scripts"
+         allow_uploads: true
+         max_file_size_mb: 10
+         max_concurrent_executions: 5
+         default_timeout_sec: 300
 
 Locking
 -------
