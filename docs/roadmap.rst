@@ -13,13 +13,13 @@ Strategy
 
 The project follows a phased approach that prioritizes developer experience:
 
-1. **Start with Apps (ROS 2 nodes)** — The level closest to developers. Provide tooling
+1. **Start with Apps (ROS 2 nodes)** - The level closest to developers. Provide tooling
    that makes their daily work easier: discovering nodes, reading data, checking faults.
 
-2. **Expand to full system** — Once app-level features are solid, extend coverage to
+2. **Expand to full system** - Once app-level features are solid, extend coverage to
    Components, Areas, and system-wide operations.
 
-3. **API coverage first, quality later** — The initial goal is to cover the entire
+3. **API coverage first, quality later** - The initial goal is to cover the entire
    standard API surface using available ROS 2 capabilities. This enables early integration
    with real projects and compliance validation. Code hardening and production-ready
    implementations will follow in later phases.
@@ -27,8 +27,8 @@ The project follows a phased approach that prioritizes developer experience:
 Milestones
 ----------
 
-MS1: Full Discovery & Data Access
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+MS1: Full Discovery & Data Access - Complete
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Goal:** Provide a complete view of the ROS 2 system and enable basic data operations.
 
@@ -37,29 +37,29 @@ diagnostic data. This milestone establishes the foundation for all subsequent fe
 
 **Standard API coverage:**
 
-- Discovery (11 endpoints) — version info, entity collections, hierarchy navigation
-- Data (5 endpoints) — data categories, groups, read/write operations
+- [x] Discovery (11 endpoints) - version info, entity collections, hierarchy navigation
+- [x] Data (5 endpoints) - data categories, groups, read/write operations
 
 `MS1 on GitHub <https://github.com/selfpatch/ros2_medkit/milestone/1>`_
 
-MS2: App Observability
-~~~~~~~~~~~~~~~~~~~~~~
+MS2: App Observability - Complete
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Goal:** Enable developers to monitor application health and diagnose issues.
 
 With observability features, developers can check fault codes, browse logs, and monitor
-the lifecycle state of their nodes — essential for debugging and troubleshooting.
+the lifecycle state of their nodes - essential for debugging and troubleshooting.
 
 **Standard API coverage:**
 
-- Faults (4 endpoints) — list, inspect, and clear diagnostic faults
-- Logs (5 endpoints) — browse and configure application logs
-- Lifecycle (6 endpoints) — status, start, restart, shutdown operations
+- [x] Faults (4 endpoints) - list, inspect, and clear diagnostic faults
+- [x] Logs (5 endpoints) - browse and configure application logs
+- [ ] Lifecycle (6 endpoints) - status, start, restart, shutdown operations
 
 `MS2 on GitHub <https://github.com/selfpatch/ros2_medkit/milestone/2>`_
 
-MS3: Configuration & Control
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+MS3: Configuration & Control - Complete
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Goal:** Allow developers to configure and control running applications.
 
@@ -68,14 +68,14 @@ operation execution, giving developers runtime control over their nodes.
 
 **Standard API coverage:**
 
-- Configuration (5 endpoints) — read/write configuration values
-- Operations (7 endpoints) — define, execute, and monitor operations
-- Modes (3 endpoints) — entity operating modes
+- [x] Configuration (5 endpoints) - read/write configuration values
+- [x] Operations (7 endpoints) - define, execute, and monitor operations
+- [ ] Modes (3 endpoints) - entity operating modes
 
 `MS3 on GitHub <https://github.com/selfpatch/ros2_medkit/milestone/3>`_
 
-MS4: Automation & Subscriptions
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+MS4: Automation & Subscriptions - In Progress
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Goal:** Enable automated workflows and reactive data collection.
 
@@ -84,32 +84,34 @@ and define triggers for event-driven workflows.
 
 **Standard API coverage:**
 
-- Scripts (8 endpoints) — upload, execute, and manage diagnostic scripts
-- Subscriptions (8 endpoints) — cyclic data subscriptions and triggers
-- Datasets (4 endpoints) — dynamic data lists for subscription
+- [x] Scripts (8 endpoints) - upload, execute, and manage diagnostic scripts
+- [x] Cyclic Subscriptions (6 endpoints) - periodic push-based resource delivery via SSE
+- [ ] Triggers - event-driven subscriptions
+- [ ] Datasets (4 endpoints) - dynamic data lists for subscription
 
 `MS4 on GitHub <https://github.com/selfpatch/ros2_medkit/milestone/4>`_
 
-MS5: Fleet & Advanced Features
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+MS5: Fleet & Advanced Features - In Progress
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Goal:** Complete SOVD API coverage with fleet-oriented and advanced features.
 
 The final milestone adds capabilities for fleet management, bulk data transfer,
-software updates, and authentication — completing the standard specification coverage.
+software updates, and authentication - completing the standard specification coverage.
 
 **Standard API coverage:**
 
-- Bulk Data (5 endpoints) — large data transfers
-- Communication Logs (5 endpoints) — protocol-level logging
-- Clear Data (5 endpoints) — cache and learned data management
-- ✅ Updates (8 endpoints) — software update management
-- Auth (2 endpoints) — authorization and token management
+- [x] Bulk Data (5 endpoints) - large data transfers (upload, download, delete)
+- [x] Updates (8 endpoints) - software update management via plugin framework
+- [x] Auth (3 endpoints) - authorization, token refresh, and revocation
+- [x] Locking (4 endpoints) - SOVD resource locking with scoped access control
+- [ ] Communication Logs (5 endpoints) - protocol-level logging
+- [ ] Clear Data (5 endpoints) - cache and learned data management
 
 `MS5 on GitHub <https://github.com/selfpatch/ros2_medkit/milestone/5>`_
 
-MS6: Fault Management System
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+MS6: Fault Management System - Complete
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Goal:** Add fault management to ros2_medkit with fault reporting, two-level filtering
 (local + central), persistent storage, lifecycle management, and REST API access.
@@ -120,33 +122,47 @@ and central aggregation.
 
 **Key features:**
 
-- **Two-level filtering**: FaultReporter (local) + FaultManager (central)
-- **Multi-source aggregation**: Same fault code from multiple sources combined into single entry
-- **Persistent storage**: Fault state survives restarts
-- **REST API + SSE**: Real-time fault monitoring via HTTP
-- **Backwards compatibility**: Integration with ``diagnostic_updater``
-
-**Success criteria:**
-
-- FaultReporter library with local filtering (default enabled)
-- FaultManager with central aggregation and lifecycle management
-- Storage survives node restarts
-- REST API endpoints for fault CRUD operations
-- Server-Sent Events (SSE) for real-time fault updates
+- [x] **Two-level filtering**: FaultReporter (local) + FaultManager (central)
+- [x] **Multi-source aggregation**: Same fault code from multiple sources combined into single entry
+- [x] **Persistent storage**: Fault state survives restarts
+- [x] **REST API + SSE**: Real-time fault monitoring via HTTP
+- [x] **Backwards compatibility**: Integration with ``diagnostic_updater``
 
 See :doc:`design/ros2_medkit_fault_manager/index` and :doc:`design/ros2_medkit_fault_reporter/index`
 for detailed architecture documentation.
 
 `MS6 on GitHub <https://github.com/selfpatch/ros2_medkit/milestone/6>`_
 
+Beyond Milestones
+~~~~~~~~~~~~~~~~~
+
+The following features were added outside the original milestone plan:
+
+- [x] **Plugin Framework** - Load custom functionality from shared libraries with provider
+  interfaces (UpdateProvider, IntrospectionProvider, LogProvider, ScriptProvider)
+- [x] **OpenAPI / Swagger UI** - Auto-generated ``/docs`` endpoint with interactive API explorer
+- [x] **Vendor Extensions** - procfs, systemd, container, topic-beacon, and parameter-beacon
+  introspection plugins
+- [x] **Rate Limiting** - Token-bucket-based per-client and per-endpoint rate limiting
+- [x] **Graph Provider** - Function-scoped topology snapshots with per-topic metrics
+
 Future Directions
 -----------------
 
-After achieving full standard API coverage, the project will focus on:
+With most of the SOVD API surface covered, the project is shifting focus toward
+production readiness and ecosystem integration:
+
+**Remaining SOVD Coverage**
+   Complete the remaining specification endpoints: triggers, communication logs,
+   clear data, datasets, lifecycle management, and entity operating modes.
 
 **Code Hardening**
    Replace initial implementations with production-ready code. Remove workarounds
    and refactor into smaller, well-tested packages.
+
+**Ecosystem Integration**
+   Deepen integration with ROS 2 tooling (Foxglove, MCP-based LLM workflows)
+   and commercial extensions (fleet gateway, fault correlation engine, OTA updates).
 
 **Additional Diagnostic Protocols**
    Extend support to other diagnostic standards relevant to robotics and embedded

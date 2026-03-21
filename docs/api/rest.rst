@@ -25,7 +25,7 @@ Server Capabilities
 
       {
         "name": "ROS 2 Medkit Gateway",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "api_base": "/api/v1",
         "endpoints": [
           "GET /api/v1/health",
@@ -66,7 +66,7 @@ Server Capabilities
             "version": "1.0.0",
             "base_uri": "/api/v1",
             "vendor_info": {
-              "version": "0.3.0",
+              "version": "0.4.0",
               "name": "ros2_medkit"
             }
           }
@@ -493,6 +493,12 @@ Manage ROS 2 node parameters.
 
 ``DELETE /api/v1/components/{id}/configurations``
    Reset all parameters to default values.
+
+Resource Locking
+----------------
+
+SOVD resource locking for preventing concurrent modification of entity state.
+See :doc:`locking` for the full API reference.
 
 Faults Endpoints
 ----------------

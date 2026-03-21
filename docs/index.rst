@@ -13,10 +13,6 @@ external tools, web interfaces, and remote diagnostics. It automatically
 discovers nodes, organizes them into a hierarchical entity tree, and provides
 endpoints for data access, operations, configurations, and fault management.
 
-.. note::
-
-   Version 0.1.0 - First public release.
-
 Quick Links
 -----------
 
@@ -128,5 +124,3 @@ Community
 
    glossary
    changelog
-
-
