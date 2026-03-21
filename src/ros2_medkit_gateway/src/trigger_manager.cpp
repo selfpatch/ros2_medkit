@@ -189,17 +189,18 @@ std::string TriggerManager::to_iso8601(const std::chrono::system_clock::time_poi
 // CRUD
 // ---------------------------------------------------------------------------
 
-tl::expected<TriggerInfo, std::string> TriggerManager::create(const TriggerCreateRequest & req) {
+tl::expected<TriggerInfo, TriggerCreateError> TriggerManager::create(const TriggerCreateRequest & req) {
   // Validate condition type
   auto evaluator = conditions_.get(req.condition_type);
   if (!evaluator) {
-    return tl::make_unexpected("Unknown condition type: " + req.condition_type);
+    return tl::make_unexpected(
+        TriggerCreateError{TriggerError::ValidationError, "Unknown condition type: " + req.condition_type});
   }
 
   // Validate condition params
   auto validation = evaluator->validate_params(req.condition_params);
   if (!validation.has_value()) {
-    return tl::make_unexpected(validation.error());
+    return tl::make_unexpected(TriggerCreateError{TriggerError::ValidationError, validation.error()});
   }
 
   auto now = std::chrono::system_clock::now();
@@ -232,7 +233,8 @@ tl::expected<TriggerInfo, std::string> TriggerManager::create(const TriggerCreat
   if (req.persistent) {
     auto save_result = store_.save(state->info);
     if (!save_result.has_value()) {
-      return tl::make_unexpected("Failed to persist trigger: " + save_result.error());
+      return tl::make_unexpected(
+          TriggerCreateError{TriggerError::PersistenceError, "Failed to persist trigger: " + save_result.error()});
     }
   }
 
@@ -247,7 +249,9 @@ tl::expected<TriggerInfo, std::string> TriggerManager::create(const TriggerCreat
       if (req.persistent) {
         (void)store_.remove(state->info.id);
       }
-      return tl::make_unexpected("Maximum trigger capacity (" + std::to_string(config_.max_triggers) + ") reached");
+      return tl::make_unexpected(
+          TriggerCreateError{TriggerError::CapacityExceeded,
+                             "Maximum trigger capacity (" + std::to_string(config_.max_triggers) + ") reached"});
     }
 
     add_to_dispatch_index(state->info.id, state->info.collection, state->info.entity_id);
@@ -288,9 +292,10 @@ std::vector<TriggerInfo> TriggerManager::list(const std::string & entity_id) {
   return result;
 }
 
-tl::expected<TriggerInfo, std::string> TriggerManager::update(const std::string & trigger_id, int new_lifetime) {
+tl::expected<TriggerInfo, TriggerCreateError> TriggerManager::update(const std::string & trigger_id, int new_lifetime) {
   if (new_lifetime <= 0) {
-    return tl::make_unexpected("Lifetime must be positive, got: " + std::to_string(new_lifetime));
+    return tl::make_unexpected(TriggerCreateError{TriggerError::ValidationError,
+                                                  "Lifetime must be positive, got: " + std::to_string(new_lifetime)});
   }
 
   std::shared_ptr<TriggerState> state;
@@ -298,7 +303,7 @@ tl::expected<TriggerInfo, std::string> TriggerManager::update(const std::string 
     std::lock_guard<std::mutex> lock(triggers_mutex_);
     auto it = triggers_.find(trigger_id);
     if (it == triggers_.end()) {
-      return tl::make_unexpected("Trigger not found: " + trigger_id);
+      return tl::make_unexpected(TriggerCreateError{TriggerError::NotFound, "Trigger not found: " + trigger_id});
     }
     state = it->second;
   }
@@ -604,6 +609,9 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
     }
   }
 
+  // Collect terminated one-shot trigger IDs for post-loop cleanup
+  std::vector<std::string> terminated_triggers;
+
   // Evaluate each candidate trigger
   for (auto & [trigger_id, state] : candidates) {
     std::unique_lock<std::mutex> sub_lock(state->mtx);
@@ -714,6 +722,11 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
       // Wake SSE consumers
       state->cv.notify_all();
 
+      // Schedule one-shot cleanup after evaluation loop completes
+      if (should_terminate) {
+        terminated_triggers.push_back(tid_copy);
+      }
+
       // I/O operations outside state->mtx (I6 fix)
       if (should_persist_state) {
         (void)store_.save_state(tid_copy, previous_value_copy);
@@ -745,6 +758,11 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
         (void)store_.save_state(tid_copy, previous_value_copy);
       }
     }
+  }
+
+  // Clean up terminated one-shot triggers (outside all locks)
+  for (const auto & tid : terminated_triggers) {
+    remove(tid);
   }
 }
 

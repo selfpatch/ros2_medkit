@@ -40,6 +40,15 @@ namespace ros2_medkit_gateway {
 class LogManager;
 class TriggerTopicSubscriber;
 
+/// Error categories for trigger create/update operations.
+enum class TriggerError { ValidationError, CapacityExceeded, PersistenceError, NotFound };
+
+/// Typed error returned by TriggerManager::create() and update().
+struct TriggerCreateError {
+  TriggerError code;
+  std::string message;
+};
+
 /// Request to create a new trigger.
 struct TriggerCreateRequest {
   std::string entity_id;
@@ -83,7 +92,7 @@ class TriggerManager {
   // --- CRUD -----------------------------------------------------------------
 
   /// Create a new trigger. Validates condition type and params.
-  tl::expected<TriggerInfo, std::string> create(const TriggerCreateRequest & req);
+  tl::expected<TriggerInfo, TriggerCreateError> create(const TriggerCreateRequest & req);
 
   /// Get a trigger by ID.
   std::optional<TriggerInfo> get(const std::string & trigger_id);
@@ -92,7 +101,7 @@ class TriggerManager {
   std::vector<TriggerInfo> list(const std::string & entity_id);
 
   /// Update a trigger's lifetime.
-  tl::expected<TriggerInfo, std::string> update(const std::string & trigger_id, int new_lifetime);
+  tl::expected<TriggerInfo, TriggerCreateError> update(const std::string & trigger_id, int new_lifetime);
 
   /// Remove a trigger. Returns true if found and removed.
   bool remove(const std::string & trigger_id);
