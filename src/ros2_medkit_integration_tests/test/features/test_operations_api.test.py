@@ -140,7 +140,7 @@ class TestOperationsApi(GatewayTestCase):
     def test_operation_call_invalid_operation_name(self):
         """Operation call rejects invalid operation name.
 
-        @verifies REQ_INTEROP_021
+        @verifies REQ_INTEROP_035
         """
         invalid_names = [
             'op;drop',
@@ -167,7 +167,7 @@ class TestOperationsApi(GatewayTestCase):
     def test_operation_call_with_invalid_json(self):
         """Operation call returns 400 for invalid JSON body.
 
-        @verifies REQ_INTEROP_021
+        @verifies REQ_INTEROP_035
         """
         response = requests.post(
             f'{self.BASE_URL}/apps/calibration/operations/calibrate/executions',
@@ -188,7 +188,7 @@ class TestOperationsApi(GatewayTestCase):
     def test_operations_listed_in_app_discovery(self):
         """Operations (services) are available via app detail endpoint.
 
-        @verifies REQ_INTEROP_021
+        @verifies REQ_INTEROP_033
         """
         self.poll_endpoint('/apps/calibration')
 
@@ -222,7 +222,7 @@ class TestOperationsApi(GatewayTestCase):
     def test_root_endpoint_includes_operations(self):
         """Root endpoint lists operations endpoint and capability.
 
-        @verifies REQ_INTEROP_021
+        @verifies REQ_INTEROP_033
         """
         data = self.get_json('/')
 

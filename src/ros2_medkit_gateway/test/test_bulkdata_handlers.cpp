@@ -67,7 +67,7 @@ TEST_F(BulkDataHandlersTest, GetRosbagMimetypeCasesSensitive) {
 
 // === Shared timestamp utility tests ===
 
-// @verifies REQ_INTEROP_013
+// @verifies REQ_INTEROP_071
 TEST_F(BulkDataHandlersTest, FormatTimestampNsValidTimestamp) {
   // 2026-02-08T00:00:00.000Z
   int64_t ns = 1770458400000000000;
@@ -77,13 +77,13 @@ TEST_F(BulkDataHandlersTest, FormatTimestampNsValidTimestamp) {
   EXPECT_TRUE(result.find("Z") != std::string::npos);
 }
 
-// @verifies REQ_INTEROP_013
+// @verifies REQ_INTEROP_071
 TEST_F(BulkDataHandlersTest, FormatTimestampNsEpoch) {
   auto result = ros2_medkit_gateway::format_timestamp_ns(0);
   EXPECT_EQ(result, "1970-01-01T00:00:00.000Z");
 }
 
-// @verifies REQ_INTEROP_013
+// @verifies REQ_INTEROP_071
 TEST_F(BulkDataHandlersTest, FormatTimestampNsWithMilliseconds) {
   // 1 second + 123 ms
   int64_t ns = 1'000'000'000 + 123'000'000;
@@ -91,7 +91,7 @@ TEST_F(BulkDataHandlersTest, FormatTimestampNsWithMilliseconds) {
   EXPECT_TRUE(result.find(".123Z") != std::string::npos);
 }
 
-// @verifies REQ_INTEROP_013
+// @verifies REQ_INTEROP_071
 TEST_F(BulkDataHandlersTest, FormatTimestampNsNegativeFallback) {
   // Negative timestamps should return fallback
   auto result = ros2_medkit_gateway::format_timestamp_ns(-1);
