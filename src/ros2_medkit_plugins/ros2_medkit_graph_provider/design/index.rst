@@ -46,9 +46,9 @@ The following diagram shows the plugin's main components and data flow.
    package "ros2_medkit_graph_provider" {
 
        class GraphProviderPlugin {
-           - graph_cache_: map<string, json>
-           - topic_metrics_: map<string, TopicMetrics>
-           - last_seen_by_app_: map<string, string>
+           - graph_cache_: map~<string, json~>
+           - topic_metrics_: map~<string, TopicMetrics~>
+           - last_seen_by_app_: map~<string, string~>
            - config_: ConfigOverrides
            --
            + introspect(input): IntrospectionResult
@@ -65,10 +65,10 @@ The following diagram shows the plugin's main components and data flow.
        }
 
        struct TopicMetrics {
-           + frequency_hz: optional<double>
-           + latency_ms: optional<double>
+           + frequency_hz: optional~<double~>
+           + latency_ms: optional~<double~>
            + drop_rate_percent: double
-           + expected_frequency_hz: optional<double>
+           + expected_frequency_hz: optional~<double~>
        }
 
        struct GraphBuildState {

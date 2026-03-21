@@ -88,7 +88,7 @@ The following diagram shows the three plugins and their shared infrastructure.
            - ttl_: duration
            - mutex_: shared_mutex
            --
-           + lookup(fqn, root): optional<pid_t>
+           + lookup(fqn, root): optional~<pid_t~>
            + refresh(root): void
            + size(): size_t
        }
