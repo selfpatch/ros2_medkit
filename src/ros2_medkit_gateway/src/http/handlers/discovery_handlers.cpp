@@ -970,8 +970,12 @@ void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, h
       return;
     }
 
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto discovery = ctx_.node()->get_discovery_manager();
-    auto app_opt = discovery->get_app(app_id);
+    auto app_opt = cache.get_app(app_id);
+    if (!app_opt) {
+      app_opt = discovery->get_app(app_id);
+    }
 
     if (!app_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
@@ -982,7 +986,10 @@ void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, h
     const auto & app = *app_opt;
 
     if (!app.component_id.empty()) {
-      auto component_opt = discovery->get_component(app.component_id);
+      auto component_opt = cache.get_component(app.component_id);
+      if (!component_opt) {
+        component_opt = discovery->get_component(app.component_id);
+      }
       if (component_opt) {
         json item;
         item["id"] = component_opt->id;
@@ -990,6 +997,16 @@ void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, h
         item["href"] = "/api/v1/components/" + component_opt->id;
         items.push_back(item);
       } else {
+        json item;
+        item["id"] = app.component_id;
+        item["name"] = app.component_id;
+        item["href"] = "/api/v1/components/" + app.component_id;
+
+        XMedkit ext;
+        ext.add("missing", true);
+        item["x-medkit"] = ext.build();
+        items.push_back(item);
+
         RCLCPP_WARN(HandlerContext::logger(), "App '%s' references unknown component '%s'", app_id.c_str(),
                     app.component_id.c_str());
       }
