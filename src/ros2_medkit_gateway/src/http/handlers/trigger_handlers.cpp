@@ -100,14 +100,12 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
   }
 
   // Validate collection
-  static const std::unordered_set<std::string> known_collections = {"data",    "faults", "operations", "configurations",
-                                                                    "updates", "logs",   "bulk-data"};
+  static const std::unordered_set<std::string> known_collections = {"data", "faults", "operations", "updates", "logs"};
   if (known_collections.find(parsed->collection) == known_collections.end() &&
       parsed->collection.substr(0, 2) != "x-") {
     HandlerContext::send_error(
         res, 400, ERR_INVALID_PARAMETER,
-        "Unknown collection. Supported: data, faults, operations, configurations, updates, logs, bulk-data, or x-* "
-        "vendor extensions",
+        "Unknown collection. Supported: data, faults, operations, updates, logs, or x-* vendor extensions",
         {{"parameter", "resource"}, {"collection", parsed->collection}});
     return;
   }
@@ -404,6 +402,7 @@ void TriggerHandlers::handle_events(const httplib::Request & req, httplib::Respo
   res.set_chunked_content_provider(
       "text/event-stream",
       [&mgr, tid, tracker](size_t /*offset*/, httplib::DataSink & sink) -> bool {
+        uint64_t sse_event_counter = 0;
         while (mgr.is_active(tid)) {
           // Wait for event or timeout (15 seconds for keepalive)
           bool woken = mgr.wait_for_event(tid, std::chrono::milliseconds(15000));
@@ -424,11 +423,8 @@ void TriggerHandlers::handle_events(const httplib::Request & req, httplib::Respo
           // accumulate multiple events between wakeups for multishot triggers)
           bool write_ok = true;
           while (auto event = mgr.consume_pending_event(tid)) {
-            std::string frame;
-            if (event->contains("event_id")) {
-              frame = "id: " + std::to_string((*event)["event_id"].get<uint64_t>()) + "\n";
-            }
-            frame += "data: " + event->dump() + "\n\n";
+            ++sse_event_counter;
+            std::string frame = "id: " + std::to_string(sse_event_counter) + "\n" + "data: " + event->dump() + "\n\n";
             if (!sink.write(frame.c_str(), frame.size())) {
               write_ok = false;
               break;

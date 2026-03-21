@@ -654,7 +654,7 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
       continue;
     }
 
-    // Extract value via JSON Pointer
+    // Extract value via JSON Pointer - skip evaluation if pointer doesn't match
     nlohmann::json extracted_value;
     if (state->info.path.empty()) {
       extracted_value = change.value;
@@ -664,10 +664,10 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
         if (change.value.contains(ptr)) {
           extracted_value = change.value[ptr];
         } else {
-          extracted_value = change.value;
+          continue;  // Path not found in this change - skip evaluation
         }
       } catch (...) {
-        extracted_value = change.value;
+        continue;  // Malformed pointer - skip evaluation
       }
     }
 
@@ -692,9 +692,9 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
 
     if (fired) {
       // Build EventEnvelope
-      auto event_id = state->event_counter.fetch_add(1) + 1;
+      // Increment event counter (used by SSE id: field for reconnection)
+      state->event_counter.fetch_add(1);
       nlohmann::json envelope;
-      envelope["event_id"] = event_id;
       envelope["timestamp"] = to_iso8601(std::chrono::system_clock::now());
       envelope["payload"] = change.value;
 
@@ -744,13 +744,17 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
         (void)store_.update(tid_copy, fields);
       }
 
-      // I5 fix: set guard before log entry to prevent recursive notification
+      // I5 fix: RAII guard prevents recursive notification from log triggers
       if (log_settings_copy.has_value() && log_manager_) {
         auto & ls = *log_settings_copy;
         evaluating_trigger_ = true;
-        log_manager_->add_log_entry(
-            entity_id_copy, ls.value("severity", "info"), ls.value("marker", "Trigger fired"),
-            {{"trigger_id", tid_copy}, {"condition_type", condition_type_copy}, {"resource", resource_uri_copy}});
+        try {
+          log_manager_->add_log_entry(
+              entity_id_copy, ls.value("severity", "info"), ls.value("marker", "Trigger fired"),
+              {{"trigger_id", tid_copy}, {"condition_type", condition_type_copy}, {"resource", resource_uri_copy}});
+        } catch (...) {
+          // Don't let log entry failure prevent trigger delivery
+        }
         evaluating_trigger_ = false;
       }
     } else {

@@ -93,8 +93,8 @@ fires, useful for recording context around a failure event.
        "multishot": true,
        "lifetime": 120,
        "log_settings": {
-         "severity_filter": "warning",
-         "max_entries": 500
+         "severity": "warning",
+         "marker": "OTA update failure detected"
        }
      }'
 
@@ -261,8 +261,8 @@ Step 2: Create the critical temperature alert
        "multishot": true,
        "lifetime": 300,
        "log_settings": {
-         "severity_filter": "error",
-         "max_entries": 200
+         "severity": "error",
+         "marker": "Critical temperature threshold exceeded"
        }
      }'
 

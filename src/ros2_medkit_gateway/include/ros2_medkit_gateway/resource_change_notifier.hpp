@@ -60,7 +60,9 @@ using NotifierSubscriptionId = uint64_t;
 /// dedicated worker thread.
 class ResourceChangeNotifier {
  public:
-  ResourceChangeNotifier();
+  using ErrorLoggerFn = std::function<void(const std::string &)>;
+
+  explicit ResourceChangeNotifier(ErrorLoggerFn error_logger = {});
   ~ResourceChangeNotifier();
 
   // Non-copyable, non-movable
@@ -86,11 +88,6 @@ class ResourceChangeNotifier {
   /// Shut down the worker thread. After this, notify() is a no-op.
   /// Safe to call multiple times.
   void shutdown();
-
-  /// Set an optional error logger for subscriber callback exceptions.
-  /// Must be called before concurrent use (typically from GatewayNode init).
-  using ErrorLoggerFn = std::function<void(const std::string &)>;
-  void set_error_logger(ErrorLoggerFn fn);
 
   /// Default maximum number of pending notifications in the queue.
   static constexpr size_t kDefaultMaxQueueSize = 10000;
