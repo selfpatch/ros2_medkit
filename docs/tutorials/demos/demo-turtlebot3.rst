@@ -56,7 +56,7 @@ The script will build and start Docker containers with:
 - Gazebo simulation with TurtleBot3 Waffle
 - Nav2 navigation stack
 - ros2_medkit gateway (REST API on port 8080)
-- sovd_web_ui (Web interface on port 3000)
+- ros2_medkit_web_ui (Web interface on port 3000)
 
 **Startup Options:**
 

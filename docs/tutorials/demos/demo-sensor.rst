@@ -57,7 +57,7 @@ Clone the demo repository and run the startup script:
 The script will build and start Docker containers with:
 
 - ros2_medkit gateway (REST API on port 8080)
-- sovd_web_ui (Web interface on port 3000)
+- ros2_medkit_web_ui (Web interface on port 3000)
 - Simulated sensor nodes (lidar, camera, imu, gps)
 - Anomaly detector for fault monitoring
 - Diagnostic bridge for legacy fault reporting
