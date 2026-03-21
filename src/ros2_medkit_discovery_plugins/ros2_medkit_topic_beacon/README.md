@@ -19,10 +19,10 @@ data still served with stale marker) -> **expired** (removed from store).
 ```yaml
 plugins: ["topic_beacon"]
 plugins.topic_beacon.path: "/path/to/libros2_medkit_topic_beacon.so"
-plugins.topic_beacon.ttl_sec: 30
-plugins.topic_beacon.expiry_sec: 90
+plugins.topic_beacon.beacon_ttl_sec: 10.0
+plugins.topic_beacon.beacon_expiry_sec: 300.0
 plugins.topic_beacon.allow_new_entities: true
-plugins.topic_beacon.rate_limit_hz: 10.0
+plugins.topic_beacon.max_messages_per_second: 100.0
 ```
 
 See [discovery options](https://selfpatch.github.io/ros2_medkit/config/discovery-options.html)

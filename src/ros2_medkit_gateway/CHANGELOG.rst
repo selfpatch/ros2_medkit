@@ -2,20 +2,7 @@
 Changelog for package ros2_medkit_gateway
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Unreleased
-----------
-
-Added
-~~~~~
-* Beacon discovery plugin system - push-based entity enrichment via ROS 2 topic
-* ``MedkitDiscoveryHint`` message type for beacon publishers
-* ``discovery.manifest.enabled`` / ``discovery.runtime.enabled`` parameters for hybrid mode
-* ``NewEntities.functions`` - plugins can now produce Function entities
-* ``x-medkit-topic-beacon`` vendor extension REST endpoint (TopicBeaconPlugin) for push-based beacon metadata
-* ``x-medkit-param-beacon`` vendor extension REST endpoint (ParameterBeaconPlugin) for pull-based parameter beacon metadata
-* ``ros2_medkit_beacon_common`` shared library - ``BeaconHintStore``, ``build_beacon_response()``, and base ``BeaconPlugin`` class used by both beacon plugins
-
-0.3.0 (2026-02-27)
+0.4.0 (2026-03-20)
 ------------------
 
 **Breaking Changes:**
@@ -23,6 +10,8 @@ Added
 * ``GET /version-info`` response key renamed from ``sovd_info`` to ``items`` for SOVD alignment (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
 * ``GET /`` root endpoint restructured: ``endpoints`` is now a flat string array, added ``capabilities`` object, ``api_base`` field, and ``name``/``version`` top-level fields (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
 * Default rosbag storage format changed from ``sqlite3`` to ``mcap`` (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
+* Plugin API version bumped to v4 - added ``ScriptProvider``, locking API, and extended ``PluginContext`` with entity snapshot, fault listing, and sampler registration
+* ``GraphProviderPlugin`` extracted to separate ``ros2_medkit_graph_provider`` package
 
 **Features:**
 
@@ -36,6 +25,64 @@ Added
 * Entity capabilities fix: areas and functions now report correct resource collections (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
 * SOVD compliance documentation with resource collection support matrix (`#258 <https://github.com/selfpatch/ros2_medkit/pull/258>`_)
 * Linux introspection plugins: procfs, systemd, and container plugins for process-level diagnostics via ``x-medkit-*`` vendor extension endpoints (`#263 <https://github.com/selfpatch/ros2_medkit/pull/263>`_)
+* SOVD-compliant resource locking: acquire, release, extend with session tracking and expiration
+* Lock enforcement on all mutating handlers (PUT, POST, DELETE)
+* Per-entity lock configuration via manifest YAML with ``required_scopes``
+* Lock API exposed to plugins via ``PluginContext``
+* Automatic cyclic subscription cleanup on lock expiry
+* ``LOCKS`` capability in entity descriptions
+* SOVD script execution endpoints: CRUD for scripts and executions with subprocess execution
+* ``ScriptProvider`` plugin interface for custom script backends
+* ``DefaultScriptProvider`` with manifest + filesystem CRUD, argument passing, and timeout
+* ``allow_uploads`` config toggle for hardened deployments
+* RBAC integration for script operations
+* Manifest-defined scripts: ``ManifestParser`` populates ``ScriptsConfig.entries`` from manifest YAML ``scripts`` field
+* ``RouteRegistry`` as single source of truth for routes and OpenAPI metadata
+* ``OpenApiSpecBuilder`` for full OpenAPI 3.1.0 document assembly with ``SchemaBuilder`` and ``PathBuilder``
+* Compile-time Swagger UI embedding (``ENABLE_SWAGGER_UI``)
+* Generation-based caching for capability responses via ``CapabilityGenerator``
+* Beacon discovery plugin system - push-based entity enrichment via ROS 2 topic
+* ``x-medkit-topic-beacon`` vendor extension REST endpoint (TopicBeaconPlugin) for push-based beacon metadata
+* ``x-medkit-param-beacon`` vendor extension REST endpoint (ParameterBeaconPlugin) for pull-based parameter beacon metadata
+* ``discovery.manifest.enabled`` / ``discovery.runtime.enabled`` parameters for hybrid mode
+* ``NewEntities.functions`` - plugins can now produce Function entities
+* ``LogManager`` with ``/rosout`` ring buffer and plugin delegation
+* ``/logs`` and ``/logs/configuration`` endpoints
+* ``LOGS`` capability in discovery responses
+* Configurable log buffer size via parameters
+* Multi-collection cyclic subscription support (data, faults, logs, configurations, update-status)
+* ``PluginContext::get_child_apps()`` for Component-level aggregation
+* Sub-resource RBAC patterns for all collections
+* Auto-populate gateway version from ``package.xml`` via CMake
+* ``GET /apps/{id}/is-located-on`` endpoint for reverse host lookup (app to component)
+* Namespaced fault manager integration - ``FaultManagerPaths`` resolves service/topic names for fault manager nodes running in custom namespaces
+* Grouped ``fault_manager.*`` parameter namespace for cleaner configuration
+* OpenAPI spec improvements: named component schemas with ``$ref``, clean ``operationId`` values, endpoint descriptions, ``GenericError`` schema refs, ``info.contact``, Spectral-clean output, multipart upload schemas, static spec caching
+* Condition-based triggers with CRUD endpoints, SSE event streaming, and hierarchy matching
+* ``TriggerManager`` with ``ConditionEvaluator`` interface and 4 built-in evaluators (OnChange, OnChangeTo, EnterRange, LeaveRange)
+* ``ResourceChangeNotifier`` for async dispatch from FaultManager, UpdateManager, and OperationManager
+* ``TriggerTopicSubscriber`` for data trigger ROS 2 topic subscriptions
+* Persistent trigger storage via SQLite with restore-on-restart support
+* ``TriggerTransportProvider`` plugin interface for custom trigger delivery
+
+**Build:**
+
+* Extracted shared cmake modules into ``ros2_medkit_cmake`` package (`#294 <https://github.com/selfpatch/ros2_medkit/pull/294>`_)
+* Auto-detect ccache for faster incremental rebuilds
+* Precompiled headers for gateway package
+* Centralized clang-tidy configuration (opt-in locally, mandatory in CI)
+
+**Tests:**
+
+* Unit tests for DiscoveryHandlers, OperationHandlers, ScriptHandlers, LockHandlers, LockManager, ScriptManager, DefaultScriptProvider
+* Comprehensive integration tests for locking, scripts, graph provider plugin, beacon plugins, OpenAPI/docs, logging, namespaced fault manager
+* Contributors: @bburda
+
+0.3.0 (2026-02-27)
+------------------
+
+**Features:**
+
 * Gateway plugin framework with dynamic C++ plugin loading (`#237 <https://github.com/selfpatch/ros2_medkit/pull/237>`_)
 * Software updates plugin with 8 SOVD-compliant endpoints (`#237 <https://github.com/selfpatch/ros2_medkit/pull/237>`_, `#231 <https://github.com/selfpatch/ros2_medkit/pull/231>`_)
 * SSE-based periodic data subscriptions for real-time streaming without polling (`#223 <https://github.com/selfpatch/ros2_medkit/pull/223>`_)
