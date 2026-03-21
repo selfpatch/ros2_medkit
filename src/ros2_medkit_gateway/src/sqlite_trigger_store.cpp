@@ -170,7 +170,8 @@ void SqliteTriggerStore::initialize_schema() {
       log_settings    TEXT,
       status          TEXT NOT NULL,
       created_at      TEXT NOT NULL,
-      expires_at      TEXT
+      expires_at      TEXT,
+      resolved_topic_name TEXT DEFAULT ''
     );
   )";
 
@@ -192,6 +193,16 @@ void SqliteTriggerStore::initialize_schema() {
     std::string error = err_msg ? err_msg : "Unknown error";
     sqlite3_free(err_msg);
     throw std::runtime_error("Failed to create trigger_state table: " + error);
+  }
+
+  // Migration: add resolved_topic_name column for existing databases.
+  // New databases already have it via CREATE TABLE IF NOT EXISTS above,
+  // but existing DBs need ALTER TABLE. SQLite errors if the column already exists,
+  // so we wrap in a try/catch.
+  const char * add_resolved_topic = "ALTER TABLE triggers ADD COLUMN resolved_topic_name TEXT DEFAULT ''";
+  if (sqlite3_exec(db_, add_resolved_topic, nullptr, nullptr, &err_msg) != SQLITE_OK) {
+    // Column already exists - this is expected for new or already-migrated databases
+    sqlite3_free(err_msg);
   }
 }
 
@@ -232,8 +243,8 @@ tl::expected<void, std::string> SqliteTriggerStore::save(const TriggerInfo & tri
                          "INSERT OR REPLACE INTO triggers "
                          "(id, entity_id, entity_type, resource_uri, collection, resource_path, "
                          "path, condition_type, condition_params, protocol, multishot, persistent, "
-                         "lifetime_sec, log_settings, status, created_at, expires_at) "
-                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                         "lifetime_sec, log_settings, status, created_at, expires_at, resolved_topic_name) "
+                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
 
     stmt.bind_text(1, trigger.id);
     stmt.bind_text(2, trigger.entity_id);
@@ -268,6 +279,8 @@ tl::expected<void, std::string> SqliteTriggerStore::save(const TriggerInfo & tri
     } else {
       stmt.bind_null(17);
     }
+
+    stmt.bind_text(18, trigger.resolved_topic_name);
 
     if (stmt.step() != SQLITE_DONE) {
       return tl::make_unexpected(std::string("Failed to save trigger: ") + sqlite3_errmsg(db_));
@@ -387,7 +400,7 @@ tl::expected<std::vector<TriggerInfo>, std::string> SqliteTriggerStore::load_all
                          "SELECT id, entity_id, entity_type, resource_uri, collection, "
                          "resource_path, path, condition_type, condition_params, protocol, "
                          "multishot, persistent, lifetime_sec, log_settings, status, "
-                         "created_at, expires_at FROM triggers");
+                         "created_at, expires_at, resolved_topic_name FROM triggers");
 
     std::vector<TriggerInfo> result;
     while (stmt.step() == SQLITE_ROW) {
@@ -425,6 +438,11 @@ tl::expected<std::vector<TriggerInfo>, std::string> SqliteTriggerStore::load_all
 
       if (!stmt.column_is_null(16)) {
         t.expires_at = from_iso8601(stmt.column_text(16));
+      }
+
+      // Column 17: resolved_topic_name (added in migration, defaults to empty)
+      if (!stmt.column_is_null(17)) {
+        t.resolved_topic_name = stmt.column_text(17);
       }
 
       result.push_back(std::move(t));

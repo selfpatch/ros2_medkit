@@ -113,6 +113,7 @@ TEST(TriggerStore, AllFieldsSurviveRoundTrip) {
   t.resource_uri = "/api/v1/components/motor_1/data/speed";
   t.collection = "data";
   t.resource_path = "speed";
+  t.resolved_topic_name = "/motor_1/speed";
   t.path = "/data";
   t.condition_type = "LeaveRange";
   t.condition_params = json{{"lower_bound", 20}, {"upper_bound", 30}};
@@ -139,6 +140,7 @@ TEST(TriggerStore, AllFieldsSurviveRoundTrip) {
   EXPECT_EQ(r.resource_uri, "/api/v1/components/motor_1/data/speed");
   EXPECT_EQ(r.collection, "data");
   EXPECT_EQ(r.resource_path, "speed");
+  EXPECT_EQ(r.resolved_topic_name, "/motor_1/speed");
   EXPECT_EQ(r.path, "/data");
   EXPECT_EQ(r.condition_type, "LeaveRange");
   EXPECT_EQ(r.condition_params, json({{"lower_bound", 20}, {"upper_bound", 30}}));

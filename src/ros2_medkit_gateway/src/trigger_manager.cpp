@@ -560,6 +560,12 @@ void TriggerManager::load_persistent_triggers() {
     }
 
     add_to_dispatch_index(state->info.id, state->info.collection, state->info.entity_id);
+
+    // Re-subscribe to topic for restored data triggers
+    if (topic_subscriber_ && state->info.collection == "data" && !state->info.resolved_topic_name.empty()) {
+      topic_subscriber_->subscribe(state->info.resolved_topic_name, state->info.resource_path, state->info.entity_id);
+    }
+
     triggers_[state->info.id] = std::move(state);
   }
 }
