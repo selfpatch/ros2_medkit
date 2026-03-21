@@ -456,8 +456,8 @@ A companion web UI is available for visual entity browsing:
 
 .. code-block:: bash
 
-   docker pull ghcr.io/selfpatch/sovd_web_ui:latest
-   docker run -p 3000:80 ghcr.io/selfpatch/sovd_web_ui:latest
+   docker pull ghcr.io/selfpatch/ros2_medkit_web_ui:latest
+   docker run -p 3000:80 ghcr.io/selfpatch/ros2_medkit_web_ui:latest
 
 Open http://localhost:3000 and connect to the gateway at http://localhost:8080.
 

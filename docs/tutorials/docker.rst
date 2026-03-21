@@ -33,7 +33,7 @@ This starts:
 
 - TurtleBot3 simulation with Nav2
 - ros2_medkit_gateway
-- `sovd_web_ui <https://github.com/selfpatch/sovd_web_ui>`_ (Web UI)
+- `ros2_medkit_web_ui <https://github.com/selfpatch/ros2_medkit_web_ui>`_ (Web UI)
 
 Access the UI at http://localhost:3000 (Docker container maps port 80 to 3000).
 

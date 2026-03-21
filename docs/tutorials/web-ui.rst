@@ -1,15 +1,15 @@
-Web UI (sovd_web_ui)
+Web UI (ros2_medkit_web_ui)
 ====================
 
-sovd_web_ui is a lightweight web application for browsing SOVD entity trees.
+ros2_medkit_web_ui is a lightweight web application for browsing SOVD entity trees.
 It connects to the ros2_medkit gateway and visualizes the entity hierarchy.
 
 .. figure:: /_static/images/00_ui_view.png
-   :alt: sovd_web_ui main interface
+   :alt: ros2_medkit_web_ui main interface
    :align: center
    :width: 600px
 
-   The sovd_web_ui interface showing entity tree, detail panel, and data view.
+   The ros2_medkit_web_ui interface showing entity tree, detail panel, and data view.
 
 .. contents:: Table of Contents
    :local:
@@ -32,8 +32,8 @@ Using Docker
 .. code-block:: bash
 
    # Pull from GitHub Container Registry
-   docker pull ghcr.io/selfpatch/sovd_web_ui:latest
-   docker run -p 3000:80 ghcr.io/selfpatch/sovd_web_ui:latest
+   docker pull ghcr.io/selfpatch/ros2_medkit_web_ui:latest
+   docker run -p 3000:80 ghcr.io/selfpatch/ros2_medkit_web_ui:latest
 
 Then open http://localhost:3000 in your browser.
 
@@ -43,8 +43,8 @@ From Source
 .. code-block:: bash
 
    # Clone the repository
-   git clone https://github.com/selfpatch/sovd_web_ui.git
-   cd sovd_web_ui
+   git clone https://github.com/selfpatch/ros2_medkit_web_ui.git
+   cd ros2_medkit_web_ui
 
    # Install dependencies
    npm install
@@ -194,7 +194,7 @@ Run both gateway and web UI together:
        network_mode: host
 
      web_ui:
-       image: ghcr.io/selfpatch/sovd_web_ui:latest
+       image: ghcr.io/selfpatch/ros2_medkit_web_ui:latest
        ports:
          - "80:80"
 
@@ -227,7 +227,7 @@ Tech Stack
 Repository
 ----------
 
-https://github.com/selfpatch/sovd_web_ui
+https://github.com/selfpatch/ros2_medkit_web_ui
 
 See Also
 --------

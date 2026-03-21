@@ -84,7 +84,7 @@ Companion Projects
 ------------------
 
 :doc:`web-ui`
-   sovd_web_ui — A web interface for browsing SOVD entity trees.
+   ros2_medkit_web_ui — A web interface for browsing SOVD entity trees.
 
 :doc:`mcp-server`
    ros2_medkit_mcp — Connect LLMs to your ROS 2 system via MCP protocol.

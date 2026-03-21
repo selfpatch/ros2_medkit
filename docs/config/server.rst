@@ -123,7 +123,7 @@ Cross-Origin Resource Sharing (CORS) settings for browser-based clients.
      - ``86400``
      - Preflight response cache duration (24 hours).
 
-Example for development with sovd_web_ui:
+Example for development with ros2_medkit_web_ui:
 
 .. code-block:: yaml
 
