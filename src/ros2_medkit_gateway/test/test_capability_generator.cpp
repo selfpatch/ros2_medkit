@@ -25,6 +25,7 @@
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/version.hpp"
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::openapi;
@@ -134,7 +135,7 @@ TEST_F(CapabilityGeneratorTest, GenerateRootReturnsValidOpenApiSpec) {
   // Verify info block
   ASSERT_TRUE(spec.contains("info"));
   EXPECT_EQ(spec["info"]["title"], "ROS 2 Medkit Gateway");
-  EXPECT_EQ(spec["info"]["version"], "0.3.0");
+  EXPECT_EQ(spec["info"]["version"], ros2_medkit_gateway::kGatewayVersion);
   ASSERT_TRUE(spec["info"].contains("x-sovd-version"));
   EXPECT_EQ(spec["info"]["x-sovd-version"], "1.0.0");
 

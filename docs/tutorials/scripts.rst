@@ -324,7 +324,7 @@ execution.
 RBAC Roles
 ~~~~~~~~~~
 
-When :doc:`authentication` is enabled (``auth.mode: write`` or ``auth.mode: all``),
+When :doc:`authentication` is enabled (``auth.enabled: true``),
 script endpoints are protected by role-based access control:
 
 .. list-table::

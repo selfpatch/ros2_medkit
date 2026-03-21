@@ -45,15 +45,18 @@ Open `http://localhost:3000` in your browser. You will see a TurtleBot3 with Nav
 **Build from source** (ROS 2 Jazzy, Humble, or Rolling):
 
 ```bash
+source /opt/ros/jazzy/setup.bash   # or humble - adjust for your distro
 git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
 cd ros2_medkit
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install && source install/setup.bash
 ros2 launch ros2_medkit_gateway gateway.launch.py
-# → http://localhost:8080/api/v1/areas
+# → http://localhost:8080/api/v1/health
 ```
 
-For API examples, see our [Postman collection](postman/).
+Verify it works: `curl http://localhost:8080/api/v1/health` should return `{"status": "healthy", ...}`.
+
+For a guided walkthrough with demo nodes and the full API, see the [Getting Started tutorial](https://selfpatch.github.io/ros2_medkit/getting_started.html). For API examples, see our [Postman collection](postman/).
 
 ### Experimental: Pixi
 
@@ -168,7 +171,7 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for build inst
 Quick version:
 
 ```bash
-pip install pre-commit && pre-commit install && pre-commit install --hook-type pre-push
+pipx install pre-commit && pre-commit install && pre-commit install --hook-type pre-push
 colcon build --symlink-install
 source install/setup.bash
 ./scripts/test.sh          # unit tests
