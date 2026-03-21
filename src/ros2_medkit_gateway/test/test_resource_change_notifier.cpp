@@ -383,3 +383,67 @@ TEST(ResourceChangeNotifier, UnsubscribeInvalidIdIsSafe) {
   ResourceChangeNotifier notifier;
   EXPECT_NO_THROW(notifier.unsubscribe(999));
 }
+
+// --- Bounded queue: overflow drops oldest notifications ---
+
+TEST(ResourceChangeNotifier, QueueOverflow_DropsOldest) {
+  ResourceChangeNotifier notifier;
+  notifier.set_max_queue_size(5);
+
+  // Block the worker thread so that notifications pile up in the queue.
+  std::promise<void> unblock;
+  auto unblock_future = unblock.get_future();
+
+  std::promise<void> worker_blocked;
+  auto worker_blocked_future = worker_blocked.get_future();
+
+  // Subscribe with a blocking callback to hold the worker while we fill the queue.
+  notifier.subscribe({"data", "blocker", ""}, [&](const ResourceChange & /*change*/) {
+    worker_blocked.set_value();
+    unblock_future.wait();
+  });
+
+  // Trigger the blocking callback.
+  notifier.notify("data", "blocker", "block", {}, ChangeType::UPDATED);
+
+  // Wait for the worker to enter the blocking callback.
+  auto blocked_status = worker_blocked_future.wait_for(std::chrono::seconds(2));
+  ASSERT_EQ(blocked_status, std::future_status::ready);
+
+  // Now queue 10 notifications (indices 0..9). With max_queue_size=5, the
+  // 5 oldest should be discarded, leaving only the 5 newest (indices 5..9).
+  for (int i = 0; i < 10; ++i) {
+    notifier.notify("data", "sensor", "temp", {{"index", i}}, ChangeType::UPDATED);
+  }
+
+  // Collect all delivered notifications.
+  std::vector<int> received_indices;
+  std::mutex recv_mutex;
+  std::promise<void> all_done;
+  auto done_future = all_done.get_future();
+  bool promise_set = false;
+
+  notifier.subscribe({"data", "sensor", ""}, [&](const ResourceChange & change) {
+    std::lock_guard<std::mutex> lk(recv_mutex);
+    received_indices.push_back(change.value.at("index").get<int>());
+    if (received_indices.size() >= 5 && !promise_set) {
+      promise_set = true;
+      all_done.set_value();
+    }
+  });
+
+  // Unblock the worker thread so it processes the queued notifications.
+  unblock.set_value();
+
+  auto status = done_future.wait_for(std::chrono::seconds(5));
+  ASSERT_EQ(status, std::future_status::ready);
+
+  std::lock_guard<std::mutex> lk(recv_mutex);
+  // Exactly 5 notifications should have been delivered (the 5 newest).
+  ASSERT_EQ(received_indices.size(), 5u);
+  // The delivered indices should be the 5 newest: 5, 6, 7, 8, 9.
+  for (int expected : {5, 6, 7, 8, 9}) {
+    EXPECT_NE(std::find(received_indices.begin(), received_indices.end(), expected), received_indices.end())
+        << "Expected index " << expected << " to be delivered";
+  }
+}

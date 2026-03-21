@@ -67,8 +67,8 @@ class TriggerTopicSubscriber {
   /**
    * @brief Subscribe to a topic for data trigger monitoring.
    *
-   * If the topic is already subscribed, adds the entity_id to the set and
-   * increments the ref count. Otherwise, creates a GenericSubscription that
+   * If the topic is already subscribed, adds the entity_id to the set.
+   * Otherwise, creates a GenericSubscription that
    * deserializes messages to JSON and forwards them to the notifier.
    *
    * If the topic type cannot be determined (e.g., no publishers yet),
@@ -83,8 +83,8 @@ class TriggerTopicSubscriber {
   /**
    * @brief Unsubscribe an entity from a topic.
    *
-   * Decrements the ref count and removes the entity_id from the set.
-   * If the ref count reaches zero, the ROS 2 subscription is destroyed.
+   * Removes the entity_id from the set.
+   * If the set becomes empty, the ROS 2 subscription is destroyed.
    *
    * @param topic_name ROS 2 topic name to unsubscribe from
    * @param entity_id Entity ID to remove from the subscription
@@ -99,10 +99,9 @@ class TriggerTopicSubscriber {
   void shutdown();
 
  private:
-  /// Per-topic subscription state with ref counting and multi-entity support.
+  /// Per-topic subscription state with multi-entity support.
   struct SubscriptionEntry {
     rclcpp::GenericSubscription::SharedPtr subscription;
-    int ref_count = 0;
     std::string resource_path;                   ///< Resource path for notifications (e.g., "/temperature")
     std::unordered_set<std::string> entity_ids;  ///< All entities watching this topic
   };
