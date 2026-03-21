@@ -92,6 +92,13 @@ class ResourceChangeNotifier {
   using ErrorLoggerFn = std::function<void(const std::string &)>;
   void set_error_logger(ErrorLoggerFn fn);
 
+  /// Default maximum number of pending notifications in the queue.
+  static constexpr size_t kDefaultMaxQueueSize = 10000;
+
+  /// Set the maximum queue size. When exceeded, the oldest entries are dropped.
+  /// Must be called before concurrent use (typically from GatewayNode init).
+  void set_max_queue_size(size_t max_size);
+
  private:
   struct SubscriptionEntry {
     NotifierFilter filter;
@@ -113,6 +120,8 @@ class ResourceChangeNotifier {
   std::mutex queue_mutex_;
   std::condition_variable queue_cv_;
   std::deque<ResourceChange> queue_;
+  size_t max_queue_size_{kDefaultMaxQueueSize};
+  size_t overflow_drop_count_{0};  ///< Accumulated drops since last overflow log
 
   // Worker thread lifecycle
   std::atomic<bool> shutdown_flag_{false};

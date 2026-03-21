@@ -56,6 +56,21 @@ void ResourceChangeNotifier::notify(const std::string & collection, const std::s
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     queue_.push_back(std::move(change));
+
+    // Enforce bounded queue: drop oldest entries when limit is exceeded.
+    // Log only once per overflow batch to avoid log flooding.
+    if (queue_.size() > max_queue_size_) {
+      size_t drop_count = 0;
+      while (queue_.size() > max_queue_size_) {
+        queue_.pop_front();
+        ++drop_count;
+      }
+      overflow_drop_count_ += drop_count;
+      if (error_logger_) {
+        error_logger_("ResourceChangeNotifier: queue overflow - dropped " + std::to_string(drop_count) +
+                      " notification(s) (total dropped: " + std::to_string(overflow_drop_count_) + ")");
+      }
+    }
   }
   queue_cv_.notify_one();
 }
@@ -140,6 +155,11 @@ void ResourceChangeNotifier::worker_loop() {
 
 void ResourceChangeNotifier::set_error_logger(ErrorLoggerFn fn) {
   error_logger_ = std::move(fn);
+}
+
+void ResourceChangeNotifier::set_max_queue_size(size_t max_size) {
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+  max_queue_size_ = max_size;
 }
 
 }  // namespace ros2_medkit_gateway

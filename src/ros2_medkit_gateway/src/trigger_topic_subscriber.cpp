@@ -47,15 +47,14 @@ void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std
 
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // If already subscribed, add entity_id and increment ref count
+  // If already subscribed, add entity_id to the existing subscription
   auto it = subscriptions_.find(topic_name);
   if (it != subscriptions_.end()) {
-    it->second.ref_count++;
     it->second.entity_ids.insert(entity_id);
     RCLCPP_DEBUG(node_->get_logger(),
-                 "TriggerTopicSubscriber: incremented ref_count for '%s' to %d, "
-                 "entity_ids count=%zu",
-                 topic_name.c_str(), it->second.ref_count, it->second.entity_ids.size());
+                 "TriggerTopicSubscriber: added entity '%s' to existing subscription for '%s' "
+                 "(entity_ids count=%zu)",
+                 entity_id.c_str(), topic_name.c_str(), it->second.entity_ids.size());
     return;
   }
 
@@ -143,7 +142,6 @@ void TriggerTopicSubscriber::create_subscription_internal(const std::string & to
 
     SubscriptionEntry entry;
     entry.subscription = std::move(subscription);
-    entry.ref_count = static_cast<int>(entity_ids.size());
     entry.resource_path = resource_path;
     entry.entity_ids = entity_ids;
     subscriptions_[topic_name] = std::move(entry);
@@ -177,18 +175,15 @@ void TriggerTopicSubscriber::unsubscribe(const std::string & topic_name, const s
     return;
   }
 
-  it->second.ref_count--;
   it->second.entity_ids.erase(entity_id);
 
-  if (it->second.ref_count <= 0) {
-    RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: unsubscribed from '%s' (ref_count reached 0)",
+  if (it->second.entity_ids.empty()) {
+    RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: unsubscribed from '%s' (no entities remaining)",
                 topic_name.c_str());
     subscriptions_.erase(it);
   } else {
-    RCLCPP_DEBUG(node_->get_logger(),
-                 "TriggerTopicSubscriber: decremented ref_count for '%s' to %d, "
-                 "entity_ids count=%zu",
-                 topic_name.c_str(), it->second.ref_count, it->second.entity_ids.size());
+    RCLCPP_DEBUG(node_->get_logger(), "TriggerTopicSubscriber: removed entity '%s' from '%s' (entity_ids count=%zu)",
+                 entity_id.c_str(), topic_name.c_str(), it->second.entity_ids.size());
   }
 }
 
