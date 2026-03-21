@@ -95,7 +95,7 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 
 ### API Documentation (OpenAPI)
 
-- `GET /api/v1/docs` - Full OpenAPI 3.0 specification
+- `GET /api/v1/docs` - Full OpenAPI 3.1.0 specification
 - `GET /api/v1/{entity_type}/{id}/docs` - Entity-scoped OpenAPI spec
 - `GET /api/v1/swagger-ui` - Interactive Swagger UI (requires build with `-DENABLE_SWAGGER_UI=ON`)
 

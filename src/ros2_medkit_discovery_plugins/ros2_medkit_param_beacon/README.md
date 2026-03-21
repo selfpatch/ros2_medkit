@@ -19,11 +19,11 @@ ROS 2 graph. In hybrid mode, targets come from the manifest.
 ```yaml
 plugins: ["param_beacon"]
 plugins.param_beacon.path: "/path/to/libros2_medkit_param_beacon.so"
-plugins.param_beacon.poll_interval_sec: 10
-plugins.param_beacon.poll_budget_ms: 500
-plugins.param_beacon.timeout_ms: 1000
-plugins.param_beacon.ttl_sec: 60
-plugins.param_beacon.expiry_sec: 120
+plugins.param_beacon.poll_interval_sec: 10.0
+plugins.param_beacon.poll_budget_sec: 10.0
+plugins.param_beacon.param_timeout_sec: 2.0
+plugins.param_beacon.beacon_ttl_sec: 15.0
+plugins.param_beacon.beacon_expiry_sec: 300.0
 ```
 
 See [discovery options](https://selfpatch.github.io/ros2_medkit/config/discovery-options.html)
