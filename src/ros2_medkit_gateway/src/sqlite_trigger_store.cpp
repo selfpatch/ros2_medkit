@@ -310,7 +310,6 @@ tl::expected<void, std::string> SqliteTriggerStore::update(const std::string & i
   try {
     // Build SET clause dynamically from supplied keys
     std::string sql = "UPDATE triggers SET ";
-    std::vector<std::pair<std::string, std::string>> bindings;  // column, value
 
     bool first = true;
     for (auto it = fields.begin(); it != fields.end(); ++it) {
@@ -322,23 +321,26 @@ tl::expected<void, std::string> SqliteTriggerStore::update(const std::string & i
       }
       sql += it.key() + " = ?";
       first = false;
-
-      // Convert JSON value to text for binding
-      if (it.value().is_string()) {
-        bindings.emplace_back(it.key(), it.value().get<std::string>());
-      } else {
-        bindings.emplace_back(it.key(), it.value().dump());
-      }
     }
     sql += " WHERE id = ?";
 
     SqliteStatement stmt(db_, sql.c_str());
 
-    int idx = 1;
-    for (const auto & [col, val] : bindings) {
-      stmt.bind_text(idx++, val);
+    int bind_idx = 1;
+    for (auto it = fields.begin(); it != fields.end(); ++it) {
+      if (it.value().is_boolean()) {
+        stmt.bind_int(bind_idx, it.value().get<bool>() ? 1 : 0);
+      } else if (it.value().is_number_integer()) {
+        stmt.bind_int(bind_idx, it.value().get<int>());
+      } else if (it.value().is_string()) {
+        stmt.bind_text(bind_idx, it.value().get<std::string>());
+      } else {
+        // JSON objects/arrays - dump to text
+        stmt.bind_text(bind_idx, it.value().dump());
+      }
+      ++bind_idx;
     }
-    stmt.bind_text(idx, id);
+    stmt.bind_text(bind_idx, id);
 
     if (stmt.step() != SQLITE_DONE) {
       return tl::make_unexpected(std::string("Failed to update trigger: ") + sqlite3_errmsg(db_));

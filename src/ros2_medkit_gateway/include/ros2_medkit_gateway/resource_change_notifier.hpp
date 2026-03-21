@@ -44,7 +44,7 @@ struct ResourceChange {
 
 /// Filter for selecting which resource changes a subscriber cares about.
 struct NotifierFilter {
-  std::string collection;     ///< Required - which collection to watch
+  std::string collection;     ///< Optional - empty = all collections (catch-all)
   std::string entity_id;      ///< Optional - empty = all entities
   std::string resource_path;  ///< Optional - empty = all resources
 };

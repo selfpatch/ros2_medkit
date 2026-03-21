@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 
 #include "ros2_medkit_gateway/sqlite_trigger_store.hpp"
@@ -211,8 +212,8 @@ TEST(TriggerStore, UpdateFields) {
   auto t = make_trigger("upd_001");
   ASSERT_TRUE(store.save(t).has_value());
 
-  // Update status and lifetime_sec
-  json fields = {{"status", "TERMINATED"}, {"lifetime_sec", "7200"}};
+  // Update status (text) and lifetime_sec (integer)
+  json fields = {{"status", "TERMINATED"}, {"lifetime_sec", 7200}};
   auto result = store.update("upd_001", fields);
   ASSERT_TRUE(result.has_value()) << result.error();
 
@@ -222,6 +223,26 @@ TEST(TriggerStore, UpdateFields) {
   EXPECT_EQ(loaded->at(0).status, TriggerStatus::TERMINATED);
   ASSERT_TRUE(loaded->at(0).lifetime_sec.has_value());
   EXPECT_EQ(loaded->at(0).lifetime_sec.value(), 7200);
+}
+
+TEST(TriggerStore, UpdateBooleanAndIntegerFields) {
+  SqliteTriggerStore store(":memory:");
+
+  auto t = make_trigger("upd_typed");
+  t.multishot = true;
+  ASSERT_TRUE(store.save(t).has_value());
+
+  // Update multishot (boolean) and lifetime_sec (integer) with proper types
+  json fields = {{"multishot", false}, {"lifetime_sec", 900}};
+  auto result = store.update("upd_typed", fields);
+  ASSERT_TRUE(result.has_value()) << result.error();
+
+  auto loaded = store.load_all();
+  ASSERT_TRUE(loaded.has_value());
+  ASSERT_EQ(loaded->size(), 1u);
+  EXPECT_FALSE(loaded->at(0).multishot);
+  ASSERT_TRUE(loaded->at(0).lifetime_sec.has_value());
+  EXPECT_EQ(loaded->at(0).lifetime_sec.value(), 900);
 }
 
 TEST(TriggerStore, UpdateDisallowedColumn) {
@@ -343,19 +364,19 @@ TEST(TriggerStore, RemoveDeletesState) {
 
 // @verifies REQ_INTEROP_029
 TEST(TriggerStore, FilePersistence) {
-  std::string path = "/tmp/test_trigger_store_persist.db";
-  std::remove(path.c_str());
+  auto path = std::filesystem::temp_directory_path() / ("test_trigger_store_" + std::to_string(::getpid()) + ".db");
+  std::filesystem::remove(path);
 
   // Scope 1: create and save
   {
-    SqliteTriggerStore store(path);
+    SqliteTriggerStore store(path.string());
     ASSERT_TRUE(store.save(make_trigger("persist_001")).has_value());
     ASSERT_TRUE(store.save_state("persist_001", json{{"val", 99}}).has_value());
   }
 
   // Scope 2: reopen and verify
   {
-    SqliteTriggerStore store(path);
+    SqliteTriggerStore store(path.string());
     auto loaded = store.load_all();
     ASSERT_TRUE(loaded.has_value());
     ASSERT_EQ(loaded->size(), 1u);
@@ -367,5 +388,5 @@ TEST(TriggerStore, FilePersistence) {
     EXPECT_EQ(state->value(), json({{"val", 99}}));
   }
 
-  std::remove(path.c_str());
+  std::filesystem::remove(path);
 }

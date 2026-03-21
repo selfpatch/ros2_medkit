@@ -66,14 +66,19 @@ class TestTriggersLatePublisher(GatewayTestCase):
     # ------------------------------------------------------------------
 
     def test_01_trigger_on_late_publisher_receives_events(self):
-        """Create trigger before publisher starts, verify events arrive after retry.
+        """Create trigger immediately when app appears, before data topics resolve.
+
+        The demo node starts after a 15s delay. This test creates the trigger
+        as soon as the app entity is discovered - before waiting for data
+        topic availability - so the TriggerTopicSubscriber retry path is
+        exercised.
 
         Steps:
         1. Verify temp_sensor is NOT yet discovered (demo_delay ensures this).
         2. Wait for temp_sensor to appear (demo_delay will start it).
-        3. Discover a data topic for temp_sensor.
-        4. Create a trigger on that data topic.
-        5. Connect SSE and wait for events (proves the subscription works).
+        3. Create a trigger immediately using the known topic path, without
+           waiting for data topic discovery.
+        4. Connect SSE and wait for events (proves the retry subscription works).
         """
         # Step 1: Verify the app is NOT yet discovered
         try:
@@ -102,37 +107,10 @@ class TestTriggersLatePublisher(GatewayTestCase):
 
         self.assertTrue(app_found, f'App {self.app_id} not discovered within 60s')
 
-        # Step 3: Find a non-system data topic
-        system_topics = {'/parameter_events', '/rosout'}
-        topic_id = None
-        resource_uri = None
-        deadline = time.monotonic() + 15.0
-        while time.monotonic() < deadline:
-            try:
-                r = requests.get(
-                    f'{self.BASE_URL}/apps/{self.app_id}/data', timeout=5,
-                )
-                if r.status_code == 200:
-                    items = r.json().get('items', [])
-                    for item in items:
-                        if item['id'] not in system_topics:
-                            topic_id = item['id']
-                            resource_uri = (
-                                f'/api/v1/apps/{self.app_id}/data{topic_id}'
-                            )
-                            break
-                    if topic_id:
-                        break
-            except requests.exceptions.RequestException:
-                pass
-            time.sleep(1.0)
-
-        self.assertIsNotNone(
-            topic_id,
-            f'No data items available for app {self.app_id}',
-        )
-
-        # Step 4: Create a trigger on the discovered data topic
+        # Step 3: Create trigger immediately using known topic path.
+        # The topic type may not be resolvable yet if the publisher hasn't
+        # fully advertised, exercising the TriggerTopicSubscriber retry path.
+        resource_uri = f'/api/v1/apps/{self.app_id}/data{self.topic_name}'
         body = {
             'resource': resource_uri,
             'trigger_condition': {'condition_type': 'OnChange'},
@@ -156,7 +134,7 @@ class TestTriggersLatePublisher(GatewayTestCase):
 
         self.assertEqual(trig['status'], 'active')
 
-        # Step 5: Connect SSE and collect events
+        # Step 4: Connect SSE and collect events
         events_url = (
             f'{self.BASE_URL}{trig["event_source"].removeprefix(API_BASE_PATH)}'
         )

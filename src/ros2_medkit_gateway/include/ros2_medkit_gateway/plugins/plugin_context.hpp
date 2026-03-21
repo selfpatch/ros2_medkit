@@ -210,16 +210,16 @@ class PluginContext {
   /**
    * @brief Get the ResourceChangeNotifier for publishing or subscribing to resource changes.
    *
-   * Returns nullptr when triggers are disabled in the gateway configuration.
-   * Plugins should guard against nullptr before use.
+   * Always returns a valid pointer - ResourceChangeNotifier is created unconditionally
+   * in GatewayNode regardless of trigger configuration.
    */
   virtual ResourceChangeNotifier * get_resource_change_notifier() = 0;
 
   /**
    * @brief Get the ConditionRegistry for registering custom trigger condition evaluators.
    *
-   * Returns nullptr when triggers are disabled in the gateway configuration.
-   * Plugins should guard against nullptr before use.
+   * Always returns a valid pointer - ConditionRegistry is created unconditionally
+   * in GatewayNode regardless of trigger configuration.
    */
   virtual ConditionRegistry * get_condition_registry() = 0;
 };
