@@ -82,6 +82,32 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `PUT /api/v1/{components|apps}/{id}/locks/{lock_id}` - Extend lock expiration
 - `DELETE /api/v1/{components|apps}/{id}/locks/{lock_id}` - Release a lock
 
+### Scripts Endpoints
+
+- `GET /api/v1/{entity}/{id}/scripts` - List available diagnostic scripts
+- `POST /api/v1/{entity}/{id}/scripts` - Upload a new script
+- `GET /api/v1/{entity}/{id}/scripts/{script_id}` - Get script details
+- `DELETE /api/v1/{entity}/{id}/scripts/{script_id}` - Delete a script
+- `POST /api/v1/{entity}/{id}/scripts/{script_id}/executions` - Start script execution
+- `GET /api/v1/{entity}/{id}/scripts/{script_id}/executions/{eid}` - Get execution status and output
+- `PUT /api/v1/{entity}/{id}/scripts/{script_id}/executions/{eid}` - Send stdin or control signals
+- `DELETE /api/v1/{entity}/{id}/scripts/{script_id}/executions/{eid}` - Cancel execution
+
+### API Documentation (OpenAPI)
+
+- `GET /api/v1/docs` - Full OpenAPI 3.0 specification
+- `GET /api/v1/{entity_type}/{id}/docs` - Entity-scoped OpenAPI spec
+- `GET /api/v1/swagger-ui` - Interactive Swagger UI (requires build with `-DENABLE_SWAGGER_UI=ON`)
+
+### Vendor Extension Endpoints
+
+- `GET /api/v1/{entity}/{id}/x-medkit-topic-beacon` - Topic beacon metadata
+- `GET /api/v1/{entity}/{id}/x-medkit-param-beacon` - Parameter beacon metadata
+- `GET /api/v1/{entity}/{id}/x-medkit-procfs` - Process info (procfs plugin)
+- `GET /api/v1/{entity}/{id}/x-medkit-systemd` - Systemd unit status
+- `GET /api/v1/{entity}/{id}/x-medkit-container` - Container runtime info
+- `GET /api/v1/{entity}/{id}/x-medkit-graph` - ROS 2 graph details
+
 ### API Reference
 
 #### GET /api/v1/areas
