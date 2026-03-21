@@ -32,45 +32,45 @@ The following diagram shows the beacon common components and their relationships
            +introspect(input): IntrospectionResult
        }
 
-       struct IntrospectionInput {
-           +areas: vector~<Area~>
-           +components: vector~<Component~>
-           +apps: vector~<App~>
-           +functions: vector~<Function~>
+       class IntrospectionInput {
+           +areas: vector<Area>
+           +components: vector<Component>
+           +apps: vector<App>
+           +functions: vector<Function>
        }
 
-       struct IntrospectionResult {
-           +metadata: map~<string, json~>
+       class IntrospectionResult {
+           +metadata: map<string, json>
            +new_entities: NewEntities
        }
    }
 
    package "ros2_medkit_beacon_common" {
 
-       struct BeaconHint {
+       class BeaconHint {
            + entity_id: string
            + stable_id: string
            + display_name: string
-           + function_ids: vector~<string~>
-           + depends_on: vector~<string~>
+           + function_ids: vector<string>
+           + depends_on: vector<string>
            + component_id: string
            + transport_type: string
            + negotiated_format: string
            + process_id: uint32
            + process_name: string
            + hostname: string
-           + metadata: map~<string, string~>
+           + metadata: map<string, string>
            + received_at: time_point
        }
 
        class BeaconHintStore {
-           - hints_: map~<string, StoredHint~>
+           - hints_: map<string, StoredHint>
            - config_: Config
            - mutex_: shared_mutex
            --
            + update(hint): bool
-           + evict_and_snapshot(): vector~<StoredHint~>
-           + get(entity_id): optional~<StoredHint~>
+           + evict_and_snapshot(): vector<StoredHint>
+           + get(entity_id): optional<StoredHint>
            + size(): size_t
        }
 
@@ -91,13 +91,13 @@ The following diagram shows the beacon common components and their relationships
            + {static} build_beacon_response(id, stored): json
        }
 
-       struct "BeaconHintStore::Config" as StoreConfig {
+       class "BeaconHintStore::Config" as StoreConfig {
            + beacon_ttl_sec: double = 10.0
            + beacon_expiry_sec: double = 300.0
            + max_hints: size_t = 10000
        }
 
-       struct ValidationLimits {
+       class ValidationLimits {
            + max_id_length: 256
            + max_string_length: 512
            + max_function_ids: 100
