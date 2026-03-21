@@ -12,6 +12,8 @@ Step-by-step guides for common use cases with ros2_medkit.
    migration-to-manifest
    authentication
    https
+   locking
+   scripts
    snapshots
    fault-correlation
    docker
@@ -20,6 +22,8 @@ Step-by-step guides for common use cases with ros2_medkit.
    custom_areas
    web-ui
    mcp-server
+   openapi
+   beacon-discovery
    plugin-system
    linux-introspection
    triggers-use-cases
@@ -58,6 +62,12 @@ Basic Tutorials
 :doc:`https`
    Enable TLS/HTTPS for secure communication.
 
+:doc:`locking`
+   Use SOVD resource locking to prevent concurrent modification of entity resources.
+
+:doc:`scripts`
+   Upload, execute, and manage diagnostic scripts on entities.
+
 :doc:`snapshots`
    Configure snapshot capture for fault debugging.
 
@@ -79,6 +89,9 @@ Companion Projects
 :doc:`mcp-server`
    ros2_medkit_mcp — Connect LLMs to your ROS 2 system via MCP protocol.
 
+:doc:`openapi`
+   Explore and interact with the gateway's self-describing OpenAPI spec and Swagger UI.
+
 Advanced Tutorials
 ------------------
 
@@ -87,6 +100,9 @@ Advanced Tutorials
 
 :doc:`custom_areas`
    Customize the entity hierarchy for your robot architecture.
+
+:doc:`beacon-discovery`
+   Use topic and parameter beacon plugins to enrich entities with runtime metadata from nodes.
 
 :doc:`plugin-system`
    Extend the gateway with custom plugins for update backends, introspection, and REST endpoints.
