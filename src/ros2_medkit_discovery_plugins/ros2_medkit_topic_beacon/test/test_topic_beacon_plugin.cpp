@@ -196,7 +196,6 @@ class TopicBeaconPluginTest : public ::testing::Test {
   rclcpp::Publisher<ros2_medkit_msgs::msg::MedkitDiscoveryHint>::SharedPtr publisher_;
 };
 
-// @verifies REQ_DISCO_BEACON_01
 TEST_F(TopicBeaconPluginTest, MessageCallbackUpdatesStore) {
   auto msg = make_hint("engine_temp_sensor");
   publisher_->publish(msg);
@@ -214,7 +213,6 @@ TEST_F(TopicBeaconPluginTest, MessageCallbackUpdatesStore) {
   EXPECT_EQ(stored->hint.process_id, 1234u);
 }
 
-// @verifies REQ_DISCO_BEACON_01
 TEST_F(TopicBeaconPluginTest, IntrospectReturnsCorrectResult) {
   // Populate store directly
   BeaconHint hint;
@@ -236,7 +234,6 @@ TEST_F(TopicBeaconPluginTest, IntrospectReturnsCorrectResult) {
   EXPECT_TRUE(result.metadata["my_app"].contains("x-medkit-beacon-status"));
 }
 
-// @verifies REQ_DISCO_BEACON_05
 TEST_F(TopicBeaconPluginTest, InvalidMessageRejectedByValidator) {
   // Publish message with empty entity_id - should be rejected by validator
   ros2_medkit_msgs::msg::MedkitDiscoveryHint msg;
@@ -255,7 +252,6 @@ TEST_F(TopicBeaconPluginTest, ShutdownDestroysSubscription) {
   EXPECT_EQ(plugin_->subscription(), nullptr);
 }
 
-// @verifies REQ_DISCO_BEACON_01
 TEST_F(TopicBeaconPluginTest, MetadataFromMessagePreserved) {
   auto msg = make_hint("sensor_node");
   diagnostic_msgs::msg::KeyValue kv;
@@ -271,7 +267,6 @@ TEST_F(TopicBeaconPluginTest, MetadataFromMessagePreserved) {
   EXPECT_EQ(stored->hint.metadata.at("gpu_model"), "RTX 4090");
 }
 
-// @verifies REQ_DISCO_BEACON_04
 TEST_F(TopicBeaconPluginTest, PluginNameAndCapabilities) {
   EXPECT_EQ(plugin_->name(), "topic_beacon");
 
@@ -322,7 +317,6 @@ TEST(TokenBucketTest, DefaultConstructor) {
 
 // --- Rate limiting rejection test ---
 
-// @verifies REQ_DISCO_BEACON_05
 TEST_F(TopicBeaconPluginTest, RateLimitingRejectsExcessMessages) {
   // Create a separate plugin with very low rate limit
   auto rate_limited_plugin = std::make_unique<TopicBeaconPlugin>();
