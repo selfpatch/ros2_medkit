@@ -836,6 +836,7 @@ TEST_F(TestGatewayNode, test_invalid_app_id_bad_request) {
   EXPECT_EQ(res->status, 400);
 }
 
+// @verifies REQ_INTEROP_105
 TEST_F(TestGatewayNode, test_app_is_located_on_endpoint) {
   load_app_location_fixture();
 

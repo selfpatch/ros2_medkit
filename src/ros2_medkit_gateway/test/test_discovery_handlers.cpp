@@ -604,7 +604,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetAppReturnsLinksAndCapabilities) {
   EXPECT_EQ(body["x-medkit"]["is_online"], false);
 }
 
-// @verifies REQ_INTEROP_003
+// @verifies REQ_INTEROP_105
 TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsParentComponent) {
   auto req = make_request_with_match("/api/v1/apps/mapper/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
   httplib::Response res;
@@ -621,7 +621,7 @@ TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsParentComponent) {
   EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/mapper");
 }
 
-// @verifies REQ_INTEROP_003
+// @verifies REQ_INTEROP_105
 TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsEmptyWhenAppHasNoComponent) {
   auto req = make_request_with_match("/api/v1/apps/standalone/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
   httplib::Response res;
@@ -635,7 +635,7 @@ TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsEmptyWhenAppHasNoCompo
   EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/standalone");
 }
 
-// @verifies REQ_INTEROP_003
+// @verifies REQ_INTEROP_105
 TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsMissingItemWhenHostComponentUnresolved) {
   auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
   auto apps = cache.get_apps();
@@ -665,7 +665,7 @@ TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsMissingItemWhenHostCom
   EXPECT_EQ(body["items"][0]["x-medkit"]["missing"], true);
 }
 
-// @verifies REQ_INTEROP_003
+// @verifies REQ_INTEROP_105
 TEST_F(DiscoveryHandlersValidationTest, AppIsLocatedOnInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/apps/bad/id/is-located-on", R"(/api/v1/apps/(.+)/is-located-on)");
   httplib::Response res;
@@ -675,7 +675,7 @@ TEST_F(DiscoveryHandlersValidationTest, AppIsLocatedOnInvalidIdReturns400) {
   EXPECT_EQ(res.status, 400);
 }
 
-// @verifies REQ_INTEROP_003
+// @verifies REQ_INTEROP_105
 TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnUnknownAppReturns404) {
   auto req = make_request_with_match("/api/v1/apps/unknown/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
   httplib::Response res;

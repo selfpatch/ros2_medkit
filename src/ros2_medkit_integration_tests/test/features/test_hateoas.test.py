@@ -418,6 +418,7 @@ class TestHateoas(GatewayTestCase):
 
     def test_is_located_on_apps_has_href(self):
         """GET /apps/{id}/is-located-on returns 0-or-1 component hrefs."""
+        # @verifies REQ_INTEROP_105
         response = requests.get(
             f'{self.BASE_URL}/apps/temp_sensor/is-located-on',
             timeout=10
@@ -443,6 +444,7 @@ class TestHateoas(GatewayTestCase):
 
     def test_is_located_on_apps_nonexistent(self):
         """GET /apps/{id}/is-located-on returns 404 for unknown app."""
+        # @verifies REQ_INTEROP_105
         response = requests.get(
             f'{self.BASE_URL}/apps/nonexistent_app/is-located-on',
             timeout=10
