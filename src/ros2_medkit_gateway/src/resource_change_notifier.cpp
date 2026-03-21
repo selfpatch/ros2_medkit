@@ -19,7 +19,8 @@
 
 namespace ros2_medkit_gateway {
 
-ResourceChangeNotifier::ResourceChangeNotifier() : worker_thread_(&ResourceChangeNotifier::worker_loop, this) {
+ResourceChangeNotifier::ResourceChangeNotifier(ErrorLoggerFn error_logger)
+  : error_logger_(std::move(error_logger)), worker_thread_(&ResourceChangeNotifier::worker_loop, this) {
 }
 
 ResourceChangeNotifier::~ResourceChangeNotifier() {
@@ -151,10 +152,6 @@ void ResourceChangeNotifier::worker_loop() {
       }
     }
   }
-}
-
-void ResourceChangeNotifier::set_error_logger(ErrorLoggerFn fn) {
-  error_logger_ = std::move(fn);
 }
 
 void ResourceChangeNotifier::set_max_queue_size(size_t max_size) {

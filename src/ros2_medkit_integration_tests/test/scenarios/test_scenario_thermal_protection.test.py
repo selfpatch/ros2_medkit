@@ -186,7 +186,7 @@ class TestScenarioThermalProtection(GatewayTestCase):
             'multishot': True,
             'lifetime': 120,
             'log_settings': {
-                'severity': 'critical',
+                'severity': 'error',
                 'marker': 'THERMAL CRITICAL: 95C reached',
             },
         }
@@ -202,7 +202,7 @@ class TestScenarioThermalProtection(GatewayTestCase):
         )
         # log_settings preserved
         self.assertIn('log_settings', trig)
-        self.assertEqual(trig['log_settings']['severity'], 'critical')
+        self.assertEqual(trig['log_settings']['severity'], 'error')
 
     def test_03_create_component_fault_trigger(self):
         """Create trigger 3: OnChange on component faults collection.

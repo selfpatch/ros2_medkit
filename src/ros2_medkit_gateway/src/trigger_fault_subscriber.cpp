@@ -55,6 +55,12 @@ void TriggerFaultSubscriber::on_fault_event(const ros2_medkit_msgs::msg::FaultEv
     change_type = ChangeType::DELETED;
   }
 
+  // Skip dispatch if entity_id could not be determined (no reporting sources
+  // or FQN was just "/"). Prevents unintended catch-all matching.
+  if (entity_id.empty()) {
+    return;
+  }
+
   // Prefix fault_code with '/' to match the resource_path format produced by
   // parse_resource_uri() (e.g. "/fault_001"), so fault triggers with a specific
   // resource_path can match.
