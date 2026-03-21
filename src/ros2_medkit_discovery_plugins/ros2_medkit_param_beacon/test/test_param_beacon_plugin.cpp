@@ -215,7 +215,6 @@ TEST_F(ParamBeaconPluginTest, PluginNameAndExports) {
   delete raw;
 }
 
-// @verifies REQ_DISCO_BEACON_04
 TEST_F(ParamBeaconPluginTest, CapabilitiesRegistered) {
   setup_plugin();
   ASSERT_EQ(mock_ctx_->registered_capabilities_.size(), 2u);
@@ -223,7 +222,6 @@ TEST_F(ParamBeaconPluginTest, CapabilitiesRegistered) {
   EXPECT_EQ(mock_ctx_->registered_capabilities_[1].name, "x-medkit-param-beacon");
 }
 
-// @verifies REQ_DISCO_BEACON_02
 TEST_F(ParamBeaconPluginTest, PollsNodeAndStoresHint) {
   // Setup mock client expectations
   EXPECT_CALL(*mock_client_, wait_for_service(_)).WillRepeatedly(Return(true));
@@ -259,7 +257,6 @@ TEST_F(ParamBeaconPluginTest, PollsNodeAndStoresHint) {
   EXPECT_EQ(stored->hint.hostname, "test-host");
 }
 
-// @verifies REQ_DISCO_BEACON_02
 TEST_F(ParamBeaconPluginTest, SkipsNodeWithoutEntityId) {
   EXPECT_CALL(*mock_client_, wait_for_service(_)).WillRepeatedly(Return(true));
   EXPECT_CALL(*mock_client_, list_parameters(_, _))
@@ -332,7 +329,6 @@ TEST_F(ParamBeaconPluginTest, BackoffOnTimeout) {
   ASSERT_TRUE(stored.has_value());
 }
 
-// @verifies REQ_DISCO_BEACON_02
 TEST_F(ParamBeaconPluginTest, MetadataSubParams) {
   EXPECT_CALL(*mock_client_, wait_for_service(_)).WillRepeatedly(Return(true));
   EXPECT_CALL(*mock_client_, list_parameters(_, _))
@@ -384,7 +380,6 @@ TEST_F(ParamBeaconPluginTest, ConfigValidationAutoFixes) {
   plugin->shutdown();
 }
 
-// @verifies REQ_DISCO_BEACON_02
 TEST_F(ParamBeaconPluginTest, IntrospectReturnsMetadata) {
   // Populate store directly
   BeaconHint hint;

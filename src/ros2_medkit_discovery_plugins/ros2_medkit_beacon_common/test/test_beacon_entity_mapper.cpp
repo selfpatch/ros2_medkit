@@ -89,7 +89,6 @@ IntrospectionInput make_base_input() {
 // ---------------------------------------------------------------------------
 // EnrichesExistingApp
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, EnrichesExistingApp) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -116,7 +115,6 @@ TEST(BeaconEntityMapper, EnrichesExistingApp) {
 // ---------------------------------------------------------------------------
 // EnrichesExistingComponent
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, EnrichesExistingComponent) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -143,7 +141,6 @@ TEST(BeaconEntityMapper, EnrichesExistingComponent) {
 // ---------------------------------------------------------------------------
 // UnknownEntityIgnoredWhenDisabled
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, UnknownEntityIgnoredWhenDisabled) {
   auto input = make_base_input();
   BeaconEntityMapper::Config cfg;
@@ -162,7 +159,6 @@ TEST(BeaconEntityMapper, UnknownEntityIgnoredWhenDisabled) {
 // ---------------------------------------------------------------------------
 // UnknownEntityCreatesAppWhenEnabled
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, UnknownEntityCreatesAppWhenEnabled) {
   auto input = make_base_input();
   BeaconEntityMapper::Config cfg;
@@ -187,7 +183,6 @@ TEST(BeaconEntityMapper, UnknownEntityCreatesAppWhenEnabled) {
 // ---------------------------------------------------------------------------
 // FunctionIdsReverseMapAddsToHosts
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, FunctionIdsReverseMapAddsToHosts) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -209,7 +204,6 @@ TEST(BeaconEntityMapper, FunctionIdsReverseMapAddsToHosts) {
 // ---------------------------------------------------------------------------
 // FunctionIdsNonExistentFunctionLogsWarning
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, FunctionIdsNonExistentFunctionLogsWarning) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -233,7 +227,6 @@ TEST(BeaconEntityMapper, FunctionIdsNonExistentFunctionLogsWarning) {
 // ---------------------------------------------------------------------------
 // EmptyFunctionIdsIsNoop
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, EmptyFunctionIdsIsNoop) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -253,7 +246,6 @@ TEST(BeaconEntityMapper, EmptyFunctionIdsIsNoop) {
 // ---------------------------------------------------------------------------
 // ComponentIdSetsParent
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, ComponentIdSetsParent) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -270,7 +262,6 @@ TEST(BeaconEntityMapper, ComponentIdSetsParent) {
 // ---------------------------------------------------------------------------
 // DisplayNameSetsName
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, DisplayNameSetsName) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -287,7 +278,6 @@ TEST(BeaconEntityMapper, DisplayNameSetsName) {
 // ---------------------------------------------------------------------------
 // DependsOnMapped
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, DependsOnMapped) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -309,7 +299,6 @@ TEST(BeaconEntityMapper, DependsOnMapped) {
 // ---------------------------------------------------------------------------
 // MetadataPrefixedCorrectly
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, MetadataPrefixedCorrectly) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -328,7 +317,6 @@ TEST(BeaconEntityMapper, MetadataPrefixedCorrectly) {
 // ---------------------------------------------------------------------------
 // ProcessDiagnosticsInMetadata
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, ProcessDiagnosticsInMetadata) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -352,7 +340,6 @@ TEST(BeaconEntityMapper, ProcessDiagnosticsInMetadata) {
 // ---------------------------------------------------------------------------
 // ActiveHintMetadataCorrect
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, ActiveHintMetadataCorrect) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -373,7 +360,6 @@ TEST(BeaconEntityMapper, ActiveHintMetadataCorrect) {
 // ---------------------------------------------------------------------------
 // StaleHintMetadataCorrect
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, StaleHintMetadataCorrect) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -393,7 +379,6 @@ TEST(BeaconEntityMapper, StaleHintMetadataCorrect) {
 // ---------------------------------------------------------------------------
 // MultipleHintsProcessedIndependently
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, MultipleHintsProcessedIndependently) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -414,7 +399,6 @@ TEST(BeaconEntityMapper, MultipleHintsProcessedIndependently) {
 // ---------------------------------------------------------------------------
 // StableIdInMetadata
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, StableIdInMetadata) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -431,7 +415,6 @@ TEST(BeaconEntityMapper, StableIdInMetadata) {
 // ---------------------------------------------------------------------------
 // NegotiatedFormatInMetadata
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, NegotiatedFormatInMetadata) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -448,7 +431,6 @@ TEST(BeaconEntityMapper, NegotiatedFormatInMetadata) {
 // ---------------------------------------------------------------------------
 // EmptyOptionalFieldsOmitted
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, EmptyOptionalFieldsOmitted) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -479,7 +461,6 @@ TEST(BeaconEntityMapper, EmptyOptionalFieldsOmitted) {
 // ---------------------------------------------------------------------------
 // FunctionDeduplication - same function referenced by multiple hints
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, FunctionDeduplication) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -505,7 +486,6 @@ TEST(BeaconEntityMapper, FunctionDeduplication) {
 // ---------------------------------------------------------------------------
 // EmptyHintsVector
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, EmptyHintsVector) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -521,7 +501,6 @@ TEST(BeaconEntityMapper, EmptyHintsVector) {
 // ---------------------------------------------------------------------------
 // DisplayNameEmptyDoesNotOverrideName
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, DisplayNameEmptyDoesNotOverrideName) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -539,7 +518,6 @@ TEST(BeaconEntityMapper, DisplayNameEmptyDoesNotOverrideName) {
 // ---------------------------------------------------------------------------
 // FreeformMetadataDoesNotOverrideStructuredFields
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, FreeformMetadataDoesNotOverrideStructuredFields) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
@@ -561,7 +539,6 @@ TEST(BeaconEntityMapper, FreeformMetadataDoesNotOverrideStructuredFields) {
 // ---------------------------------------------------------------------------
 // ComponentIdEmptyDoesNotOverride
 // ---------------------------------------------------------------------------
-// @verifies REQ_DISCO_BEACON_01
 TEST(BeaconEntityMapper, ComponentIdEmptyDoesNotOverride) {
   auto input = make_base_input();
   BeaconEntityMapper mapper;
