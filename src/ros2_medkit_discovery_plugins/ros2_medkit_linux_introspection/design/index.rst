@@ -88,7 +88,7 @@ The following diagram shows the three plugins and their shared infrastructure.
            - ttl_: duration
            - mutex_: shared_mutex
            --
-           + lookup(fqn, root): optional~<pid_t~>
+           + lookup(fqn, root): optional<pid_t>
            + refresh(root): void
            + size(): size_t
        }
@@ -107,7 +107,7 @@ The following diagram shows the three plugins and their shared infrastructure.
            + escape_unit_for_dbus(name): string
        }
 
-       struct IntrospectionConfig {
+       class IntrospectionConfig {
            + pid_cache: PidCache
            + proc_root: string
        }
