@@ -636,6 +636,36 @@ TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsEmptyWhenAppHasNoCompo
 }
 
 // @verifies REQ_INTEROP_003
+TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsMissingItemWhenHostComponentUnresolved) {
+  auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
+  auto apps = cache.get_apps();
+  ASSERT_FALSE(apps.empty());
+
+  bool updated = false;
+  for (auto & app : apps) {
+    if (app.id == "mapper") {
+      app.component_id = "ghost_component";
+      updated = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(updated);
+  cache.update_apps(apps);
+
+  auto req = make_request_with_match("/api/v1/apps/mapper/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
+  httplib::Response res;
+
+  handlers_->handle_app_is_located_on(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 1);
+  EXPECT_EQ(body["items"][0]["id"], "ghost_component");
+  EXPECT_EQ(body["items"][0]["name"], "ghost_component");
+  EXPECT_EQ(body["items"][0]["href"], "/api/v1/components/ghost_component");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["missing"], true);
+}
+
+// @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersValidationTest, AppIsLocatedOnInvalidIdReturns400) {
   auto req = make_request_with_match("/api/v1/apps/bad/id/is-located-on", R"(/api/v1/apps/(.+)/is-located-on)");
   httplib::Response res;

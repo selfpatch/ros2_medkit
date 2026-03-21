@@ -122,6 +122,7 @@ class TestHealth(GatewayTestCase):
         endpoints = data['endpoints']
         self.assertIn('GET /api/v1/apps', endpoints)
         self.assertIn('GET /api/v1/apps/{app_id}', endpoints)
+        self.assertIn('GET /api/v1/apps/{app_id}/is-located-on', endpoints)
         self.assertIn('GET /api/v1/apps/{app_id}/depends-on', endpoints)
         self.assertIn('GET /api/v1/apps/{app_id}/data', endpoints)
         self.assertIn('GET /api/v1/apps/{app_id}/operations', endpoints)

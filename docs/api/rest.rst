@@ -157,6 +157,39 @@ Apps
 ``GET /api/v1/apps/{app_id}``
    Get capabilities for a single discovered app.
 
+``GET /api/v1/apps/{app_id}/is-located-on``
+   Return the host component reference for an app.
+
+   The response follows the standard ``items`` wrapper and returns:
+
+   - ``0`` items when the app has no associated host component
+   - ``1`` item when the host component is resolved
+   - ``1`` item with ``x-medkit.missing=true`` when the app references a host
+     component that cannot currently be resolved
+
+   **Example Response:**
+
+   .. code-block:: json
+
+      {
+        "items": [
+          {
+            "id": "temp-sensor-hw",
+            "name": "Temperature Sensor",
+            "href": "/api/v1/components/temp-sensor-hw"
+          }
+        ],
+        "x-medkit": {
+          "total_count": 1
+        },
+        "_links": {
+          "self": "/api/v1/apps/engine-temp-sensor/is-located-on",
+          "app": "/api/v1/apps/engine-temp-sensor"
+        }
+      }
+
+   Unknown apps return ``404 App not found`` with ``parameters.app_id``.
+
 Functions
 ~~~~~~~~~
 
