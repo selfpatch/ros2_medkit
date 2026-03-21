@@ -883,6 +883,13 @@ void RESTServer::setup_routes() {
     }
 
     if (et_type_str == "apps") {
+      reg.get(entity_path + "/is-located-on",
+              [this](auto & req, auto & res) {
+                discovery_handlers_->handle_app_is_located_on(req, res);
+              })
+          .tag("Discovery")
+          .summary("Get app host component");
+
       reg.get(entity_path + "/depends-on",
               [this](auto & req, auto & res) {
                 discovery_handlers_->handle_app_depends_on(req, res);

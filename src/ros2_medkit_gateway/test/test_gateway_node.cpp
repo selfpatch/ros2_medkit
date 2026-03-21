@@ -157,6 +157,41 @@ class TestGatewayNode : public ::testing::Test {
     cache.update_functions({func});
   }
 
+  void load_app_location_fixture() {
+    const std::string manifest = R"(
+manifest_version: "1.0"
+areas:
+  - id: "vehicle"
+    name: "Vehicle"
+components:
+  - id: "main_ecu"
+    name: "Main ECU"
+    area: "vehicle"
+    namespace: "/vehicle"
+apps:
+  - id: "planner"
+    name: "Planner"
+    is_located_on: "main_ecu"
+  - id: "standalone"
+    name: "Standalone"
+)";
+
+    ros2_medkit_gateway::DiscoveryConfig config;
+    config.mode = ros2_medkit_gateway::DiscoveryMode::MANIFEST_ONLY;
+    config.manifest_path = write_temp_manifest(manifest);
+    config.manifest_strict_validation = false;
+
+    ASSERT_TRUE(node_->get_discovery_manager()->initialize(config));
+
+    auto areas = node_->get_discovery_manager()->discover_areas();
+    auto components = node_->get_discovery_manager()->discover_components();
+    auto apps = node_->get_discovery_manager()->discover_apps();
+    auto functions = node_->get_discovery_manager()->discover_functions();
+
+    auto & cache = const_cast<ros2_medkit_gateway::ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+    cache.update_all(areas, components, apps, functions);
+  }
+
   std::shared_ptr<ros2_medkit_gateway::GatewayNode> node_;
   std::string server_host_;
   int server_port_;
@@ -799,6 +834,23 @@ TEST_F(TestGatewayNode, test_invalid_app_id_bad_request) {
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, 400);
+}
+
+TEST_F(TestGatewayNode, test_app_is_located_on_endpoint) {
+  load_app_location_fixture();
+
+  auto client = create_client();
+  auto res = client.Get((std::string(API_BASE_PATH) + "/apps/planner/is-located-on").c_str());
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 200);
+
+  auto json_response = nlohmann::json::parse(res->body);
+  ASSERT_TRUE(json_response.contains("items"));
+  ASSERT_EQ(json_response["items"].size(), 1);
+  EXPECT_EQ(json_response["items"][0]["id"], "main_ecu");
+  EXPECT_EQ(json_response["_links"]["self"], "/api/v1/apps/planner/is-located-on");
+  EXPECT_EQ(json_response["_links"]["app"], "/api/v1/apps/planner");
 }
 
 TEST_F(TestGatewayNode, test_invalid_function_id_bad_request) {
