@@ -34,10 +34,17 @@ void TriggerFaultSubscriber::on_fault_event(const ros2_medkit_msgs::msg::FaultEv
   nlohmann::json fault_json = FaultManager::fault_to_json(msg->fault);
   fault_json["event_type"] = msg->event_type;
 
-  // Derive entity_id from reporting_sources (first source, if available)
+  // Derive entity_id from reporting_sources (first source, if available).
+  // reporting_sources contains FQNs like "/powertrain/engine/temp_sensor",
+  // but triggers use SOVD entity IDs (just the node name, e.g. "temp_sensor").
+  // Extract the last segment after the final '/'.
   std::string entity_id;
   if (!msg->fault.reporting_sources.empty()) {
     entity_id = msg->fault.reporting_sources[0];
+    auto last_slash = entity_id.rfind('/');
+    if (last_slash != std::string::npos) {
+      entity_id = entity_id.substr(last_slash + 1);
+    }
   }
 
   // Map event_type to ChangeType
@@ -48,7 +55,11 @@ void TriggerFaultSubscriber::on_fault_event(const ros2_medkit_msgs::msg::FaultEv
     change_type = ChangeType::DELETED;
   }
 
-  notifier_.notify("faults", entity_id, msg->fault.fault_code, fault_json, change_type);
+  // Prefix fault_code with '/' to match the resource_path format produced by
+  // parse_resource_uri() (e.g. "/fault_001"), so fault triggers with a specific
+  // resource_path can match.
+  auto resource_path = "/" + msg->fault.fault_code;
+  notifier_.notify("faults", entity_id, resource_path, fault_json, change_type);
 
   RCLCPP_DEBUG(logger_, "Forwarded fault event to notifier: %s for %s (entity=%s)", msg->event_type.c_str(),
                msg->fault.fault_code.c_str(), entity_id.c_str());

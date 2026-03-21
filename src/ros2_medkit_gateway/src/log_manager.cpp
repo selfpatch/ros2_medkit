@@ -235,7 +235,7 @@ void LogManager::add_log_entry(const std::string & entity_id, const std::string 
 
   // Notify observers if a notifier is set
   if (notifier_) {
-    notifier_->notify("logs", entity_id, "", entry_to_json(entry), ChangeType::CREATED);
+    notifier_->notify("logs", normalized, "", entry_to_json(entry), ChangeType::CREATED);
   }
 }
 
