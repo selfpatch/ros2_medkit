@@ -849,6 +849,7 @@ TEST(LoadPersistentTriggers, RestoreBehaviorLoadsActiveTrigger) {
   ASSERT_TRUE(fetched.has_value()) << "Trigger should have been restored";
   EXPECT_EQ(fetched->entity_id, "sensor");
   EXPECT_EQ(fetched->status, TriggerStatus::ACTIVE);
+  EXPECT_EQ(fetched->resolved_topic_name, "/sensor/temperature");
   EXPECT_TRUE(manager.is_active("trig_42"));
 
   manager.shutdown();
