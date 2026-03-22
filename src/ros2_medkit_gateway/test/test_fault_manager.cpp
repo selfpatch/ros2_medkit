@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
@@ -24,11 +25,18 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "ros2_medkit_gateway/fault_manager.hpp"
+#include "ros2_medkit_gateway/fault_manager_paths.hpp"
+#include "ros2_medkit_gateway/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
+#include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
 
 using namespace std::chrono_literals;
 using ros2_medkit_gateway::FaultManager;
+using ros2_medkit_gateway::ResourceChange;
+using ros2_medkit_gateway::ResourceChangeNotifier;
+using ros2_medkit_gateway::TriggerFaultSubscriber;
 using ros2_medkit_msgs::srv::GetRosbag;
 using ros2_medkit_msgs::srv::GetSnapshots;
 
@@ -75,11 +83,35 @@ class FaultManagerTest : public ::testing::Test {
     });
   }
 
+  bool wait_for_subscription_count(const std::string & topic_name, size_t expected_count,
+                                   std::chrono::milliseconds timeout = 1s) {
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      executor_->spin_some();
+      if (node_->count_subscribers(topic_name) == expected_count) {
+        return true;
+      }
+      std::this_thread::sleep_for(10ms);
+    }
+    return node_->count_subscribers(topic_name) == expected_count;
+  }
+
   static inline int test_counter_ = 0;
   std::shared_ptr<rclcpp::Node> node_;
   std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::thread spin_thread_;
 };
+
+TEST(FaultManagerPathsTest, BuildPathsFromNamespaceString) {
+  EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_base_path(""), "/fault_manager");
+  EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_base_path("/"), "/fault_manager");
+  EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_base_path("robot1"), "/robot1/fault_manager");
+  EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_base_path("/robot1/"), "/robot1/fault_manager");
+
+  EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_events_topic(""), "/fault_manager/events");
+  EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_events_topic("robot1"), "/robot1/fault_manager/events");
+  EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_events_topic("/robot1/"), "/robot1/fault_manager/events");
+}
 
 // @verifies REQ_INTEROP_088
 TEST_F(FaultManagerTest, GetSnapshotsServiceNotAvailable) {
@@ -122,6 +154,36 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithValidJson) {
   EXPECT_EQ(result.data["fault_code"], "MOTOR_OVERHEAT");
   EXPECT_TRUE(result.data.contains("topics"));
   EXPECT_TRUE(result.data["topics"].contains("/joint_states"));
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(FaultManagerTest, GetSnapshotsUsesConfiguredFaultManagerNamespace) {
+  node_ = std::make_shared<rclcpp::Node>("test_fault_manager_node_namespaced_snapshots",
+                                         rclcpp::NodeOptions().parameter_overrides({
+                                             {"fault_service_timeout_sec", 3.0},
+                                             {"fault_manager_namespace", "robot1"},
+                                         }));
+  executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+  executor_->add_node(node_);
+
+  auto service = node_->create_service<GetSnapshots>(
+      "/robot1/fault_manager/get_snapshots",
+      [](const std::shared_ptr<GetSnapshots::Request> request, std::shared_ptr<GetSnapshots::Response> response) {
+        response->success = true;
+        nlohmann::json snapshot_data;
+        snapshot_data["fault_code"] = request->fault_code;
+        snapshot_data["service_path"] = "/robot1/fault_manager/get_snapshots";
+        response->data = snapshot_data.dump();
+      });
+
+  start_spinning();
+  FaultManager fault_manager(node_.get());
+
+  auto result = fault_manager.get_snapshots("NAMESPACED_FAULT");
+
+  EXPECT_TRUE(result.success);
+  EXPECT_EQ(result.data["fault_code"], "NAMESPACED_FAULT");
+  EXPECT_EQ(result.data["service_path"], "/robot1/fault_manager/get_snapshots");
 }
 
 // @verifies REQ_INTEROP_088
@@ -240,6 +302,97 @@ TEST_F(FaultManagerTest, GetRosbagSuccess) {
   EXPECT_EQ(result.data["format"], "sqlite3");
   EXPECT_EQ(result.data["duration_sec"], 5.5);
   EXPECT_EQ(result.data["size_bytes"], 12345);
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(FaultManagerTest, GetRosbagUsesConfiguredFaultManagerNamespace) {
+  node_ = std::make_shared<rclcpp::Node>("test_fault_manager_node_namespaced_rosbag",
+                                         rclcpp::NodeOptions().parameter_overrides({
+                                             {"fault_service_timeout_sec", 3.0},
+                                             {"fault_manager_namespace", "/robot2"},
+                                         }));
+  executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+  executor_->add_node(node_);
+
+  auto service = node_->create_service<GetRosbag>(
+      "/robot2/fault_manager/get_rosbag",
+      [](const std::shared_ptr<GetRosbag::Request> request, std::shared_ptr<GetRosbag::Response> response) {
+        response->success = true;
+        response->file_path = "/tmp/" + request->fault_code;
+        response->format = "mcap";
+        response->duration_sec = 2.0;
+        response->size_bytes = 2048;
+      });
+
+  start_spinning();
+  FaultManager fault_manager(node_.get());
+
+  auto result = fault_manager.get_rosbag("NAMESPACED_ROSBAG");
+
+  EXPECT_TRUE(result.success);
+  EXPECT_EQ(result.data["file_path"], "/tmp/NAMESPACED_ROSBAG");
+  EXPECT_EQ(result.data["format"], "mcap");
+}
+
+TEST_F(FaultManagerTest, TriggerFaultSubscriberUsesConfiguredFaultManagerNamespace) {
+  node_ = std::make_shared<rclcpp::Node>("test_trigger_fault_subscriber_namespaced",
+                                         rclcpp::NodeOptions().parameter_overrides({
+                                             {"fault_manager_namespace", "robot3"},
+                                         }));
+  executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+  executor_->add_node(node_);
+
+  ResourceChangeNotifier notifier;
+  TriggerFaultSubscriber subscriber(node_.get(), notifier);
+  auto publisher =
+      node_->create_publisher<ros2_medkit_msgs::msg::FaultEvent>("/robot3/fault_manager/events", rclcpp::QoS(10));
+
+  ASSERT_TRUE(wait_for_subscription_count("/robot3/fault_manager/events", 1u));
+  EXPECT_EQ(node_->count_subscribers("/fault_manager/events"), 0u);
+}
+
+TEST_F(FaultManagerTest, TriggerFaultSubscriberForwardsNamespacedFaultEvents) {
+  node_ = std::make_shared<rclcpp::Node>("test_trigger_fault_subscriber_forwarding",
+                                         rclcpp::NodeOptions().parameter_overrides({
+                                             {"fault_manager_namespace", "/robot4"},
+                                         }));
+  executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+  executor_->add_node(node_);
+
+  ResourceChangeNotifier notifier;
+  TriggerFaultSubscriber subscriber(node_.get(), notifier);
+  auto publisher =
+      node_->create_publisher<ros2_medkit_msgs::msg::FaultEvent>("/robot4/fault_manager/events", rclcpp::QoS(10));
+
+  std::promise<ResourceChange> change_promise;
+  auto change_future = change_promise.get_future();
+  auto subscription_id =
+      notifier.subscribe({"faults", "camera_node", "/FAULT_1"}, [&change_promise](const ResourceChange & change) {
+        change_promise.set_value(change);
+      });
+
+  ASSERT_TRUE(wait_for_subscription_count("/robot4/fault_manager/events", 1u));
+  start_spinning();
+
+  ros2_medkit_msgs::msg::FaultEvent event;
+  event.event_type = "fault_confirmed";
+  event.fault.fault_code = "FAULT_1";
+  event.fault.reporting_sources.push_back("/pipeline/camera_node");
+  event.fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;
+  publisher->publish(event);
+
+  auto status = change_future.wait_for(2s);
+  ASSERT_EQ(status, std::future_status::ready);
+
+  auto change = change_future.get();
+  EXPECT_EQ(change.collection, "faults");
+  EXPECT_EQ(change.entity_id, "camera_node");
+  EXPECT_EQ(change.resource_path, "/FAULT_1");
+  EXPECT_EQ(change.change_type, ros2_medkit_gateway::ChangeType::CREATED);
+  EXPECT_EQ(change.value["fault_code"], "FAULT_1");
+  EXPECT_EQ(change.value["event_type"], "fault_confirmed");
+
+  notifier.unsubscribe(subscription_id);
 }
 
 // @verifies REQ_INTEROP_088

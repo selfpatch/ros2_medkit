@@ -19,6 +19,7 @@
 #include <sstream>
 
 #include "ros2_medkit_gateway/fault_manager.hpp"
+#include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 
@@ -27,18 +28,18 @@ namespace handlers {
 
 SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker)
   : ctx_(ctx), client_tracker_(std::move(client_tracker)) {
+  const auto fault_events_topic = build_fault_manager_events_topic(ctx_.node());
+
   // Create subscription to fault events topic
   // Use fully qualified topic name since FaultManager publishes on ~/events
   subscription_ = ctx_.node()->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
-      "/fault_manager/events", rclcpp::QoS(100).reliable(),
+      fault_events_topic, rclcpp::QoS(100).reliable(),
       [this](const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
         on_fault_event(msg);
       });
 
-  RCLCPP_INFO(HandlerContext::logger(),
-              "SSE fault handler initialized, subscribed to /fault_manager/events, "
-              "max_clients=%zu",
-              client_tracker_->max_clients());
+  RCLCPP_INFO(HandlerContext::logger(), "SSE fault handler initialized, subscribed to %s, max_clients=%zu",
+              fault_events_topic.c_str(), client_tracker_->max_clients());
 }
 
 SSEFaultHandler::~SSEFaultHandler() {

@@ -23,7 +23,7 @@
 namespace ros2_medkit_gateway {
 
 /**
- * @brief Subscribes to /fault_manager/events and forwards fault events
+ * @brief Subscribes to the configured fault manager events topic and forwards fault events
  *        to ResourceChangeNotifier for trigger evaluation.
  *
  * Follows the same ROS 2 subscription pattern as SSEFaultHandler - subscribes

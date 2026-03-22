@@ -148,12 +148,48 @@ Data Access Settings
      - Description
    * - ``max_parallel_topic_samples``
      - int
-     - ``10``
+     - ``20``
      - Max concurrent topic samples. Higher values use more resources. Range: 1-50.
    * - ``topic_sample_timeout_sec``
      - float
-     - ``1.0``
+     - ``2.0``
      - Timeout for sampling topics with active publishers. Range: 0.1-30.0.
+
+Fault Manager Integration
+-------------------------
+
+Configure how the gateway connects to the fault manager services and event topic.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 15 20 35
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``fault_manager_namespace``
+     - string
+     - ``""``
+     - Optional namespace prefix for fault manager service and event topic resolution.
+       Examples: ``""`` -> ``/fault_manager/list_faults``, ``"robot1"`` -> ``/robot1/fault_manager/list_faults``.
+   * - ``fault_service_timeout_sec``
+     - float
+     - ``5.0``
+     - Timeout for fault manager service calls such as ``list_faults`` and ``get_snapshots``.
+
+When ``fault_manager_namespace`` is set, the gateway also subscribes to the matching
+fault event topic (for example ``/robot1/fault_manager/events`` instead of the default
+``/fault_manager/events``).
+
+Example:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       fault_manager_namespace: "robot1"
+       fault_service_timeout_sec: 5.0
 
 Logging Configuration
 ---------------------
