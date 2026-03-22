@@ -342,3 +342,166 @@ TEST_F(RouteRegistryTest, DeprecatedFlagAppearsInOutput) {
   auto paths = registry_.to_openapi_paths();
   EXPECT_TRUE(paths["/old-endpoint"]["get"]["deprecated"].get<bool>());
 }
+
+// =============================================================================
+// validate_completeness
+// =============================================================================
+
+TEST_F(RouteRegistryTest, ValidateCompletenessPassesForCompleteRoute) {
+  registry_.get("/health", noop)
+      .tag("Server")
+      .summary("Health check")
+      .response(200, "Healthy", json{{"type", "object"}});
+
+  auto issues = registry_.validate_completeness();
+  // No errors expected
+  int error_count = 0;
+  for (const auto & issue : issues) {
+    if (issue.severity == ValidationIssue::Severity::kError) {
+      error_count++;
+    }
+  }
+  EXPECT_EQ(error_count, 0);
+}
+
+TEST_F(RouteRegistryTest, ValidateCompletenessErrorOnMissingTag) {
+  registry_.get("/health", noop).summary("Health check").response(200, "Healthy", json{{"type", "object"}});
+
+  auto issues = registry_.validate_completeness();
+  bool has_tag_error = false;
+  for (const auto & issue : issues) {
+    if (issue.severity == ValidationIssue::Severity::kError && issue.message == "Missing tag") {
+      has_tag_error = true;
+    }
+  }
+  EXPECT_TRUE(has_tag_error);
+}
+
+TEST_F(RouteRegistryTest, ValidateCompletenessErrorOnMissingResponseSchema) {
+  registry_.get("/health", noop).tag("Server").summary("Health check").response(200, "Healthy");
+
+  auto issues = registry_.validate_completeness();
+  bool has_schema_error = false;
+  for (const auto & issue : issues) {
+    if (issue.severity == ValidationIssue::Severity::kError &&
+        issue.message.find("Missing response schema") != std::string::npos) {
+      has_schema_error = true;
+    }
+  }
+  EXPECT_TRUE(has_schema_error);
+}
+
+TEST_F(RouteRegistryTest, ValidateCompletenessErrorOnPostMissingRequestBody) {
+  registry_.post("/items", noop).tag("Items").summary("Create item").response(201, "Created", json{{"type", "object"}});
+
+  auto issues = registry_.validate_completeness();
+  bool has_body_error = false;
+  for (const auto & issue : issues) {
+    if (issue.severity == ValidationIssue::Severity::kError &&
+        issue.message.find("Missing request body") != std::string::npos) {
+      has_body_error = true;
+    }
+  }
+  EXPECT_TRUE(has_body_error);
+}
+
+TEST_F(RouteRegistryTest, ValidateCompletenessPassesForDeleteWith204) {
+  registry_.del("/items/{id}", noop).tag("Items").summary("Delete item").response(204, "Deleted");
+
+  auto issues = registry_.validate_completeness();
+  int error_count = 0;
+  for (const auto & issue : issues) {
+    if (issue.severity == ValidationIssue::Severity::kError) {
+      error_count++;
+    }
+  }
+  EXPECT_EQ(error_count, 0);
+}
+
+TEST_F(RouteRegistryTest, ValidateCompletenessErrorOnDeleteNoExplicitResponse) {
+  registry_.del("/items/{id}", noop).tag("Items").summary("Delete item");
+
+  auto issues = registry_.validate_completeness();
+  bool has_delete_error = false;
+  for (const auto & issue : issues) {
+    if (issue.severity == ValidationIssue::Severity::kError &&
+        issue.message.find("DELETE missing explicit response") != std::string::npos) {
+      has_delete_error = true;
+    }
+  }
+  EXPECT_TRUE(has_delete_error);
+}
+
+TEST_F(RouteRegistryTest, ValidateCompletenessPassesFor405Endpoint) {
+  registry_.post("/readonly", noop).tag("Test").summary("Not supported").response(405, "Method not allowed");
+
+  auto issues = registry_.validate_completeness();
+  int error_count = 0;
+  for (const auto & issue : issues) {
+    if (issue.severity == ValidationIssue::Severity::kError) {
+      error_count++;
+    }
+  }
+  EXPECT_EQ(error_count, 0);
+}
+
+TEST_F(RouteRegistryTest, ValidateCompletenessPassesForSSEEndpoint) {
+  registry_.get("/events/stream", noop).tag("Events").summary("SSE events stream");
+
+  auto issues = registry_.validate_completeness();
+  int error_count = 0;
+  for (const auto & issue : issues) {
+    if (issue.severity == ValidationIssue::Severity::kError) {
+      error_count++;
+    }
+  }
+  EXPECT_EQ(error_count, 0);
+}
+
+TEST_F(RouteRegistryTest, ValidateCompletenessWarnsOnMissingSummary) {
+  registry_.get("/health", noop).tag("Server").response(200, "OK", json{{"type", "object"}});
+
+  auto issues = registry_.validate_completeness();
+  bool has_summary_warning = false;
+  for (const auto & issue : issues) {
+    if (issue.severity == ValidationIssue::Severity::kWarning && issue.message == "Missing summary") {
+      has_summary_warning = true;
+    }
+  }
+  EXPECT_TRUE(has_summary_warning);
+}
+
+TEST_F(RouteRegistryTest, ValidateCompletenessPassesForCompletePostRoute) {
+  registry_.post("/items", noop)
+      .tag("Items")
+      .summary("Create item")
+      .request_body("Item data", json{{"type", "object"}})
+      .response(201, "Created", json{{"type", "object"}});
+
+  auto issues = registry_.validate_completeness();
+  int error_count = 0;
+  for (const auto & issue : issues) {
+    if (issue.severity == ValidationIssue::Severity::kError) {
+      error_count++;
+    }
+  }
+  EXPECT_EQ(error_count, 0);
+}
+
+// =============================================================================
+// Error responses use GenericError $ref (Task 2)
+// =============================================================================
+
+// @verifies REQ_INTEROP_002
+TEST_F(RouteRegistryTest, ErrorResponsesUseGenericErrorRef) {
+  registry_.get("/test", noop).tag("Test").summary("Test").response(200, "OK", json{{"type", "object"}});
+
+  auto paths = registry_.to_openapi_paths();
+  auto & resp_400 = paths["/test"]["get"]["responses"]["400"];
+
+  // Error responses should $ref the GenericError response component
+  ASSERT_TRUE(resp_400.contains("$ref"));
+  EXPECT_EQ(resp_400["$ref"].get<std::string>(), "#/components/responses/GenericError");
+  // No inline description when using $ref
+  EXPECT_FALSE(resp_400.contains("description"));
+}

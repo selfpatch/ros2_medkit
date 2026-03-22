@@ -15,7 +15,6 @@
 #include "route_registry.hpp"
 
 #include <algorithm>
-#include <regex>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -283,25 +282,22 @@ nlohmann::json RouteRegistry::to_openapi_paths() const {
       operation["responses"]["200"]["description"] = "Successful response";
     }
 
-    // Add standard error responses only if not already explicitly set
-    if (!operation["responses"].contains("400")) {
-      operation["responses"]["400"]["description"] = "Bad request";
-    }
-    if (!operation["responses"].contains("404")) {
-      operation["responses"]["404"]["description"] = "Not found";
-    }
-    if (!operation["responses"].contains("500")) {
-      operation["responses"]["500"]["description"] = "Internal server error";
-    }
+    // Add standard error responses as $ref to GenericError component.
+    // Response-level $ref (not nested in content/schema) - the referenced
+    // component is a complete response object with description and schema.
+    auto add_error_ref = [&operation](const std::string & code) {
+      if (!operation["responses"].contains(code)) {
+        operation["responses"][code] = {{"$ref", "#/components/responses/GenericError"}};
+      }
+    };
 
-    // Add auth error responses if authentication is enabled
+    add_error_ref("400");
+    add_error_ref("404");
+    add_error_ref("500");
+
     if (auth_enabled_) {
-      if (!operation["responses"].contains("401")) {
-        operation["responses"]["401"]["description"] = "Unauthorized";
-      }
-      if (!operation["responses"].contains("403")) {
-        operation["responses"]["403"]["description"] = "Forbidden";
-      }
+      add_error_ref("401");
+      add_error_ref("403");
     }
 
     // Auto-generate operationId from method + path
@@ -362,6 +358,83 @@ std::vector<std::string> RouteRegistry::tags() const {
     }
   }
   return {tag_set.begin(), tag_set.end()};
+}
+
+// -----------------------------------------------------------------------------
+// validate_completeness - check all routes have required OpenAPI metadata
+// -----------------------------------------------------------------------------
+
+std::vector<ValidationIssue> RouteRegistry::validate_completeness() const {
+  std::vector<ValidationIssue> issues;
+
+  for (const auto & route : routes_) {
+    std::string method_upper = route.method_;
+    std::transform(method_upper.begin(), method_upper.end(), method_upper.begin(), [](unsigned char c) {
+      return std::toupper(c);
+    });
+    std::string route_id = method_upper + " " + route.path_;
+
+    // Every route must have a tag
+    if (route.tag_.empty()) {
+      issues.push_back({ValidationIssue::Severity::kError, route_id, "Missing tag"});
+    }
+
+    // Check response schemas for non-DELETE methods
+    if (route.method_ != "delete") {
+      bool has_success_response_with_schema = false;
+      for (const auto & [code, info] : route.responses_) {
+        if (code >= 200 && code < 300 && !info.schema.empty()) {
+          has_success_response_with_schema = true;
+          break;
+        }
+      }
+
+      // SSE endpoints use text/event-stream, not JSON schema - skip schema check
+      // Convention: SSE endpoints have "SSE" or "stream" in summary
+      bool is_sse = route.summary_.find("SSE") != std::string::npos ||
+                    route.summary_.find("stream") != std::string::npos ||
+                    route.summary_.find("Stream") != std::string::npos;
+
+      // 204 No Content responses don't need a schema
+      bool has_204 = route.responses_.count(204) > 0;
+
+      // Endpoints that only return errors (e.g., 405) don't need success schemas
+      bool has_only_error_responses = !route.responses_.empty();
+      for (const auto & [code, info] : route.responses_) {
+        if (code < 400) {
+          has_only_error_responses = false;
+          break;
+        }
+      }
+
+      if (!has_success_response_with_schema && !is_sse && !has_204 && !has_only_error_responses) {
+        issues.push_back({ValidationIssue::Severity::kError, route_id, "Missing response schema for success (2xx)"});
+      }
+    } else {
+      // DELETE must have an explicit response code
+      if (route.responses_.empty()) {
+        issues.push_back({ValidationIssue::Severity::kError, route_id, "DELETE missing explicit response code"});
+      }
+    }
+
+    // POST/PUT must have request_body
+    if ((route.method_ == "post" || route.method_ == "put") && !route.request_body_.has_value()) {
+      // Exception: endpoints returning 405 (method not allowed) don't need request body
+      bool is_405 = route.responses_.count(405) > 0;
+      // Exception: PUT endpoints returning 204 (e.g., log config) don't need request body schema
+      // if they also don't have a success schema - they may accept a body but it's optional
+      if (!is_405) {
+        issues.push_back({ValidationIssue::Severity::kError, route_id, "Missing request body definition"});
+      }
+    }
+
+    // Warnings for missing summary/description
+    if (route.summary_.empty()) {
+      issues.push_back({ValidationIssue::Severity::kWarning, route_id, "Missing summary"});
+    }
+  }
+
+  return issues;
 }
 
 }  // namespace openapi
