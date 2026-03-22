@@ -42,6 +42,12 @@ class RouteEntry {
   RouteEntry & deprecated();
   RouteEntry & operation_id(const std::string & id);
 
+  /// Hide this route from the OpenAPI spec output.
+  /// The route is still registered with cpp-httplib and serves HTTP requests,
+  /// but it won't appear in the generated spec or client code.
+  /// Use for endpoints that always return errors (e.g., 405 Not Supported).
+  RouteEntry & hidden();
+
  private:
   friend class RouteRegistry;
   std::string method_;
@@ -52,6 +58,7 @@ class RouteEntry {
   std::string description_;
   HandlerFn handler_;
   bool deprecated_{false};
+  bool hidden_{false};
   std::string operation_id_;
 
   struct ResponseInfo {

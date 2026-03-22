@@ -195,10 +195,10 @@ TEST_F(OpenApiSpecBuilderTest, AlwaysIncludesGenericErrorResponse) {
   auto & error_resp = spec["components"]["responses"]["GenericError"];
   ASSERT_TRUE(error_resp.contains("description"));
   ASSERT_TRUE(error_resp.contains("content"));
+  // Schema is a $ref to components/schemas/GenericError (defined once, referenced everywhere)
   auto & schema = error_resp["content"]["application/json"]["schema"];
-  EXPECT_EQ(schema["type"], "object");
-  EXPECT_TRUE(schema["properties"].contains("error_code"));
-  EXPECT_TRUE(schema["properties"].contains("message"));
+  EXPECT_TRUE(schema.contains("$ref"));
+  EXPECT_EQ(schema["$ref"].get<std::string>(), "#/components/schemas/GenericError");
 }
 
 // =============================================================================
