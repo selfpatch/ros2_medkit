@@ -2,6 +2,15 @@
 Changelog for package ros2_medkit_fault_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.4.0 (2026-03-20)
+------------------
+* Per-entity confirmation and healing thresholds via manifest configuration (`#269 <https://github.com/selfpatch/ros2_medkit/pull/269>`_)
+* Default rosbag storage format changed from ``sqlite3`` to ``mcap``
+* Support for namespaced fault manager nodes - gateway resolves service/topic names when the fault manager runs in a custom namespace
+* Build: use shared cmake modules from ``ros2_medkit_cmake`` package
+* Build: centralized clang-tidy configuration
+* Contributors: @bburda
+
 0.3.0 (2026-02-27)
 ------------------
 * Accurate HIGHEST_SEVERITY reassignment and stale ``fault_to_cluster_`` cleanup (`#221 <https://github.com/selfpatch/ros2_medkit/pull/221>`_)
