@@ -605,6 +605,40 @@ TEST_F(ManifestManagerTest, WorksWithoutNode) {
   EXPECT_TRUE(manager.is_manifest_active());
 }
 
+// =============================================================================
+// Script Access Tests
+// =============================================================================
+
+TEST_F(ManifestManagerTest, GetScriptsReturnsManifestScripts) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+scripts:
+  - id: "run-diagnostics"
+    name: "Run Diagnostics"
+    path: "/opt/scripts/run-diagnostics.sh"
+    format: "bash"
+    timeout_sec: 30
+    entity_filter:
+      - "components/*"
+)";
+
+  ManifestManager mgr(nullptr);
+  ASSERT_TRUE(mgr.load_manifest_from_string(yaml, false));
+  auto scripts = mgr.get_scripts();
+  ASSERT_EQ(scripts.size(), 1);
+  EXPECT_EQ(scripts[0].id, "run-diagnostics");
+  EXPECT_EQ(scripts[0].name, "Run Diagnostics");
+  EXPECT_EQ(scripts[0].timeout_sec, 30);
+  ASSERT_EQ(scripts[0].entity_filter.size(), 1);
+  EXPECT_EQ(scripts[0].entity_filter[0], "components/*");
+}
+
+TEST_F(ManifestManagerTest, GetScriptsEmptyWhenNoManifest) {
+  ManifestManager mgr(nullptr);
+  auto scripts = mgr.get_scripts();
+  EXPECT_TRUE(scripts.empty());
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
