@@ -1131,6 +1131,10 @@ The gateway can be configured via parameters in `config/gateway_params.yaml` or 
 | `fault_manager_namespace`    | string | `""`        | Optional namespace prefix for fault manager services and events (for example `robot1`)  |
 | `fault_service_timeout_sec`  | float  | `5.0`       | Timeout for fault manager service calls such as `list_faults` and `get_snapshots`      |
 
+These defaults reflect the recommended values from `config/gateway_params.yaml`.
+If the gateway is run without those parameters, the `DataAccessManager` fallback
+defaults are `max_parallel_topic_samples=10` and `topic_sample_timeout_sec=1.0`.
+
 #### SSE (Server-Sent Events) Configuration
 
 | Parameter        | Type | Default | Description                                                                |

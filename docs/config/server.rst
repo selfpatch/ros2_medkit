@@ -155,6 +155,13 @@ Data Access Settings
      - ``2.0``
      - Timeout for sampling topics with active publishers. Range: 0.1-30.0.
 
+.. note::
+
+   The defaults listed above match the recommended gateway configuration in
+   ``src/ros2_medkit_gateway/config/gateway_params.yaml``. If these parameters are
+   not provided at all, the ``DataAccessManager`` fallback defaults are
+   ``max_parallel_topic_samples = 10`` and ``topic_sample_timeout_sec = 1.0``.
+
 Fault Manager Integration
 -------------------------
 
