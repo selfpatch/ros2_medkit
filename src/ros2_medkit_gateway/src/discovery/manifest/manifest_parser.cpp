@@ -95,6 +95,13 @@ Manifest ManifestParser::parse_string(const std::string & yaml_content) const {
     }
   }
 
+  // Parse scripts
+  if (root["scripts"] && root["scripts"].IsSequence()) {
+    for (const auto & node : root["scripts"]) {
+      manifest.scripts.push_back(parse_script_entry(node));
+    }
+  }
+
   // Parse capabilities (optional map)
   if (root["capabilities"] && root["capabilities"].IsMap()) {
     for (const auto & it : root["capabilities"]) {
@@ -271,6 +278,61 @@ std::string ManifestConfig::policy_to_string(UnmanifestedNodePolicy policy) {
     default:
       return "warn";
   }
+}
+
+ros2_medkit_gateway::ScriptEntryConfig ManifestParser::parse_script_entry(const YAML::Node & node) const {
+  ros2_medkit_gateway::ScriptEntryConfig entry;
+  entry.id = get_string(node, "id");
+  if (entry.id.empty()) {
+    throw std::runtime_error("Script entry missing required field: id");
+  }
+  entry.name = get_string(node, "name", entry.id);
+  entry.description = get_string(node, "description");
+  entry.path = get_string(node, "path");
+  entry.format = get_string(node, "format");
+  if (node["timeout_sec"]) {
+    entry.timeout_sec = std::max(1, node["timeout_sec"].as<int>());
+  }
+  entry.entity_filter = get_string_vector(node, "entity_filter");
+
+  // Parse env map
+  if (node["env"] && node["env"].IsMap()) {
+    for (const auto & it : node["env"]) {
+      entry.env[it.first.as<std::string>()] = it.second.as<std::string>();
+    }
+  }
+
+  // Parse args (JSON array of {name, type, flag} objects)
+  if (node["args"] && node["args"].IsSequence()) {
+    entry.args = json::array();
+    for (const auto & arg_node : node["args"]) {
+      json arg_obj;
+      if (arg_node["name"]) {
+        arg_obj["name"] = arg_node["name"].as<std::string>();
+      }
+      if (arg_node["type"]) {
+        arg_obj["type"] = arg_node["type"].as<std::string>();
+      }
+      if (arg_node["flag"]) {
+        arg_obj["flag"] = arg_node["flag"].as<std::string>();
+      }
+      entry.args.push_back(arg_obj);
+    }
+  }
+
+  // Parse parameters_schema (JSON object) - store as-is
+  if (node["parameters_schema"] && node["parameters_schema"].IsMap()) {
+    json schema;
+    for (const auto & it : node["parameters_schema"]) {
+      auto key = it.first.as<std::string>();
+      if (it.second.IsScalar()) {
+        schema[key] = it.second.as<std::string>();
+      }
+    }
+    entry.parameters_schema = schema;
+  }
+
+  return entry;
 }
 
 ManifestLockConfig ManifestParser::parse_lock_config(const YAML::Node & node) const {
