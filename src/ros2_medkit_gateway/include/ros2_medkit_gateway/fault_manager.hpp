@@ -137,6 +137,7 @@ class FaultManager {
 
   /// Service timeout
   double service_timeout_sec_{5.0};
+  std::string fault_manager_base_path_{"/fault_manager"};
 
   /// Per-client mutexes for thread-safe service calls.
   /// Split by service client so that read operations (list, get) are not blocked

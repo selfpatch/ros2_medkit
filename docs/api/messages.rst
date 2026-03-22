@@ -99,7 +99,9 @@ Core fault data model representing an aggregated fault condition.
 FaultEvent.msg
 ~~~~~~~~~~~~~~
 
-Real-time fault event notifications published on ``/fault_manager/events``.
+Real-time fault event notifications published on ``/fault_manager/events`` by default.
+When the fault manager runs under an additional namespace, the topic follows the same
+prefix (for example ``/robot1/fault_manager/events``).
 
 .. code-block:: text
 

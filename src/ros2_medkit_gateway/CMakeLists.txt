@@ -90,6 +90,7 @@ add_library(gateway_lib STATIC
   src/operation_manager.cpp
   src/configuration_manager.cpp
   src/fault_manager.cpp
+  src/fault_manager_paths.cpp
   src/log_manager.cpp
   src/subscription_manager.cpp
   src/lock_manager.cpp

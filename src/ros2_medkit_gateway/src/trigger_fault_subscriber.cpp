@@ -15,18 +15,20 @@
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
 
 #include "ros2_medkit_gateway/fault_manager.hpp"
+#include "ros2_medkit_gateway/fault_manager_paths.hpp"
 
 namespace ros2_medkit_gateway {
 
 TriggerFaultSubscriber::TriggerFaultSubscriber(rclcpp::Node * node, ResourceChangeNotifier & notifier)
   : notifier_(notifier), logger_(node->get_logger()) {
+  const auto fault_events_topic = build_fault_manager_events_topic(node);
   subscription_ = node->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
-      "/fault_manager/events", rclcpp::QoS(100).reliable(),
+      fault_events_topic, rclcpp::QoS(100).reliable(),
       [this](const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
         on_fault_event(msg);
       });
 
-  RCLCPP_INFO(logger_, "TriggerFaultSubscriber initialized, subscribed to /fault_manager/events");
+  RCLCPP_INFO(logger_, "TriggerFaultSubscriber initialized, subscribed to %s", fault_events_topic.c_str());
 }
 
 void TriggerFaultSubscriber::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {

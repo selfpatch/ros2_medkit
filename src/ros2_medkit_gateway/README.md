@@ -1125,8 +1125,11 @@ The gateway can be configured via parameters in `config/gateway_params.yaml` or 
 | ---------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------- |
 | `server.host`                | string | `127.0.0.1` | Host to bind the REST server (`127.0.0.1` for localhost, `0.0.0.0` for all interfaces) |
 | `server.port`                | int    | `8080`      | Port for the REST API (range: 1024-65535)                                              |
-| `refresh_interval_ms`        | int    | `2000`      | Cache refresh interval in milliseconds (range: 100-60000)                              |
-| `max_parallel_topic_samples` | int    | `10`        | Max concurrent topic samples when fetching data (range: 1-50)                          |
+| `refresh_interval_ms`        | int    | `10000`     | Cache refresh interval in milliseconds (range: 100-60000)                              |
+| `max_parallel_topic_samples` | int    | `20`        | Max concurrent topic samples when fetching data (range: 1-50)                          |
+| `topic_sample_timeout_sec`   | float  | `2.0`       | Timeout for sampling topics with active publishers (range: 0.1-30.0)                   |
+| `fault_manager_namespace`    | string | `""`        | Optional namespace prefix for fault manager services and events (for example `robot1`)  |
+| `fault_service_timeout_sec`  | float  | `5.0`       | Timeout for fault manager service calls such as `list_faults` and `get_snapshots`      |
 
 #### SSE (Server-Sent Events) Configuration
 
@@ -1366,7 +1369,7 @@ ros2 launch ros2_medkit_gateway gateway_https.launch.py min_tls_version:=1.3
 | `server_host`         | `127.0.0.1`                | Host to bind HTTPS server                        |
 | `server_port`         | `8443`                     | Port for HTTPS API                               |
 | `min_tls_version`     | `1.2`                      | Minimum TLS version (`1.2` or `1.3`)             |
-| `refresh_interval_ms` | `2000`                     | Cache refresh interval in milliseconds           |
+| `refresh_interval_ms` | `10000`                    | Cache refresh interval in milliseconds           |
 
 **Usage with curl (self-signed certs):**
 ```bash

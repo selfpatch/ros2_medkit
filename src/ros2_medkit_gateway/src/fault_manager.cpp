@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/fault_manager.hpp"
+#include "ros2_medkit_gateway/fault_manager_paths.hpp"
 
 #include <algorithm>
 #include <builtin_interfaces/msg/time.hpp>
@@ -23,19 +24,26 @@ using namespace std::chrono_literals;
 namespace ros2_medkit_gateway {
 
 FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
-  // Create service clients for fault_manager services
-  report_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
-  get_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::GetFault>("/fault_manager/get_fault");
-  list_faults_client_ = node_->create_client<ros2_medkit_msgs::srv::ListFaults>("/fault_manager/list_faults");
-  clear_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ClearFault>("/fault_manager/clear_fault");
-  get_snapshots_client_ = node_->create_client<ros2_medkit_msgs::srv::GetSnapshots>("/fault_manager/get_snapshots");
-  get_rosbag_client_ = node_->create_client<ros2_medkit_msgs::srv::GetRosbag>("/fault_manager/get_rosbag");
-  list_rosbags_client_ = node_->create_client<ros2_medkit_msgs::srv::ListRosbags>("/fault_manager/list_rosbags");
-
   // Get configurable timeout
   service_timeout_sec_ = node_->declare_parameter("fault_service_timeout_sec", 5.0);
+  fault_manager_base_path_ = build_fault_manager_base_path(node_);
 
-  RCLCPP_INFO(node_->get_logger(), "FaultManager initialized");
+  // Create service clients for fault_manager services
+  report_fault_client_ =
+      node_->create_client<ros2_medkit_msgs::srv::ReportFault>(fault_manager_base_path_ + "/report_fault");
+  get_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::GetFault>(fault_manager_base_path_ + "/get_fault");
+  list_faults_client_ =
+      node_->create_client<ros2_medkit_msgs::srv::ListFaults>(fault_manager_base_path_ + "/list_faults");
+  clear_fault_client_ =
+      node_->create_client<ros2_medkit_msgs::srv::ClearFault>(fault_manager_base_path_ + "/clear_fault");
+  get_snapshots_client_ =
+      node_->create_client<ros2_medkit_msgs::srv::GetSnapshots>(fault_manager_base_path_ + "/get_snapshots");
+  get_rosbag_client_ = node_->create_client<ros2_medkit_msgs::srv::GetRosbag>(fault_manager_base_path_ + "/get_rosbag");
+  list_rosbags_client_ =
+      node_->create_client<ros2_medkit_msgs::srv::ListRosbags>(fault_manager_base_path_ + "/list_rosbags");
+
+  RCLCPP_INFO(node_->get_logger(), "FaultManager initialized (base_path=%s, timeout=%.1fs)",
+              fault_manager_base_path_.c_str(), service_timeout_sec_);
 }
 
 bool FaultManager::wait_for_services(std::chrono::duration<double> timeout) {

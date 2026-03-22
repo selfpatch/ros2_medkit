@@ -91,6 +91,17 @@ ros2_medkit_gateway:
     # Valid range: 0.1-30.0
     topic_sample_timeout_sec: 2.0
 
+    # Fault Manager integration
+    # Namespace prefix used to resolve Fault Manager services.
+    # Examples:
+    #   ""        -> /fault_manager/list_faults
+    #   "robot1"  -> /robot1/fault_manager/list_faults
+    #   "/robot1" -> /robot1/fault_manager/list_faults
+    fault_manager_namespace: ""
+
+    # Timeout (in seconds) for Fault Manager service calls
+    fault_service_timeout_sec: 5.0
+
     # NOTE: Native-only implementation
     # The gateway uses native rclcpp APIs for all ROS 2 interactions:
     # - Topic discovery: node->get_topic_names_and_types()
