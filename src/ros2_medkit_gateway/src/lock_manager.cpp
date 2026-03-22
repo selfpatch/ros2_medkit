@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/lock_manager.hpp"
 
 #include <algorithm>
+#include <mutex>
 
 namespace ros2_medkit_gateway {
 

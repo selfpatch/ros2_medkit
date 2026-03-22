@@ -40,6 +40,9 @@ class OpenApiSpecBuilder {
   /// Add a server entry with URL and optional description.
   OpenApiSpecBuilder & server(const std::string & url, const std::string & description = "");
 
+  /// Set the API contact info (info.contact).
+  OpenApiSpecBuilder & contact(const std::string & name, const std::string & url);
+
   /// Set the SOVD specification version (x-sovd-version extension in info).
   OpenApiSpecBuilder & sovd_version(const std::string & version);
 
@@ -63,6 +66,8 @@ class OpenApiSpecBuilder {
   std::string version_;
   std::string description_;
   std::string sovd_version_;
+  std::string contact_name_;
+  std::string contact_url_;
 
   struct ServerEntry {
     std::string url;

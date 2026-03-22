@@ -104,6 +104,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
       .description(
           "SOVD-compatible REST API for ROS 2 diagnostics and control. "
           "See https://selfpatch.github.io/ros2_medkit/ for documentation.")
+      .contact("selfpatch.ai", "https://selfpatch.ai")
       .sovd_version(kSovdVersion)
       .server(build_server_url(), "Gateway server")
       .tags({
