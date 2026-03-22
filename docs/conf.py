@@ -111,18 +111,15 @@ needs_types = [
     ),
 ]
 
-needs_links = {
-    "links": {
-        "incoming": "is linked by",
-        "outgoing": "links to",
-    },
-    "verifies": {
+needs_extra_links = [
+    {
+        "option": "verifies",
         "incoming": "is verified by",
         "outgoing": "verifies",
         "copy": False,
         "allow_dead_links": False,
     },
-}
+]
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
