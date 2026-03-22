@@ -617,6 +617,12 @@ Scripts
 Scripts define pre-deployed diagnostic scripts that are available on entities.
 Scripts defined in the manifest are ``managed`` - they cannot be deleted via the REST API.
 
+.. note::
+
+   Manifest scripts are only loaded when ``scripts.scripts_dir`` is configured in the
+   gateway parameters. Without it, the ``scripts:`` block is parsed but scripts are
+   not exposed via the REST API.
+
 Schema
 ~~~~~~
 
@@ -717,6 +723,10 @@ Example
            type: float
            flag: "--threshold"
 
+.. seealso::
+
+   See the Scripts section in :doc:`/api/rest` for API endpoints.
+
 Complete Example
 ----------------
 
@@ -810,6 +820,8 @@ Manifests are validated during loading. The validator checks:
 - All entities must have ``id`` and ``name``
 - Apps with ``ros_binding`` must have ``node_name`` or ``topic_namespace``
 - Functions must have at least one entry in ``hosted_by``
+- Scripts must have ``id``, ``path``, and ``format``
+- ``format`` must be one of: ``bash``, ``python``, ``sh``
 
 **References:**
 
@@ -822,6 +834,7 @@ Manifests are validated during loading. The validator checks:
 
 - All entity IDs must be unique within their type
 - IDs should be unique across all types (warning)
+- Script IDs must be unique (checked against all entity types)
 
 **Format:**
 
