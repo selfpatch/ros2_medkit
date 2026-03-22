@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <map>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -78,6 +79,71 @@ class SchemaBuilder {
 
   /// Version-info endpoint response schema (SOVD 7.4.1)
   static nlohmann::json version_info_schema();
+
+  /// API root overview response schema (GET /)
+  static nlohmann::json root_overview_schema();
+
+  /// Data item in collection list
+  static nlohmann::json data_item_schema();
+
+  /// Generic object schema (for dynamic ROS 2 message payloads)
+  static nlohmann::json generic_object_schema();
+
+  /// Binary content schema (for file downloads)
+  static nlohmann::json binary_schema();
+
+  /// Operation item in collection list
+  static nlohmann::json operation_item_schema();
+
+  /// Operation execution status
+  static nlohmann::json operation_execution_schema();
+
+  /// Trigger schema (CRUD responses)
+  static nlohmann::json trigger_schema();
+
+  /// Cyclic subscription schema (CRUD responses)
+  static nlohmann::json cyclic_subscription_schema();
+
+  /// Lock schema (CRUD responses)
+  static nlohmann::json lock_schema();
+
+  /// Script metadata schema (list/get)
+  static nlohmann::json script_metadata_schema();
+
+  /// Script execution status schema
+  static nlohmann::json script_execution_schema();
+
+  /// Bulk-data category schema
+  static nlohmann::json bulk_data_category_schema();
+
+  /// Bulk-data descriptor schema
+  static nlohmann::json bulk_data_descriptor_schema();
+
+  /// Software update list schema (items: [string])
+  static nlohmann::json update_list_schema();
+
+  /// Software update status schema
+  static nlohmann::json update_status_schema();
+
+  /// Log configuration schema (GET/PUT)
+  static nlohmann::json log_configuration_schema();
+
+  /// Auth token response schema
+  static nlohmann::json auth_token_response_schema();
+
+  /// Auth credentials request body schema
+  static nlohmann::json auth_credentials_schema();
+
+  /// Returns a $ref JSON object pointing to a named component schema.
+  static nlohmann::json ref(const std::string & schema_name);
+
+  /// Wraps a $ref in an items collection.
+  static nlohmann::json items_wrapper_ref(const std::string & schema_name);
+
+  /// Returns all named schemas for registration in components/schemas.
+  /// Key = schema name (becomes the type name in generated clients).
+  /// List-type schemas use internal $ref to avoid duplicate types.
+  static std::map<std::string, nlohmann::json> component_schemas();
 
  private:
   ros2_medkit_serialization::JsonSerializer serializer_;  // Owns its own instance

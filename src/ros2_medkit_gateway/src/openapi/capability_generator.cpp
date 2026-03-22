@@ -133,6 +133,14 @@ nlohmann::json CapabilityGenerator::generate_root() const {
     builder.security_scheme("bearerAuth", {{"type", "http"}, {"scheme", "bearer"}, {"bearerFormat", "JWT"}});
   }
 
+  // Register named schemas in components/schemas for $ref usage.
+  // Generated clients use these as named types (e.g., FaultDetail, Lock, Trigger).
+  nlohmann::json named_schemas;
+  for (const auto & [name, schema] : SchemaBuilder::component_schemas()) {
+    named_schemas[name] = schema;
+  }
+  builder.add_schemas(named_schemas);
+
   return builder.build();
 }
 

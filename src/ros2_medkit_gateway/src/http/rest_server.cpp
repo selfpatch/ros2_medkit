@@ -25,6 +25,7 @@
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 
 #include "../openapi/route_registry.hpp"
+#include "../openapi/schema_builder.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -296,6 +297,7 @@ void RESTServer::setup_routes() {
 #endif
 
   auto & reg = *route_registry_;
+  using SB = openapi::SchemaBuilder;
 
   // === Server endpoints ===
   reg.get("/health",
@@ -305,7 +307,7 @@ void RESTServer::setup_routes() {
       .tag("Server")
       .summary("Health check")
       .description("Returns gateway health status.")
-      .response(200, "Gateway is healthy");
+      .response(200, "Gateway is healthy", SB::ref("HealthStatus"));
 
   reg.get("/",
           [this](auto & req, auto & res) {
@@ -313,7 +315,8 @@ void RESTServer::setup_routes() {
           })
       .tag("Server")
       .summary("API overview")
-      .description("Returns gateway metadata, available endpoints, and capabilities.");
+      .description("Returns gateway metadata, available endpoints, and capabilities.")
+      .response(200, "API metadata", SB::ref("RootOverview"));
 
   reg.get("/version-info",
           [this](auto & req, auto & res) {
@@ -321,7 +324,8 @@ void RESTServer::setup_routes() {
           })
       .tag("Server")
       .summary("SOVD version information")
-      .description("Returns SOVD specification version and vendor info.");
+      .description("Returns SOVD specification version and vendor info.")
+      .response(200, "Version info", SB::ref("VersionInfo"));
 
   // === Discovery - entity collections ===
   reg.get("/areas",
@@ -329,28 +333,32 @@ void RESTServer::setup_routes() {
             discovery_handlers_->handle_list_areas(req, res);
           })
       .tag("Discovery")
-      .summary("List areas");
+      .summary("List areas")
+      .response(200, "Area list", SB::ref("EntityList"));
 
   reg.get("/apps",
           [this](auto & req, auto & res) {
             discovery_handlers_->handle_list_apps(req, res);
           })
       .tag("Discovery")
-      .summary("List apps");
+      .summary("List apps")
+      .response(200, "App list", SB::ref("EntityList"));
 
   reg.get("/components",
           [this](auto & req, auto & res) {
             discovery_handlers_->handle_list_components(req, res);
           })
       .tag("Discovery")
-      .summary("List components");
+      .summary("List components")
+      .response(200, "Component list", SB::ref("EntityList"));
 
   reg.get("/functions",
           [this](auto & req, auto & res) {
             discovery_handlers_->handle_list_functions(req, res);
           })
       .tag("Discovery")
-      .summary("List functions");
+      .summary("List functions")
+      .response(200, "Function list", SB::ref("EntityList"));
 
   // === Per-entity-type resource routes ===
   // Entity types: areas, components, apps, functions
@@ -385,30 +393,35 @@ void RESTServer::setup_routes() {
               data_handlers_->handle_get_data_item(req, res);
             })
         .tag("Data")
-        .summary(std::string("Get data item for ") + et.singular);
+        .summary(std::string("Get data item for ") + et.singular)
+        .response(200, "Data value", SB::generic_object_schema());
 
     reg.put(entity_path + "/data/{data_id}",
             [this](auto & req, auto & res) {
               data_handlers_->handle_put_data_item(req, res);
             })
         .tag("Data")
-        .summary(std::string("Write data item for ") + et.singular);
+        .summary(std::string("Write data item for ") + et.singular)
+        .request_body("Data value to write", SB::generic_object_schema())
+        .response(200, "Written value", SB::generic_object_schema());
 
-    // Data-categories (apps only in original, but registered for all entity types)
+    // Data-categories (returns 501 - not yet implemented)
     reg.get(entity_path + "/data-categories",
             [this](auto & req, auto & res) {
               data_handlers_->handle_data_categories(req, res);
             })
         .tag("Data")
-        .summary(std::string("List data categories for ") + et.singular);
+        .summary(std::string("List data categories for ") + et.singular)
+        .response(200, "Category list", SB::ref("BulkDataCategoryList"));
 
-    // Data-groups
+    // Data-groups (returns 501 - not yet implemented)
     reg.get(entity_path + "/data-groups",
             [this](auto & req, auto & res) {
               data_handlers_->handle_data_groups(req, res);
             })
         .tag("Data")
-        .summary(std::string("List data groups for ") + et.singular);
+        .summary(std::string("List data groups for ") + et.singular)
+        .response(200, "Group list", SB::items_wrapper(SB::generic_object_schema()));
 
     // Data collection (all topics)
     reg.get(entity_path + "/data",
@@ -416,7 +429,8 @@ void RESTServer::setup_routes() {
               data_handlers_->handle_list_data(req, res);
             })
         .tag("Data")
-        .summary(std::string("List data items for ") + et.singular);
+        .summary(std::string("List data items for ") + et.singular)
+        .response(200, "Data item list", SB::ref("DataItemList"));
 
     // --- Operations ---
     reg.get(entity_path + "/operations",
@@ -424,14 +438,16 @@ void RESTServer::setup_routes() {
               operation_handlers_->handle_list_operations(req, res);
             })
         .tag("Operations")
-        .summary(std::string("List operations for ") + et.singular);
+        .summary(std::string("List operations for ") + et.singular)
+        .response(200, "Operation list", SB::ref("OperationItemList"));
 
     reg.get(entity_path + "/operations/{operation_id}",
             [this](auto & req, auto & res) {
               operation_handlers_->handle_get_operation(req, res);
             })
         .tag("Operations")
-        .summary(std::string("Get operation details for ") + et.singular);
+        .summary(std::string("Get operation details for ") + et.singular)
+        .response(200, "Operation details", SB::ref("OperationItem"));
 
     // Execution endpoints
     reg.post(entity_path + "/operations/{operation_id}/executions",
@@ -439,35 +455,43 @@ void RESTServer::setup_routes() {
                operation_handlers_->handle_create_execution(req, res);
              })
         .tag("Operations")
-        .summary(std::string("Start operation execution for ") + et.singular);
+        .summary(std::string("Start operation execution for ") + et.singular)
+        .request_body("Operation parameters", SB::generic_object_schema())
+        .response(200, "Synchronous result", SB::generic_object_schema())
+        .response(202, "Asynchronous execution started", SB::ref("OperationExecution"));
 
     reg.get(entity_path + "/operations/{operation_id}/executions",
             [this](auto & req, auto & res) {
               operation_handlers_->handle_list_executions(req, res);
             })
         .tag("Operations")
-        .summary(std::string("List operation executions for ") + et.singular);
+        .summary(std::string("List operation executions for ") + et.singular)
+        .response(200, "Execution list", SB::ref("OperationExecutionList"));
 
     reg.get(entity_path + "/operations/{operation_id}/executions/{execution_id}",
             [this](auto & req, auto & res) {
               operation_handlers_->handle_get_execution(req, res);
             })
         .tag("Operations")
-        .summary(std::string("Get execution status for ") + et.singular);
+        .summary(std::string("Get execution status for ") + et.singular)
+        .response(200, "Execution status", SB::ref("OperationExecution"));
 
     reg.put(entity_path + "/operations/{operation_id}/executions/{execution_id}",
             [this](auto & req, auto & res) {
               operation_handlers_->handle_update_execution(req, res);
             })
         .tag("Operations")
-        .summary(std::string("Update execution for ") + et.singular);
+        .summary(std::string("Update execution for ") + et.singular)
+        .request_body("Execution control", SB::generic_object_schema())
+        .response(200, "Updated execution", SB::ref("OperationExecution"));
 
     reg.del(entity_path + "/operations/{operation_id}/executions/{execution_id}",
             [this](auto & req, auto & res) {
               operation_handlers_->handle_cancel_execution(req, res);
             })
         .tag("Operations")
-        .summary(std::string("Cancel execution for ") + et.singular);
+        .summary(std::string("Cancel execution for ") + et.singular)
+        .response(204, "Execution cancelled");
 
     // --- Configurations ---
     reg.get(entity_path + "/configurations",
@@ -475,35 +499,41 @@ void RESTServer::setup_routes() {
               config_handlers_->handle_list_configurations(req, res);
             })
         .tag("Configuration")
-        .summary(std::string("List configurations for ") + et.singular);
+        .summary(std::string("List configurations for ") + et.singular)
+        .response(200, "Configuration list", SB::ref("ConfigurationParamList"));
 
     reg.get(entity_path + "/configurations/{config_id}",
             [this](auto & req, auto & res) {
               config_handlers_->handle_get_configuration(req, res);
             })
         .tag("Configuration")
-        .summary(std::string("Get specific configuration for ") + et.singular);
+        .summary(std::string("Get specific configuration for ") + et.singular)
+        .response(200, "Configuration parameter", SB::ref("ConfigurationParam"));
 
     reg.put(entity_path + "/configurations/{config_id}",
             [this](auto & req, auto & res) {
               config_handlers_->handle_set_configuration(req, res);
             })
         .tag("Configuration")
-        .summary(std::string("Set configuration for ") + et.singular);
+        .summary(std::string("Set configuration for ") + et.singular)
+        .request_body("Configuration value", SB::ref("ConfigurationParam"))
+        .response(200, "Updated configuration", SB::ref("ConfigurationParam"));
 
     reg.del(entity_path + "/configurations/{config_id}",
             [this](auto & req, auto & res) {
               config_handlers_->handle_delete_configuration(req, res);
             })
         .tag("Configuration")
-        .summary(std::string("Delete configuration for ") + et.singular);
+        .summary(std::string("Delete configuration for ") + et.singular)
+        .response(204, "Configuration deleted");
 
     reg.del(entity_path + "/configurations",
             [this](auto & req, auto & res) {
               config_handlers_->handle_delete_all_configurations(req, res);
             })
         .tag("Configuration")
-        .summary(std::string("Delete all configurations for ") + et.singular);
+        .summary(std::string("Delete all configurations for ") + et.singular)
+        .response(204, "All configurations deleted");
 
     // --- Faults ---
     reg.get(entity_path + "/faults",
@@ -511,28 +541,32 @@ void RESTServer::setup_routes() {
               fault_handlers_->handle_list_faults(req, res);
             })
         .tag("Faults")
-        .summary(std::string("List faults for ") + et.singular);
+        .summary(std::string("List faults for ") + et.singular)
+        .response(200, "Fault list", SB::ref("FaultList"));
 
     reg.get(entity_path + "/faults/{fault_code}",
             [this](auto & req, auto & res) {
               fault_handlers_->handle_get_fault(req, res);
             })
         .tag("Faults")
-        .summary(std::string("Get specific fault for ") + et.singular);
+        .summary(std::string("Get specific fault for ") + et.singular)
+        .response(200, "Fault detail", SB::ref("FaultDetail"));
 
     reg.del(entity_path + "/faults/{fault_code}",
             [this](auto & req, auto & res) {
               fault_handlers_->handle_clear_fault(req, res);
             })
         .tag("Faults")
-        .summary(std::string("Clear fault for ") + et.singular);
+        .summary(std::string("Clear fault for ") + et.singular)
+        .response(204, "Fault cleared");
 
     reg.del(entity_path + "/faults",
             [this](auto & req, auto & res) {
               fault_handlers_->handle_clear_all_faults(req, res);
             })
         .tag("Faults")
-        .summary(std::string("Clear all faults for ") + et.singular);
+        .summary(std::string("Clear all faults for ") + et.singular)
+        .response(204, "All faults cleared");
 
     // --- Logs ---
     reg.get(entity_path + "/logs",
@@ -540,21 +574,25 @@ void RESTServer::setup_routes() {
               log_handlers_->handle_get_logs(req, res);
             })
         .tag("Logs")
-        .summary(std::string("Query log entries for ") + et.singular);
+        .summary(std::string("Query log entries for ") + et.singular)
+        .response(200, "Log entries", SB::ref("LogEntryList"));
 
     reg.get(entity_path + "/logs/configuration",
             [this](auto & req, auto & res) {
               log_handlers_->handle_get_logs_configuration(req, res);
             })
         .tag("Logs")
-        .summary(std::string("Get log configuration for ") + et.singular);
+        .summary(std::string("Get log configuration for ") + et.singular)
+        .response(200, "Log configuration", SB::ref("LogConfiguration"));
 
     reg.put(entity_path + "/logs/configuration",
             [this](auto & req, auto & res) {
               log_handlers_->handle_put_logs_configuration(req, res);
             })
         .tag("Logs")
-        .summary(std::string("Update log configuration for ") + et.singular);
+        .summary(std::string("Update log configuration for ") + et.singular)
+        .request_body("Log configuration", SB::ref("LogConfiguration"))
+        .response(204, "Configuration updated");
 
     // --- Bulk Data ---
     reg.get(entity_path + "/bulk-data",
@@ -562,21 +600,24 @@ void RESTServer::setup_routes() {
               bulkdata_handlers_->handle_list_categories(req, res);
             })
         .tag("Bulk Data")
-        .summary(std::string("List bulk-data categories for ") + et.singular);
+        .summary(std::string("List bulk-data categories for ") + et.singular)
+        .response(200, "Category list", SB::ref("BulkDataCategoryList"));
 
     reg.get(entity_path + "/bulk-data/{category_id}",
             [this](auto & req, auto & res) {
               bulkdata_handlers_->handle_list_descriptors(req, res);
             })
         .tag("Bulk Data")
-        .summary(std::string("List bulk-data descriptors for ") + et.singular);
+        .summary(std::string("List bulk-data descriptors for ") + et.singular)
+        .response(200, "Descriptor list", SB::ref("BulkDataDescriptorList"));
 
     reg.get(entity_path + "/bulk-data/{category_id}/{file_id}",
             [this](auto & req, auto & res) {
               bulkdata_handlers_->handle_download(req, res);
             })
         .tag("Bulk Data")
-        .summary(std::string("Download bulk-data file for ") + et.singular);
+        .summary(std::string("Download bulk-data file for ") + et.singular)
+        .response(200, "File content", SB::binary_schema());
 
     // Upload: only for apps and components (405 for areas and functions)
     std::string et_type_str = et.type;
@@ -586,14 +627,17 @@ void RESTServer::setup_routes() {
                  bulkdata_handlers_->handle_upload(req, res);
                })
           .tag("Bulk Data")
-          .summary(std::string("Upload bulk-data for ") + et.singular);
+          .summary(std::string("Upload bulk-data for ") + et.singular)
+          .request_body("File to upload", SB::generic_object_schema())
+          .response(201, "File uploaded", SB::ref("BulkDataDescriptor"));
 
       reg.del(entity_path + "/bulk-data/{category_id}/{file_id}",
               [this](auto & req, auto & res) {
                 bulkdata_handlers_->handle_delete(req, res);
               })
           .tag("Bulk Data")
-          .summary(std::string("Delete bulk-data file for ") + et.singular);
+          .summary(std::string("Delete bulk-data file for ") + et.singular)
+          .response(204, "File deleted");
     } else {
       reg.post(entity_path + "/bulk-data/{category_id}",
                [this](auto & /*req*/, auto & res) {
@@ -630,7 +674,7 @@ void RESTServer::setup_routes() {
                 trigger_handlers_->handle_events(req, res);
               })
           .tag("Triggers")
-          .summary(std::string("SSE events for trigger on ") + et.singular);
+          .summary(std::string("SSE events stream for trigger on ") + et.singular);
 
       reg.post(entity_path + "/triggers",
                [this, trigger_501](auto & req, auto & res) {
@@ -641,7 +685,9 @@ void RESTServer::setup_routes() {
                  trigger_handlers_->handle_create(req, res);
                })
           .tag("Triggers")
-          .summary(std::string("Create trigger for ") + et.singular);
+          .summary(std::string("Create trigger for ") + et.singular)
+          .request_body("Trigger configuration", SB::ref("Trigger"))
+          .response(201, "Trigger created", SB::ref("Trigger"));
 
       reg.get(entity_path + "/triggers",
               [this, trigger_501](auto & req, auto & res) {
@@ -652,7 +698,8 @@ void RESTServer::setup_routes() {
                 trigger_handlers_->handle_list(req, res);
               })
           .tag("Triggers")
-          .summary(std::string("List triggers for ") + et.singular);
+          .summary(std::string("List triggers for ") + et.singular)
+          .response(200, "Trigger list", SB::ref("TriggerList"));
 
       reg.get(entity_path + "/triggers/{trigger_id}",
               [this, trigger_501](auto & req, auto & res) {
@@ -663,7 +710,8 @@ void RESTServer::setup_routes() {
                 trigger_handlers_->handle_get(req, res);
               })
           .tag("Triggers")
-          .summary(std::string("Get trigger for ") + et.singular);
+          .summary(std::string("Get trigger for ") + et.singular)
+          .response(200, "Trigger details", SB::ref("Trigger"));
 
       reg.put(entity_path + "/triggers/{trigger_id}",
               [this, trigger_501](auto & req, auto & res) {
@@ -674,7 +722,9 @@ void RESTServer::setup_routes() {
                 trigger_handlers_->handle_update(req, res);
               })
           .tag("Triggers")
-          .summary(std::string("Update trigger for ") + et.singular);
+          .summary(std::string("Update trigger for ") + et.singular)
+          .request_body("Trigger update", SB::ref("Trigger"))
+          .response(200, "Updated trigger", SB::ref("Trigger"));
 
       reg.del(entity_path + "/triggers/{trigger_id}",
               [this, trigger_501](auto & req, auto & res) {
@@ -685,7 +735,8 @@ void RESTServer::setup_routes() {
                 trigger_handlers_->handle_delete(req, res);
               })
           .tag("Triggers")
-          .summary(std::string("Delete trigger for ") + et.singular);
+          .summary(std::string("Delete trigger for ") + et.singular)
+          .response(204, "Trigger deleted");
     }
 
     // --- Cyclic Subscriptions (apps, components, and functions) ---
@@ -696,42 +747,49 @@ void RESTServer::setup_routes() {
                 cyclic_sub_handlers_->handle_events(req, res);
               })
           .tag("Subscriptions")
-          .summary(std::string("SSE events for cyclic subscription on ") + et.singular);
+          .summary(std::string("SSE events stream for cyclic subscription on ") + et.singular);
 
       reg.post(entity_path + "/cyclic-subscriptions",
                [this](auto & req, auto & res) {
                  cyclic_sub_handlers_->handle_create(req, res);
                })
           .tag("Subscriptions")
-          .summary(std::string("Create cyclic subscription for ") + et.singular);
+          .summary(std::string("Create cyclic subscription for ") + et.singular)
+          .request_body("Subscription configuration", SB::ref("CyclicSubscription"))
+          .response(201, "Subscription created", SB::ref("CyclicSubscription"));
 
       reg.get(entity_path + "/cyclic-subscriptions",
               [this](auto & req, auto & res) {
                 cyclic_sub_handlers_->handle_list(req, res);
               })
           .tag("Subscriptions")
-          .summary(std::string("List cyclic subscriptions for ") + et.singular);
+          .summary(std::string("List cyclic subscriptions for ") + et.singular)
+          .response(200, "Subscription list", SB::ref("CyclicSubscriptionList"));
 
       reg.get(entity_path + "/cyclic-subscriptions/{subscription_id}",
               [this](auto & req, auto & res) {
                 cyclic_sub_handlers_->handle_get(req, res);
               })
           .tag("Subscriptions")
-          .summary(std::string("Get cyclic subscription for ") + et.singular);
+          .summary(std::string("Get cyclic subscription for ") + et.singular)
+          .response(200, "Subscription details", SB::ref("CyclicSubscription"));
 
       reg.put(entity_path + "/cyclic-subscriptions/{subscription_id}",
               [this](auto & req, auto & res) {
                 cyclic_sub_handlers_->handle_update(req, res);
               })
           .tag("Subscriptions")
-          .summary(std::string("Update cyclic subscription for ") + et.singular);
+          .summary(std::string("Update cyclic subscription for ") + et.singular)
+          .request_body("Subscription update", SB::ref("CyclicSubscription"))
+          .response(200, "Updated subscription", SB::ref("CyclicSubscription"));
 
       reg.del(entity_path + "/cyclic-subscriptions/{subscription_id}",
               [this](auto & req, auto & res) {
                 cyclic_sub_handlers_->handle_delete(req, res);
               })
           .tag("Subscriptions")
-          .summary(std::string("Delete cyclic subscription for ") + et.singular);
+          .summary(std::string("Delete cyclic subscription for ") + et.singular)
+          .response(204, "Subscription deleted");
     }
 
     // --- Locking (components and apps only, per SOVD spec) ---
@@ -741,35 +799,42 @@ void RESTServer::setup_routes() {
                  lock_handlers_->handle_acquire_lock(req, res);
                })
           .tag("Locking")
-          .summary(std::string("Acquire lock on ") + et.singular);
+          .summary(std::string("Acquire lock on ") + et.singular)
+          .request_body("Lock parameters", SB::ref("Lock"))
+          .response(201, "Lock acquired", SB::ref("Lock"));
 
       reg.get(entity_path + "/locks",
               [this](auto & req, auto & res) {
                 lock_handlers_->handle_list_locks(req, res);
               })
           .tag("Locking")
-          .summary(std::string("List locks on ") + et.singular);
+          .summary(std::string("List locks on ") + et.singular)
+          .response(200, "Lock list", SB::ref("LockList"));
 
       reg.get(entity_path + "/locks/{lock_id}",
               [this](auto & req, auto & res) {
                 lock_handlers_->handle_get_lock(req, res);
               })
           .tag("Locking")
-          .summary(std::string("Get lock details for ") + et.singular);
+          .summary(std::string("Get lock details for ") + et.singular)
+          .response(200, "Lock details", SB::ref("Lock"));
 
       reg.put(entity_path + "/locks/{lock_id}",
               [this](auto & req, auto & res) {
                 lock_handlers_->handle_extend_lock(req, res);
               })
           .tag("Locking")
-          .summary(std::string("Extend lock on ") + et.singular);
+          .summary(std::string("Extend lock on ") + et.singular)
+          .request_body("Lock extension", SB::ref("Lock"))
+          .response(200, "Lock extended", SB::ref("Lock"));
 
       reg.del(entity_path + "/locks/{lock_id}",
               [this](auto & req, auto & res) {
                 lock_handlers_->handle_release_lock(req, res);
               })
           .tag("Locking")
-          .summary(std::string("Release lock on ") + et.singular);
+          .summary(std::string("Release lock on ") + et.singular)
+          .response(204, "Lock released");
     }
 
     // --- Scripts (apps and components only) ---
@@ -780,21 +845,24 @@ void RESTServer::setup_routes() {
                })
           .tag("Scripts")
           .summary(std::string("Upload diagnostic script for ") + et.singular)
-          .response(201, "Script uploaded");
+          .request_body("Script file", SB::generic_object_schema())
+          .response(201, "Script uploaded", SB::ref("ScriptMetadata"));
 
       reg.get(entity_path + "/scripts",
               [this](auto & req, auto & res) {
                 script_handlers_->handle_list_scripts(req, res);
               })
           .tag("Scripts")
-          .summary(std::string("List scripts for ") + et.singular);
+          .summary(std::string("List scripts for ") + et.singular)
+          .response(200, "Script list", SB::ref("ScriptMetadataList"));
 
       reg.get(entity_path + "/scripts/{script_id}",
               [this](auto & req, auto & res) {
                 script_handlers_->handle_get_script(req, res);
               })
           .tag("Scripts")
-          .summary(std::string("Get script metadata for ") + et.singular);
+          .summary(std::string("Get script metadata for ") + et.singular)
+          .response(200, "Script metadata", SB::ref("ScriptMetadata"));
 
       reg.del(entity_path + "/scripts/{script_id}",
               [this](auto & req, auto & res) {
@@ -810,21 +878,25 @@ void RESTServer::setup_routes() {
                })
           .tag("Scripts")
           .summary(std::string("Start script execution for ") + et.singular)
-          .response(202, "Execution started");
+          .request_body("Execution parameters", SB::generic_object_schema())
+          .response(202, "Execution started", SB::ref("ScriptExecution"));
 
       reg.get(entity_path + "/scripts/{script_id}/executions/{execution_id}",
               [this](auto & req, auto & res) {
                 script_handlers_->handle_get_execution(req, res);
               })
           .tag("Scripts")
-          .summary(std::string("Get execution status for ") + et.singular);
+          .summary(std::string("Get execution status for ") + et.singular)
+          .response(200, "Execution status", SB::ref("ScriptExecution"));
 
       reg.put(entity_path + "/scripts/{script_id}/executions/{execution_id}",
               [this](auto & req, auto & res) {
                 script_handlers_->handle_control_execution(req, res);
               })
           .tag("Scripts")
-          .summary(std::string("Terminate script execution for ") + et.singular);
+          .summary(std::string("Terminate script execution for ") + et.singular)
+          .request_body("Execution control", SB::generic_object_schema())
+          .response(200, "Execution updated", SB::ref("ScriptExecution"));
 
       reg.del(entity_path + "/scripts/{script_id}/executions/{execution_id}",
               [this](auto & req, auto & res) {
@@ -842,21 +914,24 @@ void RESTServer::setup_routes() {
                 discovery_handlers_->handle_area_components(req, res);
               })
           .tag("Discovery")
-          .summary("List components in area");
+          .summary("List components in area")
+          .response(200, "Component list", SB::ref("EntityList"));
 
       reg.get(entity_path + "/subareas",
               [this](auto & req, auto & res) {
                 discovery_handlers_->handle_get_subareas(req, res);
               })
           .tag("Discovery")
-          .summary("List subareas");
+          .summary("List subareas")
+          .response(200, "Subarea list", SB::ref("EntityList"));
 
       reg.get(entity_path + "/contains",
               [this](auto & req, auto & res) {
                 discovery_handlers_->handle_get_contains(req, res);
               })
           .tag("Discovery")
-          .summary("List entities contained in area");
+          .summary("List entities contained in area")
+          .response(200, "Contained entities", SB::ref("EntityList"));
     }
 
     if (et_type_str == "components") {
@@ -865,21 +940,24 @@ void RESTServer::setup_routes() {
                 discovery_handlers_->handle_get_subcomponents(req, res);
               })
           .tag("Discovery")
-          .summary("List subcomponents");
+          .summary("List subcomponents")
+          .response(200, "Subcomponent list", SB::ref("EntityList"));
 
       reg.get(entity_path + "/hosts",
               [this](auto & req, auto & res) {
                 discovery_handlers_->handle_get_hosts(req, res);
               })
           .tag("Discovery")
-          .summary("List component hosts");
+          .summary("List component hosts")
+          .response(200, "Host list", SB::ref("EntityList"));
 
       reg.get(entity_path + "/depends-on",
               [this](auto & req, auto & res) {
                 discovery_handlers_->handle_component_depends_on(req, res);
               })
           .tag("Discovery")
-          .summary("List component dependencies");
+          .summary("List component dependencies")
+          .response(200, "Dependency list", SB::ref("EntityList"));
     }
 
     if (et_type_str == "apps") {
@@ -888,14 +966,16 @@ void RESTServer::setup_routes() {
                 discovery_handlers_->handle_app_is_located_on(req, res);
               })
           .tag("Discovery")
-          .summary("Get app host component");
+          .summary("Get app host component")
+          .response(200, "Host component", SB::ref("EntityDetail"));
 
       reg.get(entity_path + "/depends-on",
               [this](auto & req, auto & res) {
                 discovery_handlers_->handle_app_depends_on(req, res);
               })
           .tag("Discovery")
-          .summary("List app dependencies");
+          .summary("List app dependencies")
+          .response(200, "Dependency list", SB::ref("EntityList"));
     }
 
     if (et_type_str == "functions") {
@@ -904,11 +984,15 @@ void RESTServer::setup_routes() {
                 discovery_handlers_->handle_function_hosts(req, res);
               })
           .tag("Discovery")
-          .summary("List function hosts");
+          .summary("List function hosts")
+          .response(200, "Host list", SB::ref("EntityList"));
     }
 
     // Single entity detail (capabilities) - must be LAST for this entity type
-    reg.get(entity_path, et.detail_handler).tag("Discovery").summary(std::string("Get ") + et.singular + " details");
+    reg.get(entity_path, et.detail_handler)
+        .tag("Discovery")
+        .summary(std::string("Get ") + et.singular + " details")
+        .response(200, "Entity details with capabilities", SB::ref("EntityDetail"));
   }
 
   // === Nested entities - subareas bulk-data ===
@@ -917,21 +1001,24 @@ void RESTServer::setup_routes() {
             bulkdata_handlers_->handle_list_categories(req, res);
           })
       .tag("Bulk Data")
-      .summary("List bulk-data categories for subarea");
+      .summary("List bulk-data categories for subarea")
+      .response(200, "Category list", SB::ref("BulkDataCategoryList"));
 
   reg.get("/areas/{area_id}/subareas/{subarea_id}/bulk-data/{category_id}",
           [this](auto & req, auto & res) {
             bulkdata_handlers_->handle_list_descriptors(req, res);
           })
       .tag("Bulk Data")
-      .summary("List bulk-data descriptors for subarea");
+      .summary("List bulk-data descriptors for subarea")
+      .response(200, "Descriptor list", SB::ref("BulkDataDescriptorList"));
 
   reg.get("/areas/{area_id}/subareas/{subarea_id}/bulk-data/{category_id}/{file_id}",
           [this](auto & req, auto & res) {
             bulkdata_handlers_->handle_download(req, res);
           })
       .tag("Bulk Data")
-      .summary("Download bulk-data file for subarea");
+      .summary("Download bulk-data file for subarea")
+      .response(200, "File content", SB::binary_schema());
 
   // === Nested entities - subcomponents bulk-data ===
   reg.get("/components/{component_id}/subcomponents/{subcomponent_id}/bulk-data",
@@ -939,21 +1026,24 @@ void RESTServer::setup_routes() {
             bulkdata_handlers_->handle_list_categories(req, res);
           })
       .tag("Bulk Data")
-      .summary("List bulk-data categories for subcomponent");
+      .summary("List bulk-data categories for subcomponent")
+      .response(200, "Category list", SB::ref("BulkDataCategoryList"));
 
   reg.get("/components/{component_id}/subcomponents/{subcomponent_id}/bulk-data/{category_id}",
           [this](auto & req, auto & res) {
             bulkdata_handlers_->handle_list_descriptors(req, res);
           })
       .tag("Bulk Data")
-      .summary("List bulk-data descriptors for subcomponent");
+      .summary("List bulk-data descriptors for subcomponent")
+      .response(200, "Descriptor list", SB::ref("BulkDataDescriptorList"));
 
   reg.get("/components/{component_id}/subcomponents/{subcomponent_id}/bulk-data/{category_id}/{file_id}",
           [this](auto & req, auto & res) {
             bulkdata_handlers_->handle_download(req, res);
           })
       .tag("Bulk Data")
-      .summary("Download bulk-data file for subcomponent");
+      .summary("Download bulk-data file for subcomponent")
+      .response(200, "File content", SB::binary_schema());
 
   // === Global faults ===
   // SSE stream - must be before /faults to avoid regex conflict
@@ -971,14 +1061,16 @@ void RESTServer::setup_routes() {
           })
       .tag("Faults")
       .summary("List all faults globally")
-      .description("Retrieve all faults across the system.");
+      .description("Retrieve all faults across the system.")
+      .response(200, "All faults", SB::ref("FaultList"));
 
   reg.del("/faults",
           [this](auto & req, auto & res) {
             fault_handlers_->handle_clear_all_faults_global(req, res);
           })
       .tag("Faults")
-      .summary("Clear all faults globally");
+      .summary("Clear all faults globally")
+      .response(204, "All faults cleared");
 
   // === Software Updates ===
   // Always register for OpenAPI documentation. Lambdas guard against null update_handlers_.
@@ -991,56 +1083,68 @@ void RESTServer::setup_routes() {
           })
                                        : HandlerFn(update_501))
       .tag("Updates")
-      .summary("List software updates");
+      .summary("List software updates")
+      .response(200, "Update list", SB::ref("UpdateList"));
 
   reg.post("/updates", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
              update_handlers_->handle_register_update(req, res);
            })
                                         : HandlerFn(update_501))
       .tag("Updates")
-      .summary("Register a software update");
+      .summary("Register a software update")
+      .request_body("Update descriptor", SB::generic_object_schema())
+      .response(201, "Update registered", SB::generic_object_schema());
 
   reg.get("/updates/{update_id}/status", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
             update_handlers_->handle_get_status(req, res);
           })
                                                           : HandlerFn(update_501))
       .tag("Updates")
-      .summary("Get update status");
+      .summary("Get update status")
+      .response(200, "Update status", SB::ref("UpdateStatus"));
 
   reg.put("/updates/{update_id}/prepare", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
             update_handlers_->handle_prepare(req, res);
           })
                                                            : HandlerFn(update_501))
       .tag("Updates")
-      .summary("Prepare update for execution");
+      .summary("Prepare update for execution")
+      .request_body("Prepare parameters", SB::generic_object_schema())
+      .response(200, "Update prepared", SB::ref("UpdateStatus"));
 
   reg.put("/updates/{update_id}/execute", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
             update_handlers_->handle_execute(req, res);
           })
                                                            : HandlerFn(update_501))
       .tag("Updates")
-      .summary("Execute update");
+      .summary("Execute update")
+      .request_body("Execute parameters", SB::generic_object_schema())
+      .response(200, "Update executing", SB::ref("UpdateStatus"));
 
   reg.put("/updates/{update_id}/automated", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
             update_handlers_->handle_automated(req, res);
           })
                                                              : HandlerFn(update_501))
       .tag("Updates")
-      .summary("Run automated update");
+      .summary("Run automated update")
+      .request_body("Automated parameters", SB::generic_object_schema())
+      .response(200, "Automated update started", SB::ref("UpdateStatus"));
 
   reg.get("/updates/{update_id}", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
             update_handlers_->handle_get_update(req, res);
           })
                                                    : HandlerFn(update_501))
       .tag("Updates")
-      .summary("Get update details");
+      .summary("Get update details")
+      .response(200, "Update details", SB::generic_object_schema());
 
   reg.del("/updates/{update_id}", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
             update_handlers_->handle_delete_update(req, res);
           })
                                                    : HandlerFn(update_501))
       .tag("Updates")
-      .summary("Delete update");
+      .summary("Delete update")
+      .response(204, "Update deleted");
 
   // === Authentication ===
   reg.post("/auth/authorize",
@@ -1049,7 +1153,9 @@ void RESTServer::setup_routes() {
            })
       .tag("Authentication")
       .summary("Authorize client")
-      .description("Authenticate and obtain authorization tokens.");
+      .description("Authenticate and obtain authorization tokens.")
+      .request_body("Client credentials", SB::ref("AuthCredentials"))
+      .response(200, "Authorization tokens", SB::ref("AuthTokenResponse"));
 
   reg.post("/auth/token",
            [this](auto & req, auto & res) {
@@ -1057,7 +1163,9 @@ void RESTServer::setup_routes() {
            })
       .tag("Authentication")
       .summary("Obtain access token")
-      .description("Exchange credentials or refresh token for a JWT access token.");
+      .description("Exchange credentials or refresh token for a JWT access token.")
+      .request_body("Token request credentials", SB::ref("AuthCredentials"))
+      .response(200, "Access token", SB::ref("AuthTokenResponse"));
 
   reg.post("/auth/revoke",
            [this](auto & req, auto & res) {
@@ -1065,7 +1173,9 @@ void RESTServer::setup_routes() {
            })
       .tag("Authentication")
       .summary("Revoke token")
-      .description("Revoke an access or refresh token.");
+      .description("Revoke an access or refresh token.")
+      .request_body("Token to revoke", SB::generic_object_schema())
+      .response(200, "Token revoked", SB::generic_object_schema());
 
   // Register all routes with cpp-httplib
   route_registry_->register_all(*srv, API_BASE_PATH);
