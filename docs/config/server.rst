@@ -175,17 +175,17 @@ Configure how the gateway connects to the fault manager services and event topic
      - Type
      - Default
      - Description
-   * - ``fault_manager_namespace``
+   * - ``fault_manager.namespace``
      - string
      - ``""``
      - Optional namespace prefix for fault manager service and event topic resolution.
        Examples: ``""`` -> ``/fault_manager/list_faults``, ``"robot1"`` -> ``/robot1/fault_manager/list_faults``.
-   * - ``fault_service_timeout_sec``
+   * - ``fault_manager.service_timeout_sec``
      - float
      - ``5.0``
      - Timeout for fault manager service calls such as ``list_faults`` and ``get_snapshots``.
 
-When ``fault_manager_namespace`` is set, the gateway also subscribes to the matching
+When ``fault_manager.namespace`` is set, the gateway also subscribes to the matching
 fault event topic (for example ``/robot1/fault_manager/events`` instead of the default
 ``/fault_manager/events``).
 
@@ -195,8 +195,9 @@ Example:
 
    ros2_medkit_gateway:
      ros__parameters:
-       fault_manager_namespace: "robot1"
-       fault_service_timeout_sec: 5.0
+       fault_manager:
+         namespace: "robot1"
+         service_timeout_sec: 5.0
 
 Logging Configuration
 ---------------------

@@ -257,7 +257,7 @@ TEST_F(TestGatewayNode, test_fault_manager_namespace_configures_event_subscriber
 
   create_node_with_overrides({
       rclcpp::Parameter("server.port", free_port),
-      rclcpp::Parameter("fault_manager_namespace", "robot5"),
+      rclcpp::Parameter("fault_manager.namespace", "robot5"),
   });
 
   ASSERT_TRUE(wait_for_subscriber_count("/robot5/fault_manager/events", 2u));

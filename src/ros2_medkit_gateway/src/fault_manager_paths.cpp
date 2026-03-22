@@ -45,7 +45,7 @@ std::string get_fault_manager_namespace(rclcpp::Node * node) {
     throw std::invalid_argument("Fault manager namespace resolution requires a valid node");
   }
 
-  constexpr auto kParameterName = "fault_manager_namespace";
+  constexpr auto kParameterName = "fault_manager.namespace";
   std::string namespace_value;
   if (!node->get_parameter(kParameterName, namespace_value)) {
     return "";
@@ -59,7 +59,7 @@ std::string get_fault_manager_namespace(rclcpp::Node * node) {
     }
 
     RCLCPP_WARN(node->get_logger(),
-                "Ignoring invalid fault_manager_namespace '%s': character '%c' is not allowed. "
+                "Ignoring invalid fault_manager.namespace '%s': character '%c' is not allowed. "
                 "Falling back to root fault manager path.",
                 namespace_value.c_str(), c);
     return "";

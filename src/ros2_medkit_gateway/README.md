@@ -1128,8 +1128,8 @@ The gateway can be configured via parameters in `config/gateway_params.yaml` or 
 | `refresh_interval_ms`        | int    | `10000`     | Cache refresh interval in milliseconds (range: 100-60000)                              |
 | `max_parallel_topic_samples` | int    | `20`        | Max concurrent topic samples when fetching data (range: 1-50)                          |
 | `topic_sample_timeout_sec`   | float  | `2.0`       | Timeout for sampling topics with active publishers (range: 0.1-30.0)                   |
-| `fault_manager_namespace`    | string | `""`        | Optional namespace prefix for fault manager services and events (for example `robot1`)  |
-| `fault_service_timeout_sec`  | float  | `5.0`       | Timeout for fault manager service calls such as `list_faults` and `get_snapshots`      |
+| `fault_manager.namespace`    | string | `""`        | Optional namespace prefix for fault manager services and events (for example `robot1`)  |
+| `fault_manager.service_timeout_sec`  | float  | `5.0`       | Timeout for fault manager service calls such as `list_faults` and `get_snapshots`      |
 
 These defaults reflect the recommended values from `config/gateway_params.yaml`.
 If the gateway is run without those parameters, the `DataAccessManager` fallback
