@@ -346,6 +346,7 @@ void RESTServer::setup_routes() {
           })
       .tag("Discovery")
       .summary("List areas")
+      .description("Lists all discovered areas in the system.")
       .response(200, "Area list", SB::ref("EntityList"))
       .operation_id("listAreas");
 
@@ -355,6 +356,7 @@ void RESTServer::setup_routes() {
           })
       .tag("Discovery")
       .summary("List apps")
+      .description("Lists all discovered apps (ROS 2 nodes) in the system.")
       .response(200, "App list", SB::ref("EntityList"))
       .operation_id("listApps");
 
@@ -364,6 +366,7 @@ void RESTServer::setup_routes() {
           })
       .tag("Discovery")
       .summary("List components")
+      .description("Lists all discovered components in the system.")
       .response(200, "Component list", SB::ref("EntityList"))
       .operation_id("listComponents");
 
@@ -373,6 +376,7 @@ void RESTServer::setup_routes() {
           })
       .tag("Discovery")
       .summary("List functions")
+      .description("Lists all discovered functions in the system.")
       .response(200, "Function list", SB::ref("EntityList"))
       .operation_id("listFunctions");
 
@@ -410,6 +414,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Data")
         .summary(std::string("Get data item for ") + et.singular)
+        .description(std::string("Returns the latest value from a ROS 2 topic for this ") + et.singular + ".")
         .response(200, "Data value", SB::generic_object_schema())
         .operation_id(std::string("get") + capitalize(et.singular) + "DataItem");
 
@@ -419,6 +424,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Data")
         .summary(std::string("Write data item for ") + et.singular)
+        .description(std::string("Publishes a value to a ROS 2 topic on this ") + et.singular + ".")
         .request_body("Data value to write", SB::generic_object_schema())
         .response(200, "Written value", SB::generic_object_schema())
         .operation_id(std::string("put") + capitalize(et.singular) + "DataItem");
@@ -430,6 +436,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Data")
         .summary(std::string("List data categories for ") + et.singular)
+        .description(std::string("Lists available data categories for this ") + et.singular + ".")
         .response(200, "Category list", SB::ref("BulkDataCategoryList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "DataCategories");
 
@@ -440,6 +447,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Data")
         .summary(std::string("List data groups for ") + et.singular)
+        .description(std::string("Lists available data groups for this ") + et.singular + ".")
         .response(200, "Group list", SB::items_wrapper(SB::generic_object_schema()))
         .operation_id(std::string("list") + capitalize(et.singular) + "DataGroups");
 
@@ -450,6 +458,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Data")
         .summary(std::string("List data items for ") + et.singular)
+        .description(std::string("Lists all data items (ROS 2 topics) available on this ") + et.singular + ".")
         .response(200, "Data item list", SB::ref("DataItemList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Data");
 
@@ -460,6 +469,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Operations")
         .summary(std::string("List operations for ") + et.singular)
+        .description(std::string("Lists all ROS 2 services and actions available on this ") + et.singular + ".")
         .response(200, "Operation list", SB::ref("OperationItemList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Operations");
 
@@ -469,6 +479,8 @@ void RESTServer::setup_routes() {
             })
         .tag("Operations")
         .summary(std::string("Get operation details for ") + et.singular)
+        .description(std::string("Returns operation details including request/response schema for this ") +
+                     et.singular + ".")
         .response(200, "Operation details", SB::ref("OperationItem"))
         .operation_id(std::string("get") + capitalize(et.singular) + "Operation");
 
@@ -479,6 +491,7 @@ void RESTServer::setup_routes() {
              })
         .tag("Operations")
         .summary(std::string("Start operation execution for ") + et.singular)
+        .description("Starts a new execution. Returns 200 for synchronous, 202 for asynchronous operations.")
         .request_body("Operation parameters", SB::generic_object_schema())
         .response(200, "Synchronous result", SB::generic_object_schema())
         .response(202, "Asynchronous execution started", SB::ref("OperationExecution"))
@@ -490,6 +503,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Operations")
         .summary(std::string("List operation executions for ") + et.singular)
+        .description(std::string("Lists all executions of an operation on this ") + et.singular + ".")
         .response(200, "Execution list", SB::ref("OperationExecutionList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Executions");
 
@@ -499,6 +513,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Operations")
         .summary(std::string("Get execution status for ") + et.singular)
+        .description("Returns the current status and result of a specific execution.")
         .response(200, "Execution status", SB::ref("OperationExecution"))
         .operation_id(std::string("get") + capitalize(et.singular) + "Execution");
 
@@ -508,6 +523,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Operations")
         .summary(std::string("Update execution for ") + et.singular)
+        .description("Sends a control command to a running execution.")
         .request_body("Execution control", SB::generic_object_schema())
         .response(200, "Updated execution", SB::ref("OperationExecution"))
         .operation_id(std::string("update") + capitalize(et.singular) + "Execution");
@@ -518,6 +534,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Operations")
         .summary(std::string("Cancel execution for ") + et.singular)
+        .description("Cancels a running execution.")
         .response(204, "Execution cancelled")
         .operation_id(std::string("cancel") + capitalize(et.singular) + "Execution");
 
@@ -528,6 +545,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Configuration")
         .summary(std::string("List configurations for ") + et.singular)
+        .description(std::string("Lists all ROS 2 node parameters for this ") + et.singular + ".")
         .response(200, "Configuration list", SB::ref("ConfigurationParamList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Configurations");
 
@@ -537,6 +555,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Configuration")
         .summary(std::string("Get specific configuration for ") + et.singular)
+        .description(std::string("Returns a specific ROS 2 node parameter for this ") + et.singular + ".")
         .response(200, "Configuration parameter", SB::ref("ConfigurationParam"))
         .operation_id(std::string("get") + capitalize(et.singular) + "Configuration");
 
@@ -546,6 +565,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Configuration")
         .summary(std::string("Set configuration for ") + et.singular)
+        .description(std::string("Sets a ROS 2 node parameter value for this ") + et.singular + ".")
         .request_body("Configuration value", SB::ref("ConfigurationParam"))
         .response(200, "Updated configuration", SB::ref("ConfigurationParam"))
         .operation_id(std::string("set") + capitalize(et.singular) + "Configuration");
@@ -556,6 +576,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Configuration")
         .summary(std::string("Delete configuration for ") + et.singular)
+        .description(std::string("Resets a configuration parameter to its default for this ") + et.singular + ".")
         .response(204, "Configuration deleted")
         .operation_id(std::string("delete") + capitalize(et.singular) + "Configuration");
 
@@ -565,6 +586,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Configuration")
         .summary(std::string("Delete all configurations for ") + et.singular)
+        .description(std::string("Resets all configuration parameters for this ") + et.singular + ".")
         .response(204, "All configurations deleted")
         .operation_id(std::string("deleteAll") + capitalize(et.singular) + "Configurations");
 
@@ -575,6 +597,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Faults")
         .summary(std::string("List faults for ") + et.singular)
+        .description(std::string("Returns all active faults reported by this ") + et.singular + ".")
         .response(200, "Fault list", SB::ref("FaultList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Faults");
 
@@ -584,6 +607,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Faults")
         .summary(std::string("Get specific fault for ") + et.singular)
+        .description("Returns fault details including SOVD status, environment data, and rosbag snapshots.")
         .response(200, "Fault detail", SB::ref("FaultDetail"))
         .operation_id(std::string("get") + capitalize(et.singular) + "Fault");
 
@@ -593,6 +617,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Faults")
         .summary(std::string("Clear fault for ") + et.singular)
+        .description(std::string("Clears a specific fault for this ") + et.singular + ".")
         .response(204, "Fault cleared")
         .operation_id(std::string("clear") + capitalize(et.singular) + "Fault");
 
@@ -602,6 +627,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Faults")
         .summary(std::string("Clear all faults for ") + et.singular)
+        .description(std::string("Clears all faults for this ") + et.singular + ".")
         .response(204, "All faults cleared")
         .operation_id(std::string("clearAll") + capitalize(et.singular) + "Faults");
 
@@ -612,6 +638,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Logs")
         .summary(std::string("Query log entries for ") + et.singular)
+        .description(std::string("Queries application log entries for this ") + et.singular + ".")
         .response(200, "Log entries", SB::ref("LogEntryList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Logs");
 
@@ -621,6 +648,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Logs")
         .summary(std::string("Get log configuration for ") + et.singular)
+        .description(std::string("Returns the log filter configuration for this ") + et.singular + ".")
         .response(200, "Log configuration", SB::ref("LogConfiguration"))
         .operation_id(std::string("get") + capitalize(et.singular) + "LogConfiguration");
 
@@ -630,6 +658,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Logs")
         .summary(std::string("Update log configuration for ") + et.singular)
+        .description(std::string("Updates the log severity filter and max entries for this ") + et.singular + ".")
         .request_body("Log configuration", SB::ref("LogConfiguration"))
         .response(204, "Configuration updated")
         .operation_id(std::string("set") + capitalize(et.singular) + "LogConfiguration");
@@ -641,6 +670,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Bulk Data")
         .summary(std::string("List bulk-data categories for ") + et.singular)
+        .description(std::string("Lists bulk-data categories (e.g., rosbag snapshots) for this ") + et.singular + ".")
         .response(200, "Category list", SB::ref("BulkDataCategoryList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "BulkDataCategories");
 
@@ -650,6 +680,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Bulk Data")
         .summary(std::string("List bulk-data descriptors for ") + et.singular)
+        .description(std::string("Lists downloadable files in a bulk-data category for this ") + et.singular + ".")
         .response(200, "Descriptor list", SB::ref("BulkDataDescriptorList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "BulkDataDescriptors");
 
@@ -659,6 +690,7 @@ void RESTServer::setup_routes() {
             })
         .tag("Bulk Data")
         .summary(std::string("Download bulk-data file for ") + et.singular)
+        .description("Downloads a bulk-data file (binary content).")
         .response(200, "File content", SB::binary_schema())
         .operation_id(std::string("download") + capitalize(et.singular) + "BulkData");
 
@@ -671,6 +703,7 @@ void RESTServer::setup_routes() {
                })
           .tag("Bulk Data")
           .summary(std::string("Upload bulk-data for ") + et.singular)
+          .description(std::string("Uploads a file to a bulk-data category for this ") + et.singular + ".")
           .request_body("File to upload", SB::generic_object_schema())
           .response(201, "File uploaded", SB::ref("BulkDataDescriptor"))
           .operation_id(std::string("upload") + capitalize(et.singular) + "BulkData");
@@ -681,6 +714,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Bulk Data")
           .summary(std::string("Delete bulk-data file for ") + et.singular)
+          .description(std::string("Deletes a bulk-data file for this ") + et.singular + ".")
           .response(204, "File deleted")
           .operation_id(std::string("delete") + capitalize(et.singular) + "BulkData");
     } else {
@@ -691,6 +725,7 @@ void RESTServer::setup_routes() {
                })
           .tag("Bulk Data")
           .summary(std::string("Upload bulk-data for ") + et.singular + " (not supported)")
+          .description("Bulk data upload is not supported for this entity type.")
           .response(405, "Method not allowed")
           .operation_id(std::string("upload") + capitalize(et.singular) + "BulkDataNotSupported");
 
@@ -701,6 +736,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Bulk Data")
           .summary(std::string("Delete bulk-data file for ") + et.singular + " (not supported)")
+          .description("Bulk data deletion is not supported for this entity type.")
           .response(405, "Method not allowed")
           .operation_id(std::string("delete") + capitalize(et.singular) + "BulkDataNotSupported");
     }
@@ -722,6 +758,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Triggers")
           .summary(std::string("SSE events stream for trigger on ") + et.singular)
+          .description(std::string("Server-Sent Events stream for trigger notifications on this ") + et.singular + ".")
           .operation_id(std::string("stream") + capitalize(et.singular) + "TriggerEvents");
 
       reg.post(entity_path + "/triggers",
@@ -734,6 +771,7 @@ void RESTServer::setup_routes() {
                })
           .tag("Triggers")
           .summary(std::string("Create trigger for ") + et.singular)
+          .description(std::string("Creates a new event trigger for this ") + et.singular + ".")
           .request_body("Trigger configuration", SB::ref("Trigger"))
           .response(201, "Trigger created", SB::ref("Trigger"))
           .operation_id(std::string("create") + capitalize(et.singular) + "Trigger");
@@ -748,6 +786,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Triggers")
           .summary(std::string("List triggers for ") + et.singular)
+          .description(std::string("Lists all triggers configured for this ") + et.singular + ".")
           .response(200, "Trigger list", SB::ref("TriggerList"))
           .operation_id(std::string("list") + capitalize(et.singular) + "Triggers");
 
@@ -761,6 +800,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Triggers")
           .summary(std::string("Get trigger for ") + et.singular)
+          .description(std::string("Returns details of a specific trigger on this ") + et.singular + ".")
           .response(200, "Trigger details", SB::ref("Trigger"))
           .operation_id(std::string("get") + capitalize(et.singular) + "Trigger");
 
@@ -774,6 +814,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Triggers")
           .summary(std::string("Update trigger for ") + et.singular)
+          .description(std::string("Updates a trigger configuration on this ") + et.singular + ".")
           .request_body("Trigger update", SB::ref("Trigger"))
           .response(200, "Updated trigger", SB::ref("Trigger"))
           .operation_id(std::string("update") + capitalize(et.singular) + "Trigger");
@@ -788,6 +829,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Triggers")
           .summary(std::string("Delete trigger for ") + et.singular)
+          .description(std::string("Deletes a trigger from this ") + et.singular + ".")
           .response(204, "Trigger deleted")
           .operation_id(std::string("delete") + capitalize(et.singular) + "Trigger");
     }
@@ -801,6 +843,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Subscriptions")
           .summary(std::string("SSE events stream for cyclic subscription on ") + et.singular)
+          .description(std::string("Server-Sent Events stream for subscription data on this ") + et.singular + ".")
           .operation_id(std::string("stream") + capitalize(et.singular) + "SubscriptionEvents");
 
       reg.post(entity_path + "/cyclic-subscriptions",
@@ -809,6 +852,7 @@ void RESTServer::setup_routes() {
                })
           .tag("Subscriptions")
           .summary(std::string("Create cyclic subscription for ") + et.singular)
+          .description(std::string("Creates a new cyclic data subscription for this ") + et.singular + ".")
           .request_body("Subscription configuration", SB::ref("CyclicSubscription"))
           .response(201, "Subscription created", SB::ref("CyclicSubscription"))
           .operation_id(std::string("create") + capitalize(et.singular) + "Subscription");
@@ -819,6 +863,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Subscriptions")
           .summary(std::string("List cyclic subscriptions for ") + et.singular)
+          .description(std::string("Lists all cyclic subscriptions for this ") + et.singular + ".")
           .response(200, "Subscription list", SB::ref("CyclicSubscriptionList"))
           .operation_id(std::string("list") + capitalize(et.singular) + "Subscriptions");
 
@@ -828,6 +873,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Subscriptions")
           .summary(std::string("Get cyclic subscription for ") + et.singular)
+          .description(std::string("Returns details of a specific subscription on this ") + et.singular + ".")
           .response(200, "Subscription details", SB::ref("CyclicSubscription"))
           .operation_id(std::string("get") + capitalize(et.singular) + "Subscription");
 
@@ -837,6 +883,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Subscriptions")
           .summary(std::string("Update cyclic subscription for ") + et.singular)
+          .description(std::string("Updates a subscription configuration on this ") + et.singular + ".")
           .request_body("Subscription update", SB::ref("CyclicSubscription"))
           .response(200, "Updated subscription", SB::ref("CyclicSubscription"))
           .operation_id(std::string("update") + capitalize(et.singular) + "Subscription");
@@ -847,6 +894,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Subscriptions")
           .summary(std::string("Delete cyclic subscription for ") + et.singular)
+          .description(std::string("Deletes a cyclic subscription from this ") + et.singular + ".")
           .response(204, "Subscription deleted")
           .operation_id(std::string("delete") + capitalize(et.singular) + "Subscription");
     }
@@ -859,6 +907,7 @@ void RESTServer::setup_routes() {
                })
           .tag("Locking")
           .summary(std::string("Acquire lock on ") + et.singular)
+          .description(std::string("Acquires an exclusive lock on this ") + et.singular + ".")
           .request_body("Lock parameters", SB::ref("Lock"))
           .response(201, "Lock acquired", SB::ref("Lock"))
           .operation_id(std::string("acquire") + capitalize(et.singular) + "Lock");
@@ -869,6 +918,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Locking")
           .summary(std::string("List locks on ") + et.singular)
+          .description(std::string("Lists all active locks on this ") + et.singular + ".")
           .response(200, "Lock list", SB::ref("LockList"))
           .operation_id(std::string("list") + capitalize(et.singular) + "Locks");
 
@@ -878,6 +928,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Locking")
           .summary(std::string("Get lock details for ") + et.singular)
+          .description(std::string("Returns details of a specific lock on this ") + et.singular + ".")
           .response(200, "Lock details", SB::ref("Lock"))
           .operation_id(std::string("get") + capitalize(et.singular) + "Lock");
 
@@ -887,6 +938,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Locking")
           .summary(std::string("Extend lock on ") + et.singular)
+          .description(std::string("Extends the expiration of a lock on this ") + et.singular + ".")
           .request_body("Lock extension", SB::ref("Lock"))
           .response(200, "Lock extended", SB::ref("Lock"))
           .operation_id(std::string("extend") + capitalize(et.singular) + "Lock");
@@ -897,6 +949,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Locking")
           .summary(std::string("Release lock on ") + et.singular)
+          .description(std::string("Releases a lock on this ") + et.singular + ".")
           .response(204, "Lock released")
           .operation_id(std::string("release") + capitalize(et.singular) + "Lock");
     }
@@ -909,6 +962,7 @@ void RESTServer::setup_routes() {
                })
           .tag("Scripts")
           .summary(std::string("Upload diagnostic script for ") + et.singular)
+          .description(std::string("Uploads a diagnostic script for this ") + et.singular + ".")
           .request_body("Script file", SB::generic_object_schema())
           .response(201, "Script uploaded", SB::ref("ScriptMetadata"))
           .operation_id(std::string("upload") + capitalize(et.singular) + "Script");
@@ -919,6 +973,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Scripts")
           .summary(std::string("List scripts for ") + et.singular)
+          .description(std::string("Lists all diagnostic scripts for this ") + et.singular + ".")
           .response(200, "Script list", SB::ref("ScriptMetadataList"))
           .operation_id(std::string("list") + capitalize(et.singular) + "Scripts");
 
@@ -928,6 +983,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Scripts")
           .summary(std::string("Get script metadata for ") + et.singular)
+          .description(std::string("Returns metadata of a specific script for this ") + et.singular + ".")
           .response(200, "Script metadata", SB::ref("ScriptMetadata"))
           .operation_id(std::string("get") + capitalize(et.singular) + "Script");
 
@@ -937,6 +993,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Scripts")
           .summary(std::string("Delete script for ") + et.singular)
+          .description(std::string("Deletes a diagnostic script from this ") + et.singular + ".")
           .response(204, "Script deleted")
           .operation_id(std::string("delete") + capitalize(et.singular) + "Script");
 
@@ -946,6 +1003,7 @@ void RESTServer::setup_routes() {
                })
           .tag("Scripts")
           .summary(std::string("Start script execution for ") + et.singular)
+          .description(std::string("Starts execution of a diagnostic script on this ") + et.singular + ".")
           .request_body("Execution parameters", SB::generic_object_schema())
           .response(202, "Execution started", SB::ref("ScriptExecution"))
           .operation_id(std::string("start") + capitalize(et.singular) + "ScriptExecution");
@@ -956,6 +1014,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Scripts")
           .summary(std::string("Get execution status for ") + et.singular)
+          .description("Returns the current status of a script execution.")
           .response(200, "Execution status", SB::ref("ScriptExecution"))
           .operation_id(std::string("get") + capitalize(et.singular) + "ScriptExecution");
 
@@ -965,6 +1024,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Scripts")
           .summary(std::string("Terminate script execution for ") + et.singular)
+          .description("Sends a control command (e.g., terminate) to a running script execution.")
           .request_body("Execution control", SB::generic_object_schema())
           .response(200, "Execution updated", SB::ref("ScriptExecution"))
           .operation_id(std::string("control") + capitalize(et.singular) + "ScriptExecution");
@@ -975,6 +1035,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Scripts")
           .summary(std::string("Remove completed execution for ") + et.singular)
+          .description("Removes a completed script execution record.")
           .response(204, "Execution removed")
           .operation_id(std::string("remove") + capitalize(et.singular) + "ScriptExecution");
     }
@@ -987,6 +1048,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Discovery")
           .summary("List components in area")
+          .description("Lists components belonging to this area.")
           .response(200, "Component list", SB::ref("EntityList"))
           .operation_id("listAreaComponents");
 
@@ -996,6 +1058,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Discovery")
           .summary("List subareas")
+          .description("Lists subareas within this area.")
           .response(200, "Subarea list", SB::ref("EntityList"))
           .operation_id("listSubareas");
 
@@ -1005,6 +1068,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Discovery")
           .summary("List entities contained in area")
+          .description("Lists all entities contained in this area.")
           .response(200, "Contained entities", SB::ref("EntityList"))
           .operation_id("listAreaContains");
     }
@@ -1016,6 +1080,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Discovery")
           .summary("List subcomponents")
+          .description("Lists subcomponents of this component.")
           .response(200, "Subcomponent list", SB::ref("EntityList"))
           .operation_id("listSubcomponents");
 
@@ -1025,6 +1090,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Discovery")
           .summary("List component hosts")
+          .description("Lists apps hosted by this component.")
           .response(200, "Host list", SB::ref("EntityList"))
           .operation_id("listComponentHosts");
 
@@ -1034,6 +1100,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Discovery")
           .summary("List component dependencies")
+          .description("Lists components this component depends on.")
           .response(200, "Dependency list", SB::ref("EntityList"))
           .operation_id("listComponentDependencies");
     }
@@ -1045,6 +1112,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Discovery")
           .summary("Get app host component")
+          .description("Returns the component hosting this app.")
           .response(200, "Host component", SB::ref("EntityDetail"))
           .operation_id("getAppHost");
 
@@ -1054,6 +1122,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Discovery")
           .summary("List app dependencies")
+          .description("Lists apps this app depends on.")
           .response(200, "Dependency list", SB::ref("EntityList"))
           .operation_id("listAppDependencies");
     }
@@ -1065,6 +1134,7 @@ void RESTServer::setup_routes() {
               })
           .tag("Discovery")
           .summary("List function hosts")
+          .description("Lists components hosting this function.")
           .response(200, "Host list", SB::ref("EntityList"))
           .operation_id("listFunctionHosts");
     }
@@ -1073,6 +1143,7 @@ void RESTServer::setup_routes() {
     reg.get(entity_path, et.detail_handler)
         .tag("Discovery")
         .summary(std::string("Get ") + et.singular + " details")
+        .description(std::string("Returns ") + et.singular + " details with capabilities and resource collection URIs.")
         .response(200, "Entity details with capabilities", SB::ref("EntityDetail"))
         .operation_id(std::string("get") + capitalize(et.singular));
   }
@@ -1084,6 +1155,7 @@ void RESTServer::setup_routes() {
           })
       .tag("Bulk Data")
       .summary("List bulk-data categories for subarea")
+      .description("Lists bulk-data categories for a subarea.")
       .response(200, "Category list", SB::ref("BulkDataCategoryList"))
       .operation_id("listSubareaBulkDataCategories");
 
@@ -1093,6 +1165,7 @@ void RESTServer::setup_routes() {
           })
       .tag("Bulk Data")
       .summary("List bulk-data descriptors for subarea")
+      .description("Lists bulk-data descriptors for a subarea.")
       .response(200, "Descriptor list", SB::ref("BulkDataDescriptorList"))
       .operation_id("listSubareaBulkDataDescriptors");
 
@@ -1102,6 +1175,7 @@ void RESTServer::setup_routes() {
           })
       .tag("Bulk Data")
       .summary("Download bulk-data file for subarea")
+      .description("Downloads a bulk-data file for a subarea.")
       .response(200, "File content", SB::binary_schema())
       .operation_id("downloadSubareaBulkData");
 
@@ -1112,6 +1186,7 @@ void RESTServer::setup_routes() {
           })
       .tag("Bulk Data")
       .summary("List bulk-data categories for subcomponent")
+      .description("Lists bulk-data categories for a subcomponent.")
       .response(200, "Category list", SB::ref("BulkDataCategoryList"))
       .operation_id("listSubcomponentBulkDataCategories");
 
@@ -1121,6 +1196,7 @@ void RESTServer::setup_routes() {
           })
       .tag("Bulk Data")
       .summary("List bulk-data descriptors for subcomponent")
+      .description("Lists bulk-data descriptors for a subcomponent.")
       .response(200, "Descriptor list", SB::ref("BulkDataDescriptorList"))
       .operation_id("listSubcomponentBulkDataDescriptors");
 
@@ -1130,6 +1206,7 @@ void RESTServer::setup_routes() {
           })
       .tag("Bulk Data")
       .summary("Download bulk-data file for subcomponent")
+      .description("Downloads a bulk-data file for a subcomponent.")
       .response(200, "File content", SB::binary_schema())
       .operation_id("downloadSubcomponentBulkData");
 
@@ -1160,6 +1237,7 @@ void RESTServer::setup_routes() {
           })
       .tag("Faults")
       .summary("Clear all faults globally")
+      .description("Clears all faults across the entire system.")
       .response(204, "All faults cleared")
       .operation_id("clearAllFaults");
 
@@ -1175,6 +1253,7 @@ void RESTServer::setup_routes() {
                                        : HandlerFn(update_501))
       .tag("Updates")
       .summary("List software updates")
+      .description("Lists all registered software updates.")
       .response(200, "Update list", SB::ref("UpdateList"))
       .operation_id("listUpdates");
 
@@ -1184,6 +1263,7 @@ void RESTServer::setup_routes() {
                                         : HandlerFn(update_501))
       .tag("Updates")
       .summary("Register a software update")
+      .description("Registers a new software update descriptor.")
       .request_body("Update descriptor", SB::generic_object_schema())
       .response(201, "Update registered", SB::generic_object_schema())
       .operation_id("registerUpdate");
@@ -1194,6 +1274,7 @@ void RESTServer::setup_routes() {
                                                           : HandlerFn(update_501))
       .tag("Updates")
       .summary("Get update status")
+      .description("Returns the current status and progress of an update.")
       .response(200, "Update status", SB::ref("UpdateStatus"))
       .operation_id("getUpdateStatus");
 
@@ -1203,6 +1284,7 @@ void RESTServer::setup_routes() {
                                                            : HandlerFn(update_501))
       .tag("Updates")
       .summary("Prepare update for execution")
+      .description("Prepares an update for execution (downloads, validates).")
       .request_body("Prepare parameters", SB::generic_object_schema())
       .response(200, "Update prepared", SB::ref("UpdateStatus"))
       .operation_id("prepareUpdate");
@@ -1213,6 +1295,7 @@ void RESTServer::setup_routes() {
                                                            : HandlerFn(update_501))
       .tag("Updates")
       .summary("Execute update")
+      .description("Starts executing a prepared update.")
       .request_body("Execute parameters", SB::generic_object_schema())
       .response(200, "Update executing", SB::ref("UpdateStatus"))
       .operation_id("executeUpdate");
@@ -1223,6 +1306,7 @@ void RESTServer::setup_routes() {
                                                              : HandlerFn(update_501))
       .tag("Updates")
       .summary("Run automated update")
+      .description("Runs a fully automated update (prepare + execute).")
       .request_body("Automated parameters", SB::generic_object_schema())
       .response(200, "Automated update started", SB::ref("UpdateStatus"))
       .operation_id("automateUpdate");
@@ -1233,6 +1317,7 @@ void RESTServer::setup_routes() {
                                                    : HandlerFn(update_501))
       .tag("Updates")
       .summary("Get update details")
+      .description("Returns details of a specific update.")
       .response(200, "Update details", SB::generic_object_schema())
       .operation_id("getUpdate");
 
@@ -1242,6 +1327,7 @@ void RESTServer::setup_routes() {
                                                    : HandlerFn(update_501))
       .tag("Updates")
       .summary("Delete update")
+      .description("Removes an update registration.")
       .response(204, "Update deleted")
       .operation_id("deleteUpdate");
 
