@@ -1,5 +1,5 @@
 Web UI (ros2_medkit_web_ui)
-==========================
+============================
 
 ros2_medkit_web_ui is a lightweight web application for browsing SOVD entity trees.
 It connects to the ros2_medkit gateway and visualizes the entity hierarchy.
