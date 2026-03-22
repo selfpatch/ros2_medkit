@@ -717,14 +717,16 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       default_script_provider_ = std::make_unique<DefaultScriptProvider>(scripts_config);
       script_mgr_->set_backend(default_script_provider_.get());
       RCLCPP_INFO(get_logger(), "Scripts enabled with directory: %s", scripts_dir.c_str());
-    }
-    if (scripts_dir.empty()) {
+    } else {
       auto * manifest_mgr = discovery_mgr_->get_manifest_manager();
-      if (manifest_mgr && !manifest_mgr->get_scripts().empty()) {
-        RCLCPP_WARN(get_logger(),
-                    "Manifest defines %zu script(s) but scripts.scripts_dir is not configured - "
-                    "manifest scripts will not be loaded. Set 'scripts.scripts_dir' in gateway parameters to enable.",
-                    manifest_mgr->get_scripts().size());
+      if (manifest_mgr) {
+        auto manifest_scripts = manifest_mgr->get_scripts();
+        if (!manifest_scripts.empty()) {
+          RCLCPP_WARN(get_logger(),
+                      "Manifest defines %zu script(s) but scripts.scripts_dir is not configured - "
+                      "manifest scripts will not be loaded. Set 'scripts.scripts_dir' in gateway parameters to enable.",
+                      manifest_scripts.size());
+        }
       }
     }
   }

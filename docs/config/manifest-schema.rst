@@ -694,7 +694,7 @@ Fields
    * - ``parameters_schema``
      - object
      - No
-     - JSON Schema for execution parameters validation. Only flat scalar key-value pairs are supported in YAML; nested objects and arrays are not preserved.
+     - JSON Schema for execution parameters validation. Nested objects and arrays are fully supported.
 
 Example
 ~~~~~~~

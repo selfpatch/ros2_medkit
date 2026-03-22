@@ -368,7 +368,7 @@ scripts:
   EXPECT_EQ(manifest.scripts[0].parameters_schema->at("type"), "object");
 }
 
-TEST_F(ManifestParserTest, ParseScriptsParametersSchemaDropsNonScalars) {
+TEST_F(ManifestParserTest, ParseScriptsParametersSchemaPreservesNestedObjects) {
   const std::string yaml = R"(
 manifest_version: "1.0"
 scripts:
@@ -380,16 +380,23 @@ scripts:
       properties:
         threshold:
           type: "number"
+      required:
+        - threshold
 )";
 
   auto manifest = parser_.parse_string(yaml);
 
   ASSERT_EQ(manifest.scripts.size(), 1);
   ASSERT_TRUE(manifest.scripts[0].parameters_schema.has_value());
-  // Scalar value is preserved
-  EXPECT_EQ(manifest.scripts[0].parameters_schema->at("type"), "object");
-  // Nested object "properties" is silently dropped
-  EXPECT_FALSE(manifest.scripts[0].parameters_schema->contains("properties"));
+  const auto & schema = *manifest.scripts[0].parameters_schema;
+  EXPECT_EQ(schema.at("type"), "object");
+  // Nested objects are preserved via recursive YAML-to-JSON conversion
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_EQ(schema["properties"]["threshold"]["type"], "number");
+  // Arrays are preserved
+  ASSERT_TRUE(schema.contains("required"));
+  ASSERT_TRUE(schema["required"].is_array());
+  EXPECT_EQ(schema["required"][0], "threshold");
 }
 
 // @verifies REQ_INTEROP_041

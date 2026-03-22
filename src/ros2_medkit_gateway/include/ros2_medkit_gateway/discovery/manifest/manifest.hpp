@@ -14,11 +14,11 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/default_script_provider.hpp"
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/script_types.hpp"
 
 #include <nlohmann/json.hpp>
 #include <string>

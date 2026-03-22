@@ -16,7 +16,6 @@
 
 #include <atomic>
 #include <filesystem>
-#include <map>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -24,34 +23,9 @@
 #include <nlohmann/json.hpp>
 
 #include "ros2_medkit_gateway/providers/script_provider.hpp"
+#include "ros2_medkit_gateway/script_types.hpp"
 
 namespace ros2_medkit_gateway {
-
-/// Configuration for a single pre-defined script loaded from manifest YAML.
-struct ScriptEntryConfig {
-  std::string id;
-  std::string name;
-  std::string description;
-  std::string path;    // filesystem path to the script file
-  std::string format;  // python, bash, sh
-  int timeout_sec = 300;
-  std::vector<std::string> entity_filter;  // globs like "components/*", "apps/*"
-  std::map<std::string, std::string> env;  // environment variables
-  nlohmann::json args;                     // array of {name, type, flag}
-  std::optional<nlohmann::json> parameters_schema;
-};
-
-/// Top-level scripts configuration.
-struct ScriptsConfig {
-  std::string scripts_dir;
-  int max_file_size_mb = 10;
-  int max_concurrent_executions = 5;
-  int default_timeout_sec = 300;
-  int max_execution_history = 100;
-  bool allow_uploads = true;
-  std::vector<std::string> supported_execution_types = {"now"};
-  std::vector<ScriptEntryConfig> entries;
-};
 
 /// Tracks the state of a running script execution.
 struct ExecutionState {
