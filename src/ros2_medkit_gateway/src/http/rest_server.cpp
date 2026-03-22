@@ -727,7 +727,8 @@ void RESTServer::setup_routes() {
           .summary(std::string("Upload bulk-data for ") + et.singular + " (not supported)")
           .description("Bulk data upload is not supported for this entity type.")
           .response(405, "Method not allowed")
-          .operation_id(std::string("upload") + capitalize(et.singular) + "BulkDataNotSupported");
+          .operation_id(std::string("upload") + capitalize(et.singular) + "BulkDataNotSupported")
+          .hidden();  // Always returns 405 - exclude from OpenAPI spec and generated clients
 
       reg.del(entity_path + "/bulk-data/{category_id}/{file_id}",
               [this](auto & /*req*/, auto & res) {
@@ -738,7 +739,8 @@ void RESTServer::setup_routes() {
           .summary(std::string("Delete bulk-data file for ") + et.singular + " (not supported)")
           .description("Bulk data deletion is not supported for this entity type.")
           .response(405, "Method not allowed")
-          .operation_id(std::string("delete") + capitalize(et.singular) + "BulkDataNotSupported");
+          .operation_id(std::string("delete") + capitalize(et.singular) + "BulkDataNotSupported")
+          .hidden();  // Always returns 405 - exclude from OpenAPI spec and generated clients
     }
 
     // --- Triggers (ALL entity types - x-medkit extension beyond SOVD) ---

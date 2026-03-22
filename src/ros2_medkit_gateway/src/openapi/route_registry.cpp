@@ -88,6 +88,11 @@ RouteEntry & RouteEntry::operation_id(const std::string & id) {
   return *this;
 }
 
+RouteEntry & RouteEntry::hidden() {
+  hidden_ = true;
+  return *this;
+}
+
 // -----------------------------------------------------------------------------
 // RouteRegistry route registration
 // -----------------------------------------------------------------------------
@@ -191,6 +196,11 @@ nlohmann::json RouteRegistry::to_openapi_paths() const {
   nlohmann::json paths = nlohmann::json::object();
 
   for (const auto & route : routes_) {
+    // Hidden routes are served by cpp-httplib but excluded from OpenAPI spec
+    if (route.hidden_) {
+      continue;
+    }
+
     nlohmann::json operation;
 
     if (!route.tag_.empty()) {
@@ -389,6 +399,11 @@ std::vector<ValidationIssue> RouteRegistry::validate_completeness() const {
   std::vector<ValidationIssue> issues;
 
   for (const auto & route : routes_) {
+    // Hidden routes are excluded from OpenAPI - skip validation
+    if (route.hidden_) {
+      continue;
+    }
+
     std::string method_upper = route.method_;
     std::transform(method_upper.begin(), method_upper.end(), method_upper.begin(), [](unsigned char c) {
       return std::toupper(c);
