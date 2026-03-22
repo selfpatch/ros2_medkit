@@ -723,7 +723,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       if (manifest_mgr && !manifest_mgr->get_scripts().empty()) {
         RCLCPP_WARN(get_logger(),
                     "Manifest defines %zu script(s) but scripts.scripts_dir is not configured - "
-                    "manifest scripts will not be loaded",
+                    "manifest scripts will not be loaded. Set 'scripts.scripts_dir' in gateway parameters to enable.",
                     manifest_mgr->get_scripts().size());
       }
     }

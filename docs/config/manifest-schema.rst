@@ -833,8 +833,7 @@ Manifests are validated during loading. The validator checks:
 **Uniqueness:**
 
 - All entity IDs must be unique within their type
-- IDs should be unique across all types (warning)
-- Script IDs must be unique (checked against all entity types)
+- IDs must be unique across all entity types (areas, components, apps, functions, scripts)
 
 **Format:**
 
