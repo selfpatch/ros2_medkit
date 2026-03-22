@@ -60,6 +60,7 @@ class ManifestParser {
   ManifestConfig parse_config(const YAML::Node & node) const;
   ManifestMetadata parse_metadata(const YAML::Node & node) const;
   ManifestLockConfig parse_lock_config(const YAML::Node & node) const;
+  ScriptEntryConfig parse_script_entry(const YAML::Node & node) const;
 
   /// Get string value with default
   std::string get_string(const YAML::Node & node, const std::string & key, const std::string & default_val = "") const;
