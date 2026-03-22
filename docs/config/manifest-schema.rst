@@ -30,6 +30,7 @@ A manifest file has the following top-level structure:
    components: []         # Optional - component definitions
    apps: []               # Optional - app definitions
    functions: []          # Optional - function definitions
+   scripts: []             # Optional - pre-defined script entries
 
 manifest_version (Required)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -610,6 +611,112 @@ Example
          - camera-driver
          - point-cloud-processor
 
+Scripts
+-------
+
+Scripts define pre-deployed diagnostic scripts that are available on entities.
+Scripts defined in the manifest are ``managed`` - they cannot be deleted via the REST API.
+
+Schema
+~~~~~~
+
+.. code-block:: yaml
+
+   scripts:
+     - id: string              # Required - unique identifier
+       name: string            # Optional - human-readable name (defaults to id)
+       description: string     # Optional - detailed description
+       path: string            # Required - filesystem path to script file
+       format: string          # Required - execution format (bash, python, sh)
+       timeout_sec: integer    # Optional - execution timeout (default: 300)
+       entity_filter: [string] # Optional - glob patterns for entity matching
+       env:                    # Optional - environment variables
+         KEY: "value"
+       args:                   # Optional - argument definitions
+         - name: string
+           type: string
+           flag: string
+       parameters_schema:      # Optional - JSON Schema for parameters
+
+Fields
+~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 15 10 53
+
+   * - Field
+     - Type
+     - Required
+     - Description
+   * - ``id``
+     - string
+     - Yes
+     - Unique script identifier
+   * - ``name``
+     - string
+     - No
+     - Human-readable name (defaults to id)
+   * - ``description``
+     - string
+     - No
+     - Detailed description
+   * - ``path``
+     - string
+     - Yes
+     - Filesystem path to the script file
+   * - ``format``
+     - string
+     - Yes
+     - Execution format: ``bash``, ``python``, ``sh``
+   * - ``timeout_sec``
+     - integer
+     - No
+     - Max execution time in seconds (default: 300)
+   * - ``entity_filter``
+     - [string]
+     - No
+     - Glob patterns for entity matching (e.g., ``components/*``, ``apps/*``). Empty means all entities.
+   * - ``env``
+     - map
+     - No
+     - Environment variables passed to the script
+   * - ``args``
+     - [object]
+     - No
+     - Argument definitions with ``name``, ``type``, ``flag`` fields
+   * - ``parameters_schema``
+     - object
+     - No
+     - JSON Schema for execution parameters validation
+
+Example
+~~~~~~~
+
+.. code-block:: yaml
+
+   scripts:
+     - id: run-diagnostics
+       name: "Run Diagnostics"
+       description: "Check health of all sensors"
+       path: "/opt/scripts/run-diagnostics.sh"
+       format: "bash"
+       timeout_sec: 30
+       entity_filter:
+         - "components/*"
+       env:
+         GATEWAY_URL: "http://localhost:8080"
+
+     - id: calibrate-sensor
+       name: "Calibrate Sensor"
+       path: "/opt/scripts/calibrate.py"
+       format: "python"
+       timeout_sec: 60
+       args:
+         - name: threshold
+           type: float
+           flag: "--threshold"
+
 Complete Example
 ----------------
 
@@ -682,6 +789,15 @@ Here's a complete manifest for a TurtleBot3 robot:
        hosted_by:
          - amcl-node
          - planner-server
+
+   scripts:
+     - id: run-diagnostics
+       name: "Run Diagnostics"
+       path: "/opt/scripts/diagnostics.sh"
+       format: "bash"
+       timeout_sec: 30
+       entity_filter:
+         - "components/*"
 
 Validation
 ----------
