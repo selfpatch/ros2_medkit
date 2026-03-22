@@ -83,6 +83,11 @@ RouteEntry & RouteEntry::deprecated() {
   return *this;
 }
 
+RouteEntry & RouteEntry::operation_id(const std::string & id) {
+  operation_id_ = id;
+  return *this;
+}
+
 // -----------------------------------------------------------------------------
 // RouteRegistry route registration
 // -----------------------------------------------------------------------------
@@ -242,6 +247,9 @@ nlohmann::json RouteRegistry::to_openapi_paths() const {
               {"update_id", "The software update identifier"},
               {"subarea_id", "The subarea identifier"},
               {"subcomponent_id", "The subcomponent identifier"},
+              {"trigger_id", "The trigger identifier"},
+              {"lock_id", "The lock identifier"},
+              {"script_id", "The script identifier"},
           };
           nlohmann::json param;
           param["name"] = pname;
@@ -300,24 +308,37 @@ nlohmann::json RouteRegistry::to_openapi_paths() const {
       add_error_ref("403");
     }
 
-    // Auto-generate operationId from method + path
-    {
+    // Use explicit operationId if set, otherwise auto-generate camelCase from path
+    if (!route.operation_id_.empty()) {
+      operation["operationId"] = route.operation_id_;
+    } else {
+      // Auto-generate: strip {param} segments, camelCase remaining path segments
+      // e.g., GET /faults/stream -> getFaultsStream
       std::string op_id = route.method_;
       bool next_upper = false;
+      bool in_param = false;
       for (char c : route.path_) {
-        if (c == '/' || c == '{' || c == '}' || c == '-') {
+        if (c == '{') {
+          in_param = true;
+          continue;
+        }
+        if (c == '}') {
+          in_param = false;
+          continue;
+        }
+        if (in_param) {
+          continue;
+        }
+        if (c == '/' || c == '-') {
           next_upper = true;
         } else {
-          if (next_upper && !op_id.empty()) {
-            op_id += '_';
+          if (next_upper) {
+            op_id += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             next_upper = false;
+          } else {
+            op_id += c;
           }
-          op_id += c;
         }
-      }
-      // Remove trailing underscore if present
-      if (!op_id.empty() && op_id.back() == '_') {
-        op_id.pop_back();
       }
       operation["operationId"] = op_id;
     }

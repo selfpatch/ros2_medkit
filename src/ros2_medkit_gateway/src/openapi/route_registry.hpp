@@ -40,6 +40,7 @@ class RouteEntry {
   RouteEntry & path_param(const std::string & name, const std::string & desc);
   RouteEntry & query_param(const std::string & name, const std::string & desc, const std::string & type = "string");
   RouteEntry & deprecated();
+  RouteEntry & operation_id(const std::string & id);
 
  private:
   friend class RouteRegistry;
@@ -51,6 +52,7 @@ class RouteEntry {
   std::string description_;
   HandlerFn handler_;
   bool deprecated_{false};
+  std::string operation_id_;
 
   struct ResponseInfo {
     std::string desc;
@@ -65,6 +67,14 @@ class RouteEntry {
   std::optional<RequestBodyInfo> request_body_;
 
   std::vector<nlohmann::json> parameters_;
+};
+
+/// Validation issue found by validate_completeness().
+struct ValidationIssue {
+  enum class Severity { kError, kWarning };
+  Severity severity;
+  std::string route;    // e.g., "GET /apps/{app_id}/data"
+  std::string message;  // e.g., "Missing response schema for 200"
 };
 
 /// Central registry: single source of truth for routes + OpenAPI metadata.
@@ -91,6 +101,11 @@ class RouteRegistry {
 
   /// Generate endpoint list for handle_root (e.g., "GET /api/v1/health").
   std::vector<std::string> to_endpoint_list(const std::string & api_prefix) const;
+
+  /// Validate that all routes have required OpenAPI metadata.
+  /// Returns issues found. Errors indicate missing required metadata,
+  /// warnings indicate missing optional metadata.
+  std::vector<ValidationIssue> validate_completeness() const;
 
   /// Number of registered routes.
   size_t size() const {
