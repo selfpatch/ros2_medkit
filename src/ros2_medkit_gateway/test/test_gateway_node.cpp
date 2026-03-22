@@ -79,8 +79,12 @@ class TestGatewayNode : public ::testing::Test {
     int free_port = reserve_free_port();
     ASSERT_NE(free_port, 0) << "Failed to reserve a free port for test";
 
+    create_node_with_overrides({rclcpp::Parameter("server.port", free_port)});
+  }
+
+  void create_node_with_overrides(const std::vector<rclcpp::Parameter> & overrides) {
     rclcpp::NodeOptions options;
-    options.parameter_overrides({rclcpp::Parameter("server.port", free_port)});
+    options.parameter_overrides(overrides);
     node_ = std::make_shared<ros2_medkit_gateway::GatewayNode>(options);
 
     // Get server configuration from node parameters
@@ -117,6 +121,18 @@ class TestGatewayNode : public ::testing::Test {
 
   httplib::Client create_client() {
     return httplib::Client(server_host_, server_port_);
+  }
+
+  bool wait_for_subscriber_count(const std::string & topic_name, size_t expected_count,
+                                 std::chrono::milliseconds timeout = 2s) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (node_->count_subscribers(topic_name) == expected_count) {
+        return true;
+      }
+      std::this_thread::sleep_for(20ms);
+    }
+    return node_->count_subscribers(topic_name) == expected_count;
   }
 
   std::string write_temp_manifest(const std::string & contents) {
@@ -231,6 +247,21 @@ TEST_F(TestGatewayNode, test_root_endpoint) {
   EXPECT_TRUE(json_response.contains("capabilities"));
   EXPECT_TRUE(json_response["capabilities"]["discovery"]);
   EXPECT_TRUE(json_response["capabilities"]["data_access"]);
+}
+
+TEST_F(TestGatewayNode, test_fault_manager_namespace_configures_event_subscribers) {
+  node_.reset();
+
+  int free_port = reserve_free_port();
+  ASSERT_NE(free_port, 0) << "Failed to reserve a free port for test";
+
+  create_node_with_overrides({
+      rclcpp::Parameter("server.port", free_port),
+      rclcpp::Parameter("fault_manager_namespace", "robot5"),
+  });
+
+  ASSERT_TRUE(wait_for_subscriber_count("/robot5/fault_manager/events", 2u));
+  EXPECT_EQ(node_->count_subscribers("/fault_manager/events"), 0u);
 }
 
 TEST_F(TestGatewayNode, test_version_info_endpoint) {

@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 
+#include <cctype>
 #include <stdexcept>
 
 namespace ros2_medkit_gateway {
@@ -45,11 +46,26 @@ std::string get_fault_manager_namespace(rclcpp::Node * node) {
   }
 
   constexpr auto kParameterName = "fault_manager_namespace";
-  if (!node->has_parameter(kParameterName)) {
-    node->declare_parameter<std::string>(kParameterName, "");
+  std::string namespace_value;
+  if (!node->get_parameter(kParameterName, namespace_value)) {
+    return "";
   }
 
-  return normalize_fault_manager_namespace(node->get_parameter(kParameterName).as_string());
+  auto normalized = normalize_fault_manager_namespace(namespace_value);
+  for (char c : normalized) {
+    auto uc = static_cast<unsigned char>(c);
+    if (std::isalnum(uc) || c == '_' || c == '/') {
+      continue;
+    }
+
+    RCLCPP_WARN(node->get_logger(),
+                "Ignoring invalid fault_manager_namespace '%s': character '%c' is not allowed. "
+                "Falling back to root fault manager path.",
+                namespace_value.c_str(), c);
+    return "";
+  }
+
+  return normalized;
 }
 
 std::string build_fault_manager_base_path(const std::string & namespace_value) {

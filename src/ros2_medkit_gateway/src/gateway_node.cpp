@@ -115,6 +115,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("server.host", "127.0.0.1");
   declare_parameter("server.port", 8080);
   declare_parameter("refresh_interval_ms", 10000);
+  declare_parameter("fault_manager_namespace", "");
+  declare_parameter("fault_service_timeout_sec", 5.0);
   declare_parameter("cors.allowed_origins", std::vector<std::string>{});
   declare_parameter("cors.allowed_methods", std::vector<std::string>{"GET", "PUT", "POST", "DELETE", "OPTIONS"});
   declare_parameter("cors.allowed_headers", std::vector<std::string>{"Content-Type", "Accept"});
