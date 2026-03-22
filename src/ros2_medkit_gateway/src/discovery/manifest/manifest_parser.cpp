@@ -16,8 +16,11 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
+
+#include "ros2_medkit_serialization/json_serializer.hpp"
 
 namespace ros2_medkit_gateway {
 namespace discovery {
@@ -305,10 +308,12 @@ ros2_medkit_gateway::ScriptEntryConfig ManifestParser::parse_script_entry(const 
   }
   entry.entity_filter = get_string_vector(node, "entity_filter");
 
-  // Parse env map
+  // Parse env map (skip non-scalar values to avoid yaml-cpp exceptions)
   if (node["env"] && node["env"].IsMap()) {
     for (const auto & it : node["env"]) {
-      entry.env[it.first.as<std::string>()] = it.second.as<std::string>();
+      if (it.second.IsScalar()) {
+        entry.env[it.first.as<std::string>()] = it.second.as<std::string>();
+      }
     }
   }
 
@@ -330,16 +335,12 @@ ros2_medkit_gateway::ScriptEntryConfig ManifestParser::parse_script_entry(const 
     }
   }
 
-  // Parse parameters_schema (JSON object) - store as-is
-  if (node["parameters_schema"] && node["parameters_schema"].IsMap()) {
-    json schema;
-    for (const auto & it : node["parameters_schema"]) {
-      auto key = it.first.as<std::string>();
-      if (it.second.IsScalar()) {
-        schema[key] = it.second.as<std::string>();
-      }
+  // Parse parameters_schema via recursive YAML-to-JSON conversion
+  if (node["parameters_schema"]) {
+    auto schema = ros2_medkit_serialization::JsonSerializer::yaml_to_json(node["parameters_schema"]);
+    if (!schema.is_null() && !schema.empty()) {
+      entry.parameters_schema = schema;
     }
-    entry.parameters_schema = schema;
   }
 
   return entry;
