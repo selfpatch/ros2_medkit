@@ -114,6 +114,11 @@ class ManifestManager {
    */
   std::unordered_map<std::string, ManifestLockConfig> get_lock_overrides() const;
 
+  /**
+   * @brief Get script entries defined in manifest
+   */
+  std::vector<ScriptEntryConfig> get_scripts() const;
+
   // === Entity Access ===
 
   /**

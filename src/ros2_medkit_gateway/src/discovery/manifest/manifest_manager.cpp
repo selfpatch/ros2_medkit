@@ -55,9 +55,13 @@ bool ManifestManager::load_manifest(const std::string & file_path, bool strict) 
     manifest_ = std::move(loaded);
     build_lookup_maps();
 
-    log_info("Manifest loaded successfully: " + std::to_string(manifest_->areas.size()) + " areas, " +
-             std::to_string(manifest_->components.size()) + " components, " + std::to_string(manifest_->apps.size()) +
-             " apps, " + std::to_string(manifest_->functions.size()) + " functions");
+    auto msg = "Manifest loaded successfully: " + std::to_string(manifest_->areas.size()) + " areas, " +
+               std::to_string(manifest_->components.size()) + " components, " + std::to_string(manifest_->apps.size()) +
+               " apps, " + std::to_string(manifest_->functions.size()) + " functions";
+    if (!manifest_->scripts.empty()) {
+      msg += ", " + std::to_string(manifest_->scripts.size()) + " scripts";
+    }
+    log_info(msg);
     return true;
 
   } catch (const std::exception & e) {
@@ -186,6 +190,14 @@ std::unordered_map<std::string, ManifestLockConfig> ManifestManager::get_lock_ov
   std::lock_guard<std::mutex> lock(mutex_);
   if (manifest_) {
     return manifest_->lock_overrides;
+  }
+  return {};
+}
+
+std::vector<ScriptEntryConfig> ManifestManager::get_scripts() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (manifest_) {
+    return manifest_->scripts;
   }
   return {};
 }
@@ -397,7 +409,8 @@ json ManifestManager::get_status_json() const {
     status["entity_counts"] = {{"areas", manifest_->areas.size()},
                                {"components", manifest_->components.size()},
                                {"apps", manifest_->apps.size()},
-                               {"functions", manifest_->functions.size()}};
+                               {"functions", manifest_->functions.size()},
+                               {"scripts", manifest_->scripts.size()}};
   }
 
   status["validation"] = {{"is_valid", validation_result_.is_valid},
