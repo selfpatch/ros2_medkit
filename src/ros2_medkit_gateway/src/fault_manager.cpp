@@ -24,8 +24,11 @@ using namespace std::chrono_literals;
 namespace ros2_medkit_gateway {
 
 FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
-  // Get configurable timeout
-  service_timeout_sec_ = node_->declare_parameter("fault_service_timeout_sec", 5.0);
+  // Get configurable timeout. GatewayNode declares this parameter up front,
+  // but unit tests may construct FaultManager with a plain rclcpp::Node.
+  if (!node_->get_parameter("fault_service_timeout_sec", service_timeout_sec_)) {
+    service_timeout_sec_ = 5.0;
+  }
   fault_manager_base_path_ = build_fault_manager_base_path(node_);
 
   // Create service clients for fault_manager services
