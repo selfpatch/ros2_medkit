@@ -275,3 +275,27 @@ functions:
     description: "Environment perception via LiDAR"
     hosted_by:
       - lidar-sensor
+
+# ============================================================================
+# Scripts - Pre-deployed diagnostic scripts
+# ============================================================================
+scripts:
+  - id: "run-diagnostics"
+    name: "Run Diagnostics"
+    description: "Check health of all sensors"
+    path: "/opt/ros2_medkit/scripts/run-diagnostics.sh"
+    format: "bash"
+    timeout_sec: 30
+    entity_filter:
+      - "components/*"
+    env:
+      GATEWAY_URL: "http://localhost:8080"
+
+  - id: "inject-nan"
+    name: "Inject NaN Fault"
+    description: "Enable NaN values on all sensors for testing"
+    path: "/opt/ros2_medkit/scripts/inject-nan.sh"
+    format: "bash"
+    timeout_sec: 30
+    entity_filter:
+      - "components/compute-unit"
