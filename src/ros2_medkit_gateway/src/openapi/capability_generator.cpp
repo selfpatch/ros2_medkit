@@ -116,6 +116,9 @@ nlohmann::json CapabilityGenerator::generate_root() const {
           {"Logs", "Application log access and configuration"},
           {"Bulk Data", "Large file downloads (rosbags, snapshots)"},
           {"Subscriptions", "Cyclic data subscriptions and event streaming"},
+          {"Triggers", "Event-driven condition monitoring and notifications"},
+          {"Locking", "Entity lock management for exclusive access"},
+          {"Scripts", "Diagnostic script upload, execution, and management"},
           {"Updates", "Software update management"},
           {"Authentication", "JWT-based authentication"},
       });
