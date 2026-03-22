@@ -105,10 +105,12 @@ class FaultManagerTest : public ::testing::Test {
 TEST(FaultManagerPathsTest, BuildPathsFromNamespaceString) {
   EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_base_path(""), "/fault_manager");
   EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_base_path("/"), "/fault_manager");
+  EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_base_path("///"), "/fault_manager");
   EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_base_path("robot1"), "/robot1/fault_manager");
   EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_base_path("/robot1/"), "/robot1/fault_manager");
 
   EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_events_topic(""), "/fault_manager/events");
+  EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_events_topic("///"), "/fault_manager/events");
   EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_events_topic("robot1"), "/robot1/fault_manager/events");
   EXPECT_EQ(ros2_medkit_gateway::build_fault_manager_events_topic("/robot1/"), "/robot1/fault_manager/events");
 }

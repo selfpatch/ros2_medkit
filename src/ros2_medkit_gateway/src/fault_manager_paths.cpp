@@ -19,7 +19,7 @@
 namespace ros2_medkit_gateway {
 
 std::string normalize_fault_manager_namespace(const std::string & namespace_value) {
-  if (namespace_value.empty() || namespace_value == "/") {
+  if (namespace_value.empty()) {
     return "";
   }
 
@@ -30,6 +30,10 @@ std::string normalize_fault_manager_namespace(const std::string & namespace_valu
 
   while (normalized.size() > 1 && normalized.back() == '/') {
     normalized.pop_back();
+  }
+
+  if (normalized == "/") {
+    return "";
   }
 
   return normalized;
