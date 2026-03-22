@@ -269,6 +269,7 @@ functions:
 // Script Parsing Tests
 // =============================================================================
 
+// @verifies REQ_INTEROP_041
 TEST_F(ManifestParserTest, ParseScripts) {
   const std::string yaml = R"(
 manifest_version: "1.0"
@@ -391,6 +392,7 @@ scripts:
   EXPECT_FALSE(manifest.scripts[0].parameters_schema->contains("properties"));
 }
 
+// @verifies REQ_INTEROP_041
 TEST_F(ManifestParserTest, ParseScriptsMissingId) {
   const std::string yaml = R"(
 manifest_version: "1.0"
@@ -402,6 +404,7 @@ scripts:
   EXPECT_THROW(parser_.parse_string(yaml), std::runtime_error);
 }
 
+// @verifies REQ_INTEROP_041
 TEST_F(ManifestParserTest, ParseScriptsMissingPath) {
   const std::string yaml = R"(
 manifest_version: "1.0"
@@ -413,6 +416,7 @@ scripts:
   EXPECT_THROW(parser_.parse_string(yaml), std::runtime_error);
 }
 
+// @verifies REQ_INTEROP_041
 TEST_F(ManifestParserTest, ParseScriptsMissingFormat) {
   const std::string yaml = R"(
 manifest_version: "1.0"
@@ -422,6 +426,23 @@ scripts:
 )";
 
   EXPECT_THROW(parser_.parse_string(yaml), std::runtime_error);
+}
+
+// @verifies REQ_INTEROP_041
+TEST_F(ManifestParserTest, ParseScriptsTimeoutClampedToMinimum) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+scripts:
+  - id: "clamped"
+    path: "/opt/scripts/test.sh"
+    format: "bash"
+    timeout_sec: 0
+)";
+
+  auto manifest = parser_.parse_string(yaml);
+
+  ASSERT_EQ(manifest.scripts.size(), 1);
+  EXPECT_EQ(manifest.scripts[0].timeout_sec, 1);  // clamped from 0
 }
 
 TEST_F(ManifestParserTest, ParseScriptsUnknownFormat) {
