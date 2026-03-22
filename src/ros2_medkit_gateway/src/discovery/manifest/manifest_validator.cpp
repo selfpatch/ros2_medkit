@@ -76,6 +76,14 @@ void ManifestValidator::validate_unique_ids(const Manifest & manifest, Validatio
     }
     seen_ids.insert(func.id);
   }
+
+  // Check script IDs
+  for (const auto & script : manifest.scripts) {
+    if (seen_ids.count(script.id)) {
+      result.add_error("R012", "Duplicate script ID: " + script.id, "scripts");
+    }
+    seen_ids.insert(script.id);
+  }
 }
 
 void ManifestValidator::validate_area_references(const Manifest & manifest, ValidationResult & result) const {

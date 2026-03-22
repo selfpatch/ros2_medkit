@@ -16,7 +16,7 @@
  * @file test_manifest_validator.cpp
  * @brief Unit tests for manifest validator
  *
- * @verifies REQ_DISCOVERY_003 Manifest validation rules R001-R011
+ * @verifies REQ_DISCOVERY_003 Manifest validation rules R001-R012
  */
 
 #include <gtest/gtest.h>
@@ -70,7 +70,7 @@ manifest_version: "2.0"
 }
 
 // =============================================================================
-// R002-R005: Unique ID Validation
+// R002-R005, R012: Unique ID Validation
 // =============================================================================
 
 TEST_F(ManifestValidatorTest, R002_DuplicateAreaId) {
@@ -133,6 +133,43 @@ functions:
 
   EXPECT_FALSE(result.is_valid);
   EXPECT_EQ(result.errors[0].rule_id, "R005");
+}
+
+TEST_F(ManifestValidatorTest, R012_DuplicateScriptId) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+scripts:
+  - id: "collect_logs"
+    path: "/scripts/collect_logs.sh"
+    format: "bash"
+  - id: "collect_logs"
+    path: "/scripts/collect_logs2.sh"
+    format: "bash"
+)";
+
+  auto manifest = parser_.parse_string(yaml);
+  auto result = validator_.validate(manifest);
+
+  EXPECT_FALSE(result.is_valid);
+  EXPECT_EQ(result.errors[0].rule_id, "R012");
+}
+
+TEST_F(ManifestValidatorTest, R012_ScriptIdCollidesWithEntityId) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+apps:
+  - id: "nav2"
+scripts:
+  - id: "nav2"
+    path: "/scripts/nav2.sh"
+    format: "bash"
+)";
+
+  auto manifest = parser_.parse_string(yaml);
+  auto result = validator_.validate(manifest);
+
+  EXPECT_FALSE(result.is_valid);
+  EXPECT_EQ(result.errors[0].rule_id, "R012");
 }
 
 TEST_F(ManifestValidatorTest, UniqueIdsAcrossEntityTypes) {
