@@ -289,7 +289,17 @@ ros2_medkit_gateway::ScriptEntryConfig ManifestParser::parse_script_entry(const 
   entry.name = get_string(node, "name", entry.id);
   entry.description = get_string(node, "description");
   entry.path = get_string(node, "path");
+  if (entry.path.empty()) {
+    throw std::runtime_error("Script entry '" + entry.id + "' missing required field: path");
+  }
   entry.format = get_string(node, "format");
+  if (entry.format.empty()) {
+    throw std::runtime_error("Script entry '" + entry.id + "' missing required field: format");
+  }
+  if (entry.format != "bash" && entry.format != "python" && entry.format != "sh") {
+    throw std::runtime_error("Script entry '" + entry.id + "' has unknown format: '" + entry.format +
+                             "' (expected: bash, python, sh)");
+  }
   if (node["timeout_sec"]) {
     entry.timeout_sec = std::max(1, node["timeout_sec"].as<int>());
   }

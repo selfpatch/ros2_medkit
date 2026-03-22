@@ -378,6 +378,40 @@ scripts:
   EXPECT_THROW(parser_.parse_string(yaml), std::runtime_error);
 }
 
+TEST_F(ManifestParserTest, ParseScriptsMissingPath) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+scripts:
+  - id: "no-path"
+    format: "bash"
+)";
+
+  EXPECT_THROW(parser_.parse_string(yaml), std::runtime_error);
+}
+
+TEST_F(ManifestParserTest, ParseScriptsMissingFormat) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+scripts:
+  - id: "no-format"
+    path: "/opt/scripts/test.sh"
+)";
+
+  EXPECT_THROW(parser_.parse_string(yaml), std::runtime_error);
+}
+
+TEST_F(ManifestParserTest, ParseScriptsUnknownFormat) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+scripts:
+  - id: "bad-format"
+    path: "/opt/scripts/test.sh"
+    format: "ruby"
+)";
+
+  EXPECT_THROW(parser_.parse_string(yaml), std::runtime_error);
+}
+
 TEST_F(ManifestParserTest, ParseNoScriptsSection) {
   const std::string yaml = R"(
 manifest_version: "1.0"
