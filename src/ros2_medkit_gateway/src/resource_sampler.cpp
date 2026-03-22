@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/resource_sampler.hpp"
 
+#include <mutex>
 #include <stdexcept>
 
 namespace ros2_medkit_gateway {

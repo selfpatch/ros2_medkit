@@ -40,6 +40,12 @@ OpenApiSpecBuilder & OpenApiSpecBuilder::server(const std::string & url, const s
   return *this;
 }
 
+OpenApiSpecBuilder & OpenApiSpecBuilder::contact(const std::string & name, const std::string & url) {
+  contact_name_ = name;
+  contact_url_ = url;
+  return *this;
+}
+
 OpenApiSpecBuilder & OpenApiSpecBuilder::sovd_version(const std::string & version) {
   sovd_version_ = version;
   return *this;
@@ -78,6 +84,12 @@ nlohmann::json OpenApiSpecBuilder::build() const {
   }
   if (!sovd_version_.empty()) {
     spec["info"]["x-sovd-version"] = sovd_version_;
+  }
+  if (!contact_name_.empty()) {
+    spec["info"]["contact"]["name"] = contact_name_;
+    if (!contact_url_.empty()) {
+      spec["info"]["contact"]["url"] = contact_url_;
+    }
   }
 
   // 2b. Top-level tags array
