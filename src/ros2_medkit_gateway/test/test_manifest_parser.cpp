@@ -367,6 +367,30 @@ scripts:
   EXPECT_EQ(manifest.scripts[0].parameters_schema->at("type"), "object");
 }
 
+TEST_F(ManifestParserTest, ParseScriptsParametersSchemaDropsNonScalars) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+scripts:
+  - id: "nested-schema"
+    path: "/opt/scripts/test.sh"
+    format: "bash"
+    parameters_schema:
+      type: "object"
+      properties:
+        threshold:
+          type: "number"
+)";
+
+  auto manifest = parser_.parse_string(yaml);
+
+  ASSERT_EQ(manifest.scripts.size(), 1);
+  ASSERT_TRUE(manifest.scripts[0].parameters_schema.has_value());
+  // Scalar value is preserved
+  EXPECT_EQ(manifest.scripts[0].parameters_schema->at("type"), "object");
+  // Nested object "properties" is silently dropped
+  EXPECT_FALSE(manifest.scripts[0].parameters_schema->contains("properties"));
+}
+
 TEST_F(ManifestParserTest, ParseScriptsMissingId) {
   const std::string yaml = R"(
 manifest_version: "1.0"
