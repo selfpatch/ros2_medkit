@@ -51,8 +51,9 @@ RouteEntry & RouteEntry::response(int status_code, const std::string & desc, con
   return *this;
 }
 
-RouteEntry & RouteEntry::request_body(const std::string & desc, const nlohmann::json & schema) {
-  request_body_ = RequestBodyInfo{desc, schema};
+RouteEntry & RouteEntry::request_body(const std::string & desc, const nlohmann::json & schema,
+                                      const std::string & content_type) {
+  request_body_ = RequestBodyInfo{desc, schema, content_type};
   return *this;
 }
 
@@ -280,8 +281,9 @@ nlohmann::json RouteRegistry::to_openapi_paths() const {
     // Request body
     if (route.request_body_.has_value()) {
       operation["requestBody"]["description"] = route.request_body_->desc;
+      const auto & ct = route.request_body_->content_type;
       if (!route.request_body_->schema.empty()) {
-        operation["requestBody"]["content"]["application/json"]["schema"] = route.request_body_->schema;
+        operation["requestBody"]["content"][ct]["schema"] = route.request_body_->schema;
       }
       operation["requestBody"]["required"] = true;
     }

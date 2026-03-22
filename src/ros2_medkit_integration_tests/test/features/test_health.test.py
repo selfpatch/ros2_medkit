@@ -141,6 +141,88 @@ class TestHealth(GatewayTestCase):
         self.assertIn('info', data)
         self.assertIn('paths', data)
 
+    def test_docs_spec_completeness(self):
+        """Verify OpenAPI spec has response schemas, request bodies, and named types.
+
+        Validates that every endpoint has proper type contracts for client
+        code generation - no bare "Successful response" without schema.
+
+        @verifies REQ_INTEROP_002
+        """
+        spec = self.poll_endpoint_until(
+            '/docs',
+            lambda d: d if d.get('paths') else None,
+        )
+
+        # Must have named component schemas
+        schemas = spec.get('components', {}).get('schemas', {})
+        self.assertGreater(len(schemas), 30, f'Expected 30+ component schemas, got {len(schemas)}')
+
+        # Must have GenericError response component
+        responses = spec.get('components', {}).get('responses', {})
+        self.assertIn('GenericError', responses)
+
+        # Must have global tags matching all used tags
+        global_tags = {t['name'] for t in spec.get('tags', [])}
+        used_tags = set()
+        for path_item in spec.get('paths', {}).values():
+            for op in path_item.values():
+                if isinstance(op, dict):
+                    for t in op.get('tags', []):
+                        used_tags.add(t)
+        missing = used_tags - global_tags
+        self.assertEqual(missing, set(), f'Tags used but not globally defined: {missing}')
+
+        # Every non-DELETE operation must have a response with schema or $ref
+        issues = []
+        for path, path_item in spec.get('paths', {}).items():
+            for method, op in path_item.items():
+                if not isinstance(op, dict) or method == 'delete':
+                    continue
+                op_id = op.get('operationId', f'{method} {path}')
+                has_schema = False
+                for code, resp in op.get('responses', {}).items():
+                    if not code.startswith('2'):
+                        continue
+                    # 204 No Content doesn't need a schema
+                    if code == '204':
+                        has_schema = True
+                    if '$ref' in resp:
+                        has_schema = True
+                    elif 'content' in resp:
+                        for ct in resp['content'].values():
+                            if 'schema' in ct:
+                                has_schema = True
+                # SSE endpoints don't have JSON schema
+                summary = op.get('summary', '')
+                if 'SSE' in summary or 'stream' in summary.lower():
+                    has_schema = True
+                if not has_schema:
+                    issues.append(f'{op_id}: no response schema')
+        self.assertEqual(issues, [], f'Operations missing response schema: {issues}')
+
+        # operationIds must be unique
+        op_ids = []
+        for path_item in spec.get('paths', {}).values():
+            for op in path_item.values():
+                if isinstance(op, dict) and 'operationId' in op:
+                    op_ids.append(op['operationId'])
+        duplicates = [oid for oid in op_ids if op_ids.count(oid) > 1]
+        self.assertEqual(duplicates, [], f'Duplicate operationIds: {set(duplicates)}')
+
+        # Error responses must use $ref (not inline)
+        for path, path_item in spec.get('paths', {}).items():
+            for method, op in path_item.items():
+                if not isinstance(op, dict):
+                    continue
+                for code in ('400', '404', '500'):
+                    resp = op.get('responses', {}).get(code)
+                    if resp and '$ref' not in resp and 'description' in resp:
+                        self.fail(
+                            f'{op.get("operationId", method + " " + path)} '
+                            f'{code} response should use $ref to GenericError'
+                        )
+
 
 @launch_testing.post_shutdown_test()
 class TestShutdown(unittest.TestCase):

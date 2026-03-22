@@ -143,7 +143,7 @@ class SchemaBuilder {
   /// Returns all named schemas for registration in components/schemas.
   /// Key = schema name (becomes the type name in generated clients).
   /// List-type schemas use internal $ref to avoid duplicate types.
-  static std::map<std::string, nlohmann::json> component_schemas();
+  static const std::map<std::string, nlohmann::json> & component_schemas();
 
  private:
   ros2_medkit_serialization::JsonSerializer serializer_;  // Owns its own instance
