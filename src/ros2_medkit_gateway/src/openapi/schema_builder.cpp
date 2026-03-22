@@ -88,7 +88,7 @@ nlohmann::json SchemaBuilder::fault_detail_schema() {
                                     {"properties",
                                      {{"type", {{"type", "string"}}},
                                       {"name", {{"type", "string"}}},
-                                      {"data", {}},
+                                      {"data", {{"description", "Snapshot data"}}},
                                       {"bulk_data_uri", {{"type", "string"}}},
                                       {"size_bytes", {{"type", "integer"}}},
                                       {"duration_sec", {{"type", "number"}}},
@@ -142,7 +142,10 @@ nlohmann::json SchemaBuilder::items_wrapper(const nlohmann::json & item_schema) 
 
 nlohmann::json SchemaBuilder::configuration_param_schema() {
   return {{"type", "object"},
-          {"properties", {{"name", {{"type", "string"}}}, {"value", {}}, {"type", {{"type", "string"}}}}},
+          {"properties",
+           {{"name", {{"type", "string"}}},
+            {"value", {{"description", "Configuration value (type varies by parameter)"}}},
+            {"type", {{"type", "string"}}}}},
           {"required", {"name", "value"}}};
 }
 
@@ -192,6 +195,268 @@ nlohmann::json SchemaBuilder::version_info_schema() {
   return {{"type", "object"},
           {"properties", {{"items", {{"type", "array"}, {"items", info_entry_schema}}}}},
           {"required", {"items"}}};
+}
+
+nlohmann::json SchemaBuilder::root_overview_schema() {
+  nlohmann::json capabilities_schema = {{"type", "object"},
+                                        {"properties",
+                                         {{"discovery", {{"type", "boolean"}}},
+                                          {"data_access", {{"type", "boolean"}}},
+                                          {"operations", {{"type", "boolean"}}},
+                                          {"async_actions", {{"type", "boolean"}}},
+                                          {"configurations", {{"type", "boolean"}}},
+                                          {"faults", {{"type", "boolean"}}},
+                                          {"logs", {{"type", "boolean"}}},
+                                          {"bulk_data", {{"type", "boolean"}}},
+                                          {"cyclic_subscriptions", {{"type", "boolean"}}},
+                                          {"locking", {{"type", "boolean"}}},
+                                          {"triggers", {{"type", "boolean"}}},
+                                          {"updates", {{"type", "boolean"}}},
+                                          {"authentication", {{"type", "boolean"}}},
+                                          {"tls", {{"type", "boolean"}}},
+                                          {"scripts", {{"type", "boolean"}}},
+                                          {"vendor_extensions", {{"type", "boolean"}}}}}};
+
+  return {{"type", "object"},
+          {"properties",
+           {{"name", {{"type", "string"}}},
+            {"version", {{"type", "string"}}},
+            {"api_base", {{"type", "string"}}},
+            {"endpoints", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+            {"capabilities", capabilities_schema}}},
+          {"required", {"name", "version", "api_base", "endpoints", "capabilities"}}};
+}
+
+nlohmann::json SchemaBuilder::data_item_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"id", {{"type", "string"}}},
+            {"name", {{"type", "string"}}},
+            {"category", {{"type", "string"}}},
+            {"x-medkit", {{"type", "object"}}}}},
+          {"required", {"id", "name"}}};
+}
+
+nlohmann::json SchemaBuilder::generic_object_schema() {
+  return {{"type", "object"}};
+}
+
+nlohmann::json SchemaBuilder::binary_schema() {
+  return {{"type", "string"}, {"format", "binary"}};
+}
+
+nlohmann::json SchemaBuilder::operation_item_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"id", {{"type", "string"}}},
+            {"name", {{"type", "string"}}},
+            {"proximity_proof_required", {{"type", "boolean"}}},
+            {"asynchronous_execution", {{"type", "boolean"}}},
+            {"x-medkit", {{"type", "object"}}}}},
+          {"required", {"id", "name"}}};
+}
+
+nlohmann::json SchemaBuilder::operation_execution_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"id", {{"type", "string"}}},
+            {"status", {{"type", "string"}, {"enum", {"pending", "running", "completed", "failed"}}}},
+            {"progress", {{"type", "number"}}},
+            {"result", {{"type", "object"}}}}},
+          {"required", {"id", "status"}}};
+}
+
+nlohmann::json SchemaBuilder::trigger_schema() {
+  nlohmann::json condition_schema = {
+      {"type", "object"}, {"properties", {{"condition_type", {{"type", "string"}}}}}, {"required", {"condition_type"}}};
+
+  return {{"type", "object"},
+          {"properties",
+           {{"id", {{"type", "string"}}},
+            {"status", {{"type", "string"}, {"enum", {"active", "terminated"}}}},
+            {"observed_resource", {{"type", "string"}}},
+            {"event_source", {{"type", "string"}}},
+            {"protocol", {{"type", "string"}}},
+            {"trigger_condition", condition_schema},
+            {"multishot", {{"type", "boolean"}}},
+            {"persistent", {{"type", "boolean"}}},
+            {"lifetime", {{"type", "number"}}},
+            {"path", {{"type", "string"}}},
+            {"log_settings", {{"type", "object"}}}}},
+          {"required", {"id", "status", "observed_resource", "event_source", "protocol", "trigger_condition"}}};
+}
+
+nlohmann::json SchemaBuilder::cyclic_subscription_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"id", {{"type", "string"}}},
+            {"observed_resource", {{"type", "string"}}},
+            {"event_source", {{"type", "string"}}},
+            {"protocol", {{"type", "string"}}},
+            {"interval", {{"type", "string"}, {"enum", {"fast", "normal", "slow"}}}}}},
+          {"required", {"id", "observed_resource", "event_source", "protocol", "interval"}}};
+}
+
+nlohmann::json SchemaBuilder::lock_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"id", {{"type", "string"}}},
+            {"owned", {{"type", "boolean"}}},
+            {"scopes", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+            {"lock_expiration", {{"type", "string"}, {"format", "date-time"}}}}},
+          {"required", {"id", "owned", "lock_expiration"}}};
+}
+
+nlohmann::json SchemaBuilder::script_metadata_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"id", {{"type", "string"}}},
+            {"name", {{"type", "string"}}},
+            {"description", {{"type", "string"}}},
+            {"href", {{"type", "string"}}},
+            {"managed", {{"type", "boolean"}}},
+            {"proximity_proof_required", {{"type", "boolean"}}},
+            {"parameters_schema", {{"type", "object"}}}}},
+          {"required", {"id", "name"}}};
+}
+
+nlohmann::json SchemaBuilder::script_execution_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"id", {{"type", "string"}}},
+            {"status", {{"type", "string"}}},
+            {"progress", {{"type", "number"}}},
+            {"started_at", {{"type", "string"}}},
+            {"completed_at", {{"type", "string"}}},
+            {"parameters", {{"type", "object"}}},
+            {"error", {{"type", "object"}}}}},
+          {"required", {"id", "status"}}};
+}
+
+nlohmann::json SchemaBuilder::bulk_data_category_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"id", {{"type", "string"}}}, {"name", {{"type", "string"}}}, {"description", {{"type", "string"}}}}},
+          {"required", {"id", "name"}}};
+}
+
+nlohmann::json SchemaBuilder::bulk_data_descriptor_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"id", {{"type", "string"}}},
+            {"name", {{"type", "string"}}},
+            {"size", {{"type", "integer"}}},
+            {"content_type", {{"type", "string"}}},
+            {"created_at", {{"type", "string"}, {"format", "date-time"}}}}},
+          {"required", {"id", "name"}}};
+}
+
+nlohmann::json SchemaBuilder::update_list_schema() {
+  return items_wrapper({{"type", "string"}});
+}
+
+nlohmann::json SchemaBuilder::update_status_schema() {
+  nlohmann::json sub_progress_schema = {
+      {"type", "object"},
+      {"properties", {{"name", {{"type", "string"}}}, {"progress", {{"type", "number"}}}}},
+      {"required", {"name", "progress"}}};
+
+  return {{"type", "object"},
+          {"properties",
+           {{"status", {{"type", "string"}, {"enum", {"pending", "inProgress", "completed", "failed"}}}},
+            {"progress", {{"type", "number"}}},
+            {"sub_progress", {{"type", "array"}, {"items", sub_progress_schema}}},
+            {"error", {{"type", "string"}}}}},
+          {"required", {"status"}}};
+}
+
+nlohmann::json SchemaBuilder::log_configuration_schema() {
+  return {{"type", "object"},
+          {"properties", {{"severity_filter", {{"type", "string"}}}, {"max_entries", {{"type", "integer"}}}}},
+          {"required", {"severity_filter", "max_entries"}}};
+}
+
+nlohmann::json SchemaBuilder::auth_token_response_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"access_token", {{"type", "string"}}},
+            {"token_type", {{"type", "string"}}},
+            {"expires_in", {{"type", "integer"}}},
+            {"scope", {{"type", "string"}}},
+            {"refresh_token", {{"type", "string"}}}}},
+          {"required", {"access_token", "token_type", "expires_in"}}};
+}
+
+nlohmann::json SchemaBuilder::auth_credentials_schema() {
+  return {{"type", "object"},
+          {"properties", {{"username", {{"type", "string"}}}, {"password", {{"type", "string"}}}}},
+          {"required", {"username", "password"}}};
+}
+
+nlohmann::json SchemaBuilder::ref(const std::string & schema_name) {
+  return {{"$ref", "#/components/schemas/" + schema_name}};
+}
+
+nlohmann::json SchemaBuilder::items_wrapper_ref(const std::string & schema_name) {
+  return {{"type", "object"},
+          {"properties", {{"items", {{"type", "array"}, {"items", ref(schema_name)}}}}},
+          {"required", {"items"}}};
+}
+
+std::map<std::string, nlohmann::json> SchemaBuilder::component_schemas() {
+  return {
+      // Core types
+      {"GenericError", generic_error()},
+      {"EntityDetail", entity_detail_schema()},
+      {"EntityList", items_wrapper_ref("EntityDetail")},
+      // Faults
+      {"FaultListItem", fault_list_item_schema()},
+      {"FaultDetail", fault_detail_schema()},
+      {"FaultList", items_wrapper_ref("FaultListItem")},
+      // Configuration
+      {"ConfigurationParam", configuration_param_schema()},
+      {"ConfigurationParamList", items_wrapper_ref("ConfigurationParam")},
+      // Logs
+      {"LogEntry", log_entry_schema()},
+      {"LogEntryList", items_wrapper_ref("LogEntry")},
+      {"LogConfiguration", log_configuration_schema()},
+      // Server
+      {"HealthStatus", health_schema()},
+      {"VersionInfo", version_info_schema()},
+      {"RootOverview", root_overview_schema()},
+      // Data
+      {"DataItem", data_item_schema()},
+      {"DataItemList", items_wrapper_ref("DataItem")},
+      // Operations
+      {"OperationItem", operation_item_schema()},
+      {"OperationItemList", items_wrapper_ref("OperationItem")},
+      {"OperationExecution", operation_execution_schema()},
+      {"OperationExecutionList", items_wrapper_ref("OperationExecution")},
+      // Triggers
+      {"Trigger", trigger_schema()},
+      {"TriggerList", items_wrapper_ref("Trigger")},
+      // Subscriptions
+      {"CyclicSubscription", cyclic_subscription_schema()},
+      {"CyclicSubscriptionList", items_wrapper_ref("CyclicSubscription")},
+      // Locking
+      {"Lock", lock_schema()},
+      {"LockList", items_wrapper_ref("Lock")},
+      // Scripts
+      {"ScriptMetadata", script_metadata_schema()},
+      {"ScriptMetadataList", items_wrapper_ref("ScriptMetadata")},
+      {"ScriptExecution", script_execution_schema()},
+      // Bulk Data
+      {"BulkDataCategory", bulk_data_category_schema()},
+      {"BulkDataCategoryList", items_wrapper_ref("BulkDataCategory")},
+      {"BulkDataDescriptor", bulk_data_descriptor_schema()},
+      {"BulkDataDescriptorList", items_wrapper_ref("BulkDataDescriptor")},
+      // Updates
+      {"UpdateList", update_list_schema()},
+      {"UpdateStatus", update_status_schema()},
+      // Auth
+      {"AuthTokenResponse", auth_token_response_schema()},
+      {"AuthCredentials", auth_credentials_schema()},
+  };
 }
 
 }  // namespace openapi
