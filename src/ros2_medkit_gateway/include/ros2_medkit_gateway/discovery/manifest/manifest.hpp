@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/default_script_provider.hpp"
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/discovery/models/component.hpp"
@@ -87,6 +88,9 @@ struct Manifest {
   std::vector<Component> components;
   std::vector<App> apps;
   std::vector<Function> functions;
+
+  /// Script entries loaded from manifest
+  std::vector<ros2_medkit_gateway::ScriptEntryConfig> scripts;
 
   /// Custom capabilities overrides per entity
   std::unordered_map<std::string, json> capabilities;
