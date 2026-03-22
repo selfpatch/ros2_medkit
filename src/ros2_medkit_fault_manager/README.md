@@ -333,6 +333,27 @@ When clearing a root cause fault, `auto_cleared_codes` lists symptoms that were 
 5. Dashboard shows only `ESTOP_001` (root cause)
 6. When E-Stop is cleared → Motor faults are auto-cleared
 
+## Namespaced Deployment
+
+The fault manager can run in a custom ROS 2 namespace. The gateway resolves service and topic
+names automatically via the `fault_manager.namespace` parameter:
+
+```yaml
+# gateway_params.yaml
+fault_manager:
+  namespace: "robot1"          # -> /robot1/fault_manager/list_faults
+  service_timeout_sec: 5.0
+```
+
+Launch the fault manager in a namespace:
+
+```bash
+ros2 launch ros2_medkit_fault_manager fault_manager.launch.py \
+  namespace:=robot1
+```
+
+Leading slashes are optional - `"robot1"` and `"/robot1"` are equivalent.
+
 ## Building
 
 ```bash

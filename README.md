@@ -98,6 +98,7 @@ Beyond faults, medkit exposes the full ROS 2 graph through REST:
 | **Software Updates** | Async prepare/execute lifecycle with pluggable backends |
 | **Authentication** | JWT-based RBAC (viewer, operator, configurator, admin) |
 | **Logs** | Log entries and configuration |
+| **Docs** | OpenAPI 3.1.0 spec and Swagger UI at ``/api/v1/docs`` |
 
 On the [roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html): entity lifecycle control, mode management, communication logs.
 
