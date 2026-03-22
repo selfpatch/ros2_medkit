@@ -34,7 +34,7 @@ Open three terminals. In each, source your workspace:
 
 .. code-block:: bash
 
-   source ~/ros2_medkit_ws/install/setup.bash
+   source ~/ros2_medkit/install/setup.bash
 
 **Terminal 1 - Start the gateway:**
 

@@ -85,16 +85,21 @@ Basic Setup
         ros__parameters:
           auth:
             enabled: true
-            jwt_secret: "your-secret-key-at-least-32-characters-long"
+            jwt_secret: "CHANGE-ME-use-openssl-rand-base64-32"
             jwt_algorithm: "HS256"
             token_expiry_seconds: 3600
             refresh_token_expiry_seconds: 86400
             require_auth_for: "write"
             issuer: "ros2_medkit_gateway"
             clients:
-              - "admin:admin_secret_key:admin"
-              - "operator:operator_secret:operator"
-              - "viewer:viewer_pass:viewer"
+              - "admin:REPLACE_WITH_STRONG_SECRET:admin"
+              - "operator:REPLACE_WITH_STRONG_SECRET:operator"
+              - "viewer:REPLACE_WITH_STRONG_SECRET:viewer"
+
+   .. danger::
+
+      **Never use example credentials in production.** Generate strong secrets with
+      ``openssl rand -base64 32`` and keep them out of version control.
 
 2. **Launch with authentication:**
 
@@ -115,7 +120,7 @@ Using Authentication
      -d '{
        "grant_type": "client_credentials",
        "client_id": "admin",
-       "client_secret": "admin_secret_key"
+       "client_secret": "YOUR_ADMIN_SECRET"
      }'
 
 Response:

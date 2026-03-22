@@ -62,23 +62,52 @@ Fix memory leak in diagnostic tree traversal
 Update documentation for colcon build process
 ```
 
-### Build and Test Requirements
+### Build and Test
 
-Before opening or updating a Pull Request, you **must**:
+Before opening or updating a Pull Request, you **must** build and test locally:
 
-1. Build the project successfully:
-   ```bash
-   colcon build
-   ```
+```bash
+source /opt/ros/jazzy/setup.bash   # or humble - adjust for your distro
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install && source install/setup.bash
+```
 
-2. Run all tests:
-   ```bash
-   colcon test
-   colcon test-result --verbose
-   ```
+Use `scripts/test.sh` for testing (preferred over raw colcon commands):
 
-3. Ensure all tests pass locally
-4. Fix any build warnings or test failures
+```bash
+./scripts/test.sh              # Unit tests only (default)
+./scripts/test.sh integ        # Integration tests only
+./scripts/test.sh lint         # Fast linters (no clang-tidy)
+./scripts/test.sh all          # Everything
+./scripts/test.sh <test_name>  # Single test by CTest name regex
+```
+
+#### Pre-commit and Pre-push Hooks
+
+```bash
+pipx install pre-commit
+pre-commit install
+pre-commit install --hook-type pre-push
+```
+
+On commit: clang-format, cmake-lint, shellcheck, flake8, ament-copyright, trailing whitespace.
+On push: incremental clang-tidy on changed `.cpp` files.
+
+#### Code Coverage
+
+```bash
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON
+./scripts/test.sh              # run tests
+lcov --capture --directory build --output-file coverage.raw.info --ignore-errors mismatch,negative
+lcov --extract coverage.raw.info '*/ros2_medkit/src/*/src/*' '*/ros2_medkit/src/*/include/*' --output-file coverage.info
+genhtml coverage.info --output-directory coverage_html
+```
+
+Open `coverage_html/index.html` in your browser.
+
+#### CI/CD
+
+All PRs are tested on Ubuntu 24.04 (Jazzy) with parallel lint + test jobs, plus Humble and Rolling (allowed to fail). Coverage is uploaded to Codecov on push to main. All CI jobs use ccache.
 
 ### Pull Request Checklist
 

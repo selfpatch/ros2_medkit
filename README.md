@@ -31,7 +31,7 @@ ros2_medkit gives your ROS 2 system a **diagnostic REST API** so you can inspect
 
 ## 🚀 Quick Start
 
-**Try the full demo** (Docker, no ROS 2 needed):
+**Try the full demo** (requires [Docker](https://docs.docker.com/get-docker/) with Compose, no ROS 2 needed):
 
 ```bash
 git clone https://github.com/selfpatch/selfpatch_demos.git
@@ -98,7 +98,7 @@ Beyond faults, medkit exposes the full ROS 2 graph through REST:
 | **Software Updates** | Async prepare/execute lifecycle with pluggable backends |
 | **Authentication** | JWT-based RBAC (viewer, operator, configurator, admin) |
 | **Logs** | Log entries and configuration |
-| **Docs** | OpenAPI 3.1.0 spec and Swagger UI at ``/api/v1/docs`` |
+| **Docs** | OpenAPI 3.1.0 spec and Swagger UI at `/api/v1/docs` |
 
 On the [roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html): entity lifecycle control, mode management, communication logs.
 
@@ -172,6 +172,7 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for build inst
 Quick version:
 
 ```bash
+source /opt/ros/jazzy/setup.bash  # or humble
 pipx install pre-commit && pre-commit install && pre-commit install --hook-type pre-push
 colcon build --symlink-install
 source install/setup.bash

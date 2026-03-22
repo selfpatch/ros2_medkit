@@ -6,7 +6,7 @@ through standard ROS 2 parameters.
 
 ## How It Works
 
-1. The plugin queries nodes for a known beacon parameter (JSON-encoded `BeaconHint`)
+1. The plugin polls each node's parameter service for parameters under a configurable prefix (default: `ros2_medkit.discovery`), mapping individual parameters to `BeaconHint` fields
 2. Hints are validated via `BeaconValidator` and stored in `BeaconHintStore` with TTL
 3. Entity metadata is mapped into the SOVD hierarchy via `BeaconEntityMapper`
 4. Results are exposed at the `x-medkit-param-beacon` vendor extension endpoint
