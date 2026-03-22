@@ -705,6 +705,15 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       scripts_config.max_execution_history = static_cast<int>(get_parameter("scripts.max_execution_history").as_int());
       scripts_config.allow_uploads = get_parameter("scripts.allow_uploads").as_bool();
 
+      // Load manifest-defined scripts
+      auto * manifest_mgr = discovery_mgr_->get_manifest_manager();
+      if (manifest_mgr) {
+        scripts_config.entries = manifest_mgr->get_scripts();
+        if (!scripts_config.entries.empty()) {
+          RCLCPP_INFO(get_logger(), "Loaded %zu manifest-defined scripts", scripts_config.entries.size());
+        }
+      }
+
       default_script_provider_ = std::make_unique<DefaultScriptProvider>(scripts_config);
       script_mgr_->set_backend(default_script_provider_.get());
       RCLCPP_INFO(get_logger(), "Scripts enabled with directory: %s", scripts_dir.c_str());
