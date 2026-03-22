@@ -125,6 +125,10 @@ nlohmann::json OpenApiSpecBuilder::build() const {
   }
 
   // 6. Components - GenericError response (always present)
+  // Ensure GenericError schema exists for sub-page specs that don't call add_schemas()
+  if (!spec["components"].contains("schemas") || !spec["components"]["schemas"].contains("GenericError")) {
+    spec["components"]["schemas"]["GenericError"] = SchemaBuilder::generic_error();
+  }
   // Uses $ref to components/schemas/GenericError so the schema is defined once
   spec["components"]["responses"]["GenericError"]["description"] = "SOVD GenericError response";
   spec["components"]["responses"]["GenericError"]["content"]["application/json"]["schema"] =

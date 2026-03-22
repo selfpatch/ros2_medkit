@@ -202,6 +202,23 @@ TEST_F(OpenApiSpecBuilderTest, AlwaysIncludesGenericErrorResponse) {
 }
 
 // =============================================================================
+// Contact info
+// =============================================================================
+
+TEST_F(OpenApiSpecBuilderTest, ContactInfoAppearsInSpec) {
+  auto spec = builder_.info("API", "1.0.0").contact("selfpatch.ai", "https://selfpatch.ai").build();
+
+  ASSERT_TRUE(spec["info"].contains("contact"));
+  EXPECT_EQ(spec["info"]["contact"]["name"].get<std::string>(), "selfpatch.ai");
+  EXPECT_EQ(spec["info"]["contact"]["url"].get<std::string>(), "https://selfpatch.ai");
+}
+
+TEST_F(OpenApiSpecBuilderTest, NoContactWhenNotSet) {
+  auto spec = builder_.info("API", "1.0.0").build();
+  EXPECT_FALSE(spec["info"].contains("contact"));
+}
+
+// =============================================================================
 // Security scheme
 // =============================================================================
 
@@ -311,11 +328,12 @@ TEST_F(OpenApiSpecBuilderTest, AddEmptySchemas) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST_F(OpenApiSpecBuilderTest, NoEmptySchemasSection) {
+TEST_F(OpenApiSpecBuilderTest, GenericErrorSchemaAlwaysPresent) {
   auto spec = builder_.info("Test", "1.0").server("http://localhost").build();
-  // components should exist (for GenericError response), but schemas should be absent when empty
+  // GenericError schema is always emitted (needed by the GenericError response $ref)
   ASSERT_TRUE(spec.contains("components"));
-  EXPECT_FALSE(spec["components"].contains("schemas")) << "Empty schemas section should not be emitted";
+  ASSERT_TRUE(spec["components"].contains("schemas"));
+  EXPECT_TRUE(spec["components"]["schemas"].contains("GenericError"));
   EXPECT_TRUE(spec["components"]["responses"].contains("GenericError"));
 }
 
