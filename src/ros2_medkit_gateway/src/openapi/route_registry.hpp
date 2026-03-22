@@ -36,7 +36,8 @@ class RouteEntry {
   RouteEntry & description(const std::string & desc);
   RouteEntry & response(int status_code, const std::string & desc);
   RouteEntry & response(int status_code, const std::string & desc, const nlohmann::json & schema);
-  RouteEntry & request_body(const std::string & desc, const nlohmann::json & schema);
+  RouteEntry & request_body(const std::string & desc, const nlohmann::json & schema,
+                            const std::string & content_type = "application/json");
   RouteEntry & path_param(const std::string & name, const std::string & desc);
   RouteEntry & query_param(const std::string & name, const std::string & desc, const std::string & type = "string");
   RouteEntry & deprecated();
@@ -70,6 +71,7 @@ class RouteEntry {
   struct RequestBodyInfo {
     std::string desc;
     nlohmann::json schema;
+    std::string content_type;
   };
   std::optional<RequestBodyInfo> request_body_;
 

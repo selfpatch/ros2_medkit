@@ -704,7 +704,7 @@ void RESTServer::setup_routes() {
           .tag("Bulk Data")
           .summary(std::string("Upload bulk-data for ") + et.singular)
           .description(std::string("Uploads a file to a bulk-data category for this ") + et.singular + ".")
-          .request_body("File to upload", SB::generic_object_schema())
+          .request_body("File to upload", SB::binary_schema(), "multipart/form-data")
           .response(201, "File uploaded", SB::ref("BulkDataDescriptor"))
           .operation_id(std::string("upload") + capitalize(et.singular) + "BulkData");
 
@@ -727,7 +727,6 @@ void RESTServer::setup_routes() {
           .summary(std::string("Upload bulk-data for ") + et.singular + " (not supported)")
           .description("Bulk data upload is not supported for this entity type.")
           .response(405, "Method not allowed")
-          .operation_id(std::string("upload") + capitalize(et.singular) + "BulkDataNotSupported")
           .hidden();  // Always returns 405 - exclude from OpenAPI spec and generated clients
 
       reg.del(entity_path + "/bulk-data/{category_id}/{file_id}",
@@ -739,7 +738,6 @@ void RESTServer::setup_routes() {
           .summary(std::string("Delete bulk-data file for ") + et.singular + " (not supported)")
           .description("Bulk data deletion is not supported for this entity type.")
           .response(405, "Method not allowed")
-          .operation_id(std::string("delete") + capitalize(et.singular) + "BulkDataNotSupported")
           .hidden();  // Always returns 405 - exclude from OpenAPI spec and generated clients
     }
 
@@ -965,7 +963,7 @@ void RESTServer::setup_routes() {
           .tag("Scripts")
           .summary(std::string("Upload diagnostic script for ") + et.singular)
           .description(std::string("Uploads a diagnostic script for this ") + et.singular + ".")
-          .request_body("Script file", SB::generic_object_schema())
+          .request_body("Script file", SB::binary_schema(), "multipart/form-data")
           .response(201, "Script uploaded", SB::ref("ScriptMetadata"))
           .operation_id(std::string("upload") + capitalize(et.singular) + "Script");
 

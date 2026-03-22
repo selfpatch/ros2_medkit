@@ -403,8 +403,8 @@ nlohmann::json SchemaBuilder::items_wrapper_ref(const std::string & schema_name)
           {"required", {"items"}}};
 }
 
-std::map<std::string, nlohmann::json> SchemaBuilder::component_schemas() {
-  return {
+const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas() {
+  static const std::map<std::string, nlohmann::json> schemas = {
       // Core types
       {"GenericError", generic_error()},
       {"EntityDetail", entity_detail_schema()},
@@ -457,6 +457,7 @@ std::map<std::string, nlohmann::json> SchemaBuilder::component_schemas() {
       {"AuthTokenResponse", auth_token_response_schema()},
       {"AuthCredentials", auth_credentials_schema()},
   };
+  return schemas;
 }
 
 }  // namespace openapi
