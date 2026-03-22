@@ -61,7 +61,7 @@ class FaultManagerTest : public ::testing::Test {
     std::string node_name = "test_fault_manager_node_" + std::to_string(test_counter_++);
     node_ = std::make_shared<rclcpp::Node>(
         node_name, rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true).parameter_overrides({
-                       {"fault_service_timeout_sec", 3.0},
+                       {"fault_manager.service_timeout_sec", 3.0},
                    }));
 
     // Create executor for spinning
@@ -164,7 +164,7 @@ TEST_F(FaultManagerTest, GetSnapshotsUsesConfiguredFaultManagerNamespace) {
   node_ = std::make_shared<rclcpp::Node>(
       "test_fault_manager_node_namespaced_snapshots",
       rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true).parameter_overrides({
-          {"fault_manager_namespace", "robot1"},
+          {"fault_manager.namespace", "robot1"},
       }));
   executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_node(node_);
@@ -193,7 +193,7 @@ TEST_F(FaultManagerTest, InvalidFaultManagerNamespaceFallsBackToRootServicePath)
   node_ = std::make_shared<rclcpp::Node>(
       "test_fault_manager_node_invalid_namespace",
       rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true).parameter_overrides({
-          {"fault_manager_namespace", "robot 1"},
+          {"fault_manager.namespace", "robot 1"},
       }));
   executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_node(node_);
@@ -340,7 +340,7 @@ TEST_F(FaultManagerTest, GetRosbagUsesConfiguredFaultManagerNamespace) {
   node_ = std::make_shared<rclcpp::Node>(
       "test_fault_manager_node_namespaced_rosbag",
       rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true).parameter_overrides({
-          {"fault_manager_namespace", "/robot2"},
+          {"fault_manager.namespace", "/robot2"},
       }));
   executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_node(node_);
@@ -369,7 +369,7 @@ TEST_F(FaultManagerTest, TriggerFaultSubscriberUsesConfiguredFaultManagerNamespa
   node_ = std::make_shared<rclcpp::Node>(
       "test_trigger_fault_subscriber_namespaced",
       rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true).parameter_overrides({
-          {"fault_manager_namespace", "robot3"},
+          {"fault_manager.namespace", "robot3"},
       }));
   executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_node(node_);
@@ -387,7 +387,7 @@ TEST_F(FaultManagerTest, TriggerFaultSubscriberForwardsNamespacedFaultEvents) {
   node_ = std::make_shared<rclcpp::Node>(
       "test_trigger_fault_subscriber_forwarding",
       rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true).parameter_overrides({
-          {"fault_manager_namespace", "/robot4"},
+          {"fault_manager.namespace", "/robot4"},
       }));
   executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_node(node_);
