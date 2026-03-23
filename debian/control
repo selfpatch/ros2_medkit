@@ -1,0 +1,12 @@
+Source: ros-humble-ros2-medkit-integration-tests
+Section: misc
+Priority: optional
+Maintainer: bburda <bartoszburda93@gmail.com>
+Build-Depends: debhelper (>= 9.0.0), python3-requests <!nocheck>, ros-humble-ament-cmake, ros-humble-ament-cmake-python, ros-humble-ament-index-python <!nocheck>, ros-humble-diagnostic-msgs, ros-humble-example-interfaces, ros-humble-launch-ros <!nocheck>, ros-humble-launch-testing <!nocheck>, ros-humble-launch-testing-ament-cmake <!nocheck>, ros-humble-rcl-interfaces, ros-humble-rclcpp, ros-humble-rclcpp-action, ros-humble-ros2-medkit-cmake, ros-humble-ros2-medkit-fault-manager <!nocheck>, ros-humble-ros2-medkit-gateway <!nocheck>, ros-humble-ros2-medkit-graph-provider <!nocheck>, ros-humble-ros2-medkit-linux-introspection <!nocheck>, ros-humble-ros2-medkit-msgs, ros-humble-ros2-medkit-param-beacon <!nocheck>, ros-humble-ros2-medkit-topic-beacon <!nocheck>, ros-humble-sensor-msgs, ros-humble-std-msgs, ros-humble-std-srvs, ros-humble-ros-workspace
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-humble-ros2-medkit-integration-tests
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ros-humble-diagnostic-msgs, ros-humble-example-interfaces, ros-humble-rcl-interfaces, ros-humble-rclcpp, ros-humble-rclcpp-action, ros-humble-ros2-medkit-msgs, ros-humble-sensor-msgs, ros-humble-std-msgs, ros-humble-std-srvs, ros-humble-ros-workspace
+Description: Integration tests and demo nodes for ros2_medkit
