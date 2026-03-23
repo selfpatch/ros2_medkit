@@ -1,0 +1,14 @@
+ros-humble-ros2-medkit-beacon-common (0.4.0-1jammy) jammy; urgency=high
+
+  * Initial release - shared utilities for beacon discovery plugins
+  * ``BeaconHintStore`` with TTL-based hint transitions and thread safety
+  * ``BeaconValidator`` input validation gate
+  * ``BeaconEntityMapper`` to convert discovery hints into ``IntrospectionResult``
+  * ``build_beacon_response()`` shared response builder
+  * ``BeaconPlugin`` base class for topic and parameter beacon plugins
+  * ``TokenBucket`` rate limiter with thread-safe access
+  * Contributors: @bburda
+
+ -- bburda <bartoszburda93@gmail.com>  Thu, 19 Mar 2026 23:00:00 -0000
+
+
