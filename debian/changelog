@@ -1,0 +1,34 @@
+ros-humble-ros2-medkit-diagnostic-bridge (0.4.0-1jammy) jammy; urgency=high
+
+  * Build: use shared cmake modules from ``ros2_medkit_cmake`` package
+  * Build: auto-detect ccache, centralized clang-tidy configuration
+  * Contributors: @bburda
+
+ -- mfaferek93 <michal.faferek.coe@gmail.com>  Thu, 19 Mar 2026 23:00:00 -0000
+
+ros-humble-ros2-medkit-diagnostic-bridge (0.3.0-1jammy) jammy; urgency=high
+
+  * Multi-distro CI support for ROS 2 Humble, Jazzy, and Rolling (#219 <https://github.com/selfpatch/ros2_medkit/pull/219>, #242 <https://github.com/selfpatch/ros2_medkit/pull/242>)
+  * Contributors: @bburda
+
+ -- mfaferek93 <michal.faferek.coe@gmail.com>  Thu, 26 Feb 2026 23:00:00 -0000
+
+ros-humble-ros2-medkit-diagnostic-bridge (0.2.0-1jammy) jammy; urgency=high
+
+  * Initial rosdistro release
+  * Bridge node converting standard ROS 2 /diagnostics to FaultManager fault reports
+  * Severity mapping:
+    
+      * OK -> PASSED event (fault condition cleared)
+      * WARN -> WARN severity FAILED event
+      * ERROR -> ERROR severity FAILED event
+      * STALE -> CRITICAL severity FAILED event
+    
+  * Auto-generated fault codes from diagnostic names (UPPER_SNAKE_CASE)
+  * Custom name_to_code mappings via ROS parameters
+  * Stateless design: always sends PASSED for OK status (handles restarts)
+  * Contributors: Michal Faferek
+
+ -- mfaferek93 <michal.faferek.coe@gmail.com>  Fri, 06 Feb 2026 23:00:00 -0000
+
+
