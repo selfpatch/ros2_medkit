@@ -1,0 +1,12 @@
+Source: ros-humble-ros2-medkit-param-beacon
+Section: misc
+Priority: optional
+Maintainer: bburda <bartoszburda93@gmail.com>
+Build-Depends: debhelper (>= 9.0.0), libcpp-httplib-dev, libssl-dev, nlohmann-json3-dev, ros-humble-ament-cmake, ros-humble-ament-cmake-clang-format <!nocheck>, ros-humble-ament-cmake-gmock <!nocheck>, ros-humble-ament-lint-auto <!nocheck>, ros-humble-ament-lint-common <!nocheck>, ros-humble-rclcpp, ros-humble-ros2-medkit-beacon-common, ros-humble-ros2-medkit-cmake, ros-humble-ros2-medkit-gateway, ros-humble-ros-workspace
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-humble-ros2-medkit-param-beacon
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libcpp-httplib-dev, libssl-dev, nlohmann-json3-dev, ros-humble-rclcpp, ros-humble-ros2-medkit-beacon-common, ros-humble-ros2-medkit-gateway, ros-humble-ros-workspace
+Description: Parameter-based beacon discovery plugin for ros2_medkit gateway
