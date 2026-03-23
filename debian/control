@@ -1,0 +1,12 @@
+Source: ros-humble-ros2-medkit-gateway
+Section: misc
+Priority: optional
+Maintainer: bburda <bartoszburda93@gmail.com>
+Build-Depends: debhelper (>= 9.0.0), libcpp-httplib-dev, libsqlite3-dev, libssl-dev, nlohmann-json3-dev, ros-humble-action-msgs, ros-humble-ament-cmake, ros-humble-ament-cmake-clang-format <!nocheck>, ros-humble-ament-cmake-clang-tidy <!nocheck>, ros-humble-ament-cmake-gtest <!nocheck>, ros-humble-ament-index-cpp, ros-humble-ament-lint-auto <!nocheck>, ros-humble-ament-lint-common <!nocheck>, ros-humble-example-interfaces <!nocheck>, ros-humble-rcl-interfaces, ros-humble-rclcpp, ros-humble-rclcpp-action <!nocheck>, ros-humble-ros2-medkit-cmake, ros-humble-ros2-medkit-msgs, ros-humble-ros2-medkit-serialization, ros-humble-rosidl-typesupport-cpp, ros-humble-rosidl-typesupport-introspection-cpp, ros-humble-sensor-msgs, ros-humble-std-msgs, ros-humble-std-srvs, ros-humble-yaml-cpp-vendor, ros-humble-ros-workspace
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-humble-ros2-medkit-gateway
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libcpp-httplib-dev, libsqlite3-dev, libssl-dev, nlohmann-json3-dev, ros-humble-action-msgs, ros-humble-ament-index-cpp, ros-humble-rcl-interfaces, ros-humble-rclcpp, ros-humble-ros2-medkit-msgs, ros-humble-ros2-medkit-serialization, ros-humble-rosidl-parser, ros-humble-rosidl-runtime-py, ros-humble-rosidl-typesupport-cpp, ros-humble-rosidl-typesupport-introspection-cpp, ros-humble-sensor-msgs, ros-humble-std-msgs, ros-humble-std-srvs, ros-humble-yaml-cpp-vendor, ros-humble-ros-workspace
+Description: HTTP gateway for ros2_medkit diagnostics system
