@@ -1,0 +1,12 @@
+Source: ros-humble-ros2-medkit-fault-manager
+Section: misc
+Priority: optional
+Maintainer: bburda <bartoszburda93@gmail.com>
+Build-Depends: debhelper (>= 9.0.0), libsqlite3-dev, nlohmann-json3-dev, ros-humble-ament-cmake, ros-humble-ament-cmake-clang-format <!nocheck>, ros-humble-ament-cmake-clang-tidy <!nocheck>, ros-humble-ament-cmake-gtest <!nocheck>, ros-humble-ament-lint-auto <!nocheck>, ros-humble-ament-lint-common <!nocheck>, ros-humble-launch-testing-ament-cmake <!nocheck>, ros-humble-launch-testing-ros <!nocheck>, ros-humble-rclcpp, ros-humble-ros2-medkit-cmake, ros-humble-ros2-medkit-msgs, ros-humble-ros2-medkit-serialization, ros-humble-rosbag2-cpp, ros-humble-rosbag2-storage, ros-humble-rosbag2-storage-mcap, ros-humble-sensor-msgs <!nocheck>, ros-humble-std-msgs <!nocheck>, ros-humble-ros-workspace
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-humble-ros2-medkit-fault-manager
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libsqlite3-dev, nlohmann-json3-dev, ros-humble-rclcpp, ros-humble-ros2-medkit-msgs, ros-humble-ros2-medkit-serialization, ros-humble-rosbag2-cpp, ros-humble-rosbag2-storage, ros-humble-rosbag2-storage-mcap, ros-humble-ros-workspace
+Description: Central fault manager node for ros2_medkit fault management system
