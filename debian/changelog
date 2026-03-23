@@ -1,0 +1,11 @@
+ros-humble-ros2-medkit-graph-provider (0.4.0-1jammy) jammy; urgency=high
+
+  * Initial release - extracted from ``ros2_medkit_gateway`` package
+  * ``GraphProviderPlugin`` for ROS 2 graph-based entity introspection
+  * Standalone external plugin package with independent build and test
+  * Locking support via ``PluginContext`` API
+  * Contributors: @bburda
+
+ -- bburda <bartoszburda93@gmail.com>  Thu, 19 Mar 2026 23:00:00 -0000
+
+
