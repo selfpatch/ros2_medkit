@@ -1,0 +1,49 @@
+# Copyright 2026 mfaferek93
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# GetSnapshots.srv - Retrieve topic snapshots captured when a fault was confirmed.
+#
+# Returns topic data that was captured at the moment a fault transitioned to CONFIRMED.
+# Snapshots provide debugging context by preserving system state at fault time.
+
+# Request fields
+
+# The fault_code to get snapshots for.
+string fault_code
+
+# Optional topic filter. If empty, returns snapshots for all captured topics.
+# If specified, returns only the snapshot for that specific topic.
+string topic
+---
+# Response fields
+
+# True if the fault_code was found (even if no snapshots exist).
+bool success
+
+# JSON-encoded snapshot data. Format:
+# {
+#   "fault_code": "MOTOR_OVERTEMP",
+#   "captured_at": 1735830000.123,
+#   "topics": {
+#     "/joint_states": {
+#       "message_type": "sensor_msgs/msg/JointState",
+#       "data": {...}
+#     }
+#   }
+# }
+# Empty object "{}" if no snapshots captured for this fault.
+string data
+
+# Error message if success is false.
+string error_message

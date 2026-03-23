@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+# Copyright 2026 bburda
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Feature tests for SSE (Server-Sent Events) fault stream.
+
+Validates SSE stream headers and keepalive connection handling.
+
+"""
+
+import threading
+import unittest
+
+import launch_testing
+import launch_testing.actions
+import requests
+
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
+from ros2_medkit_test_utils.launch_helpers import create_test_launch
+
+
+def generate_test_description():
+    return create_test_launch(
+        demo_nodes=['temp_sensor'],
+        fault_manager=False,
+    )
+
+
+class TestSse(GatewayTestCase):
+    """SSE (Server-Sent Events) fault stream tests."""
+
+    MIN_EXPECTED_APPS = 1
+    REQUIRED_APPS = {'temp_sensor'}
+
+    def test_sse_stream_endpoint_returns_correct_headers(self):
+        """GET /faults/stream returns SSE headers."""
+        headers_verified = False
+        try:
+            response = requests.get(
+                f'{self.BASE_URL}/faults/stream',
+                stream=True,
+                timeout=2
+            )
+            # Check SSE-specific headers
+            self.assertEqual(response.status_code, 200)
+            content_type = response.headers.get('Content-Type', '')
+            self.assertIn('text/event-stream', content_type)
+            self.assertEqual(
+                response.headers.get('Cache-Control'),
+                'no-cache'
+            )
+            headers_verified = True
+
+            # Close the connection (we just wanted to check headers)
+            response.close()
+        except requests.exceptions.ReadTimeout:
+            # Timeout is expected since SSE keeps connection open
+            pass
+        self.assertTrue(
+            headers_verified, 'Headers were not verified before timeout',
+        )
+
+    def test_sse_stream_connects_without_error(self):
+        """SSE stream can be read and handles concurrent connections."""
+        received_data = []
+        connection_error = []
+        stop_event = threading.Event()
+        connected = threading.Event()
+
+        def read_stream():
+            try:
+                response = requests.get(
+                    f'{self.BASE_URL}/faults/stream',
+                    stream=True,
+                    timeout=35  # Slightly longer than keepalive interval
+                )
+                connected.set()
+                for line in response.iter_lines(decode_unicode=True):
+                    if stop_event.is_set():
+                        break
+                    if line:
+                        received_data.append(line)
+                response.close()
+            except requests.exceptions.Timeout:
+                # Timeout is expected when stop_event is set
+                pass
+            except Exception as exc:
+                # Capture connection errors for assertion
+                connection_error.append(str(exc))
+            finally:
+                connected.set()  # Unblock waiter on error
+
+        # Start reading in background thread
+        thread = threading.Thread(target=read_stream)
+        thread.daemon = True
+        thread.start()
+
+        # Wait for connection to be established
+        self.assertTrue(
+            connected.wait(timeout=5),
+            'SSE stream failed to connect within 5s',
+        )
+        stop_event.set()
+        thread.join(timeout=2)
+
+        # Verify no connection errors occurred
+        self.assertEqual(len(connection_error), 0,
+                         f'SSE stream connection failed: {connection_error}')
+
+
+@launch_testing.post_shutdown_test()
+class TestShutdown(unittest.TestCase):
+
+    def test_exit_codes(self, proc_info):
+        """Check all processes exited cleanly.
+
+        Allow exit code -15 (SIGTERM) which is expected during shutdown
+        after SSE stream tests close persistent connections.
+        """
+        for info in proc_info:
+            self.assertIn(
+                info.returncode, ALLOWED_EXIT_CODES,
+                f'{info.process_name} exited with code {info.returncode}'
+            )

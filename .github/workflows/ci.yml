@@ -1,0 +1,421 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ros_distro: humble
+            os_image: ubuntu:jammy
+          - ros_distro: rolling
+            os_image: ubuntu:noble
+    continue-on-error: ${{ matrix.ros_distro == 'rolling' }}
+    container:
+      image: ${{ matrix.os_image }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 ${{ matrix.ros_distro }}
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: ${{ matrix.ros_distro }}
+
+      - name: Install ccache
+        run: apt-get install -y ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-${{ matrix.ros_distro }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.ros_distro }}-
+
+      - name: Install cpp-httplib from source (Humble)
+        if: matrix.ros_distro == 'humble'
+        run: |
+          apt-get update
+          apt-get install -y cmake g++ libssl-dev pkg-config
+          git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib
+          cd /tmp/cpp-httplib
+          mkdir build && cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON
+          make install
+          # Verify installation — cpp-httplib from source installs cmake config (not pkg-config .pc)
+          test -f /usr/include/httplib.h && echo "cpp-httplib installed successfully" || exit 1
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y ros-${{ matrix.ros_distro }}-test-msgs
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          rosdep update
+          # On Humble, skip the libcpp-httplib-dev rosdep key - the apt version (0.10.3)
+          # is too old; cpp-httplib v0.14.3 is built from source in an earlier step.
+          if [ "${{ matrix.ros_distro }}" = "humble" ]; then
+            rosdep install --from-paths src --ignore-src -r -y --skip-keys="libcpp-httplib-dev"
+          else
+            rosdep install --from-paths src --ignore-src -y
+          fi
+
+      - name: Build packages
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          colcon build --symlink-install \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release \
+            --event-handlers console_direct+
+          ccache -s
+
+      - name: Run unit and integration tests
+        timeout-minutes: 15
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          colcon test --return-code-on-test-failure \
+            --ctest-args -LE linter \
+            --event-handlers console_direct+
+
+      - name: Show test results
+        if: always()
+        run: colcon test-result --verbose
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.ros_distro }}
+          path: |
+            log/
+            build/*/test_results/
+
+  jazzy-build:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install ccache
+        run: apt-get install -y ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-${{ github.sha }}
+          restore-keys: |
+            ccache-jazzy-
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y ros-jazzy-test-msgs clang-format clang-tidy
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Build packages
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DENABLE_CLANG_TIDY=ON \
+            --event-handlers console_direct+
+          ccache -s
+
+      - name: Package build artifacts
+        run: tar cf /tmp/jazzy-build.tar build/ install/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jazzy-build
+          path: /tmp/jazzy-build.tar
+          retention-days: 1
+
+  jazzy-lint:
+    needs: jazzy-build
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y clang-format clang-tidy
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: jazzy-build
+
+      - name: Extract build artifacts
+        run: tar xf jazzy-build.tar && rm jazzy-build.tar
+
+      - name: Run linters
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon test --return-code-on-test-failure \
+            --ctest-args -L linter \
+            --event-handlers console_direct+
+
+      - name: Show test results
+        if: always()
+        run: colcon test-result --verbose
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-jazzy-lint
+          path: |
+            log/
+            build/*/test_results/
+
+  jazzy-test:
+    needs: jazzy-build
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y ros-jazzy-test-msgs
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: jazzy-build
+
+      - name: Extract build artifacts
+        run: tar xf jazzy-build.tar && rm jazzy-build.tar
+
+      - name: Run unit and integration tests
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon test --return-code-on-test-failure \
+            --ctest-args -LE linter \
+            --event-handlers console_direct+
+
+      - name: Show test results
+        if: always()
+        run: colcon test-result --verbose
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-jazzy-test
+          path: |
+            log/
+            build/*/test_results/
+
+  coverage:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install ccache
+        run: apt-get install -y ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-coverage-${{ github.sha }}
+          restore-keys: |
+            ccache-coverage-
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y lcov ros-jazzy-test-msgs
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -r -y
+
+      - name: Build packages with coverage
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install \
+            --cmake-args -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON \
+            --event-handlers console_direct+
+          ccache -s
+
+      - name: Run unit and integration tests for coverage
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon test \
+            --ctest-args -LE linter \
+            --event-handlers console_direct+
+
+      - name: Generate coverage report
+        run: |
+          lcov --capture --directory build --output-file coverage.raw.info \
+            --ignore-errors mismatch,negative,empty,gcov
+
+          if [ ! -s coverage.raw.info ] || ! grep -q 'SF:' coverage.raw.info; then
+            echo "::error::No valid coverage data found in coverage.raw.info"
+            exit 1
+          fi
+
+          lcov --extract coverage.raw.info \
+            '*/ros2_medkit/src/*/src/*' \
+            '*/ros2_medkit/src/*/include/*' \
+            --output-file coverage.extracted.info \
+            --ignore-errors unused,empty
+
+          lcov --remove coverage.extracted.info \
+            '*/vendored/*' \
+            --output-file coverage.info \
+            --ignore-errors unused,empty
+
+          if [ ! -s coverage.info ]; then
+            echo "::error::Filtered coverage.info is empty - no source files matched"
+            exit 1
+          fi
+
+          lcov --list coverage.info
+          genhtml coverage.info --output-directory coverage_html --ignore-errors source
+
+      - name: Upload coverage HTML report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage_html/
+
+      - name: Upload coverage to Codecov
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.info
+          flags: unittests,integration
+          name: ros2_medkit-coverage
+          fail_ci_if_error: true
+          verbose: true
+
+  notify-demos:
+    needs: [jazzy-lint, jazzy-test]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.jazzy-lint.result == 'success' &&
+      needs.jazzy-test.result == 'success'
+    runs-on: ubuntu-latest
+    # Only Jazzy gates the dispatch. Humble failures do not block demos CI - intentional tradeoff.
+    permissions: {}
+    steps:
+      - name: Trigger selfpatch_demos CI
+        uses: peter-evans/repository-dispatch@v4
+        with:
+          token: ${{ secrets.DEMOS_DISPATCH_TOKEN }}
+          repository: selfpatch/selfpatch_demos
+          event-type: ros2_medkit_updated
+          client-payload: '{"sha":"${{ github.sha }}","run_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'

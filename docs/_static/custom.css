@@ -1,0 +1,82 @@
+/* Fix DataTables display in Sphinx RTD Theme */
+.dataTables_wrapper {
+    width: 100%;
+    overflow-x: auto;
+    display: block;
+}
+
+table.dataTable {
+    width: 100% !important;
+    margin: 0 auto;
+    clear: both;
+    border-collapse: collapse;
+    border-spacing: 0;
+    table-layout: auto;
+}
+
+/* Ensure the table cells don't collapse too much */
+table.dataTable th,
+table.dataTable td {
+    white-space: normal !important;
+    word-wrap: break-word;
+    vertical-align: top;
+}
+
+/* Increase the content width to accommodate large tables */
+.wy-nav-content {
+    max-width: 100% !important;
+}
+
+/* Ensure the main container uses full width */
+.wy-grid-for-nav {
+    width: 100%;
+    max-width: 100%;
+}
+
+/* Inspiration from Furo / Sphinx-Needs modern styling */
+:root {
+    --sn-color-need-border: #e0e0e0;
+    --sn-color-need-row-border: #f5f5f5;
+    --sn-color-need-bg: #fafafa;
+    --sn-color-need-bg-head: #f0f0f0;
+    --sn-color-datatable-label: #666;
+    --sn-color-datatable-btn-border: #ccc;
+}
+
+/* Apply these variables to the DataTable if Sphinx-Needs uses them,
+   or manually apply them to match the look */
+
+table.dataTable thead th {
+    background-color: #f0f0f0; /* Fallback */
+    background-color: var(--sn-color-need-bg-head);
+    border-bottom: 2px solid #e0e0e0;
+    border-bottom: 2px solid var(--sn-color-need-border);
+    color: #333;
+    font-weight: bold;
+    padding: 10px !important;
+}
+
+table.dataTable tbody td {
+    border-bottom: 1px solid #f5f5f5;
+    border-bottom: 1px solid var(--sn-color-need-row-border);
+    padding: 8px !important;
+}
+
+table.dataTable.no-footer {
+    border-bottom: 1px solid #e0e0e0;
+    border-bottom: 1px solid var(--sn-color-need-border);
+}
+
+/* Improve search/filter inputs in DataTables */
+.dataTables_filter input {
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+
+.dataTables_length select {
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    padding: 4px;
+}
+

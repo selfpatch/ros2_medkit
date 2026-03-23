@@ -1,0 +1,569 @@
+// Copyright 2026 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "ros2_medkit_gateway/http/handlers/bulkdata_handlers.hpp"
+
+#include <algorithm>
+#include <filesystem>
+#include <unordered_map>
+#include <vector>
+
+#include "ros2_medkit_gateway/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/entity_path_utils.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/http_utils.hpp"
+
+namespace ros2_medkit_gateway {
+namespace handlers {
+
+BulkDataHandlers::BulkDataHandlers(HandlerContext & ctx) : ctx_(ctx) {
+}
+
+void BulkDataHandlers::handle_list_categories(const httplib::Request & req, httplib::Response & res) {
+  // Parse entity path from request URL
+  auto entity_info = parse_entity_path(req.path);
+  if (!entity_info) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid entity path");
+    return;
+  }
+
+  // Validate entity exists and matches the route type (e.g., /components/ only accepts components)
+  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
+  if (!entity_opt) {
+    return;  // Error response already sent
+  }
+
+  // Validate entity type supports bulk-data collection (SOVD Table 8)
+  if (auto err = HandlerContext::validate_collection_access(*entity_opt, ResourceCollection::BULK_DATA)) {
+    HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    return;
+  }
+
+  // Build categories list: "rosbags" always available + BulkDataStore categories
+  nlohmann::json categories = nlohmann::json::array();
+  categories.push_back("rosbags");  // Always available via FaultManager
+
+  auto * store = ctx_.bulk_data_store();
+  if (store) {
+    for (const auto & cat : store->list_categories()) {
+      categories.push_back(cat);
+    }
+  }
+
+  nlohmann::json response = {{"items", categories}};
+
+  HandlerContext::send_json(res, response);
+}
+
+void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, httplib::Response & res) {
+  // Parse entity path from request URL
+  auto entity_info = parse_entity_path(req.path);
+  if (!entity_info) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid entity path");
+    return;
+  }
+
+  // Validate entity exists and matches the route type
+  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
+  if (!entity_opt) {
+    return;  // Error response already sent
+  }
+  auto entity = *entity_opt;
+
+  // Validate entity type supports bulk-data collection (SOVD Table 8)
+  if (auto err = HandlerContext::validate_collection_access(entity, ResourceCollection::BULK_DATA)) {
+    HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    return;
+  }
+
+  // Extract and validate category from path
+  auto category = extract_bulk_data_category(req.path);
+  if (category.empty()) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing category");
+    return;
+  }
+
+  if (category == "rosbags") {
+    // === Rosbags: served via FaultManager ===
+    auto fault_mgr = ctx_.node()->get_fault_manager();
+
+    // Get source filters for this entity (single for most, multiple for functions).
+    // Functions aggregate rosbags from all hosting apps.
+    auto source_filters = get_source_filters(entity);
+
+    // Collect faults across all source filters for timestamp enrichment
+    std::unordered_map<std::string, nlohmann::json> fault_map;
+    for (const auto & source_filter : source_filters) {
+      auto faults_result = fault_mgr->list_faults(source_filter);
+      if (faults_result.success && faults_result.data.contains("faults")) {
+        for (const auto & fault_json : faults_result.data["faults"]) {
+          if (fault_json.contains("fault_code")) {
+            std::string fc = fault_json["fault_code"].get<std::string>();
+            fault_map[fc] = fault_json;
+          }
+        }
+      }
+    }
+
+    // Collect rosbags across all source filters
+    std::vector<nlohmann::json> all_rosbags;
+    for (const auto & source_filter : source_filters) {
+      auto rosbags_result = fault_mgr->list_rosbags(source_filter);
+      if (rosbags_result.success && rosbags_result.data.contains("rosbags")) {
+        for (const auto & rosbag : rosbags_result.data["rosbags"]) {
+          all_rosbags.push_back(rosbag);
+        }
+      }
+    }
+
+    nlohmann::json items = nlohmann::json::array();
+
+    for (const auto & rosbag : all_rosbags) {
+      std::string fault_code = rosbag.value("fault_code", "");
+      std::string format = rosbag.value("format", "mcap");
+      uint64_t size_bytes = rosbag.value("size_bytes", 0);
+      double duration_sec = rosbag.value("duration_sec", 0.0);
+
+      // Use fault_code as bulk_data_id
+      std::string bulk_data_id = fault_code;
+
+      // Get timestamp from fault if available
+      int64_t created_at_ns = 0;
+      auto it = fault_map.find(fault_code);
+      if (it != fault_map.end()) {
+        double first_occurred = it->second.value("first_occurred", 0.0);
+        created_at_ns = static_cast<int64_t>(first_occurred * 1'000'000'000);
+      }
+
+      nlohmann::json descriptor = {
+          {"id", bulk_data_id},
+          {"name", fault_code + " recording " + format_timestamp_ns(created_at_ns)},
+          {"mimetype", get_rosbag_mimetype(format)},
+          {"size", size_bytes},
+          {"creation_date", format_timestamp_ns(created_at_ns)},
+          {"x-medkit", {{"fault_code", fault_code}, {"duration_sec", duration_sec}, {"format", format}}}};
+      items.push_back(descriptor);
+    }
+
+    nlohmann::json response = {{"items", items}};
+    HandlerContext::send_json(res, response);
+  } else {
+    // === Non-rosbag categories: served via BulkDataStore ===
+    auto * store = ctx_.bulk_data_store();
+    if (!store || !store->is_known_category(category)) {
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Unknown category: " + category);
+      return;
+    }
+
+    auto items_list = store->list_items(entity_info->entity_id, category);
+    nlohmann::json json_items = nlohmann::json::array();
+    for (const auto & item : items_list) {
+      nlohmann::json desc = {
+          {"id", item.id},
+          {"name", item.name},
+          {"mimetype", item.mime_type},
+          {"size", item.size},
+          {"creation_date", item.created},
+      };
+      if (!item.description.empty()) {
+        desc["description"] = item.description;
+      }
+      if (!item.metadata.empty()) {
+        desc["x-medkit"] = item.metadata;
+      }
+      json_items.push_back(desc);
+    }
+    nlohmann::json response = {{"items", json_items}};
+    HandlerContext::send_json(res, response);
+  }
+}
+
+void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Response & res) {
+  // Parse entity path from request URL
+  auto entity_info = parse_entity_path(req.path);
+  if (!entity_info) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid entity path");
+    return;
+  }
+
+  // Validate entity exists and matches the route type
+  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
+  if (!entity_opt) {
+    return;  // Error response already sent
+  }
+
+  // Validate entity type supports bulk-data collection (SOVD Table 8)
+  if (auto err = HandlerContext::validate_collection_access(*entity_opt, ResourceCollection::BULK_DATA)) {
+    HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    return;
+  }
+
+  // Check lock access for bulk-data
+  if (ctx_.validate_lock_access(req, res, *entity_opt, "bulk-data")) {
+    return;
+  }
+
+  // Extract and validate category from path
+  auto category = extract_bulk_data_category(req.path);
+  if (category.empty()) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing category");
+    return;
+  }
+
+  // Rosbags are managed by the fault system, not user-uploadable
+  if (category == "rosbags") {
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
+                               "Category 'rosbags' does not support upload. "
+                               "Rosbags are managed by the fault system.");
+    return;
+  }
+
+  // Check BulkDataStore is available
+  auto * store = ctx_.bulk_data_store();
+  if (store == nullptr) {
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Bulk data storage not configured");
+    return;
+  }
+
+  // Validate category is known
+  if (!store->is_known_category(category)) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unknown bulk-data category: " + category);
+    return;
+  }
+
+  // Extract multipart file
+  if (!req.has_file("file")) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing 'file' field in multipart/form-data request");
+    return;
+  }
+
+  const auto & file = req.get_file_value("file");
+  std::string filename = file.filename.empty() ? "upload" : file.filename;
+  std::string content_type = file.content_type.empty() ? "application/octet-stream" : file.content_type;
+
+  // Check file size against limit
+  if (store->max_upload_bytes() > 0 && file.content.size() > store->max_upload_bytes()) {
+    HandlerContext::send_error(res, 413, ERR_PAYLOAD_TOO_LARGE, "File size exceeds maximum upload limit");
+    return;
+  }
+
+  // Extract optional description and metadata
+  std::string description;
+  if (req.has_file("description")) {
+    description = req.get_file_value("description").content;
+  }
+
+  nlohmann::json metadata = nlohmann::json::object();
+  if (req.has_file("metadata")) {
+    const auto & meta_str = req.get_file_value("metadata").content;
+    if (!meta_str.empty()) {
+      auto parsed = nlohmann::json::parse(meta_str, nullptr, false);
+      if (parsed.is_discarded()) {
+        HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid JSON in 'metadata' field");
+        return;
+      }
+      if (!parsed.is_object()) {
+        HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "metadata must be a JSON object");
+        return;
+      }
+      metadata = std::move(parsed);
+    }
+  }
+
+  // Store the file
+  auto result =
+      store->store(entity_info->entity_id, category, filename, content_type, file.content, description, metadata);
+  if (!result) {
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, result.error());
+    return;
+  }
+
+  // Build response JSON
+  const auto & desc = *result;
+  nlohmann::json descriptor_json = {{"id", desc.id},
+                                    {"name", desc.name},
+                                    {"mimetype", desc.mime_type},
+                                    {"size", desc.size},
+                                    {"creation_date", desc.created}};
+  if (!desc.description.empty()) {
+    descriptor_json["description"] = desc.description;
+  }
+  if (!desc.metadata.empty()) {
+    descriptor_json["x-medkit"] = desc.metadata;
+  }
+
+  // Return 201 Created with Location header
+  res.status = 201;
+  res.set_header("Location", req.path + "/" + desc.id);
+  HandlerContext::send_json(res, descriptor_json);
+}
+
+void BulkDataHandlers::handle_delete(const httplib::Request & req, httplib::Response & res) {
+  // Parse entity path from request URL
+  auto entity_info = parse_entity_path(req.path);
+  if (!entity_info) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid entity path");
+    return;
+  }
+
+  // Validate entity exists and matches the route type
+  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
+  if (!entity_opt) {
+    return;  // Error response already sent
+  }
+
+  // Validate entity type supports bulk-data collection (SOVD Table 8)
+  if (auto err = HandlerContext::validate_collection_access(*entity_opt, ResourceCollection::BULK_DATA)) {
+    HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    return;
+  }
+
+  // Check lock access for bulk-data
+  if (ctx_.validate_lock_access(req, res, *entity_opt, "bulk-data")) {
+    return;
+  }
+
+  // Extract and validate category from path
+  auto category = extract_bulk_data_category(req.path);
+  if (category.empty()) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing category");
+    return;
+  }
+
+  // Rosbags are managed by the fault system, not user-deletable
+  if (category == "rosbags") {
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
+                               "Category 'rosbags' does not support deletion. "
+                               "Rosbags are managed by the fault system.");
+    return;
+  }
+
+  // Extract item ID
+  auto item_id = extract_bulk_data_id(req.path);
+  if (item_id.empty()) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing bulk-data ID");
+    return;
+  }
+
+  // Check BulkDataStore is available
+  auto * store = ctx_.bulk_data_store();
+  if (store == nullptr) {
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Bulk data storage not configured");
+    return;
+  }
+
+  // Validate category is known
+  if (!store->is_known_category(category)) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unknown bulk-data category: " + category);
+    return;
+  }
+
+  // Delete the item
+  auto result = store->remove(entity_info->entity_id, category, item_id);
+  if (!result) {
+    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Bulk-data item not found");
+    return;
+  }
+
+  // Return 204 No Content
+  res.status = 204;
+}
+
+void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Response & res) {
+  // Parse entity path from request URL
+  auto entity_info = parse_entity_path(req.path);
+  if (!entity_info) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid entity path");
+    return;
+  }
+
+  // Validate entity exists and matches the route type
+  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
+  if (!entity_opt) {
+    return;  // Error response already sent
+  }
+  auto entity = *entity_opt;
+
+  // Validate entity type supports bulk-data collection (SOVD Table 8)
+  if (auto err = HandlerContext::validate_collection_access(entity, ResourceCollection::BULK_DATA)) {
+    HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+    return;
+  }
+
+  // Extract category and bulk_data_id from path
+  auto category = extract_bulk_data_category(req.path);
+  auto bulk_data_id = extract_bulk_data_id(req.path);
+
+  if (bulk_data_id.empty()) {
+    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing bulk-data ID");
+    return;
+  }
+
+  if (category == "rosbags") {
+    // === Rosbags: served via FaultManager ===
+    // Get FaultManager from node
+    auto fault_mgr = ctx_.node()->get_fault_manager();
+
+    // bulk_data_id is the fault_code
+    std::string fault_code = bulk_data_id;
+
+    // Get rosbag info
+    auto rosbag_result = fault_mgr->get_rosbag(fault_code);
+    if (!rosbag_result.success || !rosbag_result.data.contains("file_path")) {
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found",
+                                 {{"bulk_data_id", bulk_data_id}});
+      return;
+    }
+
+    // Security check: verify rosbag belongs to this entity.
+    // For functions, check all hosting apps (aggregated view).
+    auto source_filters = get_source_filters(entity);
+    bool fault_verified = false;
+    for (const auto & sf : source_filters) {
+      auto fault_result = fault_mgr->get_fault(fault_code, sf);
+      if (fault_result.success) {
+        fault_verified = true;
+        break;
+      }
+    }
+
+    if (!fault_verified) {
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found for this entity",
+                                 {{"entity_id", entity_info->entity_id}});
+      return;
+    }
+
+    // Get file path and stream the file
+    std::string file_path = rosbag_result.data["file_path"].get<std::string>();
+    std::string format = rosbag_result.data.value("format", "mcap");
+    auto mimetype = get_rosbag_mimetype(format);
+    std::string filename = fault_code + "." + format;
+
+    // Sanitize quotes in filename for Content-Disposition header safety
+    std::string safe_name = filename;
+    std::replace(safe_name.begin(), safe_name.end(), '"', '_');
+
+    // Set response headers for file download
+    res.set_header("Content-Disposition", "attachment; filename=\"" + safe_name + "\"");
+
+    if (!stream_file_to_response(res, file_path, mimetype)) {
+      HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to read rosbag file");
+    }
+  } else {
+    // === Non-rosbag categories: served via BulkDataStore ===
+    auto * store = ctx_.bulk_data_store();
+    if (!store || !store->is_known_category(category)) {
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Unknown category: " + category);
+      return;
+    }
+
+    auto file_path = store->get_file_path(entity_info->entity_id, category, bulk_data_id);
+    if (!file_path) {
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found",
+                                 {{"bulk_data_id", bulk_data_id}});
+      return;
+    }
+
+    // Get descriptor for filename and MIME type
+    auto item = store->get_item(entity_info->entity_id, category, bulk_data_id);
+    std::string filename = item ? item->name : bulk_data_id;
+    std::string mimetype = item ? item->mime_type : "application/octet-stream";
+
+    // Sanitize quotes in filename for Content-Disposition header safety
+    std::string safe_name = filename;
+    std::replace(safe_name.begin(), safe_name.end(), '"', '_');
+
+    // Content-Disposition with original filename
+    res.set_header("Content-Disposition", "attachment; filename=\"" + safe_name + "\"");
+
+    // Use generic stream utility (from subtask 1)
+    if (!ros2_medkit_gateway::stream_file_to_response(res, *file_path, mimetype)) {
+      HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to read file");
+    }
+  }
+}
+
+bool BulkDataHandlers::stream_file_to_response(httplib::Response & res, const std::string & file_path,
+                                               const std::string & content_type) {
+  // Resolve the actual file path - rosbag2 creates a directory with the db3/mcap file inside
+  std::string actual_path = resolve_rosbag_file_path(file_path);
+  if (actual_path.empty()) {
+    return false;
+  }
+
+  // Delegate to the generic stream utility
+  return ros2_medkit_gateway::stream_file_to_response(res, actual_path, content_type);
+}
+
+std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path) {
+  // If it's a regular file, return as-is
+  if (std::filesystem::is_regular_file(path)) {
+    return path;
+  }
+
+  // If it's a directory (rosbag2 directory structure), find the db3/mcap file inside
+  if (std::filesystem::is_directory(path)) {
+    for (const auto & entry : std::filesystem::directory_iterator(path)) {
+      if (entry.is_regular_file()) {
+        auto ext = entry.path().extension().string();
+        // Look for db3 (sqlite3 format) or mcap files
+        if (ext == ".db3" || ext == ".mcap") {
+          return entry.path().string();
+        }
+      }
+    }
+  }
+
+  return "";  // File not found
+}
+
+std::string BulkDataHandlers::get_rosbag_mimetype(const std::string & format) {
+  if (format == "mcap") {
+    return "application/x-mcap";
+  } else if (format == "sqlite3" || format == "db3") {
+    return "application/x-sqlite3";
+  }
+  return "application/octet-stream";
+}
+
+std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo & entity) const {
+  if (entity.type == EntityType::FUNCTION) {
+    // Functions aggregate rosbags from all hosting apps
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto host_app_ids = cache.get_apps_for_function(entity.id);
+    std::vector<std::string> filters;
+    filters.reserve(host_app_ids.size());
+    for (const auto & app_id : host_app_ids) {
+      auto app = cache.get_app(app_id);
+      if (app) {
+        auto fqn = app->effective_fqn();
+        if (!fqn.empty()) {
+          filters.push_back(fqn);
+        }
+      }
+    }
+    return filters;
+  }
+
+  // For other entity types, use FQN or namespace_path
+  std::string filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
+  if (filter.empty()) {
+    return {};
+  }
+  return {filter};
+}
+
+}  // namespace handlers
+}  // namespace ros2_medkit_gateway

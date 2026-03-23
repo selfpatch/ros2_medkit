@@ -1,0 +1,461 @@
+# ROS 2 Medkit Gateway Configuration Parameters
+#
+# This file contains default configuration for the ROS 2 Medkit Gateway.
+# You can override these values via:
+#   - Command line: --ros-args -p server.port:=9000
+#   - Launch files: parameters=[...]
+#   - This YAML file
+
+ros2_medkit_gateway:
+  ros__parameters:
+    # Server Configuration
+    server:
+      # Host to bind the REST server to
+      # Options:
+      #   - "127.0.0.1" (localhost only - SECURE, default)
+      #   - "0.0.0.0" (all interfaces - use for Docker/networking)
+      host: "127.0.0.1"
+
+      # Port for REST API
+      # Valid range: 1024-65535
+      port: 8080
+
+      # TLS/HTTPS Configuration
+      # Enables encrypted communication using OpenSSL
+      tls:
+        # Enable/disable TLS (default: false for backward compatibility)
+        enabled: false
+
+        # Path to PEM-encoded certificate file (required when TLS enabled)
+        # Example: "/etc/ros2_medkit/certs/cert.pem"
+        cert_file: ""
+
+        # Path to PEM-encoded private key file (required when TLS enabled)
+        # SECURITY: Private key should have restricted permissions (chmod 600)
+        # Example: "/etc/ros2_medkit/certs/key.pem"
+        key_file: ""
+
+        # Optional: Path to CA certificate file for client verification
+        # TODO: Used for mutual TLS when implemented
+        # Example: "/etc/ros2_medkit/certs/ca.pem"
+        ca_file: ""
+
+        # Minimum TLS version
+        # Options: "1.2" (default, widely compatible), "1.3" (more secure)
+        min_version: "1.2"
+
+        # TODO: Mutual TLS (client certificate verification) is not yet implemented
+        # See: https://github.com/selfpatch/ros2_medkit/issues/XXX
+
+    # Cache refresh interval in milliseconds
+    # How often to discover ROS 2 nodes and update the cache
+    # Valid range: 100-60000 (0.1s to 60s)
+    # Default: 10000 (10 seconds) - optimized for developer experience
+    refresh_interval_ms: 10000
+
+    # CORS Configuration
+    # Cross-Origin Resource Sharing settings for browser-based clients
+    # If cors section is missing or empty, CORS handling is disabled
+    cors:
+      # List of allowed origins
+      # Examples: ["http://localhost:5173", "https://example.com"]
+      # Use ["*"] to allow all origins (not recommended for production)
+      # Empty list = CORS disabled (use [""] for ROS 2 YAML compatibility)
+      allowed_origins: [""]
+
+      # Allowed HTTP methods for CORS requests
+      # Default: ["GET", "PUT", "POST", "DELETE", "OPTIONS"]
+      allowed_methods: ["GET", "PUT", "POST", "DELETE", "OPTIONS"]
+
+      # Allowed headers in CORS requests
+      # List the allowed headers explicitly (wildcard "*" is not supported)
+      allowed_headers: ["Content-Type", "Accept"]
+
+      # Whether to allow credentials (cookies, authorization headers)
+      # When true, allowed_origins cannot be ["*"]
+      allow_credentials: false
+
+      # How long (in seconds) browsers should cache preflight response
+      # Default: 86400 (24 hours)
+      max_age_seconds: 86400
+
+    # Data Access Configuration
+    # Maximum number of concurrent topic samples when fetching component data
+    # Higher values improve response time but use more system resources
+    # Valid range: 1-50
+    max_parallel_topic_samples: 20
+
+    # Timeout (in seconds) for sampling topic data via native GenericSubscription
+    # Topics without publishers return immediately with metadata (no timeout wait)
+    # This timeout only applies when topics have active publishers
+    # Valid range: 0.1-30.0
+    topic_sample_timeout_sec: 2.0
+
+    # Fault Manager integration
+    fault_manager:
+      # Namespace prefix used to resolve Fault Manager services.
+      # Examples:
+      #   ""        -> /fault_manager/list_faults
+      #   "robot1"  -> /robot1/fault_manager/list_faults
+      #   "/robot1" -> /robot1/fault_manager/list_faults
+      namespace: ""
+
+      # Timeout (in seconds) for Fault Manager service calls
+      service_timeout_sec: 5.0
+
+    # NOTE: Native-only implementation
+    # The gateway uses native rclcpp APIs for all ROS 2 interactions:
+    # - Topic discovery: node->get_topic_names_and_types()
+    # - Topic sampling: rclcpp::GenericSubscription + JsonSerializer
+    # - Topic publishing: rclcpp::GenericPublisher + JsonSerializer
+    # - Service calls: rclcpp::GenericClient + JsonSerializer
+    # - Action operations: Internal action services via GenericClient
+    # No ROS 2 CLI dependencies - pure C++ implementation using ros2_medkit_serialization.
+
+    # SSE (Server-Sent Events) Configuration
+    sse:
+      # Maximum number of concurrent SSE connections
+      # Applies to fault streams and cyclic subscription streams combined
+      # Default: 10
+      max_clients: 10
+
+      # Maximum number of active cyclic subscriptions across all entities
+      # Returns HTTP 503 when this limit is reached
+      # Default: 100
+      max_subscriptions: 100
+
+      # Maximum allowed subscription duration in seconds
+      # Subscriptions requesting a longer duration are rejected with HTTP 400
+      # Default: 3600 (1 hour)
+      max_duration_sec: 3600
+
+    # Logging Configuration
+    logs:
+      # Ring buffer capacity per node name.
+      # The gateway retains at most this many /rosout entries per node in memory.
+      # Oldest entries are dropped when the buffer is full.
+      # Valid range: 1-100000 (values outside this range are clamped with a warning).
+      # Default: 200
+      buffer_size: 200
+
+    # Discovery Configuration
+    # Controls how ROS 2 graph entities are mapped to SOVD entities
+    discovery:
+      # Discovery mode
+      # Options:
+      #   - "runtime_only": Use ROS 2 graph introspection only (default)
+      #   - "manifest_only": Only expose manifest-declared entities
+      #   - "hybrid": Manifest as source of truth + runtime linking
+      mode: "runtime_only"
+
+      # Path to manifest file (required for manifest_only and hybrid modes)
+      manifest_path: ""
+
+      # Strict manifest validation (reject invalid manifests)
+      manifest_strict_validation: true
+
+      # Configurable main layers (hybrid mode only)
+      # Set false to disable a layer - useful when running manifest+plugin or runtime+plugin
+      # without the other default layer.
+      # manifest.enabled: true     # Set false to disable manifest layer
+      # runtime.enabled: true      # Set false to disable runtime layer
+
+      # Runtime (heuristic) discovery options
+      # These control how nodes are mapped to SOVD entities in runtime mode
+      runtime:
+        # Create synthetic Component entities that group Apps
+        # When true, Components are synthetic groupings (by namespace)
+        # When false, each node is a Component
+        # Default: true
+        create_synthetic_components: true
+
+        # How to group nodes into synthetic components
+        # Options:
+        #   - "none": Each node = 1 component (default when synthetic off)
+        #   - "namespace": Group by first namespace segment (area)
+        # Note: "process" grouping is planned for future (requires R&D)
+        grouping_strategy: "namespace"
+
+        # Naming pattern for synthetic components
+        # Placeholders: {area}
+        # Examples: "{area}", "{area}_group", "component_{area}"
+        synthetic_component_name_pattern: "{area}"
+
+        # Policy for namespaces with topics but no ROS 2 nodes
+        # Common with Isaac Sim, external bridges, or dead/orphaned topics
+        # Options:
+        #   - "ignore": Don't create any entity for topic-only namespaces
+        #   - "create_component": Create component with source="topic" (default)
+        #   - "create_area_only": Only create the area, no component
+        topic_only_policy: "create_component"
+
+        # Minimum number of topics to create a topic-based component
+        # Only applies when topic_only_policy is "create_component"
+        # Namespaces with fewer topics are skipped
+        # Default: 1 (create component for any namespace with topics)
+        min_topics_for_component: 1
+
+      # Merge pipeline configuration (only used in hybrid mode)
+      # Controls how manifest, runtime, and plugin layers merge entities
+      merge_pipeline:
+        # Gap-fill: what runtime discovery can create when manifest is incomplete
+        gap_fill:
+          allow_heuristic_areas: true
+          allow_heuristic_components: true
+          allow_heuristic_apps: true
+          allow_heuristic_functions: false
+          # namespace_blacklist: ["/rosout"]
+          # namespace_whitelist: []
+
+        # Per-layer merge policy overrides (optional, empty string = use layer default)
+        # Values: "authoritative", "enrichment", "fallback"
+        # Defaults: manifest=AUTH for identity/hierarchy/metadata, ENRICH for live_data, FALLBACK for status
+        #           runtime=AUTH for live_data/status, ENRICH for metadata, FALLBACK for identity/hierarchy
+        layers:
+          manifest:
+            identity: ""
+            hierarchy: ""
+            live_data: ""
+            status: ""
+            metadata: ""
+          runtime:
+            identity: ""
+            hierarchy: ""
+            live_data: ""
+            status: ""
+            metadata: ""
+
+    # Authentication Configuration (REQ_INTEROP_086, REQ_INTEROP_087)
+    # JWT-based authentication with Role-Based Access Control (RBAC)
+    auth:
+      # Enable/disable authentication
+      # Default: false (disabled for local development)
+      enabled: false
+
+      # JWT signing secret (required when enabled)
+      # For HS256: The shared secret string
+      # For RS256: Path to the private key file (PEM format)
+      jwt_secret: ""
+
+      # Path to public key file for RS256 (required for RS256, optional for HS256)
+      jwt_public_key: ""
+
+      # JWT signing algorithm
+      # Options: "HS256" (symmetric, default), "RS256" (asymmetric)
+      jwt_algorithm: "HS256"
+
+      # Access token validity period in seconds
+      # Default: 3600 (1 hour)
+      token_expiry_seconds: 3600
+
+      # Refresh token validity period in seconds
+      # Default: 86400 (24 hours)
+      # Must be >= token_expiry_seconds
+      refresh_token_expiry_seconds: 86400
+
+      # When to require authentication
+      # Options:
+      #   - "none": No authentication required (auth endpoints still available)
+      #   - "write": Auth required for write operations (POST, PUT, DELETE)
+      #   - "all": Auth required for all operations
+      # Default: "write"
+      require_auth_for: "write"
+
+      # JWT issuer claim
+      # Default: "ros2_medkit_gateway"
+      issuer: "ros2_medkit_gateway"
+
+      # Pre-configured clients for authentication
+      # Format: "client_id:client_secret:role"
+      # Roles: viewer, operator, configurator, admin
+      #
+      # Role permissions:
+      #   - viewer: Read-only access (GET on areas, components, data, faults)
+      #   - operator: Viewer + trigger operations, acknowledge faults, publish data
+      #   - configurator: Operator + modify/reset configurations
+      #   - admin: Full access including auth management
+      #
+      # Example:
+      #   clients: ["admin:admin_secret_123:admin", "viewer:viewer_pass:viewer"]
+      clients: [""]
+
+    # Bulk Data Storage Configuration
+    # Controls where uploaded bulk data files are stored and size limits
+    bulk_data:
+      # Base directory for uploaded files
+      # Created automatically if it doesn't exist
+      # Default: /tmp/ros2_medkit_bulk_data
+      storage_dir: "/tmp/ros2_medkit_bulk_data"
+
+      # Maximum upload file size in bytes
+      # Also sets cpp-httplib set_payload_max_length() globally
+      # Default: 104857600 (100MB)
+      # Set to 0 for unlimited (not recommended in production)
+      max_upload_size: 104857600
+
+      # Allowed bulk data categories (besides "rosbags" which is always
+      # available via FaultManager)
+      # Example: ["calibration", "firmware", "comlogs", "snapshots"]
+      categories: [""]
+
+    # Plugin Framework
+    # Extend gateway with custom plugins loaded from shared libraries (.so).
+    # Plugins can implement provider interfaces (UpdateProvider, IntrospectionProvider)
+    # that are automatically detected and wired into subsystem managers.
+    #
+    # List plugin names, then configure each with plugins.<name>.path and
+    # any additional plugins.<name>.<key> parameters (passed as JSON config).
+    # Example:
+    #   plugins: ["my_ota_plugin"]
+    #   plugins.my_ota_plugin.path: "/opt/ros2_medkit/lib/libmy_ota_plugin.so"
+    #   plugins.my_ota_plugin.server_url: "https://updates.example.com"
+    #   plugins.my_ota_plugin.timeout_ms: 5000
+    #
+    # Plugin lifecycle: load -> configure -> set_context -> register_routes
+    # Plugins that throw during any lifecycle call are disabled (not crashed).
+    # Default: [] (no plugins)
+    plugins: [""]  # Default: no plugins. gateway.launch.py adds graph_provider automatically.
+
+    # Graph provider plugin - path set by launch file when ros2_medkit_graph_provider is installed
+    plugins.graph_provider.path: ""
+
+    # Graph provider configuration (used when plugin is loaded via launch file)
+    plugins.graph_provider.expected_frequency_hz_default: 30.0
+    plugins.graph_provider.degraded_frequency_ratio: 0.5
+    plugins.graph_provider.drop_rate_percent_threshold: 5.0
+
+    # --- Beacon Discovery Plugin (TopicBeaconPlugin) ---
+    # Subscribes to /ros2_medkit/discovery and enriches discovered entities
+    # with push-based metadata from ROS 2 nodes (MedkitDiscoveryHint messages).
+    # Registers the x-medkit-topic-beacon vendor endpoint on all apps and components.
+    # Uncomment and set path to enable:
+    # plugins: ["topic_beacon"]
+    # plugins.topic_beacon.path: "/path/to/libtopic_beacon_plugin.so"
+    # plugins.topic_beacon.topic: "/ros2_medkit/discovery"
+    # plugins.topic_beacon.beacon_ttl_sec: 10.0
+    # plugins.topic_beacon.beacon_expiry_sec: 300.0
+    # plugins.topic_beacon.allow_new_entities: false
+    # plugins.topic_beacon.max_hints: 10000
+    # plugins.topic_beacon.max_messages_per_second: 100
+
+    # --- Parameter Beacon Plugin (ParameterBeaconPlugin) ---
+    # Polls ROS 2 node parameters matching a prefix to enrich discovered entities
+    # with pull-based metadata. Registers x-medkit-param-beacon vendor endpoint.
+    # plugins: ["parameter_beacon"]
+    # plugins.parameter_beacon.path: "/path/to/libparam_beacon_plugin.so"
+    # plugins.parameter_beacon.parameter_prefix: "ros2_medkit.discovery"
+    # plugins.parameter_beacon.poll_interval_sec: 5.0
+    # plugins.parameter_beacon.poll_budget_sec: 10.0
+    # plugins.parameter_beacon.param_timeout_sec: 2.0
+    # plugins.parameter_beacon.beacon_ttl_sec: 15.0
+    # plugins.parameter_beacon.beacon_expiry_sec: 300.0
+    # plugins.parameter_beacon.allow_new_entities: false
+    # plugins.parameter_beacon.max_hints: 10000
+
+    # Software Updates
+    # Enables /updates endpoints for SOVD-compliant software update management.
+    # When enabled, a plugin implementing UpdateProvider is required to provide
+    # the backend functionality. Without such a plugin, endpoints return 501.
+    updates:
+      # Enable/disable /updates endpoints
+      # When false, update routes are not registered
+      # Default: false
+      enabled: false
+
+    # ---------------------------------------------------------------------------
+    # Scripts Configuration
+    # ---------------------------------------------------------------------------
+    # Diagnostic scripts: upload, manage, and execute scripts on entities.
+    # Set scripts_dir to enable. Leave empty to disable (all script endpoints return 501).
+    scripts:
+      # Directory for storing uploaded scripts. Empty = feature disabled.
+      scripts_dir: ""
+      # Allow uploading scripts via HTTP. Set to false for hardened deployments
+      # that only use manifest-defined scripts.
+      allow_uploads: true
+      # Maximum uploaded script file size in megabytes
+      max_file_size_mb: 10
+      # Maximum number of scripts executing concurrently
+      max_concurrent_executions: 5
+      # Default timeout per execution in seconds
+      default_timeout_sec: 300
+      # Maximum number of completed executions to keep in memory.
+      # Oldest completed entries are evicted when this limit is exceeded.
+      max_execution_history: 100
+
+    # Trigger Configuration
+    # SOVD-compliant condition-based triggers for resource change notifications.
+    # Triggers monitor resource collections (data, faults, etc.) and fire events
+    # when conditions are met (OnChange, OnChangeTo, EnterRange, LeaveRange).
+    triggers:
+      # Enable/disable the trigger subsystem
+      # When false, trigger endpoints return 501
+      # Default: true
+      enabled: true
+
+      # Maximum number of concurrent triggers across all entities
+      # Returns HTTP 503 when this limit is reached
+      # Default: 1000
+      max_triggers: 1000
+
+      # Behavior on gateway restart for persistent triggers
+      # Options:
+      #   - "reset": Clear all triggers on restart (default)
+      #   - "restore": Reload persistent triggers from storage
+      on_restart_behavior: "reset"
+
+      # Trigger persistence storage
+      storage:
+        # Path to SQLite database file for persistent triggers
+        # Empty string = in-memory only (default for development)
+        # Example: "/var/lib/ros2_medkit/triggers.db"
+        path: ""
+
+    # OpenAPI Documentation Endpoints
+    # Controls the /docs endpoints that serve OpenAPI capability descriptions
+    docs:
+      # Master switch for OpenAPI /docs endpoints
+      # When false, /docs routes return 501
+      # Note: requires gateway restart to take effect (read once at startup)
+      enabled: true
+
+    # Rate Limiting Configuration
+    # Token-bucket-based rate limiting for API requests.
+    # Disabled by default for backward compatibility.
+    rate_limiting:
+      enabled: false
+
+      # Maximum requests per minute across all clients combined
+      global_requests_per_minute: 600
+
+      # Maximum requests per minute per client IP
+      client_requests_per_minute: 60
+
+      # Endpoint-specific rate limit overrides
+      # Format: "pattern:requests_per_minute"
+      # Pattern uses * as single-segment wildcard
+      # Example: "/api/v1/*/operations/*:10"
+      # ROS 2 requires at least one element; empty string is ignored at runtime.
+      endpoint_limits: [""]
+
+      # How often to scan and remove idle client tracking entries (seconds)
+      client_cleanup_interval_seconds: 300
+
+      # Remove client entries idle longer than this (seconds)
+      client_max_idle_seconds: 600
+
+    # Locking configuration (SOVD resource locking, ISO 17978-3 Section 7.17)
+    # lock_required_scopes: collections that REQUIRE a lock before mutation.
+    # Default [""] means no enforcement. Set e.g. [configurations, operations]
+    # to require locks for those collections. Per-entity overrides via manifest lock: section.
+    locking:
+      enabled: true
+      default_max_expiration: 3600        # max allowed TTL in seconds
+      cleanup_interval: 30                # seconds between cleanup sweeps
+      defaults:
+        components:
+          lock_required_scopes: [""]      # empty = no lock required by default
+          breakable: true
+        apps:
+          lock_required_scopes: [""]      # empty = no lock required by default
+          breakable: true

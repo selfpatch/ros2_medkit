@@ -1,0 +1,599 @@
+Configuring Snapshot Capture
+============================
+
+This tutorial shows how to configure snapshot capture to automatically
+preserve topic data when faults are confirmed, enabling post-mortem debugging.
+
+.. contents:: Table of Contents
+   :local:
+   :depth: 2
+
+Overview
+--------
+
+When a fault transitions to CONFIRMED status, the system can automatically
+capture data from configured ROS 2 topics. This snapshot preserves the
+system state at the moment of fault occurrence, similar to:
+
+- **AUTOSAR DEM freeze frames** - diagnostic data captured at fault detection
+- **SOVD environment data** - system context for fault analysis
+
+Snapshots are useful for:
+
+- Debugging intermittent faults that are hard to reproduce
+- Understanding system state when a fault occurred
+- Post-mortem analysis without real-time access to the robot
+
+.. note::
+
+   Snapshots are automatically deleted when a fault is cleared via the
+   ``DELETE /api/v1/faults/{code}`` endpoint or ``~/clear_fault`` service.
+
+Quick Start
+-----------
+
+1. **Start the fault manager with snapshot capture enabled:**
+
+   .. code-block:: bash
+
+      ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
+        -p snapshots.enabled:=true \
+        -p snapshots.default_topics:="['/odom', '/battery_state']"
+
+2. **Start the gateway:**
+
+   .. code-block:: bash
+
+      ros2 launch ros2_medkit_gateway gateway.launch.py
+
+3. **When a fault is confirmed, query its snapshots:**
+
+   .. code-block:: bash
+
+      curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
+
+Configuration Options
+---------------------
+
+Configure snapshot capture via fault manager parameters:
+
+.. list-table::
+   :widths: 30 15 55
+   :header-rows: 1
+
+   * - Parameter
+     - Default
+     - Description
+   * - ``snapshots.enabled``
+     - ``true``
+     - Enable/disable snapshot capture
+   * - ``snapshots.default_topics``
+     - ``[]``
+     - Topics to capture for all faults
+   * - ``snapshots.config_file``
+     - ``""``
+     - Path to YAML config for fault-specific topics
+   * - ``snapshots.timeout_sec``
+     - ``1.0``
+     - Timeout waiting for topic message
+   * - ``snapshots.max_message_size``
+     - ``65536``
+     - Maximum message size in bytes (larger messages skipped)
+   * - ``snapshots.background_capture``
+     - ``false``
+     - Use background subscriptions (caches latest message)
+
+Advanced Configuration
+----------------------
+
+For fault-specific topic capture, create a YAML configuration file:
+
+.. code-block:: yaml
+
+   # snapshots.yaml
+   fault_specific:
+     MOTOR_OVERHEAT:
+       - /joint_states
+       - /motor/temperature
+     BATTERY_LOW:
+       - /battery_state
+       - /power_management/status
+
+   patterns:
+     "MOTOR_.*":
+       - /joint_states
+       - /cmd_vel
+     "SENSOR_.*":
+       - /diagnostics
+
+**Topic Resolution Priority:**
+
+1. ``fault_specific`` - Exact match for fault code
+2. ``patterns`` - Regex pattern match (first matching pattern wins)
+3. ``default_topics`` - Fallback for all faults
+
+**Launch with config file:**
+
+.. code-block:: bash
+
+   ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
+     -p snapshots.enabled:=true \
+     -p snapshots.config_file:=/path/to/snapshots.yaml \
+     -p snapshots.default_topics:="['/diagnostics']"
+
+Querying Snapshots
+------------------
+
+Snapshots are included inline in the fault response as ``environment_data``:
+
+**Get fault details with snapshots:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/apps/motor_controller/faults/MOTOR_OVERHEAT
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "item": {
+       "code": "MOTOR_OVERHEAT",
+       "fault_name": "Motor temperature exceeded threshold",
+       "severity": 2,
+       "status": {
+         "aggregatedStatus": "active",
+         "testFailed": "1",
+         "confirmedDTC": "1"
+       }
+     },
+     "environment_data": {
+       "extended_data_records": {
+         "first_occurrence": "2026-02-04T10:30:00.000Z",
+         "last_occurrence": "2026-02-04T10:35:00.000Z"
+       },
+       "snapshots": [
+         {
+           "type": "freeze_frame",
+           "name": "motor_temperature",
+           "data": 85.5,
+           "x-medkit": {
+             "topic": "/motor/temperature",
+             "message_type": "sensor_msgs/msg/Temperature",
+             "full_data": {"temperature": 85.5, "variance": 0.1},
+             "captured_at": "2026-02-04T10:30:00.123Z"
+           }
+         },
+         {
+           "type": "rosbag",
+           "name": "fault_recording",
+           "bulk_data_uri": "/apps/motor_controller/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000",
+           "size_bytes": 1234567,
+           "duration_sec": 6.0,
+           "format": "mcap"
+         }
+       ]
+     },
+     "x-medkit": {
+       "occurrence_count": 3,
+       "reporting_sources": ["/powertrain/motor_controller"]
+     }
+   }
+
+**Snapshot Types:**
+
+- ``freeze_frame``: Topic data captured at fault confirmation (JSON format)
+- ``rosbag``: Recording file available via bulk-data endpoint (binary format)
+
+**Get snapshots from fault response using jq:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/apps/motor_controller/faults/MOTOR_OVERHEAT | \
+     jq '.environment_data.snapshots'
+
+Example Workflow
+----------------
+
+This example demonstrates the complete snapshot capture workflow.
+
+**1. Configure and start the fault manager:**
+
+.. code-block:: bash
+
+   ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
+     -p snapshots.enabled:=true \
+     -p snapshots.default_topics:="['/odom']"
+
+**2. Start a node that publishes odometry:**
+
+.. code-block:: bash
+
+   ros2 topic pub /odom nav_msgs/msg/Odometry \
+     "{pose: {pose: {position: {x: 1.5, y: 2.0}}}}" -r 10
+
+**3. Report a fault (it will be confirmed immediately by default):**
+
+.. code-block:: bash
+
+   ros2 service call /fault_manager/report_fault ros2_medkit_msgs/srv/ReportFault \
+     "{fault_code: 'NAV_ERROR', event_type: 0, severity: 2, \
+       description: 'Navigation failed', source_id: '/nav_node'}"
+
+**4. Query the captured snapshot:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/apps/nav_node/faults/NAV_ERROR | \
+     jq '.environment_data.snapshots'
+
+The response will contain the odometry data that was captured at the
+moment the fault was confirmed.
+
+Troubleshooting
+---------------
+
+**No snapshots captured**
+
+- Verify ``snapshots.enabled`` is ``true``
+- Check that configured topics exist and are publishing
+- Increase ``snapshots.timeout_sec`` for slow-publishing topics
+- Check fault manager logs for capture errors
+
+**Empty topics object in response**
+
+- The fault may have been cleared (snapshots are deleted on clear)
+- No topics were configured for this fault code
+- All configured topics timed out or exceeded size limit
+
+**Snapshot data truncated**
+
+- Message exceeded ``snapshots.max_message_size``
+- Increase the limit or filter to smaller topics
+
+**Wrong topics captured**
+
+- Check topic resolution priority (fault_specific > patterns > default)
+- Verify regex patterns in config file are correct
+
+Rosbag Capture (Time-Window Recording)
+--------------------------------------
+
+In addition to JSON snapshots, you can enable **rosbag capture** for "black box"
+style recording. This continuously buffers messages in memory and flushes them
+to a bag file when a fault is confirmed.
+
+**Key differences from JSON snapshots:**
+
+.. list-table::
+   :widths: 25 35 40
+   :header-rows: 1
+
+   * - Feature
+     - JSON Snapshots
+     - Rosbag Capture
+   * - Data format
+     - JSON (human-readable)
+     - Binary (native ROS 2)
+   * - Time coverage
+     - Point-in-time (at confirmation)
+     - Time window (before + after fault)
+   * - Message fidelity
+     - Converted to JSON
+     - Original serialization preserved
+   * - Playback
+     - N/A
+     - ``ros2 bag play``
+   * - Default
+     - Enabled
+     - Disabled
+
+Enabling Rosbag Capture
+^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+   ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
+     -p snapshots.rosbag.enabled:=true \
+     -p snapshots.rosbag.duration_sec:=5.0 \
+     -p snapshots.rosbag.duration_after_sec:=1.0
+
+This captures 5 seconds of data **before** the fault and 1 second **after**.
+
+Rosbag Configuration Options
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :widths: 35 15 50
+   :header-rows: 1
+
+   * - Parameter
+     - Default
+     - Description
+   * - ``snapshots.rosbag.enabled``
+     - ``false``
+     - Enable rosbag capture. When enabled, the system continuously buffers
+       messages in memory and writes them to a bag file when faults are confirmed.
+   * - ``snapshots.rosbag.duration_sec``
+     - ``5.0``
+     - Ring buffer duration in seconds. This determines how much history is
+       preserved before the fault confirmation. Larger values provide more
+       context but consume more memory.
+   * - ``snapshots.rosbag.duration_after_sec``
+     - ``1.0``
+     - Post-fault recording duration. After a fault is confirmed, recording
+       continues for this many seconds to capture immediate system response.
+   * - ``snapshots.rosbag.topics``
+     - ``"config"``
+     - Topic selection mode:
+
+       - ``"config"`` - Use same topics as JSON snapshots (from config file)
+       - ``"all"`` or ``"auto"`` - Auto-discover and record all available topics
+       - ``"explicit"`` - Use only topics from ``include_topics`` list
+   * - ``snapshots.rosbag.include_topics``
+     - ``[]``
+     - Explicit list of topics to record (only used when ``topics: "explicit"``).
+       Example: ``["/odom", "/joint_states", "/cmd_vel"]``
+   * - ``snapshots.rosbag.exclude_topics``
+     - ``[]``
+     - Topics to exclude from recording (applies to all modes). Useful for
+       filtering high-bandwidth topics like camera images.
+   * - ``snapshots.rosbag.format``
+     - ``"sqlite3"``
+     - Bag storage format: ``"sqlite3"`` (default, widely compatible) or
+       ``"mcap"`` (more efficient compression, requires plugin).
+   * - ``snapshots.rosbag.storage_path``
+     - ``""``
+     - Directory for bag files. Empty string uses system temp directory
+       (``/tmp``). Bags are named ``fault_{code}_{timestamp}/``.
+   * - ``snapshots.rosbag.auto_cleanup``
+     - ``true``
+     - Automatically delete bag files when faults are cleared. Set to ``false``
+       to retain bags for manual analysis.
+   * - ``snapshots.rosbag.lazy_start``
+     - ``false``
+     - Controls when the ring buffer starts recording. See diagram below.
+   * - ``snapshots.rosbag.max_bag_size_mb``
+     - ``50``
+     - Maximum size per bag file in MB. When exceeded, rosbag2 creates
+       additional segment files.
+   * - ``snapshots.rosbag.max_total_storage_mb``
+     - ``500``
+     - Total storage limit for all bag files. Oldest bags are automatically
+       deleted when this limit is exceeded.
+
+Understanding lazy_start Mode
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``lazy_start`` parameter controls when the ring buffer starts recording:
+
+**lazy_start: false (default)** - Recording starts immediately at node startup.
+Best for development and when you need maximum context for any fault.
+
+.. uml::
+
+   @startuml
+   skinparam backgroundColor transparent
+   participant "Ring Buffer" as RB
+   participant "Fault Manager" as FM
+
+   == Node Startup ==
+   RB -> RB : Start recording
+   note right of RB #LightGreen : Buffer active\n(continuous)
+
+   ... time passes (messages buffered) ...
+
+   == Fault Detected ==
+   FM -> FM : PREFAILED
+   note right of RB #LightGreen : duration_sec\nof data buffered
+
+   FM -> FM : CONFIRMED
+   FM -> RB : Flush buffer
+   RB -> RB : Write pre-fault data
+   note right of RB #LightBlue : Post-fault\nrecording
+
+   ... duration_after_sec ...
+
+   RB -> RB : Save bag file
+   note right of RB #LightGreen : Resume\nbuffering
+   @enduml
+
+**lazy_start: true** - Recording only starts when a fault enters PREFAILED state.
+Saves resources but may miss context if fault confirms before buffer fills.
+
+.. uml::
+
+   @startuml
+   skinparam backgroundColor transparent
+   participant "Ring Buffer" as RB
+   participant "Fault Manager" as FM
+
+   == Node Startup ==
+   note right of RB #LightGray : Buffer inactive\n(saving resources)
+
+   ... time passes (no recording) ...
+
+   == Fault Detected ==
+   FM -> FM : PREFAILED
+   FM -> RB : Start buffer
+   note right of RB #LightGreen : Recording\nstarts now
+
+   ... buffer filling (may be < duration_sec) ...
+
+   FM -> FM : CONFIRMED
+   FM -> RB : Flush buffer
+   RB -> RB : Write pre-fault data
+   note right of RB #LightBlue : Post-fault\nrecording
+
+   ... duration_after_sec ...
+
+   RB -> RB : Save bag file
+   note right of RB #LightGray : Buffer\ninactive
+   @enduml
+
+**When to use lazy_start: true:**
+
+- Production systems with limited resources
+- When faults have reliable PREFAILED → CONFIRMED progression
+- Systems where most faults are debounced (enter PREFAILED first)
+
+**When to use lazy_start: false:**
+
+- Development and debugging
+- When faults may skip PREFAILED state (severity 3 = CRITICAL)
+- When maximum fault context is more important than resource usage
+
+.. note::
+
+   The ``"mcap"`` format requires ``rosbag2_storage_mcap`` to be installed.
+   If not available, use ``"sqlite3"`` (default).
+
+   .. code-block:: bash
+
+      # Install MCAP support (optional)
+      sudo apt install ros-${ROS_DISTRO}-rosbag2-storage-mcap
+
+Downloading Rosbag Files
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Rosbag files are downloaded via SOVD bulk-data endpoints.
+
+**1. List available rosbags for an entity:**
+
+.. code-block:: bash
+
+   curl http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "items": [
+       {
+         "id": "550e8400-e29b-41d4-a716-446655440000",
+         "name": "MOTOR_OVERHEAT recording",
+         "mimetype": "application/x-mcap",
+         "size": 1234567,
+         "creation_date": "2026-02-04T10:30:00.000Z",
+         "x-medkit": {
+           "fault_code": "MOTOR_OVERHEAT",
+           "duration_sec": 6.0,
+           "format": "mcap"
+         }
+       }
+     ]
+   }
+
+**2. Download a specific rosbag:**
+
+Use the ``bulk_data_uri`` from the fault response, or construct from listing:
+
+.. code-block:: bash
+
+   # Using bulk_data_uri from fault response
+   curl -O -J http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000
+
+The ``-J`` flag uses the server-provided filename from ``Content-Disposition`` header.
+
+**3. Play back the rosbag:**
+
+.. code-block:: bash
+
+   ros2 bag play MOTOR_OVERHEAT.mcap
+
+**Via ROS 2 service (alternative):**
+
+.. code-block:: bash
+
+   ros2 service call /fault_manager/get_rosbag ros2_medkit_msgs/srv/GetRosbag \
+     "{fault_code: 'MOTOR_OVERHEAT'}"
+
+Example: Production Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For production use with conservative resource usage:
+
+.. code-block:: yaml
+
+   # config/snapshots.yaml
+   rosbag:
+     enabled: true
+     duration_sec: 3.0
+     duration_after_sec: 0.5
+     topics: "config"           # Use same topics as JSON snapshots
+     lazy_start: true           # Save resources until fault detected
+     format: "sqlite3"
+     max_bag_size_mb: 25
+     max_total_storage_mb: 200
+     auto_cleanup: true
+
+   # Exclude high-bandwidth topics
+   # exclude_topics:
+   #   - /camera/image_raw
+   #   - /pointcloud
+
+Example: Debugging Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For development with maximum context:
+
+.. code-block:: yaml
+
+   rosbag:
+     enabled: true
+     duration_sec: 10.0         # 10 seconds before fault
+     duration_after_sec: 2.0    # 2 seconds after
+     topics: "config"
+     lazy_start: false          # Always recording
+     format: "sqlite3"
+     storage_path: "/var/log/ros2_medkit/rosbags"
+     max_bag_size_mb: 100
+     max_total_storage_mb: 1000
+     auto_cleanup: false        # Keep bags for analysis
+
+See Also
+--------
+
+- :doc:`../api/rest` - REST API reference (Bulk Data section)
+- :doc:`../requirements/specs/faults` - Fault API requirements
+- `Gateway README <https://github.com/selfpatch/ros2_medkit/blob/main/src/ros2_medkit_gateway/README.md>`_ - REST API reference
+- `config/snapshots.yaml <https://github.com/selfpatch/ros2_medkit/blob/main/src/ros2_medkit_fault_manager/config/snapshots.yaml>`_ - Full configuration reference
+
+Migration from Legacy Endpoints
+-------------------------------
+
+If you were using the legacy snapshot endpoints, migrate to the new SOVD-compliant API:
+
+**Snapshots:**
+
+.. list-table::
+   :widths: 45 55
+   :header-rows: 1
+
+   * - Previous (removed)
+     - Current
+   * - ``GET /faults/{code}/snapshots``
+     - ``GET /apps/{app}/faults/{code}`` → ``environment_data.snapshots[]``
+   * - ``GET /components/{id}/faults/{code}/snapshots``
+     - ``GET /components/{id}/faults/{code}`` → ``environment_data.snapshots[]``
+
+**Rosbag Downloads:**
+
+.. list-table::
+   :widths: 45 55
+   :header-rows: 1
+
+   * - Previous (removed)
+     - Current
+   * - ``GET /faults/{code}/snapshots/bag``
+     - ``GET /apps/{app}/bulk-data/rosbags/{id}``
+   * - ``GET /components/{id}/faults/{code}/snapshots/bag``
+     - ``GET /components/{id}/bulk-data/rosbags/{id}``
+
+**Key Changes:**
+
+1. **Snapshots inline**: No separate snapshot endpoint; data is in fault response
+2. **Bulk-data pattern**: Rosbags use SOVD bulk-data with UUID identifiers
+3. **Entity-scoped**: Bulk-data endpoints require entity path (e.g., ``/apps/motor``)
+4. **SOVD status**: Fault response includes SOVD-compliant ``status`` object

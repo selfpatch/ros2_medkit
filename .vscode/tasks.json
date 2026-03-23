@@ -1,0 +1,41 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Docs: Build",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/sphinx-build",
+            "args": [
+                "-b",
+                "html",
+                "docs",
+                "docs/_build/html"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Docs: Serve",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/sphinx-autobuild",
+            "args": [
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+                "docs",
+                "docs/_build/html"
+            ],
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            }
+        }
+    ]
+}
+

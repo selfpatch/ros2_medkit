@@ -1,0 +1,44 @@
+# Codecov configuration for ros2_medkit
+# https://docs.codecov.com/docs/codecov-yaml
+
+coverage:
+  precision: 2
+  round: down
+  range: "60...100"
+
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        informational: false
+    patch:
+      default:
+        target: auto
+        threshold: 1%
+        informational: false
+
+# Ignore paths from coverage reporting
+ignore:
+  - "test/**/*"                    # Test files
+  - "**/test_*.cpp"                # Test source files
+  - "**/demo_nodes/**"             # Demo nodes (test fixtures)
+  - "**/vendored/**"               # Third-party vendored code
+  - "build/**/*"                   # Build artifacts
+  - "install/**/*"                 # Install artifacts
+  - "log/**/*"                     # Log files
+  - "docs/**/*"                    # Documentation
+
+comment:
+  layout: "header, diff, flags, components, files"
+  behavior: default
+  require_changes: true
+  require_base: false
+  require_head: true
+
+# Flag management for different test types
+flags:
+  unittests:
+    paths:
+      - src/
+    carryforward: true

@@ -1,0 +1,153 @@
+@startuml ros2_medkit_gateway_architecture
+
+skinparam linetype ortho
+skinparam classAttributeIconSize 0
+
+title ROS 2 Medkit Gateway - Class Architecture
+
+package "ROS 2 Framework" {
+    class "rclcpp::Node" {
+        +get_node_names()
+        +get_topic_names_and_types()
+        +get_service_names_and_types()
+    }
+}
+
+package "ros2_medkit_gateway" {
+
+    class GatewayNode {
+        + get_entity_cache(): EntityCache
+        + get_data_access_manager(): DataAccessManager*
+    }
+
+    class DiscoveryManager {
+        + discover_areas(): vector<Area>
+        + discover_components(): vector<Component>
+    }
+
+    class RESTServer {
+        + start(): void
+        + stop(): void
+    }
+
+    class DataAccessManager {
+        + get_topic_sample_with_fallback(): json
+        + get_component_data_with_fallback(): json
+        + publish_to_topic(): json
+        + get_topic_sample_native(): json
+        + get_component_data_native(): json
+        - find_component_topics_native(): vector<string>
+    }
+
+    class NativeTopicSampler {
+        + discover_all_topics(): vector<TopicInfo>
+        + discover_topics(): vector<TopicInfo>
+        + sample_topic(): TopicSampleResult
+        + sample_topics_parallel(): vector<TopicSampleResult>
+    }
+
+    class JsonSerializer {
+        + serialize(): SerializedMessage
+        + deserialize(): json
+        + to_json(): json
+        + from_json(): RosMessage_Cpp
+        + yaml_to_json(): json {static}
+    }
+
+    class Area {
+        + id: string
+        + namespace_path: string
+        + type: string
+        + to_json(): json
+    }
+
+    class Component {
+        + id: string
+        + namespace_path: string
+        + fqn: string
+        + type: string
+        + area: string
+        + to_json(): json
+    }
+
+    class EntityCache {
+        + areas: vector<Area>
+        + components: vector<Component>
+        + apps: vector<App>
+        + last_update: time_point
+    }
+
+    class MergePipeline {
+        + add_layer(): void
+        + execute(): MergeResult
+        + set_linker(): void
+    }
+
+    interface DiscoveryLayer <<interface>> {
+        + name(): string
+        + discover(): LayerOutput
+        + policy_for(FieldGroup): MergePolicy
+    }
+
+    class ManifestLayer
+    class RuntimeLayer
+    class PluginLayer
+
+    class RuntimeLinker {
+        + link(): LinkingResult
+    }
+}
+
+package "External Libraries" {
+    class "httplib::Server" as HTTPLibServer
+    class "nlohmann::json" as JSON
+}
+
+' Relationships
+
+' Inheritance
+GatewayNode -up-|> "rclcpp::Node" : extends
+
+' Composition (Gateway owns these)
+GatewayNode *-down-> DiscoveryManager : owns
+GatewayNode *-down-> RESTServer : owns
+GatewayNode *-down-> DataAccessManager : owns
+GatewayNode *-down-> EntityCache : owns
+
+' Discovery Manager uses Node interface
+DiscoveryManager --> "rclcpp::Node" : uses
+
+' REST Server references Gateway and DataAccessManager
+RESTServer --> GatewayNode : uses
+RESTServer --> DataAccessManager : uses
+
+' DataAccessManager owns utility classes (native implementation)
+DataAccessManager *--> JsonSerializer : owns (serialization)
+DataAccessManager *--> NativeTopicSampler : owns
+
+' NativeTopicSampler uses Node interface
+NativeTopicSampler --> "rclcpp::Node" : uses
+
+' Entity Cache aggregates entities
+EntityCache o-right-> Area : contains many
+EntityCache o-right-> Component : contains many
+
+' Discovery produces entities
+DiscoveryManager ..> Area : creates
+DiscoveryManager ..> Component : creates
+
+' MergePipeline layer architecture
+MergePipeline o--> DiscoveryLayer : ordered layers
+MergePipeline --> RuntimeLinker : post-merge linking
+ManifestLayer .up.|> DiscoveryLayer : implements
+RuntimeLayer .up.|> DiscoveryLayer : implements
+PluginLayer .up.|> DiscoveryLayer : implements
+
+' REST Server uses HTTP library
+RESTServer *--> HTTPLibServer : owns
+
+' Models use JSON for serialization
+Area ..> JSON : serializes to
+Component ..> JSON : serializes to
+
+@enduml

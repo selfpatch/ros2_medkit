@@ -1,0 +1,52 @@
+# Copyright 2026 mfaferek93
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Test correlation configuration for integration tests
+
+correlation:
+  enabled: true
+  default_window_ms: 500
+
+  patterns:
+    motor_errors:
+      codes: ["MOTOR_COMM_*", "MOTOR_TIMEOUT_*"]
+    drive_faults:
+      codes: ["DRIVE_*"]
+    sensor_errors:
+      codes: ["SENSOR_*"]
+
+  rules:
+    # Hierarchical rule: E-Stop causes motor and drive faults
+    - id: estop_cascade
+      name: "E-Stop Cascade"
+      mode: hierarchical
+      root_cause:
+        codes: ["ESTOP_001"]
+      symptoms:
+        - pattern: motor_errors
+        - pattern: drive_faults
+      window_ms: 2000
+      mute_symptoms: true
+      auto_clear_with_root: true
+
+    # Auto-cluster rule: Group sensor errors
+    - id: sensor_storm
+      name: "Sensor Storm"
+      mode: auto_cluster
+      match:
+        - pattern: sensor_errors
+      min_count: 2
+      window_ms: 2000
+      show_as_single: true
+      representative: highest_severity
