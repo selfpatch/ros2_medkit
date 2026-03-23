@@ -1,0 +1,12 @@
+Source: ros-humble-ros2-medkit-fault-reporter
+Section: misc
+Priority: optional
+Maintainer: mfaferek93 <michal.faferek.coe@gmail.com>
+Build-Depends: debhelper (>= 9.0.0), ros-humble-ament-cmake, ros-humble-ament-cmake-clang-format <!nocheck>, ros-humble-ament-cmake-clang-tidy <!nocheck>, ros-humble-ament-cmake-gtest <!nocheck>, ros-humble-ament-lint-auto <!nocheck>, ros-humble-ament-lint-common <!nocheck>, ros-humble-launch-testing-ament-cmake <!nocheck>, ros-humble-launch-testing-ros <!nocheck>, ros-humble-rclcpp, ros-humble-ros2-medkit-cmake, ros-humble-ros2-medkit-fault-manager <!nocheck>, ros-humble-ros2-medkit-msgs, ros-humble-ros-workspace
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-humble-ros2-medkit-fault-reporter
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ros-humble-rclcpp, ros-humble-ros2-medkit-msgs, ros-humble-ros-workspace
+Description: Client library for easy fault reporting with local filtering
