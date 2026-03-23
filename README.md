@@ -1,199 +1,1540 @@
-# ros2_medkit
+# ros2_medkit_gateway
 
-[![CI](https://github.com/selfpatch/ros2_medkit/actions/workflows/ci.yml/badge.svg)](https://github.com/selfpatch/ros2_medkit/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/selfpatch/ros2_medkit/branch/main/graph/badge.svg)](https://codecov.io/gh/selfpatch/ros2_medkit)
-[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://selfpatch.github.io/ros2_medkit/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-blue)](https://docs.ros.org/en/jazzy/)
-[![ROS 2 Humble](https://img.shields.io/badge/ROS%202-Humble-blue)](https://docs.ros.org/en/humble/)
-[![ROS 2 Rolling](https://img.shields.io/badge/ROS%202-Rolling-orange)](https://docs.ros.org/en/rolling/)
-[![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289DA?logo=discord&logoColor=white)](https://discord.gg/6CXPMApAyq)
-[![Quality Level 3](https://img.shields.io/badge/Quality-Level%203-yellow)](QUALITY_DECLARATION.md)
+HTTP gateway node for the ros2_medkit diagnostics system.
 
-<p align="center">
-  <img src="hero-full.gif" alt="Robots break. Now you'll know why." width="600">
-</p>
+## Overview
 
-<p align="center">
-  <b>Structured diagnostics for ROS 2 robots.</b><br>
-  When your robot fails, find out why - in minutes, not hours.
-</p>
+The ROS 2 Medkit Gateway exposes ROS 2 system information and data through a RESTful HTTP API. It automatically discovers nodes in the ROS 2 system, organizes them into areas based on their namespaces, and provides endpoints to query and interact with them.
 
-<p align="center">
-  Fault management · Live introspection · REST API · <a href="https://github.com/selfpatch/ros2_medkit_mcp">AI via MCP</a>
-</p>
+**Key Features:**
+- **Auto-discovery**: Automatically detects ROS 2 nodes and topics
+- **Area-based organization**: Groups nodes by namespace (e.g., `/powertrain`, `/chassis`, `/body`)
+- **REST API**: Standard HTTP/JSON interface
+- **Real-time updates**: Configurable cache refresh for up-to-date system state
+- **Bulk Data Management**: Upload, download, list, and delete bulk data files (calibration, firmware, etc.)
+- **Resource Locking**: SOVD-compliant entity locking with scoped access control, lock breaking, and automatic expiry
 
-## The problem
+## Endpoints
 
-When a robot breaks in the field, you SSH in, run `ros2 node list`, grep through logs, and try to reconstruct what happened. It works for one robot on your desk. It does not work for 20 robots at a customer site, at 2 AM, when you cannot reproduce the issue.
+All endpoints are prefixed with `/api/v1` for API versioning.
 
-ros2_medkit gives your ROS 2 system a **diagnostic REST API** so you can inspect what is running, what failed, and why, without SSH and without custom tooling.
+### Discovery Endpoints
 
-## 🚀 Quick Start
+- `GET /api/v1/health` - Health check endpoint (returns healthy status)
+- `GET /api/v1/` - Gateway status and version information
+- `GET /api/v1/version-info` - SOVD version info (supported SOVD versions and base URIs)
+- `GET /api/v1/areas` - List all discovered areas (powertrain, chassis, body, root)
+- `GET /api/v1/areas/{area_id}` - Get area capabilities
+- `GET /api/v1/areas/{area_id}/subareas` - List sub-areas within an area
+- `GET /api/v1/areas/{area_id}/contains` - List components contained in an area
+- `GET /api/v1/components` - List all discovered components across all areas
+- `GET /api/v1/components/{component_id}` - Get component capabilities
+- `GET /api/v1/components/{component_id}/subcomponents` - List sub-components
+- `GET /api/v1/components/{component_id}/hosts` - List apps hosted on a component
+- `GET /api/v1/components/{component_id}/depends-on` - List component dependencies
+- `GET /api/v1/areas/{area_id}/components` - List components within a specific area
+- `GET /api/v1/apps/{app_id}/is-located-on` - Get the component hosting this app
 
-**Try the full demo** (requires [Docker](https://docs.docker.com/get-docker/) with Compose, no ROS 2 needed):
+### Component Data Endpoints
+
+- `GET /api/v1/components/{component_id}/data` - Read all topic data from a component
+- `GET /api/v1/components/{component_id}/data/{topic_name}` - Read specific topic data from a component
+- `PUT /api/v1/components/{component_id}/data/{topic_name}` - Publish data to a topic
+
+### Operations Endpoints (Services & Actions)
+
+- `GET /api/v1/components/{component_id}/operations` - List all services and actions for a component
+- `GET /api/v1/components/{component_id}/operations/{operation_id}` - Get operation details
+- `POST /api/v1/components/{component_id}/operations/{operation_id}/executions` - Execute operation (call service or send action goal)
+- `GET /api/v1/components/{component_id}/operations/{operation_id}/executions` - List all executions for an operation
+- `GET /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}` - Get execution status
+- `DELETE /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}` - Cancel action execution
+
+### Configurations Endpoints (ROS 2 Parameters)
+
+- `GET /api/v1/components/{component_id}/configurations` - List all parameters for a component
+- `GET /api/v1/components/{component_id}/configurations/{param}` - Get parameter value
+- `PUT /api/v1/components/{component_id}/configurations/{param}` - Set parameter value
+- `DELETE /api/v1/components/{component_id}/configurations/{param}` - Reset parameter to default value
+- `DELETE /api/v1/components/{component_id}/configurations` - Reset all parameters to default values
+
+### Bulk Data Endpoints
+
+- `GET /api/v1/{entity}/{id}/bulk-data` - List bulk-data categories (rosbags + configured)
+- `GET /api/v1/{entity}/{id}/bulk-data/{category}` - List bulk-data items in a category
+- `GET /api/v1/{entity}/{id}/bulk-data/{category}/{item_id}` - Download a bulk-data file
+- `POST /api/v1/{entity}/{id}/bulk-data/{category}` - Upload bulk data (components/apps only)
+- `DELETE /api/v1/{entity}/{id}/bulk-data/{category}/{item_id}` - Delete bulk data (components/apps only)
+
+### Logging Endpoints
+
+- `GET /api/v1/components/{component_id}/logs` - Query recent log entries for a component (all its nodes, prefix match)
+- `GET /api/v1/apps/{app_id}/logs` - Query recent log entries for a specific app node (exact match)
+- `GET /api/v1/components/{component_id}/logs/configuration` - Get log configuration for a component
+- `GET /api/v1/apps/{app_id}/logs/configuration` - Get log configuration for an app
+- `PUT /api/v1/components/{component_id}/logs/configuration` - Update log configuration for a component
+- `PUT /api/v1/apps/{app_id}/logs/configuration` - Update log configuration for an app
+
+### Locking Endpoints
+
+- `POST /api/v1/{components|apps}/{id}/locks` - Acquire a lock on an entity
+- `GET /api/v1/{components|apps}/{id}/locks` - List active locks on an entity
+- `GET /api/v1/{components|apps}/{id}/locks/{lock_id}` - Get lock details
+- `PUT /api/v1/{components|apps}/{id}/locks/{lock_id}` - Extend lock expiration
+- `DELETE /api/v1/{components|apps}/{id}/locks/{lock_id}` - Release a lock
+
+### Trigger Endpoints
+
+- `POST /api/v1/{entity}/{id}/triggers` - Create a trigger with conditions
+- `GET /api/v1/{entity}/{id}/triggers` - List active triggers
+- `GET /api/v1/{entity}/{id}/triggers/{trigger_id}` - Get trigger details
+- `PUT /api/v1/{entity}/{id}/triggers/{trigger_id}` - Update trigger conditions
+- `DELETE /api/v1/{entity}/{id}/triggers/{trigger_id}` - Delete a trigger
+- `GET /api/v1/{entity}/{id}/triggers/{trigger_id}/events` - SSE stream of trigger events
+
+### Scripts Endpoints
+
+- `GET /api/v1/{entity}/{id}/scripts` - List available diagnostic scripts
+- `POST /api/v1/{entity}/{id}/scripts` - Upload a new script
+- `GET /api/v1/{entity}/{id}/scripts/{script_id}` - Get script details
+- `DELETE /api/v1/{entity}/{id}/scripts/{script_id}` - Delete a script
+- `POST /api/v1/{entity}/{id}/scripts/{script_id}/executions` - Start script execution
+- `GET /api/v1/{entity}/{id}/scripts/{script_id}/executions/{eid}` - Get execution status and output
+- `PUT /api/v1/{entity}/{id}/scripts/{script_id}/executions/{eid}` - Send stdin or control signals
+- `DELETE /api/v1/{entity}/{id}/scripts/{script_id}/executions/{eid}` - Cancel execution
+
+### API Documentation (OpenAPI)
+
+- `GET /api/v1/docs` - Full OpenAPI 3.1.0 specification
+- `GET /api/v1/{entity_type}/{id}/docs` - Entity-scoped OpenAPI spec
+- `GET /api/v1/swagger-ui` - Interactive Swagger UI (requires build with `-DENABLE_SWAGGER_UI=ON`)
+
+### Vendor Extension Endpoints
+
+- `GET /api/v1/{entity}/{id}/x-medkit-topic-beacon` - Topic beacon metadata
+- `GET /api/v1/{entity}/{id}/x-medkit-param-beacon` - Parameter beacon metadata
+- `GET /api/v1/{entity}/{id}/x-medkit-procfs` - Process info (procfs plugin)
+- `GET /api/v1/{entity}/{id}/x-medkit-systemd` - Systemd unit status
+- `GET /api/v1/{entity}/{id}/x-medkit-container` - Container runtime info
+- `GET /api/v1/{entity}/{id}/x-medkit-graph` - ROS 2 graph details
+
+### API Reference
+
+#### GET /api/v1/areas
+
+Lists all discovered areas in the system.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/areas
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "powertrain",
+    "namespace": "/powertrain",
+    "type": "Area"
+  },
+  {
+    "id": "chassis",
+    "namespace": "/chassis",
+    "type": "Area"
+  }
+]
+```
+
+#### GET /api/v1/components
+
+Lists all discovered components across all areas.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/components
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "temp_sensor",
+    "namespace": "/powertrain/engine",
+    "fqn": "/powertrain/engine/temp_sensor",
+    "type": "Component",
+    "area": "powertrain",
+    "source": "node"
+  },
+  {
+    "id": "carter1",
+    "namespace": "/carter1",
+    "fqn": "/carter1",
+    "type": "Component",
+    "area": "carter1",
+    "source": "topic"
+  }
+]
+```
+
+**Response Fields:**
+- `id` - Component name (node name or namespace for topic-based)
+- `namespace` - ROS 2 namespace where the component is running
+- `fqn` - Fully qualified name (namespace + node name)
+- `type` - Always "Component"
+- `source` - Discovery source: `"node"` (standard ROS 2 node) or `"topic"` (discovered from topic namespaces)
+- `area` - Parent area this component belongs to
+
+#### GET /api/v1/areas/{area_id}/components
+
+Lists all components within a specific area.
+
+**Example (Success):**
+```bash
+curl http://localhost:8080/api/v1/areas/powertrain/components
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "id": "temp_sensor",
+    "namespace": "/powertrain/engine",
+    "fqn": "/powertrain/engine/temp_sensor",
+    "type": "Component",
+    "area": "powertrain",
+    "source": "node"
+  },
+  {
+    "id": "rpm_sensor",
+    "namespace": "/powertrain/engine",
+    "fqn": "/powertrain/engine/rpm_sensor",
+    "type": "Component",
+    "area": "powertrain",
+    "source": "node"
+  }
+]
+```
+
+**Example (Error - Area Not Found):**
+```bash
+curl http://localhost:8080/api/v1/areas/nonexistent/components
+```
+
+**Response (404 Not Found):**
+```json
+{
+  "error": "Area not found",
+  "area_id": "nonexistent"
+}
+```
+
+**URL Parameters:**
+- `area_id` - Area identifier (e.g., `powertrain`, `chassis`, `body`)
+
+**Use Cases:**
+- Filter components by domain (only show powertrain components)
+- Hierarchical navigation (select area → view its components)
+- Area-specific health checks
+
+### Component Data Read Endpoints
+
+#### GET /api/v1/components/{component_id}/data
+
+Read all topic data from a specific component.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/components/temp_sensor/data
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "topic": "/powertrain/engine/temperature",
+    "timestamp": 1732377600000000000,
+    "data": {
+      "temperature": 85.5,
+      "variance": 0.0
+    }
+  }
+]
+```
+
+**Example (Error - Component Not Found):**
+```bash
+curl http://localhost:8080/api/v1/components/nonexistent/data
+```
+
+**Response (404 Not Found):**
+```json
+{
+  "error": "Component not found",
+  "component_id": "nonexistent"
+}
+```
+
+**URL Parameters:**
+- `component_id` - Component identifier (e.g., `temp_sensor`, `rpm_sensor`)
+
+**Response Fields:**
+- `topic` - Full topic path
+- `timestamp` - Unix timestamp (nanoseconds since epoch) when data was sampled
+- `data` - Topic message data as JSON object
+
+**Behavior:**
+- Returns array of all topics under the component's namespace
+- Each topic is sampled once using native rclcpp GenericSubscription
+- Empty array `[]` returned if component has no topics
+- Configurable timeout per topic (default: 2 seconds)
+
+**Use Cases:**
+- Remote diagnostics - Read all sensor values from a component
+- System monitoring - Get current state of all component topics
+- Data logging - Periodic sampling of component data
+
+**Performance Considerations:**
+- Topic sampling uses **parallel execution** with configurable concurrency
+- Default: up to 10 topics sampled in parallel (configurable via `max_parallel_topic_samples`)
+- Response time scales with batch count: `ceil(topics / batch_size) × timeout`
+- 3-second timeout per topic to accommodate slow-publishing topics
+
+#### GET /api/v1/components/{component_id}/data/{topic_name}
+
+Read data from a specific topic within a component.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/components/temp_sensor/data/temperature
+```
+
+**Response (200 OK):**
+```json
+{
+  "topic": "/powertrain/engine/temperature",
+  "timestamp": 1732377600000000000,
+  "data": {
+    "temperature": 85.5,
+    "variance": 0.0
+  }
+}
+```
+
+**Example (Error - Topic Not Found):**
+```bash
+curl http://localhost:8080/api/v1/components/temp_sensor/data/nonexistent
+```
+
+**Response (404 Not Found):**
+```json
+{
+  "error": "Topic not found or not publishing",
+  "component_id": "temp_sensor",
+  "topic_name": "nonexistent"
+}
+```
+
+**Example (Error - Component Not Found):**
+```bash
+curl http://localhost:8080/api/v1/components/nonexistent/data/temperature
+```
+
+**Response (404 Not Found):**
+```json
+{
+  "error": "Component not found",
+  "component_id": "nonexistent"
+}
+```
+
+**Example (Error - Invalid Topic Name):**
+```bash
+curl http://localhost:8080/api/v1/components/temp_sensor/data/invalid-name
+```
+
+**Response (400 Bad Request):**
+```json
+{
+  "error": "Invalid topic name",
+  "details": "Entity ID contains invalid character: '-'. Only alphanumeric and underscore are allowed",
+  "topic_name": "invalid-name"
+}
+```
+
+**URL Parameters:**
+- `component_id` - Component identifier (e.g., `temp_sensor`, `rpm_sensor`)
+- `topic_name` - Topic name within the component (e.g., `temperature`, `rpm`)
+
+**Response Fields:**
+- `topic` - Full topic path (e.g., `/powertrain/engine/temperature`)
+- `timestamp` - Unix timestamp (nanoseconds since epoch) when data was sampled
+- `data` - Topic message data as JSON object
+
+**Validation:**
+- Both `component_id` and `topic_name` follow ROS 2 naming conventions
+- Allowed characters: alphanumeric (a-z, A-Z, 0-9), underscore (_)
+- Hyphens, special characters, and escape sequences are rejected
+
+**Use Cases:**
+- Read specific sensor value (e.g., just temperature, not all engine data)
+- Lower latency than reading all component data
+- Targeted monitoring of specific metrics
+
+### Operations Endpoints
+
+#### GET /api/v1/components/{component_id}/operations
+
+List all operations (services and actions) available for a component.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/components/calibration/operations
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "name": "calibrate",
+    "path": "/powertrain/engine/calibrate",
+    "type": "std_srvs/srv/Trigger",
+    "kind": "service",
+    "type_info": {
+      "schema": "...",
+      "default_value": "..."
+    }
+  }
+]
+```
+
+#### POST /api/v1/components/{component_id}/operations/{operation_id}/executions
+
+Execute an operation (call a service or send an action goal).
+
+**Example (Service Call):**
+```bash
+curl -X POST http://localhost:8080/api/v1/components/calibration/operations/calibrate/executions \
+  -H "Content-Type: application/json" \
+  -d '{"parameters": {}}'
+```
+
+**Response (200 OK - Service):**
+```json
+{
+  "parameters": {
+    "success": true,
+    "message": "Calibration triggered"
+  }
+}
+```
+
+**Example (Action Goal):**
+```bash
+curl -X POST http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions \
+  -H "Content-Type: application/json" \
+  -d '{"parameters": {"order": 10}}'
+```
+
+**Response (202 Accepted - Action):**
+```json
+{
+  "id": "abc123def456...",
+  "status": "running"
+}
+```
+
+**Headers:** `Location: /api/v1/components/long_calibration/operations/long_calibration/executions/abc123def456...`
+
+#### GET /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}
+
+Get the status of an action execution.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions/abc123def456
+```
+
+**Response (200 OK):**
+```json
+{
+  "status": "running",
+  "capability": "execute",
+  "parameters": {
+    "sequence": [0, 1, 1, 2, 3]
+  },
+  "x-medkit": {
+    "goal_id": "abc123def456...",
+    "ros2_status": "executing",
+    "ros2": {
+      "action": "/powertrain/engine/long_calibration",
+      "type": "example_interfaces/action/Fibonacci"
+    }
+  }
+}
+```
+
+**Status Values:** `running`, `completed`, `failed`
+
+#### DELETE /api/v1/components/{component_id}/operations/{operation_id}/executions/{execution_id}
+
+Cancel a running action execution.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions/abc123def456
+```
+
+**Response (200 OK):**
+```json
+{
+  "status": "canceling",
+  "goal_id": "abc123def456...",
+  "message": "Cancel request sent"
+}
+```
+
+### Authentication Endpoints
+
+#### POST /api/v1/auth/authorize
+
+Authenticate using OAuth2 client credentials flow. Returns access and refresh tokens.
+
+**Example (JSON):**
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/authorize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "grant_type": "client_credentials",
+    "client_id": "my_client",
+    "client_secret": "my_secret"
+  }'
+```
+
+**Example (Form URL-encoded):**
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/authorize \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d 'grant_type=client_credentials&client_id=my_client&client_secret=my_secret'
+```
+
+**Response (200 OK):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...",
+  "scope": "admin"
+}
+```
+
+**Response (401 Unauthorized - Invalid Credentials):**
+```json
+{
+  "error": "invalid_client",
+  "error_description": "Invalid client credentials"
+}
+```
+
+#### POST /api/v1/auth/token
+
+Refresh an access token using a refresh token.
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{
+    "grant_type": "refresh_token",
+    "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4..."
+  }'
+```
+
+**Response (200 OK):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...",
+  "scope": "admin"
+}
+```
+
+**Note:** The `refresh_token` in the response is the same token that was sent in the request (not a new token). Refresh token rotation is not implemented.
+
+#### POST /api/v1/auth/revoke
+
+Revoke a refresh token to prevent further use.
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/revoke \
+  -H "Content-Type: application/json" \
+  -d '{"token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4..."}'
+```
+
+**Response (200 OK):**
+```json
+{
+  "status": "revoked"
+}
+```
+
+### Configurations Endpoints
+
+#### GET /api/v1/components/{component_id}/configurations
+
+List all parameters for a component.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/components/temp_sensor/configurations
+```
+
+**Response (200 OK):**
+```json
+{
+  "component_id": "temp_sensor",
+  "node_name": "/powertrain/engine/temp_sensor",
+  "parameters": [
+    {
+      "name": "publish_rate",
+      "value": 2.0,
+      "type": "double"
+    },
+    {
+      "name": "min_temp",
+      "value": -40.0,
+      "type": "double"
+    }
+  ]
+}
+```
+
+#### GET /api/v1/components/{component_id}/configurations/{param}
+
+Get a specific parameter value.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate
+```
+
+**Response (200 OK):**
+```json
+{
+  "component_id": "temp_sensor",
+  "parameter": {
+    "name": "publish_rate",
+    "value": 2.0,
+    "type": "double"
+  }
+}
+```
+
+#### PUT /api/v1/components/{component_id}/configurations/{param}
+
+Set a parameter value.
+
+**Example:**
+```bash
+curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate \
+  -H "Content-Type: application/json" \
+  -d '{"value": 5.0}'
+```
+
+**Response (200 OK):**
+```json
+{
+  "status": "success",
+  "component_id": "temp_sensor",
+  "parameter": {
+    "name": "publish_rate",
+    "value": 5.0,
+    "type": "double"
+  }
+}
+```
+
+#### DELETE /api/v1/components/{component_id}/configurations/{param}
+
+Reset a parameter to its default (initial) value.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/v1/components/temp_sensor/configurations/min_temp
+```
+
+**Response (200 OK):**
+```json
+{
+  "name": "min_temp",
+  "value": -40.0,
+  "type": "double",
+  "reset_to_default": true
+}
+```
+
+#### DELETE /api/v1/components/{component_id}/configurations
+
+Reset all parameters to their default (initial) values.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/v1/components/temp_sensor/configurations
+```
+
+**Response (200 OK):**
+```json
+{
+  "node_name": "/powertrain/engine/temp_sensor",
+  "reset_count": 5,
+  "failed_count": 0
+}
+```
+
+**Response (207 Multi-Status - Partial Success):**
+```json
+{
+  "node_name": "/powertrain/engine/temp_sensor",
+  "reset_count": 3,
+  "failed_count": 2,
+  "failed_parameters": ["read_only_param1", "read_only_param2"]
+}
+```
+
+### Faults Endpoints
+
+Faults represent errors or warnings reported by system components. The gateway provides access to faults stored in `ros2_medkit_fault_manager`.
+
+- `GET /api/v1/faults` - List all faults across the system (convenience API for dashboards)
+- `GET /api/v1/faults/stream` - Real-time fault event stream via Server-Sent Events (SSE)
+- `GET /api/v1/faults/{fault_code}/snapshots` - Get topic snapshots captured when fault was confirmed
+- `GET /api/v1/faults/{fault_code}/snapshots/bag` - Download rosbag file for fault (if rosbag capture enabled)
+- `GET /api/v1/components/{component_id}/faults` - List faults for a specific component
+- `GET /api/v1/components/{component_id}/faults/{fault_code}` - Get a specific fault
+- `GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots` - Get snapshots for a component's fault
+- `DELETE /api/v1/components/{component_id}/faults/{fault_code}` - Clear a fault
+
+#### GET /api/v1/faults
+
+List all faults across the system. This is a convenience API for dashboards and monitoring tools that need a complete system health view without iterating over individual components.
+
+**Query Parameters:**
+- `status` - Filter by fault status: `pending`, `confirmed`, `cleared`, `all` (default: `pending` + `confirmed`)
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/faults
+curl http://localhost:8080/api/v1/faults?status=all
+```
+
+**Response (200 OK):**
+```json
+{
+  "faults": [
+    {
+      "fault_code": "NAVIGATION_PATH_BLOCKED",
+      "severity": 2,
+      "severity_label": "ERROR",
+      "description": "Navigation failed - cannot find valid path to goal",
+      "source_id": "/nav2_fault_reporter",
+      "status": "pending",
+      "first_occurred": 1735830000,
+      "last_occurred": 1735830000,
+      "occurrence_count": 1
+    }
+  ],
+  "count": 1
+}
+```
+
+**Response (400 Bad Request - Invalid Status):**
+```json
+{
+  "error": "Invalid status parameter",
+  "details": "Valid values: pending, confirmed, cleared, all",
+  "parameter": "status",
+  "value": "invalid"
+}
+```
+
+#### GET /api/v1/faults/stream
+
+Real-time fault event stream using Server-Sent Events (SSE). Clients receive instant notifications when faults are confirmed, updated, or cleared.
+
+**Features:**
+- **Real-time notifications**: Events pushed instantly when fault state changes
+- **Automatic reconnection**: Supports `Last-Event-ID` header for seamless reconnection
+- **Keepalive**: Sends `:keepalive` comment every 30 seconds to prevent timeouts
+- **Event buffer**: Buffers up to 100 recent events for reconnecting clients
+
+**Event Types:**
+- `fault_confirmed` - Fault transitioned to CONFIRMED status
+- `fault_updated` - Fault data changed (occurrence_count, sources, etc.)
+- `fault_cleared` - Fault was cleared via ClearFault service
+
+**Example:**
+```bash
+curl -N http://localhost:8080/api/v1/faults/stream
+```
+
+**Response (SSE Stream):**
+```
+:keepalive
+
+id: 1
+event: fault_confirmed
+data: {"event_type":"fault_confirmed","fault":{"fault_code":"MOTOR_OVERHEAT",...},"timestamp":1735830000.123}
+
+id: 2
+event: fault_cleared
+data: {"event_type":"fault_cleared","fault":{"fault_code":"MOTOR_OVERHEAT",...},"timestamp":1735830060.456}
+```
+
+**Response (503 Service Unavailable - Client Limit Reached):**
+```json
+{
+  "error": "Maximum number of SSE clients reached. Please try again later."
+}
+```
+
+**Reconnection with Last-Event-ID:**
+```bash
+curl -N -H "Last-Event-ID: 5" http://localhost:8080/api/v1/faults/stream
+```
+
+This replays any buffered events with ID > 5, then continues streaming new events.
+
+#### GET /api/v1/components/{component_id}/faults
+
+List all faults for a specific component.
+
+**Query Parameters:**
+- `status` - Filter by fault status: `pending`, `confirmed`, `cleared`, `all` (default: `pending` + `confirmed`)
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/components/nav2_controller/faults
+```
+
+**Response (200 OK):**
+```json
+{
+  "component_id": "nav2_controller",
+  "source_id": "/nav2_controller",
+  "faults": [...],
+  "count": 1
+}
+```
+
+#### GET /api/v1/faults/{fault_code}/snapshots
+
+Get topic snapshots captured when a fault transitioned to CONFIRMED status. Snapshots provide system state at the moment of fault confirmation for debugging purposes.
+
+**Query Parameters:**
+- `topic` - (optional) Filter by specific topic name
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
+curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots?topic=/joint_states
+```
+
+**Response (200 OK):**
+```json
+{
+  "fault_code": "MOTOR_OVERHEAT",
+  "captured_at": 1735830000.123,
+  "topics": {
+    "/joint_states": {
+      "message_type": "sensor_msgs/msg/JointState",
+      "data": {"name": ["joint1"], "position": [1.57]}
+    },
+    "/cmd_vel": {
+      "message_type": "geometry_msgs/msg/Twist",
+      "data": {"linear": {"x": 0.5}, "angular": {"z": 0.1}}
+    }
+  }
+}
+```
+
+**Response (200 OK - No snapshots):**
+```json
+{
+  "fault_code": "MOTOR_OVERHEAT",
+  "topics": {}
+}
+```
+
+**Response (404 Not Found):**
+```json
+{
+  "error": "Fault not found",
+  "fault_code": "NONEXISTENT_FAULT"
+}
+```
+
+#### GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots
+
+Get topic snapshots for a specific component's fault. Same as the system-wide endpoint but scoped to a component.
+
+**Query Parameters:**
+- `topic` - (optional) Filter by specific topic name
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/components/motor_controller/faults/MOTOR_OVERHEAT/snapshots
+```
+
+**Response (200 OK):**
+```json
+{
+  "component_id": "motor_controller",
+  "fault_code": "MOTOR_OVERHEAT",
+  "captured_at": 1735830000.123,
+  "topics": {
+    "/motor/temperature": {
+      "message_type": "sensor_msgs/msg/Temperature",
+      "data": {"temperature": 85.5, "variance": 0.1}
+    }
+  }
+}
+```
+
+**Snapshot Configuration:**
+
+Snapshots are configured via FaultManager parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `snapshots.enabled` | bool | `true` | Enable/disable snapshot capture |
+| `snapshots.background_capture` | bool | `false` | Use background subscriptions (caches latest message) vs on-demand capture |
+| `snapshots.timeout_sec` | double | `1.0` | Timeout waiting for topic message (on-demand mode) |
+| `snapshots.max_message_size` | int | `65536` | Maximum message size in bytes (larger messages skipped) |
+| `snapshots.default_topics` | string[] | `[]` | Topics to capture for all faults |
+| `snapshots.config_file` | string | `""` | Path to YAML config file for `fault_specific` and `patterns` |
+
+**Topic Resolution Priority:**
+1. `fault_specific` - Exact match for fault code (configured via YAML config file)
+2. `patterns` - Regex pattern match (configured via YAML config file)
+3. `default_topics` - Fallback for all faults
+
+**Example YAML config file** (`snapshots.yaml`):
+```yaml
+fault_specific:
+  MOTOR_OVERHEAT:
+    - /joint_states
+    - /motor/temperature
+patterns:
+  "MOTOR_.*":
+    - /joint_states
+    - /cmd_vel
+default_topics:
+  - /diagnostics
+```
+
+#### GET /api/v1/faults/{fault_code}/snapshots/bag
+
+Download the rosbag file associated with a fault. This endpoint is only available when rosbag capture is enabled in FaultManager.
+
+Rosbag capture provides "black box" style recording - a ring buffer continuously records configured topics, and when a fault is confirmed, the buffer is flushed to a bag file. This allows capturing system state both **before and after** fault confirmation.
+
+**Example:**
+```bash
+# Download rosbag archive
+curl -O -J http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag
+
+# Or save with custom filename
+curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag -o motor_fault.tar.gz
+```
+
+**Response (200 OK):**
+- For directory-based bags (default rosbag2 format): compressed tar.gz archive containing the full bag directory with metadata.yaml and all storage segments
+- Content-Type: `application/gzip`
+- Content-Disposition: `attachment; filename="fault_MOTOR_OVERHEAT_20260124_153045.tar.gz"`
+
+The archive can be extracted and played directly with `ros2 bag play`.
+
+**Response (404 Not Found - Fault or rosbag not found):**
+```json
+{
+  "error": "Rosbag not found",
+  "fault_code": "MOTOR_OVERHEAT",
+  "details": "No rosbag file associated with this fault"
+}
+```
+
+**Response (404 Not Found - Rosbag file deleted):**
+```json
+{
+  "error": "Rosbag file not found",
+  "fault_code": "MOTOR_OVERHEAT",
+  "details": "File was deleted or moved"
+}
+```
+
+**Rosbag Configuration:**
+
+Rosbag capture is configured via FaultManager parameters. See `config/snapshots.yaml` for full configuration options.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `snapshots.rosbag.enabled` | bool | `false` | Enable/disable rosbag capture |
+| `snapshots.rosbag.duration_sec` | double | `5.0` | Ring buffer duration (seconds before fault) |
+| `snapshots.rosbag.duration_after_sec` | double | `1.0` | Recording duration after fault confirmed |
+| `snapshots.rosbag.topics` | string | `"config"` | Topic selection: `"config"`, `"all"`, or `"explicit"` |
+| `snapshots.rosbag.format` | string | `"sqlite3"` | Bag format: `"sqlite3"` or `"mcap"` |
+| `snapshots.rosbag.auto_cleanup` | bool | `true` | Delete bag when fault is cleared |
+| `snapshots.rosbag.max_bag_size_mb` | int | `50` | Max size per bag file |
+| `snapshots.rosbag.max_total_storage_mb` | int | `500` | Total storage limit |
+
+**Enable rosbag capture:**
+```bash
+ros2 run ros2_medkit_fault_manager fault_manager_node \
+  --ros-args -p snapshots.rosbag.enabled:=true \
+             -p snapshots.rosbag.duration_sec:=5.0
+```
+
+**Playback downloaded rosbag:**
+```bash
+# Extract the downloaded archive
+tar -xzf fault_MOTOR_OVERHEAT_20260124_153045.tar.gz
+
+# Play back the bag
+ros2 bag play fault_MOTOR_OVERHEAT_1735830000/
+
+# Inspect bag contents
+ros2 bag info fault_MOTOR_OVERHEAT_1735830000/
+```
+
+**Differences from JSON Snapshots:**
+
+| Feature | JSON Snapshots | Rosbag Capture |
+|---------|----------------|----------------|
+| Data format | JSON (human-readable) | Binary (native ROS 2) |
+| Time coverage | Point-in-time (at confirmation) | Time window (before + after) |
+| Message fidelity | Converted to JSON | Original serialization |
+| Playback | N/A | `ros2 bag play` |
+| Query via REST | Yes (structured JSON) | Download only |
+| Default | Enabled | Disabled |
+
+### Logging Endpoints
+
+The gateway collects `/rosout` messages and exposes them via REST. Each node's log entries are stored in a per-node ring buffer (default: 200 entries, configurable via `logs.buffer_size` in `gateway_params.yaml`).
+
+**Query parameters for GET /logs:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `severity` | string | Minimum severity filter: `debug`, `info`, `warning`, `error`, `fatal` |
+| `context`  | string | Substring filter applied to the logger name |
+
+#### GET /api/v1/components/{component_id}/logs
+
+Returns recent log entries for all nodes under the component's namespace (prefix match). Results are capped at `max_entries` (default: 100, configurable per entity via `PUT /logs/configuration`).
 
 ```bash
-git clone https://github.com/selfpatch/selfpatch_demos.git
-cd selfpatch_demos/demos/turtlebot3_integration
-./run-demo.sh
-# → API: http://localhost:8080/api/v1/  Web UI: http://localhost:3000
+curl http://localhost:8080/api/v1/components/temp_sensor/logs
+curl "http://localhost:8080/api/v1/components/temp_sensor/logs?severity=warning"
 ```
 
-Open `http://localhost:3000` in your browser. You will see a TurtleBot3 with Nav2, organized into a browsable entity tree with live faults, topic data, and parameter access.
+**Response:**
 
-**Build from source** (ROS 2 Jazzy, Humble, or Rolling):
+```json
+{
+  "items": [
+    {
+      "id": "log_42",
+      "timestamp": "2026-03-03T12:00:00.000000000Z",
+      "severity": "warning",
+      "message": "Temperature exceeded threshold",
+      "context": {
+        "node": "powertrain/engine/temp_sensor",
+        "function": "publish_temperature",
+        "file": "temp_sensor_node.cpp",
+        "line": 87
+      }
+    }
+  ]
+}
+```
+
+#### GET /api/v1/apps/{app_id}/logs
+
+Same as above but for a single app node (exact logger name match).
 
 ```bash
-source /opt/ros/jazzy/setup.bash   # or humble - adjust for your distro
-git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
-cd ros2_medkit
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install && source install/setup.bash
-ros2 launch ros2_medkit_gateway gateway.launch.py
-# → http://localhost:8080/api/v1/health
+curl http://localhost:8080/api/v1/apps/temp_sensor/logs
+curl "http://localhost:8080/api/v1/apps/temp_sensor/logs?severity=error&context=engine"
 ```
 
-Verify it works: `curl http://localhost:8080/api/v1/health` should return `{"status": "healthy", ...}`.
+#### GET /api/v1/{entity}/{id}/logs/configuration
 
-For a guided walkthrough with demo nodes and the full API, see the [Getting Started tutorial](https://selfpatch.github.io/ros2_medkit/getting_started.html). For API examples, see our [Postman collection](postman/).
-
-### Experimental: Pixi
-
-[Pixi](https://pixi.sh) provides a reproducible, lockfile-based environment
-without requiring a system-wide ROS 2 installation (Linux x86_64 only).
-This is experimental; the standard ROS 2 toolchain (rosdep + colcon) remains the primary method.
+Returns the current log configuration for the entity.
 
 ```bash
-curl -fsSL https://pixi.sh/install.sh | bash
-pixi install -e jazzy     # or: pixi install -e humble
-pixi run -e jazzy build
-pixi run -e jazzy test
-pixi run -e jazzy smoke   # verify gateway starts
+curl http://localhost:8080/api/v1/components/temp_sensor/logs/configuration
 ```
 
-See [installation docs](https://selfpatch.github.io/ros2_medkit/installation.html#experimental-pixi)
-for details. Feedback welcome on [#265](https://github.com/selfpatch/ros2_medkit/issues/265).
+**Response:**
 
-## What you get
-
-**Start here: Faults.** Your robot has 47 nodes. Something throws an error.
-Instead of grepping logs, you query `GET /api/v1/faults` and get a structured list
-with fault codes, timestamps, affected entities, environment snapshots, and history.
-Clear faults, subscribe to new ones via SSE, correlate them across components.
-
-Beyond faults, medkit exposes the full ROS 2 graph through REST:
-
-| | What it does |
-|---|---|
-| **Discovery** | Automatically finds running nodes, topics, services, and actions |
-| **Data** | Read and write topic data via REST |
-| **Operations** | Call services and actions with execution tracking |
-| **Configurations** | Read, write, and reset node parameters |
-| **Bulk Data** | Upload/download files (calibration, firmware, rosbags) |
-| **Subscriptions** | Stream live data and fault events via SSE |
-| **Triggers** | Condition-based push notifications for resource changes |
-| **Locking** | Resource locking for safe concurrent access |
-| **Scripts** | Upload and execute diagnostic scripts on entities |
-| **Software Updates** | Async prepare/execute lifecycle with pluggable backends |
-| **Authentication** | JWT-based RBAC (viewer, operator, configurator, admin) |
-| **Logs** | Log entries and configuration |
-| **Docs** | OpenAPI 3.1.0 spec and Swagger UI at `/api/v1/docs` |
-
-On the [roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html): entity lifecycle control, mode management, communication logs.
-
-## How it organizes your robot
-
-medkit models your system as an **entity tree** with four levels:
-
-```
-Areas          Components         Apps (nodes)
-─────          ──────────         ────────────
-base       ┬─ motor_controller ┬─ left_wheel_driver
-           │                   └─ right_wheel_driver
-           └─ battery_monitor  └─ bms_node
-
-navigation ┬─ lidar_driver     └─ rplidar_node
-           └─ nav_stack        ┬─ nav2_controller
-                               ├─ nav2_planner
-                               └─ nav2_bt_navigator
+```json
+{
+  "severity_filter": "debug",
+  "max_entries": 100
+}
 ```
 
-A small robot might have a single area. A large robot can use areas to separate physical domains:
+#### PUT /api/v1/{entity}/{id}/logs/configuration
 
-```
-areas/
-├── base/
-│   └── components/
-│       ├── motor_controller/   → apps: left_wheel, right_wheel
-│       └── battery_monitor/    → apps: bms_node
-├── arm/
-│   └── components/
-│       ├── joint_controller/   → apps: joint_1..joint_6
-│       └── gripper/            → apps: gripper_driver
-├── navigation/
-│   └── components/
-│       ├── lidar_driver/       → apps: rplidar_node
-│       ├── camera_driver/      → apps: realsense_node
-│       └── nav_stack/          → apps: controller, planner, bt_navigator
-└── safety/
-    └── components/
-        ├── emergency_stop/     → apps: estop_monitor
-        └── collision_detect/   → apps: collision_checker
-```
-
-**Functions** cut across the tree. A function like `localization` might depend on apps from both `navigation` and `base`, giving you a capability-oriented view alongside the physical hierarchy.
-
-This entity model follows the **SOVD (Service-Oriented Vehicle Diagnostics)** standard, so the same concepts work across robots, vehicles, and embedded systems.
-
-## 📋 Requirements
-
-- **OS:** Ubuntu 24.04 LTS (Jazzy / Rolling) or Ubuntu 22.04 LTS (Humble)
-- **ROS 2:** Jazzy Jalisco, Humble Hawksbill, or Rolling (experimental)
-- **Compiler:** GCC 11+ (C++17 support)
-- **Build System:** colcon + ament_cmake
-
-## 📚 Documentation
-
-- 📖 [Full Documentation](https://selfpatch.github.io/ros2_medkit/)
-- 🗺️ [Roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html)
-- 📋 [GitHub Milestones](https://github.com/selfpatch/ros2_medkit/milestones)
-
-## 💬 Community
-
-- **💬 Discord** - [Join our server](https://discord.gg/6CXPMApAyq) for discussions, help, and announcements
-- **🐛 Issues** - [Report bugs or request features](https://github.com/selfpatch/ros2_medkit/issues)
-- **💡 Discussions** - [GitHub Discussions](https://github.com/selfpatch/ros2_medkit/discussions) for Q&A and ideas
-
-## 🤝 Contributing
-
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, testing, pre-commit hooks, CI/CD details, and code coverage.
-
-Quick version:
+Updates the log configuration. Both fields are optional; omitted fields are unchanged.
 
 ```bash
-source /opt/ros/jazzy/setup.bash  # or humble
-pipx install pre-commit && pre-commit install && pre-commit install --hook-type pre-push
-colcon build --symlink-install
+curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/logs/configuration \
+  -H "Content-Type: application/json" \
+  -d '{"severity_filter": "warning", "max_entries": 50}'
+```
+
+**Request body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `severity_filter` | string | Minimum severity stored/returned: `debug`, `info`, `warning`, `error`, `fatal` |
+| `max_entries` | integer > 0 | Maximum entries returned by GET /logs for this entity |
+
+**Response:** `204 No Content`.
+
+## Quick Start
+
+### Build
+
+```bash
+# From your ROS 2 workspace
+colcon build --packages-select ros2_medkit_gateway
+
+# Source the workspace
 source install/setup.bash
-./scripts/test.sh          # unit tests
-./scripts/test.sh all      # everything
 ```
 
-Check out [good first issues](https://github.com/selfpatch/ros2_medkit/labels/good%20first%20issue) for places to start.
+### Run
 
-## 🔒 Security
+**Start the gateway:**
+```bash
+ros2 run ros2_medkit_gateway gateway_node
+```
 
-If you discover a security vulnerability, please follow the responsible disclosure process in [SECURITY.md](SECURITY.md).
+**Or use the launch file:**
+```bash
+ros2 launch ros2_medkit_gateway gateway.launch.py
+```
 
-## 📄 License
+**Start with HTTPS (auto-generates development certificates):**
+```bash
+ros2 launch ros2_medkit_gateway gateway_https.launch.py
+```
 
-Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+**Start demo nodes:**
+```bash
+ros2 launch ros2_medkit_integration_tests demo_nodes.launch.py
+```
 
----
+**Test the API:**
+```bash
+# HTTP
+curl http://localhost:8080/api/v1/areas
 
-<p align="center">
-  Made with ❤️ by the <a href="https://github.com/selfpatch">selfpatch</a> community
-  <br>
-  <a href="https://discord.gg/6CXPMApAyq">💬 Join us on Discord</a>
-</p>
+# HTTPS (skip certificate verification for self-signed)
+curl -k https://localhost:8443/api/v1/areas
+```
+
+## Configuration
+
+The gateway can be configured via parameters in `config/gateway_params.yaml` or through command-line arguments.
+
+### Parameters
+
+#### Server Configuration
+
+| Parameter                    | Type   | Default     | Description                                                                            |
+| ---------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------- |
+| `server.host`                | string | `127.0.0.1` | Host to bind the REST server (`127.0.0.1` for localhost, `0.0.0.0` for all interfaces) |
+| `server.port`                | int    | `8080`      | Port for the REST API (range: 1024-65535)                                              |
+| `refresh_interval_ms`        | int    | `10000`     | Cache refresh interval in milliseconds (range: 100-60000)                              |
+| `max_parallel_topic_samples` | int    | `20`        | Max concurrent topic samples when fetching data (range: 1-50)                          |
+| `topic_sample_timeout_sec`   | float  | `2.0`       | Timeout for sampling topics with active publishers (range: 0.1-30.0)                   |
+| `fault_manager.namespace`    | string | `""`        | Optional namespace prefix for fault manager services and events (for example `robot1`)  |
+| `fault_manager.service_timeout_sec`  | float  | `5.0`       | Timeout for fault manager service calls such as `list_faults` and `get_snapshots`      |
+
+These defaults reflect the recommended values from `config/gateway_params.yaml`.
+If the gateway is run without those parameters, the `DataAccessManager` fallback
+defaults are `max_parallel_topic_samples=10` and `topic_sample_timeout_sec=1.0`.
+
+#### SSE (Server-Sent Events) Configuration
+
+| Parameter        | Type | Default | Description                                                                |
+| ---------------- | ---- | ------- | -------------------------------------------------------------------------- |
+| `sse.max_clients` | int  | `10`    | Maximum concurrent SSE connections. Prevents resource exhaustion attacks. Returns 503 when limit reached. |
+
+#### Native Sampling
+
+The gateway always uses native rclcpp APIs for topic discovery and sampling. This provides significant UX improvements:
+
+- **Instant metadata for idle topics**: Topics without publishers return immediately with metadata (type, schema) instead of waiting for a 3-second timeout
+- **Faster discovery**: Uses `node->get_topic_names_and_types()` instead of `ros2 topic list`
+- **Reduced external dependencies**: Native APIs for discovery and idle topics. GNU `timeout` is still required for sampling topics with active publishers (install `coreutils` in containers if needed)
+- **Better responsiveness**: Robots waiting for commands (many idle topics) respond instantly
+
+CLI is only used for publishing (`ros2 topic pub`), as native publishing requires compile-time type knowledge.
+
+#### CORS Configuration
+
+Cross-Origin Resource Sharing (CORS) settings for browser-based clients. CORS is **enabled automatically** when `allowed_origins` is not empty.
+
+| Parameter                | Type     | Default                      | Description                                                                         |
+| ------------------------ | -------- | ---------------------------- | ----------------------------------------------------------------------------------- |
+| `cors.allowed_origins`   | string[] | `[]`                         | List of allowed origins (e.g., `["http://localhost:5173"]`). Empty = CORS disabled. |
+| `cors.allowed_methods`   | string[] | `["GET", "PUT", "OPTIONS"]`  | HTTP methods allowed for CORS requests                                              |
+| `cors.allowed_headers`   | string[] | `["Content-Type", "Accept"]` | Headers allowed in CORS requests                                                    |
+| `cors.allow_credentials` | bool     | `false`                      | Allow credentials (cookies, auth headers). Cannot be `true` with wildcard origin.   |
+| `cors.max_age_seconds`   | int      | `86400`                      | How long browsers cache preflight response (24 hours default)                       |
+
+#### Authentication Configuration
+
+JWT-based authentication with Role-Based Access Control (RBAC). Authentication is **disabled by default** for backward compatibility.
+
+| Parameter                           | Type     | Default               | Description                                                                 |
+| ----------------------------------- | -------- | --------------------- | --------------------------------------------------------------------------- |
+| `auth.enabled`                      | bool     | `false`               | Enable/disable authentication. Set to `true` to require auth.              |
+| `auth.jwt_secret`                   | string   | (required if enabled) | Secret key for HS256 signing. Must be at least 32 characters.              |
+| `auth.jwt_algorithm`                | string   | `HS256`               | JWT signing algorithm: `HS256` (symmetric) or `RS256` (asymmetric).        |
+| `auth.token_expiry_seconds`         | int      | `3600`                | Access token lifetime in seconds (range: 60-86400).                        |
+| `auth.refresh_token_expiry_seconds` | int      | `86400`               | Refresh token lifetime in seconds (range: 300-604800).                     |
+| `auth.require_auth_for`             | string   | `write`               | Auth requirement: `none`, `write` (POST/PUT/DELETE only), or `all`.        |
+| `auth.issuer`                       | string   | `ros2_medkit_gateway` | JWT issuer claim for token validation.                                     |
+| `auth.clients`                      | string[] | `[]`                  | Client credentials in format `client_id:client_secret:role`.               |
+
+#### TLS/HTTPS Configuration
+
+TLS (Transport Layer Security) enables encrypted HTTPS communication. TLS is **disabled by default** for backward compatibility.
+
+| Parameter                    | Type   | Default | Description                                                                 |
+| ---------------------------- | ------ | ------- | --------------------------------------------------------------------------- |
+| `server.tls.enabled`         | bool   | `false` | Enable/disable TLS. When enabled, server uses HTTPS instead of HTTP.       |
+| `server.tls.cert_file`       | string | (required if enabled) | Path to PEM-encoded certificate file.                         |
+| `server.tls.key_file`        | string | (required if enabled) | Path to PEM-encoded private key file.                         |
+| `server.tls.ca_file`         | string | `""`    | Optional CA certificate (reserved for future mutual TLS support).          |
+| `server.tls.min_version`     | string | `"1.2"` | Minimum TLS version: `"1.2"` (compatible) or `"1.3"` (more secure).        |
+
+> **Note:** Mutual TLS (client certificate verification) is planned for a future release.
+
+**Roles and Permissions:**
+
+| Role         | Read (GET) | Operations (POST) | Configurations (PUT/DELETE) | Faults (DELETE) |
+| ------------ | ---------- | ----------------- | --------------------------- | --------------- |
+| `viewer`     | ✅          | ❌                 | ❌                           | ❌               |
+| `operator`   | ✅          | ✅                 | ❌                           | ❌               |
+| `configurator` | ✅        | ✅                 | ✅                           | ❌               |
+| `admin`      | ✅          | ✅                 | ✅                           | ✅               |
+
+### Configuration Examples
+
+**Change port via command line:**
+```bash
+ros2 run ros2_medkit_gateway gateway_node --ros-args -p server.port:=9090
+```
+
+**Change host via launch file:**
+```bash
+ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0
+```
+
+**Enable CORS for local development:**
+```yaml
+cors:
+  allowed_origins: ["http://localhost:5173", "http://localhost:3000"]
+  allowed_methods: ["GET", "PUT", "OPTIONS"]
+  allowed_headers: ["Content-Type", "Accept"]
+  allow_credentials: false
+  max_age_seconds: 86400
+```
+
+**Enable CORS for production (specific domain):**
+```yaml
+cors:
+  allowed_origins: ["https://dashboard.example.com"]
+  allowed_methods: ["GET", "OPTIONS"]
+  allowed_headers: ["Content-Type", "Accept", "Authorization"]
+  allow_credentials: true
+  max_age_seconds: 86400
+```
+
+> ⚠️ **Security Note:** Using `["*"]` as `allowed_origins` is not recommended for production. When `allow_credentials` is `true`, wildcard origins will cause the application to fail to start with an exception.
+
+### Authentication Configuration Examples
+
+**Enable authentication with write-only protection (recommended for development):**
+```yaml
+auth:
+  enabled: true
+  jwt_secret: "your_secret_key_at_least_32_chars_long"
+  jwt_algorithm: "HS256"
+  token_expiry_seconds: 3600
+  refresh_token_expiry_seconds: 86400
+  require_auth_for: "write"   # GET requests work without auth
+  issuer: "ros2_medkit_gateway"
+  clients:
+    - "admin:admin_secret:admin"
+    - "operator:operator_secret:operator"
+    - "viewer:viewer_secret:viewer"
+```
+
+**Full protection (all endpoints require authentication):**
+```yaml
+auth:
+  enabled: true
+  jwt_secret: "your_production_secret_minimum_32_chars"
+  jwt_algorithm: "HS256"
+  token_expiry_seconds: 1800    # 30 minutes for tighter security
+  refresh_token_expiry_seconds: 43200  # 12 hours
+  require_auth_for: "all"      # All endpoints require valid token
+  issuer: "production_gateway"
+  clients:
+    - "dashboard:dashboard_secret_key:admin"
+    - "monitoring:monitoring_secret:viewer"
+```
+
+**Usage with curl:**
+```bash
+# 1. Get access token
+TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/authorize \
+  -H "Content-Type: application/json" \
+  -d '{"grant_type":"client_credentials","client_id":"admin","client_secret":"admin_secret"}' \
+  | jq -r '.access_token')
+
+# 2. Use token for protected endpoints
+curl http://localhost:8080/api/v1/components/temp_sensor/data \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. Set a parameter (requires operator+ role)
+curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/configurations/rate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"value": 5.0}'
+```
+
+> ⚠️ **Security Notes:**
+> - Store `jwt_secret` securely and never commit it to version control
+> - Use environment variables or secure secret management in production
+> - RS256 algorithm requires additional setup with public/private key files
+> - Client secrets should be generated using cryptographically secure random strings
+
+### TLS/HTTPS Configuration Examples
+
+**Generate development certificates:**
+
+The package includes a helper script to generate self-signed certificates for development:
+
+```bash
+# Generate certificates in a certs/ directory
+./scripts/generate_dev_certs.sh ./certs
+
+# This creates:
+# ./certs/ca.crt           - CA certificate
+# ./certs/server.crt       - Server certificate
+# ./certs/server.key       - Server private key (chmod 600)
+# ./certs/client.crt       - Client certificate (for future mutual TLS)
+# ./certs/client.key       - Client private key
+```
+
+**Basic TLS (HTTPS only):**
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls:
+    enabled: true
+    cert_file: "/path/to/server.crt"
+    key_file: "/path/to/server.key"
+    min_version: "1.2"
+```
+
+**TLS with minimum TLS 1.3 (recommended for new deployments):**
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls:
+    enabled: true
+    cert_file: "/path/to/server.crt"
+    key_file: "/path/to/server.key"
+    min_version: "1.3"
+```
+
+<!-- TODO: Add Mutual TLS example when implemented
+**Mutual TLS (client certificate verification):**
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls:
+    enabled: true
+    cert_file: "/path/to/server.crt"
+    key_file: "/path/to/server.key"
+    ca_file: "/path/to/ca.crt"
+    min_version: "1.2"
+    mutual_tls: true
+```
+-->
+
+**Quick start with HTTPS (auto-generates development certificates):**
+```bash
+# Start gateway with HTTPS - certificates are generated automatically
+ros2 launch ros2_medkit_gateway gateway_https.launch.py
+
+# Custom port
+ros2 launch ros2_medkit_gateway gateway_https.launch.py server_port:=9443
+
+# Persist certificates to custom directory
+ros2 launch ros2_medkit_gateway gateway_https.launch.py cert_dir:=/home/user/certs
+
+# Use TLS 1.3 only
+ros2 launch ros2_medkit_gateway gateway_https.launch.py min_tls_version:=1.3
+```
+
+| Launch Argument       | Default                    | Description                                      |
+| --------------------- | -------------------------- | ------------------------------------------------ |
+| `cert_dir`            | `/tmp/ros2_medkit_certs`   | Directory for auto-generated certificates        |
+| `server_host`         | `127.0.0.1`                | Host to bind HTTPS server                        |
+| `server_port`         | `8443`                     | Port for HTTPS API                               |
+| `min_tls_version`     | `1.2`                      | Minimum TLS version (`1.2` or `1.3`)             |
+| `refresh_interval_ms` | `10000`                    | Cache refresh interval in milliseconds           |
+
+**Usage with curl (self-signed certs):**
+```bash
+# Basic HTTPS (skip verification for self-signed)
+curl -k https://localhost:8443/api/v1
+
+# HTTPS with CA verification
+curl --cacert ./certs/ca.crt https://localhost:8443/api/v1
+
+# TODO: Mutual TLS example - coming in future release
+# curl --cacert ./certs/ca.crt \
+#      --cert ./certs/client.crt \
+#      --key ./certs/client.key \
+#      https://localhost:8443/api/v1/areas
+```
+
+> ⚠️ **Security Notes:**
+> - **Never use self-signed certificates in production** - obtain certificates from a trusted CA
+> - Protect private key files with restricted permissions: `chmod 600 server.key`
+> - Use TLS 1.3 minimum version when all clients support it
+> - Consider using Let's Encrypt for automated certificate management
+> - Store certificates outside the source tree and never commit private keys
+
+## Architecture
+
+### Components
+
+- **Gateway Node**: Main ROS 2 node that runs the REST server
+- **Discovery Manager**: Discovers and caches ROS 2 nodes, organizing them into areas and components
+- **REST Server**: HTTP server using cpp-httplib
+- **Entity Cache**: In-memory cache of discovered areas and components, updated periodically
+
+### Topic-Based Discovery
+
+In addition to standard ROS 2 node discovery, the gateway supports **topic-based discovery** for systems that publish topics without creating discoverable nodes (e.g., NVIDIA Isaac Sim, hardware bridges).
+
+**How it works:**
+1. Gateway scans all topics in the ROS 2 graph
+2. Extracts unique namespace prefixes (e.g., `/carter1/odom` → `carter1`)
+3. Creates virtual "components" for namespaces that have topics but no nodes
+4. These components have `"source": "topic"` to distinguish them from node-based components
+
+**Example:** Isaac Sim publishes topics like `/carter1/odom`, `/carter1/cmd_vel`, `/carter2/imu` without creating ROS 2 nodes. The gateway discovers:
+- Component `carter1` with topics: `/carter1/odom`, `/carter1/cmd_vel`
+- Component `carter2` with topics: `/carter2/imu`
+
+**System topic filtering:** The following topics are filtered out during discovery:
+- `/parameter_events`, `/rosout`, `/clock`
+- Note: `/tf` and `/tf_static` are NOT filtered (useful for diagnostics)
+
+### Area Organization
+
+The gateway organizes nodes into "areas" based on their namespace:
+
+```
+/powertrain/engine/temp_sensor  → Area: powertrain, Component: temp_sensor
+/chassis/brakes/pressure_sensor → Area: chassis, Component: pressure_sensor
+/body/lights/controller         → Area: body, Component: controller
+/standalone_node                → Area: root, Component: standalone_node
+```
+
+## Demo Nodes
+
+The package includes demo automotive nodes for testing:
+
+| Node              | Namespace               | Description               |
+| ----------------- | ----------------------- | ------------------------- |
+| `temp_sensor`     | `/powertrain/engine`    | Engine temperature sensor |
+| `rpm_sensor`      | `/powertrain/engine`    | Engine RPM sensor         |
+| `pressure_sensor` | `/chassis/brakes`       | Brake pressure sensor     |
+| `status_sensor`   | `/body/door/front_left` | Door status sensor        |
+| `actuator`        | `/chassis/brakes`       | Brake actuator            |
+| `controller`      | `/body/lights`          | Light controller          |
+| `calibration`     | `/powertrain/engine`    | Calibration service       |
+
+**Launch all demo nodes:**
+```bash
+ros2 launch ros2_medkit_integration_tests demo_nodes.launch.py
+```
+
+## URL Encoding
+
+Topic names in URLs use standard percent-encoding (`%2F`) for the forward slash character:
+
+| ROS 2 Topic Path                | URL Encoding                                |
+| ------------------------------- | ------------------------------------------- |
+| `/powertrain/engine/temperature`| `powertrain%2Fengine%2Ftemperature`         |
+| `/chassis/brakes/command`       | `chassis%2Fbrakes%2Fcommand`                |
+| `/body/door/front_left/status`  | `body%2Fdoor%2Ffront_left%2Fstatus`         |
+
+**Example:**
+- Topic: `/powertrain/engine/temperature`
+- URL: `/api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperature`
+
+> **Note:** Component IDs do not require encoding (they are simple names like `temp_sensor`).
+> The leading slash is stripped before encoding.
+
+## Manual API Testing with Postman
+
+We provide a Postman collection for easy API testing:
+
+1. **Import collection:** `postman/collections/ros2-medkit-gateway.postman_collection.json`
+2. **Import environment:** `postman/environments/local.postman_environment.json`
+3. **Activate environment:** Select "ROS 2 Medkit Gateway - Local" in Postman
+4. **Start gateway:** `ros2 launch ros2_medkit_gateway gateway.launch.py`
+5. **Start demo nodes:** `ros2 launch ros2_medkit_integration_tests demo_nodes.launch.py`
+6. **Test:** Send requests from Postman!
+
+See [postman/README.md](postman/README.md) for detailed instructions.
+
+## Testing
+
+### Run Integration Tests
+
+```bash
+# Build with tests
+colcon build --packages-select ros2_medkit_gateway
+
+# Run tests
+colcon test --packages-select ros2_medkit_gateway --event-handlers console_direct+
+
+# View test results
+colcon test-result --verbose
+```
+
+## License
+
+Apache-2.0
