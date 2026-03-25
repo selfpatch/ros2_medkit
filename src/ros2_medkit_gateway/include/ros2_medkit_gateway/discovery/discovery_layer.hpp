@@ -69,6 +69,11 @@ class DiscoveryLayer {
     return false;
   }
 
+  /// Number of entities filtered by gap-fill in last discover(). Default 0.
+  virtual size_t filtered_count() const {
+    return 0;
+  }
+
   /// Provide the current discovery context (entities from previous layers).
   /// Called by MergePipeline before discover(). Default no-op.
   virtual void set_discovery_context(const IntrospectionInput & /*context*/) {

@@ -566,7 +566,7 @@ TEST(RuntimeLayerTest, FilteredCountTracked) {
   // RuntimeLayer with no strategy returns 0 filtered
   RuntimeLayer layer(nullptr);
   auto output = layer.discover();
-  EXPECT_EQ(layer.last_filtered_count(), 0u);
+  EXPECT_EQ(layer.filtered_count(), 0u);
 }
 
 // --- Post-merge linking tests ---

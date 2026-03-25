@@ -46,7 +46,7 @@ class RuntimeLayer : public DiscoveryLayer {
   void set_gap_fill_config(GapFillConfig config);
 
   /// Number of entities filtered by gap-fill config in last discover()
-  size_t last_filtered_count() const {
+  size_t filtered_count() const override {
     return last_filtered_count_;
   }
 
