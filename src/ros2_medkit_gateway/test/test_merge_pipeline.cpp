@@ -1365,3 +1365,170 @@ TEST_F(MergePipelineTest, AppExternalField_ManifestAuthoritativeWinsOverRuntime)
   // Manifest AUTHORITATIVE METADATA wins: external must be false
   EXPECT_FALSE(result.apps[0].external);
 }
+
+// --- Area field group merge tests ---
+
+TEST_F(MergePipelineTest, AreaIdentityMerge_ManifestAuthoritativeWinsName) {
+  // Manifest layer (IDENTITY=AUTH) has area with name="Sensors Area"
+  // Runtime layer (IDENTITY=ENRICHMENT) has same area ID with name="sensors"
+  // After merge, name should be "Sensors Area" (manifest wins)
+  Area manifest_area = make_area("sensors", "Sensors Area");
+  manifest_area.source = "manifest";
+
+  Area runtime_area = make_area("sensors", "sensors");
+  runtime_area.source = "heuristic";
+
+  LayerOutput manifest_out, runtime_out;
+  manifest_out.areas.push_back(manifest_area);
+  runtime_out.areas.push_back(runtime_area);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.areas.size(), 1u);
+  EXPECT_EQ(result.areas[0].name, "Sensors Area");
+}
+
+TEST_F(MergePipelineTest, AreaHierarchyMerge_ManifestParentAreaPreserved) {
+  // Manifest layer (HIERARCHY=AUTH) has area with parent_area_id="vehicle"
+  // Runtime layer (HIERARCHY=ENRICHMENT) has same area ID with empty parent_area_id
+  // After merge, parent_area_id should be "vehicle" (manifest wins)
+  Area manifest_area = make_area("sensors", "Sensors");
+  manifest_area.parent_area_id = "vehicle";
+  manifest_area.source = "manifest";
+
+  Area runtime_area = make_area("sensors", "Sensors");
+  // runtime has no parent_area_id set (empty string is default)
+  runtime_area.source = "heuristic";
+
+  LayerOutput manifest_out, runtime_out;
+  manifest_out.areas.push_back(manifest_area);
+  runtime_out.areas.push_back(runtime_area);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::HIERARCHY, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::HIERARCHY, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.areas.size(), 1u);
+  EXPECT_EQ(result.areas[0].parent_area_id, "vehicle");
+}
+
+// --- merge_bool ENRICHMENT vs ENRICHMENT ---
+
+TEST_F(MergePipelineTest, MergeBool_EnrichmentVsEnrichment_OrSemantics) {
+  // Two layers both with STATUS=ENRICHMENT, providing is_online with conflicting values
+  // ENRICHMENT vs ENRICHMENT resolves to BOTH -> merge_bool uses OR semantics
+  // false OR true = true
+  App app1 = make_app("controller", "nav_comp");
+  app1.is_online = false;
+
+  App app2 = make_app("controller", "nav_comp");
+  app2.is_online = true;
+
+  LayerOutput out1, out2;
+  out1.apps.push_back(app1);
+  out2.apps.push_back(app2);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "layer1", out1, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::ENRICHMENT}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "layer2", out2, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.apps.size(), 1u);
+  EXPECT_EQ(result.apps[0].is_online, true);
+}
+
+// --- PluginLayer entity ID validation ---
+
+TEST(PluginLayerTest, ValidationDropsEmptyId) {
+  auto provider = std::make_shared<MockIntrospectionProvider>();
+
+  App empty_id_app;
+  empty_id_app.id = "";
+  empty_id_app.name = "ghost";
+
+  App valid_app;
+  valid_app.id = "valid_app";
+  valid_app.name = "Valid App";
+
+  provider->result_.new_entities.apps = {empty_id_app, valid_app};
+
+  PluginLayer layer("test_plugin", provider.get());
+  auto output = layer.discover();
+  ASSERT_EQ(output.apps.size(), 1u);
+  EXPECT_EQ(output.apps[0].id, "valid_app");
+}
+
+TEST(PluginLayerTest, ValidationDropsOversizedId) {
+  auto provider = std::make_shared<MockIntrospectionProvider>();
+
+  App oversized_app;
+  oversized_app.id = std::string(257, 'a');  // >256 chars
+  oversized_app.name = "Too Long";
+
+  App valid_app;
+  valid_app.id = "ok_app";
+  valid_app.name = "OK";
+
+  provider->result_.new_entities.apps = {oversized_app, valid_app};
+
+  PluginLayer layer("test_plugin", provider.get());
+  auto output = layer.discover();
+  ASSERT_EQ(output.apps.size(), 1u);
+  EXPECT_EQ(output.apps[0].id, "ok_app");
+}
+
+TEST(PluginLayerTest, ValidationDropsSpecialCharacterId) {
+  auto provider = std::make_shared<MockIntrospectionProvider>();
+
+  App slash_app;
+  slash_app.id = "app/with/slashes";
+  slash_app.name = "Slashy";
+
+  App valid_app;
+  valid_app.id = "clean-app_1";
+  valid_app.name = "Clean";
+
+  provider->result_.new_entities.apps = {slash_app, valid_app};
+
+  PluginLayer layer("test_plugin", provider.get());
+  auto output = layer.discover();
+  ASSERT_EQ(output.apps.size(), 1u);
+  EXPECT_EQ(output.apps[0].id, "clean-app_1");
+}
+
+TEST(PluginLayerTest, ValidationKeepsAllValidEntities) {
+  auto provider = std::make_shared<MockIntrospectionProvider>();
+
+  App app1;
+  app1.id = "alpha";
+  App app2;
+  app2.id = "beta-2";
+  App app3;
+  app3.id = "gamma_3";
+  App bad1;
+  bad1.id = "";
+  App bad2;
+  bad2.id = "has space";
+  App bad3;
+  bad3.id = std::string(257, 'x');
+
+  provider->result_.new_entities.apps = {app1, bad1, app2, bad2, app3, bad3};
+
+  PluginLayer layer("test_plugin", provider.get());
+  auto output = layer.discover();
+  ASSERT_EQ(output.apps.size(), 3u);
+  EXPECT_EQ(output.apps[0].id, "alpha");
+  EXPECT_EQ(output.apps[1].id, "beta-2");
+  EXPECT_EQ(output.apps[2].id, "gamma_3");
+}

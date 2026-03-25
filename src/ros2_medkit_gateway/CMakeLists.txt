@@ -488,6 +488,7 @@ if(BUILD_TESTING)
   # Add health handler tests
   ament_add_gtest(test_health_handlers test/test_health_handlers.cpp)
   target_link_libraries(test_health_handlers gateway_lib)
+  set_tests_properties(test_health_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=79")
 
   # Add operation handler tests
   ament_add_gtest(test_operation_handlers test/test_operation_handlers.cpp)
