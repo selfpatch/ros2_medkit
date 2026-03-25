@@ -483,7 +483,11 @@ MergeResult MergePipeline::execute() {
     linking_result_ = linker_->get_last_result();
     result.linking_result = linking_result_;
 
-    // Suppress runtime-origin components/areas that duplicate manifest entities (#307)
+    // Suppress runtime-origin entities that duplicate manifest entities (#307)
+    // In hybrid mode with a manifest, the manifest is the source of truth for entity
+    // structure. Heuristic entities from runtime discovery should be suppressed when
+    // their namespace is covered by manifest entities or linked apps.
+
     // Build set of namespaces covered by linked manifest apps
     std::set<std::string> linked_namespaces;
     for (const auto & [fqn, app_id] : linking_result_.node_to_app) {
@@ -495,8 +499,10 @@ MergeResult MergePipeline::execute() {
       auto last_slash = clean_fqn.rfind('/');
       if (last_slash != std::string::npos && last_slash > 0) {
         linked_namespaces.insert(clean_fqn.substr(0, last_slash));
+      } else if (last_slash == 0) {
+        // Root namespace node (e.g., /fault_manager) - include "/" as covered
+        linked_namespaces.insert("/");
       }
-      // Skip root namespace "/" - too broad, would suppress all root-namespace entities
     }
 
     // Also track manifest component/area namespaces directly
@@ -512,6 +518,31 @@ MergeResult MergePipeline::execute() {
         manifest_area_ns.insert(area.namespace_path);
       }
     }
+
+    // Remove heuristic apps that were merged into manifest apps (same ID after merge).
+    // These are runtime duplicates of linked manifest entities. Gap-fill apps (new
+    // heuristic apps in any namespace) survive - they fill manifest gaps intentionally.
+    std::set<std::string> manifest_app_ids;
+    for (const auto & app : result.apps) {
+      if (app.source == "manifest") {
+        manifest_app_ids.insert(app.id);
+      }
+    }
+    // Also suppress heuristic apps whose original runtime ID was linked to a manifest app
+    // (linker renames runtime app ID to manifest ID, so we check node_to_app values)
+    std::set<std::string> linked_app_ids(manifest_app_ids);
+    for (const auto & [fqn, app_id] : linking_result_.node_to_app) {
+      linked_app_ids.insert(app_id);
+    }
+    auto app_it = std::remove_if(result.apps.begin(), result.apps.end(), [&](const App & app) {
+      if (app.source != "heuristic" && app.source != "topic" && app.source != "synthetic") {
+        return false;
+      }
+      // Keep gap-fill apps (not linked to any manifest entity)
+      // Suppress only if this app's ID matches a linked manifest app
+      return linked_app_ids.count(app.id) > 0;
+    });
+    result.apps.erase(app_it, result.apps.end());
 
     // Remove runtime components whose namespace is covered
     auto comp_it = std::remove_if(result.components.begin(), result.components.end(), [&](const Component & comp) {
