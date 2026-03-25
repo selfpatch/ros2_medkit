@@ -1165,3 +1165,31 @@ TEST_F(MergePipelineTest, PolicyOverrideChangedMergeBehavior) {
   EXPECT_EQ(result.components[0].source, "manifest");
   EXPECT_GE(result.report.conflict_count, 1u);
 }
+
+// --- external field belongs in METADATA, not STATUS (#260c) ---
+
+TEST_F(MergePipelineTest, AppExternalField_ManifestAuthoritativeWinsOverRuntime) {
+  // Manifest layer: METADATA=AUTHORITATIVE, sets external=false (internal node)
+  App manifest_app = make_app("lidar_proc", "sensor_comp");
+  manifest_app.external = false;
+
+  // Runtime layer: METADATA=ENRICHMENT, claims external=true (heuristic)
+  App runtime_app = make_app("lidar_proc", "sensor_comp");
+  runtime_app.external = true;
+
+  LayerOutput manifest_out, runtime_out;
+  manifest_out.apps.push_back(manifest_app);
+  runtime_out.apps.push_back(runtime_app);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.apps.size(), 1u);
+  // Manifest AUTHORITATIVE METADATA wins: external must be false
+  EXPECT_FALSE(result.apps[0].external);
+}
