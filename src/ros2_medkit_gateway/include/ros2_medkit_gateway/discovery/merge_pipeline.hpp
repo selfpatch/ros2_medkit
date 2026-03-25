@@ -101,7 +101,6 @@ class MergePipeline {
   std::unique_ptr<RuntimeLinker> linker_;
   ManifestConfig manifest_config_;
   LinkingResult linking_result_;
-  bool executed_{false};
 };
 
 }  // namespace discovery
