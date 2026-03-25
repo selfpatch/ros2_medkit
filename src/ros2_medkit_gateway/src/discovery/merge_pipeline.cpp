@@ -14,7 +14,6 @@
 
 #include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
 
-#include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
 #include <array>
@@ -414,13 +413,11 @@ MergeResult MergePipeline::execute() {
       continue;
     }
 
-    // Collect gap-fill filtering stats from RuntimeLayer
-    auto * runtime_layer = dynamic_cast<RuntimeLayer *>(layers_[i].get());
-    if (runtime_layer) {
-      report.filtered_by_gap_fill += runtime_layer->last_filtered_count();
-    }
+    // Collect gap-fill filtering stats (virtual dispatch, no dynamic_cast)
+    report.filtered_by_gap_fill += layers_[i]->filtered_count();
+
     // Save runtime apps for the linker BEFORE they are moved into app_layers below.
-    if (runtime_layer || layers_[i]->provides_runtime_apps()) {
+    if (layers_[i]->provides_runtime_apps()) {
       runtime_apps = output.apps;
     }
 
