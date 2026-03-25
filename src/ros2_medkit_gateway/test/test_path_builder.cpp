@@ -393,7 +393,7 @@ TEST_F(PathBuilderTest, CyclicSubscriptionsPostHasRequestBody) {
   auto result = path_builder_.build_cyclic_subscriptions_collection("apps/sensor");
   ASSERT_TRUE(result["post"].contains("requestBody"));
   auto req_schema = result["post"]["requestBody"]["content"]["application/json"]["schema"];
-  EXPECT_TRUE(req_schema["properties"].contains("topic"));
+  EXPECT_TRUE(req_schema["properties"].contains("observed_resource"));
 }
 
 TEST_F(PathBuilderTest, CyclicSubscriptionsPostReturns201) {

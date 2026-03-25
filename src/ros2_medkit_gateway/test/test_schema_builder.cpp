@@ -14,6 +14,11 @@
 
 #include <gtest/gtest.h>
 
+#include <regex>
+#include <set>
+#include <string>
+#include <vector>
+
 #include "../src/openapi/schema_builder.hpp"
 
 using ros2_medkit_gateway::openapi::SchemaBuilder;
@@ -147,20 +152,55 @@ TEST(SchemaBuilderStaticTest, ItemsWrapper) {
   EXPECT_NE(std::find(required.begin(), required.end(), "items"), required.end());
 }
 
-TEST(SchemaBuilderStaticTest, ConfigurationParamSchema) {
-  auto schema = SchemaBuilder::configuration_param_schema();
+TEST(SchemaBuilderStaticTest, ConfigurationMetaDataSchema) {
+  auto schema = SchemaBuilder::configuration_metadata_schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("id"));
   EXPECT_TRUE(schema["properties"].contains("name"));
-  EXPECT_TRUE(schema["properties"].contains("value"));
   EXPECT_TRUE(schema["properties"].contains("type"));
+  EXPECT_FALSE(schema["properties"].contains("value"));
+  EXPECT_EQ(schema["properties"]["id"]["type"], "string");
   EXPECT_EQ(schema["properties"]["name"]["type"], "string");
+  EXPECT_EQ(schema["properties"]["type"]["type"], "string");
 
-  // Required
+  // Required: id, name, type (no value)
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "id"), required.end());
   EXPECT_NE(std::find(required.begin(), required.end(), "name"), required.end());
-  EXPECT_NE(std::find(required.begin(), required.end(), "value"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "type"), required.end());
+  EXPECT_EQ(std::find(required.begin(), required.end(), "value"), required.end());
+}
+
+TEST(SchemaBuilderStaticTest, ConfigurationReadValueSchema) {
+  auto schema = SchemaBuilder::configuration_read_value_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("id"));
+  EXPECT_TRUE(schema["properties"].contains("data"));
+  EXPECT_FALSE(schema["properties"].contains("name"));
+  EXPECT_FALSE(schema["properties"].contains("value"));
+  EXPECT_EQ(schema["properties"]["id"]["type"], "string");
+
+  // Required: id, data
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "id"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "data"), required.end());
+}
+
+TEST(SchemaBuilderStaticTest, OperationDetailSchema) {
+  auto schema = SchemaBuilder::operation_detail_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("item"));
+  // item references OperationItem via $ref
+  EXPECT_TRUE(schema["properties"]["item"].contains("$ref"));
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "item"), required.end());
 }
 
 TEST(SchemaBuilderStaticTest, LogEntrySchema) {
@@ -288,4 +328,93 @@ TEST(SchemaBuilderRuntimeTest, FromRosSrvResponseUnknown) {
   EXPECT_EQ(schema["type"], "object");
   EXPECT_TRUE(schema.contains("x-medkit-schema-unavailable"));
   EXPECT_TRUE(schema["x-medkit-schema-unavailable"].get<bool>());
+}
+
+// =============================================================================
+// Schema registry consistency tests
+// Validates that all $ref references resolve and schemas are internally consistent.
+// This catches mismatches between schema definitions and route registrations.
+// =============================================================================
+
+namespace {
+
+// Recursively collect all $ref targets from a JSON schema
+void collect_refs(const nlohmann::json & schema, std::set<std::string> & refs) {
+  if (schema.is_object()) {
+    if (schema.contains("$ref")) {
+      auto ref_str = schema["$ref"].get<std::string>();
+      // Extract schema name from "#/components/schemas/SchemaName"
+      std::regex ref_regex(R"(^#/components/schemas/(.+)$)");
+      std::smatch match;
+      if (std::regex_match(ref_str, match, ref_regex)) {
+        refs.insert(match[1].str());
+      }
+    }
+    for (auto & [key, val] : schema.items()) {
+      collect_refs(val, refs);
+    }
+  } else if (schema.is_array()) {
+    for (const auto & item : schema) {
+      collect_refs(item, refs);
+    }
+  }
+}
+
+}  // namespace
+
+TEST(SchemaConsistencyTest, AllRefsResolveToRegisteredSchemas) {
+  const auto & schemas = SchemaBuilder::component_schemas();
+
+  // Collect all $ref targets across all schemas
+  std::set<std::string> all_refs;
+  for (const auto & [name, schema] : schemas) {
+    collect_refs(schema, all_refs);
+  }
+
+  // Verify every $ref target exists in component_schemas
+  for (const auto & ref_name : all_refs) {
+    EXPECT_TRUE(schemas.count(ref_name) > 0)
+        << "Schema $ref '#/components/schemas/" << ref_name << "' does not resolve to any registered schema";
+  }
+}
+
+TEST(SchemaConsistencyTest, ListSchemasReferenceExistingItemSchemas) {
+  const auto & schemas = SchemaBuilder::component_schemas();
+
+  // Every schema named *List should reference an existing item schema via $ref
+  for (const auto & [name, schema] : schemas) {
+    if (name.size() > 4 && name.substr(name.size() - 4) == "List") {
+      SCOPED_TRACE("Checking list schema: " + name);
+      ASSERT_TRUE(schema.contains("properties")) << name << " should have properties";
+      ASSERT_TRUE(schema["properties"].contains("items")) << name << " should have 'items' property";
+
+      auto items_prop = schema["properties"]["items"];
+      ASSERT_TRUE(items_prop.contains("items")) << name << " items property should define array items";
+
+      auto item_schema = items_prop["items"];
+      if (item_schema.contains("$ref")) {
+        auto ref_str = item_schema["$ref"].get<std::string>();
+        std::regex ref_regex(R"(^#/components/schemas/(.+)$)");
+        std::smatch match;
+        ASSERT_TRUE(std::regex_match(ref_str, match, ref_regex)) << name << " has malformed $ref: " << ref_str;
+        EXPECT_TRUE(schemas.count(match[1].str()) > 0) << name << " references non-existent schema: " << match[1].str();
+      }
+    }
+  }
+}
+
+TEST(SchemaConsistencyTest, RequiredFieldsExistInProperties) {
+  const auto & schemas = SchemaBuilder::component_schemas();
+
+  for (const auto & [name, schema] : schemas) {
+    if (!schema.contains("required") || !schema.contains("properties")) {
+      continue;
+    }
+    SCOPED_TRACE("Checking schema: " + name);
+    auto required = schema["required"].get<std::vector<std::string>>();
+    for (const auto & field : required) {
+      EXPECT_TRUE(schema["properties"].contains(field))
+          << "Schema '" << name << "' has required field '" << field << "' not present in properties";
+    }
+  }
 }
