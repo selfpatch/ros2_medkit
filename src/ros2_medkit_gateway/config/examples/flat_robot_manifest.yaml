@@ -1,0 +1,118 @@
+# SOVD System Manifest: Flat Robot (No Areas)
+# ============================================
+# This manifest demonstrates a flat entity tree without areas.
+# Suitable for simple robots where the entire system is a single component
+# with subcomponents representing hardware modules.
+#
+# Entity tree (no areas - components are top-level):
+#   turtlebot3 (component)
+#   +-- raspberry-pi (subcomponent)
+#   |   +-- nav2-controller (app)
+#   |   +-- robot-state-publisher (app)
+#   +-- opencr-board (subcomponent)
+#   |   +-- turtlebot3-node (app)
+#   +-- lds-sensor (subcomponent)
+#       +-- lidar-driver (app)
+#
+# Functions:
+#   autonomous-navigation -> nav2-controller, lidar-driver
+#   teleoperation -> turtlebot3-node, robot-state-publisher
+
+manifest_version: "1.0"
+
+metadata:
+  name: "flat-turtlebot"
+  version: "1.0.0"
+  description: "TurtleBot3 without area hierarchy - single component with subcomponents"
+
+config:
+  unmanifested_nodes: warn
+  inherit_runtime_resources: true
+
+# No areas section - flat entity tree uses components/subcomponents only
+
+components:
+  - id: turtlebot3
+    name: "TurtleBot3 Burger"
+    type: "mobile-robot"
+    description: "TurtleBot3 Burger mobile platform"
+    tags:
+      - robot
+      - mobile
+
+  - id: raspberry-pi
+    name: "Raspberry Pi 4"
+    type: "controller"
+    parent_component_id: turtlebot3
+    description: "Main compute board running ROS 2"
+
+  - id: opencr-board
+    name: "OpenCR Board"
+    type: "controller"
+    parent_component_id: turtlebot3
+    description: "Motor controller and sensor interface board"
+
+  - id: lds-sensor
+    name: "LDS-02 LiDAR"
+    type: "sensor"
+    parent_component_id: turtlebot3
+    description: "360-degree laser distance sensor"
+
+apps:
+  - id: lidar-driver
+    name: "LiDAR Driver"
+    category: "driver"
+    is_located_on: lds-sensor
+    description: "Publishes laser scans from LDS sensor"
+    ros_binding:
+      node_name: ld08_driver
+      namespace: /
+
+  - id: turtlebot3-node
+    name: "TurtleBot3 Node"
+    category: "control"
+    is_located_on: opencr-board
+    description: "Differential drive controller and odometry publisher"
+    ros_binding:
+      node_name: turtlebot3_node
+      namespace: /
+
+  - id: nav2-controller
+    name: "Nav2 Controller"
+    category: "navigation"
+    is_located_on: raspberry-pi
+    description: "Local trajectory tracking controller"
+    depends_on:
+      - lidar-driver
+    ros_binding:
+      node_name: controller_server
+      namespace: /
+
+  - id: robot-state-publisher
+    name: "Robot State Publisher"
+    category: "control"
+    is_located_on: raspberry-pi
+    description: "Publishes robot URDF transforms"
+    ros_binding:
+      node_name: robot_state_publisher
+      namespace: /
+
+# =============================================================================
+# FUNCTIONS - High-level capabilities
+# =============================================================================
+functions:
+  - id: autonomous-navigation
+    name: "Autonomous Navigation"
+    category: "mobility"
+    description: "Autonomous navigation using Nav2 stack"
+    hosted_by:
+      - nav2-controller
+      - lidar-driver
+
+  - id: teleoperation
+    name: "Teleoperation"
+    category: "control"
+    description: "Manual robot control via velocity commands"
+    hosted_by:
+      - turtlebot3-node
+      - robot-state-publisher
