@@ -814,17 +814,15 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     // mapping (populated from linking result). Captures 'this' - the lambda is
     // called from ROS subscription callbacks on the same node's executor.
     auto node_resolver = [this](const std::string & ros_fqn) -> std::string {
-      auto mapping = thread_safe_cache_.get_node_to_app();
-      auto it = mapping.find(ros_fqn);
-      if (it != mapping.end()) {
-        return it->second;
+      auto result = thread_safe_cache_.resolve_node_to_app(ros_fqn);
+      if (!result.empty()) {
+        return result;
       }
       // Try with normalized FQN (strip leading /)
       if (!ros_fqn.empty() && ros_fqn[0] == '/') {
-        auto normalized = ros_fqn.substr(1);
-        auto it2 = mapping.find(normalized);
-        if (it2 != mapping.end()) {
-          return it2->second;
+        result = thread_safe_cache_.resolve_node_to_app(ros_fqn.substr(1));
+        if (!result.empty()) {
+          return result;
         }
       }
       return "";

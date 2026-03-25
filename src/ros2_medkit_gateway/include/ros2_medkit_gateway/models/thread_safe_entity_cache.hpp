@@ -233,6 +233,9 @@ class ThreadSafeEntityCache {
    */
   std::unordered_map<std::string, std::string> get_node_to_app() const;
 
+  /// Look up a single node FQN to app entity ID mapping (shared lock, no map copy)
+  std::string resolve_node_to_app(const std::string & node_fqn) const;
+
   // --- Resolve any entity by ID ---
   std::optional<EntityRef> find_entity(const std::string & id) const;
   SovdEntityType get_entity_type(const std::string & id) const;

@@ -89,6 +89,12 @@ std::unordered_map<std::string, std::string> ThreadSafeEntityCache::get_node_to_
   return node_to_app_;
 }
 
+std::string ThreadSafeEntityCache::resolve_node_to_app(const std::string & node_fqn) const {
+  std::shared_lock lock(mutex_);
+  auto it = node_to_app_.find(node_fqn);
+  return (it != node_to_app_.end()) ? it->second : "";
+}
+
 // ============================================================================
 // Reader methods - List all
 // ============================================================================

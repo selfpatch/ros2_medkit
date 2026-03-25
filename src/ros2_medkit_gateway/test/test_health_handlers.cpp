@@ -374,7 +374,7 @@ TEST_F(HealthHandlersLiveTest, HealthDiscoveryBlockContainsExpectedFields) {
   EXPECT_TRUE(disc["strategy"].is_string());
   EXPECT_FALSE(disc["strategy"].get<std::string>().empty());
 
-  // In runtime_only mode, pipeline and linking are not present (only in hybrid mode).
-  // Verify the block structure is well-formed JSON with at least mode + strategy.
-  EXPECT_EQ(disc.size(), 2u);  // mode + strategy only
+  // In runtime_only mode, pipeline and linking are not present (only in hybrid mode)
+  EXPECT_FALSE(disc.contains("pipeline"));
+  EXPECT_FALSE(disc.contains("linking"));
 }

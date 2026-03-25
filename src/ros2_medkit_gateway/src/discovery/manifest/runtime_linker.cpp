@@ -190,8 +190,9 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const 
   }
 
   auto it = std::remove_if(result.linked_apps.begin(), result.linked_apps.end(), [&](const App & app) {
-    if (app.source == "manifest") {
-      return false;  // Always keep manifest apps
+    // Only suppress known runtime sources - preserve manifest and plugin entities
+    if (app.source != "heuristic" && app.source != "topic" && app.source != "synthetic") {
+      return false;
     }
     if (!app.bound_fqn.has_value()) {
       return false;  // Keep apps without bound_fqn

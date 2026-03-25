@@ -14,12 +14,18 @@
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+#include <rcl_interfaces/msg/log.hpp>
 #include <rclcpp/rclcpp.hpp>
+
+#include <chrono>
+#include <mutex>
+#include <thread>
 
 #include "ros2_medkit_gateway/log_manager.hpp"
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/providers/log_provider.hpp"
+#include "ros2_medkit_gateway/resource_change_notifier.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::LogConfig;
@@ -724,4 +730,182 @@ TEST_F(LogManagerIngestionTest, PluginGetConfigThrowReturnsError) {
   auto result = mgr_->get_config("entity1");
   ASSERT_FALSE(result.has_value());
   EXPECT_NE(result.error().find("plugin get_config failed"), std::string::npos);
+}
+
+// ============================================================
+// Resolver notification tests — verify on_rosout() resolves
+// node names to entity IDs and passes them to the notifier
+// ============================================================
+
+class LogManagerResolverTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    rclcpp::init(0, nullptr);
+    node_ = std::make_shared<rclcpp::Node>("test_log_resolver");
+    notifier_ = std::make_unique<ros2_medkit_gateway::ResourceChangeNotifier>();
+    mgr_ = std::make_unique<LogManager>(node_.get(), nullptr, 10);
+    mgr_->set_notifier(notifier_.get());
+
+    // Subscribe to notifier to capture entity IDs
+    notifier_->subscribe(ros2_medkit_gateway::NotifierFilter{"logs", "", ""},
+                         [this](const ros2_medkit_gateway::ResourceChange & change) {
+                           std::lock_guard<std::mutex> lock(captured_mutex_);
+                           captured_entity_ids_.push_back(change.entity_id);
+                         });
+
+    // Create /rosout publisher for sending test log messages
+    rosout_pub_ = node_->create_publisher<rcl_interfaces::msg::Log>("/rosout", 10);
+  }
+
+  void TearDown() override {
+    notifier_->shutdown();
+    mgr_.reset();
+    notifier_.reset();
+    rosout_pub_.reset();
+    node_.reset();
+    rclcpp::shutdown();
+  }
+
+  /// Drain any pending /rosout messages (e.g. from LogManager constructor logs)
+  void drain_initial_messages() {
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(200)) {
+      rclcpp::spin_some(node_);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    // Allow notifier worker to process
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // Clear whatever was captured during startup
+    std::lock_guard<std::mutex> lock(captured_mutex_);
+    captured_entity_ids_.clear();
+  }
+
+  void publish_and_spin(const std::string & logger_name) {
+    rcl_interfaces::msg::Log msg;
+    msg.level = rcl_interfaces::msg::Log::INFO;
+    msg.name = logger_name;
+    msg.msg = "test message";
+    rosout_pub_->publish(msg);
+    // Spin to process the subscription callback
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
+      rclcpp::spin_some(node_);
+      {
+        std::lock_guard<std::mutex> lock(captured_mutex_);
+        if (!captured_entity_ids_.empty()) {
+          break;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    // Allow notifier worker thread to process
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  std::vector<std::string> get_captured() {
+    std::lock_guard<std::mutex> lock(captured_mutex_);
+    return captured_entity_ids_;
+  }
+
+  std::shared_ptr<rclcpp::Node> node_;
+  std::unique_ptr<ros2_medkit_gateway::ResourceChangeNotifier> notifier_;
+  std::unique_ptr<LogManager> mgr_;
+  rclcpp::Publisher<rcl_interfaces::msg::Log>::SharedPtr rosout_pub_;
+
+  std::mutex captured_mutex_;
+  std::vector<std::string> captured_entity_ids_;
+};
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerResolverTest, ResolverMatchesWithSlashPrefixReturnsEntityId) {
+  // Resolver returns "temp_sensor_app" when called with "/powertrain/temp_sensor"
+  mgr_->set_node_to_entity_resolver([](const std::string & fqn) -> std::string {
+    if (fqn == "/powertrain/temp_sensor") {
+      return "temp_sensor_app";
+    }
+    return "";
+  });
+
+  // Drain startup log messages that arrive on /rosout before our test message
+  drain_initial_messages();
+
+  // /rosout msg.name has no leading slash per rcl convention
+  publish_and_spin("powertrain/temp_sensor");
+
+  auto captured = get_captured();
+  ASSERT_FALSE(captured.empty()) << "Notifier should have received at least one event";
+  EXPECT_EQ(captured[0], "temp_sensor_app");
+}
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerResolverTest, ResolverMatchesBareNameReturnsEntityId) {
+  // Resolver returns "my_app" when called with bare name (no leading slash)
+  mgr_->set_node_to_entity_resolver([](const std::string & fqn) -> std::string {
+    if (fqn == "simple_node") {
+      return "my_app";
+    }
+    return "";
+  });
+
+  drain_initial_messages();
+
+  publish_and_spin("simple_node");
+
+  auto captured = get_captured();
+  ASSERT_FALSE(captured.empty()) << "Notifier should have received at least one event";
+  EXPECT_EQ(captured[0], "my_app");
+}
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerResolverTest, ResolverReturnsEmptyFallsBackToLastSegment) {
+  // Resolver always returns empty -> on_rosout falls back to last path segment
+  mgr_->set_node_to_entity_resolver([](const std::string & /*fqn*/) -> std::string {
+    return "";
+  });
+
+  drain_initial_messages();
+
+  publish_and_spin("powertrain/engine/temp_sensor");
+
+  auto captured = get_captured();
+  ASSERT_FALSE(captured.empty()) << "Notifier should have received at least one event";
+  // Fallback: last segment of "powertrain/engine/temp_sensor" is "temp_sensor"
+  EXPECT_EQ(captured[0], "temp_sensor");
+}
+
+// ============================================================
+// Buffer cap test
+// ============================================================
+
+// @verifies REQ_INTEROP_061
+TEST_F(LogManagerBufferTest, BufferCapDropsNewNodesWhenFull) {
+  // LogManager was created with max_buffer_size_=3 in the fixture.
+  // Buffer cap = max_buffer_size_ * 10 = 30 distinct nodes.
+  // Create a fresh manager with buffer size 5 so cap = 50.
+  mgr_.reset();
+  mgr_ = std::make_unique<LogManager>(node_.get(), nullptr, /*max_buffer_size=*/5);
+
+  // Fill to the cap: 50 distinct nodes
+  for (int i = 0; i < 50; ++i) {
+    mgr_->inject_entry_for_testing(make_entry(i, "node_" + std::to_string(i)));
+  }
+
+  // Verify existing nodes work
+  auto result_first = mgr_->get_logs({"/node_0"}, false, "", "", "");
+  ASSERT_TRUE(result_first.has_value());
+  EXPECT_EQ(result_first->size(), 1u);
+
+  // Add one more node beyond the cap - should be silently dropped
+  mgr_->inject_entry_for_testing(make_entry(999, "new_node_beyond_cap"));
+
+  // The new node's logs should be silently dropped (buffer cap reached)
+  auto result_new = mgr_->get_logs({"/new_node_beyond_cap"}, false, "", "", "");
+  ASSERT_TRUE(result_new.has_value());
+  EXPECT_EQ(result_new->size(), 0u) << "Logs from new nodes beyond cap should be dropped";
+
+  // Existing buffers still work - can add more entries to existing nodes
+  mgr_->inject_entry_for_testing(make_entry(1000, "node_49"));
+  auto result_existing = mgr_->get_logs({"/node_49"}, false, "", "", "");
+  ASSERT_TRUE(result_existing.has_value());
+  EXPECT_EQ(result_existing->size(), 2u);
 }
