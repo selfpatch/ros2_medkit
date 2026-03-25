@@ -134,8 +134,8 @@ TEST_F(FaultManagerTest, GetSnapshotsServiceNotAvailable) {
 TEST_F(FaultManagerTest, GetSnapshotsSuccessWithValidJson) {
   // Create mock service
   auto service = node_->create_service<GetSnapshots>(
-      "/fault_manager/get_snapshots",
-      [](const std::shared_ptr<GetSnapshots::Request> request, std::shared_ptr<GetSnapshots::Response> response) {
+      "/fault_manager/get_snapshots", [](const std::shared_ptr<GetSnapshots::Request> & request,
+                                         const std::shared_ptr<GetSnapshots::Response> & response) {
         response->success = true;
         nlohmann::json snapshot_data;
         snapshot_data["fault_code"] = request->fault_code;
@@ -170,8 +170,8 @@ TEST_F(FaultManagerTest, GetSnapshotsUsesConfiguredFaultManagerNamespace) {
   executor_->add_node(node_);
 
   auto service = node_->create_service<GetSnapshots>(
-      "/robot1/fault_manager/get_snapshots",
-      [](const std::shared_ptr<GetSnapshots::Request> request, std::shared_ptr<GetSnapshots::Response> response) {
+      "/robot1/fault_manager/get_snapshots", [](const std::shared_ptr<GetSnapshots::Request> & request,
+                                                const std::shared_ptr<GetSnapshots::Response> & response) {
         response->success = true;
         nlohmann::json snapshot_data;
         snapshot_data["fault_code"] = request->fault_code;
@@ -198,15 +198,15 @@ TEST_F(FaultManagerTest, InvalidFaultManagerNamespaceFallsBackToRootServicePath)
   executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_node(node_);
 
-  auto service = node_->create_service<GetSnapshots>(
-      "/fault_manager/get_snapshots",
-      [](const std::shared_ptr<GetSnapshots::Request> request, std::shared_ptr<GetSnapshots::Response> response) {
-        response->success = true;
-        nlohmann::json snapshot_data;
-        snapshot_data["fault_code"] = request->fault_code;
-        snapshot_data["service_path"] = "/fault_manager/get_snapshots";
-        response->data = snapshot_data.dump();
-      });
+  auto service = node_->create_service<GetSnapshots>("/fault_manager/get_snapshots",
+                                                     [](const std::shared_ptr<GetSnapshots::Request> & request,
+                                                        const std::shared_ptr<GetSnapshots::Response> & response) {
+                                                       response->success = true;
+                                                       nlohmann::json snapshot_data;
+                                                       snapshot_data["fault_code"] = request->fault_code;
+                                                       snapshot_data["service_path"] = "/fault_manager/get_snapshots";
+                                                       response->data = snapshot_data.dump();
+                                                     });
 
   start_spinning();
   FaultManager fault_manager(node_.get());
@@ -222,8 +222,8 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithTopicFilter) {
   // Create mock service that verifies topic filter is passed
   std::string received_topic;
   auto service = node_->create_service<GetSnapshots>(
-      "/fault_manager/get_snapshots", [&received_topic](const std::shared_ptr<GetSnapshots::Request> request,
-                                                        std::shared_ptr<GetSnapshots::Response> response) {
+      "/fault_manager/get_snapshots", [&received_topic](const std::shared_ptr<GetSnapshots::Request> & request,
+                                                        const std::shared_ptr<GetSnapshots::Response> & response) {
         received_topic = request->topic;
         response->success = true;
         response->data = "{}";
@@ -239,12 +239,12 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithTopicFilter) {
 
 // @verifies REQ_INTEROP_088
 TEST_F(FaultManagerTest, GetSnapshotsErrorResponse) {
-  auto service = node_->create_service<GetSnapshots>(
-      "/fault_manager/get_snapshots",
-      [](const std::shared_ptr<GetSnapshots::Request> /*request*/, std::shared_ptr<GetSnapshots::Response> response) {
-        response->success = false;
-        response->error_message = "Fault not found";
-      });
+  auto service = node_->create_service<GetSnapshots>("/fault_manager/get_snapshots",
+                                                     [](const std::shared_ptr<GetSnapshots::Request> & /*request*/,
+                                                        const std::shared_ptr<GetSnapshots::Response> & response) {
+                                                       response->success = false;
+                                                       response->error_message = "Fault not found";
+                                                     });
 
   start_spinning();
   FaultManager fault_manager(node_.get());
@@ -257,12 +257,12 @@ TEST_F(FaultManagerTest, GetSnapshotsErrorResponse) {
 
 // @verifies REQ_INTEROP_088
 TEST_F(FaultManagerTest, GetSnapshotsInvalidJsonFallback) {
-  auto service = node_->create_service<GetSnapshots>(
-      "/fault_manager/get_snapshots",
-      [](const std::shared_ptr<GetSnapshots::Request> /*request*/, std::shared_ptr<GetSnapshots::Response> response) {
-        response->success = true;
-        response->data = "not valid json {{{";
-      });
+  auto service = node_->create_service<GetSnapshots>("/fault_manager/get_snapshots",
+                                                     [](const std::shared_ptr<GetSnapshots::Request> & /*request*/,
+                                                        const std::shared_ptr<GetSnapshots::Response> & response) {
+                                                       response->success = true;
+                                                       response->data = "not valid json {{{";
+                                                     });
 
   start_spinning();
   FaultManager fault_manager(node_.get());
@@ -277,12 +277,12 @@ TEST_F(FaultManagerTest, GetSnapshotsInvalidJsonFallback) {
 
 // @verifies REQ_INTEROP_088
 TEST_F(FaultManagerTest, GetSnapshotsEmptyResponse) {
-  auto service = node_->create_service<GetSnapshots>(
-      "/fault_manager/get_snapshots",
-      [](const std::shared_ptr<GetSnapshots::Request> /*request*/, std::shared_ptr<GetSnapshots::Response> response) {
-        response->success = true;
-        response->data = "{}";
-      });
+  auto service = node_->create_service<GetSnapshots>("/fault_manager/get_snapshots",
+                                                     [](const std::shared_ptr<GetSnapshots::Request> & /*request*/,
+                                                        const std::shared_ptr<GetSnapshots::Response> & response) {
+                                                       response->success = true;
+                                                       response->data = "{}";
+                                                     });
 
   start_spinning();
   FaultManager fault_manager(node_.get());
@@ -314,7 +314,7 @@ TEST_F(FaultManagerTest, GetRosbagServiceNotAvailable) {
 TEST_F(FaultManagerTest, GetRosbagSuccess) {
   auto service = node_->create_service<GetRosbag>(
       "/fault_manager/get_rosbag",
-      [](const std::shared_ptr<GetRosbag::Request> request, std::shared_ptr<GetRosbag::Response> response) {
+      [](const std::shared_ptr<GetRosbag::Request> & request, const std::shared_ptr<GetRosbag::Response> & response) {
         response->success = true;
         response->file_path = "/tmp/test_bag_" + request->fault_code;
         response->format = "sqlite3";
@@ -347,7 +347,7 @@ TEST_F(FaultManagerTest, GetRosbagUsesConfiguredFaultManagerNamespace) {
 
   auto service = node_->create_service<GetRosbag>(
       "/robot2/fault_manager/get_rosbag",
-      [](const std::shared_ptr<GetRosbag::Request> request, std::shared_ptr<GetRosbag::Response> response) {
+      [](const std::shared_ptr<GetRosbag::Request> & request, const std::shared_ptr<GetRosbag::Response> & response) {
         response->success = true;
         response->file_path = "/tmp/" + request->fault_code;
         response->format = "mcap";
@@ -557,12 +557,12 @@ TEST_F(FaultManagerTest, TriggerFaultSubscriberNoResolverUsesLastSegment) {
 
 // @verifies REQ_INTEROP_088
 TEST_F(FaultManagerTest, GetRosbagNotFound) {
-  auto service = node_->create_service<GetRosbag>(
-      "/fault_manager/get_rosbag",
-      [](const std::shared_ptr<GetRosbag::Request> /*request*/, std::shared_ptr<GetRosbag::Response> response) {
-        response->success = false;
-        response->error_message = "No rosbag file available for fault";
-      });
+  auto service = node_->create_service<GetRosbag>("/fault_manager/get_rosbag",
+                                                  [](const std::shared_ptr<GetRosbag::Request> & /*request*/,
+                                                     const std::shared_ptr<GetRosbag::Response> & response) {
+                                                    response->success = false;
+                                                    response->error_message = "No rosbag file available for fault";
+                                                  });
 
   start_spinning();
   FaultManager fault_manager(node_.get());

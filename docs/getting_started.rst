@@ -162,10 +162,10 @@ Step 3: Discover Areas and Components
 
 ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
 
-- **Areas** — Logical/physical domains (e.g., ``/powertrain``, ``/chassis``)
-- **Components** — Hardware or virtual units that group Apps
-- **Apps** — Individual ROS 2 nodes
-- **Functions** — Cross-cutting capabilities (requires manifest mode)
+- **Areas** - Logical/physical domains (e.g., ``/powertrain``, ``/chassis``)
+- **Components** - Hardware or virtual units that group Apps
+- **Apps** - Individual ROS 2 nodes
+- **Functions** - Cross-cutting capabilities (requires manifest mode)
 
 .. note::
 

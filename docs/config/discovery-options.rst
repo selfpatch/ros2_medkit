@@ -118,6 +118,11 @@ The ``min_topics_for_component`` parameter (default: 1) sets the minimum number
 of topics required before creating a component. This can filter out namespaces
 with only a few stray topics.
 
+.. note::
+
+   ``create_area_only`` has no effect when ``create_synthetic_areas: false`` -
+   use ``ignore`` instead.
+
 Merge Pipeline (Hybrid Mode)
 -----------------------------
 
@@ -166,7 +171,7 @@ Field Groups
    * - ``status``
      - is_online, bound_fqn
    * - ``metadata``
-     - source, x-medkit extensions, custom metadata fields
+     - source, ros_binding, external, x-medkit extensions, custom metadata fields
 
 Merge Policies
 ^^^^^^^^^^^^^^
