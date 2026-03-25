@@ -140,13 +140,21 @@ nlohmann::json SchemaBuilder::items_wrapper(const nlohmann::json & item_schema) 
           {"required", {"items"}}};
 }
 
-nlohmann::json SchemaBuilder::configuration_param_schema() {
+nlohmann::json SchemaBuilder::configuration_metadata_schema() {
   return {{"type", "object"},
           {"properties",
-           {{"name", {{"type", "string"}}},
-            {"value", {{"description", "Configuration value (type varies by parameter)"}}},
-            {"type", {{"type", "string"}}}}},
-          {"required", {"name", "value"}}};
+           {{"id", {{"type", "string"}, {"description", "Configuration parameter ID"}}},
+            {"name", {{"type", "string"}, {"description", "Parameter name"}}},
+            {"type", {{"type", "string"}, {"description", "Parameter type (e.g. 'parameter')"}}}}},
+          {"required", {"id", "name", "type"}}};
+}
+
+nlohmann::json SchemaBuilder::configuration_read_value_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"id", {{"type", "string"}, {"description", "Configuration parameter ID"}}},
+            {"data", {{"description", "Configuration value (type varies by parameter)"}}}}},
+          {"required", {"id", "data"}}};
 }
 
 nlohmann::json SchemaBuilder::log_entry_schema() {
@@ -169,10 +177,20 @@ nlohmann::json SchemaBuilder::log_entry_schema() {
 }
 
 nlohmann::json SchemaBuilder::health_schema() {
-  nlohmann::json discovery_schema = {
-      {"type", "object"},
-      {"properties", {{"mode", {{"type", "string"}}}, {"strategy", {{"type", "string"}}}}},
-      {"description", "Discovery subsystem status"}};
+  nlohmann::json linking_schema = {{"type", "object"},
+                                   {"properties",
+                                    {{"linked_count", {{"type", "integer"}}},
+                                     {"orphan_count", {{"type", "integer"}}},
+                                     {"binding_conflicts", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                                     {"warnings", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+
+  nlohmann::json discovery_schema = {{"type", "object"},
+                                     {"properties",
+                                      {{"mode", {{"type", "string"}}},
+                                       {"strategy", {{"type", "string"}}},
+                                       {"pipeline", {{"type", "object"}}},
+                                       {"linking", linking_schema}}},
+                                     {"description", "Discovery subsystem status"}};
 
   return {{"type", "object"},
           {"properties",
@@ -217,13 +235,24 @@ nlohmann::json SchemaBuilder::root_overview_schema() {
                                           {"scripts", {{"type", "boolean"}}},
                                           {"vendor_extensions", {{"type", "boolean"}}}}}};
 
+  nlohmann::json auth_schema = {{"type", "object"},
+                                {"properties",
+                                 {{"enabled", {{"type", "boolean"}}},
+                                  {"algorithm", {{"type", "string"}}},
+                                  {"require_auth_for", {{"type", "string"}}}}}};
+
+  nlohmann::json tls_schema = {
+      {"type", "object"}, {"properties", {{"enabled", {{"type", "boolean"}}}, {"min_version", {{"type", "string"}}}}}};
+
   return {{"type", "object"},
           {"properties",
            {{"name", {{"type", "string"}}},
             {"version", {{"type", "string"}}},
             {"api_base", {{"type", "string"}}},
             {"endpoints", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-            {"capabilities", capabilities_schema}}},
+            {"capabilities", capabilities_schema},
+            {"auth", auth_schema},
+            {"tls", tls_schema}}},
           {"required", {"name", "version", "api_base", "endpoints", "capabilities"}}};
 }
 
@@ -254,6 +283,10 @@ nlohmann::json SchemaBuilder::operation_item_schema() {
             {"asynchronous_execution", {{"type", "boolean"}}},
             {"x-medkit", {{"type", "object"}}}}},
           {"required", {"id", "name"}}};
+}
+
+nlohmann::json SchemaBuilder::operation_detail_schema() {
+  return {{"type", "object"}, {"properties", {{"item", ref("OperationItem")}}}, {"required", {"item"}}};
 }
 
 nlohmann::json SchemaBuilder::operation_execution_schema() {
@@ -333,11 +366,20 @@ nlohmann::json SchemaBuilder::script_execution_schema() {
           {"required", {"id", "status"}}};
 }
 
-nlohmann::json SchemaBuilder::bulk_data_category_schema() {
+nlohmann::json SchemaBuilder::script_upload_response_schema() {
   return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}}, {"name", {{"type", "string"}}}, {"description", {{"type", "string"}}}}},
+          {"properties", {{"id", {{"type", "string"}}}, {"name", {{"type", "string"}}}}},
           {"required", {"id", "name"}}};
+}
+
+nlohmann::json SchemaBuilder::trigger_update_request_schema() {
+  return {{"type", "object"},
+          {"properties", {{"lifetime", {{"type", "number"}, {"description", "New lifetime in seconds"}}}}},
+          {"required", {"lifetime"}}};
+}
+
+nlohmann::json SchemaBuilder::bulk_data_category_list_schema() {
+  return items_wrapper({{"type", "string"}});
 }
 
 nlohmann::json SchemaBuilder::bulk_data_descriptor_schema() {
@@ -346,8 +388,10 @@ nlohmann::json SchemaBuilder::bulk_data_descriptor_schema() {
            {{"id", {{"type", "string"}}},
             {"name", {{"type", "string"}}},
             {"size", {{"type", "integer"}}},
-            {"content_type", {{"type", "string"}}},
-            {"created_at", {{"type", "string"}, {"format", "date-time"}}}}},
+            {"mimetype", {{"type", "string"}}},
+            {"creation_date", {{"type", "string"}, {"format", "date-time"}}},
+            {"description", {{"type", "string"}}},
+            {"x-medkit", {{"type", "object"}}}}},
           {"required", {"id", "name"}}};
 }
 
@@ -414,8 +458,9 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
       {"FaultDetail", fault_detail_schema()},
       {"FaultList", items_wrapper_ref("FaultListItem")},
       // Configuration
-      {"ConfigurationParam", configuration_param_schema()},
-      {"ConfigurationParamList", items_wrapper_ref("ConfigurationParam")},
+      {"ConfigurationMetaData", configuration_metadata_schema()},
+      {"ConfigurationMetaDataList", items_wrapper_ref("ConfigurationMetaData")},
+      {"ConfigurationReadValue", configuration_read_value_schema()},
       // Logs
       {"LogEntry", log_entry_schema()},
       {"LogEntryList", items_wrapper_ref("LogEntry")},
@@ -430,11 +475,13 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
       // Operations
       {"OperationItem", operation_item_schema()},
       {"OperationItemList", items_wrapper_ref("OperationItem")},
+      {"OperationDetail", operation_detail_schema()},
       {"OperationExecution", operation_execution_schema()},
       {"OperationExecutionList", items_wrapper_ref("OperationExecution")},
       // Triggers
       {"Trigger", trigger_schema()},
       {"TriggerList", items_wrapper_ref("Trigger")},
+      {"TriggerUpdateRequest", trigger_update_request_schema()},
       // Subscriptions
       {"CyclicSubscription", cyclic_subscription_schema()},
       {"CyclicSubscriptionList", items_wrapper_ref("CyclicSubscription")},
@@ -444,10 +491,10 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
       // Scripts
       {"ScriptMetadata", script_metadata_schema()},
       {"ScriptMetadataList", items_wrapper_ref("ScriptMetadata")},
+      {"ScriptUploadResponse", script_upload_response_schema()},
       {"ScriptExecution", script_execution_schema()},
       // Bulk Data
-      {"BulkDataCategory", bulk_data_category_schema()},
-      {"BulkDataCategoryList", items_wrapper_ref("BulkDataCategory")},
+      {"BulkDataCategoryList", bulk_data_category_list_schema()},
       {"BulkDataDescriptor", bulk_data_descriptor_schema()},
       {"BulkDataDescriptorList", items_wrapper_ref("BulkDataDescriptor")},
       // Updates

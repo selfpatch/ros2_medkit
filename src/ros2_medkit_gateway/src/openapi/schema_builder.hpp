@@ -68,8 +68,11 @@ class SchemaBuilder {
   /// Wrap an item schema in a SOVD collection response: {"items": [item_schema]}
   static nlohmann::json items_wrapper(const nlohmann::json & item_schema);
 
-  /// Configuration parameter schema
-  static nlohmann::json configuration_param_schema();
+  /// Configuration metadata schema (list endpoint - SOVD ConfigurationMetaData)
+  static nlohmann::json configuration_metadata_schema();
+
+  /// Configuration read value schema (detail/set endpoints - SOVD ReadValue)
+  static nlohmann::json configuration_read_value_schema();
 
   /// Log entry schema
   static nlohmann::json log_entry_schema();
@@ -95,6 +98,9 @@ class SchemaBuilder {
   /// Operation item in collection list
   static nlohmann::json operation_item_schema();
 
+  /// Operation detail schema (wraps OperationItem in {item: ...})
+  static nlohmann::json operation_detail_schema();
+
   /// Operation execution status
   static nlohmann::json operation_execution_schema();
 
@@ -113,11 +119,17 @@ class SchemaBuilder {
   /// Script execution status schema
   static nlohmann::json script_execution_schema();
 
-  /// Bulk-data category schema
-  static nlohmann::json bulk_data_category_schema();
+  /// Bulk-data category list schema (items are bare strings)
+  static nlohmann::json bulk_data_category_list_schema();
 
   /// Bulk-data descriptor schema
   static nlohmann::json bulk_data_descriptor_schema();
+
+  /// Script upload response schema (minimal: id + name)
+  static nlohmann::json script_upload_response_schema();
+
+  /// Trigger update request schema (only mutable fields)
+  static nlohmann::json trigger_update_request_schema();
 
   /// Software update list schema (items: [string])
   static nlohmann::json update_list_schema();

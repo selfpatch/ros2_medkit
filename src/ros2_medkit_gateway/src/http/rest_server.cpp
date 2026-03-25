@@ -481,7 +481,7 @@ void RESTServer::setup_routes() {
         .summary(std::string("Get operation details for ") + et.singular)
         .description(std::string("Returns operation details including request/response schema for this ") +
                      et.singular + ".")
-        .response(200, "Operation details", SB::ref("OperationItem"))
+        .response(200, "Operation details", SB::ref("OperationDetail"))
         .operation_id(std::string("get") + capitalize(et.singular) + "Operation");
 
     // Execution endpoints
@@ -546,7 +546,7 @@ void RESTServer::setup_routes() {
         .tag("Configuration")
         .summary(std::string("List configurations for ") + et.singular)
         .description(std::string("Lists all ROS 2 node parameters for this ") + et.singular + ".")
-        .response(200, "Configuration list", SB::ref("ConfigurationParamList"))
+        .response(200, "Configuration list", SB::ref("ConfigurationMetaDataList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Configurations");
 
     reg.get(entity_path + "/configurations/{config_id}",
@@ -556,7 +556,7 @@ void RESTServer::setup_routes() {
         .tag("Configuration")
         .summary(std::string("Get specific configuration for ") + et.singular)
         .description(std::string("Returns a specific ROS 2 node parameter for this ") + et.singular + ".")
-        .response(200, "Configuration parameter", SB::ref("ConfigurationParam"))
+        .response(200, "Configuration parameter", SB::ref("ConfigurationReadValue"))
         .operation_id(std::string("get") + capitalize(et.singular) + "Configuration");
 
     reg.put(entity_path + "/configurations/{config_id}",
@@ -566,8 +566,8 @@ void RESTServer::setup_routes() {
         .tag("Configuration")
         .summary(std::string("Set configuration for ") + et.singular)
         .description(std::string("Sets a ROS 2 node parameter value for this ") + et.singular + ".")
-        .request_body("Configuration value", SB::ref("ConfigurationParam"))
-        .response(200, "Updated configuration", SB::ref("ConfigurationParam"))
+        .request_body("Configuration value", SB::ref("ConfigurationReadValue"))
+        .response(200, "Updated configuration", SB::ref("ConfigurationReadValue"))
         .operation_id(std::string("set") + capitalize(et.singular) + "Configuration");
 
     reg.del(entity_path + "/configurations/{config_id}",
@@ -815,7 +815,7 @@ void RESTServer::setup_routes() {
           .tag("Triggers")
           .summary(std::string("Update trigger for ") + et.singular)
           .description(std::string("Updates a trigger configuration on this ") + et.singular + ".")
-          .request_body("Trigger update", SB::ref("Trigger"))
+          .request_body("Trigger update", SB::ref("TriggerUpdateRequest"))
           .response(200, "Updated trigger", SB::ref("Trigger"))
           .operation_id(std::string("update") + capitalize(et.singular) + "Trigger");
 
@@ -964,7 +964,7 @@ void RESTServer::setup_routes() {
           .summary(std::string("Upload diagnostic script for ") + et.singular)
           .description(std::string("Uploads a diagnostic script for this ") + et.singular + ".")
           .request_body("Script file", SB::binary_schema(), "multipart/form-data")
-          .response(201, "Script uploaded", SB::ref("ScriptMetadata"))
+          .response(201, "Script uploaded", SB::ref("ScriptUploadResponse"))
           .operation_id(std::string("upload") + capitalize(et.singular) + "Script");
 
       reg.get(entity_path + "/scripts",
@@ -1286,7 +1286,7 @@ void RESTServer::setup_routes() {
       .summary("Prepare update for execution")
       .description("Prepares an update for execution (downloads, validates).")
       .request_body("Prepare parameters", SB::generic_object_schema())
-      .response(200, "Update prepared", SB::ref("UpdateStatus"))
+      .response(202, "Update preparation started")
       .operation_id("prepareUpdate");
 
   reg.put("/updates/{update_id}/execute", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
@@ -1297,7 +1297,7 @@ void RESTServer::setup_routes() {
       .summary("Execute update")
       .description("Starts executing a prepared update.")
       .request_body("Execute parameters", SB::generic_object_schema())
-      .response(200, "Update executing", SB::ref("UpdateStatus"))
+      .response(202, "Update execution started")
       .operation_id("executeUpdate");
 
   reg.put("/updates/{update_id}/automated", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
@@ -1308,7 +1308,7 @@ void RESTServer::setup_routes() {
       .summary("Run automated update")
       .description("Runs a fully automated update (prepare + execute).")
       .request_body("Automated parameters", SB::generic_object_schema())
-      .response(200, "Automated update started", SB::ref("UpdateStatus"))
+      .response(202, "Automated update started")
       .operation_id("automateUpdate");
 
   reg.get("/updates/{update_id}", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
