@@ -14,12 +14,21 @@
 
 #include <gtest/gtest.h>
 
+#include <arpa/inet.h>
 #include <httplib.h>
+#include <netinet/in.h>
 #include <nlohmann/json.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <string>
+#include <sys/socket.h>
+#include <thread>
+#include <unistd.h>
 
 #include "../src/openapi/route_registry.hpp"
+#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/health_handlers.hpp"
+
+using namespace std::chrono_literals;
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::AuthConfig;
@@ -264,4 +273,108 @@ TEST_F(HealthHandlersTest, HandleRootTlsEnabledIncludesTlsMetadataBlock) {
   EXPECT_TRUE(body["tls"]["enabled"].get<bool>());
   EXPECT_EQ(body["tls"]["min_version"], "1.3");
   EXPECT_TRUE(body["capabilities"]["tls"].get<bool>());
+}
+
+// --- handle_health discovery block (requires live GatewayNode) ---
+
+static constexpr const char * API_BASE_PATH = "/api/v1";
+
+static int reserve_free_port() {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) {
+    return 0;
+  }
+  int opt = 1;
+  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+    close(sock);
+    return 0;
+  }
+  socklen_t len = sizeof(addr);
+  if (getsockname(sock, reinterpret_cast<sockaddr *>(&addr), &len) != 0) {
+    close(sock);
+    return 0;
+  }
+  int port = ntohs(addr.sin_port);
+  close(sock);
+  return port;
+}
+
+class HealthHandlersLiveTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    rclcpp::init(0, nullptr);
+  }
+
+  static void TearDownTestSuite() {
+    rclcpp::shutdown();
+  }
+
+  void SetUp() override {
+    int free_port = reserve_free_port();
+    ASSERT_NE(free_port, 0) << "Failed to reserve a free port for test";
+
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({rclcpp::Parameter("server.port", free_port)});
+    node_ = std::make_shared<ros2_medkit_gateway::GatewayNode>(options);
+
+    server_port_ = free_port;
+
+    // Wait for the server to be ready
+    const auto start = std::chrono::steady_clock::now();
+    const auto timeout = std::chrono::seconds(5);
+    httplib::Client client("127.0.0.1", server_port_);
+    const std::string health_ep = std::string(API_BASE_PATH) + "/health";
+    while (std::chrono::steady_clock::now() - start < timeout) {
+      if (auto res = client.Get(health_ep.c_str())) {
+        if (res->status == 200) {
+          return;
+        }
+      }
+      std::this_thread::sleep_for(50ms);
+    }
+    FAIL() << "HTTP server failed to start within timeout";
+  }
+
+  void TearDown() override {
+    node_.reset();
+  }
+
+  std::shared_ptr<ros2_medkit_gateway::GatewayNode> node_;
+  int server_port_{0};
+};
+
+TEST_F(HealthHandlersLiveTest, HealthDiscoveryBlockContainsExpectedFields) {
+  httplib::Client client("127.0.0.1", server_port_);
+  auto res = client.Get((std::string(API_BASE_PATH) + "/health").c_str());
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 200);
+
+  auto body = json::parse(res->body);
+  EXPECT_EQ(body["status"], "healthy");
+  EXPECT_TRUE(body.contains("timestamp"));
+
+  // With a live GatewayNode, the discovery block must be present
+  ASSERT_TRUE(body.contains("discovery"));
+  auto & disc = body["discovery"];
+
+  // Must contain mode and strategy strings
+  ASSERT_TRUE(disc.contains("mode"));
+  EXPECT_TRUE(disc["mode"].is_string());
+  EXPECT_FALSE(disc["mode"].get<std::string>().empty());
+  // Default mode is runtime_only
+  EXPECT_EQ(disc["mode"].get<std::string>(), "runtime_only");
+
+  ASSERT_TRUE(disc.contains("strategy"));
+  EXPECT_TRUE(disc["strategy"].is_string());
+  EXPECT_FALSE(disc["strategy"].get<std::string>().empty());
+
+  // In runtime_only mode, pipeline and linking are not present (only in hybrid mode).
+  // Verify the block structure is well-formed JSON with at least mode + strategy.
+  EXPECT_EQ(disc.size(), 2u);  // mode + strategy only
 }
