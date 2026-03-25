@@ -166,6 +166,7 @@ class ThreadSafeEntityCache {
    * @param components All discovered components
    * @param apps All discovered apps
    * @param functions All discovered functions
+   * @param node_to_app Node FQN to app entity ID mapping from linking result (optional)
    */
   void update_all(std::vector<Area> areas, std::vector<Component> components, std::vector<App> apps,
                   std::vector<Function> functions, std::unordered_map<std::string, std::string> node_to_app = {});
