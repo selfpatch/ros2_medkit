@@ -879,8 +879,8 @@ TEST_F(LogManagerResolverTest, ResolverReturnsEmptyFallsBackToLastSegment) {
 
 // @verifies REQ_INTEROP_061
 TEST_F(LogManagerBufferTest, BufferCapDropsNewNodesWhenFull) {
-  // LogManager was created with max_buffer_size_=3 in the fixture.
-  // Buffer cap = max_buffer_size_ * 10 = 30 distinct nodes.
+  // LogManager was created with buffer size 3 in the fixture.
+  // Buffer cap = size * 10 = 30 distinct nodes.
   // Create a fresh manager with buffer size 5 so cap = 50.
   mgr_.reset();
   mgr_ = std::make_unique<LogManager>(node_.get(), nullptr, /*max_buffer_size=*/5);
