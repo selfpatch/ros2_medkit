@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
 #include <array>
+#include <set>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -473,6 +474,54 @@ MergeResult MergePipeline::execute() {
 
     linking_result_ = linker_->get_last_result();
     result.linking_result = linking_result_;
+
+    // Suppress runtime-origin components/areas that duplicate manifest entities (#307)
+    // Build set of namespaces covered by linked manifest apps
+    std::set<std::string> linked_namespaces;
+    for (const auto & [fqn, app_id] : linking_result_.node_to_app) {
+      auto last_slash = fqn.rfind('/');
+      if (last_slash != std::string::npos && last_slash > 0) {
+        linked_namespaces.insert(fqn.substr(0, last_slash));
+      } else {
+        linked_namespaces.insert("/");
+      }
+    }
+
+    // Also track manifest component/area namespaces directly
+    std::set<std::string> manifest_comp_ns;
+    for (const auto & comp : result.components) {
+      if (comp.source == "manifest" && !comp.namespace_path.empty()) {
+        manifest_comp_ns.insert(comp.namespace_path);
+      }
+    }
+    std::set<std::string> manifest_area_ns;
+    for (const auto & area : result.areas) {
+      if (area.source == "manifest" && !area.namespace_path.empty()) {
+        manifest_area_ns.insert(area.namespace_path);
+      }
+    }
+
+    // Remove runtime components whose namespace is covered
+    auto comp_it = std::remove_if(result.components.begin(), result.components.end(), [&](const Component & comp) {
+      if (comp.source == "manifest") {
+        return false;
+      }
+      return manifest_comp_ns.count(comp.namespace_path) > 0 || linked_namespaces.count(comp.namespace_path) > 0;
+    });
+    result.components.erase(comp_it, result.components.end());
+
+    // Remove runtime areas whose namespace is covered
+    auto area_it = std::remove_if(result.areas.begin(), result.areas.end(), [&](const Area & area) {
+      if (area.source == "manifest") {
+        return false;
+      }
+      return manifest_area_ns.count(area.namespace_path) > 0 || linked_namespaces.count(area.namespace_path) > 0;
+    });
+    result.areas.erase(area_it, result.areas.end());
+
+    // Recount after suppression
+    report.total_entities =
+        result.areas.size() + result.components.size() + result.apps.size() + result.functions.size();
   }
 
   RCLCPP_INFO(logger_, "MergePipeline: %zu entities from %zu layers, %zu enriched, %zu conflicts",
