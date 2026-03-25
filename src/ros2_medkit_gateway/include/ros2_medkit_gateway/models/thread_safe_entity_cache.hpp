@@ -168,7 +168,7 @@ class ThreadSafeEntityCache {
    * @param functions All discovered functions
    */
   void update_all(std::vector<Area> areas, std::vector<Component> components, std::vector<App> apps,
-                  std::vector<Function> functions);
+                  std::vector<Function> functions, std::unordered_map<std::string, std::string> node_to_app = {});
 
   /**
    * @brief Incremental update for single entity type
