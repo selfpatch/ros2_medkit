@@ -1669,3 +1669,197 @@ TEST_F(MergePipelineTest, AddLayerAfterExecuteDoesNotCrash) {
   auto result2 = pipeline_.execute();
   EXPECT_EQ(result2.apps.size(), 2u);
 }
+
+// Regression: root-namespace linked nodes must suppress heuristic entities (#307)
+TEST_F(MergePipelineTest, SuppressRootNamespaceHeuristicComponents) {
+  // Manifest component in root namespace
+  Component manifest_comp = make_component("fault-manager", "", "/");
+  manifest_comp.source = "manifest";
+
+  // Runtime heuristic component also in root namespace (different ID)
+  Component runtime_comp = make_component("fault_manager", "", "/");
+  runtime_comp.source = "heuristic";
+
+  // Manifest app with ros_binding to root-namespace node
+  App manifest_app = make_app("medkit-fault-manager", "fault-manager");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "fault_manager";
+  binding.namespace_pattern = "/";
+  binding.topic_namespace = "";
+  manifest_app.ros_binding = binding;
+
+  // Runtime app (node) that linker will match
+  App runtime_node;
+  runtime_node.id = "fault_manager";
+  runtime_node.name = "fault_manager";
+  runtime_node.source = "heuristic";
+  runtime_node.is_online = true;
+  runtime_node.bound_fqn = "/fault_manager";
+
+  LayerOutput manifest_out;
+  manifest_out.components.push_back(manifest_comp);
+  manifest_out.apps.push_back(manifest_app);
+
+  LayerOutput runtime_out;
+  runtime_out.components.push_back(runtime_comp);
+  runtime_out.apps.push_back(runtime_node);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::STATUS, MergePolicy::FALLBACK}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  ManifestConfig manifest_config;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
+
+  auto result = pipeline_.execute();
+  // Only manifest component should remain; root-namespace heuristic suppressed
+  ASSERT_EQ(result.components.size(), 1u);
+  EXPECT_EQ(result.components[0].id, "fault-manager");
+  EXPECT_EQ(result.components[0].source, "manifest");
+}
+
+// Regression: root-namespace heuristic areas must be suppressed (#307)
+TEST_F(MergePipelineTest, SuppressRootNamespaceHeuristicAreas) {
+  // Manifest area in /sensors
+  Area manifest_area;
+  manifest_area.id = "sensors";
+  manifest_area.name = "Sensors";
+  manifest_area.namespace_path = "/sensors";
+  manifest_area.source = "manifest";
+
+  // Heuristic "root" area with namespace_path "/" - should be suppressed
+  Area root_area;
+  root_area.id = "root";
+  root_area.name = "root";
+  root_area.namespace_path = "/";
+  root_area.source = "heuristic";
+
+  // Manifest app with ros_binding - root-namespace node links "/" into linked_namespaces
+  App manifest_app = make_app("fault-mgr", "fault-comp");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "fault_manager";
+  binding.namespace_pattern = "/";
+  binding.topic_namespace = "";
+  manifest_app.ros_binding = binding;
+
+  App runtime_node;
+  runtime_node.id = "fault_manager";
+  runtime_node.name = "fault_manager";
+  runtime_node.source = "heuristic";
+  runtime_node.is_online = true;
+  runtime_node.bound_fqn = "/fault_manager";
+
+  LayerOutput manifest_out;
+  manifest_out.areas.push_back(manifest_area);
+  manifest_out.apps.push_back(manifest_app);
+
+  LayerOutput runtime_out;
+  runtime_out.areas.push_back(root_area);
+  runtime_out.apps.push_back(runtime_node);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  ManifestConfig manifest_config;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
+
+  auto result = pipeline_.execute();
+  // Only manifest area should remain; root heuristic area suppressed
+  ASSERT_EQ(result.areas.size(), 1u);
+  EXPECT_EQ(result.areas[0].id, "sensors");
+}
+
+// Heuristic apps in covered namespaces are suppressed; uncovered survive (#307)
+TEST_F(MergePipelineTest, SuppressHeuristicAppsInCoveredNamespace) {
+  // Manifest app in /sensors namespace
+  App manifest_app = make_app("lidar-sim", "lidar-unit");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "lidar_sim";
+  binding.namespace_pattern = "/sensors";
+  binding.topic_namespace = "";
+  manifest_app.ros_binding = binding;
+
+  // Runtime app that links to manifest (same namespace - /sensors)
+  App linked_runtime;
+  linked_runtime.id = "lidar_sim";
+  linked_runtime.name = "lidar_sim";
+  linked_runtime.source = "heuristic";
+  linked_runtime.is_online = true;
+  linked_runtime.bound_fqn = "/sensors/lidar_sim";
+
+  // Heuristic app in root namespace - root is covered (linked via /fault_manager)
+  App root_heuristic;
+  root_heuristic.id = "_param_client_node";
+  root_heuristic.name = "_param_client_node";
+  root_heuristic.source = "heuristic";
+  root_heuristic.is_online = true;
+  root_heuristic.bound_fqn = "/_param_client_node";
+
+  // Manifest app in root namespace (creates "/" in linked_namespaces)
+  App root_manifest = make_app("fault-mgr", "fault-comp");
+  root_manifest.source = "manifest";
+  App::RosBinding root_binding;
+  root_binding.node_name = "fault_manager";
+  root_binding.namespace_pattern = "/";
+  root_binding.topic_namespace = "";
+  root_manifest.ros_binding = root_binding;
+
+  App root_runtime;
+  root_runtime.id = "fault_manager";
+  root_runtime.name = "fault_manager";
+  root_runtime.source = "heuristic";
+  root_runtime.is_online = true;
+  root_runtime.bound_fqn = "/fault_manager";
+
+  // Gap-fill app in uncovered namespace (/actuators) - should survive
+  App gapfill_app;
+  gapfill_app.id = "motor_ctrl";
+  gapfill_app.name = "motor_ctrl";
+  gapfill_app.source = "heuristic";
+  gapfill_app.is_online = true;
+  gapfill_app.bound_fqn = "/actuators/motor_ctrl";
+
+  LayerOutput manifest_out;
+  manifest_out.apps.push_back(manifest_app);
+  manifest_out.apps.push_back(root_manifest);
+
+  LayerOutput runtime_out;
+  runtime_out.apps.push_back(linked_runtime);
+  runtime_out.apps.push_back(root_heuristic);
+  runtime_out.apps.push_back(root_runtime);
+  runtime_out.apps.push_back(gapfill_app);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  ManifestConfig manifest_config;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
+
+  auto result = pipeline_.execute();
+  // 2 manifest apps + 1 gap-fill (/actuators) + 1 orphan (_param_client_node, not linked)
+  // Suppressed: linked_runtime (merged into lidar-sim), root_runtime (merged into fault-mgr)
+  ASSERT_EQ(result.apps.size(), 4u);
+  std::set<std::string> app_ids;
+  for (const auto & a : result.apps) {
+    app_ids.insert(a.id);
+  }
+  EXPECT_TRUE(app_ids.count("lidar-sim")) << "manifest app should survive";
+  EXPECT_TRUE(app_ids.count("fault-mgr")) << "manifest app should survive";
+  EXPECT_TRUE(app_ids.count("motor_ctrl")) << "gap-fill app in uncovered namespace should survive";
+  EXPECT_TRUE(app_ids.count("_param_client_node")) << "orphan gap-fill app should survive (not linked to manifest)";
+}
