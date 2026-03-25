@@ -50,6 +50,13 @@ class RuntimeLayer : public DiscoveryLayer {
     return last_filtered_count_;
   }
 
+  /// Return unfiltered runtime apps for post-merge linking.
+  /// Gap-fill may exclude apps from discover() output, but the linker
+  /// needs all runtime apps to bind manifest apps to live nodes.
+  std::vector<App> get_linking_apps() const override {
+    return linking_apps_;
+  }
+
   /// Direct access to runtime services (for operation/data endpoints, not part of pipeline)
   std::vector<ServiceInfo> discover_services();
   std::vector<ActionInfo> discover_actions();
@@ -59,6 +66,7 @@ class RuntimeLayer : public DiscoveryLayer {
   std::unordered_map<FieldGroup, MergePolicy> policies_;
   GapFillConfig gap_fill_config_;
   size_t last_filtered_count_{0};
+  std::vector<App> linking_apps_;  ///< Unfiltered runtime apps for linker
 };
 
 }  // namespace discovery

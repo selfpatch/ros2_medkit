@@ -419,9 +419,11 @@ MergeResult MergePipeline::execute() {
     // Collect gap-fill filtering stats (virtual dispatch, no dynamic_cast)
     report.filtered_by_gap_fill += layers_[i]->filtered_count();
 
-    // Save runtime apps for the linker BEFORE they are moved into app_layers below.
+    // Save runtime apps for the linker. Use get_linking_apps() which returns
+    // the unfiltered set - gap-fill may exclude apps from output.apps, but
+    // the linker needs all runtime apps to bind manifest apps to live nodes.
     if (layers_[i]->provides_runtime_apps()) {
-      runtime_apps = output.apps;
+      runtime_apps = layers_[i]->get_linking_apps();
     }
 
     if (!output.areas.empty()) {

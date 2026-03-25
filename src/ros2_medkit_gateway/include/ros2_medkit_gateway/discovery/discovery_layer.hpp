@@ -74,6 +74,14 @@ class DiscoveryLayer {
     return 0;
   }
 
+  /// Return unfiltered runtime apps for post-merge linking.
+  /// Gap-fill may exclude apps from discover() output, but the linker needs
+  /// all runtime apps to bind manifest apps to live nodes.
+  /// Only RuntimeLayer (or test doubles) should override this.
+  virtual std::vector<App> get_linking_apps() const {
+    return {};
+  }
+
   /// Provide the current discovery context (entities from previous layers).
   /// Called by MergePipeline before discover(). Default no-op.
   virtual void set_discovery_context(const IntrospectionInput & /*context*/) {
