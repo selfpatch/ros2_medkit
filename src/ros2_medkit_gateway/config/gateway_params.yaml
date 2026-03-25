@@ -163,6 +163,12 @@ ros2_medkit_gateway:
       # Runtime (heuristic) discovery options
       # These control how nodes are mapped to SOVD entities in runtime mode
       runtime:
+        # Create synthetic Area entities from ROS 2 namespaces
+        # When true (default), namespaces become Areas
+        # When false, no Areas are created - flat component tree
+        # Useful for simple robots without area hierarchy
+        create_synthetic_areas: true
+
         # Create synthetic Component entities that group Apps
         # When true, Components are synthetic groupings (by namespace)
         # When false, each node is a Component

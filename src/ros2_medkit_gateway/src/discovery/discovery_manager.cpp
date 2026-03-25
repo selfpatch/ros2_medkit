@@ -96,6 +96,7 @@ void DiscoveryManager::apply_layer_policy_overrides(const std::string & layer_na
 void DiscoveryManager::create_strategy() {
   // Configure runtime strategy with runtime options
   discovery::RuntimeDiscoveryStrategy::RuntimeConfig runtime_config;
+  runtime_config.create_synthetic_areas = config_.runtime.create_synthetic_areas;
   runtime_config.create_synthetic_components = config_.runtime.create_synthetic_components;
   runtime_config.grouping = config_.runtime.grouping;
   runtime_config.synthetic_component_name_pattern = config_.runtime.synthetic_component_name_pattern;
