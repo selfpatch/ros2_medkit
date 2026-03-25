@@ -1645,3 +1645,27 @@ TEST_F(MergePipelineTest, SuppressDoesNotAffectRootNamespaceEntities) {
   }
   EXPECT_TRUE(found_root_comp) << "Runtime component in root namespace should not be suppressed";
 }
+
+// Regression test: add_layer() after execute() must not crash.
+// Plugins are loaded after the initial pipeline execution in gateway_node.cpp,
+// so add_layer() must be callable after execute().
+TEST_F(MergePipelineTest, AddLayerAfterExecuteDoesNotCrash) {
+  // First layer with one app
+  LayerOutput manifest_output;
+  manifest_output.apps.push_back(make_app("app-one", ""));
+  pipeline_.add_layer(std::make_unique<TestLayer>("manifest", manifest_output));
+
+  // Execute pipeline
+  auto result1 = pipeline_.execute();
+  EXPECT_EQ(result1.apps.size(), 1u);
+
+  // Add another layer AFTER execute - simulates plugin registration
+  // in gateway_node.cpp where plugins are loaded after initial discovery
+  LayerOutput plugin_output;
+  plugin_output.apps.push_back(make_app("plugin-app", ""));
+  pipeline_.add_layer(std::make_unique<TestLayer>("plugin", plugin_output));
+
+  // Re-execute should include the new layer's entities
+  auto result2 = pipeline_.execute();
+  EXPECT_EQ(result2.apps.size(), 2u);
+}

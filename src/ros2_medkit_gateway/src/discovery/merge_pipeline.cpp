@@ -297,7 +297,6 @@ MergePipeline::MergePipeline(rclcpp::Logger logger) : logger_(std::move(logger))
 }
 
 void MergePipeline::add_layer(std::unique_ptr<DiscoveryLayer> layer) {
-  assert(!executed_ && "add_layer() must only be called before first refresh()");
   layers_.push_back(std::move(layer));
 }
 
@@ -376,8 +375,6 @@ std::vector<Entity> MergePipeline::merge_entities(std::vector<std::pair<size_t, 
 }
 
 MergeResult MergePipeline::execute() {
-  executed_ = true;
-
   MergeReport report;
   for (const auto & layer : layers_) {
     report.layers.push_back(layer->name());
