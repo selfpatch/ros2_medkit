@@ -46,9 +46,14 @@ std::vector<Function> HybridDiscoveryStrategy::discover_functions() {
 }
 
 void HybridDiscoveryStrategy::refresh() {
-  // Hold mutex for the full execute()+swap to prevent data races with add_layer()
+  // Execute pipeline WITHOUT lock - safe because add_layer() is
+  // construction-only (called in DiscoveryManager::initialize() before
+  // EntityCache timer starts refresh cycles).
+  auto new_result = pipeline_.execute();
+
+  // Swap result under lock to protect concurrent discover_*() readers
   std::lock_guard<std::mutex> lock(mutex_);
-  cached_result_ = pipeline_.execute();
+  cached_result_ = std::move(new_result);
   if (node_) {
     RCLCPP_INFO(node_->get_logger(), "Hybrid discovery refreshed: %zu entities", cached_result_.report.total_entities);
   }
@@ -70,7 +75,6 @@ std::vector<std::string> HybridDiscoveryStrategy::get_orphan_nodes() const {
 }
 
 void HybridDiscoveryStrategy::add_layer(std::unique_ptr<DiscoveryLayer> layer) {
-  std::lock_guard<std::mutex> lock(mutex_);
   pipeline_.add_layer(std::move(layer));
 }
 
