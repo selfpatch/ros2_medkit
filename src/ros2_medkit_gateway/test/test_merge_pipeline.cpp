@@ -1168,6 +1168,178 @@ TEST_F(MergePipelineTest, PolicyOverrideChangedMergeBehavior) {
 
 // --- external field belongs in METADATA, not STATUS (#260c) ---
 
+// --- Post-linking suppression of duplicate components/areas (#307) ---
+
+TEST_F(MergePipelineTest, SuppressLinkedRuntimeComponents) {
+  // Manifest component "lidar-sim" in /sensors
+  Component manifest_comp = make_component("lidar-sim", "", "/sensors");
+  manifest_comp.source = "manifest";
+
+  // Runtime synthetic component "lidar_sim" in /sensors (heuristic, different ID)
+  Component runtime_comp = make_component("lidar_sim", "", "/sensors");
+  runtime_comp.source = "heuristic";
+
+  // Manifest app with ros_binding to link
+  App manifest_app = make_app("lidar_app", "lidar-sim");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "lidar_node";
+  binding.namespace_pattern = "/sensors";
+  binding.topic_namespace = "";
+  manifest_app.ros_binding = binding;
+
+  // Runtime app (node) that the linker will match
+  App runtime_node;
+  runtime_node.id = "lidar_node";
+  runtime_node.name = "lidar_node";
+  runtime_node.source = "heuristic";
+  runtime_node.is_online = true;
+  runtime_node.bound_fqn = "/sensors/lidar_node";
+
+  LayerOutput manifest_out;
+  manifest_out.components.push_back(manifest_comp);
+  manifest_out.apps.push_back(manifest_app);
+
+  LayerOutput runtime_out;
+  runtime_out.components.push_back(runtime_comp);
+  runtime_out.apps.push_back(runtime_node);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::STATUS, MergePolicy::FALLBACK}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  ManifestConfig manifest_config;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
+
+  auto result = pipeline_.execute();
+  // Only the manifest component should remain; runtime duplicate suppressed
+  ASSERT_EQ(result.components.size(), 1u);
+  EXPECT_EQ(result.components[0].id, "lidar-sim");
+  EXPECT_EQ(result.components[0].source, "manifest");
+}
+
+TEST_F(MergePipelineTest, SuppressLinkedRuntimeAreas) {
+  // Manifest area "sensors" in /sensors
+  Area manifest_area;
+  manifest_area.id = "sensors";
+  manifest_area.name = "Sensors";
+  manifest_area.namespace_path = "/sensors";
+  manifest_area.source = "manifest";
+
+  // Runtime heuristic area "sensors" in /sensors (same ID, but source differs)
+  // In practice, IDs might differ, but same namespace is the key
+  Area runtime_area;
+  runtime_area.id = "sensors_rt";
+  runtime_area.name = "sensors";
+  runtime_area.namespace_path = "/sensors";
+  runtime_area.source = "heuristic";
+
+  // Manifest app with ros_binding to create linking
+  App manifest_app = make_app("sensor_app", "sensor_comp");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "sensor_node";
+  binding.namespace_pattern = "/sensors";
+  binding.topic_namespace = "";
+  manifest_app.ros_binding = binding;
+
+  // Runtime app (node)
+  App runtime_node;
+  runtime_node.id = "sensor_node";
+  runtime_node.name = "sensor_node";
+  runtime_node.source = "heuristic";
+  runtime_node.is_online = true;
+  runtime_node.bound_fqn = "/sensors/sensor_node";
+
+  LayerOutput manifest_out;
+  manifest_out.areas.push_back(manifest_area);
+  manifest_out.apps.push_back(manifest_app);
+
+  LayerOutput runtime_out;
+  runtime_out.areas.push_back(runtime_area);
+  runtime_out.apps.push_back(runtime_node);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::STATUS, MergePolicy::FALLBACK}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  ManifestConfig manifest_config;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
+
+  auto result = pipeline_.execute();
+  // Only the manifest area should remain; runtime duplicate suppressed
+  ASSERT_EQ(result.areas.size(), 1u);
+  EXPECT_EQ(result.areas[0].id, "sensors");
+  EXPECT_EQ(result.areas[0].source, "manifest");
+}
+
+TEST_F(MergePipelineTest, RuntimeComponentInUncoveredNamespaceNotSuppressed) {
+  // Manifest component in /sensors namespace
+  Component manifest_comp = make_component("lidar-sim", "", "/sensors");
+  manifest_comp.source = "manifest";
+
+  // Runtime component in a DIFFERENT namespace (/actuators) - should survive
+  Component runtime_comp = make_component("motor_ctrl", "", "/actuators");
+  runtime_comp.source = "heuristic";
+
+  // Manifest app with binding in /sensors only
+  App manifest_app = make_app("lidar_app", "lidar-sim");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "lidar_node";
+  binding.namespace_pattern = "/sensors";
+  binding.topic_namespace = "";
+  manifest_app.ros_binding = binding;
+
+  // Runtime app in /sensors (will be linked)
+  App runtime_node;
+  runtime_node.id = "lidar_node";
+  runtime_node.name = "lidar_node";
+  runtime_node.source = "heuristic";
+  runtime_node.is_online = true;
+  runtime_node.bound_fqn = "/sensors/lidar_node";
+
+  LayerOutput manifest_out;
+  manifest_out.components.push_back(manifest_comp);
+  manifest_out.apps.push_back(manifest_app);
+
+  LayerOutput runtime_out;
+  runtime_out.components.push_back(runtime_comp);
+  runtime_out.apps.push_back(runtime_node);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::STATUS, MergePolicy::FALLBACK}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  ManifestConfig manifest_config;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
+
+  auto result = pipeline_.execute();
+  // Both components should remain: manifest in /sensors and runtime in /actuators
+  ASSERT_EQ(result.components.size(), 2u);
+  // Verify the uncovered runtime component survived
+  bool found_motor = false;
+  for (const auto & c : result.components) {
+    if (c.id == "motor_ctrl") {
+      found_motor = true;
+      EXPECT_EQ(c.source, "heuristic");
+    }
+  }
+  EXPECT_TRUE(found_motor) << "Runtime component in uncovered namespace should not be suppressed";
+}
+
 TEST_F(MergePipelineTest, AppExternalField_ManifestAuthoritativeWinsOverRuntime) {
   // Manifest layer: METADATA=AUTHORITATIVE, sets external=false (internal node)
   App manifest_app = make_app("lidar_proc", "sensor_comp");
