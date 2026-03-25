@@ -475,7 +475,7 @@ if(BUILD_TESTING)
   # Add script handler tests
   ament_add_gtest(test_script_handlers test/test_script_handlers.cpp)
   target_link_libraries(test_script_handlers gateway_lib)
-  set_tests_properties(test_script_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=69")
+  set_tests_properties(test_script_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=80")
 
   # Add data handler tests
   ament_add_gtest(test_data_handlers test/test_data_handlers.cpp)

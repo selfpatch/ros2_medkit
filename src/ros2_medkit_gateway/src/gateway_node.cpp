@@ -1358,6 +1358,7 @@ void GatewayNode::stop_rest_server() {
     server_cv_.wait(lock, [this] {
       return !server_running_.load();
     });
+    lock.unlock();  // Release before join to avoid deadlock
     server_thread_->join();
   }
 }
