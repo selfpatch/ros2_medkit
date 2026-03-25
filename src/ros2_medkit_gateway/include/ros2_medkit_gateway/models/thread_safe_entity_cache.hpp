@@ -191,17 +191,6 @@ class ThreadSafeEntityCache {
    */
   void update_topic_types(std::unordered_map<std::string, std::string> topic_types);
 
-  /**
-   * @brief Update node-to-app mapping from linking result
-   *
-   * Called during cache refresh to store the mapping from ROS 2 node FQNs
-   * to manifest entity IDs. Used by trigger subscribers to resolve entity IDs
-   * from ROS identifiers.
-   *
-   * @param mapping Map of node FQN -> app entity ID
-   */
-  void set_node_to_app(std::unordered_map<std::string, std::string> mapping);
-
   // =========================================================================
   // Reader methods (shared lock) - called by HTTP handlers
   // =========================================================================

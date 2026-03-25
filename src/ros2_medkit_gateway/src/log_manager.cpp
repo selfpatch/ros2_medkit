@@ -168,10 +168,16 @@ void LogManager::on_rosout(const rcl_interfaces::msg::Log::ConstSharedPtr & msg)
 
   if (!suppress_buffer) {
     std::lock_guard<std::mutex> lock(buffers_mutex_);
-    auto & buf = buffers_[entry.name];
-    buf.push_back(entry);
-    if (buf.size() > max_buffer_size_) {
-      buf.pop_front();
+    // Cap the number of distinct node buffers to prevent unbounded growth.
+    // Uses max_buffer_size_ * 10 as the cap (e.g., 200 entries -> 2000 distinct nodes).
+    if (buffers_.find(entry.name) == buffers_.end() && buffers_.size() >= max_buffer_size_ * 10) {
+      // Silently drop logs from new nodes beyond the cap
+    } else {
+      auto & buf = buffers_[entry.name];
+      buf.push_back(entry);
+      if (buf.size() > max_buffer_size_) {
+        buf.pop_front();
+      }
     }
   }
 

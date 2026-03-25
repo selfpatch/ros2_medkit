@@ -52,6 +52,13 @@ When ``create_synthetic_components`` is true:
 - ``grouping_strategy: "namespace"`` groups nodes by their first namespace segment
 - ``synthetic_component_name_pattern`` defines the component ID format
 
+.. note::
+
+   When ``create_synthetic_areas`` is false, the ``{area}`` placeholder in
+   ``synthetic_component_name_pattern`` still resolves to the namespace
+   segment used as the component grouping key - it does not require areas
+   to be enabled.
+
 Synthetic Areas
 ^^^^^^^^^^^^^^^
 

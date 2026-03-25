@@ -135,7 +135,11 @@ class TestHybridSuppression(GatewayTestCase):
     def test_exact_component_count(self):
         """Component count must match manifest exactly - no underscored duplicates."""
         # @verifies REQ_INTEROP_003
-        data = self.get_json('/components')
+        data = self.poll_endpoint_until(
+            '/components',
+            lambda d: d if len(d.get('items', [])) == len(MANIFEST_COMPONENTS) else None,
+            timeout=30.0,
+        )
         component_ids = {c['id'] for c in data['items']}
         self.assertEqual(
             component_ids, MANIFEST_COMPONENTS,
@@ -168,7 +172,11 @@ class TestHybridSuppression(GatewayTestCase):
     def test_exact_function_count(self):
         """Function count must match manifest exactly."""
         # @verifies REQ_INTEROP_003
-        data = self.get_json('/functions')
+        data = self.poll_endpoint_until(
+            '/functions',
+            lambda d: d if len(d.get('items', [])) == len(MANIFEST_FUNCTIONS) else None,
+            timeout=30.0,
+        )
         function_ids = {f['id'] for f in data['items']}
         self.assertEqual(
             function_ids, MANIFEST_FUNCTIONS,

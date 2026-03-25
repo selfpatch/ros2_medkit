@@ -365,6 +365,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fault_manager test/test_fault_manager.cpp)
   target_link_libraries(test_fault_manager gateway_lib)
   medkit_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
+  set_tests_properties(test_fault_manager PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=99")
 
   # Add discovery models tests
   ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)

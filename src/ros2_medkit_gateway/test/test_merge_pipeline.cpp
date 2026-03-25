@@ -1584,3 +1584,61 @@ TEST_F(MergePipelineTest, AppExternalField_EnrichmentDoesNotStickyTrue) {
   // First layer's value must win for ENRICHMENT (first-set-wins, not OR).
   EXPECT_FALSE(result.apps[0].external);
 }
+
+TEST_F(MergePipelineTest, SuppressDoesNotAffectRootNamespaceEntities) {
+  // A manifest app bound to a root-level node (/root_node) should NOT
+  // suppress runtime components with empty namespace_path.
+  // This tests the last_slash > 0 guard in merge_pipeline.cpp.
+
+  // Manifest app with ros_binding to a root-level node
+  App manifest_app = make_app("root_app", "some_comp");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "root_node";
+  binding.namespace_pattern = "/";
+  binding.topic_namespace = "";
+  manifest_app.ros_binding = binding;
+
+  // Runtime app (node at root namespace)
+  App runtime_node;
+  runtime_node.id = "root_node";
+  runtime_node.name = "root_node";
+  runtime_node.source = "heuristic";
+  runtime_node.is_online = true;
+  runtime_node.bound_fqn = "/root_node";
+
+  // Runtime component with empty namespace_path (root namespace)
+  Component runtime_comp = make_component("root_comp", "", "");
+  runtime_comp.source = "heuristic";
+  runtime_comp.namespace_path = "";
+
+  LayerOutput manifest_out;
+  manifest_out.apps.push_back(manifest_app);
+
+  LayerOutput runtime_out;
+  runtime_out.apps.push_back(runtime_node);
+  runtime_out.components.push_back(runtime_comp);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::STATUS, MergePolicy::FALLBACK}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  ManifestConfig manifest_config;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
+
+  auto result = pipeline_.execute();
+  // The runtime component with empty namespace should NOT be suppressed.
+  // The last_slash > 0 guard prevents "/" FQNs from adding empty string
+  // to linked_namespaces, which would incorrectly match all root-namespace entities.
+  bool found_root_comp = false;
+  for (const auto & c : result.components) {
+    if (c.id == "root_comp") {
+      found_root_comp = true;
+    }
+  }
+  EXPECT_TRUE(found_root_comp) << "Runtime component in root namespace should not be suppressed";
+}

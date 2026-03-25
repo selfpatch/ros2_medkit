@@ -1293,7 +1293,8 @@ void GatewayNode::refresh_cache() {
     }
 
     // Update ThreadSafeEntityCache atomically (entities + node_to_app under single lock)
-    thread_safe_cache_.update_all(areas, all_components, apps, functions, std::move(node_to_app));
+    thread_safe_cache_.update_all(std::move(areas), std::move(all_components), std::move(apps), std::move(functions),
+                                  std::move(node_to_app));
 
     // Update topic type cache (avoids expensive ROS graph queries on /data requests)
     if (data_access_mgr_) {

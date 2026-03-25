@@ -46,9 +46,11 @@ std::vector<Function> HybridDiscoveryStrategy::discover_functions() {
 }
 
 void HybridDiscoveryStrategy::refresh() {
-  // Execute pipeline WITHOUT lock - safe because add_layer() is
-  // construction-only (called in DiscoveryManager::initialize() before
-  // EntityCache timer starts refresh cycles).
+  // Execute pipeline WITHOUT lock - safe because:
+  // 1. add_layer() is construction-only (called in DiscoveryManager::initialize()
+  //    before EntityCache timer starts refresh cycles)
+  // 2. refresh() is only called from the ROS executor timer callback (single-threaded)
+  //    - concurrent refresh() calls cannot occur under the default executor model
   auto new_result = pipeline_.execute();
 
   // Swap result under lock to protect concurrent discover_*() readers
