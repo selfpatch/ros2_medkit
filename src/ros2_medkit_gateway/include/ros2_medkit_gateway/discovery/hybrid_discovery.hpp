@@ -75,7 +75,10 @@ class HybridDiscoveryStrategy : public DiscoveryStrategy {
   std::vector<std::string> get_orphan_nodes() const;
 
   /**
-   * @brief Add a discovery layer to the pipeline (e.g., plugin layers)
+   * @brief Add a discovery layer to the pipeline.
+   * @warning Construction-time only. Must be called before the first refresh()
+   * (i.e., before EntityCache timer starts). Calling concurrently with refresh()
+   * is a data race.
    */
   void add_layer(std::unique_ptr<DiscoveryLayer> layer);
 
