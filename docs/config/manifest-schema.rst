@@ -776,8 +776,10 @@ represents the robot itself, with subcomponents for hardware modules:
          node_name: ld08_driver
          namespace: /
 
-For runtime-only mode, disable synthetic area creation with
-``discovery.runtime.create_synthetic_areas: false`` (see
+For manifest-based discovery (``manifest_only`` or ``hybrid``), simply omit the
+``areas:`` section as shown above - no additional configuration is needed.
+For runtime-only discovery, set ``create_synthetic_areas: false`` in
+``gateway_params.yaml`` to prevent automatic area creation from namespaces (see
 :doc:`discovery-options`). A complete example is available at
 ``config/examples/flat_robot_manifest.yaml`` in the gateway package.
 

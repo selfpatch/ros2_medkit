@@ -17,6 +17,11 @@
 # Functions:
 #   autonomous-navigation -> nav2-controller, lidar-driver
 #   teleoperation -> turtlebot3-node, robot-state-publisher
+#
+# Usage (in gateway_params.yaml or as launch parameter overrides):
+#   discovery:
+#     mode: "manifest_only"          # or "hybrid" for runtime data
+#     manifest_path: "/path/to/flat_robot_manifest.yaml"
 
 manifest_version: "1.0"
 

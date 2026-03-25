@@ -272,6 +272,19 @@ Runtime Linking
    field-group before linking. See :doc:`/config/discovery-options` for merge
    pipeline configuration.
 
+.. note::
+
+   **Trigger entity resolution in hybrid mode**
+
+   In hybrid mode, fault and log triggers are delivered using the manifest entity
+   ID rather than the raw ROS node FQN. The runtime linker builds a node-to-app
+   mapping during the linking phase (step 4 above), and the fault manager and log
+   manager use this mapping to resolve incoming trigger events to the correct
+   manifest entity. This means fault codes, log subscriptions, and SSE events
+   reference stable manifest IDs (e.g., ``lidar-driver``) instead of the
+   ephemeral node FQN (e.g., ``/sensors/velodyne_driver``), even when nodes
+   restart and re-bind.
+
 ROS Binding Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
