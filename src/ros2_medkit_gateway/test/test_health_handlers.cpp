@@ -47,7 +47,7 @@ using ros2_medkit_gateway::openapi::RouteRegistry;
 namespace {
 
 // No-op handler for route registration in tests
-void noop_handler(const httplib::Request &, httplib::Response &) {
+void noop_handler(const httplib::Request & /*req*/, httplib::Response & /*res*/) {
 }
 
 // Populate a test route registry with representative routes
@@ -330,7 +330,7 @@ class HealthHandlersLiveTest : public ::testing::Test {
     httplib::Client client("127.0.0.1", server_port_);
     const std::string health_ep = std::string(API_BASE_PATH) + "/health";
     while (std::chrono::steady_clock::now() - start < timeout) {
-      if (auto res = client.Get(health_ep.c_str())) {
+      if (auto res = client.Get(health_ep)) {
         if (res->status == 200) {
           return;
         }
@@ -350,7 +350,7 @@ class HealthHandlersLiveTest : public ::testing::Test {
 
 TEST_F(HealthHandlersLiveTest, HealthDiscoveryBlockContainsExpectedFields) {
   httplib::Client client("127.0.0.1", server_port_);
-  auto res = client.Get((std::string(API_BASE_PATH) + "/health").c_str());
+  auto res = client.Get(std::string(API_BASE_PATH) + "/health");
 
   ASSERT_TRUE(res);
   EXPECT_EQ(res->status, 200);
