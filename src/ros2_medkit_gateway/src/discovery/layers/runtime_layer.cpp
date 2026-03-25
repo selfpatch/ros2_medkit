@@ -92,6 +92,7 @@ RuntimeLayer::RuntimeLayer(RuntimeDiscoveryStrategy * runtime_strategy) : runtim
 LayerOutput RuntimeLayer::discover() {
   LayerOutput output;
   last_filtered_count_ = 0;
+  linking_apps_.clear();
   if (!runtime_strategy_) {
     return output;
   }
@@ -101,8 +102,11 @@ LayerOutput RuntimeLayer::discover() {
     last_filtered_count_ += filter_by_namespace(output.areas, gap_fill_config_);
   }
 
-  // Discover apps once - used by both components (synthetic grouping) and apps output
+  // Discover apps once - used by both components (synthetic grouping) and apps output.
+  // Always save unfiltered apps for post-merge linking. The linker needs all runtime
+  // apps to bind manifest apps to live nodes, regardless of gap-fill settings.
   auto apps = runtime_strategy_->discover_apps();
+  linking_apps_ = apps;
 
   if (gap_fill_config_.allow_heuristic_components) {
     output.components = runtime_strategy_->discover_components(apps);

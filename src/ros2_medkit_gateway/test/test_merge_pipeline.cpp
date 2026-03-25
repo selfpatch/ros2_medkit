@@ -40,6 +40,9 @@ class TestLayer : public DiscoveryLayer {
   bool provides_runtime_apps() const override {
     return name_ == "runtime";
   }
+  std::vector<App> get_linking_apps() const override {
+    return output_.apps;
+  }
   LayerOutput discover() override {
     return output_;
   }

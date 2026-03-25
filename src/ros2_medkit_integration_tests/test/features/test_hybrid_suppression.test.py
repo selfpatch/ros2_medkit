@@ -241,6 +241,30 @@ class TestHybridSuppression(GatewayTestCase):
             f'Found synthetic/unexpected areas: {synthetic}',
         )
 
+    def test_manifest_apps_are_online(self):
+        """Linked manifest apps should be online after runtime linking.
+
+        Even with allow_heuristic_apps=false (gap-fill blocking runtime
+        apps from the entity tree), the linker must still receive the
+        unfiltered runtime apps so it can bind manifest apps to live nodes.
+        """
+        # @verifies REQ_INTEROP_003
+        data = self.poll_endpoint_until(
+            '/apps',
+            lambda d: d if all(
+                a.get('x-medkit', {}).get('is_online', False)
+                for a in d.get('items', [])
+            ) and len(d.get('items', [])) == len(MANIFEST_APPS) else None,
+            timeout=30.0,
+        )
+        for app in data['items']:
+            x_medkit = app.get('x-medkit', {})
+            is_online = x_medkit.get('is_online', False)
+            self.assertTrue(
+                is_online,
+                f"App {app['id']} should be online but is not",
+            )
+
     def test_health_shows_hybrid_mode(self):
         """Health endpoint should confirm hybrid discovery mode."""
         # @verifies REQ_INTEROP_003
