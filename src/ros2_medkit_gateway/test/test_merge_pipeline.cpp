@@ -306,7 +306,7 @@ TEST_F(MergePipelineTest, AuthoritativeVsAuthoritativeHigherPriorityWins) {
   auto result = pipeline_.execute();
   ASSERT_EQ(result.components.size(), 1u);
   EXPECT_EQ(result.components[0].name, "Manifest Engine");  // higher priority wins
-  EXPECT_GE(result.report.conflict_count, 1u);              // conflict recorded
+  EXPECT_EQ(result.report.conflict_count, 1u);              // conflict recorded
 }
 
 TEST_F(MergePipelineTest, CollectionFieldsUnionOnEnrichment) {
@@ -760,7 +760,8 @@ TEST_F(MergePipelineTest, MergeConflictStructPopulated) {
       std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE}}));
 
   auto result = pipeline_.execute();
-  ASSERT_GE(result.report.conflicts.size(), 1u);
+  ASSERT_EQ(result.report.conflicts.size(), 1u);
+  EXPECT_EQ(result.report.conflict_count, 1u);
 
   // Find the IDENTITY conflict for "engine"
   bool found = false;
@@ -1163,7 +1164,7 @@ TEST_F(MergePipelineTest, PolicyOverrideChangedMergeBehavior) {
   // With both layers AUTH for LIVE_DATA, manifest (higher priority) wins
   // This means we get a conflict but manifest topics survive
   EXPECT_EQ(result.components[0].source, "manifest");
-  EXPECT_GE(result.report.conflict_count, 1u);
+  EXPECT_EQ(result.report.conflict_count, 1u);
 }
 
 // --- external field belongs in METADATA, not STATUS (#260c) ---
@@ -1531,4 +1532,55 @@ TEST(PluginLayerTest, ValidationKeepsAllValidEntities) {
   EXPECT_EQ(output.apps[0].id, "alpha");
   EXPECT_EQ(output.apps[1].id, "beta-2");
   EXPECT_EQ(output.apps[2].id, "gamma_3");
+}
+
+// --- create_synthetic_areas=false produces no areas (#261) ---
+
+TEST_F(MergePipelineTest, CreateSyntheticAreasFalseProducesNoAreas) {
+  // Simulate a runtime-only layer that provides apps but no areas,
+  // as would happen with create_synthetic_areas=false on RuntimeDiscoveryStrategy.
+  // Verify the pipeline works correctly with empty areas and exposes only apps.
+
+  App runtime_app = make_app("sensor_node", "");
+  runtime_app.source = "heuristic";
+
+  LayerOutput runtime_out;
+  // No areas in output - mirrors RuntimeDiscoveryStrategy with create_synthetic_areas=false
+  runtime_out.apps.push_back(runtime_app);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  auto result = pipeline_.execute();
+  EXPECT_TRUE(result.areas.empty());
+  ASSERT_EQ(result.apps.size(), 1u);
+  EXPECT_EQ(result.apps[0].id, "sensor_node");
+}
+
+// --- Regression for #260c: external field OR bug ---
+
+// Regression for #260c: external with ENRICHMENT-vs-ENRICHMENT should NOT use OR.
+// Both layers METADATA=ENRICHMENT. First layer sets external=false, second sets external=true.
+// In the old bug (OR semantics) result would be true. Now first layer wins (value already set).
+TEST_F(MergePipelineTest, AppExternalField_EnrichmentDoesNotStickyTrue) {
+  App layer1_app = make_app("controller", "nav_comp");
+  layer1_app.external = false;
+
+  App layer2_app = make_app("controller", "nav_comp");
+  layer2_app.external = true;
+
+  LayerOutput out1, out2;
+  out1.apps.push_back(layer1_app);
+  out2.apps.push_back(layer2_app);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "layer1", out1, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "layer2", out2, std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.apps.size(), 1u);
+  // First layer's value must win for ENRICHMENT (first-set-wins, not OR).
+  EXPECT_FALSE(result.apps[0].external);
 }

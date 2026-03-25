@@ -631,7 +631,7 @@ TEST_F(RuntimeLinkerTest, TwoAppsCompeteForSameNode) {
   EXPECT_EQ(result.unlinked_app_ids.size(), 1u);
 
   // Conflict reported
-  EXPECT_GE(result.binding_conflicts, 1u);
+  EXPECT_EQ(result.binding_conflicts, 1u);
 }
 
 TEST_F(RuntimeLinkerTest, LinkingReportSummaryIncludesConflicts) {

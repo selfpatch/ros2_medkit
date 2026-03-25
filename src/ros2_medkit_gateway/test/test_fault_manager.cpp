@@ -428,6 +428,133 @@ TEST_F(FaultManagerTest, TriggerFaultSubscriberForwardsNamespacedFaultEvents) {
   notifier.unsubscribe(subscription_id);
 }
 
+TEST_F(FaultManagerTest, TriggerFaultSubscriberResolverCalledAndEntityIdUsed) {
+  // Resolver is called with the raw FQN and the returned entity_id is used in the notification.
+  node_ = std::make_shared<rclcpp::Node>("test_trigger_resolver_called",
+                                         rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
+  executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+  executor_->add_node(node_);
+
+  ResourceChangeNotifier notifier;
+  TriggerFaultSubscriber subscriber(node_.get(), notifier);
+
+  std::string received_fqn;
+  subscriber.set_node_to_entity_resolver([&received_fqn](const std::string & fqn) -> std::string {
+    received_fqn = fqn;
+    return "manifest_entity_id";
+  });
+
+  auto publisher = node_->create_publisher<ros2_medkit_msgs::msg::FaultEvent>("/fault_manager/events", rclcpp::QoS(10));
+
+  std::promise<ResourceChange> change_promise;
+  auto change_future = change_promise.get_future();
+  auto subscription_id = notifier.subscribe({"faults", "manifest_entity_id", "/RESOLVER_FAULT"},
+                                            [&change_promise](const ResourceChange & change) {
+                                              change_promise.set_value(change);
+                                            });
+
+  ASSERT_TRUE(wait_for_subscription_count("/fault_manager/events", 1u));
+  start_spinning();
+
+  ros2_medkit_msgs::msg::FaultEvent event;
+  event.event_type = "fault_confirmed";
+  event.fault.fault_code = "RESOLVER_FAULT";
+  event.fault.reporting_sources.push_back("/pipeline/some_node");
+  event.fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;
+  publisher->publish(event);
+
+  auto status = change_future.wait_for(2s);
+  ASSERT_EQ(status, std::future_status::ready);
+
+  auto change = change_future.get();
+  EXPECT_EQ(change.entity_id, "manifest_entity_id");
+  EXPECT_EQ(received_fqn, "/pipeline/some_node");
+
+  notifier.unsubscribe(subscription_id);
+}
+
+TEST_F(FaultManagerTest, TriggerFaultSubscriberResolverEmptyFallsBackToLastSegment) {
+  // When resolver returns empty string, last-segment extraction is used.
+  node_ = std::make_shared<rclcpp::Node>("test_trigger_resolver_empty_fallback",
+                                         rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
+  executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+  executor_->add_node(node_);
+
+  ResourceChangeNotifier notifier;
+  TriggerFaultSubscriber subscriber(node_.get(), notifier);
+
+  // Resolver always returns empty -> fallback to last segment
+  subscriber.set_node_to_entity_resolver([](const std::string & /*fqn*/) -> std::string {
+    return "";
+  });
+
+  auto publisher = node_->create_publisher<ros2_medkit_msgs::msg::FaultEvent>("/fault_manager/events", rclcpp::QoS(10));
+
+  std::promise<ResourceChange> change_promise;
+  auto change_future = change_promise.get_future();
+  auto subscription_id = notifier.subscribe({"faults", "fallback_node", "/FALLBACK_FAULT"},
+                                            [&change_promise](const ResourceChange & change) {
+                                              change_promise.set_value(change);
+                                            });
+
+  ASSERT_TRUE(wait_for_subscription_count("/fault_manager/events", 1u));
+  start_spinning();
+
+  ros2_medkit_msgs::msg::FaultEvent event;
+  event.event_type = "fault_confirmed";
+  event.fault.fault_code = "FALLBACK_FAULT";
+  event.fault.reporting_sources.push_back("/pipeline/fallback_node");
+  event.fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;
+  publisher->publish(event);
+
+  auto status = change_future.wait_for(2s);
+  ASSERT_EQ(status, std::future_status::ready);
+
+  auto change = change_future.get();
+  EXPECT_EQ(change.entity_id, "fallback_node");
+
+  notifier.unsubscribe(subscription_id);
+}
+
+TEST_F(FaultManagerTest, TriggerFaultSubscriberNoResolverUsesLastSegment) {
+  // When no resolver is set, last-segment extraction works as before.
+  node_ = std::make_shared<rclcpp::Node>("test_trigger_no_resolver",
+                                         rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
+  executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+  executor_->add_node(node_);
+
+  ResourceChangeNotifier notifier;
+  TriggerFaultSubscriber subscriber(node_.get(), notifier);
+  // No resolver set
+
+  auto publisher = node_->create_publisher<ros2_medkit_msgs::msg::FaultEvent>("/fault_manager/events", rclcpp::QoS(10));
+
+  std::promise<ResourceChange> change_promise;
+  auto change_future = change_promise.get_future();
+  auto subscription_id = notifier.subscribe({"faults", "camera_proc", "/NO_RESOLVER_FAULT"},
+                                            [&change_promise](const ResourceChange & change) {
+                                              change_promise.set_value(change);
+                                            });
+
+  ASSERT_TRUE(wait_for_subscription_count("/fault_manager/events", 1u));
+  start_spinning();
+
+  ros2_medkit_msgs::msg::FaultEvent event;
+  event.event_type = "fault_confirmed";
+  event.fault.fault_code = "NO_RESOLVER_FAULT";
+  event.fault.reporting_sources.push_back("/sensors/camera_proc");
+  event.fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;
+  publisher->publish(event);
+
+  auto status = change_future.wait_for(2s);
+  ASSERT_EQ(status, std::future_status::ready);
+
+  auto change = change_future.get();
+  EXPECT_EQ(change.entity_id, "camera_proc");
+
+  notifier.unsubscribe(subscription_id);
+}
+
 // @verifies REQ_INTEROP_088
 TEST_F(FaultManagerTest, GetRosbagNotFound) {
   auto service = node_->create_service<GetRosbag>(
