@@ -657,6 +657,153 @@ TEST_F(RuntimeLinkerTest, WildcardMultiMatchCounted) {
   EXPECT_EQ(result.wildcard_multi_match, 1u);
 }
 
+// =============================================================================
+// Duplicate Suppression Tests (#307)
+// =============================================================================
+
+TEST_F(RuntimeLinkerTest, MergedInput_SuppressesRuntimeDuplicates) {
+  // Bug #307: merge_entities() produces BOTH manifest and runtime apps for the
+  // same node with different IDs. The merge pipeline passes the merged set as
+  // the first arg to link(). After link(), linked_apps must NOT contain the
+  // runtime-origin duplicates - only manifest-source apps should remain.
+
+  // Manifest app with ros_binding targeting the node
+  App manifest_app;
+  manifest_app.id = "lidar-sim";
+  manifest_app.name = "LiDAR Simulator";
+  manifest_app.source = "manifest";
+  manifest_app.ros_binding = App::RosBinding{"lidar_sim", "/sensors", ""};
+
+  // Runtime app representing the same node (from runtime discovery, different ID)
+  App runtime_origin_app;
+  runtime_origin_app.id = "lidar_sim";
+  runtime_origin_app.name = "lidar_sim";
+  runtime_origin_app.source = "heuristic";
+  runtime_origin_app.is_online = true;
+  runtime_origin_app.bound_fqn = "/sensors/lidar_sim";
+  runtime_origin_app.topics.publishes = {"/sensors/lidar_sim/scan"};
+
+  // A second manifest app with a different binding
+  App manifest_app2;
+  manifest_app2.id = "imu-driver";
+  manifest_app2.name = "IMU Driver";
+  manifest_app2.source = "manifest";
+  manifest_app2.ros_binding = App::RosBinding{"imu_node", "/sensors", ""};
+
+  // Runtime app for the second node
+  App runtime_origin_app2;
+  runtime_origin_app2.id = "imu_node";
+  runtime_origin_app2.name = "imu_node";
+  runtime_origin_app2.source = "heuristic";
+  runtime_origin_app2.is_online = true;
+  runtime_origin_app2.bound_fqn = "/sensors/imu_node";
+
+  // An orphan runtime app (no manifest counterpart) - should be preserved
+  App orphan_runtime_app;
+  orphan_runtime_app.id = "camera_node";
+  orphan_runtime_app.name = "camera_node";
+  orphan_runtime_app.source = "heuristic";
+  orphan_runtime_app.is_online = true;
+  orphan_runtime_app.bound_fqn = "/sensors/camera_node";
+
+  // Simulate merge_pipeline: first arg is the merged set (manifest + runtime apps)
+  // second arg is the raw runtime apps used for binding lookups
+  std::vector<App> merged_apps = {manifest_app, runtime_origin_app, manifest_app2, runtime_origin_app2,
+                                  orphan_runtime_app};
+  std::vector<App> runtime_apps = {runtime_origin_app, runtime_origin_app2, orphan_runtime_app};
+
+  auto result = linker_->link(merged_apps, runtime_apps, config_);
+
+  // Both manifest apps should be linked
+  EXPECT_EQ(result.app_to_node.size(), 2u);
+  EXPECT_EQ(result.app_to_node["lidar-sim"], "/sensors/lidar_sim");
+  EXPECT_EQ(result.app_to_node["imu-driver"], "/sensors/imu_node");
+
+  // linked_apps should contain exactly 2 manifest apps + 1 orphan runtime app
+  // The 2 runtime duplicates (lidar_sim, imu_node) whose bound_fqn matches
+  // a linked manifest app must be suppressed.
+  EXPECT_EQ(result.linked_apps.size(), 3u);
+
+  // Verify: manifest apps are present and linked
+  size_t manifest_count = 0;
+  size_t orphan_count = 0;
+  for (const auto & app : result.linked_apps) {
+    if (app.source == "manifest") {
+      manifest_count++;
+      EXPECT_TRUE(app.is_online) << "Manifest app should be online: " << app.id;
+    } else {
+      orphan_count++;
+      // The only non-manifest app should be the orphan (camera_node)
+      EXPECT_EQ(app.id, "camera_node");
+    }
+  }
+  EXPECT_EQ(manifest_count, 2u);
+  EXPECT_EQ(orphan_count, 1u);
+
+  // The orphan runtime app should be detected as orphan node
+  EXPECT_EQ(result.orphan_nodes.size(), 1u);
+  EXPECT_EQ(result.orphan_nodes[0], "/sensors/camera_node");
+}
+
+TEST_F(RuntimeLinkerTest, MergedInput_PreservesOrphanRuntimeApps) {
+  // When runtime apps don't match any manifest app's binding, they should NOT
+  // be suppressed (they are genuine orphans, not duplicates).
+
+  App manifest_app;
+  manifest_app.id = "nav-controller";
+  manifest_app.name = "Navigation Controller";
+  manifest_app.source = "manifest";
+  manifest_app.ros_binding = App::RosBinding{"controller", "/nav", ""};
+
+  // Runtime app matching the manifest binding (duplicate - should be suppressed)
+  App rt_matching;
+  rt_matching.id = "controller";
+  rt_matching.name = "controller";
+  rt_matching.source = "heuristic";
+  rt_matching.is_online = true;
+  rt_matching.bound_fqn = "/nav/controller";
+
+  // Runtime app NOT matching any manifest binding (orphan - should be preserved)
+  App rt_orphan;
+  rt_orphan.id = "planner";
+  rt_orphan.name = "planner";
+  rt_orphan.source = "heuristic";
+  rt_orphan.is_online = true;
+  rt_orphan.bound_fqn = "/nav/planner";
+
+  // Simulate merge_pipeline: first arg is merged set
+  std::vector<App> merged_apps = {manifest_app, rt_matching, rt_orphan};
+  std::vector<App> runtime_apps = {rt_matching, rt_orphan};
+
+  auto result = linker_->link(merged_apps, runtime_apps, config_);
+
+  // Manifest app linked
+  EXPECT_EQ(result.app_to_node.size(), 1u);
+
+  // linked_apps: 1 manifest app + 1 orphan runtime app (duplicate suppressed)
+  EXPECT_EQ(result.linked_apps.size(), 2u);
+
+  // Verify the manifest app is present and linked
+  bool found_manifest = false;
+  bool found_orphan = false;
+  for (const auto & app : result.linked_apps) {
+    if (app.id == "nav-controller") {
+      found_manifest = true;
+      EXPECT_EQ(app.source, "manifest");
+      EXPECT_TRUE(app.is_online);
+    } else if (app.id == "planner") {
+      found_orphan = true;
+      EXPECT_EQ(app.source, "heuristic");
+    }
+  }
+  EXPECT_TRUE(found_manifest) << "Manifest app nav-controller not found in linked_apps";
+  EXPECT_TRUE(found_orphan) << "Orphan app planner not found in linked_apps";
+
+  // Orphan still detected in orphan_nodes
+  EXPECT_EQ(result.orphan_nodes.size(), 1u);
+  EXPECT_EQ(result.orphan_nodes[0], "/nav/planner");
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
