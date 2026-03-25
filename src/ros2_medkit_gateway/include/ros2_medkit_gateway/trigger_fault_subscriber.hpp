@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <string>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_gateway/resource_change_notifier.hpp"
@@ -43,6 +45,13 @@ class TriggerFaultSubscriber {
    */
   TriggerFaultSubscriber(rclcpp::Node * node, ResourceChangeNotifier & notifier);
 
+  /// Callback to resolve ROS node FQN to manifest entity ID.
+  /// Returns manifest entity ID, or empty string if not resolvable.
+  using NodeToEntityFn = std::function<std::string(const std::string &)>;
+
+  /// Set the node-to-entity resolver for manifest entity ID lookup.
+  void set_node_to_entity_resolver(NodeToEntityFn resolver);
+
   // Non-copyable, non-movable
   TriggerFaultSubscriber(const TriggerFaultSubscriber &) = delete;
   TriggerFaultSubscriber & operator=(const TriggerFaultSubscriber &) = delete;
@@ -56,6 +65,7 @@ class TriggerFaultSubscriber {
   rclcpp::Subscription<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr subscription_;
   ResourceChangeNotifier & notifier_;
   rclcpp::Logger logger_;
+  NodeToEntityFn node_to_entity_resolver_;
 };
 
 }  // namespace ros2_medkit_gateway
