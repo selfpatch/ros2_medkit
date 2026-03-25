@@ -185,6 +185,8 @@ ros2_medkit_gateway:
         # Naming pattern for synthetic components
         # Placeholders: {area}
         # Examples: "{area}", "{area}_group", "component_{area}"
+        # When create_synthetic_areas is false, {area} still resolves to
+        # the namespace segment used as the component grouping key.
         synthetic_component_name_pattern: "{area}"
 
         # Policy for namespaces with topics but no ROS 2 nodes

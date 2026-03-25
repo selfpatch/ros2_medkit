@@ -783,6 +783,14 @@ For runtime-only discovery, set ``create_synthetic_areas: false`` in
 :doc:`discovery-options`). A complete example is available at
 ``config/examples/flat_robot_manifest.yaml`` in the gateway package.
 
+.. note::
+
+   In hybrid mode, the runtime gap-fill layer may create synthetic areas
+   from namespaces even when the manifest omits ``areas:``. Set
+   ``merge_pipeline.gap_fill.allow_heuristic_areas: false`` to prevent
+   this and maintain a fully flat tree. See :doc:`discovery-options`
+   for gap-fill configuration details.
+
 Complete Example
 ----------------
 

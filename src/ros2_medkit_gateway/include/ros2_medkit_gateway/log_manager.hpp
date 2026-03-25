@@ -168,6 +168,8 @@ class LogManager {
   rclcpp::Node * node_;
   PluginManager * plugin_mgr_;
   ResourceChangeNotifier * notifier_ = nullptr;
+  /// Write-once: must be set before ROS executor starts spinning.
+  /// After that, only read from subscription callbacks (no mutex needed).
   NodeToEntityFn node_to_entity_resolver_;
   size_t max_buffer_size_;
 

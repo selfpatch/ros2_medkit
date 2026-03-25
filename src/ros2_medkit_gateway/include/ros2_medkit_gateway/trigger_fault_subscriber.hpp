@@ -65,6 +65,8 @@ class TriggerFaultSubscriber {
   rclcpp::Subscription<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr subscription_;
   ResourceChangeNotifier & notifier_;
   rclcpp::Logger logger_;
+  /// Write-once: must be set before ROS executor starts spinning.
+  /// After that, only read from subscription callbacks (no mutex needed).
   NodeToEntityFn node_to_entity_resolver_;
 };
 
