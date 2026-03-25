@@ -191,6 +191,17 @@ class ThreadSafeEntityCache {
    */
   void update_topic_types(std::unordered_map<std::string, std::string> topic_types);
 
+  /**
+   * @brief Update node-to-app mapping from linking result
+   *
+   * Called during cache refresh to store the mapping from ROS 2 node FQNs
+   * to manifest entity IDs. Used by trigger subscribers to resolve entity IDs
+   * from ROS identifiers.
+   *
+   * @param mapping Map of node FQN -> app entity ID
+   */
+  void set_node_to_app(std::unordered_map<std::string, std::string> mapping);
+
   // =========================================================================
   // Reader methods (shared lock) - called by HTTP handlers
   // =========================================================================
@@ -220,6 +231,18 @@ class ThreadSafeEntityCache {
    * @return Message type string, or empty if not cached
    */
   std::string get_topic_type(const std::string & topic_name) const;
+
+  // --- Node-to-app mapping (for trigger entity resolution) ---
+  /**
+   * @brief Get the node FQN to app entity ID mapping
+   *
+   * Used by trigger subscribers to resolve ROS 2 node FQNs to manifest
+   * entity IDs. The mapping is populated from the linking result during
+   * cache refresh.
+   *
+   * @return Map of node FQN -> app entity ID (empty if no linking available)
+   */
+  std::unordered_map<std::string, std::string> get_node_to_app() const;
 
   // --- Resolve any entity by ID ---
   std::optional<EntityRef> find_entity(const std::string & id) const;
@@ -448,8 +471,11 @@ class ThreadSafeEntityCache {
   // Operation index (operation full_path → owning entity)
   std::unordered_map<std::string, EntityRef> operation_index_;
 
-  // Topic type cache (topic name → message type) - refreshed periodically
+  // Topic type cache (topic name -> message type) - refreshed periodically
   std::unordered_map<std::string, std::string> topic_type_cache_;
+
+  // Node FQN -> app entity ID mapping from linking result (for trigger entity resolution)
+  std::unordered_map<std::string, std::string> node_to_app_;
 
   // Internal helpers (called under lock)
   void rebuild_all_indexes();

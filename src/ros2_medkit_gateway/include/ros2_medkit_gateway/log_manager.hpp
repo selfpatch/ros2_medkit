@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -122,6 +123,15 @@ class LogManager {
   /// Called by GatewayNode after both LogManager and the notifier are available.
   void set_notifier(ResourceChangeNotifier * notifier);
 
+  /// Callback that maps a ROS 2 node FQN to a manifest entity ID.
+  /// Returns empty string if the FQN cannot be resolved.
+  using NodeToEntityFn = std::function<std::string(const std::string &)>;
+
+  /// Set the node-to-entity resolver for trigger notifications.
+  /// When set, on_rosout() resolves node names to manifest entity IDs before
+  /// notifying the ResourceChangeNotifier.
+  void set_node_to_entity_resolver(NodeToEntityFn resolver);
+
   // ---- Static utilities (no ROS 2 required — safe in unit tests) ----
 
   /// Convert ROS 2 uint8 log level -> SOVD severity string ("debug" for unknown levels)
@@ -158,6 +168,7 @@ class LogManager {
   rclcpp::Node * node_;
   PluginManager * plugin_mgr_;
   ResourceChangeNotifier * notifier_ = nullptr;
+  NodeToEntityFn node_to_entity_resolver_;
   size_t max_buffer_size_;
 
   rclcpp::Subscription<rcl_interfaces::msg::Log>::SharedPtr rosout_sub_;
