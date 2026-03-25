@@ -1285,14 +1285,15 @@ void GatewayNode::refresh_cache() {
     const size_t app_count = apps.size();
     const size_t function_count = functions.size();
 
-    // Update ThreadSafeEntityCache with copies
-    thread_safe_cache_.update_all(areas, all_components, apps, functions);
-
     // Populate node_to_app mapping for trigger entity resolution (#305)
+    std::unordered_map<std::string, std::string> node_to_app;
     auto linking = discovery_mgr_->get_linking_result();
     if (linking) {
-      thread_safe_cache_.set_node_to_app(std::move(linking->node_to_app));
+      node_to_app = std::move(linking->node_to_app);
     }
+
+    // Update ThreadSafeEntityCache atomically (entities + node_to_app under single lock)
+    thread_safe_cache_.update_all(areas, all_components, apps, functions, std::move(node_to_app));
 
     // Update topic type cache (avoids expensive ROS graph queries on /data requests)
     if (data_access_mgr_) {

@@ -25,13 +25,15 @@ namespace ros2_medkit_gateway {
 // ============================================================================
 
 void ThreadSafeEntityCache::update_all(std::vector<Area> areas, std::vector<Component> components,
-                                       std::vector<App> apps, std::vector<Function> functions) {
+                                       std::vector<App> apps, std::vector<Function> functions,
+                                       std::unordered_map<std::string, std::string> node_to_app) {
   std::unique_lock lock(mutex_);
 
   areas_ = std::move(areas);
   components_ = std::move(components);
   apps_ = std::move(apps);
   functions_ = std::move(functions);
+  node_to_app_ = std::move(node_to_app);
   last_update_ = std::chrono::system_clock::now();
 
   rebuild_all_indexes();

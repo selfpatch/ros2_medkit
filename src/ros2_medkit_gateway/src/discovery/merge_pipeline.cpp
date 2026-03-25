@@ -258,7 +258,11 @@ void apply_field_group_merge(Entity & target, const Entity & source, FieldGroup 
       case FieldGroup::METADATA:
         merge_scalar(target.source, source.source, res.scalar);
         merge_optional(target.ros_binding, source.ros_binding, res.scalar);
-        merge_bool(target.external, source.external, res.scalar);
+        // Use scalar semantics (not OR) - external is a classification, not a status flag
+        if (res.scalar == MergeWinner::SOURCE) {
+          target.external = source.external;
+        }
+        // TARGET and BOTH: keep target value (no OR semantics)
         break;
     }
   } else if constexpr (std::is_same_v<Entity, Function>) {
@@ -482,9 +486,8 @@ MergeResult MergePipeline::execute() {
       auto last_slash = fqn.rfind('/');
       if (last_slash != std::string::npos && last_slash > 0) {
         linked_namespaces.insert(fqn.substr(0, last_slash));
-      } else {
-        linked_namespaces.insert("/");
       }
+      // Skip root namespace "/" - too broad, would suppress all root-namespace entities
     }
 
     // Also track manifest component/area namespaces directly
