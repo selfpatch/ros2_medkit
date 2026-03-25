@@ -178,6 +178,10 @@ ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
      links them to live ROS 2 nodes.
    - **Manifest-only**: Only manifest-declared entities are exposed.
 
+   Areas are optional. Simple robots can use a flat component tree without
+   areas by setting ``discovery.runtime.create_synthetic_areas: false`` or
+   by omitting the ``areas:`` section in the manifest.
+
    See :doc:`tutorials/manifest-discovery` for details on manifest mode.
 
    In this tutorial, we use runtime-only mode with ``demo_nodes.launch.py``.

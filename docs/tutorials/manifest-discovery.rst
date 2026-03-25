@@ -332,19 +332,25 @@ Example response:
 Entity Hierarchy
 ----------------
 
-The manifest defines a hierarchical structure:
+The manifest supports two hierarchy patterns depending on your robot's complexity.
+
+With Areas (Complex Robots)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For robots with multiple subsystems (e.g., autonomous vehicles, industrial platforms),
+use areas to group components by function or location:
 
 .. code-block:: text
 
    Areas (logical/physical groupings)
-   └── Components (hardware/virtual units)
-       └── Apps (software applications)
-           └── Data (topics)
-           └── Operations (services/actions)
-           └── Configurations (parameters)
+   +-- Components (hardware/virtual units)
+       +-- Apps (software applications)
+           +-- Data (topics)
+           +-- Operations (services/actions)
+           +-- Configurations (parameters)
 
    Functions (cross-cutting capabilities)
-   └── Apps (hosted by)
+   +-- Apps (hosted by)
 
 **Areas** group related components by function or location:
 
@@ -357,7 +363,7 @@ The manifest defines a hierarchical structure:
          - id: lidar-processing
            name: "LiDAR Processing"
 
-**Components** represent hardware or virtual units:
+**Components** are assigned to areas:
 
 .. code-block:: yaml
 
@@ -369,6 +375,60 @@ The manifest defines a hierarchical structure:
        subcomponents:
          - id: gpu-unit
            name: "GPU Processing Unit"
+
+Without Areas (Simple Robots)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For simple robots where the entire system is a single unit (e.g., TurtleBot3, small
+mobile platforms), you can omit areas entirely and use a flat component tree. The
+robot itself is the top-level component, with subcomponents for hardware modules:
+
+.. code-block:: text
+
+   Components (top-level)
+   +-- Subcomponents (hardware modules)
+       +-- Apps (software applications)
+
+   Functions (cross-cutting capabilities)
+   +-- Apps (hosted by)
+
+.. code-block:: yaml
+
+   # No areas section needed
+   components:
+     - id: turtlebot3
+       name: "TurtleBot3 Burger"
+       type: "mobile-robot"
+
+     - id: raspberry-pi
+       name: "Raspberry Pi 4"
+       type: "controller"
+       parent_component_id: turtlebot3
+
+   apps:
+     - id: nav2-controller
+       name: "Nav2 Controller"
+       is_located_on: raspberry-pi
+       ros_binding:
+         node_name: controller_server
+         namespace: /
+
+For runtime-only mode, set ``discovery.runtime.create_synthetic_areas: false``
+to prevent automatic area creation from namespaces. See
+:ref:`manifest-flat-entity-tree` in the manifest schema reference and
+``config/examples/flat_robot_manifest.yaml`` for a complete example.
+
+**When to use each pattern:**
+
+- **With areas**: Multiple subsystems, deep namespace hierarchy, large teams
+  working on separate domains (perception, navigation, control)
+- **Without areas**: Single robot with a handful of nodes, flat or shallow
+  namespace structure, quick prototypes
+
+Common Elements
+~~~~~~~~~~~~~~~
+
+Both patterns use **Apps** and **Functions** the same way.
 
 **Apps** are software applications (typically ROS 2 nodes):
 

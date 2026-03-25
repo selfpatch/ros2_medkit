@@ -52,6 +52,33 @@ When ``create_synthetic_components`` is true:
 - ``grouping_strategy: "namespace"`` groups nodes by their first namespace segment
 - ``synthetic_component_name_pattern`` defines the component ID format
 
+Synthetic Areas
+^^^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+   discovery:
+     runtime:
+       create_synthetic_areas: true
+
+When ``create_synthetic_areas`` is true (the default):
+
+- Areas are created from ROS 2 namespace segments (e.g., ``/powertrain`` becomes area ``powertrain``)
+- Components and Apps are organized under these Areas
+
+When ``create_synthetic_areas`` is false:
+
+- No Areas are created from namespaces
+- The entity tree is flat - Components are top-level entities
+- This is useful for simple robots (e.g., TurtleBot3) where an area hierarchy adds unnecessary nesting
+
+.. code-block:: yaml
+
+   # Flat entity tree - no areas
+   discovery:
+     runtime:
+       create_synthetic_areas: false
+
 Topic-Only Namespaces
 ^^^^^^^^^^^^^^^^^^^^^
 
@@ -274,6 +301,9 @@ Complete YAML configuration for runtime discovery:
          mode: "runtime_only"
 
          runtime:
+           # Create Areas from namespace segments
+           create_synthetic_areas: true
+
            # Group Apps into Components by namespace
            create_synthetic_components: true
            grouping_strategy: "namespace"
