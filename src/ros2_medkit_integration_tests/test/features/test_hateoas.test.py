@@ -61,7 +61,7 @@ class TestHateoas(GatewayTestCase):
 
     MIN_EXPECTED_APPS = 8
     REQUIRED_AREAS = {'powertrain', 'chassis', 'body'}
-    REQUIRED_APPS = {'temp_sensor'}
+    REQUIRED_APPS = {'engine-temp-sensor'}
 
     # ------------------------------------------------------------------
     # List hrefs (test_70-72)
@@ -167,11 +167,11 @@ class TestHateoas(GatewayTestCase):
 
         @verifies REQ_INTEROP_003
         """
-        data = self.get_json('/apps/temp_sensor')
+        data = self.get_json('/apps/engine-temp-sensor')
 
         # Verify required fields
         self.assertIn('id', data)
-        self.assertEqual(data['id'], 'temp_sensor')
+        self.assertEqual(data['id'], 'engine-temp-sensor')
         self.assertIn('name', data)
 
         # Verify SOVD capability URIs at top level
@@ -180,7 +180,7 @@ class TestHateoas(GatewayTestCase):
         self.assertIn('configurations', data, 'App should have configurations URI')
 
         # Verify URIs are correct format
-        base = '/api/v1/apps/temp_sensor'
+        base = '/api/v1/apps/engine-temp-sensor'
         self.assertEqual(data['data'], f'{base}/data')
         self.assertEqual(data['operations'], f'{base}/operations')
         self.assertEqual(data['configurations'], f'{base}/configurations')
@@ -321,7 +321,7 @@ class TestHateoas(GatewayTestCase):
         @verifies REQ_INTEROP_007
         """
         response = requests.get(
-            f'{self.BASE_URL}/components/powertrain/hosts',
+            f'{self.BASE_URL}/components/engine-ecu/hosts',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
@@ -329,8 +329,8 @@ class TestHateoas(GatewayTestCase):
         data = response.json()
         self.assertIn('items', data)
         self.assertIn('_links', data)
-        self.assertEqual(data['_links']['self'], '/api/v1/components/powertrain/hosts')
-        self.assertEqual(data['_links']['component'], '/api/v1/components/powertrain')
+        self.assertEqual(data['_links']['self'], '/api/v1/components/engine-ecu/hosts')
+        self.assertEqual(data['_links']['component'], '/api/v1/components/engine-ecu')
 
         for app in data.get('items', []):
             self.assertIn('id', app, "Hosted app should have 'id'")
@@ -378,7 +378,7 @@ class TestHateoas(GatewayTestCase):
         @verifies REQ_INTEROP_009
         """
         response = requests.get(
-            f'{self.BASE_URL}/apps/temp_sensor/depends-on',
+            f'{self.BASE_URL}/apps/engine-temp-sensor/depends-on',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
@@ -386,8 +386,8 @@ class TestHateoas(GatewayTestCase):
         data = response.json()
         self.assertIn('items', data)
         self.assertIn('_links', data)
-        self.assertEqual(data['_links']['self'], '/api/v1/apps/temp_sensor/depends-on')
-        self.assertEqual(data['_links']['app'], '/api/v1/apps/temp_sensor')
+        self.assertEqual(data['_links']['self'], '/api/v1/apps/engine-temp-sensor/depends-on')
+        self.assertEqual(data['_links']['app'], '/api/v1/apps/engine-temp-sensor')
 
         for dep in data.get('items', []):
             self.assertIn('id', dep, "Dependency should have 'id'")
@@ -420,7 +420,7 @@ class TestHateoas(GatewayTestCase):
         """GET /apps/{id}/is-located-on returns 0-or-1 component hrefs."""
         # @verifies REQ_INTEROP_105
         response = requests.get(
-            f'{self.BASE_URL}/apps/temp_sensor/is-located-on',
+            f'{self.BASE_URL}/apps/engine-temp-sensor/is-located-on',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
@@ -428,8 +428,8 @@ class TestHateoas(GatewayTestCase):
         data = response.json()
         self.assertIn('items', data)
         self.assertIn('_links', data)
-        self.assertEqual(data['_links']['self'], '/api/v1/apps/temp_sensor/is-located-on')
-        self.assertEqual(data['_links']['app'], '/api/v1/apps/temp_sensor')
+        self.assertEqual(data['_links']['self'], '/api/v1/apps/engine-temp-sensor/is-located-on')
+        self.assertEqual(data['_links']['app'], '/api/v1/apps/engine-temp-sensor')
         self.assertLessEqual(len(data['items']), 1)
 
         if data['items']:

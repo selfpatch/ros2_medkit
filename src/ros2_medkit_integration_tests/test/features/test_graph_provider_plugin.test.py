@@ -75,7 +75,7 @@ class TestGraphProviderPlugin(GatewayTestCase):
     """
 
     MIN_EXPECTED_APPS = 3
-    REQUIRED_APPS = {'temp_sensor', 'rpm_sensor', 'pressure_sensor'}
+    REQUIRED_APPS = {'engine-temp-sensor', 'engine-rpm-sensor', 'brake-pressure-sensor'}
 
     def _get_any_function_id(self):
         """Get the first discovered function ID."""
