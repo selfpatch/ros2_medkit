@@ -213,6 +213,10 @@ void LogManager::on_rosout(const rcl_interfaces::msg::Log::ConstSharedPtr & msg)
 
 void LogManager::inject_entry_for_testing(LogEntry entry) {
   std::lock_guard<std::mutex> lock(buffers_mutex_);
+  // Respect buffer cap (same logic as on_rosout) for consistent test behavior
+  if (buffers_.find(entry.name) == buffers_.end() && buffers_.size() >= max_buffer_size_ * 10) {
+    return;  // Silently drop logs from new nodes beyond the cap
+  }
   auto & buf = buffers_[entry.name];
   buf.push_back(std::move(entry));
   if (buf.size() > max_buffer_size_) {

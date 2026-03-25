@@ -16,7 +16,9 @@
 
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cassert>
 #include <set>
 #include <type_traits>
 #include <unordered_map>
@@ -295,6 +297,7 @@ MergePipeline::MergePipeline(rclcpp::Logger logger) : logger_(std::move(logger))
 }
 
 void MergePipeline::add_layer(std::unique_ptr<DiscoveryLayer> layer) {
+  assert(!executed_ && "add_layer() must only be called before first refresh()");
   layers_.push_back(std::move(layer));
 }
 
@@ -373,6 +376,8 @@ std::vector<Entity> MergePipeline::merge_entities(std::vector<std::pair<size_t, 
 }
 
 MergeResult MergePipeline::execute() {
+  executed_ = true;
+
   MergeReport report;
   for (const auto & layer : layers_) {
     report.layers.push_back(layer->name());
@@ -485,9 +490,14 @@ MergeResult MergePipeline::execute() {
     // Build set of namespaces covered by linked manifest apps
     std::set<std::string> linked_namespaces;
     for (const auto & [fqn, app_id] : linking_result_.node_to_app) {
-      auto last_slash = fqn.rfind('/');
+      std::string clean_fqn = fqn;
+      // Strip trailing slash if present (defensive - ROS 2 normalizes FQNs)
+      if (clean_fqn.size() > 1 && clean_fqn.back() == '/') {
+        clean_fqn.pop_back();
+      }
+      auto last_slash = clean_fqn.rfind('/');
       if (last_slash != std::string::npos && last_slash > 0) {
-        linked_namespaces.insert(fqn.substr(0, last_slash));
+        linked_namespaces.insert(clean_fqn.substr(0, last_slash));
       }
       // Skip root namespace "/" - too broad, would suppress all root-namespace entities
     }
@@ -508,7 +518,8 @@ MergeResult MergePipeline::execute() {
 
     // Remove runtime components whose namespace is covered
     auto comp_it = std::remove_if(result.components.begin(), result.components.end(), [&](const Component & comp) {
-      if (comp.source == "manifest") {
+      // Only suppress known runtime sources - preserve manifest and plugin entities
+      if (comp.source != "heuristic" && comp.source != "topic" && comp.source != "synthetic") {
         return false;
       }
       return manifest_comp_ns.count(comp.namespace_path) > 0 || linked_namespaces.count(comp.namespace_path) > 0;
@@ -517,7 +528,8 @@ MergeResult MergePipeline::execute() {
 
     // Remove runtime areas whose namespace is covered
     auto area_it = std::remove_if(result.areas.begin(), result.areas.end(), [&](const Area & area) {
-      if (area.source == "manifest") {
+      // Only suppress known runtime sources - preserve manifest and plugin entities
+      if (area.source != "heuristic" && area.source != "topic" && area.source != "synthetic") {
         return false;
       }
       return manifest_area_ns.count(area.namespace_path) > 0 || linked_namespaces.count(area.namespace_path) > 0;
