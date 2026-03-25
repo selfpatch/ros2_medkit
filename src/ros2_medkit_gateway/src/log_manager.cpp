@@ -169,9 +169,34 @@ void LogManager::on_rosout(const rcl_interfaces::msg::Log::ConstSharedPtr & msg)
   if (!suppress_buffer) {
     std::lock_guard<std::mutex> lock(buffers_mutex_);
     auto & buf = buffers_[entry.name];
-    buf.push_back(std::move(entry));
+    buf.push_back(entry);
     if (buf.size() > max_buffer_size_) {
       buf.pop_front();
+    }
+  }
+
+  // Notify triggers about the log event (resolve ROS node name to entity ID)
+  if (notifier_) {
+    std::string entity_id;
+
+    // Try resolving via node_to_app mapping (manifest/hybrid mode)
+    if (node_to_entity_resolver_) {
+      // entry.name has no leading '/' (rcl convention), but the mapping
+      // may use FQNs with leading '/' - try both forms
+      entity_id = node_to_entity_resolver_("/" + entry.name);
+      if (entity_id.empty()) {
+        entity_id = node_to_entity_resolver_(entry.name);
+      }
+    }
+
+    // Fallback: extract last path segment (runtime_only mode)
+    if (entity_id.empty()) {
+      auto last_slash = entry.name.rfind('/');
+      entity_id = (last_slash != std::string::npos) ? entry.name.substr(last_slash + 1) : entry.name;
+    }
+
+    if (!entity_id.empty()) {
+      notifier_->notify("logs", entity_id, "", entry_to_json(entry), ChangeType::CREATED);
     }
   }
 }
@@ -245,6 +270,10 @@ void LogManager::add_log_entry(const std::string & entity_id, const std::string 
 
 void LogManager::set_notifier(ResourceChangeNotifier * notifier) {
   notifier_ = notifier;
+}
+
+void LogManager::set_node_to_entity_resolver(NodeToEntityFn resolver) {
+  node_to_entity_resolver_ = std::move(resolver);
 }
 
 // ---------------------------------------------------------------------------

@@ -82,6 +82,16 @@ void ThreadSafeEntityCache::update_topic_types(std::unordered_map<std::string, s
   generation_.fetch_add(1, std::memory_order_release);
 }
 
+void ThreadSafeEntityCache::set_node_to_app(std::unordered_map<std::string, std::string> mapping) {
+  std::unique_lock lock(mutex_);
+  node_to_app_ = std::move(mapping);
+}
+
+std::unordered_map<std::string, std::string> ThreadSafeEntityCache::get_node_to_app() const {
+  std::shared_lock lock(mutex_);
+  return node_to_app_;
+}
+
 // ============================================================================
 // Reader methods - List all
 // ============================================================================

@@ -809,6 +809,34 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     trigger_topic_subscriber_ = std::make_unique<TriggerTopicSubscriber>(this, *resource_change_notifier_);
     trigger_mgr_->set_topic_subscriber(trigger_topic_subscriber_.get());
 
+    // Wire node-to-entity resolver for trigger notifications (#305).
+    // The resolver looks up node FQNs in the ThreadSafeEntityCache's node_to_app
+    // mapping (populated from linking result). Captures 'this' - the lambda is
+    // called from ROS subscription callbacks on the same node's executor.
+    auto node_resolver = [this](const std::string & ros_fqn) -> std::string {
+      auto mapping = thread_safe_cache_.get_node_to_app();
+      auto it = mapping.find(ros_fqn);
+      if (it != mapping.end()) {
+        return it->second;
+      }
+      // Try with normalized FQN (strip leading /)
+      if (!ros_fqn.empty() && ros_fqn[0] == '/') {
+        auto normalized = ros_fqn.substr(1);
+        auto it2 = mapping.find(normalized);
+        if (it2 != mapping.end()) {
+          return it2->second;
+        }
+      }
+      return "";
+    };
+
+    if (trigger_fault_subscriber_) {
+      trigger_fault_subscriber_->set_node_to_entity_resolver(node_resolver);
+    }
+    if (log_mgr_) {
+      log_mgr_->set_node_to_entity_resolver(node_resolver);
+    }
+
     RCLCPP_INFO(get_logger(), "Trigger subsystem: enabled (max=%d, storage=%s)", trigger_config.max_triggers,
                 storage_path.empty() ? ":memory:" : storage_path.c_str());
   } else {
@@ -1259,6 +1287,12 @@ void GatewayNode::refresh_cache() {
 
     // Update ThreadSafeEntityCache with copies
     thread_safe_cache_.update_all(areas, all_components, apps, functions);
+
+    // Populate node_to_app mapping for trigger entity resolution (#305)
+    auto linking = discovery_mgr_->get_linking_result();
+    if (linking) {
+      thread_safe_cache_.set_node_to_app(std::move(linking->node_to_app));
+    }
 
     // Update topic type cache (avoids expensive ROS graph queries on /data requests)
     if (data_access_mgr_) {
