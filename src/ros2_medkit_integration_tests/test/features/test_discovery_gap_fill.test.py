@@ -115,6 +115,27 @@ class TestGapFillConfig(GatewayTestCase):
                 f"Unexpected heuristic component found: {comp_id}",
             )
 
+    def test_manifest_apps_present_and_linked(self):
+        """With allow_heuristic_apps=true, manifest apps matching launched nodes are present."""
+        # 4 demo nodes launched: temp_sensor, rpm_sensor, pressure_sensor, calibration
+        # These match manifest apps: engine-temp-sensor, engine-rpm-sensor,
+        # brake-pressure-sensor, engine-calibration-service
+        expected_linked = {
+            'engine-temp-sensor', 'engine-rpm-sensor',
+            'brake-pressure-sensor', 'engine-calibration-service',
+        }
+        data = self.poll_endpoint_until(
+            '/apps',
+            lambda d: d if len(d.get('items', [])) >= len(expected_linked) else None,
+            timeout=30.0,
+        )
+        app_ids = {a['id'] for a in data['items']}
+        for app_id in expected_linked:
+            self.assertIn(
+                app_id, app_ids,
+                f"Expected manifest app {app_id} not found in apps list",
+            )
+
     def test_health_shows_gap_fill_filtering(self):
         """Health endpoint should show filtered_by_gap_fill count."""
         health = self.poll_endpoint_until(
