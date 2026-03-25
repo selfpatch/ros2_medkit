@@ -112,6 +112,12 @@ Areas
 Areas represent logical or physical groupings (subsystems, locations, etc.).
 In runtime-only mode, areas are derived from ROS 2 namespaces.
 
+.. note::
+
+   The ``areas:`` section is optional. For simple robots without subsystem hierarchy,
+   you can omit areas entirely and use components as the top-level entities. See
+   :ref:`manifest-flat-entity-tree` below.
+
 Schema
 ~~~~~~
 
@@ -726,6 +732,54 @@ Example
 .. seealso::
 
    See the Scripts section in :doc:`/api/rest` for API endpoints.
+
+.. _manifest-flat-entity-tree:
+
+Flat Entity Tree
+----------------
+
+For simple robots where the entire system is a single unit, you can omit the
+``areas:`` section and use a flat component tree instead. The top-level component
+represents the robot itself, with subcomponents for hardware modules:
+
+.. code-block:: yaml
+
+   manifest_version: "1.0"
+
+   metadata:
+     name: "flat-turtlebot"
+     version: "1.0.0"
+     description: "TurtleBot3 without area hierarchy"
+
+   # No areas section - components are top-level entities
+
+   components:
+     - id: turtlebot3
+       name: "TurtleBot3 Burger"
+       type: "mobile-robot"
+
+     - id: raspberry-pi
+       name: "Raspberry Pi 4"
+       type: "controller"
+       parent_component_id: turtlebot3
+
+     - id: lds-sensor
+       name: "LDS-02 LiDAR"
+       type: "sensor"
+       parent_component_id: turtlebot3
+
+   apps:
+     - id: lidar-driver
+       name: "LiDAR Driver"
+       is_located_on: lds-sensor
+       ros_binding:
+         node_name: ld08_driver
+         namespace: /
+
+For runtime-only mode, disable synthetic area creation with
+``discovery.runtime.create_synthetic_areas: false`` (see
+:doc:`discovery-options`). A complete example is available at
+``config/examples/flat_robot_manifest.yaml`` in the gateway package.
 
 Complete Example
 ----------------
