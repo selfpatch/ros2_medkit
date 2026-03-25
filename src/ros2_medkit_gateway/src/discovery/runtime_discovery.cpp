@@ -59,12 +59,17 @@ RuntimeDiscoveryStrategy::RuntimeDiscoveryStrategy(rclcpp::Node * node) : node_(
 
 void RuntimeDiscoveryStrategy::set_config(const RuntimeConfig & config) {
   config_ = config;
-  RCLCPP_DEBUG(node_->get_logger(), "Runtime discovery config: synthetic_components=%s, grouping=%s",
-               config_.create_synthetic_components ? "true" : "false",
-               grouping_strategy_to_string(config_.grouping).c_str());
+  RCLCPP_DEBUG(
+      node_->get_logger(), "Runtime discovery config: synthetic_areas=%s, synthetic_components=%s, grouping=%s",
+      config_.create_synthetic_areas ? "true" : "false", config_.create_synthetic_components ? "true" : "false",
+      grouping_strategy_to_string(config_.grouping).c_str());
 }
 
 std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
+  if (!config_.create_synthetic_areas) {
+    return {};
+  }
+
   // Extract unique areas from namespaces
   std::set<std::string> area_set;
 

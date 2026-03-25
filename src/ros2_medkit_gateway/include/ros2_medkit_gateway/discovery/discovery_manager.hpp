@@ -58,6 +58,15 @@ struct DiscoveryConfig {
    */
   struct RuntimeOptions {
     /**
+     * @brief Create synthetic Area entities from ROS 2 namespaces
+     *
+     * When true (default), namespaces become Areas.
+     * When false, no Areas are created - flat component tree.
+     * Useful for simple robots without area hierarchy.
+     */
+    bool create_synthetic_areas{true};
+
+    /**
      * @brief Create synthetic Component entities that group Apps
      *
      * When true, Components are synthetic groupings (by namespace).

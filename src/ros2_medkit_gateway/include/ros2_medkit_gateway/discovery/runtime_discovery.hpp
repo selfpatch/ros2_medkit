@@ -61,6 +61,7 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
    * @brief Runtime discovery configuration options
    */
   struct RuntimeConfig {
+    bool create_synthetic_areas{true};
     bool create_synthetic_components{true};
     ComponentGroupingStrategy grouping{};
     std::string synthetic_component_name_pattern{"{area}"};
