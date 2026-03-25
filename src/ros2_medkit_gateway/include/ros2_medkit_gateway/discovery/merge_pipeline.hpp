@@ -65,6 +65,9 @@ class MergePipeline {
 
   /**
    * @brief Get the last merge report (returned by value for thread safety)
+   * @warning NOT thread-safe on its own. In production, access only through
+   * HybridDiscoveryStrategy which holds mutex during reads. Direct calls
+   * from multiple threads are a data race.
    */
   MergeReport get_last_report() const {
     return last_report_;
@@ -79,6 +82,8 @@ class MergePipeline {
 
   /**
    * @brief Get the last linking result (returned by value for thread safety)
+   * @warning NOT thread-safe on its own. In production, access only through
+   * HybridDiscoveryStrategy which holds mutex during reads.
    */
   LinkingResult get_linking_result() const {
     return linking_result_;
