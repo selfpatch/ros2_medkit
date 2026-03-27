@@ -487,6 +487,14 @@ MergeResult MergePipeline::execute() {
     // In hybrid mode with a manifest, the manifest is the source of truth for entity
     // structure. Heuristic entities from runtime discovery should be suppressed when
     // their namespace is covered by manifest entities or linked apps.
+    //
+    // Suppression strategy (intentionally asymmetric):
+    // - Components/Areas: suppressed by NAMESPACE match. If any manifest app is linked
+    //   in a namespace (including "/"), all heuristic components/areas in that namespace
+    //   are removed. This means the manifest "takes over" the namespace entirely.
+    // - Apps: suppressed by ID match. Only heuristic apps whose ID matches a linked
+    //   manifest app are removed. Gap-fill apps (new nodes not in manifest) survive
+    //   regardless of namespace, since they fill intentional manifest gaps.
 
     // Build set of namespaces covered by linked manifest apps
     std::set<std::string> linked_namespaces;
@@ -528,14 +536,15 @@ MergeResult MergePipeline::execute() {
         manifest_app_ids.insert(app.id);
       }
     }
-    // Also suppress heuristic apps whose original runtime ID was linked to a manifest app
-    // (linker renames runtime app ID to manifest ID, so we check node_to_app values)
+    // node_to_app values are always manifest app IDs (RuntimeLinker maps FQN -> manifest ID),
+    // so linked_app_ids == manifest_app_ids in practice. We merge both defensively in case
+    // the linker is extended to produce non-manifest IDs in the future.
     std::set<std::string> linked_app_ids(manifest_app_ids);
     for (const auto & [fqn, app_id] : linking_result_.node_to_app) {
       linked_app_ids.insert(app_id);
     }
     auto app_it = std::remove_if(result.apps.begin(), result.apps.end(), [&](const App & app) {
-      if (app.source != "heuristic" && app.source != "topic" && app.source != "synthetic") {
+      if (!is_runtime_source(app.source)) {
         return false;
       }
       // Keep gap-fill apps (not linked to any manifest entity)
@@ -546,8 +555,7 @@ MergeResult MergePipeline::execute() {
 
     // Remove runtime components whose namespace is covered
     auto comp_it = std::remove_if(result.components.begin(), result.components.end(), [&](const Component & comp) {
-      // Only suppress known runtime sources - preserve manifest and plugin entities
-      if (comp.source != "heuristic" && comp.source != "topic" && comp.source != "synthetic") {
+      if (!is_runtime_source(comp.source)) {
         return false;
       }
       return manifest_comp_ns.count(comp.namespace_path) > 0 || linked_namespaces.count(comp.namespace_path) > 0;
@@ -556,8 +564,7 @@ MergeResult MergePipeline::execute() {
 
     // Remove runtime areas whose namespace is covered
     auto area_it = std::remove_if(result.areas.begin(), result.areas.end(), [&](const Area & area) {
-      // Only suppress known runtime sources - preserve manifest and plugin entities
-      if (area.source != "heuristic" && area.source != "topic" && area.source != "synthetic") {
+      if (!is_runtime_source(area.source)) {
         return false;
       }
       return manifest_area_ns.count(area.namespace_path) > 0 || linked_namespaces.count(area.namespace_path) > 0;

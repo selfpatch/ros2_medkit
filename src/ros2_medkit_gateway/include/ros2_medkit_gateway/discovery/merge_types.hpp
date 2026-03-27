@@ -151,5 +151,15 @@ struct GapFillConfig {
   std::vector<std::string> namespace_blacklist;
 };
 
+/**
+ * @brief Check if an entity source is from runtime discovery (eligible for suppression)
+ *
+ * Runtime sources (heuristic, topic, synthetic) are created by the runtime discovery
+ * layer and may duplicate manifest entities. Manifest and plugin sources are preserved.
+ */
+inline bool is_runtime_source(const std::string & source) {
+  return source == "heuristic" || source == "topic" || source == "synthetic";
+}
+
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway
