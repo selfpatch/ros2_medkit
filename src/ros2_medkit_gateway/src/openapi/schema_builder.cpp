@@ -157,6 +157,12 @@ nlohmann::json SchemaBuilder::configuration_read_value_schema() {
           {"required", {"id", "data"}}};
 }
 
+nlohmann::json SchemaBuilder::configuration_write_value_schema() {
+  return {{"type", "object"},
+          {"properties", {{"data", {{"description", "Configuration value to set (type varies by parameter)"}}}}},
+          {"required", {"data"}}};
+}
+
 nlohmann::json SchemaBuilder::log_entry_schema() {
   nlohmann::json context_schema = {{"type", "object"},
                                    {"properties",
@@ -374,8 +380,18 @@ nlohmann::json SchemaBuilder::script_upload_response_schema() {
 
 nlohmann::json SchemaBuilder::trigger_update_request_schema() {
   return {{"type", "object"},
-          {"properties", {{"lifetime", {{"type", "number"}, {"description", "New lifetime in seconds"}}}}},
+          {"properties", {{"lifetime", {{"type", "integer"}, {"description", "New lifetime in seconds"}}}}},
           {"required", {"lifetime"}}};
+}
+
+nlohmann::json SchemaBuilder::cyclic_subscription_create_request_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"resource", {{"type", "string"}, {"description", "Resource URI to subscribe to"}}},
+            {"interval", {{"type", "string"}, {"enum", {"fast", "normal", "slow"}}}},
+            {"duration", {{"type", "integer"}, {"minimum", 1}, {"description", "Subscription duration in seconds"}}},
+            {"protocol", {{"type", "string"}, {"description", "Transport protocol (default: sse)"}}}}},
+          {"required", {"resource", "interval", "duration"}}};
 }
 
 nlohmann::json SchemaBuilder::bulk_data_category_list_schema() {
@@ -461,6 +477,7 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
       {"ConfigurationMetaData", configuration_metadata_schema()},
       {"ConfigurationMetaDataList", items_wrapper_ref("ConfigurationMetaData")},
       {"ConfigurationReadValue", configuration_read_value_schema()},
+      {"ConfigurationWriteValue", configuration_write_value_schema()},
       // Logs
       {"LogEntry", log_entry_schema()},
       {"LogEntryList", items_wrapper_ref("LogEntry")},
@@ -485,6 +502,7 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
       // Subscriptions
       {"CyclicSubscription", cyclic_subscription_schema()},
       {"CyclicSubscriptionList", items_wrapper_ref("CyclicSubscription")},
+      {"CyclicSubscriptionCreateRequest", cyclic_subscription_create_request_schema()},
       // Locking
       {"Lock", lock_schema()},
       {"LockList", items_wrapper_ref("Lock")},

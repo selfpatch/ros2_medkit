@@ -152,6 +152,7 @@ TEST(SchemaBuilderStaticTest, ItemsWrapper) {
   EXPECT_NE(std::find(required.begin(), required.end(), "items"), required.end());
 }
 
+// @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, ConfigurationMetaDataSchema) {
   auto schema = SchemaBuilder::configuration_metadata_schema();
   EXPECT_EQ(schema["type"], "object");
@@ -173,6 +174,7 @@ TEST(SchemaBuilderStaticTest, ConfigurationMetaDataSchema) {
   EXPECT_EQ(std::find(required.begin(), required.end(), "value"), required.end());
 }
 
+// @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, ConfigurationReadValueSchema) {
   auto schema = SchemaBuilder::configuration_read_value_schema();
   EXPECT_EQ(schema["type"], "object");
@@ -190,6 +192,7 @@ TEST(SchemaBuilderStaticTest, ConfigurationReadValueSchema) {
   EXPECT_NE(std::find(required.begin(), required.end(), "data"), required.end());
 }
 
+// @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, OperationDetailSchema) {
   auto schema = SchemaBuilder::operation_detail_schema();
   EXPECT_EQ(schema["type"], "object");
@@ -201,6 +204,79 @@ TEST(SchemaBuilderStaticTest, OperationDetailSchema) {
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
   EXPECT_NE(std::find(required.begin(), required.end(), "item"), required.end());
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, ConfigurationWriteValueSchema) {
+  auto schema = SchemaBuilder::configuration_write_value_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("data"));
+  EXPECT_FALSE(schema["properties"].contains("id"));
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "data"), required.end());
+  EXPECT_EQ(std::find(required.begin(), required.end(), "id"), required.end());
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, ScriptUploadResponseSchema) {
+  auto schema = SchemaBuilder::script_upload_response_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("id"));
+  EXPECT_TRUE(schema["properties"].contains("name"));
+  EXPECT_EQ(schema["properties"]["id"]["type"], "string");
+  EXPECT_EQ(schema["properties"]["name"]["type"], "string");
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "id"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "name"), required.end());
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, TriggerUpdateRequestSchema) {
+  auto schema = SchemaBuilder::trigger_update_request_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("lifetime"));
+  EXPECT_EQ(schema["properties"]["lifetime"]["type"], "integer");
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "lifetime"), required.end());
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, BulkDataCategoryListSchema) {
+  auto schema = SchemaBuilder::bulk_data_category_list_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("items"));
+  EXPECT_EQ(schema["properties"]["items"]["type"], "array");
+  EXPECT_EQ(schema["properties"]["items"]["items"]["type"], "string");
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, CyclicSubscriptionCreateRequestSchema) {
+  auto schema = SchemaBuilder::cyclic_subscription_create_request_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("resource"));
+  EXPECT_TRUE(schema["properties"].contains("interval"));
+  EXPECT_TRUE(schema["properties"].contains("duration"));
+  EXPECT_TRUE(schema["properties"].contains("protocol"));
+  EXPECT_FALSE(schema["properties"].contains("id"));
+  EXPECT_FALSE(schema["properties"].contains("event_source"));
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "resource"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "interval"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "duration"), required.end());
+  EXPECT_EQ(std::find(required.begin(), required.end(), "id"), required.end());
 }
 
 TEST(SchemaBuilderStaticTest, LogEntrySchema) {
@@ -362,6 +438,7 @@ void collect_refs(const nlohmann::json & schema, std::set<std::string> & refs) {
 
 }  // namespace
 
+// @verifies REQ_INTEROP_002
 TEST(SchemaConsistencyTest, AllRefsResolveToRegisteredSchemas) {
   const auto & schemas = SchemaBuilder::component_schemas();
 
@@ -378,6 +455,7 @@ TEST(SchemaConsistencyTest, AllRefsResolveToRegisteredSchemas) {
   }
 }
 
+// @verifies REQ_INTEROP_002
 TEST(SchemaConsistencyTest, ListSchemasReferenceExistingItemSchemas) {
   const auto & schemas = SchemaBuilder::component_schemas();
 
@@ -403,6 +481,7 @@ TEST(SchemaConsistencyTest, ListSchemasReferenceExistingItemSchemas) {
   }
 }
 
+// @verifies REQ_INTEROP_002
 TEST(SchemaConsistencyTest, RequiredFieldsExistInProperties) {
   const auto & schemas = SchemaBuilder::component_schemas();
 

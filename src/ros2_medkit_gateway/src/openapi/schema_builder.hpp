@@ -71,8 +71,11 @@ class SchemaBuilder {
   /// Configuration metadata schema (list endpoint - SOVD ConfigurationMetaData)
   static nlohmann::json configuration_metadata_schema();
 
-  /// Configuration read value schema (detail/set endpoints - SOVD ReadValue)
+  /// Configuration read value schema (GET detail response - SOVD ReadValue)
   static nlohmann::json configuration_read_value_schema();
+
+  /// Configuration write value schema (PUT request body - only data field)
+  static nlohmann::json configuration_write_value_schema();
 
   /// Log entry schema
   static nlohmann::json log_entry_schema();
@@ -130,6 +133,9 @@ class SchemaBuilder {
 
   /// Trigger update request schema (only mutable fields)
   static nlohmann::json trigger_update_request_schema();
+
+  /// Cyclic subscription create request schema
+  static nlohmann::json cyclic_subscription_create_request_schema();
 
   /// Software update list schema (items: [string])
   static nlohmann::json update_list_schema();
