@@ -306,6 +306,13 @@ TEST_F(PathBuilderTest, ConfigurationsDeleteHasSummary) {
   EXPECT_EQ(result["delete"]["summary"], "Delete all configuration parameters");
 }
 
+TEST_F(PathBuilderTest, ConfigurationsDeleteReturns204And207) {
+  auto result = path_builder_.build_configurations_collection("apps/sensor");
+  ASSERT_TRUE(result["delete"]["responses"].contains("204"));
+  ASSERT_TRUE(result["delete"]["responses"].contains("207"));
+  EXPECT_FALSE(result["delete"]["responses"].contains("200"));
+}
+
 // =============================================================================
 // Faults collection tests
 // =============================================================================

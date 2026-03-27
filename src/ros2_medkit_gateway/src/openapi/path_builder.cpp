@@ -311,7 +311,8 @@ nlohmann::json PathBuilder::build_configurations_collection(const std::string & 
   delete_op["description"] = "Delete all configuration parameters for this entity, resetting them to defaults.";
   delete_op["responses"]["204"]["description"] = "All parameters deleted";
   delete_op["responses"]["207"]["description"] = "Partial success - some nodes failed";
-  delete_op["responses"]["207"]["content"]["application/json"]["schema"] = SchemaBuilder::generic_object_schema();
+  delete_op["responses"]["207"]["content"]["application/json"]["schema"] =
+      SchemaBuilder::configuration_delete_multi_status_schema();
 
   auto del_errors = error_responses();
   for (auto & [code, val] : del_errors.items()) {

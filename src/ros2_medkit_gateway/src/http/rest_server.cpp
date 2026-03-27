@@ -588,6 +588,7 @@ void RESTServer::setup_routes() {
         .summary(std::string("Delete all configurations for ") + et.singular)
         .description(std::string("Resets all configuration parameters for this ") + et.singular + ".")
         .response(204, "All configurations deleted")
+        .response(207, "Partial success - some nodes failed", SB::ref("ConfigurationDeleteMultiStatus"))
         .operation_id(std::string("deleteAll") + capitalize(et.singular) + "Configurations");
 
     // --- Faults ---
@@ -772,7 +773,7 @@ void RESTServer::setup_routes() {
           .tag("Triggers")
           .summary(std::string("Create trigger for ") + et.singular)
           .description(std::string("Creates a new event trigger for this ") + et.singular + ".")
-          .request_body("Trigger configuration", SB::ref("Trigger"))
+          .request_body("Trigger configuration", SB::ref("TriggerCreateRequest"))
           .response(201, "Trigger created", SB::ref("Trigger"))
           .operation_id(std::string("create") + capitalize(et.singular) + "Trigger");
 

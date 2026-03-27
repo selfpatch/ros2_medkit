@@ -136,7 +136,7 @@ View and modify sensor parameters:
    # Change scan rate
    curl -X PUT http://localhost:8080/api/v1/apps/lidar-sim/configurations/scan_rate \
      -H "Content-Type: application/json" \
-     -d '{"value": 20.0}'
+     -d '{"data": 20.0}'
 
 **Key Parameters:**
 
@@ -189,15 +189,15 @@ You can also inject faults by setting parameters directly:
 
    # Increase noise level
    curl -X PUT http://localhost:8080/api/v1/apps/lidar-sim/configurations/noise_stddev \
-     -H "Content-Type: application/json" -d '{"value": 0.5}'
+     -H "Content-Type: application/json" -d '{"data": 0.5}'
 
    # Enable NaN injection
    curl -X PUT http://localhost:8080/api/v1/apps/imu-sim/configurations/inject_nan \
-     -H "Content-Type: application/json" -d '{"value": true}'
+     -H "Content-Type: application/json" -d '{"data": true}'
 
    # Increase failure probability
    curl -X PUT http://localhost:8080/api/v1/apps/gps-sim/configurations/failure_probability \
-     -H "Content-Type: application/json" -d '{"value": 0.3}'
+     -H "Content-Type: application/json" -d '{"data": 0.3}'
 
 Stopping the Demo
 -----------------

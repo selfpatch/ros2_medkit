@@ -82,7 +82,7 @@ response until the lock is released or expires.
    curl -X PUT http://localhost:8080/api/v1/components/motor_controller/configurations/max_speed \
      -H "Content-Type: application/json" \
      -H "X-Client-Id: $CLIENT_ID" \
-     -d '{"value": 1500}'
+     -d '{"data": 1500}'
 
 **3. Extend the lock**
 

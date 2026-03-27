@@ -452,14 +452,13 @@ Manage ROS 2 node parameters.
       {
         "items": [
           {
+            "id": "publish_rate",
             "name": "publish_rate",
-            "value": 10.0,
-            "type": "double",
-            "description": "Publishing rate in Hz"
+            "type": "double"
           },
           {
+            "id": "sensor_id",
             "name": "sensor_id",
-            "value": "sensor_001",
             "type": "string"
           }
         ],
@@ -486,7 +485,7 @@ Manage ROS 2 node parameters.
 
       curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate \
         -H "Content-Type: application/json" \
-        -d '{"value": 20.0}'
+        -d '{"data": 20.0}'
 
 ``DELETE /api/v1/components/{id}/configurations/{param_name}``
    Reset parameter to default value.

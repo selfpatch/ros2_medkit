@@ -285,8 +285,8 @@ nlohmann::json SchemaBuilder::operation_item_schema() {
           {"properties",
            {{"id", {{"type", "string"}}},
             {"name", {{"type", "string"}}},
-            {"proximity_proof_required", {{"type", "boolean"}}},
-            {"asynchronous_execution", {{"type", "boolean"}}},
+            {"proximity_proof_required", {{"type", "boolean"}, {"description", "Whether proximity proof is needed"}}},
+            {"asynchronous_execution", {{"type", "boolean"}, {"description", "Whether operation runs asynchronously"}}},
             {"x-medkit", {{"type", "object"}}}}},
           {"required", {"id", "name"}}};
 }
@@ -313,27 +313,28 @@ nlohmann::json SchemaBuilder::trigger_schema() {
           {"properties",
            {{"id", {{"type", "string"}}},
             {"status", {{"type", "string"}, {"enum", {"active", "terminated"}}}},
-            {"observed_resource", {{"type", "string"}}},
-            {"event_source", {{"type", "string"}}},
-            {"protocol", {{"type", "string"}}},
+            {"observed_resource", {{"type", "string"}, {"description", "Resource URI being observed"}}},
+            {"event_source", {{"type", "string"}, {"description", "Server-generated event source URI"}}},
+            {"protocol", {{"type", "string"}, {"description", "Transport protocol"}}},
             {"trigger_condition", condition_schema},
-            {"multishot", {{"type", "boolean"}}},
-            {"persistent", {{"type", "boolean"}}},
-            {"lifetime", {{"type", "number"}}},
-            {"path", {{"type", "string"}}},
+            {"multishot", {{"type", "boolean"}, {"description", "Whether trigger fires multiple times"}}},
+            {"persistent", {{"type", "boolean"}, {"description", "Whether trigger survives server restarts"}}},
+            {"lifetime", {{"type", "number"}, {"description", "Trigger lifetime in seconds"}}},
+            {"path", {{"type", "string"}, {"description", "Notification delivery path"}}},
             {"log_settings", {{"type", "object"}}}}},
           {"required", {"id", "status", "observed_resource", "event_source", "protocol", "trigger_condition"}}};
 }
 
 nlohmann::json SchemaBuilder::cyclic_subscription_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}},
-            {"observed_resource", {{"type", "string"}}},
-            {"event_source", {{"type", "string"}}},
-            {"protocol", {{"type", "string"}}},
-            {"interval", {{"type", "string"}, {"enum", {"fast", "normal", "slow"}}}}}},
-          {"required", {"id", "observed_resource", "event_source", "protocol", "interval"}}};
+  return {
+      {"type", "object"},
+      {"properties",
+       {{"id", {{"type", "string"}}},
+        {"observed_resource", {{"type", "string"}, {"description", "Resource URI being observed"}}},
+        {"event_source", {{"type", "string"}, {"description", "Server-generated event source URI"}}},
+        {"protocol", {{"type", "string"}, {"description", "Transport protocol"}}},
+        {"interval", {{"type", "string"}, {"enum", {"fast", "normal", "slow"}}, {"description", "Polling interval"}}}}},
+      {"required", {"id", "observed_resource", "event_source", "protocol", "interval"}}};
 }
 
 nlohmann::json SchemaBuilder::lock_schema() {
@@ -379,9 +380,41 @@ nlohmann::json SchemaBuilder::script_upload_response_schema() {
 }
 
 nlohmann::json SchemaBuilder::trigger_update_request_schema() {
+  return {
+      {"type", "object"},
+      {"properties", {{"lifetime", {{"type", "integer"}, {"minimum", 1}, {"description", "New lifetime in seconds"}}}}},
+      {"required", {"lifetime"}}};
+}
+
+nlohmann::json SchemaBuilder::trigger_create_request_schema() {
+  nlohmann::json condition_schema = {
+      {"type", "object"}, {"properties", {{"condition_type", {{"type", "string"}}}}}, {"required", {"condition_type"}}};
+
   return {{"type", "object"},
-          {"properties", {{"lifetime", {{"type", "integer"}, {"description", "New lifetime in seconds"}}}}},
-          {"required", {"lifetime"}}};
+          {"properties",
+           {{"resource", {{"type", "string"}, {"description", "Resource URI to observe"}}},
+            {"trigger_condition", condition_schema},
+            {"protocol", {{"type", "string"}, {"description", "Transport protocol (default: sse)"}}},
+            {"multishot", {{"type", "boolean"}}},
+            {"persistent", {{"type", "boolean"}}},
+            {"lifetime", {{"type", "integer"}, {"minimum", 1}}},
+            {"path", {{"type", "string"}}},
+            {"log_settings", {{"type", "object"}}}}},
+          {"required", {"resource", "trigger_condition"}}};
+}
+
+nlohmann::json SchemaBuilder::configuration_delete_multi_status_schema() {
+  nlohmann::json result_entry = {{"type", "object"},
+                                 {"properties",
+                                  {{"node", {{"type", "string"}}},
+                                   {"app_id", {{"type", "string"}}},
+                                   {"success", {{"type", "boolean"}}},
+                                   {"error", {{"type", "string"}}}}}};
+
+  return {
+      {"type", "object"},
+      {"properties", {{"entity_id", {{"type", "string"}}}, {"results", {{"type", "array"}, {"items", result_entry}}}}},
+      {"required", {"entity_id", "results"}}};
 }
 
 nlohmann::json SchemaBuilder::cyclic_subscription_create_request_schema() {
@@ -404,9 +437,10 @@ nlohmann::json SchemaBuilder::bulk_data_descriptor_schema() {
            {{"id", {{"type", "string"}}},
             {"name", {{"type", "string"}}},
             {"size", {{"type", "integer"}}},
-            {"mimetype", {{"type", "string"}}},
-            {"creation_date", {{"type", "string"}, {"format", "date-time"}}},
-            {"description", {{"type", "string"}}},
+            {"mimetype", {{"type", "string"}, {"description", "MIME type of the file"}}},
+            {"creation_date",
+             {{"type", "string"}, {"format", "date-time"}, {"description", "ISO 8601 creation timestamp"}}},
+            {"description", {{"type", "string"}, {"description", "Human-readable description"}}},
             {"x-medkit", {{"type", "object"}}}}},
           {"required", {"id", "name"}}};
 }
@@ -478,6 +512,7 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
       {"ConfigurationMetaDataList", items_wrapper_ref("ConfigurationMetaData")},
       {"ConfigurationReadValue", configuration_read_value_schema()},
       {"ConfigurationWriteValue", configuration_write_value_schema()},
+      {"ConfigurationDeleteMultiStatus", configuration_delete_multi_status_schema()},
       // Logs
       {"LogEntry", log_entry_schema()},
       {"LogEntryList", items_wrapper_ref("LogEntry")},
@@ -499,6 +534,7 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
       {"Trigger", trigger_schema()},
       {"TriggerList", items_wrapper_ref("Trigger")},
       {"TriggerUpdateRequest", trigger_update_request_schema()},
+      {"TriggerCreateRequest", trigger_create_request_schema()},
       // Subscriptions
       {"CyclicSubscription", cyclic_subscription_schema()},
       {"CyclicSubscriptionList", items_wrapper_ref("CyclicSubscription")},

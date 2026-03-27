@@ -247,6 +247,8 @@ TEST(SchemaBuilderStaticTest, TriggerUpdateRequestSchema) {
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
   EXPECT_NE(std::find(required.begin(), required.end(), "lifetime"), required.end());
+
+  EXPECT_EQ(schema["properties"]["lifetime"]["minimum"], 1);
 }
 
 // @verifies REQ_INTEROP_002
@@ -257,6 +259,26 @@ TEST(SchemaBuilderStaticTest, BulkDataCategoryListSchema) {
   EXPECT_TRUE(schema["properties"].contains("items"));
   EXPECT_EQ(schema["properties"]["items"]["type"], "array");
   EXPECT_EQ(schema["properties"]["items"]["items"]["type"], "string");
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, BulkDataDescriptorSchema) {
+  auto schema = SchemaBuilder::bulk_data_descriptor_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("id"));
+  EXPECT_TRUE(schema["properties"].contains("name"));
+  EXPECT_TRUE(schema["properties"].contains("mimetype"));
+  EXPECT_TRUE(schema["properties"].contains("creation_date"));
+  EXPECT_TRUE(schema["properties"].contains("description"));
+  EXPECT_TRUE(schema["properties"].contains("x-medkit"));
+  EXPECT_FALSE(schema["properties"].contains("content_type"));
+  EXPECT_FALSE(schema["properties"].contains("created_at"));
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "id"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "name"), required.end());
 }
 
 // @verifies REQ_INTEROP_002
@@ -276,6 +298,34 @@ TEST(SchemaBuilderStaticTest, CyclicSubscriptionCreateRequestSchema) {
   EXPECT_NE(std::find(required.begin(), required.end(), "resource"), required.end());
   EXPECT_NE(std::find(required.begin(), required.end(), "interval"), required.end());
   EXPECT_NE(std::find(required.begin(), required.end(), "duration"), required.end());
+  EXPECT_EQ(std::find(required.begin(), required.end(), "id"), required.end());
+
+  // Verify interval enum constraint
+  EXPECT_EQ(schema["properties"]["interval"]["type"], "string");
+  ASSERT_TRUE(schema["properties"]["interval"].contains("enum"));
+  auto enum_vals = schema["properties"]["interval"]["enum"].get<std::vector<std::string>>();
+  EXPECT_EQ(enum_vals.size(), 3u);
+
+  // Verify duration type and minimum
+  EXPECT_EQ(schema["properties"]["duration"]["type"], "integer");
+  EXPECT_EQ(schema["properties"]["duration"]["minimum"], 1);
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, TriggerCreateRequestSchema) {
+  auto schema = SchemaBuilder::trigger_create_request_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("resource"));
+  EXPECT_TRUE(schema["properties"].contains("trigger_condition"));
+  EXPECT_FALSE(schema["properties"].contains("id"));
+  EXPECT_FALSE(schema["properties"].contains("status"));
+  EXPECT_FALSE(schema["properties"].contains("event_source"));
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "resource"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "trigger_condition"), required.end());
   EXPECT_EQ(std::find(required.begin(), required.end(), "id"), required.end());
 }
 
@@ -476,6 +526,9 @@ TEST(SchemaConsistencyTest, ListSchemasReferenceExistingItemSchemas) {
         std::smatch match;
         ASSERT_TRUE(std::regex_match(ref_str, match, ref_regex)) << name << " has malformed $ref: " << ref_str;
         EXPECT_TRUE(schemas.count(match[1].str()) > 0) << name << " references non-existent schema: " << match[1].str();
+      } else {
+        // Inline items (e.g., BulkDataCategoryList with string items) must have a type
+        EXPECT_TRUE(item_schema.contains("type")) << name << " has inline items without a type field";
       }
     }
   }
