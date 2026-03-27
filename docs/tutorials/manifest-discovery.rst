@@ -224,6 +224,9 @@ After merging, the **RuntimeLinker** binds manifest apps to running ROS 2 nodes:
 3. **Linking**: For each manifest app, checks ``ros_binding`` configuration
 4. **Binding**: If match found, copies runtime resources (topics, services, actions)
 5. **Status**: Apps with matched nodes are marked ``is_online: true``
+6. **Suppression**: Heuristic entities that duplicate manifest-covered namespaces
+   (components/areas) or linked app IDs (apps) are removed. Gap-fill apps in
+   uncovered namespaces survive.
 
 Merge Report
 ~~~~~~~~~~~~
