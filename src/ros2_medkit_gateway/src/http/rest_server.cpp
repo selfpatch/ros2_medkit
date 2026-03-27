@@ -566,7 +566,7 @@ void RESTServer::setup_routes() {
         .tag("Configuration")
         .summary(std::string("Set configuration for ") + et.singular)
         .description(std::string("Sets a ROS 2 node parameter value for this ") + et.singular + ".")
-        .request_body("Configuration value", SB::ref("ConfigurationReadValue"))
+        .request_body("Configuration value", SB::ref("ConfigurationWriteValue"))
         .response(200, "Updated configuration", SB::ref("ConfigurationReadValue"))
         .operation_id(std::string("set") + capitalize(et.singular) + "Configuration");
 
@@ -853,7 +853,7 @@ void RESTServer::setup_routes() {
           .tag("Subscriptions")
           .summary(std::string("Create cyclic subscription for ") + et.singular)
           .description(std::string("Creates a new cyclic data subscription for this ") + et.singular + ".")
-          .request_body("Subscription configuration", SB::ref("CyclicSubscription"))
+          .request_body("Subscription configuration", SB::ref("CyclicSubscriptionCreateRequest"))
           .response(201, "Subscription created", SB::ref("CyclicSubscription"))
           .operation_id(std::string("create") + capitalize(et.singular) + "Subscription");
 

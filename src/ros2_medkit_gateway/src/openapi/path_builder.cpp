@@ -454,7 +454,8 @@ nlohmann::json PathBuilder::build_cyclic_subscriptions_collection(const std::str
   post_op["summary"] = "Create cyclic subscription";
   post_op["description"] = "Create a new cyclic subscription to stream data changes via SSE.";
   post_op["requestBody"]["required"] = true;
-  post_op["requestBody"]["content"]["application/json"]["schema"] = SchemaBuilder::cyclic_subscription_schema();
+  post_op["requestBody"]["content"]["application/json"]["schema"] =
+      SchemaBuilder::cyclic_subscription_create_request_schema();
   post_op["responses"]["201"]["description"] = "Subscription created";
   post_op["responses"]["201"]["content"]["application/json"]["schema"] = SchemaBuilder::cyclic_subscription_schema();
 
