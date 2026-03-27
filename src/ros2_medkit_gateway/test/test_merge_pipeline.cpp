@@ -1776,6 +1776,7 @@ TEST_F(MergePipelineTest, SuppressRootNamespaceHeuristicAreas) {
   // Only manifest area should remain; root heuristic area suppressed
   ASSERT_EQ(result.areas.size(), 1u);
   EXPECT_EQ(result.areas[0].id, "sensors");
+  EXPECT_EQ(result.areas[0].source, "manifest");
 }
 
 // Heuristic apps in covered namespaces are suppressed; uncovered survive (#307)
@@ -1850,8 +1851,8 @@ TEST_F(MergePipelineTest, SuppressHeuristicAppsInCoveredNamespace) {
   pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
 
   auto result = pipeline_.execute();
-  // 2 manifest apps + 1 gap-fill (/actuators) + 1 orphan (_param_client_node, not linked)
-  // Suppressed: linked_runtime (merged into lidar-sim), root_runtime (merged into fault-mgr)
+  // 2 manifest apps + 1 gap-fill (/actuators) + 1 orphan (_param_client_node, not in linked_app_ids)
+  // Removed: linked_runtime (FQN-deduped with lidar-sim), root_runtime (FQN-deduped with fault-mgr)
   ASSERT_EQ(result.apps.size(), 4u);
   std::set<std::string> app_ids;
   for (const auto & a : result.apps) {
@@ -1860,5 +1861,15 @@ TEST_F(MergePipelineTest, SuppressHeuristicAppsInCoveredNamespace) {
   EXPECT_TRUE(app_ids.count("lidar-sim")) << "manifest app should survive";
   EXPECT_TRUE(app_ids.count("fault-mgr")) << "manifest app should survive";
   EXPECT_TRUE(app_ids.count("motor_ctrl")) << "gap-fill app in uncovered namespace should survive";
-  EXPECT_TRUE(app_ids.count("_param_client_node")) << "orphan gap-fill app should survive (not linked to manifest)";
+  EXPECT_TRUE(app_ids.count("_param_client_node"))
+      << "unmanifested heuristic app should survive (ID-based suppression only targets linked IDs)";
+
+  // Verify source provenance on surviving apps
+  for (const auto & a : result.apps) {
+    if (a.id == "lidar-sim" || a.id == "fault-mgr") {
+      EXPECT_EQ(a.source, "manifest") << a.id << " should be manifest-sourced";
+    } else {
+      EXPECT_EQ(a.source, "heuristic") << a.id << " should be heuristic-sourced";
+    }
+  }
 }
