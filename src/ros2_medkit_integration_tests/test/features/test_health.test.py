@@ -184,8 +184,8 @@ class TestHealth(GatewayTestCase):
                 for code, resp in op.get('responses', {}).items():
                     if not code.startswith('2'):
                         continue
-                    # 204 No Content doesn't need a schema
-                    if code == '204':
+                    # 202 Accepted and 204 No Content don't need a response schema
+                    if code in ('202', '204'):
                         has_schema = True
                     if '$ref' in resp:
                         has_schema = True
