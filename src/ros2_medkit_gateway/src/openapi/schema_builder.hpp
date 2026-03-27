@@ -134,6 +134,12 @@ class SchemaBuilder {
   /// Trigger update request schema (only mutable fields)
   static nlohmann::json trigger_update_request_schema();
 
+  /// Trigger create request schema (client-supplied fields only)
+  static nlohmann::json trigger_create_request_schema();
+
+  /// Configuration delete-all multi-status response schema (207)
+  static nlohmann::json configuration_delete_multi_status_schema();
+
   /// Cyclic subscription create request schema
   static nlohmann::json cyclic_subscription_create_request_schema();
 
