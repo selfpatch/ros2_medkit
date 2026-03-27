@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
 
+#include "ros2_medkit_gateway/discovery/merge_types.hpp"
+
 #include <algorithm>
 
 namespace ros2_medkit_gateway {
@@ -190,8 +192,7 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const 
   }
 
   auto it = std::remove_if(result.linked_apps.begin(), result.linked_apps.end(), [&](const App & app) {
-    // Only suppress known runtime sources - preserve manifest and plugin entities
-    if (app.source != "heuristic" && app.source != "topic" && app.source != "synthetic") {
+    if (!is_runtime_source(app.source)) {
       return false;
     }
     if (!app.bound_fqn.has_value()) {

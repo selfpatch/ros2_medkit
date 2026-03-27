@@ -1588,10 +1588,10 @@ TEST_F(MergePipelineTest, AppExternalField_EnrichmentDoesNotStickyTrue) {
   EXPECT_FALSE(result.apps[0].external);
 }
 
-TEST_F(MergePipelineTest, SuppressDoesNotAffectRootNamespaceEntities) {
-  // A manifest app bound to a root-level node (/root_node) should NOT
-  // suppress runtime components with empty namespace_path.
-  // This tests the last_slash > 0 guard in merge_pipeline.cpp.
+TEST_F(MergePipelineTest, SuppressDoesNotAffectEmptyNamespaceEntities) {
+  // A manifest app bound to a root-level node (/root_node) adds "/" to
+  // linked_namespaces. But a runtime component with empty namespace_path ""
+  // (distinct from "/") should NOT be suppressed - empty namespace != root.
 
   // Manifest app with ros_binding to a root-level node
   App manifest_app = make_app("root_app", "some_comp");
@@ -1634,9 +1634,8 @@ TEST_F(MergePipelineTest, SuppressDoesNotAffectRootNamespaceEntities) {
   pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), manifest_config);
 
   auto result = pipeline_.execute();
-  // The runtime component with empty namespace should NOT be suppressed.
-  // The last_slash > 0 guard prevents "/" FQNs from adding empty string
-  // to linked_namespaces, which would incorrectly match all root-namespace entities.
+  // The runtime component with empty namespace_path should NOT be suppressed.
+  // linked_namespaces contains "/" (from the root-level node), but "" != "/".
   bool found_root_comp = false;
   for (const auto & c : result.components) {
     if (c.id == "root_comp") {
