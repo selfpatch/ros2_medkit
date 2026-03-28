@@ -409,12 +409,11 @@ nlohmann::json PathBuilder::build_bulk_data_collection(const std::string & entit
 
   nlohmann::json get_op;
   get_op["tags"] = nlohmann::json::array({"Bulk Data"});
-  get_op["summary"] = "List bulk data resources for " + entity_path;
-  get_op["description"] = "Returns available bulk data resources (snapshots, recordings) for this entity.";
+  get_op["summary"] = "List bulk data categories for " + entity_path;
+  get_op["description"] = "Returns available bulk data categories (e.g., rosbags) for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::items_wrapper(SchemaBuilder::bulk_data_descriptor_schema());
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::bulk_data_category_list_schema();
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
