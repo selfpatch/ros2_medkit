@@ -46,6 +46,7 @@ SSEFaultHandler::~SSEFaultHandler() {
   // Signal shutdown and wake up any waiting clients
   shutdown_flag_.store(true);
   queue_cv_.notify_all();
+  subscription_.reset();
 }
 
 void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {

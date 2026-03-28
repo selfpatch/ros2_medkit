@@ -76,6 +76,8 @@ class LogManager {
   explicit LogManager(rclcpp::Node * node, PluginManager * plugin_mgr = nullptr,
                       size_t max_buffer_size = kDefaultBufferSize);
 
+  ~LogManager();
+
   /**
    * @brief Query log entries for a set of node FQNs
    *

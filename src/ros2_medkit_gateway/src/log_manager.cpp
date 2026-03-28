@@ -132,6 +132,11 @@ LogManager::LogManager(rclcpp::Node * node, PluginManager * plugin_mgr, size_t m
   RCLCPP_INFO(node_->get_logger(), "LogManager: subscribed to /rosout (buffer_size=%zu)", max_buffer_size_);
 }
 
+LogManager::~LogManager() {
+  // Clear /rosout subscription before destruction to prevent callbacks on destroyed object
+  rosout_sub_.reset();
+}
+
 // ---------------------------------------------------------------------------
 // /rosout callback
 // ---------------------------------------------------------------------------

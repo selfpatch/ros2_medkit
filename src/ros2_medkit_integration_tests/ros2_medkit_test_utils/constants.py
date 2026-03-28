@@ -37,7 +37,7 @@ GATEWAY_STARTUP_INTERVAL = 0.5
 
 # Discovery
 DISCOVERY_TIMEOUT = 60.0
-DISCOVERY_INTERVAL = 1.0
+DISCOVERY_INTERVAL = 0.5  # seconds between discovery polls
 
 # Operations
 ACTION_TIMEOUT = 30.0

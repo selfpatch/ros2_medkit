@@ -45,6 +45,13 @@ OperationManager::OperationManager(rclcpp::Node * node, DiscoveryManager * disco
   RCLCPP_INFO(node_->get_logger(), "OperationManager initialized with native serialization");
 }
 
+OperationManager::~OperationManager() {
+  // Clear subscriptions before destruction to prevent callbacks on destroyed object.
+  // Subscription callbacks capture `this` - they must be unsubscribed first.
+  std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+  status_subscriptions_.clear();
+}
+
 void OperationManager::set_notifier(ResourceChangeNotifier * notifier) {
   notifier_ = notifier;
 }

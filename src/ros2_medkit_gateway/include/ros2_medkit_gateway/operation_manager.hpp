@@ -102,6 +102,8 @@ class OperationManager {
  public:
   explicit OperationManager(rclcpp::Node * node, DiscoveryManager * discovery_manager);
 
+  ~OperationManager();
+
   /// Set optional notifier for broadcasting operation status changes to trigger subsystem.
   void set_notifier(ResourceChangeNotifier * notifier);
 

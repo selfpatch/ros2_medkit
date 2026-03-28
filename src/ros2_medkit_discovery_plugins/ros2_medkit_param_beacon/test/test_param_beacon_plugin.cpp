@@ -321,12 +321,17 @@ TEST_F(ParamBeaconPluginTest, BackoffOnTimeout) {
   input.apps.push_back(app);
   plugin_->introspect(input);
 
-  // Wait long enough for multiple poll cycles
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-  // Eventually the hint should appear after backoff recovery
-  auto stored = plugin_->store().get("backoff_test");
-  ASSERT_TRUE(stored.has_value());
+  // Poll until backoff recovery completes instead of fixed sleep
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  decltype(plugin_->store().get("backoff_test")) stored;
+  while (std::chrono::steady_clock::now() < deadline) {
+    stored = plugin_->store().get("backoff_test");
+    if (stored.has_value()) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_TRUE(stored.has_value()) << "Backoff recovery did not complete within 5 seconds";
 }
 
 TEST_F(ParamBeaconPluginTest, MetadataSubParams) {
