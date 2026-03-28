@@ -536,9 +536,10 @@ MergeResult MergePipeline::execute() {
         manifest_app_ids.insert(app.id);
       }
     }
-    // node_to_app values are always manifest app IDs (RuntimeLinker maps FQN -> manifest ID),
-    // so linked_app_ids == manifest_app_ids in practice. We merge both defensively in case
-    // the linker is extended to produce non-manifest IDs in the future.
+    // In practice this is a defensive no-op: real suppression of same-ID apps happens during
+    // merge_entities (manifest wins), and different-ID runtime apps are removed by the linker's
+    // FQN-based dedup. This layer exists as future-proofing in case the linker is extended to
+    // produce non-manifest IDs. node_to_app values are currently always manifest app IDs.
     std::set<std::string> linked_app_ids(manifest_app_ids);
     for (const auto & [fqn, app_id] : linking_result_.node_to_app) {
       linked_app_ids.insert(app_id);

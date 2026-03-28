@@ -154,11 +154,12 @@ struct GapFillConfig {
 /**
  * @brief Check if an entity source is from runtime discovery (eligible for suppression)
  *
- * Runtime sources (heuristic, topic, synthetic) are created by the runtime discovery
- * layer and may duplicate manifest entities. Manifest and plugin sources are preserved.
+ * Runtime sources (node, heuristic, topic, synthetic) are created by the runtime
+ * discovery layer and may duplicate manifest entities. Manifest and plugin sources
+ * are preserved.
  */
 inline bool is_runtime_source(const std::string & source) {
-  return source == "heuristic" || source == "topic" || source == "synthetic";
+  return source == "heuristic" || source == "topic" || source == "synthetic" || source == "node";
 }
 
 }  // namespace discovery
