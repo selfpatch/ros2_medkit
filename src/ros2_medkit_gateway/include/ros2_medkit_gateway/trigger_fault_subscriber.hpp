@@ -45,6 +45,8 @@ class TriggerFaultSubscriber {
    */
   TriggerFaultSubscriber(rclcpp::Node * node, ResourceChangeNotifier & notifier);
 
+  ~TriggerFaultSubscriber();
+
   /// Callback to resolve ROS node FQN to manifest entity ID.
   /// Returns manifest entity ID, or empty string if not resolvable.
   using NodeToEntityFn = std::function<std::string(const std::string &)>;

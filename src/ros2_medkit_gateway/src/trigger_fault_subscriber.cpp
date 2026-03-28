@@ -31,6 +31,10 @@ TriggerFaultSubscriber::TriggerFaultSubscriber(rclcpp::Node * node, ResourceChan
   RCLCPP_INFO(logger_, "TriggerFaultSubscriber initialized, subscribed to %s", fault_events_topic.c_str());
 }
 
+TriggerFaultSubscriber::~TriggerFaultSubscriber() {
+  subscription_.reset();
+}
+
 void TriggerFaultSubscriber::set_node_to_entity_resolver(NodeToEntityFn resolver) {
   node_to_entity_resolver_ = std::move(resolver);
 }
