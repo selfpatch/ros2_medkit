@@ -539,6 +539,10 @@ TEST(SchemaConsistencyTest, RequiredFieldsExistInProperties) {
   const auto & schemas = SchemaBuilder::component_schemas();
 
   for (const auto & [name, schema] : schemas) {
+    if (schema.contains("required") && !schema.contains("properties")) {
+      ADD_FAILURE() << "Schema '" << name << "' has 'required' but no 'properties'";
+      continue;
+    }
     if (!schema.contains("required") || !schema.contains("properties")) {
       continue;
     }
