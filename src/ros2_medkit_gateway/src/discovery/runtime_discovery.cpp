@@ -97,8 +97,14 @@ std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
   // Root-namespace nodes publish topics with their node name as prefix
   // (e.g., /fault_manager publishes /fault_manager/events), which looks like
   // a topic in namespace "fault_manager". These nodes belong to area "root".
+  // Only erase if the name was NOT also derived from actual node namespaces
+  // (protects legitimate areas when a root node shares a name with a namespace).
+  std::set<std::string> node_derived_areas;
+  for (const auto & [n, ns] : names_and_namespaces) {
+    node_derived_areas.insert(extract_area_from_namespace(ns));
+  }
   for (const auto & [name, ns] : names_and_namespaces) {
-    if (ns == "/") {
+    if (ns == "/" && node_derived_areas.find(name) == node_derived_areas.end()) {
       area_set.erase(name);
     }
   }
