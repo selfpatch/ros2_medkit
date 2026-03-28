@@ -239,9 +239,19 @@ TEST_F(DiscoveryManagerWithPublishersTest, DiscoverAreas_DoesNotCreateAreaForRoo
 
   auto areas = discovery_manager_->discover_areas();
 
+  bool found_alpha = false;
+  bool found_beta = false;
   for (const auto & area : areas) {
     EXPECT_NE(area.id, "test_discovery_node") << "Root-namespace node name should not appear as synthetic area";
+    if (area.id == "robot_alpha") {
+      found_alpha = true;
+    }
+    if (area.id == "robot_beta") {
+      found_beta = true;
+    }
   }
+  EXPECT_TRUE(found_alpha) << "Legitimate area robot_alpha should survive root-node filter";
+  EXPECT_TRUE(found_beta) << "Legitimate area robot_beta should survive root-node filter";
 }
 
 TEST_F(DiscoveryManagerWithPublishersTest, DiscoverTopicComponents_DoesNotDuplicateNodeNamespaces) {
