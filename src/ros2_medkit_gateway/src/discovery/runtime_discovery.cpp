@@ -93,6 +93,16 @@ std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
     }
   }
 
+  // Filter out topic "namespaces" that are actually root-namespace node names.
+  // Root-namespace nodes publish topics with their node name as prefix
+  // (e.g., /fault_manager publishes /fault_manager/events), which looks like
+  // a topic in namespace "fault_manager". These nodes belong to area "root".
+  for (const auto & [name, ns] : names_and_namespaces) {
+    if (ns == "/") {
+      area_set.erase(name);
+    }
+  }
+
   // Convert set to vector of Area structs
   std::vector<Area> areas;
   for (const auto & area_name : area_set) {
