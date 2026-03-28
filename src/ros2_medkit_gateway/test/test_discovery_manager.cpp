@@ -122,6 +122,10 @@ class DiscoveryManagerWithPublishersTest : public ::testing::Test {
     pub2_ = node_->create_publisher<std_msgs::msg::String>("/robot_alpha/odom", 10);
     pub3_ = node_->create_publisher<std_msgs::msg::String>("/robot_beta/status", 10);
 
+    // Simulate root-namespace node publishing with node-name prefix
+    // (like /fault_manager publishing /fault_manager/events)
+    pub_root_node_ = node_->create_publisher<std_msgs::msg::String>("/test_discovery_node/events", 10);
+
     // Allow time for graph discovery
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     rclcpp::spin_some(node_);
@@ -131,6 +135,7 @@ class DiscoveryManagerWithPublishersTest : public ::testing::Test {
     pub1_.reset();
     pub2_.reset();
     pub3_.reset();
+    pub_root_node_.reset();
     discovery_manager_.reset();
     topic_sampler_.reset();
     node_.reset();
@@ -142,6 +147,7 @@ class DiscoveryManagerWithPublishersTest : public ::testing::Test {
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub1_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub2_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub3_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_root_node_;
 };
 
 TEST_F(DiscoveryManagerWithPublishersTest, DiscoverTopicComponents_FindsNamespacedTopics) {
@@ -221,6 +227,21 @@ TEST_F(DiscoveryManagerWithPublishersTest, DiscoverAreas_IncludesTopicBasedAreas
 
   EXPECT_TRUE(found_alpha) << "Areas should include robot_alpha from topics";
   EXPECT_TRUE(found_beta) << "Areas should include robot_beta from topics";
+}
+
+TEST_F(DiscoveryManagerWithPublishersTest, DiscoverAreas_DoesNotCreateAreaForRootNamespaceNodeName) {
+  // Root-namespace nodes publish topics with their node name as prefix
+  // (e.g., /fault_manager publishes /fault_manager/events). Topic-based
+  // discovery must not create a synthetic area from that prefix - the node
+  // belongs to area "root", not to a per-node area.
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  rclcpp::spin_some(node_);
+
+  auto areas = discovery_manager_->discover_areas();
+
+  for (const auto & area : areas) {
+    EXPECT_NE(area.id, "test_discovery_node") << "Root-namespace node name should not appear as synthetic area";
+  }
 }
 
 TEST_F(DiscoveryManagerWithPublishersTest, DiscoverTopicComponents_DoesNotDuplicateNodeNamespaces) {
