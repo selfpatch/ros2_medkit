@@ -91,6 +91,20 @@ ros2_medkit_gateway:
     # Valid range: 0.1-30.0
     topic_sample_timeout_sec: 2.0
 
+    # Timeout (in seconds) for ROS 2 parameter service calls (configurations endpoint).
+    # Nodes without parameter service (e.g., micro-ROS bridges) will block for this
+    # duration before returning SERVICE_UNAVAILABLE. Lower values improve responsiveness
+    # on systems with mixed node types.
+    # Valid range: 0.1-10.0
+    parameter_service_timeout_sec: 0.5
+
+    # Negative cache TTL (in seconds) for parameter service unavailability.
+    # After a node's parameter service fails to respond, subsequent requests return
+    # immediately with SERVICE_UNAVAILABLE for this duration instead of blocking.
+    # Set to 0 to disable negative caching.
+    # Valid range: 0-3600
+    parameter_service_negative_cache_sec: 60.0
+
     # Fault Manager integration
     fault_manager:
       # Namespace prefix used to resolve Fault Manager services.

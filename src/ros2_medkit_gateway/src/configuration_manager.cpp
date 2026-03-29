@@ -38,6 +38,25 @@ ConfigurationManager::ConfigurationManager(rclcpp::Node * node) : node_(node) {
               service_timeout_sec_, negative_cache_ttl_sec_);
 }
 
+ConfigurationManager::~ConfigurationManager() {
+  shutdown();
+}
+
+void ConfigurationManager::shutdown() {
+  std::lock_guard<std::mutex> lock(param_nodes_registry_mutex_);
+  for (auto & weak_node : param_nodes_registry_) {
+    if (auto node = weak_node.lock()) {
+      node.reset();
+    }
+  }
+  param_nodes_registry_.clear();
+}
+
+void ConfigurationManager::register_param_node(std::shared_ptr<rclcpp::Node> node) {
+  std::lock_guard<std::mutex> lock(param_nodes_registry_mutex_);
+  param_nodes_registry_.push_back(node);
+}
+
 std::chrono::duration<double> ConfigurationManager::get_service_timeout() const {
   return std::chrono::duration<double>(service_timeout_sec_);
 }
@@ -144,6 +163,7 @@ std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_cl
   // Create a thread-local param node to avoid executor conflicts.
   // SyncParametersClient spins its node internally - sharing one node
   // across threads causes "Node already added to executor" errors.
+  // Nodes are registered for deterministic cleanup on shutdown.
   thread_local std::shared_ptr<rclcpp::Node> tl_param_node;
   thread_local std::map<std::string, std::shared_ptr<rclcpp::SyncParametersClient>> tl_clients;
 
@@ -155,6 +175,7 @@ std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_cl
     int id = param_node_counter.fetch_add(1);
     tl_param_node = std::make_shared<rclcpp::Node>(
         "_param_client_" + std::to_string(id), options);
+    register_param_node(tl_param_node);
   }
 
   auto it = tl_clients.find(node_name);

@@ -154,6 +154,18 @@ Data Access Settings
      - float
      - ``2.0``
      - Timeout for sampling topics with active publishers. Range: 0.1-30.0.
+   * - ``parameter_service_timeout_sec``
+     - float
+     - ``0.5``
+     - Timeout for ROS 2 parameter service calls (configurations endpoint).
+       Nodes without parameter service (e.g., micro-ROS bridges) block for this
+       duration before returning SERVICE_UNAVAILABLE. Range: 0.1-10.0.
+   * - ``parameter_service_negative_cache_sec``
+     - float
+     - ``60.0``
+     - After a node's parameter service fails to respond, subsequent requests
+       return immediately with SERVICE_UNAVAILABLE for this duration.
+       Set to 0 to disable. Range: 0-3600.
 
 .. note::
 
