@@ -45,15 +45,13 @@ namespace discovery {
  * It discovers entities by querying the ROS 2 node graph at runtime.
  *
  * Features:
- * - Discovers areas from node namespaces
+ * - Discovers Functions from node namespaces (functional grouping)
  * - Discovers components from ROS 2 nodes
  * - Discovers topic-based "virtual" components for systems like Isaac Sim
  * - Enriches components with services, actions, and topics
  * - Exposes nodes as Apps
  * - Can create synthetic Components that group Apps
- *
- * @note Functions are not supported in runtime-only mode.
- *       Use ManifestDiscoveryStrategy for custom entity definitions.
+ * - Can create synthetic Areas (deprecated, off by default)
  */
 class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
  public:
@@ -61,8 +59,9 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
    * @brief Runtime discovery configuration options
    */
   struct RuntimeConfig {
-    bool create_synthetic_areas{true};
-    bool create_synthetic_components{true};
+    bool create_synthetic_areas{false};
+    bool create_synthetic_components{false};
+    bool create_functions_from_namespaces{true};
     ComponentGroupingStrategy grouping{};
     std::string synthetic_component_name_pattern{"{area}"};
     TopicOnlyPolicy topic_only_policy{TopicOnlyPolicy::CREATE_COMPONENT};
@@ -95,7 +94,7 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   std::vector<App> discover_apps() override;
 
   /// @copydoc DiscoveryStrategy::discover_functions
-  /// @note Returns empty vector - functions require manifest
+  /// @note Creates Function entities from namespace grouping when enabled
   std::vector<Function> discover_functions() override;
 
   /// @copydoc DiscoveryStrategy::get_name
