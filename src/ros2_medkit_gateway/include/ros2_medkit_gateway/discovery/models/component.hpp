@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/discovery/models/common.hpp"
 
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,7 @@ struct Component {
   std::vector<ServiceInfo> services;    ///< Services exposed by this component
   std::vector<ActionInfo> actions;      ///< Actions exposed by this component
   ComponentTopics topics;               ///< Topics this component publishes/subscribes
+  std::optional<json> host_metadata;    ///< Host system metadata (for runtime default component)
 
   /**
    * @brief Convert to JSON representation
@@ -85,6 +87,9 @@ struct Component {
       x_medkit["dependsOn"] = depends_on;
     }
     x_medkit["topics"] = topics.to_json();
+    if (host_metadata.has_value()) {
+      x_medkit["host"] = host_metadata.value();
+    }
     j["x-medkit"] = x_medkit;
 
     // Add operations array combining services and actions

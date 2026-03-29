@@ -111,6 +111,8 @@ add_library(gateway_lib STATIC
   src/discovery/layers/manifest_layer.cpp
   src/discovery/layers/runtime_layer.cpp
   src/discovery/layers/plugin_layer.cpp
+  # Host info provider (default component from host system)
+  src/discovery/host_info_provider.cpp
   # Discovery models (with .cpp serialization)
   src/discovery/models/app.cpp
   src/discovery/models/function.cpp
@@ -379,6 +381,10 @@ if(BUILD_TESTING)
   # Add discovery models tests
   ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
   target_link_libraries(test_discovery_models gateway_lib)
+
+  # Add host info provider tests
+  ament_add_gtest(test_host_info_provider test/test_host_info_provider.cpp)
+  target_link_libraries(test_host_info_provider gateway_lib)
 
   # Add discovery handlers tests
   ament_add_gtest(test_discovery_handlers test/test_discovery_handlers.cpp)
@@ -649,6 +655,7 @@ if(BUILD_TESTING)
       test_tls_config
       test_fault_manager
       test_discovery_models
+      test_host_info_provider
       test_discovery_handlers
       test_manifest_parser
       test_manifest_validator
