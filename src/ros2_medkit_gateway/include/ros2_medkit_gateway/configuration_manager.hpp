@@ -14,12 +14,15 @@
 
 #pragma once
 
+#include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace ros2_medkit_gateway {
@@ -84,11 +87,27 @@ class ConfigurationManager {
   ParameterResult reset_all_parameters(const std::string & node_name);
 
  private:
-  /// Get or create a SyncParametersClient for the given node
+  /// Get or create a SyncParametersClient for the given node.
+  /// Creates a per-thread param node to avoid executor conflicts.
   std::shared_ptr<rclcpp::SyncParametersClient> get_param_client(const std::string & node_name);
 
   /// Cache default values for a node (called on first access)
   void cache_default_values(const std::string & node_name);
+
+  /// Check if a node is in the negative cache (recently unavailable)
+  bool is_node_unavailable(const std::string & node_name) const;
+
+  /// Mark a node as unavailable in the negative cache
+  void mark_node_unavailable(const std::string & node_name);
+
+  /// Check if node_name is the gateway's own node (self-query guard)
+  bool is_self_node(const std::string & node_name) const;
+
+  /// List parameters for the gateway's own node (direct access, no IPC)
+  ParameterResult list_own_parameters();
+
+  /// Get a specific parameter from the gateway's own node
+  ParameterResult get_own_parameter(const std::string & param_name);
 
   /// Convert ROS2 parameter type to string
   static std::string parameter_type_to_string(rclcpp::ParameterType type);
@@ -104,28 +123,32 @@ class ConfigurationManager {
 
   rclcpp::Node * node_;
 
-  /// Internal node for parameter client operations
-  /// SyncParametersClient requires a node that is NOT in an executor
-  /// to perform synchronous operations (spinning internally)
-  std::shared_ptr<rclcpp::Node> param_node_;
-
   /// Timeout for waiting for parameter services (configurable via parameter_service_timeout_sec parameter)
-  double service_timeout_sec_{2.0};
+  double service_timeout_sec_{0.5};
 
-  /// Cache of parameter clients per node (avoids recreating clients)
-  mutable std::mutex clients_mutex_;
-  std::map<std::string, std::shared_ptr<rclcpp::SyncParametersClient>> param_clients_;
+  /// Negative cache TTL (configurable via parameter_service_negative_cache_sec parameter)
+  double negative_cache_ttl_sec_{60.0};
+
+  /// Gateway's own fully qualified node name (for self-query detection)
+  std::string own_node_fqn_;
+
+  /// Per-node mutexes for parameter operations.
+  /// Each node gets its own mutex so one slow node doesn't block queries to other nodes.
+  mutable std::shared_mutex node_mutexes_mutex_;
+  mutable std::unordered_map<std::string, std::unique_ptr<std::mutex>> node_mutexes_;
+
+  /// Get or create a mutex for a specific node
+  std::mutex & get_node_mutex(const std::string & node_name) const;
+
+  /// Negative cache: nodes whose parameter service was recently unavailable.
+  /// Avoids repeated blocking waits on nodes that don't have parameter services.
+  mutable std::shared_mutex negative_cache_mutex_;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> unavailable_nodes_;
 
   /// Cache of default parameter values per node
   /// Key: node_name, Value: map of param_name -> Parameter
   mutable std::mutex defaults_mutex_;
   std::map<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
-
-  /// Mutex to serialize all parameter operations.
-  /// SyncParametersClient internally spins param_node_ via spin_node_until_future_complete(),
-  /// which is not thread-safe. Concurrent HTTP requests would cause:
-  /// "Node '/_param_client_node' has already been added to an executor"
-  mutable std::mutex param_operations_mutex_;
 };
 
 }  // namespace ros2_medkit_gateway
