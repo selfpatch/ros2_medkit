@@ -228,6 +228,26 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   }
 }
 
+FaultManagerNode::~FaultManagerNode() {
+  // Stop rosbag capture first (has active subscriptions and timers)
+  if (rosbag_capture_) {
+    rosbag_capture_->stop();
+  }
+
+  // Join any active capture threads to prevent use-after-free on node destruction.
+  // Without this, detached threads holding shared_ptrs to SnapshotCapture/RosbagCapture
+  // can access the destroyed node_ pointer, causing SIGSEGV.
+  {
+    std::lock_guard<std::mutex> lock(capture_threads_mutex_);
+    for (auto & t : capture_threads_) {
+      if (t.joinable()) {
+        t.join();
+      }
+    }
+    capture_threads_.clear();
+  }
+}
+
 std::unique_ptr<FaultStorage> FaultManagerNode::create_storage() {
   if (storage_type_ == "memory") {
     RCLCPP_INFO(get_logger(), "Using in-memory fault storage");
@@ -372,14 +392,32 @@ void FaultManagerNode::handle_report_fault(
       auto snapshot_cap = snapshot_capture_;
       auto rosbag_cap = rosbag_capture_;
       auto logger = get_logger();
-      std::thread([snapshot_cap, rosbag_cap, fault_code, logger]() {
+
+      {
+        std::lock_guard<std::mutex> ct_lock(capture_threads_mutex_);
+        // Join and remove finished threads before adding new one
+        for (auto it = capture_threads_.begin(); it != capture_threads_.end();) {
+          // Threads that are no longer joinable have been joined or moved
+          if (!it->joinable()) {
+            it = capture_threads_.erase(it);
+          } else {
+            ++it;
+          }
+        }
+      }
+
+      std::thread capture_thread([snapshot_cap, rosbag_cap, fault_code, logger]() {
         if (snapshot_cap) {
           snapshot_cap->capture(fault_code);
         }
         if (rosbag_cap) {
           rosbag_cap->on_fault_confirmed(fault_code);
         }
-      }).detach();
+      });
+      {
+        std::lock_guard<std::mutex> ct_lock(capture_threads_mutex_);
+        capture_threads_.push_back(std::move(capture_thread));
+      }
     }
 
     // Handle PREFAILED state for lazy_start rosbag capture
