@@ -48,5 +48,4 @@ ROSBAG_TIMEOUT = 30.0
 SNAPSHOT_TIMEOUT = 30.0
 
 # Shutdown
-# ROS 2 Humble demo nodes occasionally SIGSEGV (-11) on SIGINT shutdown.
-ALLOWED_EXIT_CODES = {0, -2, -11, -15}  # OK, SIGINT, SIGSEGV, SIGTERM
+ALLOWED_EXIT_CODES = {0, -2, -15}  # OK, SIGINT, SIGTERM
