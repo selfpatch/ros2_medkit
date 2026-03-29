@@ -105,10 +105,14 @@ if(BUILD_TESTING)
 
   ros2_medkit_clang_tidy()
 
+  include(ROS2MedkitTestDomain)
+  medkit_init_test_domains(START 90 END 99)
+
   # Unit tests
   ament_add_gtest(test_diagnostic_bridge test/test_diagnostic_bridge.cpp)
   target_link_libraries(test_diagnostic_bridge diagnostic_bridge_lib)
   medkit_target_dependencies(test_diagnostic_bridge rclcpp diagnostic_msgs ros2_medkit_msgs)
+  medkit_set_test_domain(test_diagnostic_bridge)
 
   if(ENABLE_COVERAGE)
     target_compile_options(test_diagnostic_bridge PRIVATE --coverage -O0 -g)

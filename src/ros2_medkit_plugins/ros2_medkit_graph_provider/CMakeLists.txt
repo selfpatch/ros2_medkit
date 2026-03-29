@@ -93,6 +93,9 @@ if(BUILD_TESTING)
 
   find_package(ament_cmake_gtest REQUIRED)
 
+  include(ROS2MedkitTestDomain)
+  medkit_init_test_domains(START 120 END 129)
+
   ament_add_gtest(test_graph_provider_plugin
     test/test_graph_provider_plugin.cpp
     src/graph_provider_plugin.cpp
@@ -111,9 +114,7 @@ if(BUILD_TESTING)
     cpp_httplib_target
     OpenSSL::SSL OpenSSL::Crypto
   )
-  set_tests_properties(test_graph_provider_plugin
-    PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=77"
-  )
+  medkit_set_test_domain(test_graph_provider_plugin)
 endif()
 
 ament_package()
