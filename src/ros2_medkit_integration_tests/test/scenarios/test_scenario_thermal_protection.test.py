@@ -208,23 +208,16 @@ class TestScenarioThermalProtection(GatewayTestCase):
         """Create trigger 3: OnChange on component faults collection.
 
         Catches any fault reported on the component level during thermal
-        events. Uses the synthetic component that groups the temp_sensor.
+        events. Uses the host-derived default component that hosts all apps.
         """
-        # Find the component that hosts temp_sensor
+        # Find the component that hosts temp_sensor (host-derived default)
         r = requests.get(f'{self.BASE_URL}/components', timeout=5)
         components = r.json().get('items', [])
         self.assertTrue(
             len(components) > 0, 'No components discovered'
         )
 
-        comp_id = None
-        for comp in components:
-            cid = comp.get('id', '')
-            if 'powertrain' in cid or 'engine' in cid:
-                comp_id = cid
-                break
-        if not comp_id:
-            comp_id = components[0]['id']
+        comp_id = components[0]['id']
 
         resource = f'/api/v1/components/{comp_id}/faults'
         body = {

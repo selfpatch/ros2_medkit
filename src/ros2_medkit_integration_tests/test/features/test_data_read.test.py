@@ -16,7 +16,12 @@
 """Feature tests for data read endpoints (app data, component topic data).
 
 Validates reading topic data from apps and components, data structure,
-error handling, data categories/groups, and area/function data.
+error handling, data categories/groups, and function data.
+
+With the SOVD-aligned entity model:
+- Components: single host-derived default Component (aggregates all apps)
+- Functions: created from namespace grouping (replace old areas)
+- Areas: empty in runtime_only mode
 
 """
 
@@ -44,11 +49,28 @@ def generate_test_description():
 
 
 class TestDataRead(GatewayTestCase):
-    """Data read endpoint tests for apps, components, areas, and functions."""
+    """Data read endpoint tests for apps, components, and functions."""
 
     MIN_EXPECTED_APPS = 5
     REQUIRED_APPS = {'temp_sensor', 'rpm_sensor', 'pressure_sensor'}
-    REQUIRED_AREAS = {'powertrain', 'chassis', 'body'}
+    REQUIRED_FUNCTIONS = {'powertrain', 'chassis', 'body'}
+
+    # Cache for the dynamically-discovered host component ID
+    _host_component_id = None
+
+    def _get_host_component_id(self):
+        """Get the host component ID (cached after first lookup)."""
+        if TestDataRead._host_component_id is not None:
+            return TestDataRead._host_component_id
+
+        data = self.get_json('/components')
+        components = data.get('items', [])
+        self.assertEqual(
+            len(components), 1,
+            f'Expected exactly 1 host component, got {len(components)}'
+        )
+        TestDataRead._host_component_id = components[0]['id']
+        return TestDataRead._host_component_id
 
     # ------------------------------------------------------------------
     # App data (test_07-12)
@@ -168,19 +190,20 @@ class TestDataRead(GatewayTestCase):
         self.assertIsInstance(data['items'], list, 'Response should have items array')
 
     # ------------------------------------------------------------------
-    # Component topic data (test_17-24)
+    # Component topic data (using host component)
     # ------------------------------------------------------------------
 
     def test_component_topic_temperature(self):
         """GET /components/{component_id}/data/{topic_name} for temperature topic.
 
-        Uses synthetic 'powertrain' component which aggregates apps in that namespace.
+        Uses host-derived default component which aggregates all apps.
 
         @verifies REQ_INTEROP_019
         """
+        comp_id = self._get_host_component_id()
         topic_path = self.encode_topic_path('/powertrain/engine/temperature')
         response = requests.get(
-            f'{self.BASE_URL}/components/powertrain/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/{comp_id}/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -200,13 +223,14 @@ class TestDataRead(GatewayTestCase):
     def test_component_topic_rpm(self):
         """GET /components/{component_id}/data/{topic_name} for RPM topic.
 
-        Uses synthetic 'powertrain' component.
+        Uses host-derived default component.
 
         @verifies REQ_INTEROP_019
         """
+        comp_id = self._get_host_component_id()
         topic_path = self.encode_topic_path('/powertrain/engine/rpm')
         response = requests.get(
-            f'{self.BASE_URL}/components/powertrain/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/{comp_id}/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -224,13 +248,14 @@ class TestDataRead(GatewayTestCase):
     def test_component_topic_pressure(self):
         """GET /components/{component_id}/data/{topic_name} for pressure topic.
 
-        Uses synthetic 'chassis' component.
+        Uses host-derived default component.
 
         @verifies REQ_INTEROP_019
         """
+        comp_id = self._get_host_component_id()
         topic_path = self.encode_topic_path('/chassis/brakes/pressure')
         response = requests.get(
-            f'{self.BASE_URL}/components/chassis/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/{comp_id}/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -248,13 +273,14 @@ class TestDataRead(GatewayTestCase):
     def test_component_topic_data_structure(self):
         """GET /components/{component_id}/data/{topic_name} response structure.
 
-        Uses synthetic 'powertrain' component.
+        Uses host-derived default component.
 
         @verifies REQ_INTEROP_019
         """
+        comp_id = self._get_host_component_id()
         topic_path = self.encode_topic_path('/powertrain/engine/temperature')
         response = requests.get(
-            f'{self.BASE_URL}/components/powertrain/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/{comp_id}/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -288,13 +314,14 @@ class TestDataRead(GatewayTestCase):
         """Nonexistent topic returns 200 with metadata_only status.
 
         The gateway returns metadata about the topic even if no data is available.
-        Uses synthetic 'powertrain' component.
+        Uses host-derived default component.
 
         @verifies REQ_INTEROP_019
         """
+        comp_id = self._get_host_component_id()
         topic_path = self.encode_topic_path('/some/nonexistent/topic')
         response = requests.get(
-            f'{self.BASE_URL}/components/powertrain/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/{comp_id}/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -304,7 +331,7 @@ class TestDataRead(GatewayTestCase):
         self.assertIn('x-medkit', data)
 
         x_medkit = data['x-medkit']
-        self.assertEqual(x_medkit['entity_id'], 'powertrain')
+        self.assertEqual(x_medkit['entity_id'], comp_id)
         self.assertEqual(x_medkit['status'], 'metadata_only')
 
     def test_component_topic_nonexistent_component_error(self):
@@ -329,13 +356,14 @@ class TestDataRead(GatewayTestCase):
     def test_component_topic_with_slashes(self):
         """GET with percent-encoded slashes in topic path.
 
-        Uses synthetic 'powertrain' component.
+        Uses host-derived default component.
 
         @verifies REQ_INTEROP_019
         """
+        comp_id = self._get_host_component_id()
         topic_path = self.encode_topic_path('/powertrain/engine/temperature')
         response = requests.get(
-            f'{self.BASE_URL}/components/powertrain/data/{topic_path}', timeout=10
+            f'{self.BASE_URL}/components/{comp_id}/data/{topic_path}', timeout=10
         )
         self.assertEqual(response.status_code, 200)
 
@@ -348,10 +376,11 @@ class TestDataRead(GatewayTestCase):
     def test_component_topic_valid_names(self):
         """Valid topic names work correctly.
 
-        Uses synthetic 'powertrain' component.
+        Uses host-derived default component.
 
         @verifies REQ_INTEROP_019
         """
+        comp_id = self._get_host_component_id()
         valid_topic_names = [
             'topic_name',
             'topic_name_123',
@@ -361,7 +390,7 @@ class TestDataRead(GatewayTestCase):
 
         for valid_topic in valid_topic_names:
             response = requests.get(
-                f'{self.BASE_URL}/components/powertrain/data/{valid_topic}', timeout=10
+                f'{self.BASE_URL}/components/{comp_id}/data/{valid_topic}', timeout=10
             )
             self.assertEqual(
                 response.status_code,
@@ -415,108 +444,26 @@ class TestDataRead(GatewayTestCase):
         self.assertIn('error_code', data)
 
     # ------------------------------------------------------------------
-    # Area data endpoints (test_109-112)
+    # Function data endpoints
     # ------------------------------------------------------------------
 
-    def test_list_area_data(self):
-        """GET /areas/{area_id}/data returns aggregated topics for area.
+    def test_list_function_data(self):
+        """GET /functions/{function_id}/data returns aggregated topics for function.
 
-        Areas aggregate data from all components and apps in their hierarchy.
-        The powertrain area should include topics from engine sensors.
+        Functions are created from namespace grouping in runtime_only mode.
+        The powertrain function should include topics from engine sensors.
 
         @verifies REQ_INTEROP_018
         """
-        response = requests.get(
-            f'{self.BASE_URL}/areas/powertrain/data',
-            timeout=10
+        data = self.poll_endpoint_until(
+            '/functions/powertrain/data',
+            condition=lambda d: d if d.get('items') else None,
+            timeout=15.0,
         )
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()
         self.assertIn('items', data)
         items = data['items']
         self.assertIsInstance(items, list)
-
-        self.assertGreater(len(items), 0, 'Area should have at least one data item')
-        for topic_data in items:
-            self.assertIn('id', topic_data)
-            self.assertIn('name', topic_data)
-            self.assertIn('x-medkit', topic_data)
-            x_medkit = topic_data['x-medkit']
-            self.assertIn('ros2', x_medkit)
-            self.assertIn('direction', x_medkit['ros2'])
-            direction = x_medkit['ros2']['direction']
-            self.assertIn(direction, ['publish', 'subscribe', 'both'])
-
-        # Should include aggregated_from in x-medkit
-        self.assertIn('x-medkit', data)
-        self.assertIn('aggregated_from', data['x-medkit'])
-        self.assertIn('powertrain', data['x-medkit']['aggregated_from'])
-
-    def test_list_area_data_nonexistent(self):
-        """GET /areas/{area_id}/data returns 404 for nonexistent area.
-
-        @verifies REQ_INTEROP_018
-        """
-        response = requests.get(
-            f'{self.BASE_URL}/areas/nonexistent_area/data',
-            timeout=10
-        )
-        self.assertEqual(response.status_code, 404)
-
-        data = response.json()
-        self.assertIn('error_code', data)
-        self.assertEqual(data['message'], 'Entity not found')
-        self.assertIn('parameters', data)
-        self.assertIn('entity_id', data['parameters'])
-        self.assertEqual(data['parameters'].get('entity_id'), 'nonexistent_area')
-
-    def test_list_area_data_root(self):
-        """GET /areas/root/data returns all topics system-wide.
-
-        The root area aggregates all entities in the system.
-
-        @verifies REQ_INTEROP_018
-        """
-        response = requests.get(
-            f'{self.BASE_URL}/areas/root/data',
-            timeout=10
-        )
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()
-        self.assertIn('items', data)
-        items = data['items']
-        self.assertIsInstance(items, list)
-        self.assertGreater(len(items), 0, 'Root area should have aggregated topics')
-
-    def test_list_area_data_empty(self):
-        """GET /areas/{area_id}/data returns 200 with empty items for area with no data.
-
-        Some areas may exist but have no direct topics - they should return 200
-        with empty items, not 404.
-
-        @verifies REQ_INTEROP_018
-        """
-        response = requests.get(
-            f'{self.BASE_URL}/areas/chassis/data',
-            timeout=10
-        )
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()
-        self.assertIn('items', data)
-        self.assertIsInstance(data['items'], list)
-        self.assertIn('x-medkit', data)
-        self.assertIn('aggregated_from', data['x-medkit'])
-        self.assertIn('chassis', data['x-medkit']['aggregated_from'])
-
-    # ------------------------------------------------------------------
-    # Function data endpoints (test_113-115)
-    # ------------------------------------------------------------------
-
-    # test_list_function_data requires manifest-mode functions and is covered
-    # by test_23_function_data in test_scenario_discovery_manifest.test.py.
+        self.assertGreater(len(items), 0, 'Function should have at least one data item')
 
     def test_list_function_data_nonexistent(self):
         """GET /functions/{function_id}/data returns 404 for nonexistent function.

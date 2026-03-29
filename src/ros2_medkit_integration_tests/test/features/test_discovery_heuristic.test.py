@@ -14,17 +14,19 @@
 # limitations under the License.
 
 """
-Integration tests for heuristic discovery - runtime Apps and topic-only policies.
+Integration tests for heuristic discovery - runtime Apps, Functions, and topic-only policies.
 
-This test file validates the runtime discovery heuristics:
+This test file validates the runtime discovery heuristics with SOVD-aligned model:
 - Nodes are exposed as Apps with source="heuristic"
-- Synthetic components are created from namespace grouping
+- Synthetic components are created from namespace grouping (when enabled)
+- Functions are created from namespace grouping (default)
 - TopicOnlyPolicy controls topic-based component creation
 - min_topics_for_component threshold filters low-topic namespaces
 
 Tests verify:
 - Apps have correct source field
-- Components have source field (node vs topic)
+- Synthetic components exist when enabled
+- Functions are created from namespaces
 - Topic-only policy IGNORE prevents component creation
 - min_topics_for_component threshold works
 
@@ -48,11 +50,14 @@ def generate_test_description():
     """Generate launch description with gateway in runtime_only mode."""
     coverage_env = get_coverage_env()
 
-    # Gateway node with runtime_only discovery mode (default)
-    # Uses default topic_only_policy=create_component and min_topics=1
+    # Gateway node with runtime_only discovery mode
+    # Explicitly enable synthetic components for backward compat testing
+    # Note: create_synthetic_areas defaults to false (SOVD-aligned)
+    # Functions from namespaces is enabled by default
     gateway_node = create_gateway_node(
         extra_params={
             'discovery.runtime.create_synthetic_components': True,
+            'discovery.runtime.default_component.enabled': False,
             'discovery.runtime.grouping_strategy': 'namespace',
             'discovery.runtime.topic_only_policy': 'create_component',
             'discovery.runtime.min_topics_for_component': 1,
@@ -118,7 +123,7 @@ class TestHeuristicAppsDiscovery(GatewayTestCase):
     """Integration tests for heuristic runtime discovery of Apps."""
 
     MIN_EXPECTED_APPS = 3
-    REQUIRED_AREAS = {'powertrain', 'chassis'}
+    REQUIRED_FUNCTIONS = {'powertrain', 'chassis'}
 
     def test_apps_have_heuristic_source(self):
         """Test that runtime-discovered apps have source='heuristic'."""
@@ -144,7 +149,7 @@ class TestHeuristicAppsDiscovery(GatewayTestCase):
             )
 
     def test_synthetic_components_created(self):
-        """Test that synthetic components are created by namespace grouping."""
+        """Test that synthetic components are created when explicitly enabled."""
         data = self.get_json('/components')
         self.assertIn('items', data)
         components = data['items']
@@ -153,12 +158,12 @@ class TestHeuristicAppsDiscovery(GatewayTestCase):
         component_ids = [c.get('id') for c in components]
 
         # At least powertrain and chassis should exist
-        expected_areas = ['powertrain', 'chassis']
-        for area in expected_areas:
-            matching = [c for c in component_ids if area in c.lower()]
+        expected = ['powertrain', 'chassis']
+        for name in expected:
+            matching = [c for c in component_ids if name in c.lower()]
             self.assertTrue(
                 len(matching) > 0,
-                f"Expected component for area '{area}', found: {component_ids}"
+                f"Expected component for '{name}', found: {component_ids}"
             )
 
     def test_apps_grouped_under_components(self):
@@ -178,16 +183,27 @@ class TestHeuristicAppsDiscovery(GatewayTestCase):
                     f"App {app.get('id')} has empty component_id"
                 )
 
-    def test_areas_created_from_namespaces(self):
-        """Test that areas are created from top-level namespaces."""
+    def test_functions_created_from_namespaces(self):
+        """Test that Functions are created from top-level namespaces."""
+        data = self.get_json('/functions')
+        self.assertIn('items', data)
+        functions = data['items']
+
+        # Should have functions for powertrain, chassis
+        func_ids = [f.get('id') for f in functions]
+        self.assertIn('powertrain', func_ids, f"Missing 'powertrain' function, found: {func_ids}")
+        self.assertIn('chassis', func_ids, f"Missing 'chassis' function, found: {func_ids}")
+
+    def test_areas_empty_by_default(self):
+        """Test that areas are empty when create_synthetic_areas is false (default)."""
         data = self.get_json('/areas')
         self.assertIn('items', data)
         areas = data['items']
-
-        # Should have areas for powertrain, chassis
-        area_ids = [a.get('id') for a in areas]
-        self.assertIn('powertrain', area_ids, f"Missing 'powertrain' area, found: {area_ids}")
-        self.assertIn('chassis', area_ids, f"Missing 'chassis' area, found: {area_ids}")
+        self.assertEqual(
+            len(areas), 0,
+            f'Expected empty areas with create_synthetic_areas=false, '
+            f'got: {[a.get("id") for a in areas]}'
+        )
 
     def test_no_duplicate_component_ids(self):
         """
@@ -263,10 +279,11 @@ class TestTopicOnlyPolicy(GatewayTestCase):
 
         # Check source field is present on all components
         for comp in components:
-            # Source should be present (node, topic, synthetic, heuristic, or empty)
+            # Source should be present (node, topic, synthetic, heuristic, runtime, or empty)
             if 'source' in comp:
                 self.assertIn(
-                    comp['source'], ['node', 'topic', 'synthetic', 'heuristic', ''],
+                    comp['source'],
+                    ['node', 'topic', 'synthetic', 'heuristic', 'runtime', ''],
                     f"Component {comp.get('id')} has unexpected source: {comp['source']}"
                 )
 

@@ -18,6 +18,8 @@
 Validates publishing data to topics, validation errors for missing fields
 and invalid formats, nonexistent components, and invalid JSON bodies.
 
+Uses the host-derived default component (SOVD-aligned entity model).
+
 """
 
 import unittest
@@ -44,16 +46,34 @@ class TestDataWrite(GatewayTestCase):
     MIN_EXPECTED_APPS = 2
     REQUIRED_APPS = {'actuator', 'controller'}
 
+    # Cache for the dynamically-discovered host component ID
+    _host_component_id = None
+
+    def _get_host_component_id(self):
+        """Get the host component ID (cached after first lookup)."""
+        if TestDataWrite._host_component_id is not None:
+            return TestDataWrite._host_component_id
+
+        data = self.get_json('/components')
+        components = data.get('items', [])
+        self.assertEqual(
+            len(components), 1,
+            f'Expected exactly 1 host component, got {len(components)}'
+        )
+        TestDataWrite._host_component_id = components[0]['id']
+        return TestDataWrite._host_component_id
+
     def test_publish_brake_command(self):
         """PUT /components/{component_id}/data/{topic_name} publishes data.
 
-        Uses synthetic 'chassis' component.
+        Uses host-derived default component.
 
         @verifies REQ_INTEROP_020
         """
+        comp_id = self._get_host_component_id()
         topic_path = self.encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/chassis/data/{topic_path}',
+            f'{self.BASE_URL}/components/{comp_id}/data/{topic_path}',
             json={'type': 'std_msgs/msg/Float32', 'data': {'data': 50.0}},
             timeout=10,
         )
@@ -75,9 +95,10 @@ class TestDataWrite(GatewayTestCase):
 
         @verifies REQ_INTEROP_020
         """
+        comp_id = self._get_host_component_id()
         topic_path = self.encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/chassis/data/{topic_path}',
+            f'{self.BASE_URL}/components/{comp_id}/data/{topic_path}',
             json={'data': {'data': 50.0}},
             timeout=5,
         )
@@ -92,9 +113,10 @@ class TestDataWrite(GatewayTestCase):
 
         @verifies REQ_INTEROP_020
         """
+        comp_id = self._get_host_component_id()
         topic_path = self.encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/chassis/data/{topic_path}',
+            f'{self.BASE_URL}/components/{comp_id}/data/{topic_path}',
             json={'type': 'std_msgs/msg/Float32'},
             timeout=5,
         )
@@ -119,10 +141,11 @@ class TestDataWrite(GatewayTestCase):
             'package/msg/',  # Missing type (ends with /)
         ]
 
+        comp_id = self._get_host_component_id()
         topic_path = self.encode_topic_path('/chassis/brakes/command')
         for invalid_type in invalid_types:
             response = requests.put(
-                f'{self.BASE_URL}/components/chassis/data/{topic_path}',
+                f'{self.BASE_URL}/components/{comp_id}/data/{topic_path}',
                 json={'type': invalid_type, 'data': {'data': 50.0}},
                 timeout=5,
             )
@@ -158,9 +181,10 @@ class TestDataWrite(GatewayTestCase):
 
         @verifies REQ_INTEROP_020
         """
+        comp_id = self._get_host_component_id()
         topic_path = self.encode_topic_path('/chassis/brakes/command')
         response = requests.put(
-            f'{self.BASE_URL}/components/chassis/data/{topic_path}',
+            f'{self.BASE_URL}/components/{comp_id}/data/{topic_path}',
             data='not valid json',
             headers={'Content-Type': 'application/json'},
             timeout=5,

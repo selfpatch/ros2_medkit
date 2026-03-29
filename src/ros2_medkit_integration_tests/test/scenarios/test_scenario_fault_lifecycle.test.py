@@ -55,7 +55,7 @@ class TestScenarioFaultLifecycle(GatewayTestCase):
 
     MIN_EXPECTED_APPS = 1
     REQUIRED_APPS = {'lidar_sensor'}
-    REQUIRED_AREAS = {'perception'}
+    REQUIRED_FUNCTIONS = {'perception'}
 
     LIDAR_ENDPOINT = '/apps/lidar_sensor'
     FAULT_CODE = 'LIDAR_RANGE_INVALID'
@@ -90,8 +90,10 @@ class TestScenarioFaultLifecycle(GatewayTestCase):
 
         @verifies REQ_INTEROP_014
         """
-        # The lidar_sensor is under /perception namespace
-        component_id = 'perception'
+        # Use the host-derived default component (all apps belong to it)
+        components = self.get_json('/components')['items']
+        self.assertGreater(len(components), 0, 'Expected at least one component')
+        component_id = components[0]['id']
 
         # Clear all faults (should succeed even if empty)
         response = self.delete_request(

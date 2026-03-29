@@ -66,18 +66,22 @@ class TestBulkDataApi(GatewayTestCase):
         self.assertIn('rosbags', data['items'])
 
     def test_bulk_data_list_categories_all_entity_types(self):
-        """Bulk-data endpoint works for apps, components, and areas.
+        """Bulk-data endpoint works for apps and components.
 
         As a ros2_medkit extension, these entity types support bulk-data.
-        Areas provide read-only aggregated access via their child entities.
-        Functions also support bulk-data (tested separately with manifest).
+        Uses the host-derived default component (SOVD-aligned entity model).
 
         @verifies REQ_INTEROP_071
         """
+        # Get host component ID dynamically
+        comp_data = self.get_json('/components')
+        components = comp_data.get('items', [])
+        self.assertGreater(len(components), 0, 'Expected at least one component')
+        comp_id = components[0]['id']
+
         supported_endpoints = [
             '/apps/lidar_sensor/bulk-data',
-            '/components/perception/bulk-data',
-            '/areas/perception/bulk-data',
+            f'/components/{comp_id}/bulk-data',
         ]
 
         for endpoint in supported_endpoints:
@@ -134,14 +138,18 @@ class TestBulkDataApi(GatewayTestCase):
         self.assertIn('fault_code', x_medkit)
 
     def test_bulk_data_list_descriptors_empty_result(self):
-        """Bulk-data returns empty array for entity without rosbags.
+        """Bulk-data returns empty or non-empty array for component rosbags.
 
         @verifies REQ_INTEROP_072
         """
-        # Use a component that likely doesn't have rosbags
-        # perception component bulk-data/rosbags should work
+        # Use the host-derived default component
+        comp_data = self.get_json('/components')
+        components = comp_data.get('items', [])
+        self.assertGreater(len(components), 0, 'Expected at least one component')
+        comp_id = components[0]['id']
+
         response = requests.get(
-            f'{self.BASE_URL}/components/perception/bulk-data/rosbags',
+            f'{self.BASE_URL}/components/{comp_id}/bulk-data/rosbags',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
@@ -180,16 +188,20 @@ class TestBulkDataApi(GatewayTestCase):
         self.assertIn('error_code', data)
 
     def test_bulk_data_nested_entity_path(self):
-        """Bulk-data endpoints work for nested component entities.
+        """Bulk-data endpoints work for component entities.
 
-        Note: Areas do NOT support bulk-data per SOVD Table 8, so we test
-        with a component that has a namespace path (nested entity).
+        Components support bulk-data. Uses the host-derived default component.
 
         @verifies REQ_INTEROP_071
         """
-        # Test nested component -- components DO support bulk-data
+        # Use the host-derived default component
+        comp_data = self.get_json('/components')
+        components = comp_data.get('items', [])
+        self.assertGreater(len(components), 0, 'Expected at least one component')
+        comp_id = components[0]['id']
+
         response = requests.get(
-            f'{self.BASE_URL}/components/perception/bulk-data',
+            f'{self.BASE_URL}/components/{comp_id}/bulk-data',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)

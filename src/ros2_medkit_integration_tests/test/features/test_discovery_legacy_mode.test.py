@@ -36,6 +36,7 @@ def generate_test_description():
     gateway_node = create_gateway_node(
         extra_params={
             'discovery.runtime.create_synthetic_components': False,
+            'discovery.runtime.default_component.enabled': False,
         },
     )
 

@@ -1300,14 +1300,16 @@ void GatewayNode::refresh_cache() {
     }
 
     // Link Apps to default Component (is-located-on relationship)
-    // Only set component_id on Apps that don't already have one
-    if (discovery_mgr_->has_host_info_provider()) {
+    // In RUNTIME_ONLY mode with host info provider, ALL apps belong to
+    // the single host-derived Component. Override any namespace-derived
+    // component_id since those synthetic components no longer exist.
+    // In MANIFEST_ONLY and HYBRID modes, apps keep their manifest-assigned
+    // component_id (is_located_on relationship).
+    if (discovery_mgr_->get_mode() == DiscoveryMode::RUNTIME_ONLY && discovery_mgr_->has_host_info_provider()) {
       auto default_comp = discovery_mgr_->get_default_component();
       if (default_comp) {
         for (auto & app : apps) {
-          if (app.component_id.empty()) {
-            app.component_id = default_comp->id;
-          }
+          app.component_id = default_comp->id;
         }
       }
     }
