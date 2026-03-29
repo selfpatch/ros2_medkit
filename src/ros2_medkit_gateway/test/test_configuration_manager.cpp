@@ -345,16 +345,16 @@ TEST_F(TestConfigurationManager, test_self_query_no_deadlock) {
 TEST_F(TestConfigurationManager, test_parallel_different_nodes_not_serialized) {
   // Queries to different nonexistent nodes should run in parallel,
   // not serialize behind a single mutex.
-  // Compare serial vs parallel to avoid absolute timing thresholds.
+  // Use different node names for serial vs parallel to avoid negative cache hits.
 
-  // Serial baseline
+  // Serial baseline (uses _serial_ prefix)
   auto serial_start = std::chrono::steady_clock::now();
   for (int i = 0; i < 3; ++i) {
-    (void)config_manager_->list_parameters("/parallel_test_node_" + std::to_string(i));
+    (void)config_manager_->list_parameters("/serial_test_node_" + std::to_string(i));
   }
   auto serial_elapsed = std::chrono::steady_clock::now() - serial_start;
 
-  // Parallel run
+  // Parallel run (uses _parallel_ prefix - different names, no cache hit)
   auto parallel_start = std::chrono::steady_clock::now();
   std::vector<std::thread> threads;
   for (int i = 0; i < 3; ++i) {

@@ -155,14 +155,19 @@ class ConfigurationManager {
   mutable std::mutex defaults_mutex_;
   std::map<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
 
-  /// Registry of thread-local param nodes for deterministic cleanup.
-  /// Thread-local nodes are registered here on creation and cleared in shutdown()
-  /// to prevent use-after-free when ROS 2 context is destroyed before httplib threads exit.
-  mutable std::mutex param_nodes_registry_mutex_;
-  std::vector<std::weak_ptr<rclcpp::Node>> param_nodes_registry_;
+  /// Pool of param nodes for SyncParametersClient operations.
+  /// Each node can only be used by one thread at a time (SyncParametersClient
+  /// spins internally and is not thread-safe). Threads acquire a node from the
+  /// pool and return it when done. Pool grows on demand, shrinks on shutdown().
+  mutable std::mutex param_pool_mutex_;
+  std::vector<std::shared_ptr<rclcpp::Node>> param_pool_available_;
+  std::vector<std::shared_ptr<rclcpp::Node>> param_pool_all_;
 
-  /// Register a thread-local param node for cleanup tracking
-  void register_param_node(std::shared_ptr<rclcpp::Node> node);
+  /// Acquire a param node from the pool (creates one if none available)
+  std::shared_ptr<rclcpp::Node> acquire_param_node();
+
+  /// Return a param node to the pool
+  void release_param_node(std::shared_ptr<rclcpp::Node> node);
 };
 
 }  // namespace ros2_medkit_gateway
