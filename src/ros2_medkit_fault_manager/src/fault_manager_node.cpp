@@ -393,19 +393,6 @@ void FaultManagerNode::handle_report_fault(
       auto rosbag_cap = rosbag_capture_;
       auto logger = get_logger();
 
-      {
-        std::lock_guard<std::mutex> ct_lock(capture_threads_mutex_);
-        // Join and remove finished threads before adding new one
-        for (auto it = capture_threads_.begin(); it != capture_threads_.end();) {
-          // Threads that are no longer joinable have been joined or moved
-          if (!it->joinable()) {
-            it = capture_threads_.erase(it);
-          } else {
-            ++it;
-          }
-        }
-      }
-
       std::thread capture_thread([snapshot_cap, rosbag_cap, fault_code, logger]() {
         if (snapshot_cap) {
           snapshot_cap->capture(fault_code);
