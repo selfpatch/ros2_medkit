@@ -56,6 +56,11 @@ struct ParameterResult {
 class ConfigurationManager {
  public:
   explicit ConfigurationManager(rclcpp::Node * node);
+  ~ConfigurationManager();
+
+  /// Clean up thread-local param nodes before ROS 2 context shutdown.
+  /// Must be called before rclcpp::shutdown() to prevent use-after-free.
+  void shutdown();
 
   /// List all parameters for a node
   /// @param node_name Fully qualified node name (e.g., "/powertrain/engine/engine_temp_sensor")
@@ -149,6 +154,15 @@ class ConfigurationManager {
   /// Key: node_name, Value: map of param_name -> Parameter
   mutable std::mutex defaults_mutex_;
   std::map<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
+
+  /// Registry of thread-local param nodes for deterministic cleanup.
+  /// Thread-local nodes are registered here on creation and cleared in shutdown()
+  /// to prevent use-after-free when ROS 2 context is destroyed before httplib threads exit.
+  mutable std::mutex param_nodes_registry_mutex_;
+  std::vector<std::weak_ptr<rclcpp::Node>> param_nodes_registry_;
+
+  /// Register a thread-local param node for cleanup tracking
+  void register_param_node(std::shared_ptr<rclcpp::Node> node);
 };
 
 }  // namespace ros2_medkit_gateway
