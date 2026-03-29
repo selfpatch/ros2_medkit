@@ -101,7 +101,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     auto_confirm_after_sec_ = 0.0;
   }
 
-  // Snapshot protection parameters
+  // Capture cooldown parameters (gates both snapshot and rosbag capture)
   snapshot_recapture_cooldown_sec_ = declare_parameter<double>("snapshots.recapture_cooldown_sec", 60.0);
   if (snapshot_recapture_cooldown_sec_ < 0.0) {
     RCLCPP_WARN(get_logger(), "snapshots.recapture_cooldown_sec should be >= 0, got %.2f. Disabling.",
@@ -415,7 +415,7 @@ void FaultManagerNode::handle_report_fault(
           auto elapsed = std::chrono::steady_clock::now() - it->second;
           if (elapsed < std::chrono::duration<double>(snapshot_recapture_cooldown_sec_)) {
             should_capture = false;
-            RCLCPP_DEBUG(get_logger(), "Skipping snapshot for '%s' - cooldown active", request->fault_code.c_str());
+            RCLCPP_DEBUG(get_logger(), "Skipping capture for '%s' - cooldown active", request->fault_code.c_str());
           }
         }
         if (should_capture) {
@@ -427,9 +427,7 @@ void FaultManagerNode::handle_report_fault(
         std::string fault_code = request->fault_code;
         auto snapshot_cap = snapshot_capture_;
         auto rosbag_cap = rosbag_capture_;
-        auto logger = get_logger();
-
-        std::thread capture_thread([snapshot_cap, rosbag_cap, fault_code, logger]() {
+        std::thread capture_thread([snapshot_cap, rosbag_cap, fault_code]() {
           if (snapshot_cap) {
             snapshot_cap->capture(fault_code);
           }

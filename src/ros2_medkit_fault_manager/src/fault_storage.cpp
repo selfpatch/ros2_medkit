@@ -305,7 +305,8 @@ void InMemoryFaultStorage::store_snapshot(const SnapshotData & snapshot) {
       }
     }
     if (count >= max_snapshots_per_fault_) {
-      return;  // Reject new - keep earliest snapshots
+      // Silent rejection: storage layer has no logger. Callers should log if needed.
+      return;  // Reject new - keep first N inserted snapshots
     }
   }
   snapshots_.push_back(snapshot);

@@ -1172,7 +1172,13 @@ GatewayNode::~GatewayNode() {
   if (plugin_mgr_) {
     plugin_mgr_->shutdown_all();
   }
-  // 7. Normal member destruction (managers safe - all transports stopped)
+  // 7. Shutdown OperationManager (clears action status subscriptions and
+  //    service clients while executor may still be spinning - prevents
+  //    "terminate called without an active exception" during member destruction)
+  if (operation_mgr_) {
+    operation_mgr_->shutdown();
+  }
+  // 8. Normal member destruction (managers safe - all transports stopped)
 }
 
 const ThreadSafeEntityCache & GatewayNode::get_thread_safe_cache() const {
