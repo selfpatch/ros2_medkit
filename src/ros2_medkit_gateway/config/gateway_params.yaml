@@ -96,7 +96,7 @@ ros2_medkit_gateway:
     # duration before returning SERVICE_UNAVAILABLE. Lower values improve responsiveness
     # on systems with mixed node types.
     # Valid range: 0.1-10.0
-    parameter_service_timeout_sec: 0.5
+    parameter_service_timeout_sec: 2.0
 
     # Negative cache TTL (in seconds) for parameter service unavailability.
     # After a node's parameter service fails to respond, subsequent requests return
