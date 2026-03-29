@@ -58,22 +58,33 @@ struct DiscoveryConfig {
    */
   struct RuntimeOptions {
     /**
-     * @brief Create synthetic Area entities from ROS 2 namespaces
+     * @brief Create synthetic Area entities from ROS 2 namespaces (deprecated)
      *
-     * When true (default), namespaces become Areas.
-     * When false, no Areas are created - flat component tree.
-     * Useful for simple robots without area hierarchy.
+     * When true, namespaces become Areas (legacy behavior).
+     * When false (default), no Areas are created from namespaces.
+     * Namespace grouping now creates Function entities instead.
+     * @deprecated Use create_functions_from_namespaces instead.
      */
-    bool create_synthetic_areas{true};
+    bool create_synthetic_areas{false};
 
     /**
      * @brief Create synthetic Component entities that group Apps
      *
      * When true, Components are synthetic groupings (by namespace).
-     * When false, each node is a Component (legacy behavior).
-     * Default: true (new behavior for initial release)
+     * When false (default), each node is a Component (legacy behavior).
+     * The default Component now comes from HostInfoProvider instead.
      */
-    bool create_synthetic_components{true};
+    bool create_synthetic_components{false};
+
+    /**
+     * @brief Create Function entities from ROS 2 namespace grouping
+     *
+     * When true (default), namespaces are mapped to Function entities.
+     * Each Function hosts the Apps in that namespace.
+     * This is the SOVD-correct mapping: namespaces represent
+     * functional grouping, not deployment topology.
+     */
+    bool create_functions_from_namespaces{true};
 
     /**
      * @brief How to group nodes into synthetic components

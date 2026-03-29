@@ -16,7 +16,6 @@
 
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 
-#include <algorithm>
 #include <set>
 #include <unordered_map>
 
@@ -59,16 +58,25 @@ RuntimeDiscoveryStrategy::RuntimeDiscoveryStrategy(rclcpp::Node * node) : node_(
 
 void RuntimeDiscoveryStrategy::set_config(const RuntimeConfig & config) {
   config_ = config;
-  RCLCPP_DEBUG(
-      node_->get_logger(), "Runtime discovery config: synthetic_areas=%s, synthetic_components=%s, grouping=%s",
-      config_.create_synthetic_areas ? "true" : "false", config_.create_synthetic_components ? "true" : "false",
-      grouping_strategy_to_string(config_.grouping).c_str());
+  RCLCPP_DEBUG(node_->get_logger(),
+               "Runtime discovery config: synthetic_areas=%s, synthetic_components=%s, "
+               "functions_from_namespaces=%s, grouping=%s",
+               config_.create_synthetic_areas ? "true" : "false",
+               config_.create_synthetic_components ? "true" : "false",
+               config_.create_functions_from_namespaces ? "true" : "false",
+               grouping_strategy_to_string(config_.grouping).c_str());
 }
 
 std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
   if (!config_.create_synthetic_areas) {
     return {};
   }
+
+  RCLCPP_WARN_ONCE(node_->get_logger(),
+                   "create_synthetic_areas is enabled but deprecated. "
+                   "Namespace grouping now creates Function entities instead of Areas. "
+                   "Set discovery.runtime.create_synthetic_areas=false (the new default) "
+                   "and use create_functions_from_namespaces=true instead.");
 
   // Extract unique areas from namespaces
   std::set<std::string> area_set;
@@ -258,9 +266,46 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
 }
 
 std::vector<Function> RuntimeDiscoveryStrategy::discover_functions() {
-  // Functions are not supported in runtime-only mode
-  // They require manifest definitions
-  return {};
+  if (!config_.create_functions_from_namespaces) {
+    return {};
+  }
+
+  // Discover apps to get their IDs and namespaces
+  auto apps = discover_apps();
+
+  // Group apps by namespace (first segment), similar to discover_areas() logic
+  std::map<std::string, std::vector<std::string>> ns_to_app_ids;
+  for (const auto & app : apps) {
+    std::string ns = "/";
+    if (app.bound_fqn.has_value()) {
+      const auto & fqn = app.bound_fqn.value();
+      auto pos = fqn.rfind('/');
+      ns = (pos == std::string::npos || pos == 0) ? "/" : fqn.substr(0, pos);
+    }
+    std::string area = extract_area_from_namespace(ns);
+    ns_to_app_ids[area].push_back(app.id);
+  }
+
+  // Create Function entities from namespace groups
+  std::vector<Function> functions;
+  for (const auto & [ns_name, app_ids] : ns_to_app_ids) {
+    if (app_ids.empty()) {
+      continue;
+    }
+
+    Function func;
+    func.id = ns_name;
+    func.name = ns_name;
+    func.source = "runtime";
+    func.hosts = app_ids;
+
+    RCLCPP_DEBUG(node_->get_logger(), "Created runtime function '%s' with %zu host apps", ns_name.c_str(),
+                 app_ids.size());
+    functions.push_back(std::move(func));
+  }
+
+  RCLCPP_DEBUG(node_->get_logger(), "Discovered %zu functions from namespace grouping", functions.size());
+  return functions;
 }
 
 std::vector<ServiceInfo> RuntimeDiscoveryStrategy::discover_services() {

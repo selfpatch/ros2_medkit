@@ -206,8 +206,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
   // Runtime (heuristic) discovery options
   // These control how nodes are mapped to SOVD entities in runtime mode
-  declare_parameter("discovery.runtime.create_synthetic_areas", true);
-  declare_parameter("discovery.runtime.create_synthetic_components", true);
+  declare_parameter("discovery.runtime.create_synthetic_areas", false);
+  declare_parameter("discovery.runtime.create_synthetic_components", false);
+  declare_parameter("discovery.runtime.create_functions_from_namespaces", true);
   declare_parameter("discovery.runtime.grouping_strategy", "namespace");
   declare_parameter("discovery.runtime.synthetic_component_name_pattern", "{area}");
   declare_parameter("discovery.runtime.topic_only_policy", "create_component");
@@ -438,6 +439,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   discovery_config.runtime.create_synthetic_areas = get_parameter("discovery.runtime.create_synthetic_areas").as_bool();
   discovery_config.runtime.create_synthetic_components =
       get_parameter("discovery.runtime.create_synthetic_components").as_bool();
+  discovery_config.runtime.create_functions_from_namespaces =
+      get_parameter("discovery.runtime.create_functions_from_namespaces").as_bool();
 
   auto grouping_str = get_parameter("discovery.runtime.grouping_strategy").as_string();
   discovery_config.runtime.grouping = parse_grouping_strategy(grouping_str);

@@ -368,6 +368,11 @@ if(BUILD_TESTING)
   medkit_target_dependencies(test_discovery_manager std_msgs)
   medkit_set_test_domain(test_discovery_manager)
 
+  # Add RuntimeDiscoveryStrategy tests
+  ament_add_gtest(test_runtime_discovery test/test_runtime_discovery.cpp)
+  target_link_libraries(test_runtime_discovery gateway_lib)
+  medkit_set_test_domain(test_runtime_discovery)
+
   # Add TLS configuration tests
   ament_add_gtest(test_tls_config test/test_tls_config.cpp)
   target_link_libraries(test_tls_config gateway_lib)
@@ -646,6 +651,7 @@ if(BUILD_TESTING)
       test_configuration_manager
       test_native_topic_sampler
       test_discovery_manager
+      test_runtime_discovery
       test_tls_config
       test_fault_manager
       test_discovery_models

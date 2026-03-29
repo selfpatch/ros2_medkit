@@ -98,6 +98,7 @@ void DiscoveryManager::create_strategy() {
   discovery::RuntimeDiscoveryStrategy::RuntimeConfig runtime_config;
   runtime_config.create_synthetic_areas = config_.runtime.create_synthetic_areas;
   runtime_config.create_synthetic_components = config_.runtime.create_synthetic_components;
+  runtime_config.create_functions_from_namespaces = config_.runtime.create_functions_from_namespaces;
   runtime_config.grouping = config_.runtime.grouping;
   runtime_config.synthetic_component_name_pattern = config_.runtime.synthetic_component_name_pattern;
   runtime_config.topic_only_policy = config_.runtime.topic_only_policy;
@@ -305,6 +306,11 @@ std::vector<App> DiscoveryManager::get_apps_for_component(const std::string & co
 std::vector<std::string> DiscoveryManager::get_hosts_for_function(const std::string & function_id) {
   if (manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_hosts_for_function(function_id);
+  }
+  // Check strategy-discovered functions (e.g., runtime namespace-based functions)
+  auto func = get_function(function_id);
+  if (func) {
+    return func->hosts;
   }
   return {};
 }

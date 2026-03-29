@@ -82,14 +82,26 @@ TEST_F(DiscoveryManagerTest, DiscoverTopicComponents_SetsSourceField) {
   }
 }
 
-TEST_F(DiscoveryManagerTest, DiscoverComponents_NodeBasedHaveSourceSynthetic) {
-  // With default config (create_synthetic_components=true), components are synthetic
+TEST_F(DiscoveryManagerTest, DiscoverComponents_DefaultConfigUsesLegacyMode) {
+  // With default config (create_synthetic_components=false), each node is its own component
   auto components = discovery_manager_->discover_components();
 
-  // Synthetic components (grouped by namespace) have source="synthetic"
-  // If no runtime nodes, we may have the test node as well
+  // Legacy mode: each App becomes its own Component (1:1 mapping)
   for (const auto & comp : components) {
-    // Components can be "synthetic" (namespace-grouped) or "node" (legacy)
+    EXPECT_EQ(comp.source, "heuristic") << "Component should have source='heuristic' in legacy mode, got: "
+                                        << comp.source;
+  }
+}
+
+TEST_F(DiscoveryManagerTest, DiscoverComponents_SyntheticModeWhenEnabled) {
+  // Explicitly enable synthetic components
+  ros2_medkit_gateway::DiscoveryConfig config;
+  config.runtime.create_synthetic_components = true;
+  discovery_manager_->initialize(config);
+
+  auto components = discovery_manager_->discover_components();
+
+  for (const auto & comp : components) {
     EXPECT_TRUE(comp.source == "synthetic" || comp.source == "node")
         << "Component should have source='synthetic' or 'node', got: " << comp.source;
   }
@@ -207,7 +219,22 @@ TEST_F(DiscoveryManagerWithPublishersTest, DiscoverTopicComponents_ComponentHasC
   }
 }
 
-TEST_F(DiscoveryManagerWithPublishersTest, DiscoverAreas_IncludesTopicBasedAreas) {
+TEST_F(DiscoveryManagerWithPublishersTest, DiscoverAreas_DefaultReturnsEmpty) {
+  // With default config (create_synthetic_areas=false), discover_areas returns empty
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  rclcpp::spin_some(node_);
+
+  auto areas = discovery_manager_->discover_areas();
+
+  EXPECT_TRUE(areas.empty()) << "Areas should be empty by default (create_synthetic_areas=false)";
+}
+
+TEST_F(DiscoveryManagerWithPublishersTest, DiscoverAreas_IncludesTopicBasedAreasWhenEnabled) {
+  // Explicitly enable synthetic areas for backward compat
+  ros2_medkit_gateway::DiscoveryConfig config;
+  config.runtime.create_synthetic_areas = true;
+  discovery_manager_->initialize(config);
+
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   rclcpp::spin_some(node_);
 
@@ -234,6 +261,11 @@ TEST_F(DiscoveryManagerWithPublishersTest, DiscoverAreas_DoesNotCreateAreaForRoo
   // (e.g., /fault_manager publishes /fault_manager/events). Topic-based
   // discovery must not create a synthetic area from that prefix - the node
   // belongs to area "root", not to a per-node area.
+  // Need to explicitly enable synthetic areas (now off by default).
+  ros2_medkit_gateway::DiscoveryConfig config;
+  config.runtime.create_synthetic_areas = true;
+  discovery_manager_->initialize(config);
+
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   rclcpp::spin_some(node_);
 
