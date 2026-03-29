@@ -14,55 +14,164 @@
 
 #include "ros2_medkit_gateway/configuration_manager.hpp"
 
+#include <atomic>
 #include <chrono>
 
 using namespace std::chrono_literals;
 
 namespace ros2_medkit_gateway {
 
+// Thread-local param node counter for unique names
+static std::atomic<int> param_node_counter{0};
+
 ConfigurationManager::ConfigurationManager(rclcpp::Node * node) : node_(node) {
-  // Create an internal node for parameter client operations
-  // SyncParametersClient needs a node that is NOT added to any executor
-  // so it can spin internally when waiting for service responses
-  rclcpp::NodeOptions options;
-  options.start_parameter_services(false);
-  options.start_parameter_event_publisher(false);
-  // Don't inherit node name/namespace from global arguments (--ros-args -r __node:=...)
-  // Without this, the internal node would have the same name as the main gateway node
-  options.use_global_arguments(false);
-  param_node_ = std::make_shared<rclcpp::Node>("_param_client_node", options);
+  // Get configurable timeout for parameter services (default 0.5 seconds)
+  service_timeout_sec_ = node_->declare_parameter("parameter_service_timeout_sec", 0.5);
 
-  // Get configurable timeout for parameter services (default 2.0 seconds)
-  service_timeout_sec_ = node_->declare_parameter("parameter_service_timeout_sec", 2.0);
+  // Get negative cache TTL (default 60 seconds)
+  negative_cache_ttl_sec_ = node_->declare_parameter("parameter_service_negative_cache_sec", 60.0);
 
-  RCLCPP_INFO(node_->get_logger(), "ConfigurationManager initialized");
+  // Store own node FQN for self-query detection
+  own_node_fqn_ = node_->get_fully_qualified_name();
+
+  RCLCPP_INFO(node_->get_logger(), "ConfigurationManager initialized (timeout=%.1fs, negative_cache=%.0fs)",
+              service_timeout_sec_, negative_cache_ttl_sec_);
 }
 
-/// Helper to get the service timeout as a chrono duration
 std::chrono::duration<double> ConfigurationManager::get_service_timeout() const {
   return std::chrono::duration<double>(service_timeout_sec_);
 }
 
-std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_client(const std::string & node_name) {
-  std::lock_guard<std::mutex> lock(clients_mutex_);
+std::mutex & ConfigurationManager::get_node_mutex(const std::string & node_name) const {
+  // Fast path: check if mutex exists
+  {
+    std::shared_lock<std::shared_mutex> lock(node_mutexes_mutex_);
+    auto it = node_mutexes_.find(node_name);
+    if (it != node_mutexes_.end()) {
+      return *it->second;
+    }
+  }
+  // Slow path: create new mutex
+  std::unique_lock<std::shared_mutex> lock(node_mutexes_mutex_);
+  auto [it, inserted] = node_mutexes_.try_emplace(node_name, std::make_unique<std::mutex>());
+  return *it->second;
+}
 
-  auto it = param_clients_.find(node_name);
-  if (it != param_clients_.end()) {
+bool ConfigurationManager::is_node_unavailable(const std::string & node_name) const {
+  std::shared_lock<std::shared_mutex> lock(negative_cache_mutex_);
+  auto it = unavailable_nodes_.find(node_name);
+  if (it == unavailable_nodes_.end()) {
+    return false;
+  }
+  auto elapsed = std::chrono::steady_clock::now() - it->second;
+  return elapsed < std::chrono::duration<double>(negative_cache_ttl_sec_);
+}
+
+void ConfigurationManager::mark_node_unavailable(const std::string & node_name) {
+  std::unique_lock<std::shared_mutex> lock(negative_cache_mutex_);
+  unavailable_nodes_[node_name] = std::chrono::steady_clock::now();
+}
+
+bool ConfigurationManager::is_self_node(const std::string & node_name) const {
+  return node_name == own_node_fqn_;
+}
+
+ParameterResult ConfigurationManager::list_own_parameters() {
+  ParameterResult result;
+  try {
+    auto params = node_->get_parameters(node_->list_parameters({}, 0).names);
+    json params_array = json::array();
+    for (const auto & param : params) {
+      json param_obj;
+      param_obj["name"] = param.get_name();
+      param_obj["value"] = parameter_value_to_json(param.get_parameter_value());
+      param_obj["type"] = parameter_type_to_string(param.get_type());
+      params_array.push_back(param_obj);
+    }
+    result.success = true;
+    result.data = params_array;
+  } catch (const std::exception & e) {
+    result.success = false;
+    result.error_message = std::string("Failed to list own parameters: ") + e.what();
+    result.error_code = ParameterErrorCode::INTERNAL_ERROR;
+  }
+  return result;
+}
+
+ParameterResult ConfigurationManager::get_own_parameter(const std::string & param_name) {
+  ParameterResult result;
+  try {
+    if (!node_->has_parameter(param_name)) {
+      result.success = false;
+      result.error_message = "Parameter not found: " + param_name;
+      result.error_code = ParameterErrorCode::NOT_FOUND;
+      return result;
+    }
+    auto param = node_->get_parameter(param_name);
+    auto descriptor = node_->describe_parameter(param_name);
+
+    json param_obj;
+    param_obj["name"] = param.get_name();
+    param_obj["value"] = parameter_value_to_json(param.get_parameter_value());
+    param_obj["type"] = parameter_type_to_string(param.get_type());
+    param_obj["description"] = descriptor.description;
+    param_obj["read_only"] = descriptor.read_only;
+
+    result.success = true;
+    result.data = param_obj;
+  } catch (const std::exception & e) {
+    result.success = false;
+    result.error_message = std::string("Failed to get own parameter: ") + e.what();
+    result.error_code = ParameterErrorCode::INTERNAL_ERROR;
+  }
+  return result;
+}
+
+std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_client(const std::string & node_name) {
+  // Create a thread-local param node to avoid executor conflicts.
+  // SyncParametersClient spins its node internally - sharing one node
+  // across threads causes "Node already added to executor" errors.
+  thread_local std::shared_ptr<rclcpp::Node> tl_param_node;
+  thread_local std::map<std::string, std::shared_ptr<rclcpp::SyncParametersClient>> tl_clients;
+
+  if (!tl_param_node) {
+    rclcpp::NodeOptions options;
+    options.start_parameter_services(false);
+    options.start_parameter_event_publisher(false);
+    options.use_global_arguments(false);
+    int id = param_node_counter.fetch_add(1);
+    tl_param_node = std::make_shared<rclcpp::Node>(
+        "_param_client_" + std::to_string(id), options);
+  }
+
+  auto it = tl_clients.find(node_name);
+  if (it != tl_clients.end()) {
     return it->second;
   }
 
-  // Create new client for this node using the internal param_node_
-  // (not the main gateway node, which is already in an executor)
-  auto client = std::make_shared<rclcpp::SyncParametersClient>(param_node_, node_name);
-  param_clients_[node_name] = client;
+  auto client = std::make_shared<rclcpp::SyncParametersClient>(tl_param_node, node_name);
+  tl_clients[node_name] = client;
   return client;
 }
 
 ParameterResult ConfigurationManager::list_parameters(const std::string & node_name) {
-  std::lock_guard<std::mutex> op_lock(param_operations_mutex_);
-  ParameterResult result;
+  // Self-query guard: use direct access for gateway's own node
+  if (is_self_node(node_name)) {
+    return list_own_parameters();
+  }
 
-  RCLCPP_DEBUG(node_->get_logger(), "list_parameters called for node: '%s'", node_name.c_str());
+  // Negative cache: skip nodes that recently had no parameter service
+  if (is_node_unavailable(node_name)) {
+    ParameterResult result;
+    result.success = false;
+    result.error_message = "Parameter service not available for node (cached): " + node_name;
+    result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+    return result;
+  }
+
+  // Per-node mutex: only block concurrent queries to the SAME node
+  std::lock_guard<std::mutex> op_lock(get_node_mutex(node_name));
+  ParameterResult result;
 
   // Cache default values on first access to this node
   cache_default_values(node_name);
@@ -70,39 +179,24 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
   try {
     auto client = get_param_client(node_name);
 
-    RCLCPP_DEBUG(node_->get_logger(), "Got param client for node: '%s'", node_name.c_str());
-
     if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
       result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
-      RCLCPP_WARN(node_->get_logger(), "Parameter service not available for node: '%s'", node_name.c_str());
+      mark_node_unavailable(node_name);
+      RCLCPP_WARN(node_->get_logger(), "Parameter service not available for node: '%s' (cached for %.0fs)",
+                  node_name.c_str(), negative_cache_ttl_sec_);
       return result;
     }
 
-    RCLCPP_DEBUG(node_->get_logger(), "Service ready for node: '%s'", node_name.c_str());
-
-    // List all parameter names
     auto param_names = client->list_parameters({}, 0);
 
-    RCLCPP_DEBUG(node_->get_logger(), "Got %zu parameter names for node: '%s'", param_names.names.size(),
-                 node_name.c_str());
-
-    // Log first few parameter names for debugging
-    for (size_t i = 0; i < std::min(param_names.names.size(), static_cast<size_t>(5)); ++i) {
-      RCLCPP_DEBUG(node_->get_logger(), "  param[%zu]: '%s'", i, param_names.names[i].c_str());
-    }
-
-    // Get all parameter values - try in smaller batches if needed
     std::vector<rclcpp::Parameter> parameters;
-
-    // First try getting all at once
     parameters = client->get_parameters(param_names.names);
 
     if (parameters.empty() && !param_names.names.empty()) {
       RCLCPP_WARN(node_->get_logger(), "get_parameters returned empty, trying one by one for node: '%s'",
                   node_name.c_str());
-      // Try getting parameters one by one
       for (const auto & name : param_names.names) {
         try {
           auto single_params = client->get_parameters({name});
@@ -114,8 +208,6 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
         }
       }
     }
-
-    RCLCPP_DEBUG(node_->get_logger(), "Got %zu parameter values for node: '%s'", parameters.size(), node_name.c_str());
 
     json params_array = json::array();
     for (const auto & param : parameters) {
@@ -139,7 +231,19 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
 }
 
 ParameterResult ConfigurationManager::get_parameter(const std::string & node_name, const std::string & param_name) {
-  std::lock_guard<std::mutex> op_lock(param_operations_mutex_);
+  if (is_self_node(node_name)) {
+    return get_own_parameter(param_name);
+  }
+
+  if (is_node_unavailable(node_name)) {
+    ParameterResult result;
+    result.success = false;
+    result.error_message = "Parameter service not available for node (cached): " + node_name;
+    result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+    return result;
+  }
+
+  std::lock_guard<std::mutex> op_lock(get_node_mutex(node_name));
   ParameterResult result;
 
   try {
@@ -149,10 +253,10 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
       result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+      mark_node_unavailable(node_name);
       return result;
     }
 
-    // Check if parameter exists
     auto param_names = client->list_parameters({param_name}, 1);
     if (param_names.names.empty()) {
       result.success = false;
@@ -161,7 +265,6 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
       return result;
     }
 
-    // Get parameter value
     auto parameters = client->get_parameters({param_name});
     if (parameters.empty()) {
       result.success = false;
@@ -171,8 +274,6 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
     }
 
     const auto & param = parameters[0];
-
-    // Get parameter descriptor for additional metadata
     auto descriptors = client->describe_parameters({param_name});
 
     json param_obj;
@@ -198,7 +299,15 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
 
 ParameterResult ConfigurationManager::set_parameter(const std::string & node_name, const std::string & param_name,
                                                     const json & value) {
-  std::lock_guard<std::mutex> op_lock(param_operations_mutex_);
+  if (is_node_unavailable(node_name)) {
+    ParameterResult result;
+    result.success = false;
+    result.error_message = "Parameter service not available for node (cached): " + node_name;
+    result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+    return result;
+  }
+
+  std::lock_guard<std::mutex> op_lock(get_node_mutex(node_name));
   ParameterResult result;
 
   try {
@@ -208,26 +317,23 @@ ParameterResult ConfigurationManager::set_parameter(const std::string & node_nam
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
       result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+      mark_node_unavailable(node_name);
       return result;
     }
 
-    // Get current parameter to determine type hint
     auto current_params = client->get_parameters({param_name});
     rclcpp::ParameterType hint_type = rclcpp::ParameterType::PARAMETER_NOT_SET;
     if (!current_params.empty()) {
       hint_type = current_params[0].get_type();
     }
 
-    // Convert JSON value to ROS2 parameter
     rclcpp::ParameterValue param_value = json_to_parameter_value(value, hint_type);
     rclcpp::Parameter param(param_name, param_value);
 
-    // Set parameter
     auto results = client->set_parameters({param});
     if (results.empty() || !results[0].successful) {
       result.success = false;
       result.error_message = results.empty() ? "Failed to set parameter" : results[0].reason;
-      // Classify error based on reason
       if (!results.empty()) {
         const auto & reason = results[0].reason;
         if (reason.find("read-only") != std::string::npos || reason.find("read only") != std::string::npos ||
@@ -244,7 +350,6 @@ ParameterResult ConfigurationManager::set_parameter(const std::string & node_nam
       return result;
     }
 
-    // Return the new value
     json param_obj;
     param_obj["name"] = param_name;
     param_obj["value"] = parameter_value_to_json(param_value);
@@ -315,7 +420,6 @@ json ConfigurationManager::parameter_value_to_json(const rclcpp::ParameterValue 
 
 rclcpp::ParameterValue ConfigurationManager::json_to_parameter_value(const json & value,
                                                                      rclcpp::ParameterType hint_type) {
-  // If we have a type hint, try to match it
   if (hint_type != rclcpp::ParameterType::PARAMETER_NOT_SET) {
     switch (hint_type) {
       case rclcpp::ParameterType::PARAMETER_BOOL:
@@ -344,7 +448,6 @@ rclcpp::ParameterValue ConfigurationManager::json_to_parameter_value(const json 
         if (value.is_string()) {
           return rclcpp::ParameterValue(value.get<std::string>());
         }
-        // Convert other types to string
         return rclcpp::ParameterValue(value.dump());
       case rclcpp::ParameterType::PARAMETER_BOOL_ARRAY:
         if (value.is_array()) {
@@ -383,7 +486,6 @@ rclcpp::ParameterValue ConfigurationManager::json_to_parameter_value(const json 
     }
   }
 
-  // Infer type from JSON value
   if (value.is_boolean()) {
     return rclcpp::ParameterValue(value.get<bool>());
   }
@@ -398,10 +500,8 @@ rclcpp::ParameterValue ConfigurationManager::json_to_parameter_value(const json 
   }
   if (value.is_array()) {
     if (value.empty()) {
-      // Empty array with no type hint - default to string array
       return rclcpp::ParameterValue(std::vector<std::string>{});
     }
-    // Determine array type from first element
     if (value[0].is_boolean()) {
       return rclcpp::ParameterValue(value.get<std::vector<bool>>());
     }
@@ -416,21 +516,21 @@ rclcpp::ParameterValue ConfigurationManager::json_to_parameter_value(const json 
     }
   }
 
-  // Default: convert to string
   return rclcpp::ParameterValue(value.dump());
 }
 
 void ConfigurationManager::cache_default_values(const std::string & node_name) {
-  // Check if already cached (quick check under lock)
   {
     std::lock_guard<std::mutex> lock(defaults_mutex_);
     if (default_values_.find(node_name) != default_values_.end()) {
       return;
     }
   }
-  // Lock released — perform blocking I/O without holding defaults_mutex_
 
-  RCLCPP_DEBUG(node_->get_logger(), "Caching default values for node: '%s'", node_name.c_str());
+  // Skip if node is in negative cache
+  if (is_node_unavailable(node_name)) {
+    return;
+  }
 
   try {
     auto client = get_param_client(node_name);
@@ -438,17 +538,15 @@ void ConfigurationManager::cache_default_values(const std::string & node_name) {
     if (!client->wait_for_service(get_service_timeout())) {
       RCLCPP_WARN(node_->get_logger(), "Cannot cache defaults - service not available for node: '%s'",
                   node_name.c_str());
+      mark_node_unavailable(node_name);
       return;
     }
 
-    // List all parameter names
     auto param_names = client->list_parameters({}, 0);
 
-    // Get all parameter values
     std::vector<rclcpp::Parameter> parameters;
     parameters = client->get_parameters(param_names.names);
 
-    // Fallback to one-by-one if batch fails
     if (parameters.empty() && !param_names.names.empty()) {
       for (const auto & name : param_names.names) {
         try {
@@ -457,12 +555,10 @@ void ConfigurationManager::cache_default_values(const std::string & node_name) {
             parameters.push_back(single_params[0]);
           }
         } catch (const std::exception &) {
-          // Skip failed parameters
         }
       }
     }
 
-    // Store as defaults (re-acquire lock, double-check to avoid overwriting concurrent cacher)
     std::map<std::string, rclcpp::Parameter> node_defaults;
     for (const auto & param : parameters) {
       node_defaults[param.get_name()] = param;
@@ -472,8 +568,6 @@ void ConfigurationManager::cache_default_values(const std::string & node_name) {
       std::lock_guard<std::mutex> lock(defaults_mutex_);
       if (default_values_.find(node_name) == default_values_.end()) {
         default_values_[node_name] = std::move(node_defaults);
-        RCLCPP_DEBUG(node_->get_logger(), "Cached %zu default values for node: '%s'", default_values_[node_name].size(),
-                     node_name.c_str());
       }
     }
   } catch (const std::exception & e) {
@@ -482,14 +576,20 @@ void ConfigurationManager::cache_default_values(const std::string & node_name) {
 }
 
 ParameterResult ConfigurationManager::reset_parameter(const std::string & node_name, const std::string & param_name) {
-  std::lock_guard<std::mutex> op_lock(param_operations_mutex_);
+  if (is_node_unavailable(node_name)) {
+    ParameterResult result;
+    result.success = false;
+    result.error_message = "Parameter service not available for node (cached): " + node_name;
+    result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+    return result;
+  }
+
+  std::lock_guard<std::mutex> op_lock(get_node_mutex(node_name));
   ParameterResult result;
 
   try {
-    // Ensure defaults are cached
     cache_default_values(node_name);
 
-    // Look up default value — copy under lock, then release before blocking I/O
     rclcpp::Parameter default_param;
     {
       std::lock_guard<std::mutex> lock(defaults_mutex_);
@@ -512,12 +612,12 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
       default_param = param_it->second;
     }
 
-    // Lock released — perform blocking I/O without holding defaults_mutex_
     auto client = get_param_client(node_name);
     if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
       result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+      mark_node_unavailable(node_name);
       return result;
     }
 
@@ -529,7 +629,6 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
       return result;
     }
 
-    // Return the reset value
     json param_obj;
     param_obj["name"] = param_name;
     param_obj["value"] = parameter_value_to_json(default_param.get_parameter_value());
@@ -551,14 +650,20 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
 }
 
 ParameterResult ConfigurationManager::reset_all_parameters(const std::string & node_name) {
-  std::lock_guard<std::mutex> op_lock(param_operations_mutex_);
+  if (is_node_unavailable(node_name)) {
+    ParameterResult result;
+    result.success = false;
+    result.error_message = "Parameter service not available for node (cached): " + node_name;
+    result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+    return result;
+  }
+
+  std::lock_guard<std::mutex> op_lock(get_node_mutex(node_name));
   ParameterResult result;
 
   try {
-    // Ensure defaults are cached
     cache_default_values(node_name);
 
-    // Look up default values — copy under lock, then release before blocking I/O
     std::vector<rclcpp::Parameter> params_to_reset;
     {
       std::lock_guard<std::mutex> lock(defaults_mutex_);
@@ -576,21 +681,19 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
       }
     }
 
-    // Lock released — perform blocking I/O without holding defaults_mutex_
     auto client = get_param_client(node_name);
     if (!client->wait_for_service(get_service_timeout())) {
       result.success = false;
       result.error_message = "Parameter service not available for node: " + node_name;
       result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+      mark_node_unavailable(node_name);
       return result;
     }
 
-    // Reset all parameters
     size_t reset_count = 0;
     size_t failed_count = 0;
     json failed_params = json::array();
 
-    // Set parameters one by one to handle partial failures
     for (const auto & param : params_to_reset) {
       try {
         auto results = client->set_parameters({param});
@@ -619,7 +722,7 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
 
     if (failed_count > 0) {
       result.error_message = "Some parameters could not be reset";
-      result.error_code = ParameterErrorCode::INTERNAL_ERROR;  // Partial failure
+      result.error_code = ParameterErrorCode::INTERNAL_ERROR;
     }
 
     RCLCPP_INFO(node_->get_logger(), "Reset %zu parameters on node '%s' (%zu failed)", reset_count, node_name.c_str(),
