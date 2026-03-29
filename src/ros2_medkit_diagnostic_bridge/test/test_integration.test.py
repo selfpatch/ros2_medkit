@@ -166,9 +166,14 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         faults = self.list_faults()
         self.assertIn('HEALING_TEST', [f.fault_code for f in faults])
 
-        # Send OK multiple times to ensure PASSED event reaches FaultManager
-        for _ in range(2):
+        # Send OK multiple times to bypass FaultReporter's local PASSED filtering
+        # (default threshold=3, same as FAILED events). Extra iterations ensure
+        # the async service call has time to reach FaultManager.
+        for _ in range(4):
             self.publish_diagnostic('healing_test', DiagnosticStatus.OK)
+
+        # Allow time for the async PASSED service call to be processed
+        time.sleep(1.0)
 
         # Check fault is healed (query all statuses to find it)
         faults = self.list_faults(statuses=[Fault.STATUS_CONFIRMED, Fault.STATUS_HEALED])

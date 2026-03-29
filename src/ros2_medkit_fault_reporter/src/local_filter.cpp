@@ -62,11 +62,13 @@ bool LocalFilter::should_forward(const std::string & fault_code, uint8_t severit
 void LocalFilter::reset(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
   trackers_.erase(fault_code);
+  passed_trackers_.erase(fault_code);
 }
 
 void LocalFilter::reset_all() {
   std::lock_guard<std::mutex> lock(mutex_);
   trackers_.clear();
+  passed_trackers_.clear();
 }
 
 void LocalFilter::set_config(const FilterConfig & config) {
@@ -74,6 +76,7 @@ void LocalFilter::set_config(const FilterConfig & config) {
   config_ = config;
   validate_config();
   trackers_.clear();
+  passed_trackers_.clear();
 }
 
 void LocalFilter::cleanup_expired(FaultTracker & tracker, std::chrono::steady_clock::time_point now) {
@@ -88,6 +91,23 @@ void LocalFilter::cleanup_expired(FaultTracker & tracker, std::chrono::steady_cl
   // Timestamps are sorted (pushed in chronological order), use lower_bound for efficiency
   auto it = std::lower_bound(tracker.timestamps.begin(), tracker.timestamps.end(), cutoff);
   tracker.timestamps.erase(tracker.timestamps.begin(), it);
+}
+
+bool LocalFilter::should_forward_passed(const std::string & fault_code) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (!config_.enabled) {
+    return true;
+  }
+
+  auto now = std::chrono::steady_clock::now();
+  auto & tracker = passed_trackers_[fault_code];
+
+  cleanup_expired(tracker, now);
+
+  tracker.timestamps.push_back(now);
+
+  return static_cast<int>(tracker.timestamps.size()) >= config_.default_threshold;
 }
 
 }  // namespace ros2_medkit_fault_reporter

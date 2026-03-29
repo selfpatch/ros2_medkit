@@ -169,6 +169,38 @@ TEST_F(LocalFilterTest, ContinuousReportingAfterThreshold) {
   EXPECT_TRUE(filter_->should_forward("TEST_FAULT", Fault::SEVERITY_INFO));
 }
 
+// =============================================================================
+// PASSED event filtering tests
+// =============================================================================
+
+TEST_F(LocalFilterTest, PassedEventsAreFiltered) {
+  // PASSED events should go through the same threshold logic as FAILED
+  // Default threshold=3: first two should be filtered, third should forward
+  EXPECT_FALSE(filter_->should_forward_passed("TEST_FAULT"));
+  EXPECT_FALSE(filter_->should_forward_passed("TEST_FAULT"));
+  EXPECT_TRUE(filter_->should_forward_passed("TEST_FAULT"));
+}
+
+TEST_F(LocalFilterTest, PassedFilterDisabledAlwaysForwards) {
+  FilterConfig config;
+  config.enabled = false;
+  filter_->set_config(config);
+
+  EXPECT_TRUE(filter_->should_forward_passed("TEST_FAULT"));
+}
+
+TEST_F(LocalFilterTest, PassedAndFailedTrackedSeparately) {
+  // FAILED and PASSED should have independent counters
+  EXPECT_FALSE(filter_->should_forward("TEST_FAULT", Fault::SEVERITY_INFO));
+  EXPECT_FALSE(filter_->should_forward_passed("TEST_FAULT"));
+  EXPECT_FALSE(filter_->should_forward("TEST_FAULT", Fault::SEVERITY_INFO));
+  EXPECT_FALSE(filter_->should_forward_passed("TEST_FAULT"));
+
+  // Third FAILED forwards, but PASSED still needs one more
+  EXPECT_TRUE(filter_->should_forward("TEST_FAULT", Fault::SEVERITY_INFO));
+  EXPECT_TRUE(filter_->should_forward_passed("TEST_FAULT"));
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

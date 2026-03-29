@@ -146,6 +146,9 @@ class FaultStorage {
   /// @return Number of faults that were confirmed
   virtual size_t check_time_based_confirmation(const rclcpp::Time & current_time) = 0;
 
+  /// Set maximum snapshots per fault code (0 = unlimited)
+  virtual void set_max_snapshots_per_fault(size_t max_count) = 0;
+
   /// Store a snapshot captured when a fault was confirmed
   /// @param snapshot The snapshot data to store
   virtual void store_snapshot(const SnapshotData & snapshot) = 0;
@@ -221,6 +224,8 @@ class InMemoryFaultStorage : public FaultStorage {
 
   size_t check_time_based_confirmation(const rclcpp::Time & current_time) override;
 
+  void set_max_snapshots_per_fault(size_t max_count) override;
+
   void store_snapshot(const SnapshotData & snapshot) override;
   std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
                                           const std::string & topic_filter = "") const override;
@@ -242,6 +247,7 @@ class InMemoryFaultStorage : public FaultStorage {
   std::vector<SnapshotData> snapshots_;
   std::map<std::string, RosbagFileInfo> rosbag_files_;  ///< fault_code -> rosbag info
   DebounceConfig config_;
+  size_t max_snapshots_per_fault_{0};  ///< 0 = unlimited
 };
 
 }  // namespace ros2_medkit_fault_manager

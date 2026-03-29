@@ -82,6 +82,14 @@ Configure snapshot capture via fault manager parameters:
    * - ``snapshots.background_capture``
      - ``false``
      - Use background subscriptions (caches latest message)
+   * - ``snapshots.recapture_cooldown_sec``
+     - ``60.0``
+     - Minimum seconds between snapshot captures for the same fault code.
+       Prevents snapshot storms when a fault is reported repeatedly. Set to 0 to disable.
+   * - ``snapshots.max_per_fault``
+     - ``10``
+     - Maximum number of snapshots stored per fault code. When the limit is reached,
+       new snapshots for that fault are rejected. Set to 0 for unlimited.
 
 Advanced Configuration
 ----------------------

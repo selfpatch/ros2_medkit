@@ -797,6 +797,100 @@ TEST_F(SqliteFaultStorageTest, GetAllRosbagFilesReturnsSortedByCreatedAt) {
   EXPECT_EQ(all_rosbags[1].fault_code, "FAULT_B");
 }
 
+// =============================================================================
+// Snapshot limit tests (issue #308)
+// =============================================================================
+
+TEST_F(SqliteFaultStorageTest, SnapshotLimitRejectsNewWhenFull) {
+  using ros2_medkit_fault_manager::SnapshotData;
+
+  rclcpp::Clock clock;
+  storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                               "Motor overheated", "/motor_node", clock.now(), default_config());
+
+  // Set limit to 2 snapshots per fault
+  storage_->set_max_snapshots_per_fault(2);
+
+  SnapshotData snap1;
+  snap1.fault_code = "MOTOR_OVERHEAT";
+  snap1.topic = "/motor/temp";
+  snap1.message_type = "std_msgs/msg/Float64";
+  snap1.data = R"({"data": 85.0})";
+  snap1.captured_at_ns = 1000;
+
+  SnapshotData snap2 = snap1;
+  snap2.data = R"({"data": 90.0})";
+  snap2.captured_at_ns = 2000;
+
+  SnapshotData snap3 = snap1;
+  snap3.data = R"({"data": 95.0})";
+  snap3.captured_at_ns = 3000;
+
+  storage_->store_snapshot(snap1);
+  storage_->store_snapshot(snap2);
+  storage_->store_snapshot(snap3);  // Should be rejected
+
+  auto snapshots = storage_->get_snapshots("MOTOR_OVERHEAT");
+  ASSERT_EQ(snapshots.size(), 2u) << "Third snapshot should be rejected (limit=2)";
+
+  // Earliest snapshots kept (reject-new strategy), returned newest-first
+  EXPECT_EQ(snapshots[0].captured_at_ns, 2000);
+  EXPECT_EQ(snapshots[1].captured_at_ns, 1000);
+}
+
+TEST_F(SqliteFaultStorageTest, SnapshotLimitZeroMeansUnlimited) {
+  using ros2_medkit_fault_manager::SnapshotData;
+
+  rclcpp::Clock clock;
+  storage_->report_fault_event("FAULT_A", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "desc", "/node",
+                               clock.now(), default_config());
+
+  // Default (0) = unlimited
+  storage_->set_max_snapshots_per_fault(0);
+
+  for (int i = 0; i < 20; ++i) {
+    SnapshotData snap;
+    snap.fault_code = "FAULT_A";
+    snap.topic = "/topic";
+    snap.message_type = "std_msgs/msg/String";
+    snap.data = "{}";
+    snap.captured_at_ns = i * 1000;
+    storage_->store_snapshot(snap);
+  }
+
+  auto snapshots = storage_->get_snapshots("FAULT_A");
+  EXPECT_EQ(snapshots.size(), 20u) << "Unlimited mode should store all snapshots";
+}
+
+TEST_F(SqliteFaultStorageTest, SnapshotLimitPerFaultNotGlobal) {
+  using ros2_medkit_fault_manager::SnapshotData;
+
+  rclcpp::Clock clock;
+  storage_->report_fault_event("FAULT_A", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "desc", "/node",
+                               clock.now(), default_config());
+  storage_->report_fault_event("FAULT_B", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "desc", "/node",
+                               clock.now(), default_config());
+
+  storage_->set_max_snapshots_per_fault(1);
+
+  SnapshotData snap_a;
+  snap_a.fault_code = "FAULT_A";
+  snap_a.topic = "/topic";
+  snap_a.message_type = "std_msgs/msg/String";
+  snap_a.data = "{}";
+  snap_a.captured_at_ns = 1000;
+
+  SnapshotData snap_b = snap_a;
+  snap_b.fault_code = "FAULT_B";
+
+  storage_->store_snapshot(snap_a);
+  storage_->store_snapshot(snap_b);
+
+  // Both faults should have 1 snapshot each (limit is per-fault)
+  EXPECT_EQ(storage_->get_snapshots("FAULT_A").size(), 1u);
+  EXPECT_EQ(storage_->get_snapshots("FAULT_B").size(), 1u);
+}
+
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
   ::testing::InitGoogleTest(&argc, argv);
