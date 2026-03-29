@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
@@ -137,6 +139,7 @@ class FaultManagerNode : public rclcpp::Node {
   bool healing_enabled_{false};
   int32_t healing_threshold_{3};
   double auto_confirm_after_sec_{0.0};
+  double snapshot_recapture_cooldown_sec_{60.0};
   DebounceConfig global_config_;  ///< Global debounce config (built from ROS params)
   std::unique_ptr<FaultStorage> storage_;
   std::unique_ptr<EntityThresholdResolver> threshold_resolver_;  ///< Per-entity threshold overrides
@@ -171,6 +174,10 @@ class FaultManagerNode : public rclcpp::Node {
   /// Tracks active capture threads for clean shutdown (join before destruction)
   std::mutex capture_threads_mutex_;
   std::vector<std::thread> capture_threads_;
+
+  /// Per-fault cooldown tracking for snapshot recapture
+  std::mutex last_capture_mutex_;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_capture_times_;
 };
 
 }  // namespace ros2_medkit_fault_manager

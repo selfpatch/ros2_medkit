@@ -54,6 +54,9 @@ class LocalFilter {
   /// @return true if the report should be sent to FaultManager
   bool should_forward(const std::string & fault_code, uint8_t severity);
 
+  /// Check if a PASSED event should be forwarded
+  bool should_forward_passed(const std::string & fault_code);
+
   /// Reset tracking for a specific fault code
   void reset(const std::string & fault_code);
 
@@ -82,6 +85,7 @@ class LocalFilter {
 
   FilterConfig config_;
   std::unordered_map<std::string, FaultTracker> trackers_;
+  std::unordered_map<std::string, FaultTracker> passed_trackers_;
   mutable std::mutex mutex_;
 };
 

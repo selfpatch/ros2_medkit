@@ -166,6 +166,8 @@ Basic Snapshot Settings
          max_message_size: 65536           # Max message size in bytes (64KB)
          default_topics: []                # Topics to capture for all faults
          config_file: ""                   # Path to YAML config file
+         recapture_cooldown_sec: 60.0      # Min seconds between snapshot captures per fault
+         max_per_fault: 10                 # Max snapshots stored per fault code (0 = unlimited)
 
 .. list-table::
    :header-rows: 1
@@ -192,6 +194,14 @@ Basic Snapshot Settings
    * - ``snapshots.config_file``
      - ``""``
      - Path to YAML file with fault-specific snapshot configurations.
+   * - ``snapshots.recapture_cooldown_sec``
+     - ``60.0``
+     - Minimum seconds between snapshot captures for the same fault code.
+       Prevents snapshot storms when a fault is reported repeatedly. Set to 0 to disable.
+   * - ``snapshots.max_per_fault``
+     - ``10``
+     - Maximum number of snapshots stored per fault code. When the limit is reached,
+       new snapshots for that fault are rejected. Set to 0 for unlimited.
 
 Rosbag Recording
 ~~~~~~~~~~~~~~~~
@@ -311,6 +321,8 @@ Complete Example
          background_capture: true
          timeout_sec: 2.0
          max_message_size: 131072
+         recapture_cooldown_sec: 60.0
+         max_per_fault: 10
          default_topics:
            - /diagnostics
            - /rosout

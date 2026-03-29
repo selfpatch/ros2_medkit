@@ -101,8 +101,26 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     auto_confirm_after_sec_ = 0.0;
   }
 
+  // Snapshot protection parameters
+  snapshot_recapture_cooldown_sec_ = declare_parameter<double>("snapshots.recapture_cooldown_sec", 60.0);
+  if (snapshot_recapture_cooldown_sec_ < 0.0) {
+    RCLCPP_WARN(get_logger(), "snapshots.recapture_cooldown_sec should be >= 0, got %.2f. Disabling.",
+                snapshot_recapture_cooldown_sec_);
+    snapshot_recapture_cooldown_sec_ = 0.0;
+  }
+  int max_snapshots = declare_parameter<int>("snapshots.max_per_fault", 10);
+  if (max_snapshots < 0) {
+    RCLCPP_WARN(get_logger(), "snapshots.max_per_fault should be >= 0, got %d. Disabling limit.", max_snapshots);
+    max_snapshots = 0;
+  }
+
   // Create storage backend
   storage_ = create_storage();
+
+  // Apply snapshot limit to storage
+  if (max_snapshots > 0) {
+    storage_->set_max_snapshots_per_fault(static_cast<size_t>(max_snapshots));
+  }
 
   // Create event publisher for SSE streaming
   event_publisher_ = create_publisher<ros2_medkit_msgs::msg::FaultEvent>("~/events", rclcpp::QoS(100).reliable());
@@ -388,23 +406,42 @@ void FaultManagerNode::handle_report_fault(
     // from being processed during capture. SnapshotCapture::capture_topic_on_demand
     // uses a local callback group + local executor, so it's safe from a separate thread.
     if (just_confirmed && (snapshot_capture_ || rosbag_capture_)) {
-      std::string fault_code = request->fault_code;
-      auto snapshot_cap = snapshot_capture_;
-      auto rosbag_cap = rosbag_capture_;
-      auto logger = get_logger();
-
-      std::thread capture_thread([snapshot_cap, rosbag_cap, fault_code, logger]() {
-        if (snapshot_cap) {
-          snapshot_cap->capture(fault_code);
+      // Check recapture cooldown - skip if captured recently for this fault
+      bool should_capture = true;
+      if (snapshot_recapture_cooldown_sec_ > 0.0) {
+        std::lock_guard<std::mutex> lock(last_capture_mutex_);
+        auto it = last_capture_times_.find(request->fault_code);
+        if (it != last_capture_times_.end()) {
+          auto elapsed = std::chrono::steady_clock::now() - it->second;
+          if (elapsed < std::chrono::duration<double>(snapshot_recapture_cooldown_sec_)) {
+            should_capture = false;
+            RCLCPP_DEBUG(get_logger(), "Skipping snapshot for '%s' - cooldown active", request->fault_code.c_str());
+          }
         }
-        if (rosbag_cap) {
-          rosbag_cap->on_fault_confirmed(fault_code);
+        if (should_capture) {
+          last_capture_times_[request->fault_code] = std::chrono::steady_clock::now();
         }
-      });
-      {
-        std::lock_guard<std::mutex> ct_lock(capture_threads_mutex_);
-        capture_threads_.push_back(std::move(capture_thread));
       }
+
+      if (should_capture) {
+        std::string fault_code = request->fault_code;
+        auto snapshot_cap = snapshot_capture_;
+        auto rosbag_cap = rosbag_capture_;
+        auto logger = get_logger();
+
+        std::thread capture_thread([snapshot_cap, rosbag_cap, fault_code, logger]() {
+          if (snapshot_cap) {
+            snapshot_cap->capture(fault_code);
+          }
+          if (rosbag_cap) {
+            rosbag_cap->on_fault_confirmed(fault_code);
+          }
+        });
+        {
+          std::lock_guard<std::mutex> ct_lock(capture_threads_mutex_);
+          capture_threads_.push_back(std::move(capture_thread));
+        }
+      }  // if (should_capture)
     }
 
     // Handle PREFAILED state for lazy_start rosbag capture
@@ -506,6 +543,15 @@ void FaultManagerNode::handle_clear_fault(
 
   response->success = cleared;
   if (cleared) {
+    // Evict cooldown tracking for cleared fault and auto-cleared symptoms
+    {
+      std::lock_guard<std::mutex> lock(last_capture_mutex_);
+      last_capture_times_.erase(request->fault_code);
+      for (const auto & symptom_code : auto_cleared_codes) {
+        last_capture_times_.erase(symptom_code);
+      }
+    }
+
     // Auto-clear correlated symptoms
     for (const auto & symptom_code : auto_cleared_codes) {
       storage_->clear_fault(symptom_code);

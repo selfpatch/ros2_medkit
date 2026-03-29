@@ -80,13 +80,16 @@ void FaultReporter::report(const std::string & fault_code, uint8_t severity, con
 }
 
 void FaultReporter::report_passed(const std::string & fault_code) {
-  // Validate fault_code
   if (fault_code.empty()) {
     RCLCPP_WARN(logger_, "Attempted to report PASSED with empty fault_code, ignoring");
     return;
   }
 
-  // PASSED events bypass local filtering and are always forwarded
+  if (!filter_.should_forward_passed(fault_code)) {
+    RCLCPP_DEBUG(logger_, "PASSED for '%s' filtered (threshold not met)", fault_code.c_str());
+    return;
+  }
+
   send_report(fault_code, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED, 0, "");
 }
 

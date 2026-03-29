@@ -61,6 +61,8 @@ class SqliteFaultStorage : public FaultStorage {
 
   size_t check_time_based_confirmation(const rclcpp::Time & current_time) override;
 
+  void set_max_snapshots_per_fault(size_t max_count) override;
+
   void store_snapshot(const SnapshotData & snapshot) override;
   std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
                                           const std::string & topic_filter = "") const override;
@@ -92,6 +94,7 @@ class SqliteFaultStorage : public FaultStorage {
   sqlite3 * db_{nullptr};
   mutable std::mutex mutex_;
   DebounceConfig config_;
+  size_t max_snapshots_per_fault_{0};  ///< 0 = unlimited
 };
 
 }  // namespace ros2_medkit_fault_manager
