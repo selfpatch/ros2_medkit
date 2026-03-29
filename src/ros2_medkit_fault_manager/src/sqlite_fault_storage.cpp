@@ -704,7 +704,8 @@ void SqliteFaultStorage::store_snapshot(const SnapshotData & snapshot) {
     count_stmt.bind_text(1, snapshot.fault_code);
     if (count_stmt.step() == SQLITE_ROW &&
         count_stmt.column_int64(0) >= static_cast<int64_t>(max_snapshots_per_fault_)) {
-      return;  // Reject new - keep earliest snapshots
+      // Silent rejection: storage layer has no logger. Callers should log if needed.
+      return;  // Reject new - keep first N inserted snapshots
     }
   }
 

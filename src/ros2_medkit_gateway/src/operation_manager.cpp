@@ -46,18 +46,27 @@ OperationManager::OperationManager(rclcpp::Node * node, DiscoveryManager * disco
 }
 
 OperationManager::~OperationManager() {
-  // Clear subscriptions before destruction to prevent callbacks on destroyed object.
-  // Subscription callbacks capture `this` - they must be unsubscribed first.
+  shutdown();
+}
+
+void OperationManager::shutdown() {
+  // Clear subscriptions to stop receiving callbacks.
+  // Must happen while executor can still process pending callbacks safely.
   {
     std::lock_guard<std::mutex> lock(subscriptions_mutex_);
     status_subscriptions_.clear();
   }
 
+  // Clear tracked goals
+  {
+    std::lock_guard<std::mutex> lock(goals_mutex_);
+    tracked_goals_.clear();
+  }
+
   // Clear all service/action clients to prevent handle_response() on destroyed
   // pending_requests_. On Humble (compat shim), destroying a GenericServiceClient
   // with unfulfilled promises causes "terminate called without an active exception"
-  // if a future still references the shared state. Clearing clients here ensures
-  // the executor drops its references before member destruction.
+  // if a future still references the shared state.
   {
     std::unique_lock<std::shared_mutex> lock(clients_mutex_);
     action_clients_.clear();

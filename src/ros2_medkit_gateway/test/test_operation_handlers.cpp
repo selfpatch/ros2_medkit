@@ -169,6 +169,16 @@ class TestLongCalibrationActionServer : public rclcpp::Node {
 
       loop_rate.sleep();
     }
+
+    // Exited loop without succeed/cancel (shutdown or !rclcpp::ok()).
+    // Must abort the goal to prevent "terminate called without an active
+    // exception" when goal_handle is destroyed with unfinished state.
+    try {
+      auto abort_result = std::make_shared<Fibonacci::Result>();
+      goal_handle->abort(abort_result);
+    } catch (...) {
+      // Ignore errors during shutdown abort
+    }
   }
 
   rclcpp_action::Server<Fibonacci>::SharedPtr action_server_;
@@ -274,16 +284,19 @@ class OperationHandlersFixtureTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    if (action_server_node_ != nullptr) {
-      action_server_node_->prepare_shutdown();
-    }
-
+    // Cancel executor FIRST to stop callback delivery, then shutdown action server.
+    // Without this ordering, prepare_shutdown() resets action_server_ while
+    // executor may still be delivering callbacks to it.
     if (executor_ != nullptr) {
       executor_->cancel();
     }
 
     if (spin_thread_.joinable()) {
       spin_thread_.join();
+    }
+
+    if (action_server_node_ != nullptr) {
+      action_server_node_->prepare_shutdown();
     }
 
     handlers_.reset();

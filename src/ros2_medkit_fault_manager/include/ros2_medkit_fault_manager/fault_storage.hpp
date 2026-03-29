@@ -147,7 +147,8 @@ class FaultStorage {
   virtual size_t check_time_based_confirmation(const rclcpp::Time & current_time) = 0;
 
   /// Set maximum snapshots per fault code (0 = unlimited)
-  virtual void set_max_snapshots_per_fault(size_t max_count) = 0;
+  virtual void set_max_snapshots_per_fault(size_t /*max_count*/) {
+  }
 
   /// Store a snapshot captured when a fault was confirmed
   /// @param snapshot The snapshot data to store

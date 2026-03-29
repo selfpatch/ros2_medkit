@@ -104,6 +104,12 @@ class OperationManager {
 
   ~OperationManager();
 
+  /// Explicitly release subscriptions, clients, and tracked goals.
+  /// Call while executor is still running to allow safe callback cleanup.
+  /// Called automatically by destructor, but GatewayNode calls it earlier
+  /// during its shutdown sequence.
+  void shutdown();
+
   /// Set optional notifier for broadcasting operation status changes to trigger subsystem.
   void set_notifier(ResourceChangeNotifier * notifier);
 
