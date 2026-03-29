@@ -35,6 +35,16 @@ bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
   RCLCPP_INFO(node_->get_logger(), "Initializing discovery with mode: %s",
               discovery_mode_to_string(config.mode).c_str());
 
+  // Create HostInfoProvider when default component is enabled (runtime_only mode)
+  if (config.runtime.default_component_enabled) {
+    host_info_provider_ = std::make_unique<HostInfoProvider>();
+    RCLCPP_INFO(node_->get_logger(), "Default component enabled: id='%s' (%s)",
+                host_info_provider_->get_default_component().id.c_str(),
+                host_info_provider_->get_default_component().description.c_str());
+  } else {
+    host_info_provider_.reset();
+  }
+
   // Create manifest manager if needed
   if (config.mode == DiscoveryMode::MANIFEST_ONLY || config.mode == DiscoveryMode::HYBRID) {
     manifest_manager_ = std::make_unique<discovery::ManifestManager>(node_);
@@ -159,7 +169,8 @@ void DiscoveryManager::create_strategy() {
 
     default:
       active_strategy_ = runtime_strategy_.get();
-      RCLCPP_INFO(node_->get_logger(), "Discovery mode: runtime_only (synthetic_components=%s)",
+      RCLCPP_INFO(node_->get_logger(), "Discovery mode: runtime_only (default_component=%s, synthetic_components=%s)",
+                  host_info_provider_ ? "true" : "false",
                   config_.runtime.create_synthetic_components ? "true" : "false");
       break;
   }
@@ -176,6 +187,13 @@ std::vector<Component> DiscoveryManager::discover_components() {
   if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_components();
   }
+
+  // In RUNTIME_ONLY mode with host info provider, return only the
+  // single host-derived Component instead of synthetic namespace components
+  if (config_.mode == DiscoveryMode::RUNTIME_ONLY && host_info_provider_) {
+    return {host_info_provider_->get_default_component()};
+  }
+
   return active_strategy_->discover_components();
 }
 
@@ -392,6 +410,17 @@ std::optional<discovery::MergeReport> DiscoveryManager::get_merge_report() const
 std::optional<discovery::LinkingResult> DiscoveryManager::get_linking_result() const {
   if (hybrid_strategy_) {
     return hybrid_strategy_->get_linking_result();
+  }
+  return std::nullopt;
+}
+
+bool DiscoveryManager::has_host_info_provider() const {
+  return host_info_provider_ != nullptr;
+}
+
+std::optional<Component> DiscoveryManager::get_default_component() const {
+  if (host_info_provider_) {
+    return host_info_provider_->get_default_component();
   }
   return std::nullopt;
 }

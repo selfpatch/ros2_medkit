@@ -94,9 +94,10 @@ TEST_F(DiscoveryManagerTest, DiscoverComponents_DefaultConfigUsesLegacyMode) {
 }
 
 TEST_F(DiscoveryManagerTest, DiscoverComponents_SyntheticModeWhenEnabled) {
-  // Explicitly enable synthetic components
+  // Explicitly enable synthetic components (disable default component so synthetic wins)
   ros2_medkit_gateway::DiscoveryConfig config;
   config.runtime.create_synthetic_components = true;
+  config.runtime.default_component_enabled = false;
   discovery_manager_->initialize(config);
 
   auto components = discovery_manager_->discover_components();

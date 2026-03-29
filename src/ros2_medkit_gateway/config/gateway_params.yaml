@@ -183,6 +183,15 @@ ros2_medkit_gateway:
         # Namespace grouping now creates Function entities instead
         create_synthetic_areas: false
 
+        # Auto-detect local host system as the default Component
+        # When true (default), a single host-level Component is created
+        # from system info (hostname, OS, architecture) instead of
+        # synthetic per-namespace Components. All discovered Apps are
+        # linked to this Component via the is-located-on relationship.
+        # Only used in runtime_only mode.
+        default_component:
+          enabled: true
+
         # Create synthetic Component entities that group Apps
         # When true, Components are synthetic groupings (by namespace)
         # When false (default), each node is a Component

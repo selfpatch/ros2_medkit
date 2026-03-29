@@ -206,6 +206,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
   // Runtime (heuristic) discovery options
   // These control how nodes are mapped to SOVD entities in runtime mode
+  declare_parameter("discovery.runtime.default_component.enabled", true);
   declare_parameter("discovery.runtime.create_synthetic_areas", false);
   declare_parameter("discovery.runtime.create_synthetic_components", false);
   declare_parameter("discovery.runtime.create_functions_from_namespaces", true);
@@ -436,6 +437,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   discovery_config.runtime_enabled = get_parameter("discovery.runtime.enabled").as_bool();
 
   // Runtime discovery options
+  discovery_config.runtime.default_component_enabled =
+      get_parameter("discovery.runtime.default_component.enabled").as_bool();
   discovery_config.runtime.create_synthetic_areas = get_parameter("discovery.runtime.create_synthetic_areas").as_bool();
   discovery_config.runtime.create_synthetic_components =
       get_parameter("discovery.runtime.create_synthetic_components").as_bool();
@@ -1280,15 +1283,33 @@ void GatewayNode::refresh_cache() {
 
     std::vector<Component> all_components;
     if (discovery_mgr_->get_mode() == DiscoveryMode::RUNTIME_ONLY) {
-      // RUNTIME_ONLY: merge node + topic components (no pipeline)
-      auto node_components = discovery_mgr_->discover_components();
-      auto topic_components = discovery_mgr_->discover_topic_components();
-      all_components.reserve(node_components.size() + topic_components.size());
-      all_components.insert(all_components.end(), node_components.begin(), node_components.end());
-      all_components.insert(all_components.end(), topic_components.begin(), topic_components.end());
+      if (discovery_mgr_->has_host_info_provider()) {
+        // Host info provider active: single host-derived Component only
+        all_components = discovery_mgr_->discover_components();
+      } else {
+        // No host info: merge node + topic components (legacy behavior)
+        auto node_components = discovery_mgr_->discover_components();
+        auto topic_components = discovery_mgr_->discover_topic_components();
+        all_components.reserve(node_components.size() + topic_components.size());
+        all_components.insert(all_components.end(), node_components.begin(), node_components.end());
+        all_components.insert(all_components.end(), topic_components.begin(), topic_components.end());
+      }
     } else {
       // HYBRID: pipeline merges all sources; MANIFEST_ONLY: manifest components only
       all_components = discovery_mgr_->discover_components();
+    }
+
+    // Link Apps to default Component (is-located-on relationship)
+    // Only set component_id on Apps that don't already have one
+    if (discovery_mgr_->has_host_info_provider()) {
+      auto default_comp = discovery_mgr_->get_default_component();
+      if (default_comp) {
+        for (auto & app : apps) {
+          if (app.component_id.empty()) {
+            app.component_id = default_comp->id;
+          }
+        }
+      }
     }
 
     // Capture sizes for logging
