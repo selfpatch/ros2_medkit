@@ -14,17 +14,21 @@
 
 #include "ros2_medkit_gateway/configuration_manager.hpp"
 
-#include <atomic>
 #include <chrono>
 
 using namespace std::chrono_literals;
 
 namespace ros2_medkit_gateway {
 
-// Thread-local param node counter for unique names
-static std::atomic<int> param_node_counter{0};
-
 ConfigurationManager::ConfigurationManager(rclcpp::Node * node) : node_(node) {
+  // Create internal node for parameter client operations early.
+  // Must be in DDS graph before any parameter queries for fast service discovery.
+  rclcpp::NodeOptions options;
+  options.start_parameter_services(false);
+  options.start_parameter_event_publisher(false);
+  options.use_global_arguments(false);
+  param_node_ = std::make_shared<rclcpp::Node>("_param_client_node", options);
+
   // Get configurable timeout for parameter services (default 2.0 seconds)
   // For systems with micro-ROS nodes without parameter service, set lower (e.g., 0.5s)
   service_timeout_sec_ = node_->declare_parameter("parameter_service_timeout_sec", 2.0);
@@ -44,38 +48,13 @@ ConfigurationManager::~ConfigurationManager() {
 }
 
 void ConfigurationManager::shutdown() {
-  std::lock_guard<std::mutex> lock(param_clients_mutex_);
+  std::lock_guard<std::mutex> lock(clients_mutex_);
   param_clients_.clear();
+  param_node_.reset();
 }
 
 std::chrono::duration<double> ConfigurationManager::get_service_timeout() const {
   return std::chrono::duration<double>(service_timeout_sec_);
-}
-
-std::mutex & ConfigurationManager::get_node_mutex(const std::string & node_name) const {
-  // Fast path: check if mutex exists
-  {
-    std::shared_lock<std::shared_mutex> lock(node_mutexes_mutex_);
-    auto it = node_mutexes_.find(node_name);
-    if (it != node_mutexes_.end()) {
-      return *it->second;
-    }
-  }
-  // Slow path: create new mutex, with lazy cleanup to prevent unbounded growth
-  std::unique_lock<std::shared_mutex> lock(node_mutexes_mutex_);
-  if (node_mutexes_.size() > 200) {
-    // Remove mutexes that are not currently locked (try_lock succeeds)
-    for (auto it = node_mutexes_.begin(); it != node_mutexes_.end();) {
-      if (it->first != node_name && it->second->try_lock()) {
-        it->second->unlock();
-        it = node_mutexes_.erase(it);
-      } else {
-        ++it;
-      }
-    }
-  }
-  auto [it, inserted] = node_mutexes_.try_emplace(node_name, std::make_unique<std::mutex>());
-  return *it->second;
 }
 
 bool ConfigurationManager::is_node_unavailable(const std::string & node_name) const {
@@ -175,26 +154,16 @@ ParameterResult ConfigurationManager::get_own_parameter(const std::string & para
 }
 
 std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_client(const std::string & node_name) {
-  // Get or create a dedicated param node + cached client for this target node.
-  // The per-node mutex (held by caller) ensures only one thread uses this
-  // param_node at a time, preventing executor conflicts in SyncParametersClient.
-  std::lock_guard<std::mutex> lock(param_clients_mutex_);
+  std::lock_guard<std::mutex> lock(clients_mutex_);
 
   auto it = param_clients_.find(node_name);
   if (it != param_clients_.end()) {
-    return it->second.client;
+    return it->second;
   }
 
-  // Create dedicated param node for this target
-  rclcpp::NodeOptions options;
-  options.start_parameter_services(false);
-  options.start_parameter_event_publisher(false);
-  options.use_global_arguments(false);
-  int id = param_node_counter.fetch_add(1);
-  auto param_node = std::make_shared<rclcpp::Node>("_param_client_" + std::to_string(id), options);
-  auto client = std::make_shared<rclcpp::SyncParametersClient>(param_node, node_name);
-
-  param_clients_[node_name] = {param_node, client};
+  // Create cached client on the shared param_node_ (created in constructor)
+  auto client = std::make_shared<rclcpp::SyncParametersClient>(param_node_, node_name);
+  param_clients_[node_name] = client;
   return client;
 }
 
@@ -213,45 +182,46 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
     return result;
   }
 
-  // Per-node mutex: only block concurrent queries to the SAME node
-  std::lock_guard<std::mutex> op_lock(get_node_mutex(node_name));
   ParameterResult result;
 
   try {
     auto client = get_param_client(node_name);
 
-    if (!client->wait_for_service(get_service_timeout())) {
-      result.success = false;
-      result.error_message = "Parameter service not available for node: " + node_name;
-      result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
-      mark_node_unavailable(node_name);
-      RCLCPP_WARN(node_->get_logger(), "Parameter service not available for node: '%s' (cached for %.0fs)",
-                  node_name.c_str(), negative_cache_ttl_sec_);
-      return result;
-    }
-
-    // Cache default values after confirming service is available
-    cache_default_values(node_name);
-
-    auto param_names = client->list_parameters({}, 0);
-
+    // All ROS 2 IPC calls (wait_for_service, list_parameters, get_parameters)
+    // spin param_node_ internally. spin_mutex_ serializes these to prevent
+    // "Node already added to executor" errors from concurrent spin.
     std::vector<rclcpp::Parameter> parameters;
-    parameters = client->get_parameters(param_names.names);
+    {
+      std::lock_guard<std::recursive_mutex> spin_lock(spin_mutex_);
 
-    if (parameters.empty() && !param_names.names.empty()) {
-      RCLCPP_WARN(node_->get_logger(), "get_parameters returned empty, trying one by one for node: '%s'",
-                  node_name.c_str());
-      for (const auto & name : param_names.names) {
-        try {
-          auto single_params = client->get_parameters({name});
-          if (!single_params.empty()) {
-            parameters.push_back(single_params[0]);
+      if (!client->wait_for_service(get_service_timeout())) {
+        result.success = false;
+        result.error_message = "Parameter service not available for node: " + node_name;
+        result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+        mark_node_unavailable(node_name);
+        RCLCPP_WARN(node_->get_logger(), "Parameter service not available for node: '%s' (cached for %.0fs)",
+                    node_name.c_str(), negative_cache_ttl_sec_);
+        return result;
+      }
+
+      cache_default_values(node_name);
+
+      auto param_names = client->list_parameters({}, 0);
+      parameters = client->get_parameters(param_names.names);
+
+      if (parameters.empty() && !param_names.names.empty()) {
+        for (const auto & name : param_names.names) {
+          try {
+            auto single_params = client->get_parameters({name});
+            if (!single_params.empty()) {
+              parameters.push_back(single_params[0]);
+            }
+          } catch (const std::exception & e) {
+            RCLCPP_DEBUG(node_->get_logger(), "Failed to get param '%s': %s", name.c_str(), e.what());
           }
-        } catch (const std::exception & e) {
-          RCLCPP_DEBUG(node_->get_logger(), "Failed to get param '%s': %s", name.c_str(), e.what());
         }
       }
-    }
+    }  // spin_mutex_ released - JSON building is lock-free
 
     json params_array = json::array();
     for (const auto & param : parameters) {
@@ -287,7 +257,7 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
     return result;
   }
 
-  std::lock_guard<std::mutex> op_lock(get_node_mutex(node_name));
+  std::lock_guard<std::recursive_mutex> spin_lock(spin_mutex_);
   ParameterResult result;
 
   try {
@@ -378,7 +348,7 @@ ParameterResult ConfigurationManager::set_parameter(const std::string & node_nam
     return result;
   }
 
-  std::lock_guard<std::mutex> op_lock(get_node_mutex(node_name));
+  std::lock_guard<std::recursive_mutex> spin_lock(spin_mutex_);
   ParameterResult result;
 
   try {
@@ -690,7 +660,7 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
     return result;
   }
 
-  std::lock_guard<std::mutex> op_lock(get_node_mutex(node_name));
+  std::lock_guard<std::recursive_mutex> spin_lock(spin_mutex_);
   ParameterResult result;
 
   try {
@@ -809,7 +779,7 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
     return result;
   }
 
-  std::lock_guard<std::mutex> op_lock(get_node_mutex(node_name));
+  std::lock_guard<std::recursive_mutex> spin_lock(spin_mutex_);
   ParameterResult result;
 
   try {
