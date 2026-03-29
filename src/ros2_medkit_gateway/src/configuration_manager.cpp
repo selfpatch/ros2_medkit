@@ -61,8 +61,7 @@ std::shared_ptr<rclcpp::Node> ConfigurationManager::acquire_param_node() {
   options.start_parameter_event_publisher(false);
   options.use_global_arguments(false);
   int id = param_node_counter.fetch_add(1);
-  auto node = std::make_shared<rclcpp::Node>(
-      "_param_client_" + std::to_string(id), options);
+  auto node = std::make_shared<rclcpp::Node>("_param_client_" + std::to_string(id), options);
   param_pool_all_.push_back(node);
   return node;
 }
@@ -138,6 +137,19 @@ ParameterResult ConfigurationManager::list_own_parameters() {
   ParameterResult result;
   try {
     auto params = node_->get_parameters(node_->list_parameters({}, 0).names);
+
+    // Cache defaults for reset operations (same as IPC path)
+    {
+      std::lock_guard<std::mutex> lock(defaults_mutex_);
+      if (default_values_.find(own_node_fqn_) == default_values_.end()) {
+        std::map<std::string, rclcpp::Parameter> node_defaults;
+        for (const auto & param : params) {
+          node_defaults[param.get_name()] = param;
+        }
+        default_values_[own_node_fqn_] = std::move(node_defaults);
+      }
+    }
+
     json params_array = json::array();
     for (const auto & param : params) {
       json param_obj;
@@ -193,11 +205,11 @@ std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_cl
   auto param_node = acquire_param_node();
   auto * mgr = this;
   auto client_raw = new rclcpp::SyncParametersClient(param_node, node_name);
-  return std::shared_ptr<rclcpp::SyncParametersClient>(
-      client_raw, [mgr, param_node](rclcpp::SyncParametersClient * ptr) {
-        delete ptr;
-        mgr->release_param_node(param_node);
-      });
+  return std::shared_ptr<rclcpp::SyncParametersClient>(client_raw,
+                                                       [mgr, param_node](rclcpp::SyncParametersClient * ptr) {
+                                                         delete ptr;
+                                                         mgr->release_param_node(param_node);
+                                                       });
 }
 
 ParameterResult ConfigurationManager::list_parameters(const std::string & node_name) {
@@ -758,6 +770,51 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
 }
 
 ParameterResult ConfigurationManager::reset_all_parameters(const std::string & node_name) {
+  // Self-query guard: reset via direct access
+  if (is_self_node(node_name)) {
+    ParameterResult result;
+    std::vector<rclcpp::Parameter> params_to_reset;
+    {
+      std::lock_guard<std::mutex> lock(defaults_mutex_);
+      auto node_it = default_values_.find(node_name);
+      if (node_it == default_values_.end()) {
+        result.success = false;
+        result.error_message = "No default values cached for node: " + node_name;
+        result.error_code = ParameterErrorCode::NO_DEFAULTS_CACHED;
+        return result;
+      }
+      for (const auto & [name, param] : node_it->second) {
+        params_to_reset.push_back(param);
+      }
+    }
+    size_t reset_count = 0;
+    size_t failed_count = 0;
+    json failed_params = json::array();
+    for (const auto & param : params_to_reset) {
+      auto set_result = node_->set_parameter(param);
+      if (set_result.successful) {
+        reset_count++;
+      } else {
+        failed_count++;
+        failed_params.push_back(param.get_name());
+      }
+    }
+    json response;
+    response["node_name"] = node_name;
+    response["reset_count"] = reset_count;
+    response["failed_count"] = failed_count;
+    if (!failed_params.empty()) {
+      response["failed_parameters"] = failed_params;
+    }
+    result.success = (failed_count == 0);
+    result.data = response;
+    if (failed_count > 0) {
+      result.error_message = "Some parameters could not be reset";
+      result.error_code = ParameterErrorCode::INTERNAL_ERROR;
+    }
+    return result;
+  }
+
   if (is_node_unavailable(node_name)) {
     ParameterResult result;
     result.success = false;
