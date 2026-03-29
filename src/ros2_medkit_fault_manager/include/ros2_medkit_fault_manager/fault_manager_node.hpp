@@ -47,6 +47,7 @@ namespace ros2_medkit_fault_manager {
 class FaultManagerNode : public rclcpp::Node {
  public:
   explicit FaultManagerNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  ~FaultManagerNode() override;
 
   /// Get read-only access to fault storage (for testing)
   const FaultStorage & get_storage() const {
@@ -166,6 +167,10 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Correlation engine for fault correlation/muting (nullptr if disabled)
   std::unique_ptr<correlation::CorrelationEngine> correlation_engine_;
+
+  /// Tracks active capture threads for clean shutdown (join before destruction)
+  std::mutex capture_threads_mutex_;
+  std::vector<std::thread> capture_threads_;
 };
 
 }  // namespace ros2_medkit_fault_manager
