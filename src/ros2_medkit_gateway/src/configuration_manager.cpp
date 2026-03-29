@@ -70,6 +70,19 @@ bool ConfigurationManager::is_node_unavailable(const std::string & node_name) co
 void ConfigurationManager::mark_node_unavailable(const std::string & node_name) {
   std::unique_lock<std::shared_mutex> lock(negative_cache_mutex_);
   unavailable_nodes_[node_name] = std::chrono::steady_clock::now();
+
+  // Lazy cleanup: remove expired entries to prevent unbounded growth
+  if (unavailable_nodes_.size() > 100) {
+    auto now = std::chrono::steady_clock::now();
+    auto ttl = std::chrono::duration<double>(negative_cache_ttl_sec_);
+    for (auto it = unavailable_nodes_.begin(); it != unavailable_nodes_.end();) {
+      if (now - it->second > ttl) {
+        it = unavailable_nodes_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
 }
 
 bool ConfigurationManager::is_self_node(const std::string & node_name) const {
@@ -173,9 +186,6 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
   std::lock_guard<std::mutex> op_lock(get_node_mutex(node_name));
   ParameterResult result;
 
-  // Cache default values on first access to this node
-  cache_default_values(node_name);
-
   try {
     auto client = get_param_client(node_name);
 
@@ -188,6 +198,9 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
                   node_name.c_str(), negative_cache_ttl_sec_);
       return result;
     }
+
+    // Cache default values after confirming service is available
+    cache_default_values(node_name);
 
     auto param_names = client->list_parameters({}, 0);
 
@@ -299,6 +312,33 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
 
 ParameterResult ConfigurationManager::set_parameter(const std::string & node_name, const std::string & param_name,
                                                     const json & value) {
+  // Self-query guard: set parameter directly on own node
+  if (is_self_node(node_name)) {
+    ParameterResult result;
+    try {
+      auto current_value = node_->get_parameter(param_name).get_parameter_value();
+      rclcpp::ParameterValue param_value = json_to_parameter_value(value, current_value.get_type());
+      auto set_result = node_->set_parameter(rclcpp::Parameter(param_name, param_value));
+      if (!set_result.successful) {
+        result.success = false;
+        result.error_message = set_result.reason;
+        result.error_code = ParameterErrorCode::INVALID_VALUE;
+        return result;
+      }
+      json param_obj;
+      param_obj["name"] = param_name;
+      param_obj["value"] = parameter_value_to_json(param_value);
+      param_obj["type"] = parameter_type_to_string(param_value.get_type());
+      result.success = true;
+      result.data = param_obj;
+    } catch (const std::exception & e) {
+      result.success = false;
+      result.error_message = std::string("Failed to set own parameter: ") + e.what();
+      result.error_code = ParameterErrorCode::INTERNAL_ERROR;
+    }
+    return result;
+  }
+
   if (is_node_unavailable(node_name)) {
     ParameterResult result;
     result.success = false;
@@ -576,6 +616,41 @@ void ConfigurationManager::cache_default_values(const std::string & node_name) {
 }
 
 ParameterResult ConfigurationManager::reset_parameter(const std::string & node_name, const std::string & param_name) {
+  // Self-query guard: reset via direct access
+  if (is_self_node(node_name)) {
+    ParameterResult result;
+    std::lock_guard<std::mutex> lock(defaults_mutex_);
+    auto node_it = default_values_.find(node_name);
+    if (node_it == default_values_.end()) {
+      result.success = false;
+      result.error_message = "No default values cached for node: " + node_name;
+      result.error_code = ParameterErrorCode::NO_DEFAULTS_CACHED;
+      return result;
+    }
+    auto param_it = node_it->second.find(param_name);
+    if (param_it == node_it->second.end()) {
+      result.success = false;
+      result.error_message = "No default value for parameter: " + param_name;
+      result.error_code = ParameterErrorCode::NOT_FOUND;
+      return result;
+    }
+    auto set_result = node_->set_parameter(param_it->second);
+    if (!set_result.successful) {
+      result.success = false;
+      result.error_message = set_result.reason;
+      result.error_code = ParameterErrorCode::INTERNAL_ERROR;
+      return result;
+    }
+    json param_obj;
+    param_obj["name"] = param_name;
+    param_obj["value"] = parameter_value_to_json(param_it->second.get_parameter_value());
+    param_obj["type"] = parameter_type_to_string(param_it->second.get_type());
+    param_obj["reset_to_default"] = true;
+    result.success = true;
+    result.data = param_obj;
+    return result;
+  }
+
   if (is_node_unavailable(node_name)) {
     ParameterResult result;
     result.success = false;
