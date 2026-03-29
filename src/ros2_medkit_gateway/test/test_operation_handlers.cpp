@@ -290,25 +290,15 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     ctx_.reset();
     trigger_service_.reset();
 
-    // Remove nodes from executor before destroying them.
-    // Destroying nodes while executor still holds references can cause
-    // "terminate called without an active exception" during callback group cleanup.
-    if (executor_ != nullptr) {
-      if (gateway_node_) {
-        executor_->remove_node(gateway_node_);
-      }
-      if (service_node_) {
-        executor_->remove_node(service_node_);
-      }
-      if (action_server_node_) {
-        executor_->remove_node(action_server_node_);
-      }
-    }
+    // Destroy executor before nodes. The executor's cancel() above stopped
+    // spinning, and join() waited for the spin thread. Destroying the executor
+    // releases its internal references to node callback groups. Only then is
+    // it safe to destroy the nodes themselves.
+    executor_.reset();
 
     action_server_node_.reset();
     service_node_.reset();
     gateway_node_.reset();
-    executor_.reset();
   }
 
   void seed_component_cache() {
