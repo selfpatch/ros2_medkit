@@ -130,6 +130,11 @@ if(BUILD_TESTING)
     math(EXPR _MEDKIT_DOMAIN_COUNTER "${_MEDKIT_DOMAIN_COUNTER} + 1")
     math(EXPR _INTEG_PORT "${_INTEG_PORT} + 10")
   endforeach()
+
+  # Verify domain range not exhausted
+  if(_MEDKIT_DOMAIN_COUNTER GREATER _MEDKIT_DOMAIN_END)
+    message(FATAL_ERROR "Integration test domain range exhausted (${_MEDKIT_DOMAIN_START}-${_MEDKIT_DOMAIN_END})")
+  endif()
 endif()
 
 ament_package()
