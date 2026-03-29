@@ -137,14 +137,6 @@ class ConfigurationManager {
   /// Gateway's own fully qualified node name (for self-query detection)
   std::string own_node_fqn_;
 
-  /// Per-node mutexes for parameter operations.
-  /// Each node gets its own mutex so one slow node doesn't block queries to other nodes.
-  mutable std::shared_mutex node_mutexes_mutex_;
-  mutable std::unordered_map<std::string, std::unique_ptr<std::mutex>> node_mutexes_;
-
-  /// Get or create a mutex for a specific node
-  std::mutex & get_node_mutex(const std::string & node_name) const;
-
   /// Negative cache: nodes whose parameter service was recently unavailable.
   /// Avoids repeated blocking waits on nodes that don't have parameter services.
   mutable std::shared_mutex negative_cache_mutex_;
@@ -155,16 +147,22 @@ class ConfigurationManager {
   mutable std::mutex defaults_mutex_;
   std::map<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
 
-  /// Per-target-node param client entries.
-  /// Each target node gets a dedicated ROS 2 param node + cached SyncParametersClient.
-  /// The per-node mutex (from node_mutexes_) ensures only one thread spins a
-  /// given param_node at a time, preventing executor conflicts.
-  struct ParamClientEntry {
-    std::shared_ptr<rclcpp::Node> param_node;
-    std::shared_ptr<rclcpp::SyncParametersClient> client;
-  };
-  mutable std::mutex param_clients_mutex_;
-  std::unordered_map<std::string, ParamClientEntry> param_clients_;
+  /// Internal node for parameter client operations.
+  /// Created once in constructor - must be in DDS graph early for fast service discovery.
+  /// SyncParametersClient requires a node NOT in an executor to spin internally.
+  std::shared_ptr<rclcpp::Node> param_node_;
+
+  /// Mutex to serialize spin operations on param_node_.
+  /// SyncParametersClient::wait_for_service/get_parameters/etc spin param_node_
+  /// internally via spin_node_until_future_complete which is NOT thread-safe.
+  /// This mutex is ONLY held during the actual ROS 2 IPC call, not during
+  /// cache lookups or JSON building. With negative cache + self-guard,
+  /// most requests never touch this mutex.
+  mutable std::recursive_mutex spin_mutex_;
+
+  /// Cached SyncParametersClient per target node (avoids recreating clients)
+  mutable std::mutex clients_mutex_;
+  std::map<std::string, std::shared_ptr<rclcpp::SyncParametersClient>> param_clients_;
 };
 
 }  // namespace ros2_medkit_gateway

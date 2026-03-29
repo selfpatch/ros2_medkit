@@ -340,35 +340,22 @@ TEST_F(TestConfigurationManager, test_self_query_no_deadlock) {
   EXPECT_TRUE(result.success);
 }
 
-// ==================== PER-NODE MUTEX TESTS ====================
+// ==================== SPIN SERIALIZATION TESTS ====================
 
-TEST_F(TestConfigurationManager, test_parallel_different_nodes_not_serialized) {
-  // Queries to different nonexistent nodes should run in parallel,
-  // not serialize behind a single mutex.
-  // Use different node names for serial vs parallel to avoid negative cache hits.
-
-  // Serial baseline (uses _serial_ prefix)
-  auto serial_start = std::chrono::steady_clock::now();
-  for (int i = 0; i < 3; ++i) {
-    (void)config_manager_->list_parameters("/serial_test_node_" + std::to_string(i));
-  }
-  auto serial_elapsed = std::chrono::steady_clock::now() - serial_start;
-
-  // Parallel run (uses _parallel_ prefix - different names, no cache hit)
-  auto parallel_start = std::chrono::steady_clock::now();
+TEST_F(TestConfigurationManager, test_concurrent_queries_no_crash) {
+  // Concurrent queries to different nonexistent nodes must not crash
+  // (spin_mutex_ serializes ROS 2 IPC to prevent executor conflicts).
+  // Second+ calls hit negative cache and return instantly.
   std::vector<std::thread> threads;
   for (int i = 0; i < 3; ++i) {
     threads.emplace_back([this, i]() {
-      (void)config_manager_->list_parameters("/parallel_test_node_" + std::to_string(i));
+      (void)config_manager_->list_parameters("/concurrent_node_" + std::to_string(i));
     });
   }
   for (auto & t : threads) {
     t.join();
   }
-  auto parallel_elapsed = std::chrono::steady_clock::now() - parallel_start;
-
-  // Parallel should be noticeably faster than serial (generous factor for CI)
-  EXPECT_LT(parallel_elapsed, serial_elapsed * 0.9);
+  // If we get here without crash/hang, spin serialization works
 }
 
 // ==================== CONCURRENT ACCESS TEST ====================
