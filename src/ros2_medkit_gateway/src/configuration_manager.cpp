@@ -43,18 +43,33 @@ ConfigurationManager::~ConfigurationManager() {
 }
 
 void ConfigurationManager::shutdown() {
-  std::lock_guard<std::mutex> lock(param_nodes_registry_mutex_);
-  for (auto & weak_node : param_nodes_registry_) {
-    if (auto node = weak_node.lock()) {
-      node.reset();
-    }
-  }
-  param_nodes_registry_.clear();
+  std::lock_guard<std::mutex> lock(param_pool_mutex_);
+  param_pool_available_.clear();
+  param_pool_all_.clear();
 }
 
-void ConfigurationManager::register_param_node(std::shared_ptr<rclcpp::Node> node) {
-  std::lock_guard<std::mutex> lock(param_nodes_registry_mutex_);
-  param_nodes_registry_.push_back(node);
+std::shared_ptr<rclcpp::Node> ConfigurationManager::acquire_param_node() {
+  std::lock_guard<std::mutex> lock(param_pool_mutex_);
+  if (!param_pool_available_.empty()) {
+    auto node = std::move(param_pool_available_.back());
+    param_pool_available_.pop_back();
+    return node;
+  }
+  // Create new node
+  rclcpp::NodeOptions options;
+  options.start_parameter_services(false);
+  options.start_parameter_event_publisher(false);
+  options.use_global_arguments(false);
+  int id = param_node_counter.fetch_add(1);
+  auto node = std::make_shared<rclcpp::Node>(
+      "_param_client_" + std::to_string(id), options);
+  param_pool_all_.push_back(node);
+  return node;
+}
+
+void ConfigurationManager::release_param_node(std::shared_ptr<rclcpp::Node> node) {
+  std::lock_guard<std::mutex> lock(param_pool_mutex_);
+  param_pool_available_.push_back(std::move(node));
 }
 
 std::chrono::duration<double> ConfigurationManager::get_service_timeout() const {
@@ -70,8 +85,19 @@ std::mutex & ConfigurationManager::get_node_mutex(const std::string & node_name)
       return *it->second;
     }
   }
-  // Slow path: create new mutex
+  // Slow path: create new mutex, with lazy cleanup to prevent unbounded growth
   std::unique_lock<std::shared_mutex> lock(node_mutexes_mutex_);
+  if (node_mutexes_.size() > 200) {
+    // Remove mutexes that are not currently locked (try_lock succeeds)
+    for (auto it = node_mutexes_.begin(); it != node_mutexes_.end();) {
+      if (it->first != node_name && it->second->try_lock()) {
+        it->second->unlock();
+        it = node_mutexes_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
   auto [it, inserted] = node_mutexes_.try_emplace(node_name, std::make_unique<std::mutex>());
   return *it->second;
 }
@@ -160,32 +186,18 @@ ParameterResult ConfigurationManager::get_own_parameter(const std::string & para
 }
 
 std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_client(const std::string & node_name) {
-  // Create a thread-local param node to avoid executor conflicts.
-  // SyncParametersClient spins its node internally - sharing one node
-  // across threads causes "Node already added to executor" errors.
-  // Nodes are registered for deterministic cleanup on shutdown.
-  thread_local std::shared_ptr<rclcpp::Node> tl_param_node;
-  thread_local std::map<std::string, std::shared_ptr<rclcpp::SyncParametersClient>> tl_clients;
-
-  if (!tl_param_node) {
-    rclcpp::NodeOptions options;
-    options.start_parameter_services(false);
-    options.start_parameter_event_publisher(false);
-    options.use_global_arguments(false);
-    int id = param_node_counter.fetch_add(1);
-    tl_param_node = std::make_shared<rclcpp::Node>(
-        "_param_client_" + std::to_string(id), options);
-    register_param_node(tl_param_node);
-  }
-
-  auto it = tl_clients.find(node_name);
-  if (it != tl_clients.end()) {
-    return it->second;
-  }
-
-  auto client = std::make_shared<rclcpp::SyncParametersClient>(tl_param_node, node_name);
-  tl_clients[node_name] = client;
-  return client;
+  // Acquire a param node from the pool. The param node is captured in a
+  // custom deleter on the SyncParametersClient shared_ptr - when the client
+  // is destroyed (goes out of scope in the calling function), the param node
+  // is automatically returned to the pool.
+  auto param_node = acquire_param_node();
+  auto * mgr = this;
+  auto client_raw = new rclcpp::SyncParametersClient(param_node, node_name);
+  return std::shared_ptr<rclcpp::SyncParametersClient>(
+      client_raw, [mgr, param_node](rclcpp::SyncParametersClient * ptr) {
+        delete ptr;
+        mgr->release_param_node(param_node);
+      });
 }
 
 ParameterResult ConfigurationManager::list_parameters(const std::string & node_name) {
