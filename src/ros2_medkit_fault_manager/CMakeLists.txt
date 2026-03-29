@@ -126,6 +126,9 @@ if(BUILD_TESTING)
 
   ros2_medkit_clang_tidy()
 
+  include(ROS2MedkitTestDomain)
+  medkit_init_test_domains(START 10 END 29)
+
   # Unit tests
   # Each GTest target that instantiates ROS 2 nodes gets a dedicated ROS_DOMAIN_ID
   # so it cannot interfere with launch_testing integration tests that run concurrently
@@ -133,25 +136,25 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fault_manager test/test_fault_manager.cpp)
   target_link_libraries(test_fault_manager fault_manager_lib)
   medkit_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
-  set_tests_properties(test_fault_manager PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=62")
+  medkit_set_test_domain(test_fault_manager)
 
   # SQLite storage tests
   ament_add_gtest(test_sqlite_storage test/test_sqlite_storage.cpp)
   target_link_libraries(test_sqlite_storage fault_manager_lib)
   medkit_target_dependencies(test_sqlite_storage rclcpp ros2_medkit_msgs)
-  set_tests_properties(test_sqlite_storage PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=63")
+  medkit_set_test_domain(test_sqlite_storage)
 
   # Snapshot capture tests
   ament_add_gtest(test_snapshot_capture test/test_snapshot_capture.cpp)
   target_link_libraries(test_snapshot_capture fault_manager_lib)
   medkit_target_dependencies(test_snapshot_capture rclcpp ros2_medkit_msgs)
-  set_tests_properties(test_snapshot_capture PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=64")
+  medkit_set_test_domain(test_snapshot_capture)
 
   # Rosbag capture tests
   ament_add_gtest(test_rosbag_capture test/test_rosbag_capture.cpp)
   target_link_libraries(test_rosbag_capture fault_manager_lib)
   medkit_target_dependencies(test_rosbag_capture rclcpp ros2_medkit_msgs)
-  set_tests_properties(test_rosbag_capture PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=65")
+  medkit_set_test_domain(test_rosbag_capture)
 
   # Correlation config parser tests
   ament_add_gtest(test_correlation_config_parser test/test_correlation_config_parser.cpp)
@@ -169,7 +172,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_entity_thresholds test/test_entity_thresholds.cpp)
   target_link_libraries(test_entity_thresholds fault_manager_lib)
   medkit_target_dependencies(test_entity_thresholds rclcpp ros2_medkit_msgs)
-  set_tests_properties(test_entity_thresholds PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=67")
+  medkit_set_test_domain(test_entity_thresholds)
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)

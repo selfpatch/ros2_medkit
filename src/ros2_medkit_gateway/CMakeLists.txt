@@ -325,6 +325,9 @@ if(BUILD_TESTING)
     TIMEOUT 3000
   )
 
+  include(ROS2MedkitTestDomain)
+  medkit_init_test_domains(START 30 END 89)
+
   # Add GTest
   find_package(ament_cmake_gtest REQUIRED)
   find_package(rclcpp_action REQUIRED)
@@ -332,6 +335,7 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_gateway_node test/test_gateway_node.cpp)
   target_link_libraries(test_gateway_node gateway_lib)
+  medkit_set_test_domain(test_gateway_node)
 
   ament_add_gtest(test_auth_manager test/test_auth_manager.cpp)
   target_link_libraries(test_auth_manager gateway_lib)
@@ -339,23 +343,28 @@ if(BUILD_TESTING)
   ament_add_gtest(test_generic_client_compat test/test_generic_client_compat.cpp)
   target_link_libraries(test_generic_client_compat gateway_lib)
   medkit_target_dependencies(test_generic_client_compat rclcpp std_srvs)
+  medkit_set_test_domain(test_generic_client_compat)
 
   ament_add_gtest(test_operation_manager test/test_operation_manager.cpp)
   target_link_libraries(test_operation_manager gateway_lib)
+  medkit_set_test_domain(test_operation_manager)
 
   ament_add_gtest(test_configuration_manager test/test_configuration_manager.cpp)
   target_link_libraries(test_configuration_manager gateway_lib)
+  medkit_set_test_domain(test_configuration_manager)
 
   # Add NativeTopicSampler tests
   find_package(std_msgs REQUIRED)
   ament_add_gtest(test_native_topic_sampler test/test_native_topic_sampler.cpp)
   target_link_libraries(test_native_topic_sampler gateway_lib)
   medkit_target_dependencies(test_native_topic_sampler std_msgs)
+  medkit_set_test_domain(test_native_topic_sampler)
 
   # Add DiscoveryManager tests
   ament_add_gtest(test_discovery_manager test/test_discovery_manager.cpp)
   target_link_libraries(test_discovery_manager gateway_lib)
   medkit_target_dependencies(test_discovery_manager std_msgs)
+  medkit_set_test_domain(test_discovery_manager)
 
   # Add TLS configuration tests
   ament_add_gtest(test_tls_config test/test_tls_config.cpp)
@@ -365,7 +374,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fault_manager test/test_fault_manager.cpp)
   target_link_libraries(test_fault_manager gateway_lib)
   medkit_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
-  set_tests_properties(test_fault_manager PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=99")
+  medkit_set_test_domain(test_fault_manager)
 
   # Add discovery models tests
   ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
@@ -374,7 +383,7 @@ if(BUILD_TESTING)
   # Add discovery handlers tests
   ament_add_gtest(test_discovery_handlers test/test_discovery_handlers.cpp)
   target_link_libraries(test_discovery_handlers gateway_lib)
-  set_tests_properties(test_discovery_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=71")
+  medkit_set_test_domain(test_discovery_handlers)
 
   # Add manifest parser tests
   ament_add_gtest(test_manifest_parser test/test_manifest_parser.cpp)
@@ -420,6 +429,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_data_access_manager test/test_data_access_manager.cpp)
   target_link_libraries(test_data_access_manager gateway_lib)
   medkit_target_dependencies(test_data_access_manager rclcpp std_msgs)
+  medkit_set_test_domain(test_data_access_manager)
 
   # Add entity resource model tests
   ament_add_gtest(test_entity_resource_model test/test_entity_resource_model.cpp)
@@ -476,7 +486,7 @@ if(BUILD_TESTING)
   # Add script handler tests
   ament_add_gtest(test_script_handlers test/test_script_handlers.cpp)
   target_link_libraries(test_script_handlers gateway_lib)
-  set_tests_properties(test_script_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=80")
+  medkit_set_test_domain(test_script_handlers)
 
   # Add data handler tests
   ament_add_gtest(test_data_handlers test/test_data_handlers.cpp)
@@ -489,13 +499,13 @@ if(BUILD_TESTING)
   # Add health handler tests
   ament_add_gtest(test_health_handlers test/test_health_handlers.cpp)
   target_link_libraries(test_health_handlers gateway_lib)
-  set_tests_properties(test_health_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=79")
+  medkit_set_test_domain(test_health_handlers)
 
   # Add operation handler tests
   ament_add_gtest(test_operation_handlers test/test_operation_handlers.cpp)
   target_link_libraries(test_operation_handlers gateway_lib)
   medkit_target_dependencies(test_operation_handlers rclcpp rclcpp_action std_srvs example_interfaces)
-  set_tests_properties(test_operation_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=72")
+  medkit_set_test_domain(test_operation_handlers)
 
   # Demo update backend plugin (.so for integration tests)
   add_library(test_update_backend MODULE
@@ -551,7 +561,7 @@ if(BUILD_TESTING)
   # Dedicated ROS_DOMAIN_ID to prevent cross-talk with concurrent integration tests
   ament_add_gtest(test_log_manager test/test_log_manager.cpp)
   target_link_libraries(test_log_manager gateway_lib)
-  set_tests_properties(test_log_manager PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=66")
+  medkit_set_test_domain(test_log_manager)
 
   # Log handlers tests
   ament_add_gtest(test_log_handlers test/test_log_handlers.cpp)
@@ -580,7 +590,7 @@ if(BUILD_TESTING)
   # Capability generator tests (OpenAPI spec generation engine)
   ament_add_gtest(test_capability_generator test/test_capability_generator.cpp)
   target_link_libraries(test_capability_generator gateway_lib)
-  set_tests_properties(test_capability_generator PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=74")
+  medkit_set_test_domain(test_capability_generator)
 
   # Route registry tests (OpenAPI route registration and path conversion)
   ament_add_gtest(test_route_registry test/test_route_registry.cpp)
@@ -589,7 +599,7 @@ if(BUILD_TESTING)
   # Docs handlers tests (OpenAPI /docs endpoint handlers)
   ament_add_gtest(test_docs_handlers test/test_docs_handlers.cpp)
   target_link_libraries(test_docs_handlers gateway_lib)
-  set_tests_properties(test_docs_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=68")
+  medkit_set_test_domain(test_docs_handlers)
 
   # Lock manager tests
   ament_add_gtest(test_lock_manager test/test_lock_manager.cpp)
@@ -598,7 +608,7 @@ if(BUILD_TESTING)
   # Lock handlers tests
   ament_add_gtest(test_lock_handlers test/test_lock_handlers.cpp)
   target_link_libraries(test_lock_handlers gateway_lib)
-  set_tests_properties(test_lock_handlers PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=78")
+  medkit_set_test_domain(test_lock_handlers)
 
   # Condition evaluator tests (trigger condition interface + built-in evaluators)
   ament_add_gtest(test_condition_evaluator test/test_condition_evaluator.cpp)

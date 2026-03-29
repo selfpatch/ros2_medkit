@@ -95,7 +95,9 @@ if(BUILD_TESTING)
   # between tests (e.g., stale DDS participants from previous tests leaking into
   # subsequent test's graph discovery).
   set(_INTEG_PORT 9100)
-  set(_INTEG_DOMAIN_ID 100)
+
+  include(ROS2MedkitTestDomain)
+  medkit_init_test_domains(START 140 END 229)
 
   # Feature tests (atomic, independent, 120s timeout)
   file(GLOB FEATURE_TESTS test/features/*.test.py)
@@ -107,10 +109,10 @@ if(BUILD_TESTING)
     )
     set_tests_properties(${test_name} PROPERTIES
       LABELS "integration;feature"
-      ENVIRONMENT "GATEWAY_TEST_PORT=${_INTEG_PORT};ROS_DOMAIN_ID=${_INTEG_DOMAIN_ID}"
+      ENVIRONMENT "GATEWAY_TEST_PORT=${_INTEG_PORT};ROS_DOMAIN_ID=${_MEDKIT_DOMAIN_COUNTER}"
     )
+    math(EXPR _MEDKIT_DOMAIN_COUNTER "${_MEDKIT_DOMAIN_COUNTER} + 1")
     math(EXPR _INTEG_PORT "${_INTEG_PORT} + 10")
-    math(EXPR _INTEG_DOMAIN_ID "${_INTEG_DOMAIN_ID} + 1")
   endforeach()
 
   # Scenario tests (E2E stories, 300s timeout)
@@ -123,10 +125,10 @@ if(BUILD_TESTING)
     )
     set_tests_properties(${test_name} PROPERTIES
       LABELS "integration;scenario"
-      ENVIRONMENT "GATEWAY_TEST_PORT=${_INTEG_PORT};ROS_DOMAIN_ID=${_INTEG_DOMAIN_ID}"
+      ENVIRONMENT "GATEWAY_TEST_PORT=${_INTEG_PORT};ROS_DOMAIN_ID=${_MEDKIT_DOMAIN_COUNTER}"
     )
+    math(EXPR _MEDKIT_DOMAIN_COUNTER "${_MEDKIT_DOMAIN_COUNTER} + 1")
     math(EXPR _INTEG_PORT "${_INTEG_PORT} + 10")
-    math(EXPR _INTEG_DOMAIN_ID "${_INTEG_DOMAIN_ID} + 1")
   endforeach()
 endif()
 

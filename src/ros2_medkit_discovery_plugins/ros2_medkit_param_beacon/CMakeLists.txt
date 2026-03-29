@@ -84,6 +84,9 @@ if(BUILD_TESTING)
 
   find_package(ament_cmake_gmock REQUIRED)
 
+  include(ROS2MedkitTestDomain)
+  medkit_init_test_domains(START 100 END 109)
+
   # Include plugin source in test (plugin is MODULE/dlopen, test instantiates directly)
   ament_add_gmock(test_param_beacon_plugin
     test/test_param_beacon_plugin.cpp
@@ -98,8 +101,7 @@ if(BUILD_TESTING)
     ros2_medkit_beacon_common::beacon_common_lib
     cpp_httplib_target
     OpenSSL::SSL OpenSSL::Crypto)
-  set_tests_properties(test_param_beacon_plugin PROPERTIES
-    ENVIRONMENT "ROS_DOMAIN_ID=70")
+  medkit_set_test_domain(test_param_beacon_plugin)
 endif()
 
 ament_package()
