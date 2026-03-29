@@ -239,17 +239,10 @@ class TestTriggersFaults(GatewayTestCase):
 
     def test_20_fault_trigger_on_component(self):
         """Fault triggers work on component entities."""
-        # Find the perception component (lidar's synthetic component)
+        # Find the host-derived default component (all apps belong to it)
         r = requests.get(f'{self.BASE_URL}/components', timeout=5)
         components = r.json().get('items', [])
-        comp_id = None
-        for comp in components:
-            cid = comp.get('id', '')
-            if 'perception' in cid or 'lidar' in cid:
-                comp_id = cid
-                break
-        if not comp_id and components:
-            comp_id = components[0]['id']
+        comp_id = components[0]['id'] if components else None
 
         if not comp_id:
             self.fail('No components discovered')

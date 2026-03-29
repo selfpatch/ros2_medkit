@@ -13,9 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Feature tests for entity listing endpoints (areas, components, apps).
+"""Feature tests for entity listing endpoints (areas, components, apps, functions).
 
-Validates discovery of entities, area components, and entity ID validation.
+Validates discovery of entities with the SOVD-aligned entity model:
+- Areas are empty in runtime_only mode (no synthetic areas)
+- Components returns a single host-derived default Component
+- Functions are created from namespace grouping
+- Apps are ROS 2 nodes (unchanged)
 
 """
 
@@ -38,18 +42,22 @@ def generate_test_description():
 
 
 class TestEntityListing(GatewayTestCase):
-    """Entity listing, area components, and ID validation tests."""
+    """Entity listing, functions, components, and ID validation tests."""
 
     MIN_EXPECTED_APPS = 8
-    REQUIRED_AREAS = {'powertrain', 'chassis', 'body'}
+    REQUIRED_FUNCTIONS = {'powertrain', 'chassis', 'body'}
     REQUIRED_APPS = {'temp_sensor', 'long_calibration', 'lidar_sensor', 'actuator'}
 
     # ------------------------------------------------------------------
-    # Area listing
+    # Area listing (empty in runtime_only mode)
     # ------------------------------------------------------------------
 
-    def test_list_areas(self):
-        """GET /areas returns all discovered areas.
+    def test_list_areas_empty_in_runtime_mode(self):
+        """GET /areas returns empty items in runtime_only mode.
+
+        With the SOVD-aligned entity model, areas are not created from
+        namespaces in runtime_only mode. Namespace grouping creates
+        Functions instead.
 
         @verifies REQ_INTEROP_003
         """
@@ -57,32 +65,18 @@ class TestEntityListing(GatewayTestCase):
         self.assertIn('items', data)
         areas = data['items']
         self.assertIsInstance(areas, list)
-        self.assertGreaterEqual(len(areas), 1)
-        area_ids = [area['id'] for area in areas]
-        self.assertIn('root', area_ids)
-
-    def test_automotive_areas_discovery(self):
-        """GET /areas returns expected automotive areas (powertrain, chassis, body).
-
-        @verifies REQ_INTEROP_003
-        """
-        data = self.get_json('/areas')
-        areas = data['items']
-        area_ids = [area['id'] for area in areas]
-
-        expected_areas = ['powertrain', 'chassis', 'body']
-        for expected in expected_areas:
-            self.assertIn(expected, area_ids)
+        self.assertEqual(len(areas), 0, 'Areas should be empty in runtime_only mode')
 
     # ------------------------------------------------------------------
-    # Component listing
+    # Component listing (single host component)
     # ------------------------------------------------------------------
 
     def test_list_components(self):
-        """GET /components returns all discovered synthetic components.
+        """GET /components returns the single host-derived default Component.
 
-        With heuristic discovery (default), components are synthetic groups
-        created by namespace aggregation. ROS 2 nodes are exposed as Apps.
+        With the SOVD-aligned entity model, runtime_only mode exposes a
+        single Component derived from the host system info (hostname, OS,
+        architecture) rather than synthetic namespace-based components.
 
         @verifies REQ_INTEROP_003
         """
@@ -90,65 +84,71 @@ class TestEntityListing(GatewayTestCase):
         self.assertIn('items', data)
         components = data['items']
         self.assertIsInstance(components, list)
-        # With synthetic components, we have fewer components (grouped by namespace)
-        # Expected: powertrain, chassis, body, perception, root (at minimum)
-        self.assertGreaterEqual(len(components), 4)
+        # Exactly one default host component
+        self.assertEqual(
+            len(components), 1,
+            f'Expected exactly 1 host component, got {len(components)}: '
+            f'{[c.get("id") for c in components]}'
+        )
 
-        # Verify response structure - all components should have required fields
-        for component in components:
-            self.assertIn('id', component)
-            self.assertIn('name', component)
-            self.assertIn('href', component)
-            # x-medkit contains ROS2-specific fields
-            self.assertIn('x-medkit', component)
-            x_medkit = component['x-medkit']
-            # namespace may be in x-medkit.ros2.namespace
-            self.assertTrue(
-                'ros2' in x_medkit and 'namespace' in x_medkit.get('ros2', {}),
-                f"Component {component['id']} should have namespace in x-medkit.ros2"
-            )
-
-        # Verify expected synthetic component IDs are present
-        component_ids = [comp['id'] for comp in components]
-        self.assertIn('powertrain', component_ids)
-        self.assertIn('chassis', component_ids)
-        self.assertIn('body', component_ids)
+        # Verify response structure
+        component = components[0]
+        self.assertIn('id', component)
+        self.assertIn('name', component)
+        self.assertIn('href', component)
+        # x-medkit contains source info
+        self.assertIn('x-medkit', component)
+        x_medkit = component['x-medkit']
+        self.assertEqual(
+            x_medkit.get('source'), 'runtime',
+            'Host component should have source=runtime'
+        )
 
     # ------------------------------------------------------------------
-    # Area components
+    # Function listing (namespace-derived)
     # ------------------------------------------------------------------
 
-    def test_area_components_success(self):
-        """GET /areas/{area_id}/components returns components for valid area.
+    def test_list_functions(self):
+        """GET /functions returns namespace-derived Functions.
 
-        With synthetic components, the powertrain area contains the 'powertrain'
-        synthetic component which aggregates all ROS 2 nodes in that namespace.
+        With the SOVD-aligned entity model, namespace grouping creates
+        Function entities instead of Areas/Components.
 
-        @verifies REQ_INTEROP_006
+        @verifies REQ_INTEROP_003
         """
-        # Test powertrain area
-        data = self.get_json('/areas/powertrain/components')
+        data = self.get_json('/functions')
         self.assertIn('items', data)
-        components = data['items']
-        self.assertIsInstance(components, list)
-        self.assertGreater(len(components), 0)
+        functions = data['items']
+        self.assertIsInstance(functions, list)
+        self.assertGreaterEqual(
+            len(functions), 3,
+            'Expected at least 3 functions from namespace grouping'
+        )
 
-        # All components should have EntityReference format with x-medkit
-        for component in components:
-            self.assertIn('id', component)
-            self.assertIn('name', component)
-            self.assertIn('href', component)
-            self.assertIn('x-medkit', component)
-            # Verify namespace is in x-medkit.ros2
-            x_medkit = component['x-medkit']
-            self.assertTrue(
-                'ros2' in x_medkit and 'namespace' in x_medkit.get('ros2', {}),
-                'Component should have namespace in x-medkit.ros2'
-            )
+        # Verify expected function IDs from demo node namespaces
+        func_ids = [f['id'] for f in functions]
+        self.assertIn('powertrain', func_ids)
+        self.assertIn('chassis', func_ids)
+        self.assertIn('body', func_ids)
 
-        # Verify the synthetic 'powertrain' component exists
-        component_ids = [comp['id'] for comp in components]
-        self.assertIn('powertrain', component_ids)
+        # Verify response structure
+        for func in functions:
+            self.assertIn('id', func)
+            self.assertIn('name', func)
+            self.assertIn('href', func)
+
+    def test_function_detail_accessible(self):
+        """GET /functions/{id} returns function detail for namespace-derived function.
+
+        @verifies REQ_INTEROP_003
+        """
+        data = self.get_json('/functions/powertrain')
+        self.assertIn('id', data)
+        self.assertEqual(data['id'], 'powertrain')
+
+    # ------------------------------------------------------------------
+    # Area components (404 in runtime_only mode)
+    # ------------------------------------------------------------------
 
     def test_area_components_nonexistent_error(self):
         """GET /areas/{area_id}/components returns 404 for nonexistent area.

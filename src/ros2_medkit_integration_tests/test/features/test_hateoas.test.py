@@ -238,10 +238,12 @@ class TestHateoas(GatewayTestCase):
     def test_subareas_list_has_href(self):
         """GET /areas/{id}/subareas returns items with href field.
 
+        Uses 'powertrain' area which has subareas defined in the manifest.
+
         @verifies REQ_INTEROP_004
         """
         response = requests.get(
-            f'{self.BASE_URL}/areas/root/subareas',
+            f'{self.BASE_URL}/areas/powertrain/subareas',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
@@ -292,10 +294,12 @@ class TestHateoas(GatewayTestCase):
     def test_contains_list_has_href(self):
         """GET /areas/{id}/contains returns items with href field.
 
+        Uses 'powertrain' area which contains components in the manifest.
+
         @verifies REQ_INTEROP_006
         """
         response = requests.get(
-            f'{self.BASE_URL}/areas/root/contains',
+            f'{self.BASE_URL}/areas/powertrain/contains',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
@@ -303,8 +307,8 @@ class TestHateoas(GatewayTestCase):
         data = response.json()
         self.assertIn('items', data)
         self.assertIn('_links', data)
-        self.assertEqual(data['_links']['self'], '/api/v1/areas/root/contains')
-        self.assertEqual(data['_links']['area'], '/api/v1/areas/root')
+        self.assertEqual(data['_links']['self'], '/api/v1/areas/powertrain/contains')
+        self.assertEqual(data['_links']['area'], '/api/v1/areas/powertrain')
 
         for comp in data.get('items', []):
             self.assertIn('id', comp, "Contained component should have 'id'")

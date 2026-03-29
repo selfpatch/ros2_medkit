@@ -18,6 +18,8 @@
 Validates operation listing, service calls, action details, operation schema,
 error handling, and execution listing.
 
+Uses host-derived default component (SOVD-aligned entity model).
+
 """
 
 import unittest
@@ -45,6 +47,23 @@ class TestOperationsApi(GatewayTestCase):
     REQUIRED_APPS = {'calibration', 'long_calibration'}
     REQUIRED_OPERATIONS = {'/apps/calibration': 'calibrate'}
 
+    # Cache for the dynamically-discovered host component ID
+    _host_component_id = None
+
+    def _get_host_component_id(self):
+        """Get the host component ID (cached after first lookup)."""
+        if TestOperationsApi._host_component_id is not None:
+            return TestOperationsApi._host_component_id
+
+        data = self.get_json('/components')
+        components = data.get('items', [])
+        self.assertEqual(
+            len(components), 1,
+            f'Expected exactly 1 host component, got {len(components)}'
+        )
+        TestOperationsApi._host_component_id = components[0]['id']
+        return TestOperationsApi._host_component_id
+
     # ------------------------------------------------------------------
     # Service calls (test_31-36)
     # ------------------------------------------------------------------
@@ -52,7 +71,7 @@ class TestOperationsApi(GatewayTestCase):
     def test_operation_call_calibrate_service(self):
         """POST /apps/{app_id}/operations/{op}/executions calls a service.
 
-        Operations are exposed on Apps (ROS 2 nodes), not synthetic Components.
+        Operations are exposed on Apps (ROS 2 nodes), not Components.
 
         @verifies REQ_INTEROP_035
         """
@@ -279,9 +298,12 @@ class TestOperationsApi(GatewayTestCase):
     def test_get_operation_details_for_service(self):
         """GET /{entity}/operations/{op-id} returns operation details for service.
 
+        Uses host-derived default component which aggregates all apps' operations.
+
         @verifies REQ_INTEROP_034
         """
-        data = self.get_json('/components/powertrain/operations')
+        comp_id = self._get_host_component_id()
+        data = self.get_json(f'/components/{comp_id}/operations')
         self.assertIn('items', data)
         operations = data['items']
         self.assertGreater(len(operations), 0, 'Component should have operations')
@@ -301,7 +323,7 @@ class TestOperationsApi(GatewayTestCase):
 
         # Get the operation details
         response = requests.get(
-            f'{self.BASE_URL}/components/powertrain/operations/{operation_id}',
+            f'{self.BASE_URL}/components/{comp_id}/operations/{operation_id}',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
@@ -369,8 +391,9 @@ class TestOperationsApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_034
         """
+        comp_id = self._get_host_component_id()
         response = requests.get(
-            f'{self.BASE_URL}/components/powertrain/operations/nonexistent_op',
+            f'{self.BASE_URL}/components/{comp_id}/operations/nonexistent_op',
             timeout=10
         )
         self.assertEqual(response.status_code, 404)
@@ -408,7 +431,8 @@ class TestOperationsApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_035
         """
-        data = self.get_json('/components/powertrain/operations')
+        comp_id = self._get_host_component_id()
+        data = self.get_json(f'/components/{comp_id}/operations')
         operations = data['items']
 
         service_op = None
@@ -425,7 +449,7 @@ class TestOperationsApi(GatewayTestCase):
 
         # Call the service
         response = requests.post(
-            f'{self.BASE_URL}/components/powertrain/operations/{operation_id}/executions',
+            f'{self.BASE_URL}/components/{comp_id}/operations/{operation_id}/executions',
             json={'parameters': {}},
             timeout=30
         )
@@ -444,7 +468,8 @@ class TestOperationsApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_039
         """
-        url = (f'{self.BASE_URL}/components/powertrain/operations/'
+        comp_id = self._get_host_component_id()
+        url = (f'{self.BASE_URL}/components/{comp_id}/operations/'
                'nonexistent_op/executions/fake-exec-id')
         response = requests.delete(url, timeout=10)
         self.assertEqual(response.status_code, 404)

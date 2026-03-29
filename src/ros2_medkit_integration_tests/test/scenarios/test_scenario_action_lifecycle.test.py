@@ -147,8 +147,13 @@ class TestScenarioActionLifecycle(GatewayTestCase):
 
         @verifies REQ_INTEROP_035
         """
-        # Find a service operation on the calibration app or powertrain component
-        data = self.get_json('/components/powertrain/operations')
+        # Find a service operation on the host-derived default component
+        comp_data = self.get_json('/components')
+        components = comp_data.get('items', [])
+        self.assertGreater(len(components), 0, 'Expected at least one component')
+        comp_id = components[0]['id']
+
+        data = self.get_json(f'/components/{comp_id}/operations')
         operations = data['items']
 
         service_op = None
@@ -158,13 +163,13 @@ class TestScenarioActionLifecycle(GatewayTestCase):
                 break
 
         if service_op is None:
-            self.fail('No service operations found on powertrain component')
+            self.fail('No service operations found on component')
 
         operation_id = service_op['id']
 
         # Call the service
         response = requests.post(
-            f'{self.BASE_URL}/components/powertrain/operations/'
+            f'{self.BASE_URL}/components/{comp_id}/operations/'
             f'{operation_id}/executions',
             json={'parameters': {}},
             timeout=30,

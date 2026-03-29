@@ -24,6 +24,7 @@ Subclasses override class constants to control discovery waiting:
         MIN_EXPECTED_APPS = 3
         REQUIRED_AREAS = {'powertrain', 'chassis'}
         REQUIRED_APPS = {'temp_sensor', 'actuator'}
+        REQUIRED_FUNCTIONS = {'powertrain', 'chassis'}
 """
 
 import time
@@ -59,6 +60,8 @@ class GatewayTestCase(unittest.TestCase):
         Area IDs that must be discovered. Empty set skips area checking.
     REQUIRED_APPS : set of str
         App IDs that must be discovered. Empty set skips app checking.
+    REQUIRED_FUNCTIONS : set of str
+        Function IDs that must be discovered. Empty set skips function checking.
 
     """
 
@@ -69,6 +72,7 @@ class GatewayTestCase(unittest.TestCase):
     MIN_EXPECTED_APPS = 0
     REQUIRED_AREAS: set = set()
     REQUIRED_APPS: set = set()
+    REQUIRED_FUNCTIONS: set = set()
     # Map of entity endpoint -> operation ID that must be discovered.
     # Example: {'/apps/calibration': 'calibrate'}
     REQUIRED_OPERATIONS: dict = {}
@@ -81,7 +85,8 @@ class GatewayTestCase(unittest.TestCase):
     def setUpClass(cls):
         """Wait for gateway health, then optionally wait for discovery."""
         cls._wait_for_gateway_health()
-        if cls.MIN_EXPECTED_APPS > 0 or cls.REQUIRED_AREAS or cls.REQUIRED_APPS:
+        if (cls.MIN_EXPECTED_APPS > 0 or cls.REQUIRED_AREAS
+                or cls.REQUIRED_APPS or cls.REQUIRED_FUNCTIONS):
             cls._wait_for_discovery()
         if cls.REQUIRED_OPERATIONS:
             cls._wait_for_operations()
@@ -114,12 +119,13 @@ class GatewayTestCase(unittest.TestCase):
 
     @classmethod
     def _wait_for_discovery(cls):
-        """Poll /apps and /areas until required entities are discovered.
+        """Poll /apps, /areas, /functions until required entities are discovered.
 
         Checks:
         1. Number of apps >= ``MIN_EXPECTED_APPS``
         2. All ``REQUIRED_APPS`` IDs are present
         3. All ``REQUIRED_AREAS`` IDs are present
+        4. All ``REQUIRED_FUNCTIONS`` IDs are present
 
         Raises
         ------
@@ -132,29 +138,37 @@ class GatewayTestCase(unittest.TestCase):
             try:
                 apps_response = requests.get(f'{cls.BASE_URL}/apps', timeout=5)
                 areas_response = requests.get(f'{cls.BASE_URL}/areas', timeout=5)
-                if apps_response.status_code == 200 and areas_response.status_code == 200:
+                funcs_response = requests.get(f'{cls.BASE_URL}/functions', timeout=5)
+                if (apps_response.status_code == 200
+                        and areas_response.status_code == 200
+                        and funcs_response.status_code == 200):
                     apps = apps_response.json().get('items', [])
                     areas = areas_response.json().get('items', [])
+                    funcs = funcs_response.json().get('items', [])
                     app_ids = {a.get('id', '') for a in apps}
                     area_ids = {a.get('id', '') for a in areas}
+                    func_ids = {f.get('id', '') for f in funcs}
 
                     missing_areas = cls.REQUIRED_AREAS - area_ids
                     missing_apps = cls.REQUIRED_APPS - app_ids
+                    missing_funcs = cls.REQUIRED_FUNCTIONS - func_ids
                     apps_ok = len(apps) >= cls.MIN_EXPECTED_APPS and not missing_apps
                     areas_ok = not missing_areas
+                    funcs_ok = not missing_funcs
 
-                    if apps_ok and areas_ok:
+                    if apps_ok and areas_ok and funcs_ok:
                         print(
                             f'Discovery complete: {len(apps)} apps, '
-                            f'{len(areas)} areas'
+                            f'{len(areas)} areas, {len(funcs)} functions'
                         )
                         return
 
                     print(
                         f'  Waiting: {len(apps)}/{cls.MIN_EXPECTED_APPS} apps, '
-                        f'{len(areas)} areas. '
+                        f'{len(areas)} areas, {len(funcs)} functions. '
                         f'Missing areas: {missing_areas}, '
-                        f'Missing apps: {missing_apps}'
+                        f'Missing apps: {missing_apps}, '
+                        f'Missing functions: {missing_funcs}'
                     )
             except requests.exceptions.RequestException:
                 # Connection errors expected while nodes are starting; retry.
@@ -163,6 +177,7 @@ class GatewayTestCase(unittest.TestCase):
 
         discovered_apps = set()
         discovered_areas = set()
+        discovered_funcs = set()
         try:
             r = requests.get(f'{cls.BASE_URL}/apps', timeout=5)
             if r.status_code == 200:
@@ -174,13 +189,19 @@ class GatewayTestCase(unittest.TestCase):
                 discovered_areas = {
                     a.get('id', '') for a in r.json().get('items', [])
                 }
+            r = requests.get(f'{cls.BASE_URL}/functions', timeout=5)
+            if r.status_code == 200:
+                discovered_funcs = {
+                    f.get('id', '') for f in r.json().get('items', [])
+                }
         except requests.exceptions.RequestException:
             pass
         raise AssertionError(
             f'Discovery incomplete after {DISCOVERY_TIMEOUT}s - '
             f'found {len(discovered_apps)} apps, need {cls.MIN_EXPECTED_APPS}. '
             f'Missing apps: {cls.REQUIRED_APPS - discovered_apps}, '
-            f'Missing areas: {cls.REQUIRED_AREAS - discovered_areas}'
+            f'Missing areas: {cls.REQUIRED_AREAS - discovered_areas}, '
+            f'Missing functions: {cls.REQUIRED_FUNCTIONS - discovered_funcs}'
         )
 
     @classmethod

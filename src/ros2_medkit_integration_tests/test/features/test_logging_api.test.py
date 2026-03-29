@@ -46,7 +46,7 @@ class TestLoggingApi(GatewayTestCase):
 
     MIN_EXPECTED_APPS = 1
     REQUIRED_APPS = {'temp_sensor'}
-    REQUIRED_AREAS = {'powertrain'}
+    REQUIRED_FUNCTIONS = {'powertrain'}
 
     # ------------------------------------------------------------------
     # GET /apps/{id}/logs
@@ -292,36 +292,36 @@ class TestLoggingApi(GatewayTestCase):
         self.assertEqual(data['severity_filter'], 'info')
 
     # ------------------------------------------------------------------
-    # GET /areas/{id}/logs  (prefix match on area namespace)
+    # GET /functions/{id}/logs  (prefix match on function namespace)
     # ------------------------------------------------------------------
 
-    def test_area_get_logs_returns_200(self):
-        """GET /areas/{id}/logs returns 200 with items array.
+    def test_function_get_logs_returns_200(self):
+        """GET /functions/{id}/logs returns 200 with items array.
 
-        Areas use namespace prefix matching - all nodes under the area
-        namespace are included. This is a ros2_medkit extension (SOVD
-        defines resource collections only for apps/components).
+        Functions use namespace prefix matching in runtime_only mode.
+        This is a ros2_medkit extension (SOVD defines resource
+        collections only for apps/components).
 
         # @verifies REQ_INTEROP_061
         """
-        areas = self.get_json('/areas')['items']
-        self.assertGreater(len(areas), 0, 'Expected at least one area')
-        area_id = areas[0]['id']
+        functions = self.get_json('/functions')['items']
+        self.assertGreater(len(functions), 0, 'Expected at least one function')
+        func_id = functions[0]['id']
 
-        data = self.get_json(f'/areas/{area_id}/logs')
+        data = self.get_json(f'/functions/{func_id}/logs')
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list)
 
-    def test_area_get_logs_configuration_returns_200(self):
-        """GET /areas/{id}/logs/configuration returns default config.
+    def test_function_get_logs_configuration_returns_200(self):
+        """GET /functions/{id}/logs/configuration returns default config.
 
         # @verifies REQ_INTEROP_063
         """
-        areas = self.get_json('/areas')['items']
-        self.assertGreater(len(areas), 0, 'Expected at least one area')
-        area_id = areas[0]['id']
+        functions = self.get_json('/functions')['items']
+        self.assertGreater(len(functions), 0, 'Expected at least one function')
+        func_id = functions[0]['id']
 
-        data = self.get_json(f'/areas/{area_id}/logs/configuration')
+        data = self.get_json(f'/functions/{func_id}/logs/configuration')
         self.assertIn('severity_filter', data)
         self.assertIn('max_entries', data)
 
