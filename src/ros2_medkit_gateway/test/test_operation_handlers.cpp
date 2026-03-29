@@ -289,10 +289,26 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     handlers_.reset();
     ctx_.reset();
     trigger_service_.reset();
+
+    // Remove nodes from executor before destroying them.
+    // Destroying nodes while executor still holds references can cause
+    // "terminate called without an active exception" during callback group cleanup.
+    if (executor_ != nullptr) {
+      if (gateway_node_) {
+        executor_->remove_node(gateway_node_);
+      }
+      if (service_node_) {
+        executor_->remove_node(service_node_);
+      }
+      if (action_server_node_) {
+        executor_->remove_node(action_server_node_);
+      }
+    }
+
     action_server_node_.reset();
     service_node_.reset();
-    executor_.reset();
     gateway_node_.reset();
+    executor_.reset();
   }
 
   void seed_component_cache() {
