@@ -16,6 +16,7 @@
 
 #include "ros2_medkit_gateway/discovery/discovery_enums.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
+#include "ros2_medkit_gateway/discovery/host_info_provider.hpp"
 #include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
 #include "ros2_medkit_gateway/discovery/merge_types.hpp"
@@ -85,6 +86,17 @@ struct DiscoveryConfig {
      * functional grouping, not deployment topology.
      */
     bool create_functions_from_namespaces{true};
+
+    /**
+     * @brief Create a default Component from HostInfoProvider
+     *
+     * When true (default), a single host-level Component is created
+     * from system info (hostname, OS, arch) instead of synthetic
+     * per-namespace Components. All discovered Apps are linked to
+     * this Component via the is-located-on relationship.
+     * Only used in runtime_only mode.
+     */
+    bool default_component_enabled{true};
 
     /**
      * @brief How to group nodes into synthetic components
@@ -366,6 +378,18 @@ class DiscoveryManager {
   // =========================================================================
 
   /**
+   * @brief Check if a host info provider is active
+   * @return true if default component is enabled and provider exists
+   */
+  bool has_host_info_provider() const;
+
+  /**
+   * @brief Get the default Component from HostInfoProvider
+   * @return Component entity representing the local host, or nullopt if not enabled
+   */
+  std::optional<Component> get_default_component() const;
+
+  /**
    * @brief Get current discovery mode
    * @return Active discovery mode
    */
@@ -405,6 +429,9 @@ class DiscoveryManager {
 
   rclcpp::Node * node_;
   DiscoveryConfig config_;
+
+  // Host info provider (created when default_component_enabled is true)
+  std::unique_ptr<HostInfoProvider> host_info_provider_;
 
   // Strategies
   std::unique_ptr<discovery::RuntimeDiscoveryStrategy> runtime_strategy_;
