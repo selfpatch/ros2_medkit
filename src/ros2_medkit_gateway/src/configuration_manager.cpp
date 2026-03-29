@@ -25,8 +25,9 @@ namespace ros2_medkit_gateway {
 static std::atomic<int> param_node_counter{0};
 
 ConfigurationManager::ConfigurationManager(rclcpp::Node * node) : node_(node) {
-  // Get configurable timeout for parameter services (default 0.5 seconds)
-  service_timeout_sec_ = node_->declare_parameter("parameter_service_timeout_sec", 0.5);
+  // Get configurable timeout for parameter services (default 2.0 seconds)
+  // For systems with micro-ROS nodes without parameter service, set lower (e.g., 0.5s)
+  service_timeout_sec_ = node_->declare_parameter("parameter_service_timeout_sec", 2.0);
 
   // Get negative cache TTL (default 60 seconds)
   negative_cache_ttl_sec_ = node_->declare_parameter("parameter_service_negative_cache_sec", 60.0);
@@ -43,32 +44,8 @@ ConfigurationManager::~ConfigurationManager() {
 }
 
 void ConfigurationManager::shutdown() {
-  std::lock_guard<std::mutex> lock(param_pool_mutex_);
-  param_pool_available_.clear();
-  param_pool_all_.clear();
-}
-
-std::shared_ptr<rclcpp::Node> ConfigurationManager::acquire_param_node() {
-  std::lock_guard<std::mutex> lock(param_pool_mutex_);
-  if (!param_pool_available_.empty()) {
-    auto node = std::move(param_pool_available_.back());
-    param_pool_available_.pop_back();
-    return node;
-  }
-  // Create new node
-  rclcpp::NodeOptions options;
-  options.start_parameter_services(false);
-  options.start_parameter_event_publisher(false);
-  options.use_global_arguments(false);
-  int id = param_node_counter.fetch_add(1);
-  auto node = std::make_shared<rclcpp::Node>("_param_client_" + std::to_string(id), options);
-  param_pool_all_.push_back(node);
-  return node;
-}
-
-void ConfigurationManager::release_param_node(std::shared_ptr<rclcpp::Node> node) {
-  std::lock_guard<std::mutex> lock(param_pool_mutex_);
-  param_pool_available_.push_back(std::move(node));
+  std::lock_guard<std::mutex> lock(param_clients_mutex_);
+  param_clients_.clear();
 }
 
 std::chrono::duration<double> ConfigurationManager::get_service_timeout() const {
@@ -198,18 +175,27 @@ ParameterResult ConfigurationManager::get_own_parameter(const std::string & para
 }
 
 std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_client(const std::string & node_name) {
-  // Acquire a param node from the pool. The param node is captured in a
-  // custom deleter on the SyncParametersClient shared_ptr - when the client
-  // is destroyed (goes out of scope in the calling function), the param node
-  // is automatically returned to the pool.
-  auto param_node = acquire_param_node();
-  auto * mgr = this;
-  auto client_raw = new rclcpp::SyncParametersClient(param_node, node_name);
-  return std::shared_ptr<rclcpp::SyncParametersClient>(client_raw,
-                                                       [mgr, param_node](rclcpp::SyncParametersClient * ptr) {
-                                                         delete ptr;
-                                                         mgr->release_param_node(param_node);
-                                                       });
+  // Get or create a dedicated param node + cached client for this target node.
+  // The per-node mutex (held by caller) ensures only one thread uses this
+  // param_node at a time, preventing executor conflicts in SyncParametersClient.
+  std::lock_guard<std::mutex> lock(param_clients_mutex_);
+
+  auto it = param_clients_.find(node_name);
+  if (it != param_clients_.end()) {
+    return it->second.client;
+  }
+
+  // Create dedicated param node for this target
+  rclcpp::NodeOptions options;
+  options.start_parameter_services(false);
+  options.start_parameter_event_publisher(false);
+  options.use_global_arguments(false);
+  int id = param_node_counter.fetch_add(1);
+  auto param_node = std::make_shared<rclcpp::Node>("_param_client_" + std::to_string(id), options);
+  auto client = std::make_shared<rclcpp::SyncParametersClient>(param_node, node_name);
+
+  param_clients_[node_name] = {param_node, client};
+  return client;
 }
 
 ParameterResult ConfigurationManager::list_parameters(const std::string & node_name) {

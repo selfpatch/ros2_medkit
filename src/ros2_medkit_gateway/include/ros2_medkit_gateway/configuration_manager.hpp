@@ -129,7 +129,7 @@ class ConfigurationManager {
   rclcpp::Node * node_;
 
   /// Timeout for waiting for parameter services (configurable via parameter_service_timeout_sec parameter)
-  double service_timeout_sec_{0.5};
+  double service_timeout_sec_{2.0};
 
   /// Negative cache TTL (configurable via parameter_service_negative_cache_sec parameter)
   double negative_cache_ttl_sec_{60.0};
@@ -155,19 +155,16 @@ class ConfigurationManager {
   mutable std::mutex defaults_mutex_;
   std::map<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
 
-  /// Pool of param nodes for SyncParametersClient operations.
-  /// Each node can only be used by one thread at a time (SyncParametersClient
-  /// spins internally and is not thread-safe). Threads acquire a node from the
-  /// pool and return it when done. Pool grows on demand, shrinks on shutdown().
-  mutable std::mutex param_pool_mutex_;
-  std::vector<std::shared_ptr<rclcpp::Node>> param_pool_available_;
-  std::vector<std::shared_ptr<rclcpp::Node>> param_pool_all_;
-
-  /// Acquire a param node from the pool (creates one if none available)
-  std::shared_ptr<rclcpp::Node> acquire_param_node();
-
-  /// Return a param node to the pool
-  void release_param_node(std::shared_ptr<rclcpp::Node> node);
+  /// Per-target-node param client entries.
+  /// Each target node gets a dedicated ROS 2 param node + cached SyncParametersClient.
+  /// The per-node mutex (from node_mutexes_) ensures only one thread spins a
+  /// given param_node at a time, preventing executor conflicts.
+  struct ParamClientEntry {
+    std::shared_ptr<rclcpp::Node> param_node;
+    std::shared_ptr<rclcpp::SyncParametersClient> client;
+  };
+  mutable std::mutex param_clients_mutex_;
+  std::unordered_map<std::string, ParamClientEntry> param_clients_;
 };
 
 }  // namespace ros2_medkit_gateway
