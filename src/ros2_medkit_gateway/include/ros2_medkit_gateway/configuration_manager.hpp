@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <memory>
@@ -39,6 +40,7 @@ enum class ParameterErrorCode {
   TYPE_MISMATCH,        ///< Value type doesn't match parameter type
   INVALID_VALUE,        ///< Invalid value for parameter
   NO_DEFAULTS_CACHED,   ///< No default values cached for reset operation
+  SHUT_DOWN,            ///< ConfigurationManager has been shut down
   INTERNAL_ERROR        ///< Internal/unexpected error
 };
 
@@ -58,8 +60,9 @@ class ConfigurationManager {
   explicit ConfigurationManager(rclcpp::Node * node);
   ~ConfigurationManager();
 
-  /// Clean up thread-local param nodes before ROS 2 context shutdown.
+  /// Clean up shared param node and cached clients before ROS 2 context shutdown.
   /// Must be called before rclcpp::shutdown() to prevent use-after-free.
+  /// Idempotent - safe to call multiple times.
   void shutdown();
 
   /// List all parameters for a node
@@ -92,8 +95,7 @@ class ConfigurationManager {
   ParameterResult reset_all_parameters(const std::string & node_name);
 
  private:
-  /// Get or create a SyncParametersClient for the given node.
-  /// Creates a per-thread param node to avoid executor conflicts.
+  /// Get or create a cached SyncParametersClient for the given node.
   std::shared_ptr<rclcpp::SyncParametersClient> get_param_client(const std::string & node_name);
 
   /// Cache default values for a node (called on first access)
@@ -114,6 +116,9 @@ class ConfigurationManager {
 
   /// Get a specific parameter from the gateway's own node
   ParameterResult get_own_parameter(const std::string & param_name);
+
+  /// Return SHUT_DOWN error result
+  static ParameterResult shut_down_result();
 
   /// Convert ROS2 parameter type to string
   static std::string parameter_type_to_string(rclcpp::ParameterType type);
@@ -138,6 +143,9 @@ class ConfigurationManager {
   /// Gateway's own fully qualified node name (for self-query detection)
   std::string own_node_fqn_;
 
+  /// Shutdown flag - prevents use-after-free on param_node_ after shutdown
+  std::atomic<bool> shutdown_{false};
+
   /// Negative cache: nodes whose parameter service was recently unavailable.
   /// Avoids repeated blocking waits on nodes that don't have parameter services.
   mutable std::shared_mutex negative_cache_mutex_;
@@ -148,22 +156,26 @@ class ConfigurationManager {
   mutable std::mutex defaults_mutex_;
   std::map<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
 
-  /// Internal node for parameter client operations.
-  /// Created once in constructor - must be in DDS graph early for fast service discovery.
-  /// SyncParametersClient requires a node NOT in an executor to spin internally.
-  std::shared_ptr<rclcpp::Node> param_node_;
-
   /// Mutex to serialize spin operations on param_node_.
   /// SyncParametersClient::wait_for_service/get_parameters/etc spin param_node_
   /// internally via spin_node_until_future_complete which is NOT thread-safe.
   /// This mutex is ONLY held during the actual ROS 2 IPC call, not during
   /// cache lookups or JSON building. With negative cache + self-guard,
   /// most requests never touch this mutex.
+  /// Declared BEFORE param_node_ so it outlives the node during destruction.
   mutable std::mutex spin_mutex_;
+
+  /// Internal node for parameter client operations.
+  /// Created once in constructor - must be in DDS graph early for fast service discovery.
+  /// SyncParametersClient requires a node NOT in an executor to spin internally.
+  std::shared_ptr<rclcpp::Node> param_node_;
 
   /// Cached SyncParametersClient per target node (avoids recreating clients)
   mutable std::mutex clients_mutex_;
   std::map<std::string, std::shared_ptr<rclcpp::SyncParametersClient>> param_clients_;
+
+  /// Maximum entries in negative cache before hard eviction
+  static constexpr size_t kMaxNegativeCacheSize = 500;
 };
 
 }  // namespace ros2_medkit_gateway
