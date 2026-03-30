@@ -1178,7 +1178,12 @@ GatewayNode::~GatewayNode() {
   if (operation_mgr_) {
     operation_mgr_->shutdown();
   }
-  // 8. Normal member destruction (managers safe - all transports stopped)
+  // 8. Shutdown ConfigurationManager (clears param_node_ and cached clients
+  //    before rclcpp context is destroyed - prevents use-after-free)
+  if (config_mgr_) {
+    config_mgr_->shutdown();
+  }
+  // 9. Normal member destruction (managers safe - all transports stopped)
 }
 
 const ThreadSafeEntityCache & GatewayNode::get_thread_safe_cache() const {
