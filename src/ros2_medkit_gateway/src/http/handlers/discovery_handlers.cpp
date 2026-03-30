@@ -120,8 +120,8 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto area_opt = discovery->get_area(area_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto area_opt = cache.get_area(area_id);
 
     if (!area_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
@@ -257,18 +257,24 @@ void DiscoveryHandlers::handle_get_subareas(const httplib::Request & req, httpli
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto area_opt = discovery->get_area(area_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto area_opt = cache.get_area(area_id);
 
     if (!area_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
       return;
     }
 
-    auto subareas = discovery->get_subareas(area_id);
+    auto subarea_ids = cache.get_subareas(area_id);
 
     json items = json::array();
-    for (const auto & subarea : subareas) {
+    for (const auto & sa_id : subarea_ids) {
+      auto sa_opt = cache.get_area(sa_id);
+      if (!sa_opt) {
+        continue;
+      }
+      const auto & subarea = *sa_opt;
+
       json item;
       item["id"] = subarea.id;
       item["name"] = subarea.name.empty() ? subarea.id : subarea.name;
@@ -317,14 +323,16 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto area_opt = discovery->get_area(area_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto area_opt = cache.get_area(area_id);
 
     if (!area_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
       return;
     }
 
+    // Use DiscoveryManager for contains - it resolves subarea hierarchy
+    auto discovery = ctx_.node()->get_discovery_manager();
     auto components = discovery->get_components_for_area(area_id);
 
     json items = json::array();
@@ -431,8 +439,8 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto comp_opt = discovery->get_component(component_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto comp_opt = cache.get_component(component_id);
 
     if (!comp_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
@@ -543,8 +551,8 @@ void DiscoveryHandlers::handle_get_subcomponents(const httplib::Request & req, h
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto comp_opt = discovery->get_component(component_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto comp_opt = cache.get_component(component_id);
 
     if (!comp_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
@@ -552,6 +560,7 @@ void DiscoveryHandlers::handle_get_subcomponents(const httplib::Request & req, h
       return;
     }
 
+    auto discovery = ctx_.node()->get_discovery_manager();
     auto subcomponents = discovery->get_subcomponents(component_id);
 
     json items = json::array();
@@ -607,8 +616,8 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto comp_opt = discovery->get_component(component_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto comp_opt = cache.get_component(component_id);
 
     if (!comp_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
@@ -616,6 +625,8 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
       return;
     }
 
+    // Use DiscoveryManager for hosts - returns full App objects with online status
+    auto discovery = ctx_.node()->get_discovery_manager();
     auto apps = discovery->get_apps_for_component(component_id);
 
     json items = json::array();
@@ -670,8 +681,8 @@ void DiscoveryHandlers::handle_component_depends_on(const httplib::Request & req
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto comp_opt = discovery->get_component(component_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto comp_opt = cache.get_component(component_id);
 
     if (!comp_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
@@ -687,7 +698,7 @@ void DiscoveryHandlers::handle_component_depends_on(const httplib::Request & req
       item["id"] = dep_id;
       item["href"] = "/api/v1/components/" + dep_id;
 
-      auto dep_opt = discovery->get_component(dep_id);
+      auto dep_opt = cache.get_component(dep_id);
       if (dep_opt) {
         item["name"] = dep_opt->name.empty() ? dep_id : dep_opt->name;
 
@@ -794,8 +805,8 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto app_opt = discovery->get_app(app_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto app_opt = cache.get_app(app_id);
 
     if (!app_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
@@ -901,7 +912,8 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
     }
 
     auto discovery = ctx_.node()->get_discovery_manager();
-    auto app_opt = discovery->get_app(app_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto app_opt = cache.get_app(app_id);
 
     if (!app_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
@@ -971,11 +983,7 @@ void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, h
     }
 
     const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto discovery = ctx_.node()->get_discovery_manager();
     auto app_opt = cache.get_app(app_id);
-    if (!app_opt) {
-      app_opt = discovery->get_app(app_id);
-    }
 
     if (!app_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
@@ -987,9 +995,6 @@ void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, h
 
     if (!app.component_id.empty()) {
       auto component_opt = cache.get_component(app.component_id);
-      if (!component_opt) {
-        component_opt = discovery->get_component(app.component_id);
-      }
       if (component_opt) {
         json item;
         item["id"] = component_opt->id;
@@ -1096,10 +1101,6 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
 
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto func_opt = cache.get_function(function_id);
-    if (!func_opt) {
-      auto discovery = ctx_.node()->get_discovery_manager();
-      func_opt = discovery->get_function(function_id);
-    }
 
     if (!func_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found", {{"function_id", function_id}});
@@ -1179,14 +1180,15 @@ void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, http
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto func_opt = discovery->get_function(function_id);
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto func_opt = cache.get_function(function_id);
 
     if (!func_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found", {{"function_id", function_id}});
       return;
     }
 
+    auto discovery = ctx_.node()->get_discovery_manager();
     auto host_ids = discovery->get_hosts_for_function(function_id);
 
     json items = json::array();
