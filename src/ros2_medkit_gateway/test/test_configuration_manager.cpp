@@ -345,17 +345,37 @@ TEST_F(TestConfigurationManager, test_self_query_no_deadlock) {
 TEST_F(TestConfigurationManager, test_concurrent_queries_no_crash) {
   // Concurrent queries to different nonexistent nodes must not crash
   // (spin_mutex_ serializes ROS 2 IPC to prevent executor conflicts).
-  // Second+ calls hit negative cache and return instantly.
+  std::vector<ParameterResult> results(3);
   std::vector<std::thread> threads;
   for (int i = 0; i < 3; ++i) {
-    threads.emplace_back([this, i]() {
-      (void)config_manager_->list_parameters("/concurrent_node_" + std::to_string(i));
+    threads.emplace_back([this, i, &results]() {
+      results[static_cast<size_t>(i)] = config_manager_->list_parameters("/concurrent_node_" + std::to_string(i));
     });
   }
   for (auto & t : threads) {
     t.join();
   }
-  // If we get here without crash/hang, spin serialization works
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_FALSE(results[static_cast<size_t>(i)].success);
+    EXPECT_EQ(results[static_cast<size_t>(i)].error_code, ParameterErrorCode::SERVICE_UNAVAILABLE);
+  }
+}
+
+TEST_F(TestConfigurationManager, test_negative_cache_cross_method) {
+  // list_parameters marks node unavailable, get_parameter should return cached
+  auto list_result = config_manager_->list_parameters("/cross_method_cached_node");
+  EXPECT_FALSE(list_result.success);
+  EXPECT_EQ(list_result.error_code, ParameterErrorCode::SERVICE_UNAVAILABLE);
+
+  auto get_result = config_manager_->get_parameter("/cross_method_cached_node", "param");
+  EXPECT_FALSE(get_result.success);
+  EXPECT_EQ(get_result.error_code, ParameterErrorCode::SERVICE_UNAVAILABLE);
+  EXPECT_TRUE(get_result.error_message.find("cached") != std::string::npos);
+
+  auto set_result = config_manager_->set_parameter("/cross_method_cached_node", "param", nlohmann::json(42));
+  EXPECT_FALSE(set_result.success);
+  EXPECT_EQ(set_result.error_code, ParameterErrorCode::SERVICE_UNAVAILABLE);
+  EXPECT_TRUE(set_result.error_message.find("cached") != std::string::npos);
 }
 
 // ==================== CONCURRENT ACCESS TEST ====================

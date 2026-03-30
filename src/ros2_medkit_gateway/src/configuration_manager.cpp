@@ -29,12 +29,22 @@ ConfigurationManager::ConfigurationManager(rclcpp::Node * node) : node_(node) {
   options.use_global_arguments(false);
   param_node_ = std::make_shared<rclcpp::Node>("_param_client_node", options);
 
-  // Get configurable timeout for parameter services (default 2.0 seconds)
-  // For systems with micro-ROS nodes without parameter service, set lower (e.g., 0.5s)
-  service_timeout_sec_ = node_->declare_parameter("parameter_service_timeout_sec", 2.0);
+  // Declare parameters with range validation
+  rcl_interfaces::msg::ParameterDescriptor timeout_desc;
+  timeout_desc.description = "Timeout for ROS 2 parameter service calls (configurations endpoint)";
+  rcl_interfaces::msg::FloatingPointRange timeout_range;
+  timeout_range.from_value = 0.1;
+  timeout_range.to_value = 10.0;
+  timeout_desc.floating_point_range.push_back(timeout_range);
+  service_timeout_sec_ = node_->declare_parameter("parameter_service_timeout_sec", 2.0, timeout_desc);
 
-  // Get negative cache TTL (default 60 seconds)
-  negative_cache_ttl_sec_ = node_->declare_parameter("parameter_service_negative_cache_sec", 60.0);
+  rcl_interfaces::msg::ParameterDescriptor cache_desc;
+  cache_desc.description = "Negative cache TTL for unavailable parameter services (0 = disabled)";
+  rcl_interfaces::msg::FloatingPointRange cache_range;
+  cache_range.from_value = 0.0;
+  cache_range.to_value = 3600.0;
+  cache_desc.floating_point_range.push_back(cache_range);
+  negative_cache_ttl_sec_ = node_->declare_parameter("parameter_service_negative_cache_sec", 60.0, cache_desc);
 
   // Store own node FQN for self-query detection
   own_node_fqn_ = node_->get_fully_qualified_name();
@@ -48,11 +58,18 @@ ConfigurationManager::~ConfigurationManager() {
 }
 
 void ConfigurationManager::shutdown() {
+  if (shutdown_.exchange(true)) {
+    return;  // Already shut down
+  }
   // Acquire spin_mutex_ first to wait for any in-flight IPC to complete
   std::lock_guard<std::mutex> spin_lock(spin_mutex_);
   std::lock_guard<std::mutex> lock(clients_mutex_);
   param_clients_.clear();
   param_node_.reset();
+}
+
+ParameterResult ConfigurationManager::shut_down_result() {
+  return {false, {}, "ConfigurationManager is shut down", ParameterErrorCode::SHUT_DOWN};
 }
 
 std::chrono::duration<double> ConfigurationManager::get_service_timeout() const {
@@ -73,8 +90,9 @@ void ConfigurationManager::mark_node_unavailable(const std::string & node_name) 
   std::unique_lock<std::shared_mutex> lock(negative_cache_mutex_);
   unavailable_nodes_[node_name] = std::chrono::steady_clock::now();
 
-  // Lazy cleanup: remove expired entries to prevent unbounded growth
-  if (unavailable_nodes_.size() > 100) {
+  // Cleanup to prevent unbounded growth
+  if (unavailable_nodes_.size() > kMaxNegativeCacheSize) {
+    // First pass: remove expired entries
     auto now = std::chrono::steady_clock::now();
     auto ttl = std::chrono::duration<double>(negative_cache_ttl_sec_);
     for (auto it = unavailable_nodes_.begin(); it != unavailable_nodes_.end();) {
@@ -82,6 +100,16 @@ void ConfigurationManager::mark_node_unavailable(const std::string & node_name) 
         it = unavailable_nodes_.erase(it);
       } else {
         ++it;
+      }
+    }
+    // If still over limit, evict oldest entry
+    if (unavailable_nodes_.size() > kMaxNegativeCacheSize) {
+      auto oldest =
+          std::min_element(unavailable_nodes_.begin(), unavailable_nodes_.end(), [](const auto & a, const auto & b) {
+            return a.second < b.second;
+          });
+      if (oldest != unavailable_nodes_.end()) {
+        unavailable_nodes_.erase(oldest);
       }
     }
   }
@@ -170,6 +198,10 @@ std::shared_ptr<rclcpp::SyncParametersClient> ConfigurationManager::get_param_cl
 }
 
 ParameterResult ConfigurationManager::list_parameters(const std::string & node_name) {
+  if (shutdown_.load()) {
+    return shut_down_result();
+  }
+
   // Self-query guard: use direct access for gateway's own node
   if (is_self_node(node_name)) {
     return list_own_parameters();
@@ -247,6 +279,10 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
 }
 
 ParameterResult ConfigurationManager::get_parameter(const std::string & node_name, const std::string & param_name) {
+  if (shutdown_.load()) {
+    return shut_down_result();
+  }
+
   if (is_self_node(node_name)) {
     return get_own_parameter(param_name);
   }
@@ -320,10 +356,20 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
 
 ParameterResult ConfigurationManager::set_parameter(const std::string & node_name, const std::string & param_name,
                                                     const json & value) {
+  if (shutdown_.load()) {
+    return shut_down_result();
+  }
+
   // Self-query guard: set parameter directly on own node
   if (is_self_node(node_name)) {
     ParameterResult result;
     try {
+      if (!node_->has_parameter(param_name)) {
+        result.success = false;
+        result.error_message = "Parameter not found: " + param_name;
+        result.error_code = ParameterErrorCode::NOT_FOUND;
+        return result;
+      }
       auto current_value = node_->get_parameter(param_name).get_parameter_value();
       rclcpp::ParameterValue param_value = json_to_parameter_value(value, current_value.get_type());
       auto set_result = node_->set_parameter(rclcpp::Parameter(param_name, param_value));
@@ -624,25 +670,35 @@ void ConfigurationManager::cache_default_values(const std::string & node_name) {
 }
 
 ParameterResult ConfigurationManager::reset_parameter(const std::string & node_name, const std::string & param_name) {
+  if (shutdown_.load()) {
+    return shut_down_result();
+  }
+
   // Self-query guard: reset via direct access
   if (is_self_node(node_name)) {
     ParameterResult result;
-    std::lock_guard<std::mutex> lock(defaults_mutex_);
-    auto node_it = default_values_.find(node_name);
-    if (node_it == default_values_.end()) {
-      result.success = false;
-      result.error_message = "No default values cached for node: " + node_name;
-      result.error_code = ParameterErrorCode::NO_DEFAULTS_CACHED;
-      return result;
-    }
-    auto param_it = node_it->second.find(param_name);
-    if (param_it == node_it->second.end()) {
-      result.success = false;
-      result.error_message = "No default value for parameter: " + param_name;
-      result.error_code = ParameterErrorCode::NOT_FOUND;
-      return result;
-    }
-    auto set_result = node_->set_parameter(param_it->second);
+    // Copy default value under lock, release before set_parameter I/O
+    rclcpp::Parameter default_param;
+    {
+      std::lock_guard<std::mutex> lock(defaults_mutex_);
+      auto node_it = default_values_.find(node_name);
+      if (node_it == default_values_.end()) {
+        result.success = false;
+        result.error_message = "No default values cached for node: " + node_name;
+        result.error_code = ParameterErrorCode::NO_DEFAULTS_CACHED;
+        return result;
+      }
+      auto param_it = node_it->second.find(param_name);
+      if (param_it == node_it->second.end()) {
+        result.success = false;
+        result.error_message = "No default value for parameter: " + param_name;
+        result.error_code = ParameterErrorCode::NOT_FOUND;
+        return result;
+      }
+      default_param = param_it->second;
+    }  // defaults_mutex_ released
+
+    auto set_result = node_->set_parameter(default_param);
     if (!set_result.successful) {
       result.success = false;
       result.error_message = set_result.reason;
@@ -651,8 +707,8 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
     }
     json param_obj;
     param_obj["name"] = param_name;
-    param_obj["value"] = parameter_value_to_json(param_it->second.get_parameter_value());
-    param_obj["type"] = parameter_type_to_string(param_it->second.get_type());
+    param_obj["value"] = parameter_value_to_json(default_param.get_parameter_value());
+    param_obj["type"] = parameter_type_to_string(default_param.get_type());
     param_obj["reset_to_default"] = true;
     result.success = true;
     result.data = param_obj;
@@ -733,6 +789,10 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
 }
 
 ParameterResult ConfigurationManager::reset_all_parameters(const std::string & node_name) {
+  if (shutdown_.load()) {
+    return shut_down_result();
+  }
+
   // Self-query guard: reset via direct access
   if (is_self_node(node_name)) {
     ParameterResult result;
