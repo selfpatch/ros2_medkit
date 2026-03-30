@@ -8,7 +8,7 @@ repos:
       - id: clang-format
         name: clang-format
         types_or: [c, c++]
-        exclude: /vendored/
+        exclude: (/vendored/|/third_party/)
         # Uses the project's .clang-format automatically
 
   # ── CMake ──────────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ repos:
         entry: ament_copyright
         language: system
         types_or: [c, c++, python, cmake]
-        exclude: /vendored/
+        exclude: (/vendored/|/third_party/)
 
   # ── Incremental clang-tidy (pre-push only) ────────────────────────
   # Requires: pre-commit install --hook-type pre-push
@@ -71,5 +71,5 @@ repos:
         entry: ./scripts/clang-tidy-diff.sh
         language: system
         types: [c++]
-        exclude: /vendored/
+        exclude: (/vendored/|/third_party/)
         stages: [pre-push]
