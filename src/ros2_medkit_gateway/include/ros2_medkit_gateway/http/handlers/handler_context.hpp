@@ -71,6 +71,11 @@ struct EntityInfo {
   std::string id_field;    ///< JSON field name for ID ("component_id", "app_id", etc.)
   std::string error_name;  ///< Human-readable name for errors ("Component", "App", etc.)
 
+  // Peer aggregation fields
+  bool is_remote{false};  ///< True if entity was discovered from a peer gateway
+  std::string peer_url;   ///< Base URL of the peer (e.g., "http://localhost:8081")
+  std::string peer_name;  ///< Peer name for metadata (e.g., "subsystem_b")
+
   /**
    * @brief Get SovdEntityType equivalent
    */
