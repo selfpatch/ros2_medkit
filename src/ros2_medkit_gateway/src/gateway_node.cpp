@@ -203,9 +203,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Aggregation parameters (peer gateway federation)
   declare_parameter("aggregation.enabled", false);
   declare_parameter("aggregation.timeout_ms", 2000);
-  declare_parameter("aggregation.health_check_interval_sec", 10);
-  declare_parameter("aggregation.announce", true);
-  declare_parameter("aggregation.discover", true);
+  declare_parameter("aggregation.announce", false);
+  declare_parameter("aggregation.discover", false);
   declare_parameter("aggregation.mdns_service", std::string("_medkit._tcp.local"));
   // Static peers: parallel arrays of URLs and names.
   // Example: peer_urls=["http://localhost:8081"], peer_names=["subsystem_b"]
@@ -865,8 +864,6 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     AggregationConfig agg_config;
     agg_config.enabled = true;
     agg_config.timeout_ms = static_cast<int>(get_parameter("aggregation.timeout_ms").as_int());
-    agg_config.health_check_interval_sec =
-        static_cast<int>(get_parameter("aggregation.health_check_interval_sec").as_int());
     agg_config.announce = get_parameter("aggregation.announce").as_bool();
     agg_config.discover = get_parameter("aggregation.discover").as_bool();
     agg_config.mdns_service = get_parameter("aggregation.mdns_service").as_string();
@@ -892,9 +889,15 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       mdns_config.service = agg_config.mdns_service;
       mdns_config.port = server_port_;
       mdns_config.name = get_name();
+      mdns_config.on_error = [this](const std::string & msg) {
+        RCLCPP_WARN(get_logger(), "mDNS: %s", msg.c_str());
+      };
       mdns_discovery_ = std::make_unique<MdnsDiscovery>(mdns_config);
       mdns_discovery_->start(
           [this](const std::string & url, const std::string & name) {
+            if (name == get_name()) {
+              return;  // Skip self-discovery
+            }
             aggregation_mgr_->add_discovered_peer(url, name);
           },
           [this](const std::string & name) {
@@ -902,9 +905,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
           });
     }
 
-    RCLCPP_INFO(get_logger(), "Aggregation: enabled (timeout=%dms, health_check=%ds, announce=%s, discover=%s)",
-                agg_config.timeout_ms, agg_config.health_check_interval_sec, agg_config.announce ? "true" : "false",
-                agg_config.discover ? "true" : "false");
+    RCLCPP_INFO(get_logger(), "Aggregation: enabled (timeout=%dms, announce=%s, discover=%s)", agg_config.timeout_ms,
+                agg_config.announce ? "true" : "false", agg_config.discover ? "true" : "false");
   } else {
     RCLCPP_INFO(get_logger(), "Aggregation: disabled");
   }
@@ -1392,6 +1394,7 @@ void GatewayNode::refresh_cache() {
 
     // Merge remote peer entities if aggregation is active
     if (aggregation_mgr_ && aggregation_mgr_->peer_count() > 0) {
+      constexpr size_t kMaxEntitiesPerPeer = 10000;
       aggregation_mgr_->check_all_health();
 
       std::unordered_map<std::string, std::string> routing_entries;
@@ -1399,6 +1402,14 @@ void GatewayNode::refresh_cache() {
       for (auto * peer : healthy) {
         auto result = peer->fetch_entities();
         if (result) {
+          size_t total =
+              result->areas.size() + result->components.size() + result->apps.size() + result->functions.size();
+          if (total > kMaxEntitiesPerPeer) {
+            RCLCPP_WARN(get_logger(), "Peer '%s' returned %zu entities (max %zu), skipping", peer->name().c_str(),
+                        total, kMaxEntitiesPerPeer);
+            continue;
+          }
+
           EntityMerger merger(peer->name());
           areas = merger.merge_areas(areas, result->areas);
           functions = merger.merge_functions(functions, result->functions);

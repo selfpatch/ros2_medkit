@@ -37,6 +37,8 @@
 #include <string>
 #include <thread>
 
+#include "ros2_medkit_gateway/discovery/host_info_provider.hpp"
+
 namespace ros2_medkit_gateway {
 
 namespace {
@@ -127,6 +129,12 @@ int browse_callback(int /*sock*/, const struct sockaddr * from, size_t addrlen, 
     auto dot_pos = peer_name.find('.');
     if (dot_pos != std::string::npos) {
       peer_name = peer_name.substr(0, dot_pos);
+    }
+
+    // Sanitize peer name to valid entity ID characters
+    peer_name = HostInfoProvider::sanitize_entity_id(peer_name);
+    if (peer_name.empty()) {
+      return 0;
     }
 
     if (ctx->on_found) {
@@ -273,7 +281,11 @@ void MdnsDiscovery::announce_loop() {
 
   int sock = mdns_socket_open_ipv4(&saddr);
   if (sock < 0) {
-    // Cannot open mDNS socket (likely permission issue or port in use)
+    if (config_.on_error) {
+      config_.on_error(
+          "Failed to open mDNS announce socket on port 5353. "
+          "Check permissions (CAP_NET_BIND_SERVICE) or use static peers.");
+    }
     return;
   }
 
@@ -347,6 +359,11 @@ void MdnsDiscovery::browse_loop() {
   // Open a socket on an ephemeral port for sending queries
   int sock = mdns_socket_open_ipv4(nullptr);
   if (sock < 0) {
+    if (config_.on_error) {
+      config_.on_error(
+          "Failed to open mDNS browse socket. "
+          "Check permissions (CAP_NET_BIND_SERVICE) or use static peers.");
+    }
     return;
   }
 

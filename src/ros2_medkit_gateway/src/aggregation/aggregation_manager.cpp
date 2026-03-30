@@ -21,6 +21,31 @@
 
 namespace ros2_medkit_gateway {
 
+namespace {
+
+/**
+ * @brief Validate a peer URL discovered via mDNS
+ *
+ * Rejects URLs that don't use HTTP(S), point to cloud metadata endpoints,
+ * or use loopback addresses (which would be self-referential for mDNS peers).
+ */
+bool is_valid_peer_url(const std::string & url) {
+  // Must start with http:// or https://
+  if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) {
+    return false;
+  }
+  // Block cloud metadata endpoints (SSRF protection)
+  if (url.find("169.254.169.254") != std::string::npos) {
+    return false;
+  }
+  if (url.find("metadata.google") != std::string::npos) {
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+
 AggregationManager::AggregationManager(const AggregationConfig & config) : config_(config) {
   for (const auto & peer_cfg : config_.peers) {
     peers_.push_back(std::make_unique<PeerClient>(peer_cfg.url, peer_cfg.name, config_.timeout_ms));
@@ -33,6 +58,11 @@ size_t AggregationManager::peer_count() const {
 }
 
 void AggregationManager::add_discovered_peer(const std::string & url, const std::string & name) {
+  // Validate mDNS-discovered peer URLs (static config peers bypass this check)
+  if (!is_valid_peer_url(url)) {
+    return;
+  }
+
   std::unique_lock<std::shared_mutex> lock(mutex_);
 
   // Do not add if a peer with this name already exists

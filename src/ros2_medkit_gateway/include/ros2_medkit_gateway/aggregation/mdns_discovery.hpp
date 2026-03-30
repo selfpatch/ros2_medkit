@@ -36,12 +36,16 @@ class MdnsDiscovery {
   /**
    * @brief Configuration for mDNS discovery
    */
+  /// Callback invoked when an mDNS operation encounters an error (e.g., socket failure)
+  using ErrorCallback = std::function<void(const std::string & message)>;
+
   struct Config {
-    bool announce{true};                        ///< Broadcast presence via mDNS
-    bool discover{true};                        ///< Browse for peers via mDNS
+    bool announce{false};                       ///< Broadcast presence via mDNS
+    bool discover{false};                       ///< Browse for peers via mDNS
     std::string service{"_medkit._tcp.local"};  ///< Service type to announce/browse
     int port{8080};                             ///< Port this gateway listens on
     std::string name;                           ///< Instance name for announcement
+    ErrorCallback on_error;                     ///< Optional error reporting callback
   };
 
   /// Callback invoked when a peer gateway is discovered

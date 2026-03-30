@@ -62,11 +62,6 @@ Core Parameters
      - HTTP timeout in milliseconds for all peer communication: health checks,
        entity fetching, and request forwarding. Increase for high-latency
        networks.
-   * - ``aggregation.health_check_interval_sec``
-     - int
-     - ``10``
-     - Interval in seconds between automatic health checks of all known peers.
-       Each check sends ``GET /api/v1/health`` to every peer.
 
 mDNS Discovery Parameters
 --------------------------
@@ -81,14 +76,16 @@ mDNS Discovery Parameters
      - Description
    * - ``aggregation.announce``
      - bool
-     - ``true``
+     - ``false``
      - Broadcast this gateway's presence via mDNS. Other gateways on the local
-       network can discover this instance automatically.
+       network can discover this instance automatically. Opt-in to avoid
+       surprising network behavior.
    * - ``aggregation.discover``
      - bool
-     - ``true``
+     - ``false``
      - Browse for peer gateways via mDNS. When a new peer is found, it is
-       automatically added to the peer list.
+       automatically added to the peer list. Opt-in to avoid surprising
+       network behavior.
    * - ``aggregation.mdns_service``
      - string
      - ``"_medkit._tcp.local"``
@@ -148,8 +145,7 @@ One primary gateway aggregates from three subsystem gateways:
        aggregation:
          enabled: true
          timeout_ms: 3000
-         health_check_interval_sec: 15
-         announce: true
+         announce: false
          discover: false  # Use static peers only
          peers:
            - url: "http://192.168.1.10:8080"

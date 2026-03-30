@@ -97,6 +97,53 @@ TEST(AggregationManager, add_discovered_peer_is_idempotent) {
   EXPECT_EQ(manager.peer_count(), 1u);
 }
 
+// =============================================================================
+// Peer URL validation tests
+// =============================================================================
+
+TEST(AggregationManager, rejects_non_http_peer_url) {
+  auto config = make_config(0);
+  AggregationManager manager(config);
+
+  manager.add_discovered_peer("ftp://192.168.1.50:8081", "ftp_peer");
+  EXPECT_EQ(manager.peer_count(), 0u);
+
+  manager.add_discovered_peer("file:///etc/passwd", "file_peer");
+  EXPECT_EQ(manager.peer_count(), 0u);
+
+  manager.add_discovered_peer("not-a-url", "bad_peer");
+  EXPECT_EQ(manager.peer_count(), 0u);
+}
+
+TEST(AggregationManager, rejects_cloud_metadata_peer_url) {
+  auto config = make_config(0);
+  AggregationManager manager(config);
+
+  // AWS metadata endpoint
+  manager.add_discovered_peer("http://169.254.169.254/latest/meta-data/", "aws_meta");
+  EXPECT_EQ(manager.peer_count(), 0u);
+
+  // GCP metadata endpoint
+  manager.add_discovered_peer("http://metadata.google.internal/computeMetadata/v1/", "gcp_meta");
+  EXPECT_EQ(manager.peer_count(), 0u);
+}
+
+TEST(AggregationManager, accepts_valid_http_peer_url) {
+  auto config = make_config(0);
+  AggregationManager manager(config);
+
+  manager.add_discovered_peer("http://192.168.1.50:8081", "valid_peer");
+  EXPECT_EQ(manager.peer_count(), 1u);
+}
+
+TEST(AggregationManager, accepts_valid_https_peer_url) {
+  auto config = make_config(0);
+  AggregationManager manager(config);
+
+  manager.add_discovered_peer("https://gateway.local:8443", "secure_peer");
+  EXPECT_EQ(manager.peer_count(), 1u);
+}
+
 TEST(AggregationManager, remove_discovered_peer_decreases_count) {
   auto config = make_config(2);
   AggregationManager manager(config);
