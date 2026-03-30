@@ -19,3 +19,4 @@ This section contains design documentation for the ros2_medkit project packages.
    ros2_medkit_param_beacon/index
    ros2_medkit_serialization/index
    ros2_medkit_topic_beacon/index
+   aggregation

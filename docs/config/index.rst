@@ -11,6 +11,7 @@ This section contains configuration references for ros2_medkit.
    manifest-schema
    fault-manager
    diagnostic-bridge
+   aggregation
 
 Server Configuration
 --------------------
@@ -46,3 +47,10 @@ Diagnostic Bridge
 :doc:`diagnostic-bridge`
    Diagnostic bridge configuration for converting standard ROS 2 diagnostics
    to fault events. Includes custom fault code mappings.
+
+Aggregation
+-----------
+
+:doc:`aggregation`
+   Multi-instance peer aggregation configuration: static peers, mDNS discovery,
+   health monitoring, and entity merge settings.

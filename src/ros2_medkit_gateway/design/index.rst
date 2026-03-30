@@ -546,3 +546,11 @@ It consists of five main components:
    - Reference-counted: multiple triggers on the same topic share one subscription
    - Publishes data changes to ``ResourceChangeNotifier`` for condition evaluation
    - Automatically unsubscribes when the last trigger for a topic is removed
+
+Additional Design Documents
+----------------------------
+
+.. toctree::
+   :maxdepth: 1
+
+   aggregation
