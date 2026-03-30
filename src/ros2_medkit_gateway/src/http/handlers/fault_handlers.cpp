@@ -345,8 +345,15 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       XMedkit ext;
       ext.entity_id(entity_id);
       ext.add("aggregation_level", "function");
+      ext.add("aggregated", true);
       ext.add("count", filtered_faults.size());
       ext.add("host_count", host_fqns.size());
+      // Include source app IDs for cross-referencing aggregated results
+      json source_ids = json::array();
+      for (const auto & fqn : host_fqns) {
+        source_ids.push_back(fqn);
+      }
+      ext.add("aggregation_sources", source_ids);
 
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
@@ -389,15 +396,77 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       XMedkit ext;
       ext.entity_id(entity_id);
       ext.add("aggregation_level", "component");
+      ext.add("aggregated", true);
       ext.add("count", filtered_faults.size());
       ext.add("app_count", app_fqns.size());
+      // Include source app FQNs for cross-referencing aggregated results
+      json source_fqns = json::array();
+      for (const auto & fqn : app_fqns) {
+        source_fqns.push_back(fqn);
+      }
+      ext.add("aggregation_sources", source_fqns);
 
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
       return;
     }
 
-    // For other entity types (App, Area), use namespace_path filtering
+    // For Areas, aggregate faults from all apps in all components within the area
+    // This is an x-medkit extension - SOVD spec does not define fault collections for Areas
+    if (entity_info.type == EntityType::AREA) {
+      // Get all faults (no namespace filter)
+      auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
+                                           filter.include_healed, include_muted, include_clusters);
+
+      if (!result.success) {
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults",
+                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
+        return;
+      }
+
+      // Collect FQNs from all apps in all components belonging to this area
+      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      auto comp_ids = cache.get_components_for_area(entity_id);
+      std::set<std::string> app_fqns;
+      for (const auto & comp_id : comp_ids) {
+        auto app_ids = cache.get_apps_for_component(comp_id);
+        for (const auto & app_id : app_ids) {
+          auto app = cache.get_app(app_id);
+          if (app) {
+            auto fqn = app->effective_fqn();
+            if (!fqn.empty()) {
+              app_fqns.insert(std::move(fqn));
+            }
+          }
+        }
+      }
+
+      // Filter faults to only those from the area's apps
+      json filtered_faults = filter_faults_by_sources(result.data["faults"], app_fqns);
+
+      // Build response
+      json response = {{"items", filtered_faults}};
+
+      XMedkit ext;
+      ext.entity_id(entity_id);
+      ext.add("aggregation_level", "area");
+      ext.add("aggregated", true);
+      ext.add("count", filtered_faults.size());
+      ext.add("component_count", comp_ids.size());
+      ext.add("app_count", app_fqns.size());
+      // Include source app FQNs for cross-referencing aggregated results
+      json area_source_fqns = json::array();
+      for (const auto & fqn : app_fqns) {
+        area_source_fqns.push_back(fqn);
+      }
+      ext.add("aggregation_sources", area_source_fqns);
+
+      response["x-medkit"] = ext.build();
+      HandlerContext::send_json(res, response);
+      return;
+    }
+
+    // For Apps, use namespace_path filtering
     std::string namespace_path = entity_info.namespace_path;
     auto result =
         fault_mgr->list_faults(namespace_path, filter.include_pending, filter.include_confirmed, filter.include_cleared,
