@@ -170,30 +170,32 @@ int announce_callback(int sock, const struct sockaddr * from, size_t addrlen, md
     return 0;
   }
 
-  // Build the answer: SRV record pointing to our hostname and port
+  // Build the response per DNS-SD (RFC 6763):
+  // - Answer: PTR record (service type -> instance name)
+  // - Additional: SRV record (instance name -> host:port)
   std::string hostname = get_hostname();
   std::string instance = config->name + "." + config->service;
 
-  // Build records for the response
+  // PTR answer: maps service type to our instance name
   mdns_record_t answer{};
-  answer.name.str = instance.c_str();
-  answer.name.length = instance.size();
-  answer.type = MDNS_RECORDTYPE_SRV;
-  answer.data.srv.priority = 0;
-  answer.data.srv.weight = 0;
-  answer.data.srv.port = static_cast<uint16_t>(config->port);
-  answer.data.srv.name.str = hostname.c_str();
-  answer.data.srv.name.length = hostname.size();
+  answer.name.str = config->service.c_str();
+  answer.name.length = config->service.size();
+  answer.type = MDNS_RECORDTYPE_PTR;
+  answer.data.ptr.name.str = instance.c_str();
+  answer.data.ptr.name.length = instance.size();
   answer.rclass = 0;
   answer.ttl = 120;
 
-  // Build PTR record as additional
+  // SRV additional: maps instance name to hostname and port
   mdns_record_t additional{};
-  additional.name.str = config->service.c_str();
-  additional.name.length = config->service.size();
-  additional.type = MDNS_RECORDTYPE_PTR;
-  additional.data.ptr.name.str = instance.c_str();
-  additional.data.ptr.name.length = instance.size();
+  additional.name.str = instance.c_str();
+  additional.name.length = instance.size();
+  additional.type = MDNS_RECORDTYPE_SRV;
+  additional.data.srv.priority = 0;
+  additional.data.srv.weight = 0;
+  additional.data.srv.port = static_cast<uint16_t>(config->port);
+  additional.data.srv.name.str = hostname.c_str();
+  additional.data.srv.name.length = hostname.size();
   additional.rclass = 0;
   additional.ttl = 120;
 
