@@ -1,4 +1,4 @@
-// Copyright 2026 Selfpatch GmbH
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wold-style-cast"
 // The mdns.h header is C code with its own extern "C" guards
-#include "ros2_medkit_gateway/third_party/mdns.h"
+#include "mdns.h"
 #pragma GCC diagnostic pop
 
 #include "ros2_medkit_gateway/aggregation/mdns_discovery.hpp"
