@@ -77,6 +77,10 @@ target_include_directories(jwt_cpp_iface SYSTEM INTERFACE
 )
 add_library(jwt-cpp::jwt-cpp ALIAS jwt_cpp_iface)
 
+# mjansson/mdns (Public Domain) - https://github.com/mjansson/mdns
+# Header-only C library for mDNS/DNS-SD, used for peer gateway discovery
+include_directories(SYSTEM src/vendored/mdns)
+
 # Include directories
 include_directories(include)
 
@@ -313,7 +317,7 @@ if(BUILD_TESTING)
     "src/vendored/jwt_cpp/include/jwt-cpp/traits/nlohmann-json/traits.h"
     "src/vendored/jwt_cpp/include/picojson/picojson.h"
     "src/vendored/tl_expected/include/tl/expected.hpp"
-    "include/ros2_medkit_gateway/third_party/mdns.h"
+    "src/vendored/mdns/mdns.h"
   )
   ament_copyright(EXCLUDE ${VENDORED_FILES})
 
@@ -325,7 +329,7 @@ if(BUILD_TESTING)
     "test/*.cpp" "test/*.h" "test/*.hpp"
   )
   list(FILTER _format_files EXCLUDE REGEX ".*/vendored/.*")
-  list(FILTER _format_files EXCLUDE REGEX ".*/third_party/.*")
+  list(FILTER _format_files EXCLUDE REGEX ".*/vendored/.*")
   ament_clang_format(${_format_files}
     CONFIG_FILE "${ament_cmake_clang_format_CONFIG_FILE}"
   )
