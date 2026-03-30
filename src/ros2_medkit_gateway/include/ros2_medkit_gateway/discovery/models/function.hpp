@@ -28,7 +28,7 @@ using json = nlohmann::json;
  * Functions are higher-level abstractions that group Apps and/or Components
  * representing a complete capability (e.g., "Autonomous Navigation").
  *
- * Functions are always manifest-defined and don't exist at runtime by themselves.
+ * Functions can be manifest-defined or created at runtime from namespace grouping.
  * They aggregate data, operations, and faults from their hosted entities.
  */
 struct Function {
@@ -46,7 +46,7 @@ struct Function {
   std::vector<std::string> depends_on;  ///< depends-on relationship (Function IDs)
 
   // === Discovery metadata ===
-  std::string source = "manifest";  ///< Always "manifest" (functions don't exist at runtime)
+  std::string source = "manifest";  ///< Discovery source: manifest or runtime
 
   // === Serialization methods ===
 

@@ -130,7 +130,6 @@ software" and a Function is "what the software does".
    Area "1" *--> "*" Component : contains
    Component "1" *--> "*" App : hosts
    Function "1" o--> "*" App : groups
-   Function "1" o--> "*" Component : groups
 
    note right of Component
        In runtime mode: single host
@@ -296,7 +295,7 @@ maps to a peer, the request is forwarded transparently:
 ``GET /api/v1/faults``) use **fan-out**: the primary gateway sends the
 same request to all healthy peers, collects the responses, and merges the
 ``items`` arrays into a single response. If some peers fail, the response
-includes a ``X-Medkit-Partial: true`` header and a ``partial_errors`` field.
+body includes ``x-medkit.partial: true`` and ``x-medkit.failed_peers``.
 
 Peer Discovery
 --------------
@@ -307,17 +306,14 @@ automatically via mDNS.
 Static Peers
 ~~~~~~~~~~~~
 
-Configure peers directly in ``gateway_params.yaml``:
+Configure peers directly in ``gateway_params.yaml`` using parallel arrays:
 
 .. code-block:: yaml
 
    aggregation:
      enabled: true
-     peers:
-       - url: "http://192.168.1.10:8080"
-         name: "arm_controller"
-       - url: "http://192.168.1.11:8080"
-         name: "base_platform"
+     peer_urls: ["http://192.168.1.10:8080", "http://192.168.1.11:8080"]
+     peer_names: ["arm_controller", "base_platform"]
 
 Static peers are always present in the peer list regardless of mDNS settings.
 

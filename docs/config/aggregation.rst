@@ -26,19 +26,19 @@ Quick Start
    # Enable aggregation with a static peer
    ros2 run ros2_medkit_gateway gateway_node --ros-args \
        -p aggregation.enabled:=true \
-       -p aggregation.peers:="[{url: 'http://192.168.1.10:8080', name: 'peer_b'}]"
+       -p aggregation.peer_urls:="['http://192.168.1.10:8080']" \
+       -p aggregation.peer_names:="['peer_b']"
 
 Or in ``gateway_params.yaml``:
 
 .. code-block:: yaml
 
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        aggregation:
          enabled: true
-         peers:
-           - url: "http://192.168.1.10:8080"
-             name: "peer_b"
+         peer_urls: ["http://192.168.1.10:8080"]
+         peer_names: ["peer_b"]
 
 Core Parameters
 ---------------
@@ -95,6 +95,10 @@ mDNS Discovery Parameters
 Static Peers
 ------------
 
+Static peers are configured as parallel arrays: ``peer_urls[i]`` pairs with
+``peer_names[i]``. Both arrays must have the same length. Empty-string entries
+are ignored.
+
 .. list-table::
    :header-rows: 1
    :widths: 30 10 10 50
@@ -103,31 +107,19 @@ Static Peers
      - Type
      - Default
      - Description
-   * - ``aggregation.peers``
-     - list
-     - ``[]``
-     - List of statically configured peer gateways. Each entry has ``url``
-       (base URL including port) and ``name`` (human-readable identifier).
-       Static peers are always present regardless of mDNS discovery.
-
-Each peer entry:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 20 10 70
-
-   * - Field
-     - Type
-     - Description
-   * - ``url``
-     - string
-     - Base URL of the peer gateway (e.g., ``http://192.168.1.10:8080``).
-       Must include the scheme and port.
-   * - ``name``
-     - string
-     - Human-readable name for the peer. Used as prefix for collision
-       resolution (e.g., ``peername__entity_id``) and in the routing table.
-       Must be unique across all peers.
+   * - ``aggregation.peer_urls``
+     - string[]
+     - ``[""]``
+     - List of peer gateway base URLs (e.g.,
+       ``["http://192.168.1.10:8080", "http://192.168.1.11:8080"]``).
+       Each URL must include the scheme and port.
+   * - ``aggregation.peer_names``
+     - string[]
+     - ``[""]``
+     - List of human-readable names for peers (e.g.,
+       ``["arm_controller", "base_platform"]``).
+       Used as prefix for collision resolution (e.g., ``peername__entity_id``)
+       and in the routing table. Must be unique across all peers.
 
 Scenario Examples
 -----------------
@@ -140,20 +132,15 @@ One primary gateway aggregates from three subsystem gateways:
 .. code-block:: yaml
 
    # Primary gateway (host-A, port 8080)
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        aggregation:
          enabled: true
          timeout_ms: 3000
          announce: false
          discover: false  # Use static peers only
-         peers:
-           - url: "http://192.168.1.10:8080"
-             name: "arm_controller"
-           - url: "http://192.168.1.11:8080"
-             name: "base_platform"
-           - url: "http://192.168.1.12:8080"
-             name: "sensor_array"
+         peer_urls: ["http://192.168.1.10:8080", "http://192.168.1.11:8080", "http://192.168.1.12:8080"]
+         peer_names: ["arm_controller", "base_platform", "sensor_array"]
 
 The leaf gateways do not need aggregation enabled - they serve their own
 entities independently. Only the primary gateway needs aggregation.
@@ -166,33 +153,31 @@ Gateway A aggregates from B, which aggregates from C:
 .. code-block:: yaml
 
    # Gateway A (top-level aggregator)
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        server:
          port: 8080
        aggregation:
          enabled: true
-         peers:
-           - url: "http://gateway-b:8080"
-             name: "subsystem_b"
+         peer_urls: ["http://gateway-b:8080"]
+         peer_names: ["subsystem_b"]
 
 .. code-block:: yaml
 
    # Gateway B (mid-level aggregator)
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        server:
          port: 8080
        aggregation:
          enabled: true
-         peers:
-           - url: "http://gateway-c:8080"
-             name: "subsystem_c"
+         peer_urls: ["http://gateway-c:8080"]
+         peer_names: ["subsystem_c"]
 
 .. code-block:: yaml
 
    # Gateway C (leaf - no aggregation needed)
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        server:
          port: 8080
@@ -209,7 +194,7 @@ Fully automatic peer discovery with no static configuration:
 .. code-block:: yaml
 
    # All gateways use the same config
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        aggregation:
          enabled: true
@@ -235,16 +220,15 @@ Combine static peers for known infrastructure with mDNS for dynamic discovery:
 
 .. code-block:: yaml
 
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        aggregation:
          enabled: true
          announce: true
          discover: true
-         peers:
-           # Always connect to the base platform
-           - url: "http://base-platform:8080"
-             name: "base_platform"
+         # Always connect to the base platform
+         peer_urls: ["http://base-platform:8080"]
+         peer_names: ["base_platform"]
          # Additional peers discovered via mDNS at runtime
 
 Entity Merge Behavior
@@ -271,11 +255,40 @@ Health and Partial Results
 --------------------------
 
 If a peer is unreachable during a fan-out request (e.g., ``GET /api/v1/components``),
-the response includes:
+the response body includes:
 
-- ``X-Medkit-Partial: true`` header
-- A ``partial_errors`` field listing which peers failed
+- ``x-medkit.partial: true`` in the JSON response body
+- ``x-medkit.failed_peers`` listing which peers failed
 
 This allows clients to detect degraded responses and take appropriate action.
 Individual entity requests for remote entities return ``502 Bad Gateway`` if the
 owning peer is unreachable.
+
+Migration Notes
+---------------
+
+The entity model defaults changed with the aggregation feature. If you are
+upgrading from a previous version:
+
+- ``create_synthetic_areas`` now defaults to ``false`` (was ``true``).
+  Namespaces create Function entities instead of Areas.
+- ``create_synthetic_components`` now defaults to ``false`` (was ``true``).
+  A single host-level Component is created from system info instead.
+- ``create_functions_from_namespaces`` is a new parameter that defaults to
+  ``true``, mapping namespaces to Function entities.
+- ``default_component.enabled`` is a new parameter that defaults to ``true``,
+  creating a single Component from the local hostname.
+
+To restore the previous behavior, set these discovery runtime options:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       discovery:
+         runtime:
+           create_synthetic_areas: true
+           create_synthetic_components: true
+           create_functions_from_namespaces: false
+           default_component:
+             enabled: false

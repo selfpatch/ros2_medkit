@@ -7,7 +7,7 @@ Discovery Options Reference
 
 This document describes configuration options for the gateway's discovery system.
 The discovery system maps ROS 2 graph entities (nodes, topics, services, actions)
-to SOVD entities (areas, components, apps).
+to SOVD entities (areas, components, apps, functions).
 
 Discovery Modes
 ---------------
@@ -42,11 +42,13 @@ Synthetic Components
 
    discovery:
      runtime:
-       create_synthetic_components: true
+       create_synthetic_components: false
        grouping_strategy: "namespace"
        synthetic_component_name_pattern: "{area}"
 
-When ``create_synthetic_components`` is true:
+``create_synthetic_components`` defaults to ``false``. The default Component
+now comes from ``HostInfoProvider`` (see Default Component below). When set
+to ``true`` (legacy behavior):
 
 - Components are created as logical groupings of Apps
 - ``grouping_strategy: "namespace"`` groups nodes by their first namespace segment
@@ -59,32 +61,65 @@ When ``create_synthetic_components`` is true:
    segment used as the component grouping key - it does not require areas
    to be enabled.
 
-Synthetic Areas
-^^^^^^^^^^^^^^^
+Synthetic Areas (Deprecated)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: yaml
 
    discovery:
      runtime:
-       create_synthetic_areas: true
+       create_synthetic_areas: false
 
-When ``create_synthetic_areas`` is true (the default):
+``create_synthetic_areas`` is deprecated and defaults to ``false``. Namespace
+grouping now creates Function entities instead (see below).
+
+When ``create_synthetic_areas`` is true (legacy behavior):
 
 - Areas are created from ROS 2 namespace segments (e.g., ``/powertrain`` becomes area ``powertrain``)
 - Components and Apps are organized under these Areas
 
-When ``create_synthetic_areas`` is false:
+When ``create_synthetic_areas`` is false (the default):
 
 - No Areas are created from namespaces
-- The entity tree is flat - Components are top-level entities
-- This is useful for simple robots (e.g., TurtleBot3) where an area hierarchy adds unnecessary nesting
+- Namespace grouping is handled by Function entities instead
+- This is the SOVD-correct mapping
 
 .. code-block:: yaml
 
-   # Flat entity tree - no areas
+   # Restore legacy area-based grouping
    discovery:
      runtime:
-       create_synthetic_areas: false
+       create_synthetic_areas: true
+       create_functions_from_namespaces: false
+
+Default Component
+^^^^^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+   discovery:
+     runtime:
+       default_component:
+         enabled: true
+
+When ``default_component.enabled`` is true (the default), the gateway creates
+a single host-level Component from the local system info (hostname, OS,
+architecture) via ``HostInfoProvider``. All discovered Apps are linked to this
+Component. This replaces the old synthetic per-namespace Components.
+
+Function Entities from Namespaces
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+   discovery:
+     runtime:
+       create_functions_from_namespaces: true
+
+When ``create_functions_from_namespaces`` is true (the default), each ROS 2
+namespace becomes a Function entity that groups the Apps in that namespace.
+This is the SOVD-correct mapping where Functions represent logical capabilities
+(what the software does) rather than deployment topology.
 
 Topic-Only Namespaces
 ^^^^^^^^^^^^^^^^^^^^^
@@ -313,11 +348,18 @@ Complete YAML configuration for runtime discovery:
          mode: "runtime_only"
 
          runtime:
-           # Create Areas from namespace segments
-           create_synthetic_areas: true
+           # Function entities from namespace grouping (default: true)
+           create_functions_from_namespaces: true
 
-           # Group Apps into Components by namespace
-           create_synthetic_components: true
+           # Single host-level Component (default: true)
+           default_component:
+             enabled: true
+
+           # Legacy: create Areas from namespace segments (default: false)
+           create_synthetic_areas: false
+
+           # Legacy: group Apps into Components by namespace (default: false)
+           create_synthetic_components: false
            grouping_strategy: "namespace"
            synthetic_component_name_pattern: "{area}"
 

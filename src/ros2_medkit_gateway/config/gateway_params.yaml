@@ -525,6 +525,6 @@ ros2_medkit_gateway:
       mdns_service: "_medkit._tcp.local"
 
       # Static peers (override or supplement mDNS discovery):
-      # peers:
-      #   - url: "http://localhost:8081"
-      #     name: "subsystem_b"
+      # Parallel arrays: peer_urls[i] pairs with peer_names[i]
+      # peer_urls: ["http://localhost:8081"]
+      # peer_names: ["subsystem_b"]

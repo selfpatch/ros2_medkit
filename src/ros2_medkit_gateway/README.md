@@ -4,11 +4,11 @@ HTTP gateway node for the ros2_medkit diagnostics system.
 
 ## Overview
 
-The ROS 2 Medkit Gateway exposes ROS 2 system information and data through a RESTful HTTP API. It automatically discovers nodes in the ROS 2 system, organizes them into areas based on their namespaces, and provides endpoints to query and interact with them.
+The ROS 2 Medkit Gateway exposes ROS 2 system information and data through a RESTful HTTP API. It automatically discovers nodes in the ROS 2 system, organizes them into a SOVD-aligned entity hierarchy (Areas, Components, Apps, Functions), and provides endpoints to query and interact with them.
 
 **Key Features:**
 - **Auto-discovery**: Automatically detects ROS 2 nodes and topics
-- **Area-based organization**: Groups nodes by namespace (e.g., `/powertrain`, `/chassis`, `/body`)
+- **SOVD entity model**: Areas, Components (host-level), Apps (ROS 2 nodes), and Functions (namespace-based logical grouping)
 - **REST API**: Standard HTTP/JSON interface
 - **Real-time updates**: Configurable cache refresh for up-to-date system state
 - **Bulk Data Management**: Upload, download, list, and delete bulk data files (calibration, firmware, etc.)
@@ -33,7 +33,12 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `GET /api/v1/components/{component_id}/hosts` - List apps hosted on a component
 - `GET /api/v1/components/{component_id}/depends-on` - List component dependencies
 - `GET /api/v1/areas/{area_id}/components` - List components within a specific area
+- `GET /api/v1/apps` - List all discovered apps
+- `GET /api/v1/apps/{app_id}` - Get app capabilities
 - `GET /api/v1/apps/{app_id}/is-located-on` - Get the component hosting this app
+- `GET /api/v1/functions` - List all discovered functions
+- `GET /api/v1/functions/{function_id}` - Get function capabilities
+- `GET /api/v1/functions/{function_id}/hosts` - List apps grouped by this function
 
 ### Component Data Endpoints
 
@@ -131,18 +136,20 @@ curl http://localhost:8080/api/v1/areas
 
 **Response:**
 ```json
-[
-  {
-    "id": "powertrain",
-    "namespace": "/powertrain",
-    "type": "Area"
-  },
-  {
-    "id": "chassis",
-    "namespace": "/chassis",
-    "type": "Area"
-  }
-]
+{
+  "items": [
+    {
+      "id": "powertrain",
+      "name": "powertrain",
+      "href": "/api/v1/areas/powertrain"
+    },
+    {
+      "id": "chassis",
+      "name": "chassis",
+      "href": "/api/v1/areas/chassis"
+    }
+  ]
+}
 ```
 
 #### GET /api/v1/components
@@ -156,33 +163,21 @@ curl http://localhost:8080/api/v1/components
 
 **Response:**
 ```json
-[
-  {
-    "id": "temp_sensor",
-    "namespace": "/powertrain/engine",
-    "fqn": "/powertrain/engine/temp_sensor",
-    "type": "Component",
-    "area": "powertrain",
-    "source": "node"
-  },
-  {
-    "id": "carter1",
-    "namespace": "/carter1",
-    "fqn": "/carter1",
-    "type": "Component",
-    "area": "carter1",
-    "source": "topic"
-  }
-]
+{
+  "items": [
+    {
+      "id": "my_hostname",
+      "name": "my_hostname",
+      "href": "/api/v1/components/my_hostname"
+    }
+  ]
+}
 ```
 
 **Response Fields:**
-- `id` - Component name (node name or namespace for topic-based)
-- `namespace` - ROS 2 namespace where the component is running
-- `fqn` - Fully qualified name (namespace + node name)
-- `type` - Always "Component"
-- `source` - Discovery source: `"node"` (standard ROS 2 node) or `"topic"` (discovered from topic namespaces)
-- `area` - Parent area this component belongs to
+- `id` - Component identifier (hostname in runtime mode, or manifest-defined)
+- `name` - Human-readable name
+- `href` - URI to the component capabilities endpoint
 
 #### GET /api/v1/areas/{area_id}/components
 
@@ -195,24 +190,20 @@ curl http://localhost:8080/api/v1/areas/powertrain/components
 
 **Response (200 OK):**
 ```json
-[
-  {
-    "id": "temp_sensor",
-    "namespace": "/powertrain/engine",
-    "fqn": "/powertrain/engine/temp_sensor",
-    "type": "Component",
-    "area": "powertrain",
-    "source": "node"
-  },
-  {
-    "id": "rpm_sensor",
-    "namespace": "/powertrain/engine",
-    "fqn": "/powertrain/engine/rpm_sensor",
-    "type": "Component",
-    "area": "powertrain",
-    "source": "node"
-  }
-]
+{
+  "items": [
+    {
+      "id": "temp_sensor",
+      "name": "temp_sensor",
+      "href": "/api/v1/components/temp_sensor"
+    },
+    {
+      "id": "rpm_sensor",
+      "name": "rpm_sensor",
+      "href": "/api/v1/components/rpm_sensor"
+    }
+  ]
+}
 ```
 
 **Example (Error - Area Not Found):**
@@ -249,16 +240,18 @@ curl http://localhost:8080/api/v1/components/temp_sensor/data
 
 **Response (200 OK):**
 ```json
-[
-  {
-    "topic": "/powertrain/engine/temperature",
-    "timestamp": 1732377600000000000,
-    "data": {
-      "temperature": 85.5,
-      "variance": 0.0
+{
+  "items": [
+    {
+      "topic": "/powertrain/engine/temperature",
+      "timestamp": 1732377600000000000,
+      "data": {
+        "temperature": 85.5,
+        "variance": 0.0
+      }
     }
-  }
-]
+  ]
+}
 ```
 
 **Example (Error - Component Not Found):**
@@ -393,18 +386,20 @@ curl http://localhost:8080/api/v1/components/calibration/operations
 
 **Response (200 OK):**
 ```json
-[
-  {
-    "name": "calibrate",
-    "path": "/powertrain/engine/calibrate",
-    "type": "std_srvs/srv/Trigger",
-    "kind": "service",
-    "type_info": {
-      "schema": "...",
-      "default_value": "..."
+{
+  "items": [
+    {
+      "name": "calibrate",
+      "path": "/powertrain/engine/calibrate",
+      "type": "std_srvs/srv/Trigger",
+      "kind": "service",
+      "type_info": {
+        "schema": "...",
+        "default_value": "..."
+      }
     }
-  }
-]
+  ]
+}
 ```
 
 #### POST /api/v1/components/{component_id}/operations/{operation_id}/executions
@@ -1528,13 +1523,12 @@ Federate multiple gateway instances into a single unified API. A primary gateway
 
 ```yaml
 # gateway_params.yaml
-gateway_node:
+ros2_medkit_gateway:
   ros__parameters:
     aggregation:
       enabled: true
-      peers:
-        - url: "http://localhost:8081"
-          name: "subsystem_b"
+      peer_urls: ["http://localhost:8081"]
+      peer_names: ["subsystem_b"]
 ```
 
 ```bash
