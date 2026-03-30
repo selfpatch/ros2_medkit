@@ -55,8 +55,11 @@ void SSEStreamProxy::on_event(std::function<void(const StreamEvent &)> cb) {
 
 void SSEStreamProxy::reader_loop() {
   httplib::Client client(peer_url_);
-  // Set reasonable timeouts - SSE connections are long-lived
-  client.set_read_timeout(0);  // No read timeout for SSE streaming
+  // Set reasonable timeouts - SSE connections are long-lived.
+  // Use a long read timeout instead of 0 (which causes immediate timeout in
+  // cpp-httplib when SO_RCVTIMEO is set to zero). 24 hours allows SSE streams
+  // to stay open indefinitely while still having a finite timeout for cleanup.
+  client.set_read_timeout(86400, 0);
   client.set_connection_timeout(5, 0);
 
   connected_.store(true);
