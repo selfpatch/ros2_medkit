@@ -51,11 +51,11 @@ not need to know which gateway owns which entity.
    }
 
    package "Peer Gateway B" {
-       class "REST API (B)" as restB
+       class "REST_API_B" as restB
    }
 
    package "Peer Gateway C" {
-       class "REST API (C)" as restC
+       class "REST_API_C" as restC
    }
 
    client --> AggregationManager : HTTP request
@@ -134,7 +134,7 @@ software" and a Function is "what the software does".
    note right of Component
        In runtime mode: single host
        Component from HostInfoProvider
-       (hostname, OS, arch).
+       with hostname, OS, arch.
    end note
 
    note right of Function
@@ -185,40 +185,25 @@ type-specific merge rules:
 
    @startuml entity_merge
 
-   skinparam activity {
-       BackgroundColor #f0f0f0
-       BorderColor #999999
-   }
-
    title Entity Merge Rules
 
-   |Area or Function|
    start
-   :Receive remote entity;
-   if (Same ID exists locally?) then (yes)
-       :Merge into existing entity;
-       note right
-           - Area: combine relations
-           - Function: union of hosts lists
-           - No routing entry (both sides own it)
-       end note
-   else (no)
-       :Add as new entity;
-       :Set source = peer:name;
+   :Receive remote entity from peer;
+   if (Entity type?) then (Area or Function)
+       if (Same ID exists locally?) then (yes)
+           :Merge into existing entity\n(combine relations/hosts);
+       else (no)
+           :Add as new entity;
+       endif
+   else (Component or App)
+       if (Same ID exists locally?) then (yes)
+           :Prefix remote ID with\npeername__ separator;
+       else (no)
+           :Keep original ID;
+       endif
+       :Add routing entry;
    endif
-   stop
-
-   |Component or App|
-   start
-   :Receive remote entity;
-   if (Same ID exists locally?) then (yes)
-       :Prefix remote ID with\n"peername__original_id";
-       :Add routing entry for prefixed ID;
-   else (no)
-       :Keep original ID;
-       :Add routing entry for original ID;
-   endif
-   :Set source = "peer:<name>";
+   :Tag with peer source metadata;
    stop
 
    @enduml
@@ -286,7 +271,7 @@ maps to a peer, the request is forwarded transparently:
    ctx -> ctx : "my_node" not in routing table
    ctx --> primary : entity found, local
 
-   primary -> primary : Process locally (DataAccessManager)
+   primary -> primary : Process locally via DataAccessManager
    primary --> Client : 200 OK + JSON data
 
    @enduml
