@@ -70,15 +70,14 @@ To make Gateway A aggregate entities from Gateway B, create a config file:
 .. code-block:: yaml
    :caption: gateway_a_params.yaml
 
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        server:
          port: 8080
        aggregation:
          enabled: true
-         peers:
-           - url: "http://localhost:8081"
-             name: "subsystem_b"
+         peer_urls: ["http://localhost:8081"]
+         peer_names: ["subsystem_b"]
 
 Restart Gateway A with the config:
 
@@ -153,7 +152,7 @@ automatically on the local network.
 .. code-block:: yaml
    :caption: gateway_a_mdns.yaml
 
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        server:
          port: 8080
@@ -167,7 +166,7 @@ automatically on the local network.
 .. code-block:: yaml
    :caption: gateway_b_mdns.yaml
 
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        server:
          port: 8081
@@ -211,8 +210,9 @@ When a peer goes down, the gateway handles it gracefully:
    unhealthy.
 
 2. **Collection requests return partial results**: Global endpoints like
-   ``GET /api/v1/components`` return local entities plus a
-   ``X-Medkit-Partial: true`` header when some peers are unreachable.
+   ``GET /api/v1/components`` return local entities with
+   ``x-medkit.partial: true`` and ``x-medkit.failed_peers`` in the response
+   body when some peers are unreachable.
 
 3. **Entity-specific requests return 502**: If a request targets a remote
    entity whose peer is down, the gateway returns ``502 Bad Gateway``.
@@ -243,33 +243,31 @@ B, which aggregates from C:
 .. code-block:: yaml
    :caption: gateway_a_chain.yaml
 
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        server:
          port: 8080
        aggregation:
          enabled: true
-         peers:
-           - url: "http://localhost:8081"
-             name: "mid_level"
+         peer_urls: ["http://localhost:8081"]
+         peer_names: ["mid_level"]
 
 .. code-block:: yaml
    :caption: gateway_b_chain.yaml
 
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        server:
          port: 8081
        aggregation:
          enabled: true
-         peers:
-           - url: "http://localhost:8082"
-             name: "leaf_system"
+         peer_urls: ["http://localhost:8082"]
+         peer_names: ["leaf_system"]
 
 .. code-block:: yaml
    :caption: gateway_c_chain.yaml
 
-   gateway_node:
+   ros2_medkit_gateway:
      ros__parameters:
        server:
          port: 8082
@@ -288,8 +286,8 @@ Gateway C are forwarded through B to C.
 Summary
 -------
 
-- **Static peers**: List known gateways in ``aggregation.peers`` for
-  deterministic connections.
+- **Static peers**: List known gateways in ``aggregation.peer_urls`` and
+  ``aggregation.peer_names`` for deterministic connections.
 - **mDNS discovery**: Set ``aggregation.announce`` and ``aggregation.discover``
   to ``true`` for zero-configuration peer discovery.
 - **Entity merging**: Areas and Functions merge by ID. Components and Apps get
