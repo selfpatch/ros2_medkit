@@ -1455,15 +1455,20 @@ In addition to standard ROS 2 node discovery, the gateway supports **topic-based
 - `/parameter_events`, `/rosout`, `/clock`
 - Note: `/tf` and `/tf_static` are NOT filtered (useful for diagnostics)
 
-### Area Organization
+### Entity Organization
 
-The gateway organizes nodes into "areas" based on their namespace:
+In runtime discovery mode, the gateway maps the ROS 2 graph to the SOVD entity model:
+
+- **Component**: A single host-derived Component is created from `HostInfoProvider` (hostname, OS, architecture). All Apps belong to this Component.
+- **App**: Each discovered ROS 2 node becomes an App entity.
+- **Function**: Namespace prefixes create Function entities that group Apps sharing a namespace (e.g., `/powertrain/engine/temp_sensor` and `/powertrain/engine/rpm_sensor` both belong to Function `engine`).
+- **Area**: Top-level namespace segments create Area entities that organize Functions (e.g., `/powertrain/engine/*` nodes create Area `powertrain` containing Function `engine`).
 
 ```
-/powertrain/engine/temp_sensor  → Area: powertrain, Component: temp_sensor
-/chassis/brakes/pressure_sensor → Area: chassis, Component: pressure_sensor
-/body/lights/controller         → Area: body, Component: controller
-/standalone_node                → Area: root, Component: standalone_node
+/powertrain/engine/temp_sensor  -> Area: powertrain, Function: engine, App: temp_sensor
+/chassis/brakes/pressure_sensor -> Area: chassis, Function: brakes, App: pressure_sensor
+/body/lights/controller         -> Area: body, Function: lights, App: controller
+/standalone_node                -> Area: root, Function: root, App: standalone_node
 ```
 
 ## Demo Nodes

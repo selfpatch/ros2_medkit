@@ -17,6 +17,9 @@
 #include <algorithm>
 #include <string>
 
+#include <rclcpp/logging.hpp>
+
+#include "ros2_medkit_gateway/aggregation/entity_merger.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 
 namespace ros2_medkit_gateway {
@@ -34,8 +37,13 @@ bool is_valid_peer_url(const std::string & url) {
   if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) {
     return false;
   }
-  // Block cloud metadata endpoints (SSRF protection)
-  if (url.find("169.254.169.254") != std::string::npos) {
+  // Block loopback addresses (self-referential for mDNS peers)
+  if (url.find("://127.") != std::string::npos || url.find("://localhost") != std::string::npos ||
+      url.find("://[::1]") != std::string::npos) {
+    return false;
+  }
+  // Block all link-local (169.254.x.x) including cloud metadata endpoints
+  if (url.find("://169.254.") != std::string::npos) {
     return false;
   }
   if (url.find("metadata.google") != std::string::npos) {
@@ -83,6 +91,12 @@ void AggregationManager::remove_discovered_peer(const std::string & name) {
 }
 
 void AggregationManager::check_all_health() {
+  // Shared lock blocks add/remove (which need unique lock) during health checks.
+  // This means health checks hold the lock for N * timeout_ms in the worst case,
+  // blocking add_discovered_peer/remove_discovered_peer. This is acceptable because
+  // mDNS add/remove events are rare and health checks are short-lived (2s timeout).
+  // Moving to a snapshot-then-check pattern would require shared_ptr<PeerClient>
+  // instead of unique_ptr to avoid dangling pointers from concurrent removal.
   std::shared_lock<std::shared_mutex> lock(mutex_);
   for (auto & peer : peers_) {
     peer->check_health();
@@ -119,6 +133,57 @@ PeerEntities AggregationManager::fetch_all_peer_entities() {
     merged.components.insert(merged.components.end(), entities.components.begin(), entities.components.end());
     merged.apps.insert(merged.apps.end(), entities.apps.begin(), entities.apps.end());
     merged.functions.insert(merged.functions.end(), entities.functions.begin(), entities.functions.end());
+  }
+
+  return merged;
+}
+
+AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_entities(
+    const std::vector<Area> & local_areas, const std::vector<Component> & local_components,
+    const std::vector<App> & local_apps, const std::vector<Function> & local_functions, size_t max_entities_per_peer,
+    rclcpp::Logger * logger) {
+  MergedPeerResult merged;
+  merged.areas = local_areas;
+  merged.components = local_components;
+  merged.apps = local_apps;
+  merged.functions = local_functions;
+
+  // Hold shared lock during the entire fetch-and-merge operation so that
+  // remove_discovered_peer() (which needs a unique lock) cannot destroy
+  // PeerClient objects while we are iterating.
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  for (auto & peer : peers_) {
+    if (!peer->is_healthy()) {
+      continue;
+    }
+
+    auto result = peer->fetch_entities();
+    if (!result.has_value()) {
+      if (logger) {
+        RCLCPP_WARN(*logger, "Failed to fetch entities from peer '%s': %s", peer->name().c_str(),
+                    result.error().c_str());
+      }
+      continue;
+    }
+
+    size_t total = result->areas.size() + result->components.size() + result->apps.size() + result->functions.size();
+    if (total > max_entities_per_peer) {
+      if (logger) {
+        RCLCPP_WARN(*logger, "Peer '%s' returned %zu entities (max %zu), skipping", peer->name().c_str(), total,
+                    max_entities_per_peer);
+      }
+      continue;
+    }
+
+    EntityMerger merger(peer->name());
+    merged.areas = merger.merge_areas(merged.areas, result->areas);
+    merged.functions = merger.merge_functions(merged.functions, result->functions);
+    merged.components = merger.merge_components(merged.components, result->components);
+    merged.apps = merger.merge_apps(merged.apps, result->apps);
+
+    for (const auto & [id, name] : merger.get_routing_table()) {
+      merged.routing_table[id] = name;
+    }
   }
 
   return merged;
