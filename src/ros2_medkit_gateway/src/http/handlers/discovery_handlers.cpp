@@ -911,7 +911,6 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto app_opt = cache.get_app(app_id);
 
@@ -928,7 +927,7 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
       item["id"] = dep_id;
       item["href"] = "/api/v1/apps/" + dep_id;
 
-      auto dep_opt = discovery->get_app(dep_id);
+      auto dep_opt = cache.get_app(dep_id);
       if (dep_opt) {
         item["name"] = dep_opt->name.empty() ? dep_id : dep_opt->name;
 
@@ -1193,7 +1192,7 @@ void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, http
 
     json items = json::array();
     for (const auto & app_id : host_ids) {
-      auto app_opt = discovery->get_app(app_id);
+      auto app_opt = cache.get_app(app_id);
       if (app_opt) {
         json item;
         item["id"] = app_opt->id;
