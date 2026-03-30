@@ -47,9 +47,6 @@ constexpr size_t kMdnsBufferSize = 2048;
 // How often the browse thread sends queries (seconds)
 constexpr int kBrowseIntervalSec = 10;
 
-// How long to wait for responses after sending a query (milliseconds)
-constexpr int kQueryTimeoutMs = 2000;
-
 // Poll interval for socket reads (milliseconds)
 constexpr int kPollIntervalMs = 500;
 
