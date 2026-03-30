@@ -231,6 +231,13 @@ Combine static peers for known infrastructure with mDNS for dynamic discovery:
          peer_names: ["base_platform"]
          # Additional peers discovered via mDNS at runtime
 
+.. note::
+
+   When authentication is enabled, the gateway forwards the client's
+   ``Authorization`` header to peer gateways. Ensure all peers use
+   the same JWT configuration. This means peer gateways receive
+   client credentials - only configure peers you trust.
+
 Entity Merge Behavior
 ---------------------
 

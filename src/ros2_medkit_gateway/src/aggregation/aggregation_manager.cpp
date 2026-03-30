@@ -56,6 +56,12 @@ bool is_valid_peer_url(const std::string & url) {
 
 AggregationManager::AggregationManager(const AggregationConfig & config) : config_(config) {
   for (const auto & peer_cfg : config_.peers) {
+    // Validate scheme for static peers (http/https only).
+    // Unlike mDNS peers, loopback addresses are valid for static config
+    // (e.g., testing or same-host deployments).
+    if (peer_cfg.url.rfind("http://", 0) != 0 && peer_cfg.url.rfind("https://", 0) != 0) {
+      continue;
+    }
     peers_.push_back(std::make_unique<PeerClient>(peer_cfg.url, peer_cfg.name, config_.timeout_ms));
   }
 }
@@ -183,6 +189,12 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
 
     for (const auto & [id, name] : merger.get_routing_table()) {
       merged.routing_table[id] = name;
+      // Log collision-prefixed entities to help operators diagnose naming conflicts
+      if (id.find(EntityMerger::SEPARATOR) != std::string::npos) {
+        if (logger) {
+          RCLCPP_WARN(*logger, "Entity ID collision: '%s' prefixed for peer '%s'", id.c_str(), name.c_str());
+        }
+      }
     }
   }
 
@@ -228,7 +240,21 @@ void AggregationManager::forward_request(const std::string & peer_name, const ht
     return;
   }
 
-  peer->forward_request(req, res);
+  // Strip peer prefix from entity ID in the path if present.
+  // When entity ID collision causes renaming (e.g., camera_driver -> peer_b__camera_driver),
+  // the peer only knows the entity by its original ID (camera_driver), so we must strip
+  // the prefix before forwarding.
+  std::string forwarded_path = req.path;
+  std::string prefix = peer_name + EntityMerger::SEPARATOR;
+  auto prefix_pos = forwarded_path.find(prefix);
+  if (prefix_pos != std::string::npos) {
+    forwarded_path.erase(prefix_pos, prefix.size());
+  }
+
+  httplib::Request modified_req = req;
+  modified_req.path = forwarded_path;
+
+  peer->forward_request(modified_req, res);
 }
 
 AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::string & path,
