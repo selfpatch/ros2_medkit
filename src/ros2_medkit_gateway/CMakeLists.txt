@@ -190,6 +190,8 @@ add_library(gateway_lib STATIC
   src/aggregation/peer_client.cpp
   src/aggregation/entity_merger.cpp
   src/aggregation/aggregation_manager.cpp
+  src/aggregation/mdns_discovery.cpp
+  src/aggregation/sse_stream_proxy.cpp
 )
 
 medkit_target_dependencies(gateway_lib
@@ -311,6 +313,7 @@ if(BUILD_TESTING)
     "src/vendored/jwt_cpp/include/jwt-cpp/traits/nlohmann-json/traits.h"
     "src/vendored/jwt_cpp/include/picojson/picojson.h"
     "src/vendored/tl_expected/include/tl/expected.hpp"
+    "include/ros2_medkit_gateway/third_party/mdns.h"
   )
   ament_copyright(EXCLUDE ${VENDORED_FILES})
 
@@ -322,6 +325,7 @@ if(BUILD_TESTING)
     "test/*.cpp" "test/*.h" "test/*.hpp"
   )
   list(FILTER _format_files EXCLUDE REGEX ".*/vendored/.*")
+  list(FILTER _format_files EXCLUDE REGEX ".*/third_party/.*")
   ament_clang_format(${_format_files}
     CONFIG_FILE "${ament_cmake_clang_format_CONFIG_FILE}"
   )
@@ -661,6 +665,14 @@ if(BUILD_TESTING)
   ament_add_gtest(test_aggregation_manager test/test_aggregation_manager.cpp)
   target_link_libraries(test_aggregation_manager gateway_lib)
 
+  # Stream proxy tests (SSE parsing, aggregation module)
+  ament_add_gtest(test_stream_proxy test/test_stream_proxy.cpp)
+  target_link_libraries(test_stream_proxy gateway_lib)
+
+  # mDNS discovery tests (aggregation module)
+  ament_add_gtest(test_mdns_discovery test/test_mdns_discovery.cpp)
+  target_link_libraries(test_mdns_discovery gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -725,6 +737,8 @@ if(BUILD_TESTING)
       test_peer_client
       test_entity_merger
       test_aggregation_manager
+      test_stream_proxy
+      test_mdns_discovery
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
