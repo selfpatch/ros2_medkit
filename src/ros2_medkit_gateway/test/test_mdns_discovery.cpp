@@ -27,11 +27,12 @@ using namespace ros2_medkit_gateway;
 TEST(MdnsDiscovery, default_config_values) {
   MdnsDiscovery::Config config;
 
-  EXPECT_TRUE(config.announce);
-  EXPECT_TRUE(config.discover);
+  EXPECT_FALSE(config.announce);
+  EXPECT_FALSE(config.discover);
   EXPECT_EQ(config.service, "_medkit._tcp.local");
   EXPECT_EQ(config.port, 8080);
   EXPECT_TRUE(config.name.empty());
+  EXPECT_FALSE(config.on_error);  // No error callback by default
 }
 
 TEST(MdnsDiscovery, respects_announce_flag) {
@@ -148,4 +149,20 @@ TEST(MdnsDiscovery, not_running_before_start) {
   // Before start(), nothing should be running
   EXPECT_FALSE(discovery.is_announcing());
   EXPECT_FALSE(discovery.is_discovering());
+}
+
+TEST(MdnsDiscovery, error_callback_is_stored_in_config) {
+  MdnsDiscovery::Config config;
+  config.announce = false;
+  config.discover = false;
+
+  bool error_called = false;
+  config.on_error = [&error_called](const std::string & /*msg*/) {
+    error_called = true;
+  };
+
+  MdnsDiscovery discovery(config);
+
+  // The callback is stored but not invoked when no sockets are opened
+  EXPECT_FALSE(error_called);
 }

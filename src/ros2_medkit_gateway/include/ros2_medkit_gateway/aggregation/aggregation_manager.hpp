@@ -34,9 +34,8 @@ namespace ros2_medkit_gateway {
 struct AggregationConfig {
   bool enabled{false};
   int timeout_ms{2000};
-  int health_check_interval_sec{10};
-  bool announce{true};
-  bool discover{true};
+  bool announce{false};
+  bool discover{false};
   std::string mdns_service{"_medkit._tcp.local"};
 
   struct PeerConfig {

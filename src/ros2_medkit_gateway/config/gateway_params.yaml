@@ -512,17 +512,13 @@ ros2_medkit_gateway:
       # Default: 2000
       timeout_ms: 2000
 
-      # Interval between automatic health checks of known peers (seconds)
-      # Default: 10
-      health_check_interval_sec: 10
-
       # Announce this gateway's presence via mDNS
-      # Default: true
-      announce: true
+      # Default: false (opt-in to avoid surprising network behavior)
+      announce: false
 
       # Discover peer gateways via mDNS browsing
-      # Default: true
-      discover: true
+      # Default: false (opt-in to avoid surprising network behavior)
+      discover: false
 
       # mDNS service type for discovery/announcement
       # Default: "_medkit._tcp.local"

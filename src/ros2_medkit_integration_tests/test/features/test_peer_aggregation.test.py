@@ -72,7 +72,6 @@ def generate_test_description():
         extra_params={
             'aggregation.enabled': True,
             'aggregation.timeout_ms': 5000,
-            'aggregation.health_check_interval_sec': 3,
             'aggregation.announce': False,
             'aggregation.discover': False,
             'aggregation.peer_urls': [f'http://localhost:{PEER_PORT}'],
