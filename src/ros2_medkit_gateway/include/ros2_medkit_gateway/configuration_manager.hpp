@@ -97,6 +97,7 @@ class ConfigurationManager {
   std::shared_ptr<rclcpp::SyncParametersClient> get_param_client(const std::string & node_name);
 
   /// Cache default values for a node (called on first access)
+  /// @pre spin_mutex_ must be held by the caller
   void cache_default_values(const std::string & node_name);
 
   /// Check if a node is in the negative cache (recently unavailable)
@@ -158,7 +159,7 @@ class ConfigurationManager {
   /// This mutex is ONLY held during the actual ROS 2 IPC call, not during
   /// cache lookups or JSON building. With negative cache + self-guard,
   /// most requests never touch this mutex.
-  mutable std::recursive_mutex spin_mutex_;
+  mutable std::mutex spin_mutex_;
 
   /// Cached SyncParametersClient per target node (avoids recreating clients)
   mutable std::mutex clients_mutex_;
