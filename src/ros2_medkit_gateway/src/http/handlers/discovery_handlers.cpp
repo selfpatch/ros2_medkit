@@ -805,8 +805,13 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
       return;
     }
 
+    // Cache-first lookup: EntityCache has merged entities from peers
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto app_opt = cache.get_app(app_id);
+    if (!app_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      app_opt = discovery->get_app(app_id);
+    }
 
     if (!app_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
