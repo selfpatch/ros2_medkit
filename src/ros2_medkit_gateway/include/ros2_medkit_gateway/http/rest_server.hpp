@@ -40,6 +40,7 @@ class RouteRegistry;
 
 namespace ros2_medkit_gateway {
 
+class AggregationManager;
 class GatewayNode;
 class TriggerManager;
 
@@ -70,6 +71,10 @@ class RESTServer {
   /// Set trigger handlers (called by GatewayNode after TriggerManager is created).
   /// Creates TriggerHandlers using the existing handler context and SSE client tracker.
   void set_trigger_handlers(TriggerManager & trigger_mgr);
+
+  /// Set aggregation manager on the handler context (called by GatewayNode when aggregation is enabled).
+  /// Must be called before start() so handlers can forward requests to peers.
+  void set_aggregation_manager(AggregationManager * mgr);
 
   /// Check if TLS/HTTPS is enabled
   bool is_tls_enabled() const {

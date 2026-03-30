@@ -95,6 +95,7 @@ struct EntityInfo {
 class GatewayNode;
 class AuthManager;
 class BulkDataStore;
+class AggregationManager;
 
 namespace handlers {
 
@@ -144,6 +145,16 @@ class HandlerContext {
   /// Get bulk data store (may be nullptr if not configured)
   BulkDataStore * bulk_data_store() const {
     return bulk_data_store_;
+  }
+
+  /// Set the aggregation manager (non-owning, null when aggregation disabled)
+  void set_aggregation_manager(AggregationManager * mgr) {
+    aggregation_mgr_ = mgr;
+  }
+
+  /// Get the aggregation manager (may be nullptr if aggregation disabled)
+  AggregationManager * aggregation_manager() const {
+    return aggregation_mgr_;
   }
 
   /**
@@ -283,6 +294,7 @@ class HandlerContext {
   TlsConfig tls_config_;
   AuthManager * auth_manager_;
   BulkDataStore * bulk_data_store_;
+  AggregationManager * aggregation_mgr_{nullptr};  ///< Non-owning, null when aggregation disabled
 };
 
 }  // namespace handlers
