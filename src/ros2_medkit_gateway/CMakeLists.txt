@@ -186,6 +186,8 @@ add_library(gateway_lib STATIC
   src/trigger_topic_subscriber.cpp
   # Trigger HTTP handlers
   src/http/handlers/trigger_handlers.cpp
+  # Aggregation module
+  src/aggregation/peer_client.cpp
 )
 
 medkit_target_dependencies(gateway_lib
@@ -645,6 +647,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_trigger_handlers test/test_trigger_handlers.cpp)
   target_link_libraries(test_trigger_handlers gateway_lib)
 
+  # Peer client tests (aggregation module)
+  ament_add_gtest(test_peer_client test/test_peer_client.cpp)
+  target_link_libraries(test_peer_client gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -706,6 +712,7 @@ if(BUILD_TESTING)
       test_trigger_store
       test_trigger_manager
       test_trigger_handlers
+      test_peer_client
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
