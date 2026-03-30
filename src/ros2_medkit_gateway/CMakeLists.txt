@@ -446,6 +446,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_entity_resource_model test/test_entity_resource_model.cpp)
   target_link_libraries(test_entity_resource_model gateway_lib)
 
+  # Function/Area resource collection aggregation tests
+  ament_add_gtest(test_function_resource_collections test/test_function_resource_collections.cpp)
+  target_link_libraries(test_function_resource_collections gateway_lib)
+
   # Add entity path utils tests
   ament_add_gtest(test_entity_path_utils test/test_entity_path_utils.cpp)
   target_link_libraries(test_entity_path_utils gateway_lib)

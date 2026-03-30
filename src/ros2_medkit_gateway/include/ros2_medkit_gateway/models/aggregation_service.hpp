@@ -104,6 +104,37 @@ class AggregationService {
    */
   static bool should_aggregate(SovdEntityType type);
 
+  /**
+   * @brief Get child app IDs for an aggregated entity
+   *
+   * Resolves the leaf App entity IDs that contribute resources to
+   * an aggregated entity (Function, Area, or Component).
+   *
+   * - FUNCTION: returns app IDs from the function's hosts list
+   * - AREA: returns app IDs from all components in the area
+   * - COMPONENT: returns app IDs hosted by the component
+   * - APP: returns the app's own ID
+   *
+   * @param type Entity type
+   * @param entity_id Entity identifier
+   * @return Vector of child app IDs
+   */
+  std::vector<std::string> get_child_app_ids(SovdEntityType type, const std::string & entity_id) const;
+
+  /**
+   * @brief Build x-medkit extension JSON for any aggregated collection response
+   *
+   * Creates a standardized x-medkit metadata object with:
+   * - aggregated: true/false
+   * - aggregation_sources: [...] (child app IDs)
+   * - aggregation_level: "app" | "component" | "area" | "function"
+   *
+   * @param type Entity type (determines aggregation_level)
+   * @param entity_id Entity identifier (used to resolve sources)
+   * @return JSON object for x-medkit field
+   */
+  nlohmann::json build_collection_x_medkit(SovdEntityType type, const std::string & entity_id) const;
+
  private:
   const ThreadSafeEntityCache * cache_;
 };

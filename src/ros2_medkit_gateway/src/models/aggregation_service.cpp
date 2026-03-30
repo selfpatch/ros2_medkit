@@ -92,4 +92,74 @@ bool AggregationService::should_aggregate(SovdEntityType type) {
   }
 }
 
+std::vector<std::string> AggregationService::get_child_app_ids(SovdEntityType type,
+                                                               const std::string & entity_id) const {
+  switch (type) {
+    case SovdEntityType::APP:
+      return {entity_id};
+
+    case SovdEntityType::COMPONENT:
+      return cache_->get_apps_for_component(entity_id);
+
+    case SovdEntityType::FUNCTION: {
+      auto func = cache_->get_function(entity_id);
+      if (!func) {
+        return {};
+      }
+      return func->hosts;
+    }
+
+    case SovdEntityType::AREA: {
+      std::vector<std::string> app_ids;
+      auto comp_ids = cache_->get_components_for_area(entity_id);
+      for (const auto & comp_id : comp_ids) {
+        auto comp_apps = cache_->get_apps_for_component(comp_id);
+        app_ids.insert(app_ids.end(), comp_apps.begin(), comp_apps.end());
+      }
+      return app_ids;
+    }
+
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+    default:
+      return {};
+  }
+}
+
+nlohmann::json AggregationService::build_collection_x_medkit(SovdEntityType type, const std::string & entity_id) const {
+  nlohmann::json x_medkit;
+  bool aggregated = should_aggregate(type);
+  x_medkit["aggregated"] = aggregated;
+
+  if (aggregated) {
+    auto child_ids = get_child_app_ids(type, entity_id);
+    if (!child_ids.empty()) {
+      x_medkit["aggregation_sources"] = child_ids;
+    }
+  }
+
+  // Set aggregation_level
+  switch (type) {
+    case SovdEntityType::APP:
+      x_medkit["aggregation_level"] = "app";
+      break;
+    case SovdEntityType::COMPONENT:
+      x_medkit["aggregation_level"] = "component";
+      break;
+    case SovdEntityType::AREA:
+      x_medkit["aggregation_level"] = "area";
+      break;
+    case SovdEntityType::FUNCTION:
+      x_medkit["aggregation_level"] = "function";
+      break;
+    case SovdEntityType::SERVER:
+      x_medkit["aggregation_level"] = "server";
+      break;
+    default:
+      break;
+  }
+
+  return x_medkit;
+}
+
 }  // namespace ros2_medkit_gateway

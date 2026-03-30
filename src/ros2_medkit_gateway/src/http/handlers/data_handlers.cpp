@@ -93,7 +93,8 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
     XMedkit resp_ext;
     resp_ext.entity_id(entity_id).add("total_count", items.size());
     if (aggregated.is_aggregated) {
-      resp_ext.add("aggregated_from", aggregated.source_ids);
+      resp_ext.add("aggregated", true);
+      resp_ext.add("aggregation_sources", aggregated.source_ids);
       resp_ext.add("aggregation_level", aggregated.aggregation_level);
     }
     response["x-medkit"] = resp_ext.build();
