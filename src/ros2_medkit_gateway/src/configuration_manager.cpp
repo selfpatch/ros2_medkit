@@ -48,6 +48,8 @@ ConfigurationManager::~ConfigurationManager() {
 }
 
 void ConfigurationManager::shutdown() {
+  // Acquire spin_mutex_ first to wait for any in-flight IPC to complete
+  std::lock_guard<std::mutex> spin_lock(spin_mutex_);
   std::lock_guard<std::mutex> lock(clients_mutex_);
   param_clients_.clear();
   param_node_.reset();
@@ -192,7 +194,7 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
     // "Node already added to executor" errors from concurrent spin.
     std::vector<rclcpp::Parameter> parameters;
     {
-      std::lock_guard<std::recursive_mutex> spin_lock(spin_mutex_);
+      std::lock_guard<std::mutex> spin_lock(spin_mutex_);
 
       if (!client->wait_for_service(get_service_timeout())) {
         result.success = false;
@@ -257,38 +259,43 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
     return result;
   }
 
-  std::lock_guard<std::recursive_mutex> spin_lock(spin_mutex_);
   ParameterResult result;
 
   try {
-    auto client = get_param_client(node_name);
+    rclcpp::Parameter param;
+    std::vector<rcl_interfaces::msg::ParameterDescriptor> descriptors;
 
-    if (!client->wait_for_service(get_service_timeout())) {
-      result.success = false;
-      result.error_message = "Parameter service not available for node: " + node_name;
-      result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
-      mark_node_unavailable(node_name);
-      return result;
-    }
+    {
+      std::lock_guard<std::mutex> spin_lock(spin_mutex_);
+      auto client = get_param_client(node_name);
 
-    auto param_names = client->list_parameters({param_name}, 1);
-    if (param_names.names.empty()) {
-      result.success = false;
-      result.error_message = "Parameter not found: " + param_name;
-      result.error_code = ParameterErrorCode::NOT_FOUND;
-      return result;
-    }
+      if (!client->wait_for_service(get_service_timeout())) {
+        result.success = false;
+        result.error_message = "Parameter service not available for node: " + node_name;
+        result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+        mark_node_unavailable(node_name);
+        return result;
+      }
 
-    auto parameters = client->get_parameters({param_name});
-    if (parameters.empty()) {
-      result.success = false;
-      result.error_message = "Failed to get parameter: " + param_name;
-      result.error_code = ParameterErrorCode::INTERNAL_ERROR;
-      return result;
-    }
+      auto param_names = client->list_parameters({param_name}, 1);
+      if (param_names.names.empty()) {
+        result.success = false;
+        result.error_message = "Parameter not found: " + param_name;
+        result.error_code = ParameterErrorCode::NOT_FOUND;
+        return result;
+      }
 
-    const auto & param = parameters[0];
-    auto descriptors = client->describe_parameters({param_name});
+      auto parameters = client->get_parameters({param_name});
+      if (parameters.empty()) {
+        result.success = false;
+        result.error_message = "Failed to get parameter: " + param_name;
+        result.error_code = ParameterErrorCode::INTERNAL_ERROR;
+        return result;
+      }
+
+      param = parameters[0];
+      descriptors = client->describe_parameters({param_name});
+    }  // spin_mutex_ released
 
     json param_obj;
     param_obj["name"] = param.get_name();
@@ -348,7 +355,7 @@ ParameterResult ConfigurationManager::set_parameter(const std::string & node_nam
     return result;
   }
 
-  std::lock_guard<std::recursive_mutex> spin_lock(spin_mutex_);
+  std::lock_guard<std::mutex> spin_lock(spin_mutex_);
   ParameterResult result;
 
   try {
@@ -660,7 +667,7 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
     return result;
   }
 
-  std::lock_guard<std::recursive_mutex> spin_lock(spin_mutex_);
+  std::lock_guard<std::mutex> spin_lock(spin_mutex_);
   ParameterResult result;
 
   try {
@@ -779,7 +786,7 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
     return result;
   }
 
-  std::lock_guard<std::recursive_mutex> spin_lock(spin_mutex_);
+  std::lock_guard<std::mutex> spin_lock(spin_mutex_);
   ParameterResult result;
 
   try {
