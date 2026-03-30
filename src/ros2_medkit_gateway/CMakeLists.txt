@@ -189,6 +189,7 @@ add_library(gateway_lib STATIC
   # Aggregation module
   src/aggregation/peer_client.cpp
   src/aggregation/entity_merger.cpp
+  src/aggregation/aggregation_manager.cpp
 )
 
 medkit_target_dependencies(gateway_lib
@@ -662,6 +663,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_entity_merger test/test_entity_merger.cpp)
   target_link_libraries(test_entity_merger gateway_lib)
 
+  # Aggregation manager tests (aggregation module)
+  ament_add_gtest(test_aggregation_manager test/test_aggregation_manager.cpp)
+  target_link_libraries(test_aggregation_manager gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -726,6 +731,7 @@ if(BUILD_TESTING)
       test_trigger_handlers
       test_peer_client
       test_entity_merger
+      test_aggregation_manager
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)
