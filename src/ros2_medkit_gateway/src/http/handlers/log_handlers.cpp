@@ -164,46 +164,36 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
       }
     }
 
-    if (host_fqns.empty()) {
+    if (!host_fqns.empty()) {
+      auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
+      if (!logs) {
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
+        return;
+      }
+
       json result;
-      result["items"] = json::array();
+      result["items"] = std::move(*logs);
+
       XMedkit ext;
       ext.entity_id(entity_id);
       ext.add("aggregation_level", "area");
       ext.add("aggregated", true);
+      ext.add("component_count", comp_ids.size());
+      ext.add("app_count", host_fqns.size());
+      nlohmann::json area_log_source_fqns = nlohmann::json::array();
+      for (const auto & fqn : host_fqns) {
+        area_log_source_fqns.push_back(fqn);
+      }
+      ext.add("aggregation_sources", area_log_source_fqns);
       result["x-medkit"] = ext.build();
+
       HandlerContext::send_json(res, result);
       return;
     }
-
-    auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
-    if (!logs) {
-      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
-      return;
-    }
-
-    json result;
-    result["items"] = std::move(*logs);
-
-    XMedkit ext;
-    ext.entity_id(entity_id);
-    ext.add("aggregation_level", "area");
-    ext.add("aggregated", true);
-    ext.add("component_count", comp_ids.size());
-    ext.add("app_count", host_fqns.size());
-    // Include source app FQNs for cross-referencing aggregated results
-    nlohmann::json area_log_source_fqns = nlohmann::json::array();
-    for (const auto & fqn : host_fqns) {
-      area_log_source_fqns.push_back(fqn);
-    }
-    ext.add("aggregation_sources", area_log_source_fqns);
-    result["x-medkit"] = ext.build();
-
-    HandlerContext::send_json(res, result);
-    return;
+    // No components linked to area - fall through to namespace prefix matching
   }
 
-  const bool prefix_match = (entity.type == EntityType::COMPONENT);
+  const bool prefix_match = (entity.type == EntityType::COMPONENT || entity.type == EntityType::AREA);
 
   auto logs = log_mgr->get_logs({entity.fqn}, prefix_match, min_severity, context_filter, entity_id);
   if (!logs) {
