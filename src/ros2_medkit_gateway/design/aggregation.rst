@@ -25,9 +25,9 @@ not need to know which gateway owns which entity.
    @startuml aggregation_overview
 
    skinparam linetype ortho
-   skinparam packageStyle rectangle
+   skinparam classAttributeIconSize 0
 
-   actor "Client" as client
+   class Client << external >>
 
    package "Primary Gateway" {
        class AggregationManager {
@@ -58,7 +58,7 @@ not need to know which gateway owns which entity.
        class "REST_API_C" as restC
    }
 
-   client --> AggregationManager : HTTP request
+   Client --> AggregationManager : HTTP request
    AggregationManager --> EntityMerger : merge remote entities
    AggregationManager --> restB : PeerClient
    AggregationManager --> restC : PeerClient
