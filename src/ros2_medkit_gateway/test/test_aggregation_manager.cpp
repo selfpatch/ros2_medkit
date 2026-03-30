@@ -237,12 +237,12 @@ TEST(AggregationManager, get_peer_status_empty_when_no_peers) {
 // Routing table tests
 // =============================================================================
 
-TEST(AggregationManager, routing_table_update_and_get) {
+TEST(AggregationManager, routing_table_update_and_find) {
   auto config = make_config(0);
   AggregationManager manager(config);
 
-  // Initially empty
-  EXPECT_TRUE(manager.get_routing_table().empty());
+  // Initially empty - looking up any entity returns nullopt
+  EXPECT_FALSE(manager.find_peer_for_entity("anything").has_value());
 
   // Update with entries
   std::unordered_map<std::string, std::string> table;
@@ -250,10 +250,16 @@ TEST(AggregationManager, routing_table_update_and_get) {
   table["remote_app_b"] = "peer_y";
   manager.update_routing_table(table);
 
-  const auto & result = manager.get_routing_table();
-  ASSERT_EQ(result.size(), 2u);
-  EXPECT_EQ(result.at("remote_component_a"), "peer_x");
-  EXPECT_EQ(result.at("remote_app_b"), "peer_y");
+  auto result_a = manager.find_peer_for_entity("remote_component_a");
+  ASSERT_TRUE(result_a.has_value());
+  EXPECT_EQ(*result_a, "peer_x");
+
+  auto result_b = manager.find_peer_for_entity("remote_app_b");
+  ASSERT_TRUE(result_b.has_value());
+  EXPECT_EQ(*result_b, "peer_y");
+
+  // Unknown entity returns nullopt
+  EXPECT_FALSE(manager.find_peer_for_entity("unknown_entity").has_value());
 }
 
 TEST(AggregationManager, routing_table_replaces_on_update) {
@@ -263,7 +269,7 @@ TEST(AggregationManager, routing_table_replaces_on_update) {
   std::unordered_map<std::string, std::string> table1;
   table1["entity_a"] = "peer_1";
   manager.update_routing_table(table1);
-  EXPECT_EQ(manager.get_routing_table().size(), 1u);
+  EXPECT_TRUE(manager.find_peer_for_entity("entity_a").has_value());
 
   // Replace with different table
   std::unordered_map<std::string, std::string> table2;
@@ -271,11 +277,15 @@ TEST(AggregationManager, routing_table_replaces_on_update) {
   table2["entity_c"] = "peer_3";
   manager.update_routing_table(table2);
 
-  const auto & result = manager.get_routing_table();
-  EXPECT_EQ(result.size(), 2u);
-  EXPECT_EQ(result.count("entity_a"), 0u);  // Old entry gone
-  EXPECT_EQ(result.at("entity_b"), "peer_2");
-  EXPECT_EQ(result.at("entity_c"), "peer_3");
+  EXPECT_FALSE(manager.find_peer_for_entity("entity_a").has_value());  // Old entry gone
+
+  auto result_b = manager.find_peer_for_entity("entity_b");
+  ASSERT_TRUE(result_b.has_value());
+  EXPECT_EQ(*result_b, "peer_2");
+
+  auto result_c = manager.find_peer_for_entity("entity_c");
+  ASSERT_TRUE(result_c.has_value());
+  EXPECT_EQ(*result_c, "peer_3");
 }
 
 // =============================================================================
