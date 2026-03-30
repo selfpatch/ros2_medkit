@@ -19,6 +19,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <rclcpp/logger.hpp>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -54,6 +55,20 @@ struct AggregationConfig {
  */
 class AggregationManager {
  public:
+  /**
+   * @brief Result of fetching and merging entities from all healthy peers
+   *
+   * Contains merged entity vectors and a routing table mapping remote entity
+   * IDs to the peer name that owns them.
+   */
+  struct MergedPeerResult {
+    std::vector<Area> areas;
+    std::vector<Component> components;
+    std::vector<App> apps;
+    std::vector<Function> functions;
+    std::unordered_map<std::string, std::string> routing_table;
+  };
+
   /**
    * @brief Result of a fan-out GET across all healthy peers
    */
@@ -112,6 +127,26 @@ class AggregationManager {
    * @return Merged PeerEntities from all reachable peers
    */
   PeerEntities fetch_all_peer_entities();
+
+  /**
+   * @brief Fetch entities from all healthy peers, merge with local entities, and build routing table
+   *
+   * Holds the shared lock internally during iteration and entity fetching, avoiding
+   * dangling pointer issues with healthy_peers(). Uses EntityMerger per-peer so that
+   * collision-prefixed IDs are correctly tracked in the routing table.
+   *
+   * @param local_areas Local areas to merge with
+   * @param local_components Local components to merge with
+   * @param local_apps Local apps to merge with
+   * @param local_functions Local functions to merge with
+   * @param max_entities_per_peer Maximum total entities accepted from a single peer
+   * @param logger Optional logger for warnings (pass nullptr to suppress)
+   * @return MergedPeerResult with merged entity vectors and routing table
+   */
+  MergedPeerResult
+  fetch_and_merge_peer_entities(const std::vector<Area> & local_areas, const std::vector<Component> & local_components,
+                                const std::vector<App> & local_apps, const std::vector<Function> & local_functions,
+                                size_t max_entities_per_peer = 10000, rclcpp::Logger * logger = nullptr);
 
   /**
    * @brief Update the routing table (entity_id -> peer_name)

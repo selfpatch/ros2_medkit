@@ -21,7 +21,6 @@
 #include <set>
 #include <unordered_set>
 
-#include "ros2_medkit_gateway/aggregation/entity_merger.hpp"
 #include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
 #include "ros2_medkit_gateway/sqlite_trigger_store.hpp"
 
@@ -872,11 +871,23 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     auto peer_urls = get_parameter("aggregation.peer_urls").as_string_array();
     auto peer_names = get_parameter("aggregation.peer_names").as_string_array();
     auto peer_count = std::min(peer_urls.size(), peer_names.size());
+    if (peer_urls.size() != peer_names.size()) {
+      RCLCPP_WARN(get_logger(),
+                  "Aggregation: peer_urls has %zu entries but peer_names has %zu; "
+                  "only the first %zu pairs will be used",
+                  peer_urls.size(), peer_names.size(), peer_count);
+    }
     for (size_t i = 0; i < peer_count; ++i) {
       if (!peer_urls[i].empty() && !peer_names[i].empty()) {
         agg_config.peers.push_back({peer_urls[i], peer_names[i]});
         RCLCPP_INFO(get_logger(), "Aggregation: static peer '%s' at %s", peer_names[i].c_str(), peer_urls[i].c_str());
       }
+    }
+
+    if (agg_config.peers.empty() && !agg_config.announce && !agg_config.discover) {
+      RCLCPP_WARN(get_logger(),
+                  "Aggregation enabled but no static peers and mDNS disabled. "
+                  "No peer communication will occur.");
     }
 
     aggregation_mgr_ = std::make_unique<AggregationManager>(agg_config);
@@ -1394,39 +1405,15 @@ void GatewayNode::refresh_cache() {
 
     // Merge remote peer entities if aggregation is active
     if (aggregation_mgr_ && aggregation_mgr_->peer_count() > 0) {
-      constexpr size_t kMaxEntitiesPerPeer = 10000;
       aggregation_mgr_->check_all_health();
-
-      std::unordered_map<std::string, std::string> routing_entries;
-      auto healthy = aggregation_mgr_->healthy_peers();
-      for (auto * peer : healthy) {
-        auto result = peer->fetch_entities();
-        if (result) {
-          size_t total =
-              result->areas.size() + result->components.size() + result->apps.size() + result->functions.size();
-          if (total > kMaxEntitiesPerPeer) {
-            RCLCPP_WARN(get_logger(), "Peer '%s' returned %zu entities (max %zu), skipping", peer->name().c_str(),
-                        total, kMaxEntitiesPerPeer);
-            continue;
-          }
-
-          EntityMerger merger(peer->name());
-          areas = merger.merge_areas(areas, result->areas);
-          functions = merger.merge_functions(functions, result->functions);
-          all_components = merger.merge_components(all_components, result->components);
-          apps = merger.merge_apps(apps, result->apps);
-
-          // Accumulate routing entries from this peer
-          for (const auto & [id, name] : merger.get_routing_table()) {
-            routing_entries[id] = name;
-          }
-        } else {
-          RCLCPP_WARN(get_logger(), "Failed to fetch entities from peer '%s': %s", peer->name().c_str(),
-                      result.error().c_str());
-        }
-      }
-
-      aggregation_mgr_->update_routing_table(routing_entries);
+      auto logger = get_logger();
+      auto merged =
+          aggregation_mgr_->fetch_and_merge_peer_entities(areas, all_components, apps, functions, 10000, &logger);
+      areas = std::move(merged.areas);
+      all_components = std::move(merged.components);
+      apps = std::move(merged.apps);
+      functions = std::move(merged.functions);
+      aggregation_mgr_->update_routing_table(merged.routing_table);
     }
 
     // Capture sizes for logging

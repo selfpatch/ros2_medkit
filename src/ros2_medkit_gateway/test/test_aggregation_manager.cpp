@@ -128,6 +128,35 @@ TEST(AggregationManager, rejects_cloud_metadata_peer_url) {
   EXPECT_EQ(manager.peer_count(), 0u);
 }
 
+TEST(AggregationManager, rejects_loopback_peer_url) {
+  auto config = make_config(0);
+  AggregationManager manager(config);
+
+  // IPv4 loopback
+  manager.add_discovered_peer("http://127.0.0.1:8081", "loopback_v4");
+  EXPECT_EQ(manager.peer_count(), 0u);
+
+  manager.add_discovered_peer("http://127.0.0.99:8081", "loopback_v4_2");
+  EXPECT_EQ(manager.peer_count(), 0u);
+
+  // localhost
+  manager.add_discovered_peer("http://localhost:8081", "loopback_name");
+  EXPECT_EQ(manager.peer_count(), 0u);
+
+  // IPv6 loopback
+  manager.add_discovered_peer("http://[::1]:8081", "loopback_v6");
+  EXPECT_EQ(manager.peer_count(), 0u);
+}
+
+TEST(AggregationManager, rejects_link_local_peer_url) {
+  auto config = make_config(0);
+  AggregationManager manager(config);
+
+  // Link-local address (not just the metadata endpoint)
+  manager.add_discovered_peer("http://169.254.1.1:8081", "link_local");
+  EXPECT_EQ(manager.peer_count(), 0u);
+}
+
 TEST(AggregationManager, accepts_valid_http_peer_url) {
   auto config = make_config(0);
   AggregationManager manager(config);

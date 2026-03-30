@@ -191,20 +191,28 @@ void PeerClient::check_health() {
 }
 
 tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
-  std::lock_guard<std::mutex> lock(client_mutex_);
-  ensure_client();
+  // Use a dedicated client for this long-running operation (4 sequential HTTP
+  // requests, up to 8s with 2s timeout) to avoid blocking health checks and
+  // forwarding on the shared client_mutex_.
+  httplib::Client cli(url_);
+  cli.set_connection_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
+  cli.set_read_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
+
   PeerEntities entities;
   const std::string peer_source = "peer:" + name_;
 
   // Fetch areas
   {
-    auto result = client_->Get(std::string(API_PREFIX) + "/areas");
+    auto result = cli.Get(std::string(API_PREFIX) + "/areas");
     if (!result) {
       return tl::unexpected<std::string>("Failed to connect to peer '" + name_ + "' at " + url_);
     }
     if (result->status != 200) {
       return tl::unexpected<std::string>("Peer '" + name_ + "' returned status " + std::to_string(result->status) +
                                          " for /areas");
+    }
+    if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
+      return tl::unexpected<std::string>("Response from peer '" + name_ + "' for /areas exceeds size limit");
     }
     auto response_json = nlohmann::json::parse(result->body, nullptr, false);
     if (response_json.is_discarded()) {
@@ -218,13 +226,16 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch components
   {
-    auto result = client_->Get(std::string(API_PREFIX) + "/components");
+    auto result = cli.Get(std::string(API_PREFIX) + "/components");
     if (!result) {
       return tl::unexpected<std::string>("Failed to connect to peer '" + name_ + "' at " + url_);
     }
     if (result->status != 200) {
       return tl::unexpected<std::string>("Peer '" + name_ + "' returned status " + std::to_string(result->status) +
                                          " for /components");
+    }
+    if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
+      return tl::unexpected<std::string>("Response from peer '" + name_ + "' for /components exceeds size limit");
     }
     auto response_json = nlohmann::json::parse(result->body, nullptr, false);
     if (response_json.is_discarded()) {
@@ -238,13 +249,16 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch apps
   {
-    auto result = client_->Get(std::string(API_PREFIX) + "/apps");
+    auto result = cli.Get(std::string(API_PREFIX) + "/apps");
     if (!result) {
       return tl::unexpected<std::string>("Failed to connect to peer '" + name_ + "' at " + url_);
     }
     if (result->status != 200) {
       return tl::unexpected<std::string>("Peer '" + name_ + "' returned status " + std::to_string(result->status) +
                                          " for /apps");
+    }
+    if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
+      return tl::unexpected<std::string>("Response from peer '" + name_ + "' for /apps exceeds size limit");
     }
     auto response_json = nlohmann::json::parse(result->body, nullptr, false);
     if (response_json.is_discarded()) {
@@ -258,13 +272,16 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch functions
   {
-    auto result = client_->Get(std::string(API_PREFIX) + "/functions");
+    auto result = cli.Get(std::string(API_PREFIX) + "/functions");
     if (!result) {
       return tl::unexpected<std::string>("Failed to connect to peer '" + name_ + "' at " + url_);
     }
     if (result->status != 200) {
       return tl::unexpected<std::string>("Peer '" + name_ + "' returned status " + std::to_string(result->status) +
                                          " for /functions");
+    }
+    if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
+      return tl::unexpected<std::string>("Response from peer '" + name_ + "' for /functions exceeds size limit");
     }
     auto response_json = nlohmann::json::parse(result->body, nullptr, false);
     if (response_json.is_discarded()) {
@@ -308,6 +325,14 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
   if (!result) {
     res.status = 502;
     auto error_body = make_error_body(ERR_VENDOR_ERROR, "Peer '" + name_ + "' at " + url_ + " is unavailable",
+                                      ERR_X_MEDKIT_PEER_UNAVAILABLE);
+    res.set_content(error_body.dump(), "application/json");
+    return;
+  }
+
+  if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
+    res.status = 502;
+    auto error_body = make_error_body(ERR_VENDOR_ERROR, "Response from peer '" + name_ + "' exceeds size limit",
                                       ERR_X_MEDKIT_PEER_UNAVAILABLE);
     res.set_content(error_body.dump(), "application/json");
     return;
