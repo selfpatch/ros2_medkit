@@ -207,6 +207,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("aggregation.announce", true);
   declare_parameter("aggregation.discover", true);
   declare_parameter("aggregation.mdns_service", std::string("_medkit._tcp.local"));
+  // Static peers: parallel arrays of URLs and names.
+  // Example: peer_urls=["http://localhost:8081"], peer_names=["subsystem_b"]
+  declare_parameter("aggregation.peer_urls", std::vector<std::string>{""});
+  declare_parameter("aggregation.peer_names", std::vector<std::string>{""});
 
   // Bulk data storage parameters
   declare_parameter("bulk_data.storage_dir", "/tmp/ros2_medkit_bulk_data");
@@ -866,6 +870,17 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     agg_config.announce = get_parameter("aggregation.announce").as_bool();
     agg_config.discover = get_parameter("aggregation.discover").as_bool();
     agg_config.mdns_service = get_parameter("aggregation.mdns_service").as_string();
+
+    // Parse static peers from parallel arrays
+    auto peer_urls = get_parameter("aggregation.peer_urls").as_string_array();
+    auto peer_names = get_parameter("aggregation.peer_names").as_string_array();
+    auto peer_count = std::min(peer_urls.size(), peer_names.size());
+    for (size_t i = 0; i < peer_count; ++i) {
+      if (!peer_urls[i].empty() && !peer_names[i].empty()) {
+        agg_config.peers.push_back({peer_urls[i], peer_names[i]});
+        RCLCPP_INFO(get_logger(), "Aggregation: static peer '%s' at %s", peer_names[i].c_str(), peer_urls[i].c_str());
+      }
+    }
 
     aggregation_mgr_ = std::make_unique<AggregationManager>(agg_config);
 
