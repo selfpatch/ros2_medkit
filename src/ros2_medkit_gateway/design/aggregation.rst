@@ -29,7 +29,7 @@ not need to know which gateway owns which entity.
 
    actor "Client" as client
 
-   package "Primary Gateway (host-A)" {
+   package "Primary Gateway" {
        class AggregationManager {
            + fetch_all_peer_entities()
            + fan_out_get()
@@ -50,11 +50,11 @@ not need to know which gateway owns which entity.
        class EntityCache
    }
 
-   package "Peer Gateway B (host-B)" {
+   package "Peer Gateway B" {
        class "REST API (B)" as restB
    }
 
-   package "Peer Gateway C (host-C)" {
+   package "Peer Gateway C" {
        class "REST API (C)" as restC
    }
 
@@ -109,7 +109,7 @@ software" and a Function is "what the software does".
        name: string
        description: string
        area: string
-       source: "runtime" | "manifest"
+       source: string
    }
 
    class App {
@@ -123,8 +123,8 @@ software" and a Function is "what the software does".
    class Function {
        id: string
        name: string
-       hosts: vector<string>
-       source: "manifest" | "runtime"
+       hosts: list
+       source: string
    }
 
    Area "1" *--> "*" Component : contains
@@ -192,7 +192,7 @@ type-specific merge rules:
 
    title Entity Merge Rules
 
-   |Area / Function|
+   |Area or Function|
    start
    :Receive remote entity;
    if (Same ID exists locally?) then (yes)
@@ -204,11 +204,11 @@ type-specific merge rules:
        end note
    else (no)
        :Add as new entity;
-       :Set source = "peer:<name>";
+       :Set source = peer:name;
    endif
    stop
 
-   |Component / App|
+   |Component or App|
    start
    :Receive remote entity;
    if (Same ID exists locally?) then (yes)
