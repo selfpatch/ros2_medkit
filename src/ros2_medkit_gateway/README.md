@@ -1520,6 +1520,41 @@ We provide a Postman collection for easy API testing:
 
 See [postman/README.md](postman/README.md) for detailed instructions.
 
+## Multi-Instance Aggregation
+
+Federate multiple gateway instances into a single unified API. A primary gateway merges entities from peer gateways and transparently forwards requests for remote entities.
+
+**Quick Start:**
+
+```yaml
+# gateway_params.yaml
+gateway_node:
+  ros__parameters:
+    aggregation:
+      enabled: true
+      peers:
+        - url: "http://localhost:8081"
+          name: "subsystem_b"
+```
+
+```bash
+# Start primary gateway with aggregation
+ros2 run ros2_medkit_gateway gateway_node --ros-args \
+    --params-file gateway_params.yaml
+
+# Query merged entity tree
+curl http://localhost:8080/api/v1/components | jq
+```
+
+**Key features:**
+- **Static peers**: List known gateways in config
+- **mDNS auto-discovery**: Zero-configuration peer discovery on local network
+- **Type-aware merging**: Areas and Functions merge by ID; Components and Apps get peer-name prefixes on collision
+- **Transparent forwarding**: Requests for remote entities forwarded to owning peer
+- **Graceful degradation**: Unhealthy peers excluded, partial results clearly marked
+
+See the [documentation](https://selfpatch.github.io/ros2_medkit/) for detailed configuration reference and tutorials.
+
 ## Testing
 
 ### Run Integration Tests

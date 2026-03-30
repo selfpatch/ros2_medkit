@@ -27,6 +27,7 @@ Step-by-step guides for common use cases with ros2_medkit.
    plugin-system
    linux-introspection
    triggers-use-cases
+   multi-instance
 
 Demos
 -----
@@ -112,3 +113,6 @@ Advanced Tutorials
 
 :doc:`triggers-use-cases`
    Set up multi-trigger monitoring scenarios for OTA updates, thermal protection, and fleet diagnostics.
+
+:doc:`multi-instance`
+   Federate multiple gateway instances into a single API with peer aggregation.
