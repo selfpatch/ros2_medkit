@@ -23,6 +23,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/entity_path_utils.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
@@ -262,6 +263,21 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
       }
       if (result.data.contains("clusters")) {
         ext.add("clusters", result.data["clusters"]);
+      }
+
+      // Fan-out to peers: faults are managed by FaultManager, not cached,
+      // so we need to query each peer's /faults endpoint and merge results.
+      if (auto * agg = ctx_.aggregation_manager()) {
+        auto fan_result = agg->fan_out_get(req.path, req.get_header_value("Authorization"));
+        if (fan_result.merged_items.is_array()) {
+          for (const auto & item : fan_result.merged_items) {
+            response["items"].push_back(item);
+          }
+        }
+        if (fan_result.is_partial) {
+          ext.add("partial", true);
+          ext.add("failed_peers", fan_result.failed_peers);
+        }
       }
 
       if (!ext.empty()) {

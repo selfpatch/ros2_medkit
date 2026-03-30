@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 
+#include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/auth/auth_models.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_enums.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
@@ -61,6 +62,11 @@ void HealthHandlers::handle_health(const httplib::Request & req, httplib::Respon
       }
 
       response["discovery"] = std::move(discovery_info);
+    }
+
+    // Add peer status when aggregation is active
+    if (auto * agg = ctx_.aggregation_manager()) {
+      response["peers"] = agg->get_peer_status();
     }
 
     HandlerContext::send_json(res, response);
