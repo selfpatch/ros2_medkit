@@ -228,6 +228,9 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
     {
       std::lock_guard<std::mutex> spin_lock(spin_mutex_);
 
+      // Cache default values first (gives node extra time for DDS service discovery)
+      cache_default_values(node_name);
+
       if (!client->wait_for_service(get_service_timeout())) {
         result.success = false;
         result.error_message = "Parameter service not available for node: " + node_name;
@@ -237,8 +240,6 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
                     node_name.c_str(), negative_cache_ttl_sec_);
         return result;
       }
-
-      cache_default_values(node_name);
 
       auto param_names = client->list_parameters({}, 0);
       parameters = client->get_parameters(param_names.names);
