@@ -497,3 +497,38 @@ ros2_medkit_gateway:
         apps:
           lock_required_scopes: [""]      # empty = no lock required by default
           breakable: true
+
+    # Aggregation Configuration
+    # Federation of multiple gateway instances via peer discovery and entity merging.
+    # When enabled, this gateway merges entities from peer gateways into its cache
+    # and transparently forwards requests for remote entities to the owning peer.
+    aggregation:
+      # Enable/disable peer aggregation
+      # Default: false
+      enabled: false
+
+      # HTTP timeout for peer requests (health checks, entity fetching, forwarding)
+      # in milliseconds
+      # Default: 2000
+      timeout_ms: 2000
+
+      # Interval between automatic health checks of known peers (seconds)
+      # Default: 10
+      health_check_interval_sec: 10
+
+      # Announce this gateway's presence via mDNS
+      # Default: true
+      announce: true
+
+      # Discover peer gateways via mDNS browsing
+      # Default: true
+      discover: true
+
+      # mDNS service type for discovery/announcement
+      # Default: "_medkit._tcp.local"
+      mdns_service: "_medkit._tcp.local"
+
+      # Static peers (override or supplement mDNS discovery):
+      # peers:
+      #   - url: "http://localhost:8081"
+      #     name: "subsystem_b"

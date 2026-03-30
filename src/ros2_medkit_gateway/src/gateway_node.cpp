@@ -21,6 +21,7 @@
 #include <set>
 #include <unordered_set>
 
+#include "ros2_medkit_gateway/aggregation/entity_merger.hpp"
 #include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
 #include "ros2_medkit_gateway/sqlite_trigger_store.hpp"
 
@@ -198,6 +199,14 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("locking.defaults.components.breakable", true);
   declare_parameter("locking.defaults.apps.lock_required_scopes", std::vector<std::string>{""});
   declare_parameter("locking.defaults.apps.breakable", true);
+
+  // Aggregation parameters (peer gateway federation)
+  declare_parameter("aggregation.enabled", false);
+  declare_parameter("aggregation.timeout_ms", 2000);
+  declare_parameter("aggregation.health_check_interval_sec", 10);
+  declare_parameter("aggregation.announce", true);
+  declare_parameter("aggregation.discover", true);
+  declare_parameter("aggregation.mdns_service", std::string("_medkit._tcp.local"));
 
   // Bulk data storage parameters
   declare_parameter("bulk_data.storage_dir", "/tmp/ros2_medkit_bulk_data");
@@ -847,6 +856,44 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     RCLCPP_INFO(get_logger(), "Trigger subsystem: disabled");
   }
 
+  // --- Aggregation (peer gateway federation) ---
+  if (get_parameter("aggregation.enabled").as_bool()) {
+    AggregationConfig agg_config;
+    agg_config.enabled = true;
+    agg_config.timeout_ms = static_cast<int>(get_parameter("aggregation.timeout_ms").as_int());
+    agg_config.health_check_interval_sec =
+        static_cast<int>(get_parameter("aggregation.health_check_interval_sec").as_int());
+    agg_config.announce = get_parameter("aggregation.announce").as_bool();
+    agg_config.discover = get_parameter("aggregation.discover").as_bool();
+    agg_config.mdns_service = get_parameter("aggregation.mdns_service").as_string();
+
+    aggregation_mgr_ = std::make_unique<AggregationManager>(agg_config);
+
+    // mDNS discovery/announcement
+    if (agg_config.announce || agg_config.discover) {
+      MdnsDiscovery::Config mdns_config;
+      mdns_config.announce = agg_config.announce;
+      mdns_config.discover = agg_config.discover;
+      mdns_config.service = agg_config.mdns_service;
+      mdns_config.port = server_port_;
+      mdns_config.name = get_name();
+      mdns_discovery_ = std::make_unique<MdnsDiscovery>(mdns_config);
+      mdns_discovery_->start(
+          [this](const std::string & url, const std::string & name) {
+            aggregation_mgr_->add_discovered_peer(url, name);
+          },
+          [this](const std::string & name) {
+            aggregation_mgr_->remove_discovered_peer(name);
+          });
+    }
+
+    RCLCPP_INFO(get_logger(), "Aggregation: enabled (timeout=%dms, health_check=%ds, announce=%s, discover=%s)",
+                agg_config.timeout_ms, agg_config.health_check_interval_sec, agg_config.announce ? "true" : "false",
+                agg_config.discover ? "true" : "false");
+  } else {
+    RCLCPP_INFO(get_logger(), "Aggregation: disabled");
+  }
+
   // Register built-in resource samplers
   sampler_registry_->register_sampler(
       "data",
@@ -1146,6 +1193,11 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     rest_server_->set_trigger_handlers(*trigger_mgr_);
   }
 
+  // Wire aggregation manager into REST server handler context
+  if (aggregation_mgr_) {
+    rest_server_->set_aggregation_manager(aggregation_mgr_.get());
+  }
+
   start_rest_server();
 
   std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";
@@ -1155,7 +1207,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
 GatewayNode::~GatewayNode() {
   RCLCPP_INFO(get_logger(), "Shutting down ROS 2 Medkit Gateway...");
+  // 0. Stop mDNS discovery first (prevents new peer additions during shutdown)
+  if (mdns_discovery_) {
+    mdns_discovery_->stop();
+  }
   // 1. Stop REST server (kills HTTP connections, SSE streams exit)
+  //    Handlers may reference aggregation_mgr_, so it must outlive the server.
   stop_rest_server();
   // 2. Shutdown subscriptions via transport registry (calls sub_mgr.shutdown(),
   //    which triggers on_removed -> transport->stop() for each active subscription)
@@ -1268,6 +1325,10 @@ ConditionRegistry * GatewayNode::get_condition_registry() const {
   return condition_registry_.get();
 }
 
+AggregationManager * GatewayNode::get_aggregation_manager() const {
+  return aggregation_mgr_.get();
+}
+
 void GatewayNode::refresh_cache() {
   RCLCPP_DEBUG(get_logger(), "Refreshing entity cache...");
 
@@ -1312,6 +1373,34 @@ void GatewayNode::refresh_cache() {
           app.component_id = default_comp->id;
         }
       }
+    }
+
+    // Merge remote peer entities if aggregation is active
+    if (aggregation_mgr_ && aggregation_mgr_->peer_count() > 0) {
+      aggregation_mgr_->check_all_health();
+
+      std::unordered_map<std::string, std::string> routing_entries;
+      auto healthy = aggregation_mgr_->healthy_peers();
+      for (auto * peer : healthy) {
+        auto result = peer->fetch_entities();
+        if (result) {
+          EntityMerger merger(peer->name());
+          areas = merger.merge_areas(areas, result->areas);
+          functions = merger.merge_functions(functions, result->functions);
+          all_components = merger.merge_components(all_components, result->components);
+          apps = merger.merge_apps(apps, result->apps);
+
+          // Accumulate routing entries from this peer
+          for (const auto & [id, name] : merger.get_routing_table()) {
+            routing_entries[id] = name;
+          }
+        } else {
+          RCLCPP_WARN(get_logger(), "Failed to fetch entities from peer '%s': %s", peer->name().c_str(),
+                      result.error().c_str());
+        }
+      }
+
+      aggregation_mgr_->update_routing_table(routing_entries);
     }
 
     // Capture sizes for logging

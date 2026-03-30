@@ -266,6 +266,10 @@ void RESTServer::set_trigger_handlers(TriggerManager & trigger_mgr) {
   trigger_handlers_ = std::make_unique<handlers::TriggerHandlers>(*handler_ctx_, trigger_mgr, sse_client_tracker_);
 }
 
+void RESTServer::set_aggregation_manager(AggregationManager * mgr) {
+  handler_ctx_->set_aggregation_manager(mgr);
+}
+
 RESTServer::~RESTServer() {
   stop();
 }

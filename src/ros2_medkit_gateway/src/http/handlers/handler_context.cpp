@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
+#include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/lock_manager.hpp"
@@ -78,6 +79,19 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
   EntityInfo info;
   info.id = entity_id;
 
+  // Helper: check routing table for remote entity metadata
+  auto apply_routing = [this](EntityInfo & ei) {
+    if (aggregation_mgr_) {
+      const auto & routing = aggregation_mgr_->get_routing_table();
+      auto it = routing.find(ei.id);
+      if (it != routing.end()) {
+        ei.is_remote = true;
+        ei.peer_name = it->second;
+        ei.peer_url = aggregation_mgr_->get_peer_url(it->second);
+      }
+    }
+  };
+
   // If expected_type is specified, search ONLY in that collection
   // This prevents ID collisions (e.g., Area "powertrain" vs Component "powertrain")
   if (expected_type != SovdEntityType::UNKNOWN) {
@@ -89,6 +103,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = component->fqn;
           info.id_field = "component_id";
           info.error_name = "Component";
+          apply_routing(info);
           return info;
         }
         break;
@@ -101,6 +116,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = fqn;
           info.id_field = "app_id";
           info.error_name = "App";
+          apply_routing(info);
           return info;
         }
         break;
@@ -112,6 +128,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = area->namespace_path;
           info.id_field = "area_id";
           info.error_name = "Area";
+          apply_routing(info);
           return info;
         }
         break;
@@ -123,6 +140,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = "";
           info.id_field = "function_id";
           info.error_name = "Function";
+          apply_routing(info);
           return info;
         }
         break;
@@ -145,6 +163,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = component->fqn;
     info.id_field = "component_id";
     info.error_name = "Component";
+    apply_routing(info);
     return info;
   }
 
@@ -156,6 +175,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = fqn;
     info.id_field = "app_id";
     info.error_name = "App";
+    apply_routing(info);
     return info;
   }
 
@@ -166,6 +186,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = area->namespace_path;
     info.id_field = "area_id";
     info.error_name = "Area";
+    apply_routing(info);
     return info;
   }
 
@@ -176,6 +197,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = "";
     info.id_field = "function_id";
     info.error_name = "Function";
+    apply_routing(info);
     return info;
   }
 
@@ -266,6 +288,12 @@ std::optional<EntityInfo> HandlerContext::validate_entity_for_route(const httpli
       send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
     }
     return std::nullopt;
+  }
+
+  // Step 4: Forward to peer if entity is remote
+  if (entity_info.is_remote && aggregation_mgr_) {
+    aggregation_mgr_->forward_request(entity_info.peer_name, req, res);
+    return std::nullopt;  // Response already sent by peer forwarding
   }
 
   return entity_info;

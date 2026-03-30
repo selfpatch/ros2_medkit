@@ -23,6 +23,8 @@
 #include <thread>
 #include <vector>
 
+#include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/aggregation/mdns_discovery.hpp"
 #include "ros2_medkit_gateway/auth/auth_config.hpp"
 #include "ros2_medkit_gateway/bulk_data_store.hpp"
 #include "ros2_medkit_gateway/condition_evaluator.hpp"
@@ -174,6 +176,12 @@ class GatewayNode : public rclcpp::Node {
    */
   ConditionRegistry * get_condition_registry() const;
 
+  /**
+   * @brief Get the AggregationManager instance
+   * @return Raw pointer to AggregationManager (valid for lifetime of GatewayNode), or nullptr if disabled
+   */
+  AggregationManager * get_aggregation_manager() const;
+
  private:
   void refresh_cache();
   void start_rest_server();
@@ -217,6 +225,12 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<TriggerManager> trigger_mgr_;
   std::unique_ptr<TriggerFaultSubscriber> trigger_fault_subscriber_;
   std::unique_ptr<TriggerTopicSubscriber> trigger_topic_subscriber_;
+
+  // Aggregation infrastructure (destroyed in order: mdns -> rest_server -> aggregation)
+  // mDNS threads must stop before rest_server to avoid callbacks during shutdown.
+  // AggregationManager must outlive rest_server because handlers reference it.
+  std::unique_ptr<AggregationManager> aggregation_mgr_;
+  std::unique_ptr<MdnsDiscovery> mdns_discovery_;
 
   std::unique_ptr<RESTServer> rest_server_;
 
