@@ -74,7 +74,12 @@ void SSEStreamProxy::reader_loop() {
           return false;  // Stop receiving
         }
 
+        constexpr size_t kMaxSSEBufferSize = 1 * 1024 * 1024;  // 1MB
+
         buffer.append(data, data_length);
+        if (buffer.size() > kMaxSSEBufferSize) {
+          return false;  // Disconnect - peer sending malformed stream
+        }
 
         // Process complete events (delimited by double newline)
         size_t pos = 0;

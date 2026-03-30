@@ -82,12 +82,11 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
   // Helper: check routing table for remote entity metadata
   auto apply_routing = [this](EntityInfo & ei) {
     if (aggregation_mgr_) {
-      const auto & routing = aggregation_mgr_->get_routing_table();
-      auto it = routing.find(ei.id);
-      if (it != routing.end()) {
+      auto peer = aggregation_mgr_->find_peer_for_entity(ei.id);
+      if (peer) {
         ei.is_remote = true;
-        ei.peer_name = it->second;
-        ei.peer_url = aggregation_mgr_->get_peer_url(it->second);
+        ei.peer_name = *peer;
+        ei.peer_url = aggregation_mgr_->get_peer_url(*peer);
       }
     }
   };

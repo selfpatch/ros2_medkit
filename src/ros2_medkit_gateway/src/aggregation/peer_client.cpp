@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/aggregation/peer_client.hpp"
 
+#include <algorithm>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -28,6 +30,9 @@ constexpr const char * ERR_X_MEDKIT_PEER_UNAVAILABLE = "x-medkit-peer-unavailabl
 
 /// API prefix for SOVD endpoints
 constexpr const char * API_PREFIX = "/api/v1";
+
+/// Maximum response body size to accept from peers (10MB)
+constexpr size_t MAX_PEER_RESPONSE_SIZE = 10 * 1024 * 1024;
 
 /**
  * @brief Build a SOVD GenericError JSON body
@@ -170,30 +175,30 @@ bool PeerClient::is_healthy() const {
   return healthy_.load();
 }
 
-httplib::Client & PeerClient::get_client() {
-  std::lock_guard<std::mutex> lock(client_mutex_);
+void PeerClient::ensure_client() {
   if (!client_) {
     client_ = std::make_unique<httplib::Client>(url_);
-    client_->set_connection_timeout(0, timeout_ms_ * 1000);  // microseconds
-    client_->set_read_timeout(0, timeout_ms_ * 1000);        // microseconds
+    client_->set_connection_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
+    client_->set_read_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
   }
-  return *client_;
 }
 
 void PeerClient::check_health() {
-  auto & cli = get_client();
-  auto result = cli.Get(std::string(API_PREFIX) + "/health");
+  std::lock_guard<std::mutex> lock(client_mutex_);
+  ensure_client();
+  auto result = client_->Get(std::string(API_PREFIX) + "/health");
   healthy_.store(result && result->status == 200);
 }
 
 tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
-  auto & cli = get_client();
+  std::lock_guard<std::mutex> lock(client_mutex_);
+  ensure_client();
   PeerEntities entities;
   const std::string peer_source = "peer:" + name_;
 
   // Fetch areas
   {
-    auto result = cli.Get(std::string(API_PREFIX) + "/areas");
+    auto result = client_->Get(std::string(API_PREFIX) + "/areas");
     if (!result) {
       return tl::unexpected<std::string>("Failed to connect to peer '" + name_ + "' at " + url_);
     }
@@ -213,7 +218,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch components
   {
-    auto result = cli.Get(std::string(API_PREFIX) + "/components");
+    auto result = client_->Get(std::string(API_PREFIX) + "/components");
     if (!result) {
       return tl::unexpected<std::string>("Failed to connect to peer '" + name_ + "' at " + url_);
     }
@@ -233,7 +238,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch apps
   {
-    auto result = cli.Get(std::string(API_PREFIX) + "/apps");
+    auto result = client_->Get(std::string(API_PREFIX) + "/apps");
     if (!result) {
       return tl::unexpected<std::string>("Failed to connect to peer '" + name_ + "' at " + url_);
     }
@@ -253,7 +258,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch functions
   {
-    auto result = cli.Get(std::string(API_PREFIX) + "/functions");
+    auto result = client_->Get(std::string(API_PREFIX) + "/functions");
     if (!result) {
       return tl::unexpected<std::string>("Failed to connect to peer '" + name_ + "' at " + url_);
     }
@@ -275,7 +280,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 }
 
 void PeerClient::forward_request(const httplib::Request & req, httplib::Response & res) {
-  auto & cli = get_client();
+  std::lock_guard<std::mutex> lock(client_mutex_);
+  ensure_client();
 
   httplib::Headers headers;
   // Forward Authorization header if present
@@ -288,15 +294,15 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
   const std::string content_type = req.get_header_value("Content-Type");
 
   if (req.method == "GET") {
-    result = cli.Get(path, headers);
+    result = client_->Get(path, headers);
   } else if (req.method == "POST") {
-    result = cli.Post(path, headers, req.body, content_type);
+    result = client_->Post(path, headers, req.body, content_type);
   } else if (req.method == "PUT") {
-    result = cli.Put(path, headers, req.body, content_type);
+    result = client_->Put(path, headers, req.body, content_type);
   } else if (req.method == "DELETE") {
-    result = cli.Delete(path, headers);
+    result = client_->Delete(path, headers);
   } else if (req.method == "PATCH") {
-    result = cli.Patch(path, headers, req.body, content_type);
+    result = client_->Patch(path, headers, req.body, content_type);
   }
 
   if (!result) {
@@ -307,18 +313,25 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
     return;
   }
 
-  // Copy response from peer
+  // Copy response from peer - only forward safe headers
+  static const std::set<std::string> allowed_headers = {"content-type", "etag", "cache-control", "last-modified"};
+
   res.status = result->status;
   res.body = result->body;
   for (const auto & header : result->headers) {
-    res.set_header(header.first, header.second);
+    std::string lower_name = header.first;
+    std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
+    if (allowed_headers.count(lower_name) > 0 || lower_name.find("x-medkit") == 0) {
+      res.set_header(header.first, header.second);
+    }
   }
 }
 
 tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const std::string & method,
                                                                            const std::string & path,
                                                                            const std::string & auth_header) {
-  auto & cli = get_client();
+  std::lock_guard<std::mutex> lock(client_mutex_);
+  ensure_client();
 
   httplib::Headers headers;
   if (!auth_header.empty()) {
@@ -328,13 +341,13 @@ tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const
   httplib::Result result{nullptr, httplib::Error::Unknown};
 
   if (method == "GET") {
-    result = cli.Get(path, headers);
+    result = client_->Get(path, headers);
   } else if (method == "POST") {
-    result = cli.Post(path, headers, "", "application/json");
+    result = client_->Post(path, headers, "", "application/json");
   } else if (method == "PUT") {
-    result = cli.Put(path, headers, "", "application/json");
+    result = client_->Put(path, headers, "", "application/json");
   } else if (method == "DELETE") {
-    result = cli.Delete(path, headers);
+    result = client_->Delete(path, headers);
   }
 
   if (!result) {
@@ -344,6 +357,11 @@ tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const
   if (result->status < 200 || result->status >= 300) {
     return tl::unexpected<std::string>("Peer '" + name_ + "' returned status " + std::to_string(result->status) +
                                        " for " + method + " " + path);
+  }
+
+  if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
+    return tl::unexpected<std::string>("Response from peer '" + name_ + "' exceeds size limit for " + method + " " +
+                                       path);
   }
 
   auto parsed = nlohmann::json::parse(result->body, nullptr, false);

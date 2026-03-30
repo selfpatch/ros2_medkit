@@ -118,10 +118,11 @@ class PeerClient {
 
  private:
   /**
-   * @brief Get or create the underlying HTTP client (lazy initialization)
-   * @return Reference to the httplib::Client
+   * @brief Ensure the underlying HTTP client exists (lazy initialization)
+   *
+   * Must be called under client_mutex_. Creates the client if it doesn't exist.
    */
-  httplib::Client & get_client();
+  void ensure_client();
 
   std::string url_;
   std::string name_;

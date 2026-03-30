@@ -18,6 +18,7 @@
 
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -119,8 +120,12 @@ class AggregationManager {
    */
   void update_routing_table(const std::unordered_map<std::string, std::string> & table);
 
-  /// Get the current routing table (entity_id -> peer_name)
-  const std::unordered_map<std::string, std::string> & get_routing_table() const;
+  /**
+   * @brief Look up which peer owns a given entity
+   * @param entity_id Entity ID to look up
+   * @return Peer name if entity is remote, std::nullopt if local or unknown
+   */
+  std::optional<std::string> find_peer_for_entity(const std::string & entity_id) const;
 
   /**
    * @brief Get the URL for a known peer by name

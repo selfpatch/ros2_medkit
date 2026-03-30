@@ -99,10 +99,13 @@ void AggregationManager::update_routing_table(const std::unordered_map<std::stri
   routing_table_ = table;
 }
 
-const std::unordered_map<std::string, std::string> & AggregationManager::get_routing_table() const {
-  // Caller must be aware this returns a reference; safe for single-threaded access
-  // or when external synchronization is provided
-  return routing_table_;
+std::optional<std::string> AggregationManager::find_peer_for_entity(const std::string & entity_id) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  auto it = routing_table_.find(entity_id);
+  if (it != routing_table_.end()) {
+    return it->second;
+  }
+  return std::nullopt;
 }
 
 std::string AggregationManager::get_peer_url(const std::string & peer_name) const {
@@ -130,10 +133,6 @@ void AggregationManager::forward_request(const std::string & peer_name, const ht
     return;
   }
 
-  // Release shared lock before making the HTTP call to avoid holding
-  // the lock during potentially long network I/O. PeerClient is
-  // internally thread-safe.
-  lock.unlock();
   peer->forward_request(req, res);
 }
 
@@ -142,19 +141,14 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
   FanOutResult fan_out_result;
   fan_out_result.merged_items = nlohmann::json::array();
 
-  // Collect pointers to healthy peers under shared lock
-  std::vector<PeerClient *> targets;
-  {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    for (auto & peer : peers_) {
-      if (peer->is_healthy()) {
-        targets.push_back(peer.get());
-      }
+  // Hold shared lock for entire iteration to prevent dangling pointers
+  // if remove_discovered_peer() runs concurrently
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  for (auto & peer : peers_) {
+    if (!peer->is_healthy()) {
+      continue;
     }
-  }
 
-  // Send requests sequentially (PeerClient is internally thread-safe)
-  for (auto * peer : targets) {
     auto result = peer->forward_and_get_json("GET", path, auth_header);
     if (!result.has_value()) {
       fan_out_result.is_partial = true;
