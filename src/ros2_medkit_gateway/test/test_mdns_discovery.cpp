@@ -166,3 +166,87 @@ TEST(MdnsDiscovery, error_callback_is_stored_in_config) {
   // The callback is stored but not invoked when no sockets are opened
   EXPECT_FALSE(error_called);
 }
+
+// =============================================================================
+// Error callback wiring tests
+// =============================================================================
+
+TEST(MdnsDiscovery, error_callback_not_invoked_without_sockets) {
+  // Verify the on_error callback is not spuriously triggered when announce/discover are off
+  MdnsDiscovery::Config config;
+  config.announce = false;
+  config.discover = false;
+
+  bool error_received = false;
+  std::string error_message;
+  config.on_error = [&](const std::string & msg) {
+    error_received = true;
+    error_message = msg;
+  };
+
+  MdnsDiscovery mdns(config);
+
+  // Start and stop with both flags off - no socket operations
+  mdns.start([](const std::string &, const std::string &) {}, [](const std::string &) {});
+  mdns.stop();
+
+  // Error callback should NOT have been invoked since no network activity occurred
+  EXPECT_FALSE(error_received);
+  EXPECT_TRUE(error_message.empty());
+}
+
+TEST(MdnsDiscovery, default_announce_and_discover_are_false) {
+  MdnsDiscovery::Config config;
+  EXPECT_FALSE(config.announce);
+  EXPECT_FALSE(config.discover);
+}
+
+TEST(MdnsDiscovery, default_service_type) {
+  MdnsDiscovery::Config config;
+  EXPECT_EQ(config.service, "_medkit._tcp.local");
+}
+
+TEST(MdnsDiscovery, default_port_is_8080) {
+  MdnsDiscovery::Config config;
+  EXPECT_EQ(config.port, 8080);
+}
+
+TEST(MdnsDiscovery, default_name_is_empty) {
+  MdnsDiscovery::Config config;
+  EXPECT_TRUE(config.name.empty());
+}
+
+TEST(MdnsDiscovery, default_on_error_is_null) {
+  MdnsDiscovery::Config config;
+  EXPECT_FALSE(config.on_error);
+}
+
+TEST(MdnsDiscovery, start_stop_lifecycle_with_callbacks) {
+  MdnsDiscovery::Config config;
+  config.announce = false;
+  config.discover = false;
+
+  MdnsDiscovery discovery(config);
+
+  bool found_called = false;
+  bool removed_called = false;
+
+  discovery.start(
+      [&](const std::string & /*url*/, const std::string & /*name*/) {
+        found_called = true;
+      },
+      [&](const std::string & /*name*/) {
+        removed_called = true;
+      });
+
+  // With both flags off, callbacks should never fire
+  EXPECT_FALSE(found_called);
+  EXPECT_FALSE(removed_called);
+  EXPECT_FALSE(discovery.is_announcing());
+  EXPECT_FALSE(discovery.is_discovering());
+
+  discovery.stop();
+
+  EXPECT_FALSE(found_called);
+  EXPECT_FALSE(removed_called);
+}

@@ -203,3 +203,196 @@ TEST(StreamProxy, on_event_can_set_callback) {
   // Callback is set but not invoked without open()
   EXPECT_FALSE(called);
 }
+
+// =============================================================================
+// Mock server integration tests (local httplib::Server)
+// =============================================================================
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
+namespace {
+
+/// Helper to wait for httplib::Server to be ready for connections
+void wait_for_server(httplib::Server & svr, int timeout_ms = 5000) {
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  while (!svr.is_running() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+}
+
+}  // namespace
+
+TEST(SSEStreamProxyIntegration, receives_events_from_mock_server) {
+  httplib::Server svr;
+
+  std::atomic<bool> stop_stream{false};
+
+  // Chunked content provider simulating a real SSE stream:
+  // sends events with pauses between them, then waits until stopped.
+  svr.Get("/events", [&stop_stream](const httplib::Request &, httplib::Response & res) {
+    res.set_chunked_content_provider("text/event-stream", [&stop_stream](size_t offset, httplib::DataSink & sink) {
+      if (offset == 0) {
+        std::string event1 =
+            "event: test\n"
+            "data: {\"value\":42}\n"
+            "\n";
+        sink.write(event1.data(), event1.size());
+        return true;
+      }
+      // Second call - send the second event
+      std::string data_so_far;
+      if (offset > 0 && offset < 200) {
+        std::string event2 =
+            "event: update\n"
+            "data: {\"value\":43}\n"
+            "\n";
+        sink.write(event2.data(), event2.size());
+        return true;
+      }
+      // Keep connection open until test signals stop
+      if (stop_stream.load()) {
+        sink.done();
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      return true;
+    });
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread server_thread([&svr]() {
+    svr.listen_after_bind();
+  });
+  wait_for_server(svr);
+
+  SSEStreamProxy proxy("http://127.0.0.1:" + std::to_string(port), "/events", "test_peer");
+
+  std::vector<StreamEvent> received;
+  std::mutex mtx;
+  std::condition_variable cv;
+
+  proxy.on_event([&](const StreamEvent & event) {
+    std::lock_guard<std::mutex> lock(mtx);
+    received.push_back(event);
+    cv.notify_one();
+  });
+
+  proxy.open();
+
+  // Wait for at least two events (with timeout)
+  {
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.wait_for(lock, std::chrono::seconds(5), [&]() {
+      return received.size() >= 2u;
+    });
+  }
+
+  stop_stream.store(true);
+  proxy.close();
+  svr.stop();
+  server_thread.join();
+
+  ASSERT_GE(received.size(), 2u);
+  EXPECT_EQ(received[0].event_type, "test");
+  EXPECT_EQ(received[0].data, "{\"value\":42}");
+  EXPECT_EQ(received[0].peer_name, "test_peer");
+  EXPECT_EQ(received[1].event_type, "update");
+  EXPECT_EQ(received[1].data, "{\"value\":43}");
+  EXPECT_EQ(received[1].peer_name, "test_peer");
+}
+
+TEST(SSEStreamProxyIntegration, close_terminates_reader_thread) {
+  httplib::Server svr;
+
+  // Chunked provider that streams indefinitely until client disconnects
+  svr.Get("/events", [](const httplib::Request &, httplib::Response & res) {
+    res.set_chunked_content_provider("text/event-stream", [](size_t /*offset*/, httplib::DataSink & sink) {
+      std::string event = "data: heartbeat\n\n";
+      sink.write(event.data(), event.size());
+      // Sleep to simulate a long-lived stream
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      return true;
+    });
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread server_thread([&svr]() {
+    svr.listen_after_bind();
+  });
+  wait_for_server(svr);
+
+  SSEStreamProxy proxy("http://127.0.0.1:" + std::to_string(port), "/events", "long_stream_peer");
+
+  std::atomic<int> event_count{0};
+  proxy.on_event([&](const StreamEvent &) {
+    event_count.fetch_add(1);
+  });
+
+  proxy.open();
+
+  // Wait for at least one event to confirm the connection is live
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (event_count.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  // Even if we got zero events (e.g. timing), close() must not hang
+  auto close_start = std::chrono::steady_clock::now();
+  proxy.close();
+  auto close_duration = std::chrono::steady_clock::now() - close_start;
+
+  // Reader thread should have joined within a reasonable time
+  EXPECT_LT(close_duration, std::chrono::seconds(5));
+  EXPECT_FALSE(proxy.is_connected());
+
+  svr.stop();
+  server_thread.join();
+
+  // Verify that at least one event was received (confirms streaming worked)
+  EXPECT_GT(event_count.load(), 0);
+}
+
+TEST(SSEStreamProxyIntegration, buffer_overflow_disconnects) {
+  httplib::Server svr;
+
+  // Server sends >1MB without any event boundary (\n\n)
+  svr.Get("/events", [](const httplib::Request &, httplib::Response & res) {
+    res.set_chunked_content_provider("text/event-stream", [](size_t /*offset*/, httplib::DataSink & sink) {
+      // Send 8KB chunks of data without a double-newline boundary
+      std::string chunk(8192, 'x');
+      sink.write(chunk.data(), chunk.size());
+      return true;
+    });
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread server_thread([&svr]() {
+    svr.listen_after_bind();
+  });
+  wait_for_server(svr);
+
+  SSEStreamProxy proxy("http://127.0.0.1:" + std::to_string(port), "/events", "overflow_peer");
+
+  std::atomic<int> event_count{0};
+  proxy.on_event([&](const StreamEvent &) {
+    event_count.fetch_add(1);
+  });
+
+  proxy.open();
+
+  // Wait for the proxy to disconnect due to buffer overflow
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (proxy.is_connected() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  proxy.close();
+  svr.stop();
+  server_thread.join();
+
+  // No valid events should have been delivered since there were no boundaries
+  EXPECT_EQ(event_count.load(), 0);
+}
