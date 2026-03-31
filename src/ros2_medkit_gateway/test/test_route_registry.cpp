@@ -295,6 +295,53 @@ TEST_F(RouteRegistryTest, UnknownParamGetsGenericDescription) {
 }
 
 // =============================================================================
+// Header params (Fix 328)
+// =============================================================================
+
+TEST_F(RouteRegistryTest, HeaderParamAppearsInOpenApiOutput) {
+  registry_.post("/apps/{app_id}/locks", noop)
+      .tag("Locking")
+      .header_param("X-Client-Id", "Client identifier")
+      .request_body("Body", {{"type", "object"}})
+      .response(201, "Created", {{"type", "object"}});
+
+  auto paths = registry_.to_openapi_paths();
+  auto & params = paths["/apps/{app_id}/locks"]["post"]["parameters"];
+
+  // Should have both auto-generated path param and explicit header param
+  bool found_header = false;
+  for (const auto & p : params) {
+    if (p["name"] == "X-Client-Id") {
+      found_header = true;
+      EXPECT_EQ(p["in"], "header");
+      EXPECT_TRUE(p["required"].get<bool>());
+      EXPECT_EQ(p["description"], "Client identifier");
+      EXPECT_EQ(p["schema"]["type"], "string");
+    }
+  }
+  EXPECT_TRUE(found_header) << "X-Client-Id header param not found in OpenAPI output";
+}
+
+TEST_F(RouteRegistryTest, OptionalHeaderParamHasRequiredFalse) {
+  registry_.get("/apps/{app_id}/locks", noop)
+      .tag("Locking")
+      .header_param("X-Client-Id", "Optional client identifier", false)
+      .response(200, "OK", {{"type", "object"}});
+
+  auto paths = registry_.to_openapi_paths();
+  auto & params = paths["/apps/{app_id}/locks"]["get"]["parameters"];
+
+  bool found_header = false;
+  for (const auto & p : params) {
+    if (p["name"] == "X-Client-Id") {
+      found_header = true;
+      EXPECT_FALSE(p["required"].get<bool>());
+    }
+  }
+  EXPECT_TRUE(found_header) << "Optional header param not found";
+}
+
+// =============================================================================
 // to_endpoint_list (Fix 23)
 // =============================================================================
 

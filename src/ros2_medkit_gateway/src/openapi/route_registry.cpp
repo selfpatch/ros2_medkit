@@ -79,6 +79,17 @@ RouteEntry & RouteEntry::query_param(const std::string & name, const std::string
   return *this;
 }
 
+RouteEntry & RouteEntry::header_param(const std::string & name, const std::string & desc, bool required) {
+  nlohmann::json param;
+  param["name"] = name;
+  param["in"] = "header";
+  param["required"] = required;
+  param["description"] = desc;
+  param["schema"] = {{"type", "string"}};
+  parameters_.push_back(std::move(param));
+  return *this;
+}
+
 RouteEntry & RouteEntry::deprecated() {
   deprecated_ = true;
   return *this;

@@ -93,7 +93,7 @@ nlohmann::json SchemaBuilder::fault_detail_schema() {
                                       {"size_bytes", {{"type", "integer"}}},
                                       {"duration_sec", {{"type", "number"}}},
                                       {"format", {{"type", "string"}}},
-                                      {"x-medkit", {{"type", "object"}}}}}};
+                                      {"x-medkit", {{"type", "object"}, {"additionalProperties", true}}}}}};
 
   nlohmann::json env_data_schema = {{"type", "object"},
                                     {"properties",
@@ -105,6 +105,7 @@ nlohmann::json SchemaBuilder::fault_detail_schema() {
                                       {"snapshots", {{"type", "array"}, {"items", snapshot_schema}}}}}};
 
   nlohmann::json x_medkit_schema = {{"type", "object"},
+                                    {"additionalProperties", true},
                                     {"properties",
                                      {{"occurrence_count", {{"type", "integer"}}},
                                       {"reporting_sources", {{"type", "array"}, {"items", {{"type", "string"}}}}},
@@ -268,7 +269,7 @@ nlohmann::json SchemaBuilder::data_item_schema() {
            {{"id", {{"type", "string"}}},
             {"name", {{"type", "string"}}},
             {"category", {{"type", "string"}}},
-            {"x-medkit", {{"type", "object"}}}}},
+            {"x-medkit", {{"type", "object"}, {"additionalProperties", true}}}}},
           {"required", {"id", "name"}}};
 }
 
@@ -287,7 +288,7 @@ nlohmann::json SchemaBuilder::operation_item_schema() {
             {"name", {{"type", "string"}}},
             {"proximity_proof_required", {{"type", "boolean"}, {"description", "Whether proximity proof is needed"}}},
             {"asynchronous_execution", {{"type", "boolean"}, {"description", "Whether operation runs asynchronously"}}},
-            {"x-medkit", {{"type", "object"}}}}},
+            {"x-medkit", {{"type", "object"}, {"additionalProperties", true}}}}},
           {"required", {"id", "name"}}};
 }
 
@@ -305,9 +306,15 @@ nlohmann::json SchemaBuilder::operation_execution_schema() {
           {"required", {"id", "status"}}};
 }
 
+nlohmann::json SchemaBuilder::trigger_condition_schema() {
+  return {{"type", "object"},
+          {"properties", {{"condition_type", {{"type", "string"}}}}},
+          {"required", {"condition_type"}},
+          {"additionalProperties", true}};
+}
+
 nlohmann::json SchemaBuilder::trigger_schema() {
-  nlohmann::json condition_schema = {
-      {"type", "object"}, {"properties", {{"condition_type", {{"type", "string"}}}}}, {"required", {"condition_type"}}};
+  auto condition_schema = trigger_condition_schema();
 
   return {{"type", "object"},
           {"properties",
@@ -347,6 +354,31 @@ nlohmann::json SchemaBuilder::lock_schema() {
           {"required", {"id", "owned", "lock_expiration"}}};
 }
 
+nlohmann::json SchemaBuilder::acquire_lock_request_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"lock_expiration",
+             {{"type", "integer"}, {"minimum", 1}, {"example", 300}, {"description", "Lock duration in seconds"}}},
+            {"scopes",
+             {{"type", "array"},
+              {"items", {{"type", "string"}}},
+              {"description", "Lock scopes (e.g. 'configurations', 'operations')"}}},
+            {"break_lock",
+             {{"type", "boolean"}, {"description", "Force-acquire by breaking an existing lock (default: false)"}}}}},
+          {"required", {"lock_expiration"}}};
+}
+
+nlohmann::json SchemaBuilder::extend_lock_request_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"lock_expiration",
+             {{"type", "integer"},
+              {"minimum", 1},
+              {"example", 120},
+              {"description", "Additional seconds to extend the lock"}}}}},
+          {"required", {"lock_expiration"}}};
+}
+
 nlohmann::json SchemaBuilder::script_metadata_schema() {
   return {{"type", "object"},
           {"properties",
@@ -356,7 +388,7 @@ nlohmann::json SchemaBuilder::script_metadata_schema() {
             {"href", {{"type", "string"}}},
             {"managed", {{"type", "boolean"}}},
             {"proximity_proof_required", {{"type", "boolean"}}},
-            {"parameters_schema", {{"type", "object"}}}}},
+            {"parameters_schema", {{"type", {"object", "null"}}}}}},
           {"required", {"id", "name"}}};
 }
 
@@ -387,8 +419,7 @@ nlohmann::json SchemaBuilder::trigger_update_request_schema() {
 }
 
 nlohmann::json SchemaBuilder::trigger_create_request_schema() {
-  nlohmann::json condition_schema = {
-      {"type", "object"}, {"properties", {{"condition_type", {{"type", "string"}}}}}, {"required", {"condition_type"}}};
+  auto condition_schema = trigger_condition_schema();
 
   return {{"type", "object"},
           {"properties",
@@ -441,7 +472,7 @@ nlohmann::json SchemaBuilder::bulk_data_descriptor_schema() {
             {"creation_date",
              {{"type", "string"}, {"format", "date-time"}, {"description", "ISO 8601 creation timestamp"}}},
             {"description", {{"type", "string"}, {"description", "Human-readable description"}}},
-            {"x-medkit", {{"type", "object"}}}}},
+            {"x-medkit", {{"type", "object"}, {"additionalProperties", true}}}}},
           {"required", {"id", "name"}}};
 }
 
@@ -466,8 +497,37 @@ nlohmann::json SchemaBuilder::update_status_schema() {
 
 nlohmann::json SchemaBuilder::log_configuration_schema() {
   return {{"type", "object"},
-          {"properties", {{"severity_filter", {{"type", "string"}}}, {"max_entries", {{"type", "integer"}}}}},
-          {"required", {"severity_filter", "max_entries"}}};
+          {"properties",
+           {{"severity_filter", {{"type", "string"}, {"enum", {"debug", "info", "warning", "error", "fatal"}}}},
+            {"max_entries", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}}}}}};
+}
+
+nlohmann::json SchemaBuilder::data_write_request_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"type", {{"type", "string"}, {"description", "ROS 2 message type (e.g. 'std_msgs/msg/Float32')"}}},
+            {"data", {{"description", "Message value to publish"}}}}},
+          {"required", {"type", "data"}}};
+}
+
+nlohmann::json SchemaBuilder::execution_update_request_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"capability",
+             {{"type", "string"},
+              {"enum", {"stop", "execute", "freeze", "reset"}},
+              {"description", "Control command for the running execution"}}}}},
+          {"required", {"capability"}}};
+}
+
+nlohmann::json SchemaBuilder::script_control_request_schema() {
+  return {{"type", "object"},
+          {"properties",
+           {{"action",
+             {{"type", "string"},
+              {"enum", {"stop", "forced_termination"}},
+              {"description", "Control action for the running script execution"}}}}},
+          {"required", {"action"}}};
 }
 
 nlohmann::json SchemaBuilder::auth_token_response_schema() {
@@ -524,12 +584,14 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
       // Data
       {"DataItem", data_item_schema()},
       {"DataItemList", items_wrapper_ref("DataItem")},
+      {"DataWriteRequest", data_write_request_schema()},
       // Operations
       {"OperationItem", operation_item_schema()},
       {"OperationItemList", items_wrapper_ref("OperationItem")},
       {"OperationDetail", operation_detail_schema()},
       {"OperationExecution", operation_execution_schema()},
       {"OperationExecutionList", items_wrapper_ref("OperationExecution")},
+      {"ExecutionUpdateRequest", execution_update_request_schema()},
       // Triggers
       {"Trigger", trigger_schema()},
       {"TriggerList", items_wrapper_ref("Trigger")},
@@ -542,11 +604,14 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
       // Locking
       {"Lock", lock_schema()},
       {"LockList", items_wrapper_ref("Lock")},
+      {"AcquireLockRequest", acquire_lock_request_schema()},
+      {"ExtendLockRequest", extend_lock_request_schema()},
       // Scripts
       {"ScriptMetadata", script_metadata_schema()},
       {"ScriptMetadataList", items_wrapper_ref("ScriptMetadata")},
       {"ScriptUploadResponse", script_upload_response_schema()},
       {"ScriptExecution", script_execution_schema()},
+      {"ScriptControlRequest", script_control_request_schema()},
       // Bulk Data
       {"BulkDataCategoryList", bulk_data_category_list_schema()},
       {"BulkDataDescriptor", bulk_data_descriptor_schema()},

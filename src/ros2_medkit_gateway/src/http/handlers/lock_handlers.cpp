@@ -43,10 +43,18 @@ bool LockHandlers::check_locking_enabled(httplib::Response & res) {
 }
 
 std::optional<std::string> LockHandlers::require_client_id(const httplib::Request & req, httplib::Response & res) {
+  static constexpr size_t kMaxClientIdLen = 256;
+
   auto client_id = req.get_header_value("X-Client-Id");
   if (client_id.empty()) {
     HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing required X-Client-Id header",
                                json{{"details", "X-Client-Id header is required for lock operations"}});
+    return std::nullopt;
+  }
+  if (client_id.size() > kMaxClientIdLen) {
+    HandlerContext::send_error(
+        res, 400, ERR_INVALID_PARAMETER, "X-Client-Id exceeds maximum length",
+        json{{"details", "X-Client-Id must be at most 256 characters"}, {"max_length", kMaxClientIdLen}});
     return std::nullopt;
   }
   return client_id;

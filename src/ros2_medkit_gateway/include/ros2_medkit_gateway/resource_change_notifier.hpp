@@ -120,12 +120,14 @@ class ResourceChangeNotifier {
   size_t max_queue_size_{kDefaultMaxQueueSize};
   size_t overflow_drop_count_{0};  ///< Accumulated drops since last overflow log
 
+  // Optional error logger - must be declared before worker_thread_ so it is
+  // initialized before the worker thread starts (C++ initializes members in
+  // declaration order, not initializer-list order).
+  ErrorLoggerFn error_logger_;
+
   // Worker thread lifecycle
   std::atomic<bool> shutdown_flag_{false};
   std::thread worker_thread_;
-
-  // Optional error logger (set once before concurrent use)
-  ErrorLoggerFn error_logger_;
 };
 
 }  // namespace ros2_medkit_gateway
