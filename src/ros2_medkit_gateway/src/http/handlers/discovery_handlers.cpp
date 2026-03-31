@@ -262,23 +262,29 @@ void DiscoveryHandlers::handle_get_subareas(const httplib::Request & req, httpli
       return;
     }
 
+    // Cache-first lookup: EntityCache has merged entities from peers
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto area_opt = cache.get_area(area_id);
+    if (!area_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      area_opt = discovery->get_area(area_id);
+    }
 
     if (!area_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
       return;
     }
 
+    // Use cache relationship index for subarea IDs, then look up each
     auto subarea_ids = cache.get_subareas(area_id);
 
     json items = json::array();
-    for (const auto & sa_id : subarea_ids) {
-      auto sa_opt = cache.get_area(sa_id);
-      if (!sa_opt) {
+    for (const auto & sub_id : subarea_ids) {
+      auto subarea_opt = cache.get_area(sub_id);
+      if (!subarea_opt) {
         continue;
       }
-      const auto & subarea = *sa_opt;
+      const auto & subarea = *subarea_opt;
 
       json item;
       item["id"] = subarea.id;
@@ -328,20 +334,47 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
       return;
     }
 
+    // Cache-first lookup: EntityCache has merged entities from peers
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto area_opt = cache.get_area(area_id);
+    if (!area_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      area_opt = discovery->get_area(area_id);
+    }
 
     if (!area_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
       return;
     }
 
-    // Use DiscoveryManager for contains - it resolves subarea hierarchy
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto components = discovery->get_components_for_area(area_id);
+    // Recursively collect components from this area and all descendant subareas
+    // (mirrors ManifestManager::get_components_for_area behavior)
+    std::vector<std::string> area_queue = {area_id};
+    std::set<std::string> visited_areas;
+    std::vector<std::string> all_comp_ids;
+
+    while (!area_queue.empty()) {
+      auto current_area = area_queue.back();
+      area_queue.pop_back();
+      if (!visited_areas.insert(current_area).second) {
+        continue;
+      }
+
+      auto comp_ids = cache.get_components_for_area(current_area);
+      all_comp_ids.insert(all_comp_ids.end(), comp_ids.begin(), comp_ids.end());
+
+      auto sub_ids = cache.get_subareas(current_area);
+      area_queue.insert(area_queue.end(), sub_ids.begin(), sub_ids.end());
+    }
 
     json items = json::array();
-    for (const auto & comp : components) {
+    for (const auto & comp_id : all_comp_ids) {
+      auto comp_opt = cache.get_component(comp_id);
+      if (!comp_opt) {
+        continue;
+      }
+      const auto & comp = *comp_opt;
+
       json item;
       item["id"] = comp.id;
       item["name"] = comp.name.empty() ? comp.id : comp.name;
@@ -444,7 +477,8 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
       return;
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Read from cache first (has merged entities from aggregation),
+    // fall back to discovery manager for entities not yet cached.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_opt = cache.get_component(component_id);
     if (!comp_opt) {
@@ -561,8 +595,13 @@ void DiscoveryHandlers::handle_get_subcomponents(const httplib::Request & req, h
       return;
     }
 
+    // Cache-first lookup: EntityCache has merged entities from peers
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_opt = cache.get_component(component_id);
+    if (!comp_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      comp_opt = discovery->get_component(component_id);
+    }
 
     if (!comp_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
@@ -570,11 +609,15 @@ void DiscoveryHandlers::handle_get_subcomponents(const httplib::Request & req, h
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto subcomponents = discovery->get_subcomponents(component_id);
+    // Cache has no get_subcomponents(), so filter from all components
+    const auto all_components = cache.get_components();
 
     json items = json::array();
-    for (const auto & sub : subcomponents) {
+    for (const auto & sub : all_components) {
+      if (sub.parent_component_id != component_id) {
+        continue;
+      }
+
       json item;
       item["id"] = sub.id;
       item["name"] = sub.name.empty() ? sub.id : sub.name;
@@ -626,8 +669,13 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
       return;
     }
 
+    // Cache-first lookup: EntityCache has merged entities from peers
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_opt = cache.get_component(component_id);
+    if (!comp_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      comp_opt = discovery->get_component(component_id);
+    }
 
     if (!comp_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
@@ -635,12 +683,17 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
       return;
     }
 
-    // Use DiscoveryManager for hosts - returns full App objects with online status
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto apps = discovery->get_apps_for_component(component_id);
+    // Use cache relationship index for app IDs, then look up each
+    auto app_ids = cache.get_apps_for_component(component_id);
 
     json items = json::array();
-    for (const auto & app : apps) {
+    for (const auto & aid : app_ids) {
+      auto app_opt = cache.get_app(aid);
+      if (!app_opt) {
+        continue;
+      }
+      const auto & app = *app_opt;
+
       json item;
       item["id"] = app.id;
       item["name"] = app.name.empty() ? app.id : app.name;
@@ -691,8 +744,13 @@ void DiscoveryHandlers::handle_component_depends_on(const httplib::Request & req
       return;
     }
 
+    // Cache-first lookup: EntityCache has merged entities from peers
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_opt = cache.get_component(component_id);
+    if (!comp_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      comp_opt = discovery->get_component(component_id);
+    }
 
     if (!comp_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
@@ -815,7 +873,8 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
       return;
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Read from cache first (has host component override applied),
+    // fall back to discovery manager for entities not yet cached.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto app_opt = cache.get_app(app_id);
     if (!app_opt) {
@@ -926,8 +985,13 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
       return;
     }
 
+    // Cache-first lookup: EntityCache has merged entities from peers
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto app_opt = cache.get_app(app_id);
+    if (!app_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      app_opt = discovery->get_app(app_id);
+    }
 
     if (!app_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
@@ -996,8 +1060,13 @@ void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, h
       return;
     }
 
+    // Cache-first lookup: EntityCache has merged entities from peers
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto app_opt = cache.get_app(app_id);
+    if (!app_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      app_opt = discovery->get_app(app_id);
+    }
 
     if (!app_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
@@ -1009,6 +1078,10 @@ void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, h
 
     if (!app.component_id.empty()) {
       auto component_opt = cache.get_component(app.component_id);
+      if (!component_opt) {
+        auto discovery = ctx_.node()->get_discovery_manager();
+        component_opt = discovery->get_component(app.component_id);
+      }
       if (component_opt) {
         json item;
         item["id"] = component_opt->id;
@@ -1115,6 +1188,10 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
 
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto func_opt = cache.get_function(function_id);
+    if (!func_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      func_opt = discovery->get_function(function_id);
+    }
 
     if (!func_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found", {{"function_id", function_id}});
@@ -1194,7 +1271,7 @@ void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, http
       return;
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Read from cache (has merged entities from aggregation with combined hosts)
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto func_opt = cache.get_function(function_id);
     if (!func_opt) {

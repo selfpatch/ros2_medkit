@@ -492,7 +492,8 @@ TEST_F(DiscoveryHandlersFixtureTest, GetHostsReturnsHostedApps) {
   ASSERT_EQ(body["items"].size(), 1);
   EXPECT_EQ(body["items"][0]["id"], "planner");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
-  EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], false);
+  // Reads from cache where planner app has is_online=true (set in SetUp)
+  EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], true);
 }
 
 // @verifies REQ_INTEROP_007
@@ -696,7 +697,8 @@ TEST_F(DiscoveryHandlersFixtureTest, AppDependsOnReturnsResolvedAndMissingDepend
   ASSERT_EQ(body["items"].size(), 2);
   EXPECT_EQ(body["items"][0]["id"], "planner");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
-  EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], true);  // cache has enriched is_online from SetUp
+  // Reads from cache where planner app has is_online=true (set in SetUp)
+  EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], true);
   EXPECT_EQ(body["items"][1]["id"], "ghost_app");
   EXPECT_EQ(body["items"][1]["x-medkit"]["missing"], true);
   EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/mapper");
@@ -800,6 +802,7 @@ TEST_F(DiscoveryHandlersFixtureTest, FunctionHostsReturnsHostingApps) {
   ASSERT_EQ(body["items"].size(), 1);
   EXPECT_EQ(body["items"][0]["id"], "planner");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
+  // Reads from cache where planner app has is_online=true (set in SetUp)
   EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], true);
   EXPECT_EQ(body["_links"]["function"], "/api/v1/functions/navigation");
 }
