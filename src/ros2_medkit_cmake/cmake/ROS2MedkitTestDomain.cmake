@@ -27,7 +27,7 @@
 #   ros2_medkit_graph_provider:     120 - 129 (10 slots)
 #   ros2_medkit_linux_introspection: 130 - 139 (10 slots)
 #   ros2_medkit_integration_tests:  140 - 229 (90 slots)
-#   multi-domain tests (secondary):  230 - 232 (3 slots, via get_test_domain_id)
+#   ros2_medkit_sovd_service_iface: 230 - 232 (3 slots, max domain ID is 232)
 #
 # To add a new package: pick the next free range and update this comment.
 

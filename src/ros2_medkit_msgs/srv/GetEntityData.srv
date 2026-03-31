@@ -1,0 +1,34 @@
+# Copyright 2026 mfaferek93
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# GetEntityData.srv - Retrieve data values for a SOVD entity.
+#
+# Returns latest topic data for the specified entity as a JSON string.
+# Used by VDA 5050 agent to populate AGV state with sensor data.
+
+# Request fields
+
+# Entity ID to query
+string entity_id
+
+# Specific data keys (topic names) to return, [] for all available
+string[] data_keys
+---
+# Response fields
+
+bool success
+string error_message
+
+# JSON-encoded data: {"topic_name": {"field": value, ...}, ...}
+string data_json
