@@ -189,13 +189,14 @@ type-specific merge rules:
 
    start
    :Receive remote entity from peer;
-   if (Entity type?) then (Area or Function)
+   if (Entity type?) then (Area, Function, or Component)
        if (Same ID exists locally?) then (yes)
-           :Merge into existing entity\n(combine relations/hosts);
+           :Merge into existing entity\n(combine relations/tags);
        else (no)
            :Add as new entity;
+           :Add routing entry;
        endif
-   else (Component or App)
+   else (App)
        if (Same ID exists locally?) then (yes)
            :Prefix remote ID with\npeername__ separator;
        else (no)
@@ -219,17 +220,19 @@ type-specific merge rules:
   If both gateways expose a ``navigation`` Function, the merged entity lists
   hosts from both gateways. Same ownership semantics as Areas.
 
-- **Components**: Prefix on collision. If a remote Component has the same ID as
-  a local one, the remote entity's ID is prefixed with ``peername__`` (double
-  underscore separator). For example, remote Component ``lidar_unit`` from peer
-  ``robot_arm`` becomes ``robot_arm__lidar_unit``. A routing table entry maps the
-  (possibly prefixed) ID to the peer name for request forwarding.
+- **Components**: Merge by ID, combining tags and metadata. Components represent
+  physical hosts or ECUs defined in manifests - the same Component ID across
+  peers refers to the same physical entity. Remote-only Components get a routing
+  table entry.
 
-- **Apps**: Same prefix-on-collision behavior as Components.
+- **Apps**: Prefix on collision. If a remote App has the same ID as a local one,
+  the remote entity's ID is prefixed with ``peername__`` (double underscore
+  separator). Apps represent individual ROS 2 nodes with unique behavior - two
+  Apps with the same ID from different peers are different entities.
 
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
-separator. The routing table maps ``entity_id -> peer_name`` for all remote
-entities that need request forwarding.
+separator for Apps. The routing table maps ``entity_id -> peer_name`` for
+remote-only entities and prefixed Apps that need request forwarding.
 
 Request Routing
 ---------------
