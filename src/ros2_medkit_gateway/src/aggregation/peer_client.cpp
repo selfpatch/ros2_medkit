@@ -104,6 +104,10 @@ Component parse_component(const nlohmann::json & j) {
     comp.source = xm.value("source", "");
     comp.description = xm.value("description", "");
     comp.variant = xm.value("variant", "");
+    comp.parent_component_id = xm.value("parentComponentId", "");
+    if (xm.contains("dependsOn") && xm["dependsOn"].is_array()) {
+      comp.depends_on = xm["dependsOn"].get<std::vector<std::string>>();
+    }
   }
   if (j.contains("translationId")) {
     comp.translation_id = j["translationId"].get<std::string>();
@@ -147,6 +151,9 @@ Function parse_function(const nlohmann::json & j) {
     const auto & xm = j["x-medkit"];
     func.source = xm.value("source", "");
     func.description = xm.value("description", "");
+    if (xm.contains("hosts") && xm["hosts"].is_array()) {
+      func.hosts = xm["hosts"].get<std::vector<std::string>>();
+    }
   }
   if (j.contains("translationId")) {
     func.translation_id = j["translationId"].get<std::string>();
