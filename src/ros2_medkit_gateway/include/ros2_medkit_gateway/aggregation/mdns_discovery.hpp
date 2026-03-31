@@ -100,6 +100,11 @@ class MdnsDiscovery {
   /// Check if the discover/browse thread is running
   bool is_discovering() const;
 
+  /// Get the resolved mDNS instance name (hostname if not explicitly set)
+  const std::string & instance_name() const {
+    return config_.name;
+  }
+
  private:
   /// Main loop for the announce thread (listens for queries and responds)
   void announce_loop();

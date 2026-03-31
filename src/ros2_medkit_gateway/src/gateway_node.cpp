@@ -205,6 +205,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("aggregation.announce", false);
   declare_parameter("aggregation.discover", false);
   declare_parameter("aggregation.mdns_service", std::string("_medkit._tcp.local"));
+  declare_parameter("aggregation.mdns_name", std::string(""));  // defaults to hostname
   // Static peers: parallel arrays of URLs and names.
   // Example: peer_urls=["http://localhost:8081"], peer_names=["subsystem_b"]
   declare_parameter("aggregation.peer_urls", std::vector<std::string>{""});
@@ -899,7 +900,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       mdns_config.discover = agg_config.discover;
       mdns_config.service = agg_config.mdns_service;
       mdns_config.port = server_port_;
-      mdns_config.name = get_name();
+      // mDNS instance name must be unique per gateway instance.
+      // Defaults to hostname via MdnsDiscovery constructor when empty.
+      // Operators should set aggregation.mdns_name for multi-gateway-per-host deployments.
+      mdns_config.name = get_parameter("aggregation.mdns_name").as_string();
       mdns_config.on_error = [this](const std::string & msg) {
         RCLCPP_WARN(get_logger(), "mDNS: %s", msg.c_str());
       };
@@ -907,9 +911,13 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
         RCLCPP_DEBUG(get_logger(), "mDNS: %s", msg.c_str());
       };
       mdns_discovery_ = std::make_unique<MdnsDiscovery>(mdns_config);
+      // Get the actual mDNS instance name for self-discovery filtering.
+      // MdnsDiscovery constructor resolves empty name to gethostname().
+      // Sanitize it the same way browse_callback sanitizes discovered peer names.
+      const std::string self_mdns_name = HostInfoProvider::sanitize_entity_id(mdns_discovery_->instance_name());
       mdns_discovery_->start(
-          [this](const std::string & url, const std::string & name) {
-            if (name == get_name()) {
+          [this, self_mdns_name](const std::string & url, const std::string & name) {
+            if (name == self_mdns_name) {
               return;  // Skip self-discovery
             }
             aggregation_mgr_->add_discovered_peer(url, name);

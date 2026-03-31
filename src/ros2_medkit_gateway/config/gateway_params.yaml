@@ -524,6 +524,12 @@ ros2_medkit_gateway:
       # Default: "_medkit._tcp.local"
       mdns_service: "_medkit._tcp.local"
 
+      # mDNS instance name - must be unique per gateway instance.
+      # Used for announcing and self-discovery filtering.
+      # Default: "" (uses container/host hostname via gethostname())
+      # Set explicitly when running multiple gateways on the same host.
+      mdns_name: ""
+
       # Static peers (override or supplement mDNS discovery):
       # Parallel arrays: peer_urls[i] pairs with peer_names[i]
       # peer_urls: ["http://localhost:8081"]
