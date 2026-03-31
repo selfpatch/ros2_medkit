@@ -40,7 +40,8 @@ class RouteEntry {
                             const std::string & content_type = "application/json");
   RouteEntry & path_param(const std::string & name, const std::string & desc);
   RouteEntry & query_param(const std::string & name, const std::string & desc, const std::string & type = "string");
-  RouteEntry & header_param(const std::string & name, const std::string & desc, bool required = true);
+  RouteEntry & header_param(const std::string & name, const std::string & desc, bool required = true,
+                            const nlohmann::json & schema = {{"type", "string"}});
   RouteEntry & deprecated();
   RouteEntry & operation_id(const std::string & id);
 

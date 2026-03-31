@@ -902,6 +902,9 @@ void RESTServer::setup_routes() {
 
     // --- Locking (components and apps only, per SOVD spec) ---
     if (et_type_str == "components" || et_type_str == "apps") {
+      // X-Client-Id schema with length constraints matching handler validation
+      static const nlohmann::json client_id_schema = {{"type", "string"}, {"minLength", 1}, {"maxLength", 256}};
+
       reg.post(entity_path + "/locks",
                [this](auto & req, auto & res) {
                  lock_handlers_->handle_acquire_lock(req, res);
@@ -910,7 +913,7 @@ void RESTServer::setup_routes() {
           .summary(std::string("Acquire lock on ") + et.singular)
           .description(std::string("Acquires an exclusive lock on this ") + et.singular + ".")
           .request_body("Lock parameters", SB::ref("AcquireLockRequest"))
-          .header_param("X-Client-Id", "Unique client identifier for lock ownership")
+          .header_param("X-Client-Id", "Unique client identifier for lock ownership", true, client_id_schema)
           .response(201, "Lock acquired", SB::ref("Lock"))
           .operation_id(std::string("acquire") + capitalize(et.singular) + "Lock");
 
@@ -922,7 +925,7 @@ void RESTServer::setup_routes() {
           .summary(std::string("List locks on ") + et.singular)
           .description(std::string("Lists all active locks on this ") + et.singular + ".")
           .header_param("X-Client-Id", "When provided, the 'owned' field indicates whether this client owns the lock",
-                        false)
+                        false, client_id_schema)
           .response(200, "Lock list", SB::ref("LockList"))
           .operation_id(std::string("list") + capitalize(et.singular) + "Locks");
 
@@ -934,7 +937,7 @@ void RESTServer::setup_routes() {
           .summary(std::string("Get lock details for ") + et.singular)
           .description(std::string("Returns details of a specific lock on this ") + et.singular + ".")
           .header_param("X-Client-Id", "When provided, the 'owned' field indicates whether this client owns the lock",
-                        false)
+                        false, client_id_schema)
           .response(200, "Lock details", SB::ref("Lock"))
           .operation_id(std::string("get") + capitalize(et.singular) + "Lock");
 
@@ -946,7 +949,7 @@ void RESTServer::setup_routes() {
           .summary(std::string("Extend lock on ") + et.singular)
           .description(std::string("Extends the expiration of a lock on this ") + et.singular + ".")
           .request_body("Lock extension", SB::ref("ExtendLockRequest"))
-          .header_param("X-Client-Id", "Unique client identifier for lock ownership")
+          .header_param("X-Client-Id", "Unique client identifier for lock ownership", true, client_id_schema)
           .response(204, "Lock extended")
           .operation_id(std::string("extend") + capitalize(et.singular) + "Lock");
 
@@ -957,7 +960,7 @@ void RESTServer::setup_routes() {
           .tag("Locking")
           .summary(std::string("Release lock on ") + et.singular)
           .description(std::string("Releases a lock on this ") + et.singular + ".")
-          .header_param("X-Client-Id", "Unique client identifier for lock ownership")
+          .header_param("X-Client-Id", "Unique client identifier for lock ownership", true, client_id_schema)
           .response(204, "Lock released")
           .operation_id(std::string("release") + capitalize(et.singular) + "Lock");
     }

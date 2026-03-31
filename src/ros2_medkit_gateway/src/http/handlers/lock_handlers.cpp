@@ -57,6 +57,14 @@ std::optional<std::string> LockHandlers::require_client_id(const httplib::Reques
         json{{"details", "X-Client-Id must be at most 256 characters"}, {"max_length", kMaxClientIdLen}});
     return std::nullopt;
   }
+  // Reject control characters (defense-in-depth)
+  for (char c : client_id) {
+    if (static_cast<unsigned char>(c) < 0x20) {
+      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "X-Client-Id contains invalid characters",
+                                 json{{"details", "X-Client-Id must not contain control characters"}});
+      return std::nullopt;
+    }
+  }
   return client_id;
 }
 
