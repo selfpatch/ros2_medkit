@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <shared_mutex>
 #include <string>
@@ -163,7 +164,7 @@ class ConfigurationManager {
   /// cache lookups or JSON building. With negative cache + self-guard,
   /// most requests never touch this mutex.
   /// Declared BEFORE param_node_ so it outlives the node during destruction.
-  mutable std::mutex spin_mutex_;
+  mutable std::timed_mutex spin_mutex_;
 
   /// Internal node for parameter client operations.
   /// Created once in constructor - must be in DDS graph early for fast service discovery.
@@ -176,6 +177,17 @@ class ConfigurationManager {
 
   /// Maximum entries in negative cache before hard eviction
   static constexpr size_t kMaxNegativeCacheSize = 500;
+
+  /// Margin added to service_timeout_sec_ for spin_mutex acquisition timeout.
+  /// Must exceed parameter_service_timeout_sec to avoid spurious TIMEOUT errors.
+  static constexpr double kSpinLockMarginSec{1.0};
+
+  /// Timeout for shutdown to wait for in-flight IPC
+  static constexpr std::chrono::seconds kShutdownTimeout{10};
+
+  /// Try to acquire spin_mutex_ with timeout.
+  /// Returns unique_lock on success, nullopt on timeout (result populated with error).
+  std::optional<std::unique_lock<std::timed_mutex>> try_acquire_spin_lock(ParameterResult & result);
 };
 
 }  // namespace ros2_medkit_gateway

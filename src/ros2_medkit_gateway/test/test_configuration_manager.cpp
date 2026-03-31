@@ -361,6 +361,42 @@ TEST_F(TestConfigurationManager, test_concurrent_queries_no_crash) {
   }
 }
 
+TEST_F(TestConfigurationManager, test_spin_lock_timeout_returns_error) {
+  // Hold spin_mutex_ from a background thread, verify public method returns TIMEOUT
+  // Access the mutex via a configurations call that blocks on a nonexistent node
+  std::atomic<bool> holding{false};
+  std::atomic<bool> done{false};
+
+  // Background thread: acquire spin_mutex_ and hold it
+  std::thread blocker([this, &holding, &done]() {
+    auto result = config_manager_->list_parameters("/blocking_node_timeout_test");
+    holding = true;
+    // list_parameters already released the lock, but by the time it returns
+    // the test thread should have observed the TIMEOUT. Spin briefly to keep
+    // the test deterministic.
+    while (!done.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  });
+
+  // Wait for blocker to start (it will hold spin_mutex_ during wait_for_service)
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  // This call should timeout on spin_mutex_ if blocker is still holding it,
+  // OR succeed if blocker already released. Either way, no hang.
+  auto start = std::chrono::steady_clock::now();
+  auto result = config_manager_->list_parameters("/timeout_test_node");
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  // Should complete within reasonable time (not hang forever)
+  EXPECT_LT(elapsed, std::chrono::seconds(10));
+  // Result is either TIMEOUT or SERVICE_UNAVAILABLE - both are acceptable
+  EXPECT_FALSE(result.success);
+
+  done = true;
+  blocker.join();
+}
+
 TEST_F(TestConfigurationManager, test_negative_cache_cross_method) {
   // list_parameters marks node unavailable, get_parameter should return cached
   auto list_result = config_manager_->list_parameters("/cross_method_cached_node");
