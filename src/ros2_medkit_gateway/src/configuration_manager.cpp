@@ -61,8 +61,12 @@ void ConfigurationManager::shutdown() {
   if (shutdown_.exchange(true)) {
     return;  // Already shut down
   }
-  // Acquire spin_mutex_ first to wait for any in-flight IPC to complete
-  std::lock_guard<std::mutex> spin_lock(spin_mutex_);
+  // Hold lock through cleanup to prevent race with in-flight requests
+  std::unique_lock<std::timed_mutex> spin_lock(spin_mutex_, std::defer_lock);
+  if (!spin_lock.try_lock_for(kShutdownTimeout)) {
+    RCLCPP_WARN(node_->get_logger(),
+                "ConfigurationManager shutdown: spin_mutex_ not released within timeout, proceeding with cleanup");
+  }
   std::lock_guard<std::mutex> lock(clients_mutex_);
   param_clients_.clear();
   param_node_.reset();
@@ -70,6 +74,23 @@ void ConfigurationManager::shutdown() {
 
 ParameterResult ConfigurationManager::shut_down_result() {
   return {false, {}, "ConfigurationManager is shut down", ParameterErrorCode::SHUT_DOWN};
+}
+
+std::optional<std::unique_lock<std::timed_mutex>>
+ConfigurationManager::try_acquire_spin_lock(ParameterResult & result) {
+  auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::duration<double>(service_timeout_sec_ + kSpinLockMarginSec));
+  std::unique_lock<std::timed_mutex> lock(spin_mutex_, std::defer_lock);
+  if (!lock.try_lock_for(timeout)) {
+    result.success = false;
+    result.error_message = "Parameter service temporarily unavailable - timed out after " +
+                           std::to_string(static_cast<int>(service_timeout_sec_ + kSpinLockMarginSec)) + "s";
+    result.error_code = ParameterErrorCode::TIMEOUT;
+    RCLCPP_WARN(node_->get_logger(), "Parameter service spin lock timeout (%.1fs) - another operation may be blocking",
+                service_timeout_sec_ + kSpinLockMarginSec);
+    return std::nullopt;
+  }
+  return lock;
 }
 
 std::chrono::duration<double> ConfigurationManager::get_service_timeout() const {
@@ -226,7 +247,10 @@ ParameterResult ConfigurationManager::list_parameters(const std::string & node_n
     // "Node already added to executor" errors from concurrent spin.
     std::vector<rclcpp::Parameter> parameters;
     {
-      std::lock_guard<std::mutex> spin_lock(spin_mutex_);
+      auto spin_lock = try_acquire_spin_lock(result);
+      if (!spin_lock) {
+        return result;
+      }
 
       // Cache default values first (gives node extra time for DDS service discovery)
       cache_default_values(node_name);
@@ -303,7 +327,10 @@ ParameterResult ConfigurationManager::get_parameter(const std::string & node_nam
     std::vector<rcl_interfaces::msg::ParameterDescriptor> descriptors;
 
     {
-      std::lock_guard<std::mutex> spin_lock(spin_mutex_);
+      auto spin_lock = try_acquire_spin_lock(result);
+      if (!spin_lock) {
+        return result;
+      }
       auto client = get_param_client(node_name);
 
       if (!client->wait_for_service(get_service_timeout())) {
@@ -402,8 +429,12 @@ ParameterResult ConfigurationManager::set_parameter(const std::string & node_nam
     return result;
   }
 
-  std::lock_guard<std::mutex> spin_lock(spin_mutex_);
   ParameterResult result;
+
+  auto spin_lock = try_acquire_spin_lock(result);
+  if (!spin_lock) {
+    return result;
+  }
 
   try {
     auto client = get_param_client(node_name);
@@ -724,8 +755,12 @@ ParameterResult ConfigurationManager::reset_parameter(const std::string & node_n
     return result;
   }
 
-  std::lock_guard<std::mutex> spin_lock(spin_mutex_);
   ParameterResult result;
+
+  auto spin_lock = try_acquire_spin_lock(result);
+  if (!spin_lock) {
+    return result;
+  }
 
   try {
     cache_default_values(node_name);
@@ -847,8 +882,12 @@ ParameterResult ConfigurationManager::reset_all_parameters(const std::string & n
     return result;
   }
 
-  std::lock_guard<std::mutex> spin_lock(spin_mutex_);
   ParameterResult result;
+
+  auto spin_lock = try_acquire_spin_lock(result);
+  if (!spin_lock) {
+    return result;
+  }
 
   try {
     cache_default_values(node_name);
