@@ -425,7 +425,7 @@ void RESTServer::setup_routes() {
         .tag("Data")
         .summary(std::string("Write data item for ") + et.singular)
         .description(std::string("Publishes a value to a ROS 2 topic on this ") + et.singular + ".")
-        .request_body("Data value to write", SB::generic_object_schema())
+        .request_body("Data value to write", SB::ref("DataWriteRequest"))
         .response(200, "Written value", SB::generic_object_schema())
         .operation_id(std::string("put") + capitalize(et.singular) + "DataItem");
 
@@ -524,7 +524,7 @@ void RESTServer::setup_routes() {
         .tag("Operations")
         .summary(std::string("Update execution for ") + et.singular)
         .description("Sends a control command to a running execution.")
-        .request_body("Execution control", SB::generic_object_schema())
+        .request_body("Execution control", SB::ref("ExecutionUpdateRequest"))
         .response(200, "Updated execution", SB::ref("OperationExecution"))
         .operation_id(std::string("update") + capitalize(et.singular) + "Execution");
 
@@ -909,7 +909,8 @@ void RESTServer::setup_routes() {
           .tag("Locking")
           .summary(std::string("Acquire lock on ") + et.singular)
           .description(std::string("Acquires an exclusive lock on this ") + et.singular + ".")
-          .request_body("Lock parameters", SB::ref("Lock"))
+          .request_body("Lock parameters", SB::ref("AcquireLockRequest"))
+          .header_param("X-Client-Id", "Unique client identifier for lock ownership")
           .response(201, "Lock acquired", SB::ref("Lock"))
           .operation_id(std::string("acquire") + capitalize(et.singular) + "Lock");
 
@@ -920,6 +921,8 @@ void RESTServer::setup_routes() {
           .tag("Locking")
           .summary(std::string("List locks on ") + et.singular)
           .description(std::string("Lists all active locks on this ") + et.singular + ".")
+          .header_param("X-Client-Id", "When provided, the 'owned' field indicates whether this client owns the lock",
+                        false)
           .response(200, "Lock list", SB::ref("LockList"))
           .operation_id(std::string("list") + capitalize(et.singular) + "Locks");
 
@@ -930,6 +933,8 @@ void RESTServer::setup_routes() {
           .tag("Locking")
           .summary(std::string("Get lock details for ") + et.singular)
           .description(std::string("Returns details of a specific lock on this ") + et.singular + ".")
+          .header_param("X-Client-Id", "When provided, the 'owned' field indicates whether this client owns the lock",
+                        false)
           .response(200, "Lock details", SB::ref("Lock"))
           .operation_id(std::string("get") + capitalize(et.singular) + "Lock");
 
@@ -940,8 +945,9 @@ void RESTServer::setup_routes() {
           .tag("Locking")
           .summary(std::string("Extend lock on ") + et.singular)
           .description(std::string("Extends the expiration of a lock on this ") + et.singular + ".")
-          .request_body("Lock extension", SB::ref("Lock"))
-          .response(200, "Lock extended", SB::ref("Lock"))
+          .request_body("Lock extension", SB::ref("ExtendLockRequest"))
+          .header_param("X-Client-Id", "Unique client identifier for lock ownership")
+          .response(204, "Lock extended")
           .operation_id(std::string("extend") + capitalize(et.singular) + "Lock");
 
       reg.del(entity_path + "/locks/{lock_id}",
@@ -951,6 +957,7 @@ void RESTServer::setup_routes() {
           .tag("Locking")
           .summary(std::string("Release lock on ") + et.singular)
           .description(std::string("Releases a lock on this ") + et.singular + ".")
+          .header_param("X-Client-Id", "Unique client identifier for lock ownership")
           .response(204, "Lock released")
           .operation_id(std::string("release") + capitalize(et.singular) + "Lock");
     }
@@ -1026,7 +1033,7 @@ void RESTServer::setup_routes() {
           .tag("Scripts")
           .summary(std::string("Terminate script execution for ") + et.singular)
           .description("Sends a control command (e.g., terminate) to a running script execution.")
-          .request_body("Execution control", SB::generic_object_schema())
+          .request_body("Execution control", SB::ref("ScriptControlRequest"))
           .response(200, "Execution updated", SB::ref("ScriptExecution"))
           .operation_id(std::string("control") + capitalize(et.singular) + "ScriptExecution");
 

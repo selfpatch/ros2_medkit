@@ -303,13 +303,15 @@ TEST(ResourceChangeNotifier, ExceptionInCallbackDoesNotBlockOthers) {
 // --- ChangeType propagation ---
 
 TEST(ResourceChangeNotifier, ChangeTypePropagation) {
-  ResourceChangeNotifier notifier;
-
   for (auto ct : {ChangeType::CREATED, ChangeType::UPDATED, ChangeType::DELETED}) {
+    // Each iteration gets its own notifier to guarantee the worker thread
+    // has fully shut down (joined) before the promise goes out of scope.
+    ResourceChangeNotifier notifier;
+
     std::promise<ChangeType> promise;
     auto future = promise.get_future();
 
-    auto id = notifier.subscribe({"data", "", ""}, [&promise](const ResourceChange & change) {
+    notifier.subscribe({"data", "", ""}, [&promise](const ResourceChange & change) {
       promise.set_value(change.change_type);
     });
 
@@ -319,9 +321,8 @@ TEST(ResourceChangeNotifier, ChangeTypePropagation) {
     ASSERT_EQ(status, std::future_status::ready);
     EXPECT_EQ(future.get(), ct);
 
-    notifier.unsubscribe(id);
-    // Brief pause to let the worker finish processing before next iteration
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // notifier destructor calls shutdown() -> joins worker thread,
+    // guaranteeing the callback is no longer running before promise is destroyed.
   }
 }
 

@@ -116,6 +116,12 @@ class SchemaBuilder {
   /// Lock schema (CRUD responses)
   static nlohmann::json lock_schema();
 
+  /// Lock acquire request schema (POST /locks)
+  static nlohmann::json acquire_lock_request_schema();
+
+  /// Lock extend request schema (PUT /locks/{id})
+  static nlohmann::json extend_lock_request_schema();
+
   /// Script metadata schema (list/get)
   static nlohmann::json script_metadata_schema();
 
@@ -130,6 +136,9 @@ class SchemaBuilder {
 
   /// Script upload response schema (minimal: id + name)
   static nlohmann::json script_upload_response_schema();
+
+  /// Trigger condition sub-schema (shared by trigger response and create request)
+  static nlohmann::json trigger_condition_schema();
 
   /// Trigger update request schema (only mutable fields)
   static nlohmann::json trigger_update_request_schema();
@@ -151,6 +160,15 @@ class SchemaBuilder {
 
   /// Log configuration schema (GET/PUT)
   static nlohmann::json log_configuration_schema();
+
+  /// Data write request schema (PUT /data/{id})
+  static nlohmann::json data_write_request_schema();
+
+  /// Execution update request schema (PUT /operations/{id}/executions/{id})
+  static nlohmann::json execution_update_request_schema();
+
+  /// Script control request schema (PUT /scripts/{id}/executions/{id})
+  static nlohmann::json script_control_request_schema();
 
   /// Auth token response schema
   static nlohmann::json auth_token_response_schema();

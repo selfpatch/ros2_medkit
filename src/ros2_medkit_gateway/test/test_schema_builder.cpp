@@ -456,6 +456,122 @@ TEST(SchemaBuilderRuntimeTest, FromRosSrvResponseUnknown) {
   EXPECT_TRUE(schema["x-medkit-schema-unavailable"].get<bool>());
 }
 
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, AcquireLockRequestSchema) {
+  auto schema = SchemaBuilder::acquire_lock_request_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("lock_expiration"));
+  EXPECT_TRUE(schema["properties"].contains("scopes"));
+  EXPECT_TRUE(schema["properties"].contains("break_lock"));
+  EXPECT_EQ(schema["properties"]["lock_expiration"]["type"], "integer");
+  EXPECT_EQ(schema["properties"]["lock_expiration"]["minimum"], 1);
+  EXPECT_EQ(schema["properties"]["scopes"]["type"], "array");
+  EXPECT_EQ(schema["properties"]["break_lock"]["type"], "boolean");
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "lock_expiration"), required.end());
+  EXPECT_EQ(required.size(), 1u);
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, ExtendLockRequestSchema) {
+  auto schema = SchemaBuilder::extend_lock_request_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("lock_expiration"));
+  EXPECT_EQ(schema["properties"]["lock_expiration"]["type"], "integer");
+  EXPECT_EQ(schema["properties"]["lock_expiration"]["minimum"], 1);
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "lock_expiration"), required.end());
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, DataWriteRequestSchema) {
+  auto schema = SchemaBuilder::data_write_request_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("type"));
+  EXPECT_TRUE(schema["properties"].contains("data"));
+  EXPECT_EQ(schema["properties"]["type"]["type"], "string");
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "type"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "data"), required.end());
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, ExecutionUpdateRequestSchema) {
+  auto schema = SchemaBuilder::execution_update_request_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("capability"));
+  EXPECT_EQ(schema["properties"]["capability"]["type"], "string");
+  ASSERT_TRUE(schema["properties"]["capability"].contains("enum"));
+  auto enum_vals = schema["properties"]["capability"]["enum"].get<std::vector<std::string>>();
+  EXPECT_EQ(enum_vals.size(), 4u);
+  EXPECT_NE(std::find(enum_vals.begin(), enum_vals.end(), "stop"), enum_vals.end());
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "capability"), required.end());
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, ScriptControlRequestSchema) {
+  auto schema = SchemaBuilder::script_control_request_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("action"));
+  EXPECT_EQ(schema["properties"]["action"]["type"], "string");
+  ASSERT_TRUE(schema["properties"]["action"].contains("enum"));
+  auto enum_vals = schema["properties"]["action"]["enum"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(enum_vals.begin(), enum_vals.end(), "stop"), enum_vals.end());
+  EXPECT_NE(std::find(enum_vals.begin(), enum_vals.end(), "forced_termination"), enum_vals.end());
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "action"), required.end());
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, LogConfigurationSchemaFieldsOptional) {
+  auto schema = SchemaBuilder::log_configuration_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("severity_filter"));
+  EXPECT_TRUE(schema["properties"].contains("max_entries"));
+
+  // Both fields are optional - no required array
+  EXPECT_FALSE(schema.contains("required"));
+
+  // severity_filter has enum constraint
+  ASSERT_TRUE(schema["properties"]["severity_filter"].contains("enum"));
+  auto enum_vals = schema["properties"]["severity_filter"]["enum"].get<std::vector<std::string>>();
+  EXPECT_EQ(enum_vals.size(), 5u);
+
+  // max_entries has bounds
+  EXPECT_EQ(schema["properties"]["max_entries"]["minimum"], 1);
+  EXPECT_EQ(schema["properties"]["max_entries"]["maximum"], 10000);
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, TriggerConditionSchemaShared) {
+  auto schema = SchemaBuilder::trigger_condition_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("condition_type"));
+  EXPECT_TRUE(schema["additionalProperties"].get<bool>());
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "condition_type"), required.end());
+}
+
 // =============================================================================
 // Schema registry consistency tests
 // Validates that all $ref references resolve and schemas are internally consistent.
