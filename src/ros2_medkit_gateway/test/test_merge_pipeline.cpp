@@ -1873,3 +1873,177 @@ TEST_F(MergePipelineTest, SuppressHeuristicAppsInCoveredNamespace) {
     }
   }
 }
+
+// =============================================================================
+// unmanifested_nodes: ignore policy tests
+// =============================================================================
+
+TEST_F(MergePipelineTest, IgnorePolicyHidesOrphanApps) {
+  // Manifest app with ros_binding
+  App manifest_app = make_app("nav_app", "compute_unit");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "nav_controller";
+  binding.namespace_pattern = "/navigation";
+  binding.topic_namespace = "";
+  manifest_app.ros_binding = binding;
+
+  // Runtime nodes: one matches manifest, one is orphan
+  App runtime_nav;
+  runtime_nav.id = "nav_controller";
+  runtime_nav.name = "nav_controller";
+  runtime_nav.source = "heuristic";
+  runtime_nav.is_online = true;
+  runtime_nav.bound_fqn = "/navigation/nav_controller";
+
+  App runtime_orphan;
+  runtime_orphan.id = "_param_client_node";
+  runtime_orphan.name = "_param_client_node";
+  runtime_orphan.source = "heuristic";
+  runtime_orphan.is_online = true;
+  runtime_orphan.bound_fqn = "/_param_client_node";
+
+  LayerOutput manifest_out;
+  manifest_out.apps.push_back(manifest_app);
+
+  LayerOutput runtime_out;
+  runtime_out.apps.push_back(runtime_nav);
+  runtime_out.apps.push_back(runtime_orphan);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  ManifestConfig config;
+  config.unmanifested_nodes = ManifestConfig::UnmanifestedNodePolicy::IGNORE;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), config);
+
+  auto result = pipeline_.execute();
+
+  // Only manifest app should remain - orphan _param_client_node should be hidden
+  ASSERT_EQ(result.apps.size(), 1u);
+  EXPECT_EQ(result.apps[0].id, "nav_app");
+  EXPECT_EQ(result.apps[0].source, "manifest");
+}
+
+TEST_F(MergePipelineTest, IgnorePolicySuppressesOrphanNamespaceComponents) {
+  // Manifest component in /navigation
+  Component manifest_comp = make_component("compute_unit", "", "/navigation");
+  manifest_comp.source = "manifest";
+
+  // Runtime synthetic component in /perception (orphan namespace)
+  Component runtime_comp = make_component("perception", "", "/perception");
+  runtime_comp.source = "heuristic";
+
+  // Manifest app linked to /navigation
+  App manifest_app = make_app("nav_app", "compute_unit");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "nav_controller";
+  binding.namespace_pattern = "/navigation";
+  binding.topic_namespace = "";
+  manifest_app.ros_binding = binding;
+
+  // Runtime nodes
+  App runtime_nav;
+  runtime_nav.id = "nav_controller";
+  runtime_nav.name = "nav_controller";
+  runtime_nav.source = "heuristic";
+  runtime_nav.is_online = true;
+  runtime_nav.bound_fqn = "/navigation/nav_controller";
+
+  App runtime_perception;
+  runtime_perception.id = "camera_node";
+  runtime_perception.name = "camera_node";
+  runtime_perception.source = "heuristic";
+  runtime_perception.is_online = true;
+  runtime_perception.bound_fqn = "/perception/camera_node";
+
+  LayerOutput manifest_out;
+  manifest_out.components.push_back(manifest_comp);
+  manifest_out.apps.push_back(manifest_app);
+
+  LayerOutput runtime_out;
+  runtime_out.components.push_back(runtime_comp);
+  runtime_out.apps.push_back(runtime_nav);
+  runtime_out.apps.push_back(runtime_perception);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  ManifestConfig config;
+  config.unmanifested_nodes = ManifestConfig::UnmanifestedNodePolicy::IGNORE;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), config);
+
+  auto result = pipeline_.execute();
+
+  // Only manifest component should remain - /perception suppressed
+  ASSERT_EQ(result.components.size(), 1u);
+  EXPECT_EQ(result.components[0].id, "compute_unit");
+
+  // Only manifest app - orphan camera_node hidden
+  ASSERT_EQ(result.apps.size(), 1u);
+  EXPECT_EQ(result.apps[0].id, "nav_app");
+}
+
+TEST_F(MergePipelineTest, WarnPolicyKeepsOrphanApps) {
+  // Same setup as IgnorePolicyHidesOrphanApps but with WARN policy
+  App manifest_app = make_app("nav_app", "compute_unit");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "nav_controller";
+  binding.namespace_pattern = "/navigation";
+  binding.topic_namespace = "";
+  manifest_app.ros_binding = binding;
+
+  App runtime_nav;
+  runtime_nav.id = "nav_controller";
+  runtime_nav.name = "nav_controller";
+  runtime_nav.source = "heuristic";
+  runtime_nav.is_online = true;
+  runtime_nav.bound_fqn = "/navigation/nav_controller";
+
+  App runtime_orphan;
+  runtime_orphan.id = "orphan_node";
+  runtime_orphan.name = "orphan_node";
+  runtime_orphan.source = "heuristic";
+  runtime_orphan.is_online = true;
+  runtime_orphan.bound_fqn = "/orphan_node";
+
+  LayerOutput manifest_out;
+  manifest_out.apps.push_back(manifest_app);
+
+  LayerOutput runtime_out;
+  runtime_out.apps.push_back(runtime_nav);
+  runtime_out.apps.push_back(runtime_orphan);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  ManifestConfig config;
+  config.unmanifested_nodes = ManifestConfig::UnmanifestedNodePolicy::WARN;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), config);
+
+  auto result = pipeline_.execute();
+
+  // WARN policy should keep orphan apps (gap-fill behavior)
+  EXPECT_GE(result.apps.size(), 2u);
+  bool found_orphan = false;
+  for (const auto & app : result.apps) {
+    if (app.id == "orphan_node") {
+      found_orphan = true;
+    }
+  }
+  EXPECT_TRUE(found_orphan) << "WARN policy should preserve orphan apps";
+}

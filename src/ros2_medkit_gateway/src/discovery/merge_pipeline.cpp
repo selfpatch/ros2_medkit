@@ -527,39 +527,63 @@ MergeResult MergePipeline::execute() {
       }
     }
 
-    // Remove heuristic apps that were merged into manifest apps (same ID after merge).
-    // These are runtime duplicates of linked manifest entities. Gap-fill apps (new
-    // heuristic apps in any namespace) survive - they fill manifest gaps intentionally.
+    // Build set of orphan FQNs for policy-based filtering
+    std::set<std::string> orphan_fqns(linking.orphan_nodes.begin(), linking.orphan_nodes.end());
+
+    // Remove heuristic apps based on unmanifested_nodes policy and linking results.
     std::set<std::string> manifest_app_ids;
     for (const auto & app : result.apps) {
       if (app.source == "manifest") {
         manifest_app_ids.insert(app.id);
       }
     }
-    // In practice this is a defensive no-op: real suppression of same-ID apps happens during
-    // merge_entities (manifest wins), and different-ID runtime apps are removed by the linker's
-    // FQN-based dedup. This layer exists as future-proofing in case the linker is extended to
-    // produce non-manifest IDs. node_to_app values are currently always manifest app IDs.
     std::set<std::string> linked_app_ids(manifest_app_ids);
     for (const auto & [fqn, app_id] : linking_result_.node_to_app) {
       linked_app_ids.insert(app_id);
     }
+
+    bool hide_orphans = manifest_config_.unmanifested_nodes == ManifestConfig::UnmanifestedNodePolicy::IGNORE;
+
     auto app_it = std::remove_if(result.apps.begin(), result.apps.end(), [&](const App & app) {
       if (!is_runtime_source(app.source)) {
         return false;
       }
-      // Keep gap-fill apps (not linked to any manifest entity)
-      // Suppress only if this app's ID matches a linked manifest app
-      return linked_app_ids.count(app.id) > 0;
+      // Suppress runtime apps whose ID matches a linked manifest app (dedup)
+      if (linked_app_ids.count(app.id) > 0) {
+        return true;
+      }
+      // When unmanifested_nodes=ignore, suppress orphan apps (gap-fill nodes not in manifest)
+      if (hide_orphans && app.bound_fqn.has_value() && orphan_fqns.count(app.bound_fqn.value()) > 0) {
+        return true;
+      }
+      return false;
     });
     result.apps.erase(app_it, result.apps.end());
 
-    // Remove runtime components whose namespace is covered
+    // Also collect orphan namespaces for component/area suppression
+    std::set<std::string> orphan_namespaces;
+    if (hide_orphans) {
+      for (const auto & fqn : orphan_fqns) {
+        auto last_slash = fqn.rfind('/');
+        if (last_slash != std::string::npos && last_slash > 0) {
+          orphan_namespaces.insert(fqn.substr(0, last_slash));
+        }
+      }
+    }
+
+    // Remove runtime components whose namespace is covered by manifest or orphan suppression
     auto comp_it = std::remove_if(result.components.begin(), result.components.end(), [&](const Component & comp) {
       if (!is_runtime_source(comp.source)) {
         return false;
       }
-      return manifest_comp_ns.count(comp.namespace_path) > 0 || linked_namespaces.count(comp.namespace_path) > 0;
+      if (manifest_comp_ns.count(comp.namespace_path) > 0 || linked_namespaces.count(comp.namespace_path) > 0) {
+        return true;
+      }
+      // When hiding orphans, also suppress components from orphan-only namespaces
+      if (hide_orphans && orphan_namespaces.count(comp.namespace_path) > 0) {
+        return true;
+      }
+      return false;
     });
     result.components.erase(comp_it, result.components.end());
 
@@ -568,7 +592,13 @@ MergeResult MergePipeline::execute() {
       if (!is_runtime_source(area.source)) {
         return false;
       }
-      return manifest_area_ns.count(area.namespace_path) > 0 || linked_namespaces.count(area.namespace_path) > 0;
+      if (manifest_area_ns.count(area.namespace_path) > 0 || linked_namespaces.count(area.namespace_path) > 0) {
+        return true;
+      }
+      if (hide_orphans && orphan_namespaces.count(area.namespace_path) > 0) {
+        return true;
+      }
+      return false;
     });
     result.areas.erase(area_it, result.areas.end());
 
