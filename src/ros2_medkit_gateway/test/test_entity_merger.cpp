@@ -169,22 +169,45 @@ TEST(EntityMerger, functions_no_collision_both_kept) {
 // Component merge tests
 // =============================================================================
 
-TEST(EntityMerger, components_prefix_on_collision) {
+TEST(EntityMerger, components_merge_by_id) {
   EntityMerger merger("subsystem_b");
 
   auto local_comp = make_component("engine_ctrl", "powertrain");
+  local_comp.tags = {"engine", "control"};
+
   auto remote_comp = make_component("engine_ctrl", "powertrain");
+  remote_comp.tags = {"control", "ecu"};
 
   auto result = merger.merge_components({local_comp}, {remote_comp});
 
-  // Both kept - local unchanged, remote prefixed
-  ASSERT_EQ(result.size(), 2u);
+  // Same ID -> one entity (merged)
+  ASSERT_EQ(result.size(), 1u);
   EXPECT_EQ(result[0].id, "engine_ctrl");
-  EXPECT_EQ(result[0].source, "node");  // local unchanged
+  EXPECT_EQ(result[0].source, "node");  // local source preserved
 
-  EXPECT_EQ(result[1].id, "subsystem_b__engine_ctrl");
-  EXPECT_EQ(result[1].name, "subsystem_b__engine_ctrl");
-  EXPECT_EQ(result[1].source, "peer:subsystem_b");
+  // Tags merged without duplicates: engine, control, ecu
+  EXPECT_EQ(result[0].tags.size(), 3u);
+  auto has_tag = [&](const std::string & tag) {
+    return std::find(result[0].tags.begin(), result[0].tags.end(), tag) != result[0].tags.end();
+  };
+  EXPECT_TRUE(has_tag("engine"));
+  EXPECT_TRUE(has_tag("control"));
+  EXPECT_TRUE(has_tag("ecu"));
+}
+
+TEST(EntityMerger, components_merge_takes_remote_description_when_local_empty) {
+  EntityMerger merger("subsystem_b");
+
+  auto local_comp = make_component("engine_ctrl", "powertrain");
+  // local has no description
+
+  auto remote_comp = make_component("engine_ctrl", "powertrain");
+  remote_comp.description = "Engine control unit for powertrain management";
+
+  auto result = merger.merge_components({local_comp}, {remote_comp});
+
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].description, "Engine control unit for powertrain management");
 }
 
 TEST(EntityMerger, components_no_collision_no_prefix) {
@@ -254,10 +277,10 @@ TEST(EntityMerger, builds_routing_table_for_remote_entities) {
   EXPECT_EQ(table.at("remote_app"), "peer_x");
 }
 
-TEST(EntityMerger, routing_table_uses_prefixed_id_on_collision) {
+TEST(EntityMerger, routing_table_uses_prefixed_id_on_app_collision) {
   EntityMerger merger("peer_x");
 
-  // Same ID -> collision -> remote gets prefixed
+  // Same ID -> collision -> remote gets prefixed (Apps use prefix strategy)
   auto local_apps = std::vector<App>{make_app("shared_app")};
   auto remote_apps = std::vector<App>{make_app("shared_app")};
 
@@ -271,6 +294,32 @@ TEST(EntityMerger, routing_table_uses_prefixed_id_on_collision) {
 
   // The original ID should NOT be in the routing table (it's local)
   EXPECT_EQ(table.count("shared_app"), 0u);
+}
+
+TEST(EntityMerger, merged_components_not_in_routing_table) {
+  EntityMerger merger("peer_x");
+
+  // Same component ID -> merged, should NOT appear in routing table
+  auto local_comps = std::vector<Component>{make_component("robot-alpha")};
+  auto remote_comps = std::vector<Component>{make_component("robot-alpha")};
+
+  merger.merge_components(local_comps, remote_comps);
+
+  const auto & table = merger.get_routing_table();
+  EXPECT_EQ(table.count("robot-alpha"), 0u);
+}
+
+TEST(EntityMerger, remote_only_component_gets_routing_entry) {
+  EntityMerger merger("peer_x");
+
+  auto local_comps = std::vector<Component>{make_component("engine_ctrl")};
+  auto remote_comps = std::vector<Component>{make_component("brake_ctrl")};
+
+  merger.merge_components(local_comps, remote_comps);
+
+  const auto & table = merger.get_routing_table();
+  ASSERT_EQ(table.count("brake_ctrl"), 1u);
+  EXPECT_EQ(table.at("brake_ctrl"), "peer_x");
 }
 
 TEST(EntityMerger, merged_areas_not_in_routing_table) {

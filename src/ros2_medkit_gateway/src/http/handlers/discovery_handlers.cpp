@@ -439,8 +439,13 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
       return;
     }
 
+    // Cache-first lookup: EntityCache has merged entities from peers
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_opt = cache.get_component(component_id);
+    if (!comp_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      comp_opt = discovery->get_component(component_id);
+    }
 
     if (!comp_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
@@ -1184,16 +1189,21 @@ void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, http
       return;
     }
 
+    // Cache-first lookup: EntityCache has merged entities from peers
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto func_opt = cache.get_function(function_id);
+    if (!func_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      func_opt = discovery->get_function(function_id);
+    }
 
     if (!func_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found", {{"function_id", function_id}});
       return;
     }
 
-    auto discovery = ctx_.node()->get_discovery_manager();
-    auto host_ids = discovery->get_hosts_for_function(function_id);
+    // Use the Function's hosts list directly (includes merged hosts from all peers)
+    const auto & host_ids = func_opt->hosts;
 
     json items = json::array();
     for (const auto & app_id : host_ids) {

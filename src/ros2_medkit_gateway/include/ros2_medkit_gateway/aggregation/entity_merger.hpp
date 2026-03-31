@@ -29,13 +29,14 @@ namespace ros2_medkit_gateway {
  * @brief Merges entities from a remote peer gateway with local entities.
  *
  * Type-aware merge logic:
- * - Area: merge by ID (combine relations, no duplication)
+ * - Area: merge by ID (combine tags/description, no duplication)
  * - Function: merge by ID (combine hosts lists)
- * - Component: prefix remote ID with "peername__" on collision
+ * - Component: merge by ID (combine tags/description, no duplication)
  * - App: prefix remote ID with "peername__" on collision
  *
  * After merging, a routing table maps remote entity IDs (possibly prefixed)
- * to the peer name, enabling request forwarding.
+ * to the peer name, enabling request forwarding. Merged entities (Area,
+ * Function, Component with same ID) do NOT appear in the routing table.
  */
 class EntityMerger {
  public:
@@ -58,10 +59,11 @@ class EntityMerger {
   std::vector<Function> merge_functions(const std::vector<Function> & local, const std::vector<Function> & remote);
 
   /**
-   * @brief Merge local and remote Components with prefix on collision.
+   * @brief Merge local and remote Components by ID.
    *
-   * If a remote Component has the same ID as a local one, the remote entity
-   * gets its ID prefixed with "peername__".
+   * Same component ID from both local and remote yields one Component entity
+   * with merged tags and description. Remote-only components are added with
+   * source tagged as "peer:<name>".
    */
   std::vector<Component> merge_components(const std::vector<Component> & local, const std::vector<Component> & remote);
 

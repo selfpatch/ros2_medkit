@@ -129,24 +129,41 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
   // Start with copies of all local components
   std::vector<Component> result = local;
 
-  // Build set of local component IDs
-  std::unordered_set<std::string> local_ids;
-  for (const auto & comp : local) {
-    local_ids.insert(comp.id);
+  // Build index of local component IDs for fast lookup
+  std::unordered_map<std::string, size_t> local_index;
+  for (size_t i = 0; i < result.size(); ++i) {
+    local_index[result[i].id] = i;
   }
 
   for (const auto & remote_comp : remote) {
-    Component added = remote_comp;
-    added.source = peer_source();
+    auto it = local_index.find(remote_comp.id);
+    if (it != local_index.end()) {
+      // Collision: merge by combining tags and subcomponent relationships
+      auto & merged = result[it->second];
 
-    if (local_ids.count(remote_comp.id) > 0) {
-      // Collision: prefix the remote entity ID
-      added.id = prefix_id(remote_comp.id);
-      added.name = peer_name_ + SEPARATOR + remote_comp.name;
+      // Merge tags without duplicates
+      std::unordered_set<std::string> tag_set(merged.tags.begin(), merged.tags.end());
+      for (const auto & tag : remote_comp.tags) {
+        if (tag_set.insert(tag).second) {
+          merged.tags.push_back(tag);
+        }
+      }
+
+      // If local has no description but remote does, take remote's
+      if (merged.description.empty() && !remote_comp.description.empty()) {
+        merged.description = remote_comp.description;
+      }
+
+      // Merged components do NOT go into routing table - they are combined local+remote
+    } else {
+      // No collision: add remote component with source tagged
+      Component added = remote_comp;
+      added.source = peer_source();
+      result.push_back(added);
+
+      // Remote-only components get a routing entry
+      routing_table_[added.id] = peer_name_;
     }
-
-    routing_table_[added.id] = peer_name_;
-    result.push_back(added);
   }
 
   return result;

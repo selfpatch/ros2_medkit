@@ -800,6 +800,6 @@ TEST_F(DiscoveryHandlersFixtureTest, FunctionHostsReturnsHostingApps) {
   ASSERT_EQ(body["items"].size(), 1);
   EXPECT_EQ(body["items"][0]["id"], "planner");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
-  EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], true);  // cache has enriched is_online from SetUp
+  EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], true);
   EXPECT_EQ(body["_links"]["function"], "/api/v1/functions/navigation");
 }
