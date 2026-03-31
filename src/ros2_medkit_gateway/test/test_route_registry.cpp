@@ -16,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../src/openapi/route_registry.hpp"
@@ -118,6 +119,55 @@ TEST_F(RouteRegistryTest, ToRegexPathHealthConvertsCleanly) {
 
   auto paths = registry_.to_openapi_paths();
   EXPECT_TRUE(paths.contains("/health"));
+}
+
+// =============================================================================
+// Trailing slash tolerance (Fix 322)
+// =============================================================================
+
+TEST_F(RouteRegistryTest, RoutesMatchWithAndWithoutTrailingSlash) {
+  auto ok_handler = [](const httplib::Request &, httplib::Response & res) {
+    res.status = 200;
+    res.set_content("ok", "text/plain");
+  };
+
+  RouteRegistry reg;
+  reg.get("/", ok_handler).tag("Server");
+  reg.get("/health", ok_handler).tag("Server");
+
+  httplib::Server server;
+  reg.register_all(server, "/api/v1");
+
+  int port = server.bind_to_any_port("127.0.0.1");
+  std::thread t([&server]() {
+    server.listen_after_bind();
+  });
+  server.wait_until_ready();
+
+  httplib::Client cli("127.0.0.1", port);
+
+  // Root with trailing slash
+  auto r1 = cli.Get("/api/v1/");
+  ASSERT_TRUE(r1);
+  EXPECT_EQ(r1->status, 200) << "GET /api/v1/ should match root route";
+
+  // Root without trailing slash (#322)
+  auto r2 = cli.Get("/api/v1");
+  ASSERT_TRUE(r2);
+  EXPECT_EQ(r2->status, 200) << "GET /api/v1 should also match root route";
+
+  // /health without trailing slash
+  auto r3 = cli.Get("/api/v1/health");
+  ASSERT_TRUE(r3);
+  EXPECT_EQ(r3->status, 200) << "GET /api/v1/health should work";
+
+  // /health with trailing slash
+  auto r4 = cli.Get("/api/v1/health/");
+  ASSERT_TRUE(r4);
+  EXPECT_EQ(r4->status, 200) << "GET /api/v1/health/ should also work";
+
+  server.stop();
+  t.join();
 }
 
 // =============================================================================

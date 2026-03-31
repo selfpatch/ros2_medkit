@@ -79,13 +79,14 @@ RouteEntry & RouteEntry::query_param(const std::string & name, const std::string
   return *this;
 }
 
-RouteEntry & RouteEntry::header_param(const std::string & name, const std::string & desc, bool required) {
+RouteEntry & RouteEntry::header_param(const std::string & name, const std::string & desc, bool required,
+                                      const nlohmann::json & schema) {
   nlohmann::json param;
   param["name"] = name;
   param["in"] = "header";
   param["required"] = required;
   param["description"] = desc;
-  param["schema"] = {{"type", "string"}};
+  param["schema"] = schema;
   parameters_.push_back(std::move(param));
   return *this;
 }
@@ -148,6 +149,11 @@ std::string RouteRegistry::to_regex_path(const std::string & openapi_path, const
   //
   // The "end of path" check ensures only the LAST param on data/config paths gets (.+).
 
+  // Root path "/" -> just optional slash anchor (prefix already has the base path)
+  if (openapi_path == "/") {
+    return "/?$";
+  }
+
   std::string result;
   size_t i = 0;
   while (i < openapi_path.size()) {
@@ -174,8 +180,8 @@ std::string RouteRegistry::to_regex_path(const std::string & openapi_path, const
     }
   }
 
-  // Append $ anchor to ensure exact match
-  result += "$";
+  // Accept optional trailing slash, then anchor to ensure exact match
+  result += "/?$";
   return result;
 }
 
