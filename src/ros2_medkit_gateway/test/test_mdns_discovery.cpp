@@ -250,3 +250,30 @@ TEST(MdnsDiscovery, start_stop_lifecycle_with_callbacks) {
   EXPECT_FALSE(found_called);
   EXPECT_FALSE(removed_called);
 }
+
+// =============================================================================
+// instance_name() tests
+// =============================================================================
+
+TEST(MdnsDiscovery, instance_name_returns_explicit_name) {
+  MdnsDiscovery::Config config;
+  config.name = "my-gateway";
+  MdnsDiscovery discovery(config);
+  EXPECT_EQ(discovery.instance_name(), "my-gateway");
+}
+
+TEST(MdnsDiscovery, instance_name_defaults_to_hostname_when_empty) {
+  MdnsDiscovery::Config config;
+  // config.name is empty by default - constructor resolves to gethostname()
+  MdnsDiscovery discovery(config);
+  EXPECT_FALSE(discovery.instance_name().empty());
+}
+
+TEST(MdnsDiscovery, instance_name_preserves_set_value_across_lifecycle) {
+  MdnsDiscovery::Config config;
+  config.name = "perception-ecu";
+  MdnsDiscovery discovery(config);
+  EXPECT_EQ(discovery.instance_name(), "perception-ecu");
+  discovery.stop();
+  EXPECT_EQ(discovery.instance_name(), "perception-ecu");
+}
