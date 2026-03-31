@@ -218,20 +218,35 @@ class TestDocsEndpoint(GatewayTestCase):
         config_path = config_paths[0]
         path_item = data['paths'][config_path]
 
-        # Verify GET response schema has correct field names
+        # Verify GET response schema references LogConfiguration component
         self.assertIn('get', path_item)
         get_schema = path_item['get']['responses']['200']['content']['application/json']['schema']
-        props = get_schema.get('properties', {})
-        self.assertIn('severity_filter', props, f'Expected severity_filter in properties: {props}')
-        self.assertIn('max_entries', props, f'Expected max_entries in properties: {props}')
-        self.assertNotIn('level', props, f'Should not contain old "level" field: {props}')
+        if '$ref' in get_schema:
+            # Entity-scoped docs use $ref to shared LogConfiguration schema
+            self.assertIn('LogConfiguration', get_schema['$ref'])
+            # Verify the referenced component schema has correct fields
+            schemas = data.get('components', {}).get('schemas', {})
+            if 'LogConfiguration' in schemas:
+                props = schemas['LogConfiguration'].get('properties', {})
+                self.assertIn('severity_filter', props)
+                self.assertIn('max_entries', props)
+                self.assertNotIn('level', props)
+        else:
+            # Inline schema (root docs)
+            props = get_schema.get('properties', {})
+            self.assertIn('severity_filter', props, f'Missing severity_filter: {props}')
+            self.assertIn('max_entries', props, f'Missing max_entries: {props}')
+            self.assertNotIn('level', props, f'Old "level" field present: {props}')
 
-        # Verify PUT request body schema
+        # Verify PUT request body schema references LogConfiguration
         self.assertIn('put', path_item)
         put_schema = path_item['put']['requestBody']['content']['application/json']['schema']
-        put_props = put_schema.get('properties', {})
-        self.assertIn('severity_filter', put_props)
-        self.assertNotIn('level', put_props)
+        if '$ref' in put_schema:
+            self.assertIn('LogConfiguration', put_schema['$ref'])
+        else:
+            put_props = put_schema.get('properties', {})
+            self.assertIn('severity_filter', put_props)
+            self.assertNotIn('level', put_props)
 
     def test_nonexistent_entity_docs_returns_404(self):
         """GET /apps/nonexistent_entity_xyz/docs returns 404.
