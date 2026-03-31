@@ -91,6 +91,14 @@ mDNS Discovery Parameters
      - ``"_medkit._tcp.local"``
      - mDNS service type used for announcement and browsing. All gateways in
        the same aggregation cluster must use the same service type.
+   * - ``aggregation.mdns_name``
+     - string
+     - ``""``
+     - mDNS instance name for announcement and self-discovery filtering.
+       Defaults to the system hostname (via ``gethostname()``). Must be unique
+       per gateway instance. Set explicitly when running multiple gateways on
+       the same host - otherwise they share the same hostname and filter each
+       other out as "self".
 
 Static Peers
 ------------

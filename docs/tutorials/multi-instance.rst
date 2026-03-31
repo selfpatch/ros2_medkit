@@ -160,6 +160,7 @@ automatically on the local network.
          enabled: true
          announce: true
          discover: true
+         mdns_name: "gateway_a"
 
 **Gateway B config with mDNS:**
 
@@ -174,6 +175,14 @@ automatically on the local network.
          enabled: true
          announce: true
          discover: true
+         mdns_name: "gateway_b"
+
+.. note::
+
+   ``mdns_name`` must be set explicitly when running multiple gateways on
+   the same host. Without it, all instances share the same hostname and
+   filter each other out as "self". On separate hosts or containers with
+   distinct hostnames, this parameter can be omitted.
 
 Start both gateways with their configs:
 
