@@ -31,7 +31,9 @@
 #include <netdb.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <string>
@@ -165,8 +167,16 @@ int announce_callback(int sock, const struct sockaddr * from, size_t addrlen, md
   mdns_string_t name = mdns_string_extract(data, size, &name_off, name_buf.data(), name_buf.size());
   std::string queried_name(name.str, name.length);
 
-  // Check if the query matches our service type
-  if (queried_name.find(config->service) == std::string::npos && rtype != MDNS_RECORDTYPE_ANY) {
+  // Check if the query matches our service type (case-insensitive per RFC 1035)
+  std::string queried_lower = queried_name;
+  std::string service_lower = config->service;
+  std::transform(queried_lower.begin(), queried_lower.end(), queried_lower.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  std::transform(service_lower.begin(), service_lower.end(), service_lower.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (queried_lower.find(service_lower) == std::string::npos && rtype != MDNS_RECORDTYPE_ANY) {
     return 0;
   }
 
