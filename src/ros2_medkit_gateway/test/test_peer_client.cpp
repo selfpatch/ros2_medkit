@@ -215,6 +215,70 @@ TEST(PeerClientHappyPath, fetch_entities_parses_collections) {
   t.join();
 }
 
+TEST(PeerClientHappyPath, fetch_entities_parses_relationship_fields) {
+  httplib::Server svr;
+  svr.Get("/api/v1/areas", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  svr.Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(
+        R"({"items":[
+          {"id":"perception-ecu","name":"Perception ECU",
+           "x-medkit":{"parentComponentId":"robot-alpha","dependsOn":["compute-unit"],
+                       "source":"manifest","namespace":"/perception"}},
+          {"id":"robot-alpha","name":"Robot Alpha","x-medkit":{"source":"manifest"}}
+        ]})",
+        "application/json");
+  });
+  svr.Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(
+        R"({"items":[
+          {"id":"lidar-driver","name":"Lidar Driver",
+           "x-medkit":{"componentId":"perception-ecu","source":"manifest"}}
+        ]})",
+        "application/json");
+  });
+  svr.Get("/api/v1/functions", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(
+        R"({"items":[
+          {"id":"autonomous-navigation","name":"Autonomous Navigation",
+           "x-medkit":{"hosts":["lidar-driver","path-planner"],"source":"manifest"}}
+        ]})",
+        "application/json");
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "peer_ecu", 5000);
+  auto result = client.fetch_entities();
+
+  ASSERT_TRUE(result.has_value());
+
+  // Component: parent_component_id and depends_on parsed
+  ASSERT_EQ(result->components.size(), 2u);
+  EXPECT_EQ(result->components[0].id, "perception-ecu");
+  EXPECT_EQ(result->components[0].parent_component_id, "robot-alpha");
+  ASSERT_EQ(result->components[0].depends_on.size(), 1u);
+  EXPECT_EQ(result->components[0].depends_on[0], "compute-unit");
+
+  // App: component_id parsed
+  ASSERT_EQ(result->apps.size(), 1u);
+  EXPECT_EQ(result->apps[0].component_id, "perception-ecu");
+
+  // Function: hosts parsed
+  ASSERT_EQ(result->functions.size(), 1u);
+  EXPECT_EQ(result->functions[0].id, "autonomous-navigation");
+  ASSERT_EQ(result->functions[0].hosts.size(), 2u);
+  EXPECT_EQ(result->functions[0].hosts[0], "lidar-driver");
+  EXPECT_EQ(result->functions[0].hosts[1], "path-planner");
+
+  svr.stop();
+  t.join();
+}
+
 TEST(PeerClientHappyPath, forward_request_proxies_response) {
   httplib::Server svr;
   svr.Get(R"(/api/v1/apps/nav/data)", [](const httplib::Request & req, httplib::Response & res) {
