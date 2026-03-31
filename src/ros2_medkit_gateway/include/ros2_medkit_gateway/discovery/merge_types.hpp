@@ -141,10 +141,11 @@ struct MergeReport {
  *
  * When manifest is present, runtime entities fill gaps. This struct
  * controls which entity types and namespaces are eligible for gap-fill.
+ *
+ * Note: allow_heuristic_areas and allow_heuristic_components have been
+ * removed because runtime discovery no longer creates Areas or Components.
  */
 struct GapFillConfig {
-  bool allow_heuristic_areas{true};
-  bool allow_heuristic_components{true};
   bool allow_heuristic_apps{true};
   bool allow_heuristic_functions{false};
   std::vector<std::string> namespace_whitelist;

@@ -58,8 +58,8 @@ The following diagram shows the relationships between the main components of the
        }
 
        class RuntimeDiscoveryStrategy {
-           + discover_synthetic_components(): vector<Component>
-           + discover_topic_components(): vector<Component>
+           + discover_apps(): vector<App>
+           + discover_functions(): vector<Function>
            - config_: RuntimeConfig
        }
 
@@ -392,8 +392,8 @@ Main Components
 
    - **RuntimeDiscoveryStrategy** - Heuristic discovery via ROS 2 graph introspection
      - Maps nodes to Apps with ``source: "heuristic"``
-     - Creates synthetic Components grouped by namespace
-     - Handles topic-only namespaces (Isaac Sim, bridges) via TopicOnlyPolicy
+     - Creates Functions from namespace grouping
+     - Never creates Areas or Components (those come from manifest/HostInfoProvider)
    - **ManifestDiscoveryStrategy** - Static discovery from YAML manifest
      - Provides stable, semantic entity IDs
      - Supports offline detection of failed components

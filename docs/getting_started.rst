@@ -172,15 +172,15 @@ ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
    **Discovery Modes**
 
    - **Runtime-only** (default): Each ROS 2 namespace becomes an Area, and
-     ROS 2 nodes within it are exposed as Apps. Synthetic Components are
-     created to group these Apps by namespace.
+     ROS 2 nodes within it are exposed as Apps. A single host-level
+     Component is created from system info. Namespaces become Functions.
    - **Hybrid**: Manifest defines Areas/Components/Apps/Functions, runtime
      links them to live ROS 2 nodes.
    - **Manifest-only**: Only manifest-declared entities are exposed.
 
-   Areas are optional. Simple robots can use a flat component tree without
-   areas by setting ``discovery.runtime.create_synthetic_areas: false`` or
-   by omitting the ``areas:`` section in the manifest.
+   Areas are optional. In runtime mode, Areas are never created - they
+   come from manifest only. Omit the ``areas:`` section in the manifest
+   for a flat tree.
 
    See :doc:`tutorials/manifest-discovery` for details on manifest mode.
 

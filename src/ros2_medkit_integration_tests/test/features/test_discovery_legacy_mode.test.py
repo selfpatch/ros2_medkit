@@ -14,10 +14,10 @@
 # limitations under the License.
 
 """
-Integration tests for legacy discovery mode (create_synthetic_components: false).
+Integration tests for runtime discovery without HostInfoProvider.
 
-When synthetic components are disabled, each node becomes its own Component
-in a 1:1 mapping (no namespace-based grouping).
+When default_component is disabled, runtime discovery returns no components
+(Components come from HostInfoProvider or manifest only).
 """
 
 import unittest
@@ -35,7 +35,6 @@ from ros2_medkit_test_utils.launch_helpers import create_demo_nodes, create_gate
 def generate_test_description():
     gateway_node = create_gateway_node(
         extra_params={
-            'discovery.runtime.create_synthetic_components': False,
             'discovery.runtime.default_component.enabled': False,
         },
     )
@@ -56,48 +55,41 @@ def generate_test_description():
 
 
 # @verifies REQ_INTEROP_003
-class TestLegacyDiscoveryMode(GatewayTestCase):
-    """Test create_synthetic_components=false (legacy 1:1 node-to-component mode)."""
+class TestNoHostInfoProviderMode(GatewayTestCase):
+    """Test runtime discovery without HostInfoProvider (no components)."""
 
-    def test_each_node_has_own_component(self):
-        """Each node should become its own Component (no synthetic grouping)."""
+    def test_no_components_without_host_provider(self):
+        """No components should exist when HostInfoProvider is disabled."""
+        self.poll_endpoint_until(
+            '/apps',
+            lambda d: d if len(d.get('items', [])) >= 3 else None,
+            timeout=60.0,
+        )
+        # Now check components - should be empty
+        comp_data = self.get_json('/components')
+        components = comp_data.get('items', [])
+        self.assertEqual(
+            len(components), 0,
+            f"Expected no components without HostInfoProvider, "
+            f"got: {[c.get('id') for c in components]}",
+        )
+
+    def test_apps_still_discovered(self):
+        """Apps should still be discovered even without HostInfoProvider."""
         expected = ['temp_sensor', 'rpm_sensor', 'pressure_sensor']
         data = self.poll_endpoint_until(
-            '/components',
+            '/apps',
             lambda d: d if all(
-                any(name in c['id'] for c in d.get('items', []))
+                any(name in a.get('id', '') for a in d.get('items', []))
                 for name in expected
             ) else None,
             timeout=60.0,
         )
-        component_ids = [c['id'] for c in data['items']]
-
-        # Each demo node should appear as a component
+        app_ids = [a['id'] for a in data['items']]
         for name in expected:
             self.assertTrue(
-                any(name in cid for cid in component_ids),
-                f"{name} not found in components: {component_ids}",
-            )
-
-    def test_no_synthetic_namespace_components(self):
-        """No synthetic components from namespace grouping should exist."""
-        expected = ['temp_sensor', 'rpm_sensor', 'pressure_sensor']
-        data = self.poll_endpoint_until(
-            '/components',
-            lambda d: d if all(
-                any(name in c['id'] for c in d.get('items', []))
-                for name in expected
-            ) else None,
-            timeout=60.0,
-        )
-
-        # With synthetic off, components should NOT have source="synthetic"
-        for comp in data['items']:
-            x_medkit = comp.get('x-medkit', {})
-            source = x_medkit.get('source', '')
-            self.assertNotEqual(
-                source, 'synthetic',
-                f"Component {comp['id']} has source=synthetic in legacy mode",
+                any(name in aid for aid in app_ids),
+                f"{name} not found in apps: {app_ids}",
             )
 
 

@@ -177,12 +177,6 @@ ros2_medkit_gateway:
       # Runtime (heuristic) discovery options
       # These control how nodes are mapped to SOVD entities in runtime mode
       runtime:
-        # Create synthetic Area entities from ROS 2 namespaces (deprecated)
-        # When true, namespaces become Areas (legacy behavior)
-        # When false (default), no Areas are created from namespaces
-        # Namespace grouping now creates Function entities instead
-        create_synthetic_areas: false
-
         # Auto-detect local host system as the default Component
         # When true (default), a single host-level Component is created
         # from system info (hostname, OS, architecture) instead of
@@ -192,12 +186,6 @@ ros2_medkit_gateway:
         default_component:
           enabled: true
 
-        # Create synthetic Component entities that group Apps
-        # When true, Components are synthetic groupings (by namespace)
-        # When false (default), each node is a Component
-        # The default Component now comes from HostInfoProvider
-        create_synthetic_components: false
-
         # Create Function entities from ROS 2 namespace grouping
         # When true (default), namespaces are mapped to Function entities
         # Each Function hosts the Apps in that namespace
@@ -205,41 +193,14 @@ ros2_medkit_gateway:
         # functional grouping, not deployment topology
         create_functions_from_namespaces: true
 
-        # How to group nodes into synthetic components
-        # Options:
-        #   - "none": Each node = 1 component (default when synthetic off)
-        #   - "namespace": Group by first namespace segment (area)
-        # Note: "process" grouping is planned for future (requires R&D)
-        grouping_strategy: "namespace"
-
-        # Naming pattern for synthetic components
-        # Placeholders: {area}
-        # Examples: "{area}", "{area}_group", "component_{area}"
-        # When create_synthetic_components is true, {area} resolves to
-        # the namespace segment used as the component grouping key.
-        synthetic_component_name_pattern: "{area}"
-
-        # Policy for namespaces with topics but no ROS 2 nodes
-        # Common with Isaac Sim, external bridges, or dead/orphaned topics
-        # Options:
-        #   - "ignore": Don't create any entity for topic-only namespaces
-        #   - "create_component": Create component with source="topic" (default)
-        #   - "create_area_only": Only create the area, no component
-        topic_only_policy: "create_component"
-
-        # Minimum number of topics to create a topic-based component
-        # Only applies when topic_only_policy is "create_component"
-        # Namespaces with fewer topics are skipped
-        # Default: 1 (create component for any namespace with topics)
-        min_topics_for_component: 1
-
       # Merge pipeline configuration (only used in hybrid mode)
       # Controls how manifest, runtime, and plugin layers merge entities
       merge_pipeline:
         # Gap-fill: what runtime discovery can create when manifest is incomplete
+        # Note: Areas and Components are never created by runtime discovery.
+        # Areas come from manifest only. Components come from HostInfoProvider
+        # or manifest.
         gap_fill:
-          allow_heuristic_areas: true
-          allow_heuristic_components: true
           allow_heuristic_apps: true
           allow_heuristic_functions: false
           # namespace_blacklist: ["/rosout"]

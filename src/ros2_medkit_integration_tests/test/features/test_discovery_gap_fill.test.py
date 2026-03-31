@@ -17,8 +17,10 @@
 Integration tests for hybrid mode gap-fill configuration.
 
 Tests that gap-fill controls restrict which heuristic entities the
-runtime layer can create when a manifest is present. Also tests
-namespace blacklist/whitelist filtering.
+runtime layer can create when a manifest is present.
+
+Note: Areas and Components are never created by runtime discovery.
+Gap-fill only controls heuristic Apps and Functions.
 """
 
 import os
@@ -41,16 +43,13 @@ def generate_test_description():
         pkg_share, 'config', 'examples', 'demo_nodes_manifest.yaml'
     )
 
-    # Hybrid mode with restrictive gap-fill:
-    # - No heuristic areas (only manifest areas)
-    # - No heuristic components (only manifest components)
-    # - Apps still allowed (for linking)
+    # Hybrid mode with gap-fill:
+    # - Apps allowed (for linking)
+    # - Areas and Components come from manifest only (runtime never creates them)
     gateway_node = create_gateway_node(extra_params={
         'discovery.mode': 'hybrid',
         'discovery.manifest_path': manifest_path,
         'discovery.manifest_strict_validation': False,
-        'discovery.merge_pipeline.gap_fill.allow_heuristic_areas': False,
-        'discovery.merge_pipeline.gap_fill.allow_heuristic_components': False,
         'discovery.merge_pipeline.gap_fill.allow_heuristic_apps': True,
     })
 
@@ -75,7 +74,7 @@ class TestGapFillConfig(GatewayTestCase):
     """Test gap-fill restrictions in hybrid mode."""
 
     def test_only_manifest_areas_present(self):
-        """With allow_heuristic_areas=false, only manifest areas should exist."""
+        """Areas come from manifest only - no heuristic areas from runtime."""
         data = self.poll_endpoint_until(
             '/areas',
             lambda d: d if len(d.get('items', [])) >= 1 else None,
@@ -94,7 +93,7 @@ class TestGapFillConfig(GatewayTestCase):
             ], f"Unexpected heuristic area found: {area_id}")
 
     def test_only_manifest_components_present(self):
-        """With allow_heuristic_components=false, only manifest components exist."""
+        """Components come from manifest only - runtime never creates components."""
         data = self.poll_endpoint_until(
             '/components',
             lambda d: d if len(d.get('items', [])) >= 1 else None,
@@ -136,8 +135,8 @@ class TestGapFillConfig(GatewayTestCase):
                 f"Expected manifest app {app_id} not found in apps list",
             )
 
-    def test_health_shows_gap_fill_filtering(self):
-        """Health endpoint should show filtered_by_gap_fill count."""
+    def test_health_shows_discovery_info(self):
+        """Health endpoint should show discovery information."""
         health = self.poll_endpoint_until(
             '/health',
             lambda data: data if 'discovery' in data else None,
@@ -146,8 +145,8 @@ class TestGapFillConfig(GatewayTestCase):
         discovery = health.get('discovery', {})
         pipeline = discovery.get('pipeline', {})
 
-        # Should have filtered some entities
-        self.assertIn('filtered_by_gap_fill', pipeline)
+        # Pipeline info should be present in hybrid mode
+        self.assertIn('total_entities', pipeline)
 
 
 @launch_testing.post_shutdown_test()

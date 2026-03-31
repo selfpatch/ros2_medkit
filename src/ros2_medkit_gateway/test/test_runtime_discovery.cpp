@@ -54,30 +54,23 @@ class RuntimeDiscoveryTest : public ::testing::Test {
 };
 
 // -----------------------------------------------------------------------------
-// discover_areas() default behavior
+// discover_areas() - always returns empty (Areas come from manifest only)
 // -----------------------------------------------------------------------------
 
-TEST_F(RuntimeDiscoveryTest, DiscoverAreas_DefaultReturnsEmpty) {
-  // Default config has create_synthetic_areas=false
+TEST_F(RuntimeDiscoveryTest, DiscoverAreas_AlwaysReturnsEmpty) {
   auto areas = strategy_->discover_areas();
-  EXPECT_TRUE(areas.empty()) << "Areas should be empty with default config (create_synthetic_areas=false)";
+  EXPECT_TRUE(areas.empty()) << "Areas should always be empty - Areas come from manifest only";
 }
 
-TEST_F(RuntimeDiscoveryTest, DiscoverAreas_ReturnsAreasWhenExplicitlyEnabled) {
-  RuntimeDiscoveryStrategy::RuntimeConfig config;
-  config.create_synthetic_areas = true;
-  strategy_->set_config(config);
+// -----------------------------------------------------------------------------
+// discover_components() - always returns empty (Components come from
+// HostInfoProvider or manifest)
+// -----------------------------------------------------------------------------
 
-  auto areas = strategy_->discover_areas();
-  // Should find at least "test_ns" area from our node's namespace
-  bool found_test_ns = false;
-  for (const auto & area : areas) {
-    if (area.id == "test_ns") {
-      found_test_ns = true;
-      EXPECT_EQ(area.source, "heuristic");
-    }
-  }
-  EXPECT_TRUE(found_test_ns) << "Should discover 'test_ns' area when synthetic areas enabled";
+TEST_F(RuntimeDiscoveryTest, DiscoverComponents_AlwaysReturnsEmpty) {
+  auto components = strategy_->discover_components();
+  EXPECT_TRUE(components.empty())
+      << "Components should always be empty - Components come from HostInfoProvider or manifest";
 }
 
 // -----------------------------------------------------------------------------
@@ -146,28 +139,11 @@ TEST_F(RuntimeDiscoveryTest, DiscoverFunctions_OnlyCreatesNonEmptyFunctions) {
 }
 
 // -----------------------------------------------------------------------------
-// discover_components() default behavior
-// -----------------------------------------------------------------------------
-
-TEST_F(RuntimeDiscoveryTest, DiscoverComponents_DefaultUsesLegacyMode) {
-  // Default config has create_synthetic_components=false
-  auto components = strategy_->discover_components();
-
-  // In legacy mode, each node becomes a component with source="heuristic"
-  for (const auto & comp : components) {
-    EXPECT_EQ(comp.source, "heuristic") << "Component should have source='heuristic' in legacy mode, got: "
-                                        << comp.source;
-  }
-}
-
-// -----------------------------------------------------------------------------
 // RuntimeConfig defaults
 // -----------------------------------------------------------------------------
 
 TEST_F(RuntimeDiscoveryTest, DefaultConfig_HasCorrectDefaults) {
   RuntimeDiscoveryStrategy::RuntimeConfig config;
-  EXPECT_FALSE(config.create_synthetic_areas) << "create_synthetic_areas should default to false";
-  EXPECT_FALSE(config.create_synthetic_components) << "create_synthetic_components should default to false";
   EXPECT_TRUE(config.create_functions_from_namespaces) << "create_functions_from_namespaces should default to true";
 }
 
@@ -242,28 +218,13 @@ TEST_F(RuntimeDiscoveryMultiNsTest, DiscoverFunctions_GroupsByNamespace) {
   EXPECT_TRUE(found_root) << "Should create 'root' function from root namespace nodes";
 }
 
-TEST_F(RuntimeDiscoveryMultiNsTest, DiscoverAreas_EmptyByDefault) {
+TEST_F(RuntimeDiscoveryMultiNsTest, DiscoverAreas_AlwaysEmpty) {
   auto areas = strategy_->discover_areas();
-  EXPECT_TRUE(areas.empty()) << "Areas should be empty with default config";
+  EXPECT_TRUE(areas.empty()) << "Areas should always be empty - Areas come from manifest only";
 }
 
-TEST_F(RuntimeDiscoveryMultiNsTest, BackwardCompat_SyntheticAreasStillWork) {
-  RuntimeDiscoveryStrategy::RuntimeConfig config;
-  config.create_synthetic_areas = true;
-  strategy_->set_config(config);
-
-  auto areas = strategy_->discover_areas();
-  // Should find sensors, navigation, and root areas
-  bool found_sensors = false;
-  bool found_navigation = false;
-  for (const auto & area : areas) {
-    if (area.id == "sensors") {
-      found_sensors = true;
-    }
-    if (area.id == "navigation") {
-      found_navigation = true;
-    }
-  }
-  EXPECT_TRUE(found_sensors) << "Backward compat: should still create 'sensors' area when enabled";
-  EXPECT_TRUE(found_navigation) << "Backward compat: should still create 'navigation' area when enabled";
+TEST_F(RuntimeDiscoveryMultiNsTest, DiscoverComponents_AlwaysEmpty) {
+  auto components = strategy_->discover_components();
+  EXPECT_TRUE(components.empty())
+      << "Components should always be empty - Components come from HostInfoProvider or manifest";
 }

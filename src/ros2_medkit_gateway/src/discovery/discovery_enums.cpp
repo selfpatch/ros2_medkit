@@ -37,41 +37,4 @@ std::string discovery_mode_to_string(DiscoveryMode mode) {
   }
 }
 
-ComponentGroupingStrategy parse_grouping_strategy(const std::string & str) {
-  if (str == "namespace") {
-    return ComponentGroupingStrategy::NAMESPACE;
-  }
-  return ComponentGroupingStrategy::NONE;
-}
-
-std::string grouping_strategy_to_string(ComponentGroupingStrategy strategy) {
-  switch (strategy) {
-    case ComponentGroupingStrategy::NAMESPACE:
-      return "namespace";
-    default:
-      return "none";
-  }
-}
-
-TopicOnlyPolicy parse_topic_only_policy(const std::string & str) {
-  if (str == "ignore") {
-    return TopicOnlyPolicy::IGNORE;
-  }
-  if (str == "create_area_only") {
-    return TopicOnlyPolicy::CREATE_AREA_ONLY;
-  }
-  return TopicOnlyPolicy::CREATE_COMPONENT;
-}
-
-std::string topic_only_policy_to_string(TopicOnlyPolicy policy) {
-  switch (policy) {
-    case TopicOnlyPolicy::IGNORE:
-      return "ignore";
-    case TopicOnlyPolicy::CREATE_AREA_ONLY:
-      return "create_area_only";
-    default:
-      return "create_component";
-  }
-}
-
 }  // namespace ros2_medkit_gateway

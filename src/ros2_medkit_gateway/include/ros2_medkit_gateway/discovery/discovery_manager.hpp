@@ -56,27 +56,12 @@ struct DiscoveryConfig {
    *
    * These options control how the heuristic discovery strategy
    * maps ROS 2 graph entities to SOVD entities.
+   *
+   * Note: Synthetic/heuristic Area and Component creation has been removed.
+   * Areas come from manifest only. Components come from HostInfoProvider
+   * or manifest. Namespaces create Function entities.
    */
   struct RuntimeOptions {
-    /**
-     * @brief Create synthetic Area entities from ROS 2 namespaces (deprecated)
-     *
-     * When true, namespaces become Areas (legacy behavior).
-     * When false (default), no Areas are created from namespaces.
-     * Namespace grouping now creates Function entities instead.
-     * @deprecated Use create_functions_from_namespaces instead.
-     */
-    bool create_synthetic_areas{false};
-
-    /**
-     * @brief Create synthetic Component entities that group Apps
-     *
-     * When true, Components are synthetic groupings (by namespace).
-     * When false (default), each node is a Component (legacy behavior).
-     * The default Component now comes from HostInfoProvider instead.
-     */
-    bool create_synthetic_components{false};
-
     /**
      * @brief Create Function entities from ROS 2 namespace grouping
      *
@@ -97,42 +82,6 @@ struct DiscoveryConfig {
      * Only used in runtime_only mode.
      */
     bool default_component_enabled{true};
-
-    /**
-     * @brief How to group nodes into synthetic components
-     *
-     * Only used when create_synthetic_components is true.
-     * - NONE: Each node = 1 component
-     * - NAMESPACE: Group by first namespace segment (area)
-     */
-    ComponentGroupingStrategy grouping{ComponentGroupingStrategy::NAMESPACE};
-
-    /**
-     * @brief Naming pattern for synthetic components
-     *
-     * Placeholders: {area}
-     * Default: "{area}" - uses area name as component ID
-     */
-    std::string synthetic_component_name_pattern{"{area}"};
-
-    /**
-     * @brief Policy for handling topic-only namespaces
-     *
-     * When topics exist in a namespace without ROS 2 nodes:
-     * - IGNORE: Don't create any entity
-     * - CREATE_COMPONENT: Create component with source="topic" (default)
-     * - CREATE_AREA_ONLY: Only create the area, no component
-     */
-    TopicOnlyPolicy topic_only_policy{TopicOnlyPolicy::CREATE_COMPONENT};
-
-    /**
-     * @brief Minimum number of topics to create a component
-     *
-     * Only applies when topic_only_policy is CREATE_COMPONENT.
-     * Namespaces with fewer topics than this threshold are skipped.
-     * Default: 1 (create component for any namespace with topics)
-     */
-    int min_topics_for_component{1};
   } runtime;
 
   /**
@@ -286,13 +235,6 @@ class DiscoveryManager {
   // =========================================================================
   // Runtime-specific methods (delegate to runtime strategy)
   // =========================================================================
-
-  /**
-   * @brief Discover components from topic namespaces
-   * @return Vector of topic-based components
-   * @see discovery::RuntimeDiscoveryStrategy::discover_topic_components
-   */
-  std::vector<Component> discover_topic_components();
 
   /**
    * @brief Discover all services in the system

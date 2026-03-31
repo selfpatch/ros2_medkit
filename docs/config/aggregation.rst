@@ -282,28 +282,18 @@ owning peer is unreachable.
 Migration Notes
 ---------------
 
-The entity model defaults changed with the aggregation feature. If you are
-upgrading from a previous version:
+The entity model has been simplified. Synthetic/heuristic Area and Component
+creation from ROS 2 namespaces has been removed:
 
-- ``create_synthetic_areas`` now defaults to ``false`` (was ``true``).
-  Namespaces create Function entities instead of Areas.
-- ``create_synthetic_components`` now defaults to ``false`` (was ``true``).
-  A single host-level Component is created from system info instead.
-- ``create_functions_from_namespaces`` is a new parameter that defaults to
-  ``true``, mapping namespaces to Function entities.
-- ``default_component.enabled`` is a new parameter that defaults to ``true``,
-  creating a single Component from the local hostname.
+- **Areas** come from manifest only. Runtime discovery never creates Areas.
+- **Components** come from ``HostInfoProvider`` (single host-level Component)
+  or manifest. Runtime discovery never creates Components.
+- **Functions** are created from namespace grouping (``create_functions_from_namespaces``
+  defaults to ``true``).
+- **Apps** are created from ROS 2 nodes with ``source: "heuristic"``.
 
-To restore the previous behavior, set these discovery runtime options:
-
-.. code-block:: yaml
-
-   ros2_medkit_gateway:
-     ros__parameters:
-       discovery:
-         runtime:
-           create_synthetic_areas: true
-           create_synthetic_components: true
-           create_functions_from_namespaces: false
-           default_component:
-             enabled: false
+The removed parameters are: ``create_synthetic_areas``,
+``create_synthetic_components``, ``grouping_strategy``,
+``synthetic_component_name_pattern``, ``topic_only_policy``,
+``min_topics_for_component``, ``allow_heuristic_areas``, and
+``allow_heuristic_components``.

@@ -108,97 +108,33 @@ All options are under ``discovery.runtime`` in the gateway parameters:
          mode: "runtime_only"  # or "hybrid"
 
          runtime:
-           create_synthetic_components: true
-           grouping_strategy: "namespace"
-           synthetic_component_name_pattern: "{area}"
+           create_functions_from_namespaces: true
+           default_component:
+             enabled: true
 
-create_synthetic_components
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Entity Model
+^^^^^^^^^^^^^
 
-When ``true`` (default), the gateway creates synthetic Components to group Apps:
+In runtime mode, the gateway maps the ROS 2 graph as follows:
 
-.. code-block:: bash
-
-   curl http://localhost:8080/api/v1/components
-   # Returns: [{"id": "perception", "source": "synthetic", ...}]
-
-   curl http://localhost:8080/api/v1/components/perception/apps
-   # Returns: [{"id": "lidar_driver"}, {"id": "camera_node"}]
-
-.. note::
-
-   Synthetic components are **logical groupings only**. They do not aggregate
-   operations or data from their hosted Apps. To access operations (services/actions),
-   you must query the Apps within the component:
-
-   .. code-block:: bash
-
-      # List Apps in the component
-      curl http://localhost:8080/api/v1/components/perception/apps
-
-      # Get operations for a specific App
-      curl http://localhost:8080/api/v1/apps/lidar_driver/operations
-
-   The component endpoint ``GET /components/{id}/operations`` aggregates operation
-   listings from all hosted Apps for convenience, but execution must target the
-   specific App that owns the operation.
-
-When ``false``, no synthetic Components are created (Apps-only mode):
+- **Apps** - each ROS 2 node becomes an App (``source: "heuristic"``)
+- **Functions** - namespace grouping creates Function entities
+- **Components** - a single host-level Component from ``HostInfoProvider``
+- **Areas** - not created (Areas come from manifest only)
 
 .. code-block:: bash
-
-   curl http://localhost:8080/api/v1/components
-   # Returns: [] (empty - no synthetic components)
 
    curl http://localhost:8080/api/v1/apps
    # Returns: [{"id": "lidar_driver"}, {"id": "camera_node"}]
 
-grouping_strategy
-^^^^^^^^^^^^^^^^^
+   curl http://localhost:8080/api/v1/components
+   # Returns: [{"id": "my-hostname", "source": "runtime", ...}]
 
-Controls how Apps are grouped into Components:
+   curl http://localhost:8080/api/v1/functions
+   # Returns: [{"id": "perception"}, {"id": "navigation"}]
 
-- ``namespace`` (default): Group by first namespace segment
-- ``none``: Each app is its own component
-
-Handling Topic-Only Namespaces
-------------------------------
-
-Some systems (like Isaac Sim) publish topics without creating ROS 2 nodes.
-The ``topic_only_policy`` controls how these are handled:
-
-.. code-block:: yaml
-
-   discovery:
-     runtime:
-       topic_only_policy: "create_component"
-       min_topics_for_component: 2
-
-Policies:
-
-- ``create_component`` (default): Create a Component for topic namespaces
-- ``create_area_only``: Create only the Area, no Component
-- ``ignore``: Skip topic-only namespaces entirely
-
-Example: Filtering Noise
-^^^^^^^^^^^^^^^^^^^^^^^^
-
-To ignore orphaned topics from crashed processes:
-
-.. code-block:: yaml
-
-   discovery:
-     runtime:
-       topic_only_policy: "ignore"
-
-Or require multiple topics before creating a component:
-
-.. code-block:: yaml
-
-   discovery:
-     runtime:
-       topic_only_policy: "create_component"
-       min_topics_for_component: 3  # Need 3+ topics
+   curl http://localhost:8080/api/v1/areas
+   # Returns: {"items": []}  (empty - Areas come from manifest only)
 
 API Endpoints
 -------------
