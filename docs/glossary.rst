@@ -97,6 +97,7 @@ This glossary defines key terms used throughout ros2_medkit documentation.
       a subset of SOVD adapted for ROS 2 systems.
 
    Synthetic Component
-      A Component automatically created in runtime-only mode by grouping
-      ROS 2 nodes that share a namespace. Configured via
-      ``discovery.runtime.create_synthetic_components``.
+      (Removed) Previously, Components were automatically created in
+      runtime-only mode by grouping ROS 2 nodes by namespace. This
+      behavior has been removed. Components now come from
+      ``HostInfoProvider`` (single host-level Component) or manifest.

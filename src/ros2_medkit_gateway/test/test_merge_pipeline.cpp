@@ -532,8 +532,6 @@ TEST_F(MergePipelineTest, PluginFunctionEnrichesExistingFunction) {
 // @verifies REQ_INTEROP_003
 TEST(GapFillConfigTest, DefaultAllowsAll) {
   GapFillConfig config;
-  EXPECT_TRUE(config.allow_heuristic_areas);
-  EXPECT_TRUE(config.allow_heuristic_components);
   EXPECT_TRUE(config.allow_heuristic_apps);
   EXPECT_FALSE(config.allow_heuristic_functions);
 }
@@ -1537,18 +1535,17 @@ TEST(PluginLayerTest, ValidationKeepsAllValidEntities) {
   EXPECT_EQ(output.apps[2].id, "gamma_3");
 }
 
-// --- create_synthetic_areas=false produces no areas (#261) ---
+// --- Runtime layer produces no areas or components ---
 
-TEST_F(MergePipelineTest, CreateSyntheticAreasFalseProducesNoAreas) {
-  // Simulate a runtime-only layer that provides apps but no areas,
-  // as would happen with create_synthetic_areas=false on RuntimeDiscoveryStrategy.
-  // Verify the pipeline works correctly with empty areas and exposes only apps.
+TEST_F(MergePipelineTest, RuntimeLayerProducesNoAreasOrComponents) {
+  // Runtime discovery never creates Areas or Components.
+  // Verify the pipeline works correctly with only apps from runtime layer.
 
   App runtime_app = make_app("sensor_node", "");
   runtime_app.source = "heuristic";
 
   LayerOutput runtime_out;
-  // No areas in output - mirrors RuntimeDiscoveryStrategy with create_synthetic_areas=false
+  // No areas or components - runtime discovery only provides apps and functions
   runtime_out.apps.push_back(runtime_app);
 
   pipeline_.add_layer(std::make_unique<TestLayer>(

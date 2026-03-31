@@ -219,17 +219,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Runtime (heuristic) discovery options
   // These control how nodes are mapped to SOVD entities in runtime mode
   declare_parameter("discovery.runtime.default_component.enabled", true);
-  declare_parameter("discovery.runtime.create_synthetic_areas", false);
-  declare_parameter("discovery.runtime.create_synthetic_components", false);
   declare_parameter("discovery.runtime.create_functions_from_namespaces", true);
-  declare_parameter("discovery.runtime.grouping_strategy", "namespace");
-  declare_parameter("discovery.runtime.synthetic_component_name_pattern", "{area}");
-  declare_parameter("discovery.runtime.topic_only_policy", "create_component");
-  declare_parameter("discovery.runtime.min_topics_for_component", 1);
 
   // Merge pipeline configuration (hybrid mode only)
-  declare_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_areas", true);
-  declare_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_components", true);
   declare_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_apps", true);
   declare_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_functions", false);
   declare_parameter("discovery.merge_pipeline.gap_fill.namespace_whitelist", std::vector<std::string>{});
@@ -451,36 +443,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Runtime discovery options
   discovery_config.runtime.default_component_enabled =
       get_parameter("discovery.runtime.default_component.enabled").as_bool();
-  discovery_config.runtime.create_synthetic_areas = get_parameter("discovery.runtime.create_synthetic_areas").as_bool();
-  discovery_config.runtime.create_synthetic_components =
-      get_parameter("discovery.runtime.create_synthetic_components").as_bool();
   discovery_config.runtime.create_functions_from_namespaces =
       get_parameter("discovery.runtime.create_functions_from_namespaces").as_bool();
 
-  auto grouping_str = get_parameter("discovery.runtime.grouping_strategy").as_string();
-  discovery_config.runtime.grouping = parse_grouping_strategy(grouping_str);
-  if (grouping_str != "none" && grouping_str != "namespace") {
-    RCLCPP_WARN(get_logger(), "Unknown grouping_strategy '%s', defaulting to 'none'", grouping_str.c_str());
-  }
-
-  discovery_config.runtime.synthetic_component_name_pattern =
-      get_parameter("discovery.runtime.synthetic_component_name_pattern").as_string();
-
-  auto topic_policy_str = get_parameter("discovery.runtime.topic_only_policy").as_string();
-  discovery_config.runtime.topic_only_policy = parse_topic_only_policy(topic_policy_str);
-  if (topic_policy_str != "ignore" && topic_policy_str != "create_component" &&
-      topic_policy_str != "create_area_only") {
-    RCLCPP_WARN(get_logger(), "Unknown topic_only_policy '%s', defaulting to 'create_component'",
-                topic_policy_str.c_str());
-  }
-  discovery_config.runtime.min_topics_for_component =
-      static_cast<int>(get_parameter("discovery.runtime.min_topics_for_component").as_int());
-
   // Merge pipeline gap-fill configuration (hybrid mode)
-  discovery_config.merge_pipeline.gap_fill.allow_heuristic_areas =
-      get_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_areas").as_bool();
-  discovery_config.merge_pipeline.gap_fill.allow_heuristic_components =
-      get_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_components").as_bool();
   discovery_config.merge_pipeline.gap_fill.allow_heuristic_apps =
       get_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_apps").as_bool();
   discovery_config.merge_pipeline.gap_fill.allow_heuristic_functions =
@@ -1381,23 +1347,9 @@ void GatewayNode::refresh_cache() {
     auto apps = discovery_mgr_->discover_apps();
     auto functions = discovery_mgr_->discover_functions();
 
-    std::vector<Component> all_components;
-    if (discovery_mgr_->get_mode() == DiscoveryMode::RUNTIME_ONLY) {
-      if (discovery_mgr_->has_host_info_provider()) {
-        // Host info provider active: single host-derived Component only
-        all_components = discovery_mgr_->discover_components();
-      } else {
-        // No host info: merge node + topic components (legacy behavior)
-        auto node_components = discovery_mgr_->discover_components();
-        auto topic_components = discovery_mgr_->discover_topic_components();
-        all_components.reserve(node_components.size() + topic_components.size());
-        all_components.insert(all_components.end(), node_components.begin(), node_components.end());
-        all_components.insert(all_components.end(), topic_components.begin(), topic_components.end());
-      }
-    } else {
-      // HYBRID: pipeline merges all sources; MANIFEST_ONLY: manifest components only
-      all_components = discovery_mgr_->discover_components();
-    }
+    // In RUNTIME_ONLY mode: HostInfoProvider component or empty.
+    // In HYBRID/MANIFEST_ONLY: pipeline-merged or manifest components.
+    auto all_components = discovery_mgr_->discover_components();
 
     // Link Apps to default Component (is-located-on relationship)
     // In RUNTIME_ONLY mode with host info provider, ALL apps belong to

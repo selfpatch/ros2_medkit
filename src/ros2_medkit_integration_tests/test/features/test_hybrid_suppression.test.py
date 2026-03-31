@@ -82,14 +82,14 @@ def generate_test_description():
     # Hybrid mode with gap-fill restrictions: only manifest entities allowed.
     # All demo nodes match manifest ros_bindings, so the runtime layer
     # should link them to manifest apps (not create duplicates).
-    # Gap-fill blocks heuristic entities for non-manifest nodes (e.g. the
+    # Gap-fill blocks heuristic apps for non-manifest nodes (e.g. the
     # gateway node itself, param client) so we can assert exact counts.
+    # Note: Areas and Components are never created by runtime discovery,
+    # so no gap-fill control is needed for them.
     gateway_node = create_gateway_node(extra_params={
         'discovery.mode': 'hybrid',
         'discovery.manifest_path': manifest_path,
         'discovery.manifest_strict_validation': False,
-        'discovery.merge_pipeline.gap_fill.allow_heuristic_areas': False,
-        'discovery.merge_pipeline.gap_fill.allow_heuristic_components': False,
         'discovery.merge_pipeline.gap_fill.allow_heuristic_apps': False,
     })
 

@@ -778,18 +778,9 @@ represents the robot itself, with subcomponents for hardware modules:
 
 For manifest-based discovery (``manifest_only`` or ``hybrid``), simply omit the
 ``areas:`` section as shown above - no additional configuration is needed.
-For runtime-only discovery, set ``create_synthetic_areas: false`` in
-``gateway_params.yaml`` to prevent automatic area creation from namespaces (see
-:doc:`discovery-options`). A complete example is available at
+In runtime-only discovery, Areas are never created - they come from manifest
+only. A complete example is available at
 ``config/examples/flat_robot_manifest.yaml`` in the gateway package.
-
-.. note::
-
-   In hybrid mode, the runtime gap-fill layer may create synthetic areas
-   from namespaces even when the manifest omits ``areas:``. Set
-   ``merge_pipeline.gap_fill.allow_heuristic_areas: false`` to prevent
-   this and maintain a fully flat tree. See :doc:`discovery-options`
-   for gap-fill configuration details.
 
 Complete Example
 ----------------

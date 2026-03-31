@@ -106,13 +106,7 @@ void DiscoveryManager::apply_layer_policy_overrides(const std::string & layer_na
 void DiscoveryManager::create_strategy() {
   // Configure runtime strategy with runtime options
   discovery::RuntimeDiscoveryStrategy::RuntimeConfig runtime_config;
-  runtime_config.create_synthetic_areas = config_.runtime.create_synthetic_areas;
-  runtime_config.create_synthetic_components = config_.runtime.create_synthetic_components;
   runtime_config.create_functions_from_namespaces = config_.runtime.create_functions_from_namespaces;
-  runtime_config.grouping = config_.runtime.grouping;
-  runtime_config.synthetic_component_name_pattern = config_.runtime.synthetic_component_name_pattern;
-  runtime_config.topic_only_policy = config_.runtime.topic_only_policy;
-  runtime_config.min_topics_for_component = config_.runtime.min_topics_for_component;
   runtime_strategy_->set_config(runtime_config);
 
   switch (config_.mode) {
@@ -169,9 +163,8 @@ void DiscoveryManager::create_strategy() {
 
     default:
       active_strategy_ = runtime_strategy_.get();
-      RCLCPP_INFO(node_->get_logger(), "Discovery mode: runtime_only (default_component=%s, synthetic_components=%s)",
-                  host_info_provider_ ? "true" : "false",
-                  config_.runtime.create_synthetic_components ? "true" : "false");
+      RCLCPP_INFO(node_->get_logger(), "Discovery mode: runtime_only (default_component=%s)",
+                  host_info_provider_ ? "true" : "false");
       break;
   }
 }
@@ -331,10 +324,6 @@ std::vector<std::string> DiscoveryManager::get_hosts_for_function(const std::str
     return func->hosts;
   }
   return {};
-}
-
-std::vector<Component> DiscoveryManager::discover_topic_components() {
-  return runtime_strategy_->discover_topic_components();
 }
 
 std::vector<ServiceInfo> DiscoveryManager::discover_services() {

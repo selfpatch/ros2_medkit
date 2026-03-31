@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/discovery/discovery_enums.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/discovery/models/area.hpp"
@@ -27,7 +26,6 @@
 #include <map>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -46,12 +44,12 @@ namespace discovery {
  *
  * Features:
  * - Discovers Functions from node namespaces (functional grouping)
- * - Discovers components from ROS 2 nodes
- * - Discovers topic-based "virtual" components for systems like Isaac Sim
- * - Enriches components with services, actions, and topics
  * - Exposes nodes as Apps
- * - Can create synthetic Components that group Apps
- * - Can create synthetic Areas (deprecated, off by default)
+ * - Enriches apps with services, actions, and topics
+ *
+ * Note: Synthetic/heuristic Area and Component creation has been removed.
+ * Areas come from manifest only. Components come from HostInfoProvider
+ * or manifest. Namespaces create Function entities.
  */
 class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
  public:
@@ -59,13 +57,7 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
    * @brief Runtime discovery configuration options
    */
   struct RuntimeConfig {
-    bool create_synthetic_areas{false};
-    bool create_synthetic_components{false};
     bool create_functions_from_namespaces{true};
-    ComponentGroupingStrategy grouping{};
-    std::string synthetic_component_name_pattern{"{area}"};
-    TopicOnlyPolicy topic_only_policy{TopicOnlyPolicy::CREATE_COMPONENT};
-    int min_topics_for_component{1};
   };
 
   /**
@@ -81,13 +73,12 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   void set_config(const RuntimeConfig & config);
 
   /// @copydoc DiscoveryStrategy::discover_areas
+  /// @note Always returns empty - Areas come from manifest only
   std::vector<Area> discover_areas() override;
 
   /// @copydoc DiscoveryStrategy::discover_components
+  /// @note Always returns empty - Components come from HostInfoProvider or manifest
   std::vector<Component> discover_components() override;
-
-  /// Discover components using pre-discovered apps (avoids redundant graph introspection)
-  std::vector<Component> discover_components(const std::vector<App> & apps);
 
   /// @copydoc DiscoveryStrategy::discover_apps
   /// @note Returns nodes as Apps in runtime discovery
@@ -105,28 +96,6 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   // =========================================================================
   // Runtime-specific methods (from current DiscoveryManager)
   // =========================================================================
-
-  /**
-   * @brief Discover synthetic components (grouped by namespace)
-   *
-   * Groups runtime apps by namespace into aggregated Component entities.
-   * Uses provided apps to avoid re-querying the ROS 2 graph.
-   *
-   * @param apps Pre-discovered apps (from discover_apps())
-   * @return Vector of synthetic components
-   */
-  std::vector<Component> discover_synthetic_components(const std::vector<App> & apps);
-
-  /**
-   * @brief Discover components from topic namespaces (topic-based discovery)
-   *
-   * Creates "virtual" components for topic namespaces that don't have
-   * corresponding ROS 2 nodes. This is useful for systems like Isaac Sim
-   * that publish topics without creating proper ROS 2 nodes.
-   *
-   * @return Vector of topic-based components (excludes namespaces with existing nodes)
-   */
-  std::vector<Component> discover_topic_components();
 
   /**
    * @brief Discover all services in the system with their types
@@ -186,20 +155,11 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   /// Extract the last segment from a path (e.g., "/a/b/c" -> "c")
   std::string extract_name_from_path(const std::string & path);
 
-  /// Get set of namespaces that have ROS 2 nodes (for deduplication)
-  std::set<std::string> get_node_namespaces();
-
   /// Check if a service path belongs to a component namespace
   bool path_belongs_to_namespace(const std::string & path, const std::string & ns) const;
 
   /// Check if a service path is an internal ROS2 service
   static bool is_internal_service(const std::string & service_path);
-
-  /// Derive component ID for a node based on grouping strategy
-  std::string derive_component_id(const std::string & node_id, const std::string & area);
-
-  /// Apply naming pattern for synthetic component ID
-  std::string apply_component_name_pattern(const std::string & area);
 
   rclcpp::Node * node_;
   RuntimeConfig config_;

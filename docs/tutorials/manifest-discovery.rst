@@ -429,10 +429,10 @@ robot itself is the top-level component, with subcomponents for hardware modules
          node_name: controller_server
          namespace: /
 
-For runtime-only mode, set ``discovery.runtime.create_synthetic_areas: false``
-to prevent automatic area creation from namespaces. See
-:ref:`manifest-flat-entity-tree` in the manifest schema reference and
-``config/examples/flat_robot_manifest.yaml`` for a complete example.
+For runtime-only mode, Areas are never created from namespaces - they come
+from manifest only. See :ref:`manifest-flat-entity-tree` in the manifest
+schema reference and ``config/examples/flat_robot_manifest.yaml`` for a
+complete example.
 
 **When to use each pattern:**
 
@@ -484,17 +484,20 @@ this behavior:
    discovery:
      merge_pipeline:
        gap_fill:
-         allow_heuristic_areas: true        # Create areas from namespaces
-         allow_heuristic_components: true    # Create synthetic components
          allow_heuristic_apps: true          # Create apps from unbound nodes
          allow_heuristic_functions: false    # Don't create heuristic functions
          # namespace_blacklist: ["/rosout"]  # Exclude specific namespaces
          # namespace_whitelist: []           # If set, only allow these namespaces
 
+.. note::
+
+   Areas and Components are never created by runtime discovery. Areas come
+   from manifest only. Components come from ``HostInfoProvider`` or manifest.
+
 When all ``allow_heuristic_*`` options are ``false``, only manifest-declared
 entities appear. Runtime nodes are still discovered for linking, but no
-heuristic entities (areas, components, apps, functions) are created from
-unmatched namespaces or nodes.
+heuristic entities (apps, functions) are created from unmatched namespaces
+or nodes.
 
 See :doc:`/config/discovery-options` for the full merge pipeline reference.
 
