@@ -550,6 +550,21 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     if (!comp.type.empty()) {
       ext.add("type", comp.type);
     }
+    if (!comp.parent_component_id.empty()) {
+      ext.add("parentComponentId", comp.parent_component_id);
+    }
+    if (!comp.depends_on.empty()) {
+      ext.add("dependsOn", nlohmann::json(comp.depends_on));
+    }
+    if (!comp.area.empty()) {
+      ext.add("area", comp.area);
+    }
+    if (!comp.variant.empty()) {
+      ext.add("variant", comp.variant);
+    }
+    if (!comp.description.empty()) {
+      ext.add("description", comp.description);
+    }
 
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {
@@ -1246,6 +1261,12 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
 
     XMedkit ext;
     ext.source(func.source);
+    if (!func.hosts.empty()) {
+      ext.add("hosts", nlohmann::json(func.hosts));
+    }
+    if (!func.description.empty()) {
+      ext.add("description", func.description);
+    }
     response["x-medkit"] = ext.build();
 
     HandlerContext::send_json(res, response);

@@ -231,7 +231,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     }
   }
 
-  // Fetch components
+  // Fetch components (list then detail per entity for full relationship data)
   {
     auto result = cli.Get(std::string(API_PREFIX) + "/components");
     if (!result) {
@@ -248,10 +248,19 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     if (response_json.is_discarded()) {
       return tl::unexpected<std::string>("Invalid JSON from peer '" + name_ + "' for /components");
     }
-    entities.components = parse_collection<Component>(response_json, parse_component);
-    for (auto & comp : entities.components) {
+    // Parse IDs from list, then fetch detail per entity for relationships
+    auto comp_list = parse_collection<Component>(response_json, parse_component);
+    for (auto & comp : comp_list) {
+      auto detail = cli.Get(std::string(API_PREFIX) + "/components/" + comp.id);
+      if (detail && detail->status == 200) {
+        auto detail_json = nlohmann::json::parse(detail->body, nullptr, false);
+        if (!detail_json.is_discarded()) {
+          comp = parse_component(detail_json);
+        }
+      }
       comp.source = peer_source;
     }
+    entities.components = std::move(comp_list);
   }
 
   // Fetch apps
@@ -277,7 +286,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     }
   }
 
-  // Fetch functions
+  // Fetch functions (list then detail per entity for hosts data)
   {
     auto result = cli.Get(std::string(API_PREFIX) + "/functions");
     if (!result) {
@@ -294,10 +303,19 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     if (response_json.is_discarded()) {
       return tl::unexpected<std::string>("Invalid JSON from peer '" + name_ + "' for /functions");
     }
-    entities.functions = parse_collection<Function>(response_json, parse_function);
-    for (auto & func : entities.functions) {
+    // Parse IDs from list, then fetch detail per entity for hosts
+    auto func_list = parse_collection<Function>(response_json, parse_function);
+    for (auto & func : func_list) {
+      auto detail = cli.Get(std::string(API_PREFIX) + "/functions/" + func.id);
+      if (detail && detail->status == 200) {
+        auto detail_json = nlohmann::json::parse(detail->body, nullptr, false);
+        if (!detail_json.is_discarded()) {
+          func = parse_function(detail_json);
+        }
+      }
       func.source = peer_source;
     }
+    entities.functions = std::move(func_list);
   }
 
   return entities;
