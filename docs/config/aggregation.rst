@@ -251,14 +251,16 @@ Entity Merge Behavior
 
 When aggregation is enabled, entities from peers are merged with local entities:
 
-- **Areas and Functions**: Merged by ID. If both local and remote have the same
-  ID, they become one entity. This is appropriate because Areas and Functions
-  represent logical groupings that often span hosts.
+- **Areas, Functions, and Components**: Merged by ID. If both local and remote
+  have the same ID, they become one entity. Areas and Functions represent logical
+  groupings that span hosts. Components represent physical hosts or ECUs defined
+  in manifests - the same Component across peers is the same physical entity.
 
-- **Components and Apps**: Prefixed on collision. If a remote entity has the
-  same ID as a local one, the remote entity's ID is prefixed with
-  ``peername__`` (double underscore). For example, Component ``lidar`` from peer
-  ``arm`` becomes ``arm__lidar``.
+- **Apps**: Prefixed on collision. If a remote App has the same ID as a local
+  one, the remote App's ID is prefixed with ``peername__`` (double underscore).
+  For example, App ``camera_driver`` from peer ``arm`` becomes
+  ``arm__camera_driver``. Apps represent individual ROS 2 nodes with unique
+  behavior.
 
 Requests for remote entities are transparently forwarded to the owning peer.
 The routing table maps entity IDs to peer names.

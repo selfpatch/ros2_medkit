@@ -120,8 +120,13 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
       return;
     }
 
+    // Cache-first lookup: EntityCache has merged entities from peers
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto area_opt = cache.get_area(area_id);
+    if (!area_opt) {
+      auto discovery = ctx_.node()->get_discovery_manager();
+      area_opt = discovery->get_area(area_id);
+    }
 
     if (!area_opt) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
