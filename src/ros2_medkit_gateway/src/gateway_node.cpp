@@ -903,6 +903,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       mdns_config.on_error = [this](const std::string & msg) {
         RCLCPP_WARN(get_logger(), "mDNS: %s", msg.c_str());
       };
+      mdns_config.on_log = [this](const std::string & msg) {
+        RCLCPP_DEBUG(get_logger(), "mDNS: %s", msg.c_str());
+      };
       mdns_discovery_ = std::make_unique<MdnsDiscovery>(mdns_config);
       mdns_discovery_->start(
           [this](const std::string & url, const std::string & name) {

@@ -55,11 +55,20 @@ constexpr int kBrowseIntervalSec = 10;
 constexpr int kPollIntervalMs = 500;
 
 /**
- * @brief Context passed to mDNS callback functions via user_data pointer
+ * @brief Context passed to mDNS browse callback via user_data pointer
  */
 struct BrowseContext {
   MdnsDiscovery::PeerFoundCallback * on_found;
+  MdnsDiscovery::LogCallback * on_log;
   std::string service_name;
+};
+
+/**
+ * @brief Context passed to mDNS announce callback via user_data pointer
+ */
+struct AnnounceContext {
+  MdnsDiscovery::Config * config;
+  MdnsDiscovery::LogCallback * on_log;
 };
 
 /**
@@ -92,56 +101,70 @@ int browse_callback(int /*sock*/, const struct sockaddr * from, size_t addrlen, 
     return 0;
   }
 
-  if (rtype == MDNS_RECORDTYPE_SRV) {
-    std::array<char, 256> name_buf{};
-    mdns_record_srv_t srv =
-        mdns_record_parse_srv(data, size, record_offset, record_length, name_buf.data(), name_buf.size());
-
-    // Extract the instance name from the record name
-    std::array<char, 256> entry_name_buf{};
-    size_t name_off = name_offset;
-    mdns_string_t entry_name = mdns_string_extract(data, size, &name_off, entry_name_buf.data(), entry_name_buf.size());
-
-    std::string instance_name(entry_name.str, entry_name.length);
-    std::string target(srv.name.str, srv.name.length);
-
-    // Build peer URL from the source address
-    std::array<char, INET6_ADDRSTRLEN> addr_buf{};
-    std::string addr_str;
-
-    if (from->sa_family == AF_INET) {
-      const auto * addr4 = reinterpret_cast<const struct sockaddr_in *>(from);
-      inet_ntop(AF_INET, &addr4->sin_addr, addr_buf.data(), addr_buf.size());
-      addr_str = addr_buf.data();
-    } else if (from->sa_family == AF_INET6) {
-      const auto * addr6 = reinterpret_cast<const struct sockaddr_in6 *>(from);
-      inet_ntop(AF_INET6, &addr6->sin6_addr, addr_buf.data(), addr_buf.size());
-      addr_str = "[" + std::string(addr_buf.data()) + "]";
-    } else {
-      (void)addrlen;  // Suppress unused parameter warning
-      return 0;
+  if (rtype != MDNS_RECORDTYPE_SRV) {
+    if (ctx->on_log && *ctx->on_log) {
+      (*ctx->on_log)("browse: ignoring record type " + std::to_string(rtype) +
+                     " (want SRV=" + std::to_string(MDNS_RECORDTYPE_SRV) + ")");
     }
-    (void)addrlen;  // Suppress unused parameter warning in non-early-return paths
+    return 0;
+  }
 
-    std::string url = "http://" + addr_str + ":" + std::to_string(srv.port);
+  std::array<char, 256> name_buf{};
+  mdns_record_srv_t srv =
+      mdns_record_parse_srv(data, size, record_offset, record_length, name_buf.data(), name_buf.size());
 
-    // Use the instance name (before the service type) as the peer name
-    // Instance names look like "gateway-name._medkit._tcp.local"
-    std::string peer_name = instance_name;
-    auto dot_pos = peer_name.find('.');
-    if (dot_pos != std::string::npos) {
-      peer_name = peer_name.substr(0, dot_pos);
+  // Extract the instance name from the record name
+  std::array<char, 256> entry_name_buf{};
+  size_t name_off = name_offset;
+  mdns_string_t entry_name = mdns_string_extract(data, size, &name_off, entry_name_buf.data(), entry_name_buf.size());
+
+  std::string instance_name(entry_name.str, entry_name.length);
+  std::string target(srv.name.str, srv.name.length);
+
+  // Build peer URL from the source address
+  std::array<char, INET6_ADDRSTRLEN> addr_buf{};
+  std::string addr_str;
+
+  if (from->sa_family == AF_INET) {
+    const auto * addr4 = reinterpret_cast<const struct sockaddr_in *>(from);
+    inet_ntop(AF_INET, &addr4->sin_addr, addr_buf.data(), addr_buf.size());
+    addr_str = addr_buf.data();
+  } else if (from->sa_family == AF_INET6) {
+    const auto * addr6 = reinterpret_cast<const struct sockaddr_in6 *>(from);
+    inet_ntop(AF_INET6, &addr6->sin6_addr, addr_buf.data(), addr_buf.size());
+    addr_str = "[" + std::string(addr_buf.data()) + "]";
+  } else {
+    (void)addrlen;  // Suppress unused parameter warning
+    return 0;
+  }
+  (void)addrlen;  // Suppress unused parameter warning in non-early-return paths
+
+  std::string url = "http://" + addr_str + ":" + std::to_string(srv.port);
+
+  // Use the instance name (before the service type) as the peer name
+  // Instance names look like "gateway-name._medkit._tcp.local"
+  std::string peer_name = instance_name;
+  auto dot_pos = peer_name.find('.');
+  if (dot_pos != std::string::npos) {
+    peer_name = peer_name.substr(0, dot_pos);
+  }
+
+  // Sanitize peer name to valid entity ID characters
+  peer_name = HostInfoProvider::sanitize_entity_id(peer_name);
+  if (peer_name.empty()) {
+    if (ctx->on_log && *ctx->on_log) {
+      (*ctx->on_log)("browse: peer name empty after sanitization, instance='" + instance_name + "'");
     }
+    return 0;
+  }
 
-    // Sanitize peer name to valid entity ID characters
-    peer_name = HostInfoProvider::sanitize_entity_id(peer_name);
-    if (peer_name.empty()) {
-      return 0;
-    }
+  if (ctx->on_log && *ctx->on_log) {
+    (*ctx->on_log)("browse: discovered peer '" + peer_name + "' at " + url + " (instance='" + instance_name +
+                   "', target='" + target + "', port=" + std::to_string(srv.port) + ")");
+  }
 
-    if (ctx->on_found) {
-      (*ctx->on_found)(url, peer_name);
-    }
+  if (ctx->on_found) {
+    (*ctx->on_found)(url, peer_name);
   }
 
   return 0;
@@ -154,12 +177,16 @@ int announce_callback(int sock, const struct sockaddr * from, size_t addrlen, md
                       uint16_t query_id, uint16_t rtype, uint16_t rclass, uint32_t /*ttl*/, const void * data,
                       size_t size, size_t name_offset, size_t /*name_length*/, size_t /*record_offset*/,
                       size_t /*record_length*/, void * user_data) {
+  auto * ctx = static_cast<AnnounceContext *>(user_data);
+  auto * config = ctx->config;
+
   // We only care about incoming questions
   if (entry != MDNS_ENTRYTYPE_QUESTION) {
+    if (ctx->on_log && *ctx->on_log) {
+      (*ctx->on_log)("announce: ignoring non-question entry type " + std::to_string(static_cast<int>(entry)));
+    }
     return 0;
   }
-
-  auto * config = static_cast<MdnsDiscovery::Config *>(user_data);
 
   // Extract the queried name
   std::array<char, 256> name_buf{};
@@ -177,7 +204,24 @@ int announce_callback(int sock, const struct sockaddr * from, size_t addrlen, md
     return static_cast<char>(std::tolower(c));
   });
   if (queried_lower.find(service_lower) == std::string::npos && rtype != MDNS_RECORDTYPE_ANY) {
+    if (ctx->on_log && *ctx->on_log) {
+      (*ctx->on_log)("announce: query name '" + queried_name + "' (rtype=" + std::to_string(rtype) +
+                     ") does not match service '" + config->service + "', ignoring");
+    }
     return 0;
+  }
+
+  if (ctx->on_log && *ctx->on_log) {
+    std::array<char, INET6_ADDRSTRLEN> from_buf{};
+    std::string from_str = "unknown";
+    if (from->sa_family == AF_INET) {
+      const auto * addr4 = reinterpret_cast<const struct sockaddr_in *>(from);
+      inet_ntop(AF_INET, &addr4->sin_addr, from_buf.data(), from_buf.size());
+      from_str = std::string(from_buf.data()) + ":" + std::to_string(ntohs(addr4->sin_port));
+    }
+    bool unicast = (rclass & MDNS_UNICAST_RESPONSE) != 0;
+    (*ctx->on_log)("announce: received query for '" + queried_name + "' (rtype=" + std::to_string(rtype) +
+                   ", unicast=" + (unicast ? "true" : "false") + ") from " + from_str + ", sending response");
   }
 
   // Build the response per DNS-SD (RFC 6763):
@@ -213,12 +257,23 @@ int announce_callback(int sock, const struct sockaddr * from, size_t addrlen, md
   std::array<char, kMdnsBufferSize> buffer{};
   bool unicast = (rclass & MDNS_UNICAST_RESPONSE) != 0;
 
+  int send_result = 0;
   if (unicast) {
-    mdns_query_answer_unicast(sock, from, addrlen, buffer.data(), buffer.size(), query_id,
-                              static_cast<mdns_record_type_t>(rtype), name.str, name.length, answer, nullptr, 0,
-                              &additional, 1);
+    send_result = mdns_query_answer_unicast(sock, from, addrlen, buffer.data(), buffer.size(), query_id,
+                                            static_cast<mdns_record_type_t>(rtype), name.str, name.length, answer,
+                                            nullptr, 0, &additional, 1);
   } else {
-    mdns_query_answer_multicast(sock, buffer.data(), buffer.size(), answer, nullptr, 0, &additional, 1);
+    send_result = mdns_query_answer_multicast(sock, buffer.data(), buffer.size(), answer, nullptr, 0, &additional, 1);
+  }
+
+  if (ctx->on_log && *ctx->on_log) {
+    if (send_result < 0) {
+      (*ctx->on_log)("announce: FAILED to send " + std::string(unicast ? "unicast" : "multicast") +
+                     " response (result=" + std::to_string(send_result) + ", errno=" + std::to_string(errno) + ")");
+    } else {
+      (*ctx->on_log)("announce: sent " + std::string(unicast ? "unicast" : "multicast") + " response for instance '" +
+                     instance + "' (port " + std::to_string(config->port) + ")");
+    }
   }
 
   return 0;
@@ -303,6 +358,11 @@ void MdnsDiscovery::announce_loop() {
 
   announcing_.store(true);
 
+  if (config_.on_log) {
+    config_.on_log("announce_loop: socket opened on port 5353 (fd=" + std::to_string(sock) + ", name='" + config_.name +
+                   "', service='" + config_.service + "')");
+  }
+
   // Send an initial announcement
   {
     std::string hostname = get_hostname();
@@ -321,13 +381,25 @@ void MdnsDiscovery::announce_loop() {
     answer.ttl = 120;
 
     std::array<char, kMdnsBufferSize> buffer{};
-    mdns_announce_multicast(sock, buffer.data(), buffer.size(), answer, nullptr, 0, nullptr, 0);
+    int ann_result = mdns_announce_multicast(sock, buffer.data(), buffer.size(), answer, nullptr, 0, nullptr, 0);
+    if (config_.on_log) {
+      if (ann_result < 0) {
+        config_.on_log("announce_loop: initial announcement FAILED (result=" + std::to_string(ann_result) +
+                       ", errno=" + std::to_string(errno) + ")");
+      } else {
+        config_.on_log("announce_loop: initial announcement sent for '" + instance + "'");
+      }
+    }
   }
 
   // Listen for incoming queries and respond
+  AnnounceContext ctx;
+  ctx.config = &config_;
+  ctx.on_log = &config_.on_log;
+
   std::array<char, kMdnsBufferSize> buffer{};
+  size_t loop_count = 0;
   while (running_.load()) {
-    // Use a short timeout via select/poll so we can check running_ periodically
     struct timeval tv {};
     tv.tv_sec = 0;
     tv.tv_usec = kPollIntervalMs * 1000;
@@ -337,9 +409,31 @@ void MdnsDiscovery::announce_loop() {
     FD_SET(sock, &readfds);
 
     int ret = select(sock + 1, &readfds, nullptr, nullptr, &tv);
-    if (ret > 0) {
-      mdns_socket_listen(sock, buffer.data(), buffer.size(), announce_callback, &config_);
+    if (ret < 0) {
+      if (config_.on_log) {
+        config_.on_log("announce_loop: select() error (errno=" + std::to_string(errno) + ")");
+      }
+      break;
     }
+    if (ret > 0) {
+      if (config_.on_log) {
+        config_.on_log("announce_loop: select() returned data, calling mdns_socket_listen");
+      }
+      size_t records = mdns_socket_listen(sock, buffer.data(), buffer.size(), announce_callback, &ctx);
+      if (config_.on_log) {
+        config_.on_log("announce_loop: mdns_socket_listen processed " + std::to_string(records) + " records");
+      }
+    }
+
+    ++loop_count;
+    // Log heartbeat every ~30 seconds (60 iterations * 500ms)
+    if (config_.on_log && (loop_count % 60) == 0) {
+      config_.on_log("announce_loop: alive, " + std::to_string(loop_count) + " iterations");
+    }
+  }
+
+  if (config_.on_log) {
+    config_.on_log("announce_loop: exiting (running=" + std::string(running_.load() ? "true" : "false") + ")");
   }
 
   // Send goodbye announcement before closing
@@ -374,28 +468,42 @@ void MdnsDiscovery::browse_loop() {
     if (config_.on_error) {
       config_.on_error(
           "Failed to open mDNS browse socket. "
-          "Check permissions (CAP_NET_BIND_SERVICE) or use static peers.");
+          "Check network availability or use static peers.");
     }
     return;
   }
 
   discovering_.store(true);
 
+  if (config_.on_log) {
+    config_.on_log("browse_loop: socket opened on ephemeral port (fd=" + std::to_string(sock) + ")");
+  }
+
   BrowseContext ctx;
   ctx.on_found = &on_found_;
+  ctx.on_log = &config_.on_log;
   ctx.service_name = config_.service;
 
   std::array<char, kMdnsBufferSize> buffer{};
   auto last_query = std::chrono::steady_clock::now() - std::chrono::seconds(kBrowseIntervalSec);
 
+  size_t loop_count = 0;
   while (running_.load()) {
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_query).count();
 
     // Send a query periodically
     if (elapsed >= kBrowseIntervalSec) {
-      mdns_query_send(sock, MDNS_RECORDTYPE_PTR, config_.service.c_str(), config_.service.size(), buffer.data(),
-                      buffer.size(), 0);
+      int query_result = mdns_query_send(sock, MDNS_RECORDTYPE_PTR, config_.service.c_str(), config_.service.size(),
+                                         buffer.data(), buffer.size(), 0);
+      if (config_.on_log) {
+        if (query_result < 0) {
+          config_.on_log("browse_loop: query_send FAILED (result=" + std::to_string(query_result) +
+                         ", errno=" + std::to_string(errno) + ")");
+        } else {
+          config_.on_log("browse_loop: sent PTR query for '" + config_.service + "'");
+        }
+      }
       last_query = now;
     }
 
@@ -409,9 +517,30 @@ void MdnsDiscovery::browse_loop() {
     FD_SET(sock, &readfds);
 
     int ret = select(sock + 1, &readfds, nullptr, nullptr, &tv);
-    if (ret > 0) {
-      mdns_query_recv(sock, buffer.data(), buffer.size(), browse_callback, &ctx, 0);
+    if (ret < 0) {
+      if (config_.on_log) {
+        config_.on_log("browse_loop: select() error (errno=" + std::to_string(errno) + ")");
+      }
+      break;
     }
+    if (ret > 0) {
+      if (config_.on_log) {
+        config_.on_log("browse_loop: select() returned data, calling mdns_query_recv");
+      }
+      size_t records = mdns_query_recv(sock, buffer.data(), buffer.size(), browse_callback, &ctx, 0);
+      if (config_.on_log) {
+        config_.on_log("browse_loop: mdns_query_recv processed " + std::to_string(records) + " records");
+      }
+    }
+
+    ++loop_count;
+    if (config_.on_log && (loop_count % 60) == 0) {
+      config_.on_log("browse_loop: alive, " + std::to_string(loop_count) + " iterations");
+    }
+  }
+
+  if (config_.on_log) {
+    config_.on_log("browse_loop: exiting");
   }
 
   mdns_socket_close(sock);

@@ -39,6 +39,9 @@ class MdnsDiscovery {
   /// Callback invoked when an mDNS operation encounters an error (e.g., socket failure)
   using ErrorCallback = std::function<void(const std::string & message)>;
 
+  /// Callback for diagnostic logging (wired to RCLCPP_DEBUG in gateway)
+  using LogCallback = std::function<void(const std::string & message)>;
+
   struct Config {
     bool announce{false};                       ///< Broadcast presence via mDNS
     bool discover{false};                       ///< Browse for peers via mDNS
@@ -46,6 +49,7 @@ class MdnsDiscovery {
     int port{8080};                             ///< Port this gateway listens on
     std::string name;                           ///< Instance name for announcement
     ErrorCallback on_error;                     ///< Optional error reporting callback
+    LogCallback on_log;                         ///< Optional diagnostic log callback
   };
 
   /// Callback invoked when a peer gateway is discovered
