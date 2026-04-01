@@ -116,14 +116,13 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
 
     std::string area_id = req.matches[1];
 
-    auto validation_result = ctx_.validate_entity_id(area_id);
-    if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid area ID",
-                                 {{"details", validation_result.error()}, {"area_id", area_id}});
-      return;
+    // Validate entity and forward to peer if remote (aggregation support)
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, area_id);
+    if (!entity_opt) {
+      return;  // Response already sent (error or forwarded to peer)
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Local entity - look up full object from cache for detail response
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto area_opt = cache.get_area(area_id);
     if (!area_opt) {
@@ -479,15 +478,13 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
 
     std::string component_id = req.matches[1];
 
-    auto validation_result = ctx_.validate_entity_id(component_id);
-    if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid component ID",
-                                 {{"details", validation_result.error()}, {"component_id", component_id}});
-      return;
+    // Validate entity and forward to peer if remote (aggregation support)
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, component_id);
+    if (!entity_opt) {
+      return;  // Response already sent (error or forwarded to peer)
     }
 
-    // Read from cache first (has merged entities from aggregation),
-    // fall back to discovery manager for entities not yet cached.
+    // Local entity - look up full object from cache for detail response
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_opt = cache.get_component(component_id);
     if (!comp_opt) {
@@ -890,15 +887,13 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
 
     std::string app_id = req.matches[1];
 
-    auto validation_result = ctx_.validate_entity_id(app_id);
-    if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid app ID",
-                                 {{"details", validation_result.error()}, {"app_id", app_id}});
-      return;
+    // Validate entity and forward to peer if remote (aggregation support)
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, app_id);
+    if (!entity_opt) {
+      return;  // Response already sent (error or forwarded to peer)
     }
 
-    // Read from cache first (has host component override applied),
-    // fall back to discovery manager for entities not yet cached.
+    // Local entity - look up full object from cache for detail response
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto app_opt = cache.get_app(app_id);
     if (!app_opt) {
@@ -1203,13 +1198,13 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
 
     std::string function_id = req.matches[1];
 
-    auto validation_result = ctx_.validate_entity_id(function_id);
-    if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid function ID",
-                                 {{"details", validation_result.error()}, {"function_id", function_id}});
-      return;
+    // Validate entity and forward to peer if remote (aggregation support)
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, function_id);
+    if (!entity_opt) {
+      return;  // Response already sent (error or forwarded to peer)
     }
 
+    // Local entity - look up full object from cache for detail response
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto func_opt = cache.get_function(function_id);
     if (!func_opt) {

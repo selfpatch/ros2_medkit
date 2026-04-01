@@ -875,6 +875,17 @@ class AreaAggregationTest : public ::testing::Test {
     client_ = std::make_unique<httplib::Client>("127.0.0.1", suite_server_port_);
     client_->set_connection_timeout(5);
     client_->set_read_timeout(5);
+
+    // Wait for the REST server thread to start listening.
+    // On slow CI runners (Humble), the httplib::Server::listen() thread may
+    // not have opened the port yet when the test starts making requests.
+    for (int attempt = 0; attempt < 50; ++attempt) {
+      auto probe = client_->Get("/api/v1/health");
+      if (probe) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
   }
 
   void TearDown() override {

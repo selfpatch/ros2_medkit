@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 #include <httplib.h>
 
+#include <algorithm>
 #include <future>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -178,12 +179,15 @@ TEST(AggregationManager, accepts_valid_https_peer_url) {
 }
 
 TEST(AggregationManager, remove_discovered_peer_decreases_count) {
-  auto config = make_config(2);
+  auto config = make_config(0);
   AggregationManager manager(config);
 
+  // Add discovered peers
+  manager.add_discovered_peer("http://192.168.1.10:8081", "disc_peer_0");
+  manager.add_discovered_peer("http://192.168.1.11:8081", "disc_peer_1");
   EXPECT_EQ(manager.peer_count(), 2u);
 
-  manager.remove_discovered_peer("peer_0");
+  manager.remove_discovered_peer("disc_peer_0");
   EXPECT_EQ(manager.peer_count(), 1u);
 }
 
@@ -193,6 +197,30 @@ TEST(AggregationManager, remove_nonexistent_peer_is_noop) {
 
   manager.remove_discovered_peer("no_such_peer");
   EXPECT_EQ(manager.peer_count(), 2u);
+}
+
+TEST(AggregationManager, remove_discovered_peer_does_not_remove_static_peers) {
+  // Static peers must never be removed by remove_discovered_peer(), even if
+  // the name matches. This prevents mDNS goodbye messages from corrupting
+  // the static peer list.
+  auto config = make_config(2);  // 2 static peers: peer_0, peer_1
+  AggregationManager manager(config);
+
+  EXPECT_EQ(manager.peer_count(), 2u);
+
+  // Attempt to remove a static peer by name
+  manager.remove_discovered_peer("peer_0");
+  EXPECT_EQ(manager.peer_count(), 2u);  // Static peer should survive
+
+  manager.remove_discovered_peer("peer_1");
+  EXPECT_EQ(manager.peer_count(), 2u);  // Still 2 static peers
+
+  // Add a discovered peer and verify it CAN be removed
+  manager.add_discovered_peer("http://192.168.1.50:8081", "dynamic_peer");
+  EXPECT_EQ(manager.peer_count(), 3u);
+
+  manager.remove_discovered_peer("dynamic_peer");
+  EXPECT_EQ(manager.peer_count(), 2u);  // Only the 2 static peers remain
 }
 
 // =============================================================================
@@ -836,6 +864,105 @@ TEST(AggregationManager, fetch_and_merge_uses_default_10k_limit) {
   EXPECT_EQ(result.components.size(), 1u);
   EXPECT_EQ(result.apps.size(), 1u);
   EXPECT_EQ(result.functions.size(), 1u);
+}
+
+// =============================================================================
+// Function hosts remapped after App collision prefixing
+// =============================================================================
+
+TEST(AggregationManager, fetch_and_merge_remaps_function_hosts_after_app_collision) {
+  // When a remote peer has App "camera_driver" that collides with a local App
+  // "camera_driver", the remote App gets prefixed to "peer_cam__camera_driver".
+  // A remote Function referencing "camera_driver" in its hosts must have that
+  // host updated to the prefixed ID.
+  MockPeerServer mock;
+
+  // Health endpoint
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+
+  // Areas: empty
+  mock.server().Get("/api/v1/areas", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+
+  // Components: empty
+  mock.server().Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  mock.server().Get(R"(/api/v1/components/([^/]+)/subcomponents)",
+                    [](const httplib::Request &, httplib::Response & res) {
+                      res.set_content(R"({"items":[]})", "application/json");
+                    });
+
+  // Apps: one app "camera_driver" that will collide with local
+  mock.server().Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json items = nlohmann::json::array();
+    items.push_back({{"id", "camera_driver"}, {"name", "Camera Driver"}});
+    res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
+  });
+
+  // Functions: one function referencing "camera_driver" in hosts
+  mock.server().Get("/api/v1/functions", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json items = nlohmann::json::array();
+    items.push_back(
+        {{"id", "perception"}, {"name", "Perception"}, {"x-medkit", {{"hosts", {"camera_driver", "lidar_driver"}}}}});
+    res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
+  });
+  mock.server().Get(R"(/api/v1/functions/([^/]+))", [](const httplib::Request & req, httplib::Response & res) {
+    std::string match = req.matches[1].str();
+    if (match == "perception") {
+      res.set_content(
+          R"({"id":"perception","name":"Perception","x-medkit":{"hosts":["camera_driver","lidar_driver"]}})",
+          "application/json");
+    } else {
+      res.status = 404;
+    }
+  });
+
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "peer_cam";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 1u);
+
+  // Local apps: one "camera_driver" that will cause collision
+  App local_app;
+  local_app.id = "camera_driver";
+  local_app.name = "Camera Driver";
+  local_app.source = "manifest";
+
+  auto result = manager.fetch_and_merge_peer_entities({}, {}, {local_app}, {});
+
+  // The remote app should be prefixed
+  ASSERT_EQ(result.apps.size(), 2u);
+  EXPECT_EQ(result.apps[0].id, "camera_driver");            // local
+  EXPECT_EQ(result.apps[1].id, "peer_cam__camera_driver");  // remote, prefixed
+
+  // The remote function's hosts should reference the prefixed app ID
+  ASSERT_EQ(result.functions.size(), 1u);
+  EXPECT_EQ(result.functions[0].id, "perception");
+
+  // Check that "camera_driver" was remapped to "peer_cam__camera_driver" in hosts
+  auto & hosts = result.functions[0].hosts;
+  bool has_prefixed = std::find(hosts.begin(), hosts.end(), "peer_cam__camera_driver") != hosts.end();
+  bool has_original = std::find(hosts.begin(), hosts.end(), "camera_driver") != hosts.end();
+  EXPECT_TRUE(has_prefixed) << "Function hosts should contain prefixed 'peer_cam__camera_driver'";
+  EXPECT_FALSE(has_original) << "Function hosts should NOT contain original 'camera_driver' after remap";
+
+  // "lidar_driver" should be unchanged (no collision for that app)
+  bool has_lidar = std::find(hosts.begin(), hosts.end(), "lidar_driver") != hosts.end();
+  EXPECT_TRUE(has_lidar) << "Function hosts should still contain 'lidar_driver'";
 }
 
 // =============================================================================

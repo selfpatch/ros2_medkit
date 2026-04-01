@@ -51,6 +51,9 @@ json App::to_json() const {
   if (external) {
     x_medkit["external"] = external;
   }
+  if (!original_id.empty()) {
+    x_medkit["original_id"] = original_id;
+  }
   // Add topics if present
   if (!topics.publishes.empty() || !topics.subscribes.empty()) {
     x_medkit["topics"] = topics.to_json();

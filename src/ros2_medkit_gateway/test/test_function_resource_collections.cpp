@@ -122,6 +122,7 @@ class FunctionResourceCollections : public ::testing::Test {
 // EntityCapabilities: Function supports aggregated collections
 // ============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST_F(FunctionResourceCollections, FunctionSupportsFaults) {
   auto caps = EntityCapabilities::for_type(SovdEntityType::FUNCTION);
   EXPECT_TRUE(caps.supports_collection(ResourceCollection::FAULTS));
@@ -168,6 +169,7 @@ TEST_F(FunctionResourceCollections, FunctionSupportsCyclicSubscriptions) {
 // EntityCapabilities: Area supports aggregated collections
 // ============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST_F(FunctionResourceCollections, AreaSupportsFaults) {
   auto caps = EntityCapabilities::for_type(SovdEntityType::AREA);
   EXPECT_TRUE(caps.supports_collection(ResourceCollection::FAULTS));
@@ -209,6 +211,7 @@ TEST_F(FunctionResourceCollections, AreaSupportsBulkData) {
 // AggregationService: get_child_app_ids
 // ============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST_F(FunctionResourceCollections, FunctionChildAppIds) {
   auto ids = service_->get_child_app_ids(SovdEntityType::FUNCTION, "sensing");
   ASSERT_EQ(ids.size(), 2);
@@ -297,6 +300,7 @@ TEST_F(FunctionResourceCollections, ServerCollectionXMedkit) {
 // Function data aggregation via cache
 // ============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST_F(FunctionResourceCollections, FunctionDataAggregatesFromHostedApps) {
   auto result = cache_.get_function_data("sensing");
 

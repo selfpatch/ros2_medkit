@@ -254,15 +254,28 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     // E.g., YAML key "discovery.runtime.create_synthetic_areas" becomes
     // override name "discovery.runtime.create_synthetic_areas".
     static const std::vector<std::pair<std::string, std::string>> removed_params = {
-        {"discovery.runtime.create_synthetic_areas", "Areas now come from manifest only."},
-        {"discovery.runtime.create_synthetic_components", "Components are now host-derived in runtime mode."},
-        {"discovery.runtime.grouping_strategy", "Replaced by discovery.runtime.create_functions_from_namespaces."},
-        {"discovery.runtime.synthetic_component_name_pattern", "Components are now host-derived in runtime mode."},
-        {"discovery.runtime.topic_only_policy", "Topic-only discovery has been removed."},
-        {"discovery.runtime.min_topics_for_component", "Topic-only discovery has been removed."},
-        {"discovery.merge_pipeline.gap_fill.allow_heuristic_areas", "Areas now come from manifest only."},
+        {"discovery.runtime.create_synthetic_areas",
+         "Areas now come from manifest only. Use 'discovery.mode: hybrid' with a manifest file to define Areas."},
+        {"discovery.runtime.create_synthetic_components",
+         "Components are now host-derived in runtime mode. A single Component is auto-created from the hostname. "
+         "Use 'discovery.mode: hybrid' with a manifest file to define custom Components."},
+        {"discovery.runtime.grouping_strategy",
+         "Replaced by 'discovery.runtime.create_functions_from_namespaces'. "
+         "Set 'discovery.runtime.create_functions_from_namespaces: true' to group nodes by namespace into Functions."},
+        {"discovery.runtime.synthetic_component_name_pattern",
+         "Components are now host-derived in runtime mode. A single Component is auto-created from the hostname. "
+         "Use 'discovery.mode: hybrid' with a manifest file to define custom Components."},
+        {"discovery.runtime.topic_only_policy",
+         "Topic-only discovery has been removed. All nodes are now discovered via the ROS 2 graph API. "
+         "Remove this parameter from your configuration."},
+        {"discovery.runtime.min_topics_for_component",
+         "Topic-only discovery has been removed. All nodes are now discovered via the ROS 2 graph API. "
+         "Remove this parameter from your configuration."},
+        {"discovery.merge_pipeline.gap_fill.allow_heuristic_areas",
+         "Areas now come from manifest only. Use 'discovery.mode: hybrid' with a manifest file to define Areas."},
         {"discovery.merge_pipeline.gap_fill.allow_heuristic_components",
-         "Components are now host-derived in runtime mode."},
+         "Components are now host-derived in runtime mode. A single Component is auto-created from the hostname. "
+         "Use 'discovery.mode: hybrid' with a manifest file to define custom Components."},
     };
     for (const auto & [name, message] : removed_params) {
       for (const auto & override : overrides) {

@@ -140,6 +140,17 @@ int browse_callback(int /*sock*/, const struct sockaddr * from, size_t addrlen, 
   }
   (void)addrlen;  // Suppress unused parameter warning in non-early-return paths
 
+  // Reject privileged ports (< 1024), which includes port 0 (unspecified).
+  // Privileged ports require root and are typically system services (SSH, HTTP, DNS)
+  // that should never be SOVD peer gateways discovered via mDNS.
+  if (srv.port < 1024) {
+    if (ctx->on_log && *ctx->on_log) {
+      (*ctx->on_log)("browse: rejecting SRV record with port " + std::to_string(srv.port) +
+                     " (must be >= 1024), instance='" + instance_name + "'");
+    }
+    return 0;
+  }
+
   std::string url = ctx->peer_scheme + "://" + addr_str + ":" + std::to_string(srv.port);
 
   // Use the instance name (before the service type) as the peer name

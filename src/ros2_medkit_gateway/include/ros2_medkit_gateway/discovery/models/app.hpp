@@ -119,6 +119,7 @@ struct App {
 
   // === Discovery metadata ===
   std::string source = "manifest";  ///< "manifest" or "runtime"
+  std::string original_id;          ///< Pre-rename ID when collision-prefixed by aggregation
 
   // === Serialization methods ===
 

@@ -48,6 +48,7 @@ TEST(StreamProxy, close_is_idempotent) {
 // SSE parsing tests (pure function, no networking required)
 // =============================================================================
 
+// @verifies REQ_INTEROP_090
 TEST(StreamProxy, parse_sse_single_event) {
   std::string raw = "data: {\"temperature\": 42}\n\n";
 
@@ -60,6 +61,7 @@ TEST(StreamProxy, parse_sse_single_event) {
   EXPECT_TRUE(events[0].id.empty());
 }
 
+// @verifies REQ_INTEROP_090
 TEST(StreamProxy, parse_sse_multiple_events) {
   std::string raw =
       "data: {\"temp\": 42}\n"
@@ -90,6 +92,7 @@ TEST(StreamProxy, parse_sse_multiline_data) {
   EXPECT_EQ(events[0].event_type, "message");
 }
 
+// @verifies REQ_INTEROP_090
 TEST(StreamProxy, parse_sse_with_event_type) {
   std::string raw =
       "event: data_update\n"
@@ -225,6 +228,7 @@ void wait_for_server(httplib::Server & svr, int timeout_ms = 5000) {
 
 }  // namespace
 
+// @verifies REQ_INTEROP_090
 TEST(SSEStreamProxyIntegration, receives_events_from_mock_server) {
   httplib::Server svr;
 

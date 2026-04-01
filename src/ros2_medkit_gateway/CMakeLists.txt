@@ -329,7 +329,6 @@ if(BUILD_TESTING)
     "test/*.cpp" "test/*.h" "test/*.hpp"
   )
   list(FILTER _format_files EXCLUDE REGEX ".*/vendored/.*")
-  list(FILTER _format_files EXCLUDE REGEX ".*/vendored/.*")
   ament_clang_format(${_format_files}
     CONFIG_FILE "${ament_cmake_clang_format_CONFIG_FILE}"
   )

@@ -440,3 +440,96 @@ Key Classes
     Reads local host system info (hostname, OS, architecture) and produces a
     single ``Component`` entity representing the physical host. Used in
     runtime-only discovery to replace synthetic per-namespace Components.
+
+Security Considerations
+-----------------------
+
+Multi-instance aggregation introduces an attack surface where a malicious or
+compromised peer can inject data into the primary gateway's entity tree. The
+following defenses are in place:
+
+Peer URL Validation (mDNS-discovered peers)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``add_discovered_peer()`` rejects URLs that:
+
+- Use a non-HTTP(S) scheme (e.g., ``ftp://``, ``file://``)
+- Resolve to loopback, link-local, or unspecified addresses (prevents SSRF to
+  localhost services or cloud metadata endpoints like ``169.254.169.254``)
+- Point to well-known cloud metadata hostnames (``metadata.google``)
+
+Static peers bypass address validation (loopback is valid for same-host
+deployments) but still require HTTP(S) scheme.
+
+TLS Enforcement
+~~~~~~~~~~~~~~~
+
+When ``require_tls: true``, peers with ``http://`` URLs are rejected (both
+static and discovered). This prevents cleartext communication on untrusted
+networks.
+
+Privileged Port Rejection (mDNS)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The mDNS browse callback rejects SRV records with ports below 1024. Privileged
+ports are system services (SSH, HTTP, DNS) that should never be SOVD peer
+gateways. This prevents rogue mDNS announcements from redirecting requests to
+system services.
+
+Entity ID Validation
+~~~~~~~~~~~~~~~~~~~~
+
+Entity IDs received from peer JSON responses are validated before being used in
+URL paths for detail fetches. IDs must match ``[a-zA-Z0-9_-]{1,256}``. This
+prevents path traversal attacks where a malicious peer returns IDs like
+``../etc/passwd`` that would be interpolated into HTTP request paths.
+
+Per-Collection Limits
+~~~~~~~~~~~~~~~~~~~~~
+
+Each entity collection (areas, components, apps, functions) is limited to 1000
+entities per peer response. If a peer returns more, the entire fetch for that
+peer is rejected. This prevents a malicious peer from causing excessive HTTP
+requests via N+1 detail fetches.
+
+Response Size Limits
+~~~~~~~~~~~~~~~~~~~~
+
+All HTTP responses from peers are limited to 10 MB (``MAX_PEER_RESPONSE_SIZE``).
+Responses exceeding this limit are rejected.
+
+Per-Peer Entity Limits
+~~~~~~~~~~~~~~~~~~~~~~
+
+``fetch_and_merge_peer_entities()`` accepts a ``max_entities_per_peer`` parameter
+(default: 10000) that limits the total number of entities from a single peer
+across all collections.
+
+Max Discovered Peers
+~~~~~~~~~~~~~~~~~~~~
+
+The ``max_discovered_peers`` config (default: 50) limits the number of peers
+that can be added via mDNS discovery. Static peers do not count against this
+limit.
+
+Static Peer Protection
+~~~~~~~~~~~~~~~~~~~~~~
+
+``remove_discovered_peer()`` only iterates discovered peers, never static peers.
+This prevents a rogue mDNS goodbye message from removing a statically configured
+peer by matching its name.
+
+Auth Header Forwarding
+~~~~~~~~~~~~~~~~~~~~~~
+
+By default, ``forward_auth`` is ``false`` - the primary gateway does NOT forward
+client Authorization headers to peers. This prevents token leakage to untrusted
+or mDNS-discovered peers. Enable only when all peers are trusted.
+
+Function Host Remapping
+~~~~~~~~~~~~~~~~~~~~~~~
+
+When App ID collision causes prefixing (e.g., ``camera_driver`` becomes
+``peer_b__camera_driver``), Function entities that reference the original App ID
+in their ``hosts`` list are automatically remapped to use the prefixed ID. This
+ensures Function host references remain valid after merge.

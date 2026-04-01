@@ -633,7 +633,8 @@ TEST(GraphProviderPluginRouteTest, UsesPreviousOnlineTimestampForOfflineLastSeen
   auto online_input = make_input({make_app("node1", {}, {}, true)}, {make_function("fn", {"node1"})});
   plugin.introspect(online_input);
 
-  std::this_thread::sleep_for(5ms);
+  // Ensure timestamps differ even under CPU contention during parallel testing
+  std::this_thread::sleep_for(50ms);
 
   auto offline_input = make_input({make_app("node1", {}, {}, false)}, {make_function("fn", {"node1"})});
   plugin.introspect(offline_input);

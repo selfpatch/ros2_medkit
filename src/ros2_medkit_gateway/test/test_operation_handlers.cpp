@@ -282,7 +282,11 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<OperationHandlers>(*ctx_);
 
-    std::this_thread::sleep_for(200ms);
+    // Wait for DDS discovery to complete: the executor must discover
+    // the action server, trigger service, and all internal action services
+    // (_cancel_goal, _get_result, _status). On slow CI runners under
+    // parallel load, 200ms was insufficient.
+    std::this_thread::sleep_for(1s);
   }
 
   void TearDown() override {

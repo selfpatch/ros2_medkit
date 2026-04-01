@@ -187,7 +187,8 @@ std::vector<App> EntityMerger::merge_apps(const std::vector<App> & local, const 
     added.component_id = peer_name_;
 
     if (local_ids.count(remote_app.id) > 0) {
-      // Collision: prefix the remote entity ID
+      // Collision: prefix the remote entity ID, preserve original for clients
+      added.original_id = remote_app.id;
       added.id = prefix_id(remote_app.id);
       added.name = peer_name_ + SEPARATOR + remote_app.name;
     }

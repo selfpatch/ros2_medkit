@@ -252,6 +252,37 @@ TEST(EntityMerger, apps_prefix_on_collision) {
   EXPECT_EQ(result[1].component_id, "subsystem_b");
 }
 
+// @verifies REQ_INTEROP_003
+TEST(EntityMerger, apps_collision_sets_original_id) {
+  EntityMerger merger("subsystem_b");
+
+  auto local_app = make_app("camera_driver", "perception_comp");
+  auto remote_app = make_app("camera_driver", "perception_comp");
+
+  auto result = merger.merge_apps({local_app}, {remote_app});
+
+  ASSERT_EQ(result.size(), 2u);
+  // Local app should not have original_id set
+  EXPECT_TRUE(result[0].original_id.empty());
+  // Collision-renamed remote app should preserve original_id
+  EXPECT_EQ(result[1].id, "subsystem_b__camera_driver");
+  EXPECT_EQ(result[1].original_id, "camera_driver");
+}
+
+TEST(EntityMerger, apps_no_collision_does_not_set_original_id) {
+  EntityMerger merger("subsystem_b");
+
+  auto local_app = make_app("planner");
+  auto remote_app = make_app("localizer");
+
+  auto result = merger.merge_apps({local_app}, {remote_app});
+
+  ASSERT_EQ(result.size(), 2u);
+  // No collision - original_id should be empty for both
+  EXPECT_TRUE(result[0].original_id.empty());
+  EXPECT_TRUE(result[1].original_id.empty());
+}
+
 TEST(EntityMerger, no_collision_no_prefix) {
   EntityMerger merger("subsystem_b");
 
