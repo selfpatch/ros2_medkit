@@ -27,7 +27,12 @@ namespace ros2_medkit_gateway {
 namespace handlers {
 
 SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker)
-  : ctx_(ctx), client_tracker_(std::move(client_tracker)) {
+  : SSEFaultHandler(ctx, std::move(client_tracker), std::chrono::seconds(kKeepaliveIntervalSec)) {
+}
+
+SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
+                                 std::chrono::milliseconds keepalive_interval)
+  : ctx_(ctx), client_tracker_(std::move(client_tracker)), keepalive_interval_(keepalive_interval) {
   const auto fault_events_topic = build_fault_manager_events_topic(ctx_.node());
 
   // Create subscription to fault events topic
@@ -119,7 +124,7 @@ void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Respo
         }
 
         // Wait for new events or keepalive timeout
-        auto timeout = std::chrono::seconds(kKeepaliveIntervalSec);
+        auto timeout = keepalive_interval_;
         std::unique_lock<std::mutex> lock(queue_mutex_);
 
         while (true) {

@@ -1,0 +1,138 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1775003753994,
+  "projectRoot": "/home/sewon/dev/worktrees/cozy-pets-jam-9u3",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "scripts",
+      "src"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "build": {
+      "path": "build",
+      "purpose": "Build output",
+      "fileCount": 3,
+      "lastAccessed": 1775003753989,
+      "keyFiles": [
+        "COLCON_IGNORE",
+        "compile_commands.json"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 12,
+      "lastAccessed": 1775003753991,
+      "keyFiles": [
+        "Doxyfile",
+        "README.md",
+        "changelog.rst",
+        "conf.py",
+        "getting_started.rst"
+      ]
+    },
+    "install": {
+      "path": "install",
+      "purpose": null,
+      "fileCount": 12,
+      "lastAccessed": 1775003753992,
+      "keyFiles": [
+        "COLCON_IGNORE",
+        "_local_setup_util_ps1.py",
+        "_local_setup_util_sh.py",
+        "local_setup.bash",
+        "local_setup.ps1"
+      ]
+    },
+    "log": {
+      "path": "log",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1775003753992,
+      "keyFiles": [
+        "COLCON_IGNORE"
+      ]
+    },
+    "postman": {
+      "path": "postman",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1775003753993,
+      "keyFiles": [
+        "README.md"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 8,
+      "lastAccessed": 1775003753993,
+      "keyFiles": [
+        "clang-tidy-diff.sh",
+        "generate_verification.py",
+        "merge-compile-commands.sh",
+        "pixi-activate.sh",
+        "pixi-install-cpp-httplib.sh"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 0,
+      "lastAccessed": 1775003753993,
+      "keyFiles": []
+    },
+    "docs/api": {
+      "path": "docs/api",
+      "purpose": "API routes",
+      "fileCount": 5,
+      "lastAccessed": 1775003753993,
+      "keyFiles": [
+        "cpp.rst",
+        "index.rst",
+        "locking.rst"
+      ]
+    },
+    "docs/config": {
+      "path": "docs/config",
+      "purpose": "Configuration files",
+      "fileCount": 6,
+      "lastAccessed": 1775003753993,
+      "keyFiles": [
+        "diagnostic-bridge.rst",
+        "discovery-options.rst",
+        "fault-manager.rst"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}
