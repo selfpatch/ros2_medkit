@@ -20,7 +20,6 @@
 
 #include <arpa/inet.h>
 #include <chrono>
-#include <cstdlib>
 #include <memory>
 #include <netinet/in.h>
 #include <string>
@@ -53,8 +52,11 @@ namespace {
 int reserve_local_port() {
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) {
-    return 18080;
+    return 0;
   }
+
+  int opt = 1;
+  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -63,13 +65,13 @@ int reserve_local_port() {
 
   if (bind(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
     close(sock);
-    return 18080;
+    return 0;
   }
 
   socklen_t addr_len = sizeof(addr);
   if (getsockname(sock, reinterpret_cast<sockaddr *>(&addr), &addr_len) != 0) {
     close(sock);
-    return 18080;
+    return 0;
   }
 
   int port = ntohs(addr.sin_port);
@@ -153,7 +155,6 @@ void release_stream(httplib::Response & res, bool success = false) {
 class SSEFaultHandlerTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
-    setenv("ROS_DOMAIN_ID", "98", 1);
     rclcpp::init(0, nullptr);
   }
 
@@ -162,8 +163,11 @@ class SSEFaultHandlerTest : public ::testing::Test {
   }
 
   void SetUp() override {
+    int server_port = reserve_local_port();
+    ASSERT_NE(server_port, 0);
+
     auto options = rclcpp::NodeOptions{}.automatically_declare_parameters_from_overrides(false).parameter_overrides({
-        {"server.port", reserve_local_port()},
+        {"server.port", server_port},
     });
 
     node_ = std::make_shared<GatewayNode>(options);
