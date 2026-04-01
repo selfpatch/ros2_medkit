@@ -545,15 +545,17 @@ MergeResult MergePipeline::execute() {
     bool hide_orphans = manifest_config_.unmanifested_nodes == ManifestConfig::UnmanifestedNodePolicy::IGNORE;
 
     auto app_it = std::remove_if(result.apps.begin(), result.apps.end(), [&](const App & app) {
-      if (!is_runtime_source(app.source)) {
+      // Whitelist: manifest and plugin sources are always preserved
+      if (is_protected_source(app.source)) {
         return false;
       }
-      // Suppress runtime apps whose ID matches a linked manifest app (dedup)
+      // Suppress non-protected apps whose ID matches a linked manifest app (dedup)
       if (linked_app_ids.count(app.id) > 0) {
         return true;
       }
-      // When unmanifested_nodes=ignore, suppress orphan apps (gap-fill nodes not in manifest)
-      if (hide_orphans && app.bound_fqn.has_value() && orphan_fqns.count(app.bound_fqn.value()) > 0) {
+      // When unmanifested_nodes=ignore, suppress all non-linked, non-protected apps.
+      // This covers heuristic, topic, synthetic, node, runtime, and any other source.
+      if (hide_orphans) {
         return true;
       }
       return false;
@@ -571,9 +573,9 @@ MergeResult MergePipeline::execute() {
       }
     }
 
-    // Remove runtime components whose namespace is covered by manifest or orphan suppression
+    // Remove non-protected components whose namespace is covered by manifest or orphan suppression
     auto comp_it = std::remove_if(result.components.begin(), result.components.end(), [&](const Component & comp) {
-      if (!is_runtime_source(comp.source)) {
+      if (is_protected_source(comp.source)) {
         return false;
       }
       if (manifest_comp_ns.count(comp.namespace_path) > 0 || linked_namespaces.count(comp.namespace_path) > 0) {
@@ -587,9 +589,9 @@ MergeResult MergePipeline::execute() {
     });
     result.components.erase(comp_it, result.components.end());
 
-    // Remove runtime areas whose namespace is covered
+    // Remove non-protected areas whose namespace is covered
     auto area_it = std::remove_if(result.areas.begin(), result.areas.end(), [&](const Area & area) {
-      if (!is_runtime_source(area.source)) {
+      if (is_protected_source(area.source)) {
         return false;
       }
       if (manifest_area_ns.count(area.namespace_path) > 0 || linked_namespaces.count(area.namespace_path) > 0) {

@@ -163,5 +163,16 @@ inline bool is_runtime_source(const std::string & source) {
   return source == "heuristic" || source == "topic" || source == "synthetic" || source == "node";
 }
 
+/**
+ * @brief Check if an entity source is protected from orphan suppression
+ *
+ * Whitelist approach: only manifest and plugin sources are preserved during
+ * orphan filtering. Everything else (heuristic, topic, synthetic, node, runtime,
+ * peer:xxx) is eligible for suppression.
+ */
+inline bool is_protected_source(const std::string & source) {
+  return source == "manifest" || source.rfind("plugin", 0) == 0;
+}
+
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway

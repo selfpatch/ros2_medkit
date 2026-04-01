@@ -191,6 +191,7 @@ class GatewayNode : public rclcpp::Node {
   std::string server_host_;
   int server_port_;
   int refresh_interval_ms_;
+  bool filter_internal_nodes_{true};
   CorsConfig cors_config_;
   AuthConfig auth_config_;
   RateLimitConfig rate_limit_config_;
