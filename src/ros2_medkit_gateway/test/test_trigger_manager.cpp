@@ -750,8 +750,11 @@ TEST_F(TriggerManagerTest, ExpiredTrigger_FiresOnRemovedCallback) {
 
   EXPECT_TRUE(manager_->is_active(created->id));
 
-  // Wait for expiry
-  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  // Poll until trigger expires (lifetime=1s, poll up to 3s for CI tolerance)
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
+  while (manager_->is_active(created->id) && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
 
   // is_active triggers cleanup for expired triggers
   EXPECT_FALSE(manager_->is_active(created->id));
