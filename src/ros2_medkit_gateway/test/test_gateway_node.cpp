@@ -260,7 +260,7 @@ TEST_F(TestGatewayNode, test_fault_manager_namespace_configures_event_subscriber
       rclcpp::Parameter("fault_manager.namespace", "robot5"),
   });
 
-  ASSERT_TRUE(wait_for_subscriber_count("/robot5/fault_manager/events", 2u));
+  ASSERT_TRUE(wait_for_subscriber_count("/robot5/fault_manager/events", 2u, 5s));
   EXPECT_EQ(node_->count_subscribers("/fault_manager/events"), 0u);
 }
 

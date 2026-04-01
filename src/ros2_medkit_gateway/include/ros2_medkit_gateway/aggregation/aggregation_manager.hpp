@@ -52,6 +52,12 @@ struct AggregationConfig {
   /// Default: "http". Set to "https" when peers use TLS.
   std::string peer_scheme{"http"};
 
+  /// Maximum number of peers that can be added via mDNS discovery.
+  /// Prevents unbounded growth of the peer list from rogue mDNS announcements.
+  /// Static peers do not count against this limit.
+  /// Default: 50.
+  size_t max_discovered_peers{50};
+
   struct PeerConfig {
     std::string url;
     std::string name;
@@ -146,9 +152,10 @@ class AggregationManager {
   /**
    * @brief Fetch entities from all healthy peers, merge with local entities, and build routing table
    *
-   * Holds the shared lock internally during iteration and entity fetching, avoiding
-   * dangling pointer issues from raw peer access. Uses EntityMerger per-peer so that
-   * collision-prefixed IDs are correctly tracked in the routing table.
+   * Snapshots peer shared_ptrs under lock, releases before network I/O. The
+   * shared_ptr copies keep PeerClients alive even if remove_discovered_peer()
+   * runs concurrently. Uses EntityMerger per-peer so that collision-prefixed
+   * IDs are correctly tracked in the routing table.
    *
    * @param local_areas Local areas to merge with
    * @param local_components Local components to merge with
@@ -196,11 +203,11 @@ class AggregationManager {
   void forward_request(const std::string & peer_name, const httplib::Request & req, httplib::Response & res);
 
   /**
-   * @brief Fan-out a GET request to all healthy peers
+   * @brief Fan-out a GET request to all healthy peers in parallel
    *
-   * Sends GET requests to all healthy peers (sequentially), merges the
-   * "items" arrays from their responses. Returns partial results if some
-   * peers fail.
+   * Sends GET requests to all healthy peers concurrently via std::async,
+   * merges the "items" arrays from their responses. Returns partial results
+   * if some peers fail.
    *
    * @param path Request path (e.g., "/api/v1/components")
    * @param auth_header Authorization header value (empty to omit)
@@ -216,8 +223,10 @@ class AggregationManager {
 
  private:
   AggregationConfig config_;
+  rclcpp::Logger logger_;
+  size_t static_peer_count_{0};      ///< Number of statically configured peers (not subject to max_discovered_peers)
   mutable std::shared_mutex mutex_;  // Declared before data it protects (destruction order)
-  std::vector<std::unique_ptr<PeerClient>> peers_;
+  std::vector<std::shared_ptr<PeerClient>> peers_;
   std::unordered_map<std::string, std::string> routing_table_;
 
   /**
@@ -226,6 +235,17 @@ class AggregationManager {
    * @return Raw pointer to PeerClient, or nullptr if not found
    */
   PeerClient * find_peer(const std::string & name) const;
+
+  /**
+   * @brief Find a peer by name and return a shared_ptr (caller must hold lock)
+   *
+   * Returns a shared_ptr copy that keeps the PeerClient alive after the caller
+   * releases the lock, enabling lock-free network I/O.
+   *
+   * @param name Peer name to search for
+   * @return shared_ptr to PeerClient, or nullptr if not found
+   */
+  std::shared_ptr<PeerClient> find_peer_shared(const std::string & name) const;
 };
 
 }  // namespace ros2_medkit_gateway

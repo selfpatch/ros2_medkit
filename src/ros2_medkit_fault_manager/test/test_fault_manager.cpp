@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <optional>
@@ -718,41 +719,51 @@ TEST(FaultManagerNodeParameterTest, AutoConfirmAfterSec) {
 }
 
 // FaultEvent Publishing Tests
+//
+// Each test iteration uses a unique namespace to prevent DDS cross-contamination
+// between SetUp/TearDown cycles within the same process. Without this, late-delivered
+// messages from a previous test's publisher can pollute the new subscription.
 class FaultEventPublishingTest : public ::testing::Test {
  protected:
+  static inline std::atomic<int> test_counter_{0};
+
   void SetUp() override {
+    // Unique namespace per test iteration avoids DDS topic collisions
+    std::string ns = "/test_events_" + std::to_string(test_counter_.fetch_add(1));
+
     // Create fault manager node with immediate confirmation
-    rclcpp::NodeOptions options;
-    options.parameter_overrides({
+    rclcpp::NodeOptions fm_options;
+    fm_options.parameter_overrides({
         {"storage_type", "memory"}, {"confirmation_threshold", -1},  // Immediate confirmation
     });
-    fault_manager_ = std::make_shared<FaultManagerNode>(options);
+    fm_options.arguments({"--ros-args", "-r", "__ns:=" + ns});
+    fault_manager_ = std::make_shared<FaultManagerNode>(fm_options);
 
-    // Create test node for subscribing and calling services
-    test_node_ = std::make_shared<rclcpp::Node>("test_event_subscriber");
+    // Create test node in the same namespace
+    rclcpp::NodeOptions test_options;
+    test_options.arguments({"--ros-args", "-r", "__ns:=" + ns});
+    test_node_ = std::make_shared<rclcpp::Node>("test_event_subscriber", test_options);
 
-    // Subscribe to fault events
-    event_subscription_ = test_node_->create_subscription<FaultEvent>(
-        "/fault_manager/events", rclcpp::QoS(100).reliable(), [this](const FaultEvent::SharedPtr msg) {
+    // Subscribe to fault events (namespaced topic: /<ns>/fault_manager/events)
+    std::string events_topic = ns + "/fault_manager/events";
+    auto qos = rclcpp::QoS(100).reliable().durability_volatile();
+    event_subscription_ =
+        test_node_->create_subscription<FaultEvent>(events_topic, qos, [this](const FaultEvent::SharedPtr msg) {
           received_events_.push_back(*msg);
         });
 
-    // Create service clients
-    report_fault_client_ = test_node_->create_client<ReportFault>("/fault_manager/report_fault");
-    clear_fault_client_ = test_node_->create_client<ClearFault>("/fault_manager/clear_fault");
-    get_fault_client_ = test_node_->create_client<GetFault>("/fault_manager/get_fault");
+    // Create service clients (namespaced services)
+    report_fault_client_ = test_node_->create_client<ReportFault>(ns + "/fault_manager/report_fault");
+    clear_fault_client_ = test_node_->create_client<ClearFault>(ns + "/fault_manager/clear_fault");
+    get_fault_client_ = test_node_->create_client<GetFault>(ns + "/fault_manager/get_fault");
     list_faults_for_entity_client_ =
-        test_node_->create_client<ListFaultsForEntity>("/fault_manager/list_faults_for_entity");
+        test_node_->create_client<ListFaultsForEntity>(ns + "/fault_manager/list_faults_for_entity");
 
     // Wait for services
     ASSERT_TRUE(report_fault_client_->wait_for_service(std::chrono::seconds(5)));
     ASSERT_TRUE(clear_fault_client_->wait_for_service(std::chrono::seconds(5)));
     ASSERT_TRUE(get_fault_client_->wait_for_service(std::chrono::seconds(5)));
     ASSERT_TRUE(list_faults_for_entity_client_->wait_for_service(std::chrono::seconds(5)));
-
-    // Drain any stale DDS messages from previous tests (same topic, new subscription)
-    spin_for(std::chrono::milliseconds(50));
-    received_events_.clear();
   }
 
   void TearDown() override {

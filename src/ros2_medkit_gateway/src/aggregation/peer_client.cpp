@@ -191,6 +191,10 @@ void PeerClient::ensure_client() {
     client_ = std::make_unique<httplib::Client>(url_);
     client_->set_connection_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
     client_->set_read_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
+    // Note: cpp-httplib Client does not expose set_payload_max_length (server-only).
+    // Response size is enforced post-download in forward_request() and
+    // forward_and_get_json() via MAX_PEER_RESPONSE_SIZE body length checks.
+    // The read timeout provides a secondary defense against slow-drip attacks.
   }
 }
 

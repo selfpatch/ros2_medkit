@@ -21,6 +21,8 @@
 #include <set>
 #include <unordered_set>
 
+#include "ros2_medkit_gateway/aggregation/network_utils.hpp"
+
 #include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
 #include "ros2_medkit_gateway/sqlite_trigger_store.hpp"
 
@@ -212,6 +214,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("aggregation.require_tls", false);
   // URL scheme for mDNS-discovered peer URLs (default: "http")
   declare_parameter("aggregation.peer_scheme", std::string("http"));
+  // Maximum number of mDNS-discovered peers (prevents unbounded growth from rogue announcements)
+  declare_parameter("aggregation.max_discovered_peers", 50);
   // Static peers: parallel arrays of URLs and names.
   // Example: peer_urls=["http://localhost:8081"], peer_names=["subsystem_b"]
   declare_parameter("aggregation.peer_urls", std::vector<std::string>{""});
@@ -246,15 +250,19 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // explicitly check the parameter overrides to detect stale configs.
   {
     const auto & overrides = this->get_node_options().parameter_overrides();
+    // Use fully-qualified parameter names to match YAML override paths.
+    // E.g., YAML key "discovery.runtime.create_synthetic_areas" becomes
+    // override name "discovery.runtime.create_synthetic_areas".
     static const std::vector<std::pair<std::string, std::string>> removed_params = {
-        {"create_synthetic_areas", "Areas now come from manifest only."},
-        {"create_synthetic_components", "Components are now host-derived in runtime mode."},
-        {"grouping_strategy", "Replaced by discovery.runtime.create_functions_from_namespaces."},
-        {"synthetic_component_name_pattern", "Components are now host-derived in runtime mode."},
-        {"topic_only_policy", "Topic-only discovery has been removed."},
-        {"min_topics_for_component", "Topic-only discovery has been removed."},
-        {"allow_heuristic_areas", "Areas now come from manifest only."},
-        {"allow_heuristic_components", "Components are now host-derived in runtime mode."},
+        {"discovery.runtime.create_synthetic_areas", "Areas now come from manifest only."},
+        {"discovery.runtime.create_synthetic_components", "Components are now host-derived in runtime mode."},
+        {"discovery.runtime.grouping_strategy", "Replaced by discovery.runtime.create_functions_from_namespaces."},
+        {"discovery.runtime.synthetic_component_name_pattern", "Components are now host-derived in runtime mode."},
+        {"discovery.runtime.topic_only_policy", "Topic-only discovery has been removed."},
+        {"discovery.runtime.min_topics_for_component", "Topic-only discovery has been removed."},
+        {"discovery.merge_pipeline.gap_fill.allow_heuristic_areas", "Areas now come from manifest only."},
+        {"discovery.merge_pipeline.gap_fill.allow_heuristic_components",
+         "Components are now host-derived in runtime mode."},
     };
     for (const auto & [name, message] : removed_params) {
       for (const auto & override : overrides) {
@@ -870,6 +878,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     agg_config.forward_auth = get_parameter("aggregation.forward_auth").as_bool();
     agg_config.require_tls = get_parameter("aggregation.require_tls").as_bool();
     agg_config.peer_scheme = get_parameter("aggregation.peer_scheme").as_string();
+    agg_config.max_discovered_peers = static_cast<size_t>(get_parameter("aggregation.max_discovered_peers").as_int());
 
     // Parse static peers from parallel arrays
     auto peer_urls = get_parameter("aggregation.peer_urls").as_string_array();
@@ -893,6 +902,14 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       RCLCPP_WARN(get_logger(),
                   "Aggregation enabled but no static peers and mDNS disabled. "
                   "No peer communication will occur.");
+    }
+
+    // Security warning: forwarding auth tokens over cleartext is dangerous
+    if (agg_config.forward_auth && !agg_config.require_tls) {
+      RCLCPP_WARN(get_logger(),
+                  "Aggregation: forward_auth is enabled but require_tls is false. "
+                  "Authorization tokens may be sent to peers over cleartext HTTP. "
+                  "Set aggregation.require_tls=true for production deployments.");
     }
 
     auto logger = get_logger();
@@ -921,10 +938,27 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       // MdnsDiscovery constructor resolves empty name to gethostname().
       // Sanitize it the same way browse_callback sanitizes discovered peer names.
       const std::string self_mdns_name = HostInfoProvider::sanitize_entity_id(mdns_discovery_->instance_name());
+
+      // Collect local interface addresses at startup for IP-based self-discovery
+      // filtering. Name-only checks are insufficient: an attacker can send mDNS
+      // responses with a different name but our own IP:port, creating forwarding loops.
+      auto local_addrs = std::make_shared<std::unordered_set<std::string>>(collect_local_addresses());
+      const int self_port = server_port_;
+
       mdns_discovery_->start(
-          [this, self_mdns_name](const std::string & url, const std::string & name) {
+          [this, self_mdns_name, local_addrs, self_port](const std::string & url, const std::string & name) {
             if (name == self_mdns_name) {
-              return;  // Skip self-discovery
+              return;  // Skip self-discovery (name match)
+            }
+            // Also reject peers whose resolved IP:port matches our own listen address.
+            // Prevents forwarding loops from spoofed mDNS responses.
+            auto [peer_host, peer_port] = parse_url_host_port(url);
+            if (peer_port == self_port && local_addrs->count(peer_host) > 0) {
+              RCLCPP_WARN(get_logger(),
+                          "mDNS: rejecting peer '%s' at %s - resolves to local address with our port "
+                          "(possible spoofed mDNS response)",
+                          name.c_str(), url.c_str());
+              return;
             }
             aggregation_mgr_->add_discovered_peer(url, name);
           },
@@ -935,10 +969,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
     RCLCPP_INFO(get_logger(),
                 "Aggregation: enabled (timeout=%dms, announce=%s, discover=%s, "
-                "forward_auth=%s, require_tls=%s, peer_scheme=%s)",
+                "forward_auth=%s, require_tls=%s, peer_scheme=%s, max_discovered_peers=%zu)",
                 agg_config.timeout_ms, agg_config.announce ? "true" : "false", agg_config.discover ? "true" : "false",
                 agg_config.forward_auth ? "true" : "false", agg_config.require_tls ? "true" : "false",
-                agg_config.peer_scheme.c_str());
+                agg_config.peer_scheme.c_str(), agg_config.max_discovered_peers);
   } else {
     RCLCPP_INFO(get_logger(), "Aggregation: disabled");
   }
@@ -1431,29 +1465,9 @@ void GatewayNode::refresh_cache() {
     // Covers local heuristic apps (which bypass the merge pipeline orphan filter
     // in runtime_only mode) and any peer apps that slipped through fetch_entities.
     if (filter_internal_nodes_) {
-      // Use the routing table to precisely strip peer prefixes from entity IDs.
-      // Blindly splitting on "__" would incorrectly split entity IDs that
-      // legitimately contain "__" (which is also EntityMerger::SEPARATOR).
-      // The routing table maps entity_id -> peer_name for all remote entities,
-      // so we can strip "peer_name__" only when we know the peer name.
-      auto before = apps.size();
-      auto end = std::remove_if(apps.begin(), apps.end(), [&peer_routing_table](const App & app) {
-        std::string original_id = app.id;
-        auto rt_it = peer_routing_table.find(app.id);
-        if (rt_it != peer_routing_table.end()) {
-          // Known remote entity: strip "peer_name__" prefix if present
-          const std::string & peer_name = rt_it->second;
-          std::string prefix = peer_name + "__";
-          if (original_id.size() > prefix.size() && original_id.compare(0, prefix.size(), prefix) == 0) {
-            original_id = original_id.substr(prefix.size());
-          }
-        }
-        // ROS 2 internal nodes use _ prefix convention
-        return !original_id.empty() && original_id[0] == '_';
-      });
-      apps.erase(end, apps.end());
-      if (apps.size() < before) {
-        RCLCPP_DEBUG(get_logger(), "Filtered %zu internal node apps (_ prefix)", before - apps.size());
+      auto removed = filter_internal_node_apps(apps, peer_routing_table);
+      if (removed > 0) {
+        RCLCPP_DEBUG(get_logger(), "Filtered %zu internal node apps (_ prefix)", removed);
       }
     }
 
@@ -1541,6 +1555,27 @@ void GatewayNode::stop_rest_server() {
     lock.unlock();  // Release before join to avoid deadlock
     server_thread_->join();
   }
+}
+
+size_t filter_internal_node_apps(std::vector<App> & apps,
+                                 const std::unordered_map<std::string, std::string> & peer_routing_table) {
+  auto before = apps.size();
+  auto end = std::remove_if(apps.begin(), apps.end(), [&peer_routing_table](const App & app) {
+    std::string original_id = app.id;
+    auto rt_it = peer_routing_table.find(app.id);
+    if (rt_it != peer_routing_table.end()) {
+      // Known remote entity: strip "peer_name__" prefix if present
+      const std::string & peer_name = rt_it->second;
+      std::string prefix = peer_name + "__";
+      if (original_id.size() > prefix.size() && original_id.compare(0, prefix.size(), prefix) == 0) {
+        original_id = original_id.substr(prefix.size());
+      }
+    }
+    // ROS 2 internal nodes use _ prefix convention
+    return !original_id.empty() && original_id[0] == '_';
+  });
+  apps.erase(end, apps.end());
+  return before - apps.size();
 }
 
 }  // namespace ros2_medkit_gateway

@@ -183,6 +183,14 @@ ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
 
    See :doc:`tutorials/manifest-discovery` for details on manifest mode.
 
+   .. important::
+
+      If you are upgrading from a previous version, the entity model has
+      changed significantly. Synthetic Areas and per-namespace Components
+      are no longer created. See
+      :ref:`Breaking Changes <aggregation-breaking-changes>` for details
+      and migration guidance.
+
    In this tutorial, we use runtime-only mode with ``demo_nodes.launch.py``.
 
 **List all functions:**
@@ -191,8 +199,8 @@ ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
 
    curl http://localhost:8080/api/v1/functions
 
-With ``demo_nodes.launch.py``, you'll see Functions like ``engine``, ``brakes``, and ``lights``
-(created from namespace prefixes).
+With ``demo_nodes.launch.py``, you'll see Functions like ``powertrain``, ``chassis``, and ``body``
+(created from the first namespace segment).
 
 **List all components:**
 

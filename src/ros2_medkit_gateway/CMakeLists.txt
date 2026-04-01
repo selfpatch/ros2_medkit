@@ -684,6 +684,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_mdns_discovery test/test_mdns_discovery.cpp)
   target_link_libraries(test_mdns_discovery gateway_lib)
 
+  # Network utility tests (URL parsing, local address collection)
+  ament_add_gtest(test_network_utils test/test_network_utils.cpp)
+  target_link_libraries(test_network_utils gateway_lib)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
@@ -751,6 +755,7 @@ if(BUILD_TESTING)
       test_aggregation_manager
       test_stream_proxy
       test_mdns_discovery
+      test_network_utils
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)

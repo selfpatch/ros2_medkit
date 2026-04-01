@@ -17,7 +17,11 @@
 #include <algorithm>
 #include <future>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include <arpa/inet.h>
+#include <netdb.h>
 
 #include <rclcpp/logging.hpp>
 
@@ -29,34 +33,157 @@ namespace ros2_medkit_gateway {
 namespace {
 
 /**
+ * @brief Extract the host portion from a URL
+ *
+ * Handles both regular hosts and IPv6 bracket notation.
+ * Returns empty string if the URL cannot be parsed.
+ */
+std::string extract_host(const std::string & url) {
+  // Find the start of the host (after "://")
+  auto scheme_end = url.find("://");
+  if (scheme_end == std::string::npos) {
+    return "";
+  }
+  size_t host_start = scheme_end + 3;
+  if (host_start >= url.size()) {
+    return "";
+  }
+
+  // IPv6 bracket notation: [::1] or [fe80::1%eth0]
+  if (url[host_start] == '[') {
+    auto bracket_end = url.find(']', host_start);
+    if (bracket_end == std::string::npos) {
+      return "";
+    }
+    return url.substr(host_start + 1, bracket_end - host_start - 1);
+  }
+
+  // Regular host: find end at ':', '/', or end of string
+  size_t host_end = url.find_first_of(":/", host_start);
+  if (host_end == std::string::npos) {
+    host_end = url.size();
+  }
+  return url.substr(host_start, host_end - host_start);
+}
+
+/**
+ * @brief Check if a resolved address is loopback, link-local, or unspecified
+ *
+ * Returns true if the address should be blocked for mDNS-discovered peers.
+ */
+bool is_blocked_address(const struct sockaddr * addr) {
+  if (addr->sa_family == AF_INET) {
+    const auto * sin = reinterpret_cast<const struct sockaddr_in *>(addr);
+    uint32_t ip = ntohl(sin->sin_addr.s_addr);
+    // 127.0.0.0/8 - loopback
+    if ((ip >> 24) == 127) {
+      return true;
+    }
+    // 0.0.0.0 - unspecified (binds all interfaces, self-referential)
+    if (ip == 0) {
+      return true;
+    }
+    // 169.254.0.0/16 - link-local (includes cloud metadata 169.254.169.254)
+    if ((ip >> 16) == 0xA9FE) {
+      return true;
+    }
+    return false;
+  }
+
+  if (addr->sa_family == AF_INET6) {
+    const auto * sin6 = reinterpret_cast<const struct sockaddr_in6 *>(addr);
+    // ::1 - IPv6 loopback
+    if (IN6_IS_ADDR_LOOPBACK(&sin6->sin6_addr)) {
+      return true;
+    }
+    // :: - IPv6 unspecified
+    if (IN6_IS_ADDR_UNSPECIFIED(&sin6->sin6_addr)) {
+      return true;
+    }
+    // fe80::/10 - IPv6 link-local
+    if (IN6_IS_ADDR_LINKLOCAL(&sin6->sin6_addr)) {
+      return true;
+    }
+    // ::ffff:127.x.x.x - IPv4-mapped loopback
+    // ::ffff:0.0.0.0 - IPv4-mapped unspecified
+    // ::ffff:169.254.x.x - IPv4-mapped link-local
+    if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
+      const auto * bytes = sin6->sin6_addr.s6_addr;
+      // Last 4 bytes are the IPv4 address
+      uint32_t ip = (static_cast<uint32_t>(bytes[12]) << 24) | (static_cast<uint32_t>(bytes[13]) << 16) |
+                    (static_cast<uint32_t>(bytes[14]) << 8) | static_cast<uint32_t>(bytes[15]);
+      if ((ip >> 24) == 127 || ip == 0 || (ip >> 16) == 0xA9FE) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Unknown address family - block by default
+  return true;
+}
+
+/**
  * @brief Validate a peer URL discovered via mDNS
  *
  * Rejects URLs that don't use HTTP(S), point to cloud metadata endpoints,
- * or use loopback addresses (which would be self-referential for mDNS peers).
+ * or resolve to loopback/link-local/unspecified addresses. Uses getaddrinfo()
+ * to resolve the host, which catches IPv4-mapped IPv6 loopback (::ffff:127.0.0.1),
+ * expanded IPv6 loopback (0:0:0:0:0:0:0:1), 0.0.0.0, [::], and other bypass
+ * variants that substring matching would miss.
  */
 bool is_valid_peer_url(const std::string & url) {
   // Must start with http:// or https://
   if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) {
     return false;
   }
-  // Block loopback addresses (self-referential for mDNS peers)
-  if (url.find("://127.") != std::string::npos || url.find("://localhost") != std::string::npos ||
-      url.find("://[::1]") != std::string::npos) {
-    return false;
-  }
-  // Block all link-local (169.254.x.x) including cloud metadata endpoints
-  if (url.find("://169.254.") != std::string::npos) {
-    return false;
-  }
+
+  // Block well-known cloud metadata hostnames regardless of resolution
   if (url.find("metadata.google") != std::string::npos) {
     return false;
   }
-  return true;
+
+  std::string host = extract_host(url);
+  if (host.empty()) {
+    return false;
+  }
+
+  // Resolve the host to check the actual address
+  struct addrinfo hints {};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = AI_NUMERICHOST;  // Try numeric first (fast, no DNS)
+
+  struct addrinfo * result = nullptr;
+  int ret = getaddrinfo(host.c_str(), nullptr, &hints, &result);
+
+  if (ret != 0) {
+    // Not a numeric address - try DNS resolution
+    hints.ai_flags = 0;
+    ret = getaddrinfo(host.c_str(), nullptr, &hints, &result);
+    if (ret != 0) {
+      // Cannot resolve - reject
+      return false;
+    }
+  }
+
+  // Check all resolved addresses - block if ANY resolves to a blocked range
+  bool blocked = false;
+  for (struct addrinfo * rp = result; rp != nullptr; rp = rp->ai_next) {
+    if (is_blocked_address(rp->ai_addr)) {
+      blocked = true;
+      break;
+    }
+  }
+
+  freeaddrinfo(result);
+  return !blocked;
 }
 
 }  // namespace
 
-AggregationManager::AggregationManager(const AggregationConfig & config, rclcpp::Logger * logger) : config_(config) {
+AggregationManager::AggregationManager(const AggregationConfig & config, rclcpp::Logger * logger)
+  : config_(config), logger_(logger ? *logger : rclcpp::get_logger("aggregation_manager")) {
   for (const auto & peer_cfg : config_.peers) {
     // Validate scheme for static peers (http/https only).
     // Unlike mDNS peers, loopback addresses are valid for static config
@@ -82,8 +209,9 @@ AggregationManager::AggregationManager(const AggregationConfig & config, rclcpp:
     }
 
     peers_.push_back(
-        std::make_unique<PeerClient>(peer_cfg.url, peer_cfg.name, config_.timeout_ms, config_.forward_auth));
+        std::make_shared<PeerClient>(peer_cfg.url, peer_cfg.name, config_.timeout_ms, config_.forward_auth));
   }
+  static_peer_count_ = peers_.size();
 }
 
 size_t AggregationManager::peer_count() const {
@@ -109,27 +237,47 @@ void AggregationManager::add_discovered_peer(const std::string & url, const std:
     return;
   }
 
-  peers_.push_back(std::make_unique<PeerClient>(url, name, config_.timeout_ms, config_.forward_auth));
+  // Enforce max_discovered_peers limit (static peers do not count)
+  size_t discovered_count = peers_.size() - static_peer_count_;
+  if (discovered_count >= config_.max_discovered_peers) {
+    RCLCPP_WARN(logger_,
+                "Aggregation: max_discovered_peers limit (%zu) reached, "
+                "rejecting peer '%s' at %s",
+                config_.max_discovered_peers, name.c_str(), url.c_str());
+    return;
+  }
+
+  peers_.push_back(std::make_shared<PeerClient>(url, name, config_.timeout_ms, config_.forward_auth));
 }
 
 void AggregationManager::remove_discovered_peer(const std::string & name) {
   std::unique_lock<std::shared_mutex> lock(mutex_);
 
-  auto it = std::remove_if(peers_.begin(), peers_.end(), [&name](const std::unique_ptr<PeerClient> & peer) {
+  auto it = std::remove_if(peers_.begin(), peers_.end(), [&name](const std::shared_ptr<PeerClient> & peer) {
     return peer->name() == name;
   });
   peers_.erase(it, peers_.end());
 }
 
 void AggregationManager::check_all_health() {
-  // Shared lock blocks add/remove (which need unique lock) during health checks.
+  // Snapshot shared_ptrs under lock, then release before I/O.
+  // shared_ptr copies keep PeerClients alive even if remove_discovered_peer()
+  // erases them from peers_ during health checks.
+  std::vector<std::shared_ptr<PeerClient>> snapshot;
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    snapshot.reserve(peers_.size());
+    for (const auto & peer : peers_) {
+      snapshot.push_back(peer);
+    }
+  }
+
   // Health checks run in parallel via std::async to reduce worst-case latency
   // from N * timeout_ms (sequential) to just timeout_ms (parallel).
-  std::shared_lock<std::shared_mutex> lock(mutex_);
   std::vector<std::future<void>> futures;
-  futures.reserve(peers_.size());
-  for (auto & peer : peers_) {
-    futures.push_back(std::async(std::launch::async, [&peer]() {
+  futures.reserve(snapshot.size());
+  for (auto & peer : snapshot) {
+    futures.push_back(std::async(std::launch::async, [peer]() {
       peer->check_health();
     }));
   }
@@ -151,13 +299,19 @@ size_t AggregationManager::healthy_peer_count() const {
 }
 
 PeerEntities AggregationManager::fetch_all_peer_entities() {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
+  // Snapshot healthy peers under lock, release before network I/O.
+  std::vector<std::shared_ptr<PeerClient>> snapshot;
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    for (const auto & peer : peers_) {
+      if (peer->is_healthy()) {
+        snapshot.push_back(peer);
+      }
+    }
+  }
 
   PeerEntities merged;
-  for (auto & peer : peers_) {
-    if (!peer->is_healthy()) {
-      continue;
-    }
+  for (auto & peer : snapshot) {
     auto result = peer->fetch_entities();
     if (!result.has_value()) {
       continue;
@@ -183,15 +337,20 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
   merged.apps = local_apps;
   merged.functions = local_functions;
 
-  // Hold shared lock during the entire fetch-and-merge operation so that
-  // remove_discovered_peer() (which needs a unique lock) cannot destroy
-  // PeerClient objects while we are iterating.
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  for (auto & peer : peers_) {
-    if (!peer->is_healthy()) {
-      continue;
+  // Snapshot healthy peers under lock, release before network I/O.
+  // shared_ptr copies keep PeerClients alive even if remove_discovered_peer()
+  // erases them from peers_ concurrently.
+  std::vector<std::shared_ptr<PeerClient>> snapshot;
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    for (const auto & peer : peers_) {
+      if (peer->is_healthy()) {
+        snapshot.push_back(peer);
+      }
     }
+  }
 
+  for (auto & peer : snapshot) {
     auto result = peer->fetch_entities();
     if (!result.has_value()) {
       if (logger) {
@@ -256,15 +415,32 @@ std::string AggregationManager::get_peer_url(const std::string & peer_name) cons
 
 void AggregationManager::forward_request(const std::string & peer_name, const httplib::Request & req,
                                          httplib::Response & res) {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
+  // Find peer under lock, take shared_ptr copy for lifetime safety, then release
+  // before network I/O. The shared_ptr keeps the PeerClient alive even if
+  // remove_discovered_peer() erases it from peers_ concurrently.
+  std::shared_ptr<PeerClient> peer;
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    peer = find_peer_shared(peer_name);
+  }
 
-  auto * peer = find_peer(peer_name);
-  if (peer == nullptr) {
+  if (!peer) {
     res.status = 502;
     nlohmann::json error_body;
     error_body["error_code"] = ERR_VENDOR_ERROR;
     error_body["vendor_code"] = "x-medkit-peer-unavailable";
     error_body["message"] = "Peer '" + peer_name + "' is not known to this gateway";
+    res.set_content(error_body.dump(), "application/json");
+    return;
+  }
+
+  // Validate forwarded path - only allow SOVD API paths to prevent SSRF
+  // to internal peer endpoints (e.g., /metrics, /debug, /admin).
+  if (req.path.rfind("/api/v1/", 0) != 0) {
+    res.status = 400;
+    nlohmann::json error_body;
+    error_body["error_code"] = ERR_INVALID_REQUEST;
+    error_body["message"] = "Forwarded request path must start with /api/v1/";
     res.set_content(error_body.dump(), "application/json");
     return;
   }
@@ -290,29 +466,60 @@ void AggregationManager::forward_request(const std::string & peer_name, const ht
 
 AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::string & path,
                                                                  const std::string & auth_header) {
+  // Per-peer result collected by each async task
+  struct PeerResult {
+    std::string peer_name;
+    bool success{false};
+    nlohmann::json items = nlohmann::json::array();
+  };
+
+  // Snapshot healthy peers under lock, release before network I/O.
+  std::vector<std::shared_ptr<PeerClient>> snapshot;
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    for (const auto & peer : peers_) {
+      if (peer->is_healthy()) {
+        snapshot.push_back(peer);
+      }
+    }
+  }
+
+  // Fan out GET requests in parallel via std::async to reduce worst-case
+  // latency from N * timeout_ms (sequential) to just timeout_ms (parallel).
+  std::vector<std::future<PeerResult>> futures;
+  futures.reserve(snapshot.size());
+  for (auto & peer : snapshot) {
+    futures.push_back(std::async(std::launch::async, [peer, &path, &auth_header]() {
+      PeerResult pr;
+      pr.peer_name = peer->name();
+
+      auto result = peer->forward_and_get_json("GET", path, auth_header);
+      if (!result.has_value()) {
+        pr.success = false;
+        return pr;
+      }
+
+      pr.success = true;
+      const auto & response_json = result.value();
+      if (response_json.contains("items") && response_json["items"].is_array()) {
+        pr.items = response_json["items"];
+      }
+      return pr;
+    }));
+  }
+
+  // Merge results from all peers
   FanOutResult fan_out_result;
   fan_out_result.merged_items = nlohmann::json::array();
-
-  // Hold shared lock for entire iteration to prevent dangling pointers
-  // if remove_discovered_peer() runs concurrently
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  for (auto & peer : peers_) {
-    if (!peer->is_healthy()) {
-      continue;
-    }
-
-    auto result = peer->forward_and_get_json("GET", path, auth_header);
-    if (!result.has_value()) {
+  for (auto & f : futures) {
+    auto pr = f.get();
+    if (!pr.success) {
       fan_out_result.is_partial = true;
-      fan_out_result.failed_peers.push_back(peer->name());
+      fan_out_result.failed_peers.push_back(std::move(pr.peer_name));
       continue;
     }
-
-    const auto & response_json = result.value();
-    if (response_json.contains("items") && response_json["items"].is_array()) {
-      for (const auto & item : response_json["items"]) {
-        fan_out_result.merged_items.push_back(item);
-      }
+    for (auto & item : pr.items) {
+      fan_out_result.merged_items.push_back(std::move(item));
     }
   }
 
@@ -337,6 +544,15 @@ PeerClient * AggregationManager::find_peer(const std::string & name) const {
   for (const auto & peer : peers_) {
     if (peer->name() == name) {
       return peer.get();
+    }
+  }
+  return nullptr;
+}
+
+std::shared_ptr<PeerClient> AggregationManager::find_peer_shared(const std::string & name) const {
+  for (const auto & peer : peers_) {
+    if (peer->name() == name) {
+      return peer;
     }
   }
   return nullptr;

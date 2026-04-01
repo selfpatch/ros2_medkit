@@ -137,6 +137,20 @@ for peer communication.
        mDNS SRV records provide hostname and port but not the URL scheme.
        Set to ``"https"`` when all peers use TLS. This does not affect
        static peer URLs (which include the scheme explicitly).
+   * - ``aggregation.max_discovered_peers``
+     - int
+     - ``50``
+     - Maximum number of peers that can be added via mDNS discovery. Prevents
+       unbounded growth of the peer list from rogue mDNS announcements on the
+       local network. Static peers (configured via ``peer_urls``/``peer_names``)
+       do not count against this limit. When the limit is reached, additional
+       discovered peers are rejected with a WARN log.
+
+.. warning::
+
+   When ``forward_auth`` is enabled but ``require_tls`` is disabled, the
+   gateway logs a warning at startup. Authorization tokens may be sent to
+   peers over cleartext HTTP, exposing them to network sniffers.
 
 .. warning::
 
@@ -391,10 +405,12 @@ been removed. The following behavioral changes apply:
   by the ``create_functions_from_namespaces`` parameter (default: ``true``).
 - **Apps** are still created from ROS 2 nodes with ``source: "heuristic"``.
 
-**Removed configuration parameters (7 total):**
+**Removed configuration parameters (8 total):**
 
-The following parameters from the ``discovery.runtime`` section no longer
-exist. The gateway will log a warning and ignore them if present in config:
+The following parameters no longer exist. The gateway will log a warning
+and ignore them if present in config.
+
+From ``discovery.runtime``:
 
 - ``create_synthetic_areas``
 - ``create_synthetic_components``
@@ -402,8 +418,28 @@ exist. The gateway will log a warning and ignore them if present in config:
 - ``synthetic_component_name_pattern``
 - ``topic_only_policy``
 - ``min_topics_for_component``
+
+From ``discovery.merge_pipeline.gap_fill``:
+
 - ``allow_heuristic_areas``
 - ``allow_heuristic_components``
+
+**Cross-layer impact:**
+
+The entity model change affects consumers beyond the gateway REST API:
+
+- **Web UI** (``ros2_medkit_web_ui``): The ``ComponentWithOperations`` type
+  has stale ``area``, ``namespace``, and ``fqn`` fields that assumed
+  per-namespace Components. These fields are empty or absent for the single
+  host-level Component.
+- **Foxglove extension** (``ros2_medkit_foxglove_extension``): The
+  ``EntityBrowserPanel`` loads Areas first to build the entity tree. In
+  runtime-only mode, the Areas list is now empty, so the panel shows no
+  top-level grouping until a manifest is provided.
+- **MCP server** (``ros2_medkit_mcp``): Clients that reference synthetic
+  Component IDs (e.g., ``powertrain_engine_component``) will receive 404
+  errors. Update tool calls to use the single host-level Component ID or
+  switch to Apps/Functions.
 
 **Migration path:**
 
