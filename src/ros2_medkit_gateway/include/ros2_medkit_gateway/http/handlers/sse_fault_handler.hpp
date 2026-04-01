@@ -57,6 +57,12 @@ class SSEFaultHandler {
    * @param client_tracker Shared SSE client counter (across all SSE handlers)
    */
   SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker);
+  /**
+   * @brief Test-only constructor that overrides the keepalive interval.
+   * @param ctx The shared handler context
+   * @param client_tracker Shared SSE client counter (across all SSE handlers)
+   * @param keepalive_interval Must be positive; non-positive values fall back to the 30s default.
+   */
   SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
                   std::chrono::milliseconds keepalive_interval);
 

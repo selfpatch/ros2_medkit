@@ -311,6 +311,21 @@ TEST_F(SSEFaultHandlerTest, LastEventIdReplaysOnlyMissedBufferedEvents) {
   release_stream(res);
 }
 
+TEST_F(SSEFaultHandlerTest, InvalidLastEventIdFallsBackToFullReplay) {
+  enqueue_event(make_fault_event(FaultEvent::EVENT_CONFIRMED, "FAULT_X", 200));
+
+  auto req = make_stream_request("127.0.0.1", "not-a-number");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto output = read_stream_once(res, 1);
+
+  EXPECT_NE(output.find("id: 1\n"), std::string::npos);
+  EXPECT_EQ(parse_sse_payload(output)["fault"]["fault_code"], "FAULT_X");
+
+  release_stream(res);
+}
+
 TEST_F(SSEFaultHandlerTest, BufferedEventsAreReplayedToMultipleClients) {
   enqueue_event(make_fault_event(FaultEvent::EVENT_CLEARED, "FAULT_MULTI", 55));
 
@@ -335,6 +350,41 @@ TEST_F(SSEFaultHandlerTest, BufferedEventsAreReplayedToMultipleClients) {
   EXPECT_EQ(handler_->connected_clients(), 0u);
 }
 
+TEST_F(SSEFaultHandlerTest, BufferEvictsOldestEventWhenFull) {
+  for (int i = 1; i <= 101; ++i) {
+    enqueue_event(make_fault_event(FaultEvent::EVENT_CONFIRMED, "FAULT_" + std::to_string(i), i));
+  }
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto output = read_stream_once(res, 1);
+
+  EXPECT_NE(output.find("id: 2\n"), std::string::npos);
+  EXPECT_EQ(parse_sse_payload(output)["fault"]["fault_code"], "FAULT_2");
+
+  release_stream(res);
+}
+
+TEST_F(SSEFaultHandlerTest, StreamSanitizesNewlinesInEventType) {
+  enqueue_event(make_fault_event("fault_confirmed\nretry: 0\r\nevent: injected", "FAULT_SANITIZED", 300));
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto output = read_stream_once(res, 1);
+  auto payload = parse_sse_payload(output);
+
+  EXPECT_NE(output.find("event: fault_confirmedretry: 0event: injected\n"), std::string::npos);
+  EXPECT_EQ(output.find("\nretry: 0\r\n"), std::string::npos);
+  EXPECT_EQ(output.find("\nevent: injected\n"), std::string::npos);
+  EXPECT_EQ(payload["event_type"], "fault_confirmedretry: 0event: injected");
+
+  release_stream(res);
+}
+
 TEST_F(SSEFaultHandlerTest, StreamSendsKeepaliveCommentAfterTimeout) {
   auto fast_tracker = std::make_shared<SSEClientTracker>(1);
   SSEFaultHandler fast_handler(*ctx_, fast_tracker, 10ms);
@@ -349,6 +399,17 @@ TEST_F(SSEFaultHandlerTest, StreamSendsKeepaliveCommentAfterTimeout) {
 
   release_stream(res);
   EXPECT_EQ(fast_handler.connected_clients(), 0u);
+}
+
+TEST_F(SSEFaultHandlerTest, NonPositiveKeepaliveOverrideLogsWarning) {
+  testing::internal::CaptureStderr();
+  {
+    auto warn_tracker = std::make_shared<SSEClientTracker>(1);
+    SSEFaultHandler warn_handler(*ctx_, warn_tracker, 0ms);
+  }
+  auto logs = testing::internal::GetCapturedStderr();
+
+  EXPECT_NE(logs.find("Non-positive SSE keepalive override"), std::string::npos);
 }
 
 TEST_F(SSEFaultHandlerTest, DisconnectReleasesTrackedClientSlot) {
