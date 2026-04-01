@@ -666,6 +666,7 @@ if(BUILD_TESTING)
       test_transport_registry
       test_cyclic_subscription_handlers
       test_sse_transport_provider
+      test_sse_fault_handler
       test_update_manager
       test_script_manager
       test_default_script_provider

@@ -14,8 +14,10 @@
 
 #include "ros2_medkit_gateway/http/handlers/sse_fault_handler.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cinttypes>
+#include <cstring>
 #include <sstream>
 
 #include "ros2_medkit_gateway/fault_manager.hpp"
@@ -25,6 +27,16 @@
 
 namespace ros2_medkit_gateway {
 namespace handlers {
+
+namespace {
+
+std::string sanitize_sse_event_type(std::string event_type) {
+  event_type.erase(std::remove(event_type.begin(), event_type.end(), '\r'), event_type.end());
+  event_type.erase(std::remove(event_type.begin(), event_type.end(), '\n'), event_type.end());
+  return event_type;
+}
+
+}  // namespace
 
 SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker)
   : SSEFaultHandler(ctx, std::move(client_tracker), std::chrono::seconds(kKeepaliveIntervalSec)) {
@@ -37,6 +49,12 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
   , keepalive_interval_(keepalive_interval > std::chrono::milliseconds::zero()
                             ? keepalive_interval
                             : std::chrono::seconds(kKeepaliveIntervalSec)) {
+  if (keepalive_interval <= std::chrono::milliseconds::zero()) {
+    RCLCPP_WARN(HandlerContext::logger(), "Non-positive SSE keepalive override %" PRId64 "ms rejected; "
+                                           "using default %ds",
+                static_cast<int64_t>(keepalive_interval.count()), kKeepaliveIntervalSec);
+  }
+
   const auto fault_events_topic = build_fault_manager_events_topic(ctx_.node());
 
   // Create subscription to fault events topic
@@ -191,8 +209,10 @@ size_t SSEFaultHandler::connected_clients() const {
 }
 
 std::string SSEFaultHandler::format_sse_event(const ros2_medkit_msgs::msg::FaultEvent & event, uint64_t event_id) {
+  const auto sanitized_event_type = sanitize_sse_event_type(event.event_type);
+
   nlohmann::json json_event;
-  json_event["event_type"] = event.event_type;
+  json_event["event_type"] = sanitized_event_type;
   json_event["fault"] = FaultManager::fault_to_json(event.fault);
 
   // Convert timestamp to seconds with nanosecond precision
@@ -201,7 +221,7 @@ std::string SSEFaultHandler::format_sse_event(const ros2_medkit_msgs::msg::Fault
 
   std::ostringstream sse;
   sse << "id: " << event_id << "\n";
-  sse << "event: " << event.event_type << "\n";
+  sse << "event: " << sanitized_event_type << "\n";
   sse << "data: " << json_event.dump() << "\n\n";
 
   return sse.str();
