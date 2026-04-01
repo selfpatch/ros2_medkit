@@ -206,6 +206,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("aggregation.discover", false);
   declare_parameter("aggregation.mdns_service", std::string("_medkit._tcp.local"));
   declare_parameter("aggregation.mdns_name", std::string(""));  // defaults to hostname
+  // Security: forward Authorization header to peers (default: false to prevent token leakage)
+  declare_parameter("aggregation.forward_auth", false);
+  // Security: require TLS for all peer URLs (default: false)
+  declare_parameter("aggregation.require_tls", false);
+  // URL scheme for mDNS-discovered peer URLs (default: "http")
+  declare_parameter("aggregation.peer_scheme", std::string("http"));
   // Static peers: parallel arrays of URLs and names.
   // Example: peer_urls=["http://localhost:8081"], peer_names=["subsystem_b"]
   declare_parameter("aggregation.peer_urls", std::vector<std::string>{""});
@@ -232,6 +238,31 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   for (const auto & layer : {"manifest", "runtime"}) {
     for (const auto & fg : {"identity", "hierarchy", "live_data", "status", "metadata"}) {
       declare_parameter(std::string("discovery.merge_pipeline.layers.") + layer + "." + fg, std::string(""));
+    }
+  }
+
+  // Check for removed parameters and warn users with stale YAML configs.
+  // ROS 2 silently ignores undeclared parameters from YAML, so we must
+  // explicitly check the parameter overrides to detect stale configs.
+  {
+    const auto & overrides = this->get_node_options().parameter_overrides();
+    static const std::vector<std::pair<std::string, std::string>> removed_params = {
+        {"create_synthetic_areas", "Areas now come from manifest only."},
+        {"create_synthetic_components", "Components are now host-derived in runtime mode."},
+        {"grouping_strategy", "Replaced by discovery.runtime.create_functions_from_namespaces."},
+        {"synthetic_component_name_pattern", "Components are now host-derived in runtime mode."},
+        {"topic_only_policy", "Topic-only discovery has been removed."},
+        {"min_topics_for_component", "Topic-only discovery has been removed."},
+        {"allow_heuristic_areas", "Areas now come from manifest only."},
+        {"allow_heuristic_components", "Components are now host-derived in runtime mode."},
+    };
+    for (const auto & [name, message] : removed_params) {
+      for (const auto & override : overrides) {
+        if (override.get_name() == name) {
+          RCLCPP_WARN(get_logger(), "Parameter '%s' has been removed. %s", name.c_str(), message.c_str());
+          break;
+        }
+      }
     }
   }
 
@@ -836,21 +867,25 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     agg_config.announce = get_parameter("aggregation.announce").as_bool();
     agg_config.discover = get_parameter("aggregation.discover").as_bool();
     agg_config.mdns_service = get_parameter("aggregation.mdns_service").as_string();
+    agg_config.forward_auth = get_parameter("aggregation.forward_auth").as_bool();
+    agg_config.require_tls = get_parameter("aggregation.require_tls").as_bool();
+    agg_config.peer_scheme = get_parameter("aggregation.peer_scheme").as_string();
 
     // Parse static peers from parallel arrays
     auto peer_urls = get_parameter("aggregation.peer_urls").as_string_array();
     auto peer_names = get_parameter("aggregation.peer_names").as_string_array();
-    auto peer_count = std::min(peer_urls.size(), peer_names.size());
     if (peer_urls.size() != peer_names.size()) {
-      RCLCPP_WARN(get_logger(),
-                  "Aggregation: peer_urls has %zu entries but peer_names has %zu; "
-                  "only the first %zu pairs will be used",
-                  peer_urls.size(), peer_names.size(), peer_count);
-    }
-    for (size_t i = 0; i < peer_count; ++i) {
-      if (!peer_urls[i].empty() && !peer_names[i].empty()) {
-        agg_config.peers.push_back({peer_urls[i], peer_names[i]});
-        RCLCPP_INFO(get_logger(), "Aggregation: static peer '%s' at %s", peer_names[i].c_str(), peer_urls[i].c_str());
+      RCLCPP_ERROR(get_logger(),
+                   "Aggregation: peer_urls has %zu entries but peer_names has %zu. "
+                   "These parallel arrays must have the same length. "
+                   "All static peers will be ignored until the configuration is fixed.",
+                   peer_urls.size(), peer_names.size());
+    } else {
+      for (size_t i = 0; i < peer_urls.size(); ++i) {
+        if (!peer_urls[i].empty() && !peer_names[i].empty()) {
+          agg_config.peers.push_back({peer_urls[i], peer_names[i]});
+          RCLCPP_INFO(get_logger(), "Aggregation: static peer '%s' at %s", peer_names[i].c_str(), peer_urls[i].c_str());
+        }
       }
     }
 
@@ -860,7 +895,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
                   "No peer communication will occur.");
     }
 
-    aggregation_mgr_ = std::make_unique<AggregationManager>(agg_config);
+    auto logger = get_logger();
+    aggregation_mgr_ = std::make_unique<AggregationManager>(agg_config, &logger);
 
     // mDNS discovery/announcement
     if (agg_config.announce || agg_config.discover) {
@@ -869,12 +905,13 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       mdns_config.discover = agg_config.discover;
       mdns_config.service = agg_config.mdns_service;
       mdns_config.port = server_port_;
+      mdns_config.peer_scheme = agg_config.peer_scheme;
       // mDNS instance name must be unique per gateway instance.
       // Defaults to hostname via MdnsDiscovery constructor when empty.
       // Operators should set aggregation.mdns_name for multi-gateway-per-host deployments.
       mdns_config.name = get_parameter("aggregation.mdns_name").as_string();
       mdns_config.on_error = [this](const std::string & msg) {
-        RCLCPP_WARN(get_logger(), "mDNS: %s", msg.c_str());
+        RCLCPP_ERROR(get_logger(), "mDNS: %s", msg.c_str());
       };
       mdns_config.on_log = [this](const std::string & msg) {
         RCLCPP_DEBUG(get_logger(), "mDNS: %s", msg.c_str());
@@ -896,8 +933,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
           });
     }
 
-    RCLCPP_INFO(get_logger(), "Aggregation: enabled (timeout=%dms, announce=%s, discover=%s)", agg_config.timeout_ms,
-                agg_config.announce ? "true" : "false", agg_config.discover ? "true" : "false");
+    RCLCPP_INFO(get_logger(),
+                "Aggregation: enabled (timeout=%dms, announce=%s, discover=%s, "
+                "forward_auth=%s, require_tls=%s, peer_scheme=%s)",
+                agg_config.timeout_ms, agg_config.announce ? "true" : "false", agg_config.discover ? "true" : "false",
+                agg_config.forward_auth ? "true" : "false", agg_config.require_tls ? "true" : "false",
+                agg_config.peer_scheme.c_str());
   } else {
     RCLCPP_INFO(get_logger(), "Aggregation: disabled");
   }
@@ -1348,7 +1389,7 @@ void GatewayNode::refresh_cache() {
     // in RUNTIME_ONLY mode we manually merge node + topic components
     auto areas = discovery_mgr_->discover_areas();
     auto apps = discovery_mgr_->discover_apps();
-    auto functions = discovery_mgr_->discover_functions();
+    auto functions = discovery_mgr_->discover_functions(apps);
 
     // In RUNTIME_ONLY mode: HostInfoProvider component or empty.
     // In HYBRID/MANIFEST_ONLY: pipeline-merged or manifest components.
@@ -1369,7 +1410,9 @@ void GatewayNode::refresh_cache() {
       }
     }
 
-    // Merge remote peer entities if aggregation is active
+    // Merge remote peer entities if aggregation is active.
+    // Keep the routing table accessible for the internal-node filter below.
+    std::unordered_map<std::string, std::string> peer_routing_table;
     if (aggregation_mgr_ && aggregation_mgr_->peer_count() > 0) {
       aggregation_mgr_->check_all_health();
       auto logger = get_logger();
@@ -1379,7 +1422,8 @@ void GatewayNode::refresh_cache() {
       all_components = std::move(merged.components);
       apps = std::move(merged.apps);
       functions = std::move(merged.functions);
-      aggregation_mgr_->update_routing_table(merged.routing_table);
+      peer_routing_table = std::move(merged.routing_table);
+      aggregation_mgr_->update_routing_table(peer_routing_table);
     }
 
     // Filter ROS 2 internal nodes (underscore prefix convention).
@@ -1387,13 +1431,22 @@ void GatewayNode::refresh_cache() {
     // Covers local heuristic apps (which bypass the merge pipeline orphan filter
     // in runtime_only mode) and any peer apps that slipped through fetch_entities.
     if (filter_internal_nodes_) {
+      // Use the routing table to precisely strip peer prefixes from entity IDs.
+      // Blindly splitting on "__" would incorrectly split entity IDs that
+      // legitimately contain "__" (which is also EntityMerger::SEPARATOR).
+      // The routing table maps entity_id -> peer_name for all remote entities,
+      // so we can strip "peer_name__" only when we know the peer name.
       auto before = apps.size();
-      auto end = std::remove_if(apps.begin(), apps.end(), [](const App & app) {
-        // Strip peer prefix (peer__original_id) to get original ID
+      auto end = std::remove_if(apps.begin(), apps.end(), [&peer_routing_table](const App & app) {
         std::string original_id = app.id;
-        auto sep_pos = original_id.find("__");
-        if (sep_pos != std::string::npos) {
-          original_id = original_id.substr(sep_pos + 2);
+        auto rt_it = peer_routing_table.find(app.id);
+        if (rt_it != peer_routing_table.end()) {
+          // Known remote entity: strip "peer_name__" prefix if present
+          const std::string & peer_name = rt_it->second;
+          std::string prefix = peer_name + "__";
+          if (original_id.size() > prefix.size() && original_id.compare(0, prefix.size(), prefix) == 0) {
+            original_id = original_id.substr(prefix.size());
+          }
         }
         // ROS 2 internal nodes use _ prefix convention
         return !original_id.empty() && original_id[0] == '_';

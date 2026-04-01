@@ -60,6 +60,7 @@ TEST(PeerClient, health_check_marks_unhealthy_on_connection_refused) {
 // Forward request tests (connection failure path)
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(PeerClient, forward_sets_502_on_connection_error) {
   PeerClient client(DEAD_URL, "dead_peer", 200);
 
@@ -97,6 +98,7 @@ TEST(PeerClient, forward_and_get_json_returns_error_on_connection_refused) {
 // fetch_entities tests (connection failure path)
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(PeerClient, fetch_entities_returns_error_on_connection_refused) {
   PeerClient client(DEAD_URL, "dead_peer", 200);
 
@@ -175,6 +177,7 @@ TEST(PeerClientHappyPath, health_check_unhealthy_on_500) {
   t.join();
 }
 
+// @verifies REQ_INTEROP_003
 TEST(PeerClientHappyPath, fetch_entities_parses_collections) {
   httplib::Server svr;
   svr.Get("/api/v1/areas", [](const httplib::Request &, httplib::Response & res) {
@@ -215,6 +218,7 @@ TEST(PeerClientHappyPath, fetch_entities_parses_collections) {
   t.join();
 }
 
+// @verifies REQ_INTEROP_003
 TEST(PeerClientHappyPath, fetch_entities_parses_relationship_fields) {
   httplib::Server svr;
 
@@ -325,11 +329,13 @@ TEST(PeerClientHappyPath, fetch_entities_parses_relationship_fields) {
   t.join();
 }
 
-TEST(PeerClientHappyPath, forward_request_proxies_response) {
+// @verifies REQ_INTEROP_018
+TEST(PeerClientHappyPath, forward_request_proxies_response_with_auth) {
   httplib::Server svr;
   svr.Get(R"(/api/v1/apps/nav/data)", [](const httplib::Request & req, httplib::Response & res) {
     nlohmann::json body;
     body["forwarded"] = true;
+    body["has_auth"] = req.has_header("Authorization");
     if (req.has_header("Authorization")) {
       body["auth"] = req.get_header_value("Authorization");
     }
@@ -341,6 +347,42 @@ TEST(PeerClientHappyPath, forward_request_proxies_response) {
     svr.listen_after_bind();
   });
 
+  // forward_auth=true: Authorization header should be forwarded
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "test_peer", 5000, true);
+
+  httplib::Request req;
+  req.method = "GET";
+  req.path = "/api/v1/apps/nav/data";
+  req.set_header("Authorization", "Bearer test-token");
+
+  httplib::Response res;
+  client.forward_request(req, res);
+
+  EXPECT_EQ(res.status, 200);
+  auto body = nlohmann::json::parse(res.body);
+  EXPECT_TRUE(body["forwarded"].get<bool>());
+  EXPECT_TRUE(body["has_auth"].get<bool>());
+  EXPECT_EQ(body["auth"].get<std::string>(), "Bearer test-token");
+
+  svr.stop();
+  t.join();
+}
+
+TEST(PeerClientHappyPath, forward_request_does_not_forward_auth_by_default) {
+  httplib::Server svr;
+  svr.Get(R"(/api/v1/apps/nav/data)", [](const httplib::Request & req, httplib::Response & res) {
+    nlohmann::json body;
+    body["forwarded"] = true;
+    body["has_auth"] = req.has_header("Authorization");
+    res.set_content(body.dump(), "application/json");
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+
+  // forward_auth=false (default): Authorization header should NOT be forwarded
   PeerClient client("http://127.0.0.1:" + std::to_string(port), "test_peer", 5000);
 
   httplib::Request req;
@@ -354,7 +396,7 @@ TEST(PeerClientHappyPath, forward_request_proxies_response) {
   EXPECT_EQ(res.status, 200);
   auto body = nlohmann::json::parse(res.body);
   EXPECT_TRUE(body["forwarded"].get<bool>());
-  EXPECT_EQ(body["auth"].get<std::string>(), "Bearer test-token");
+  EXPECT_FALSE(body["has_auth"].get<bool>());
 
   svr.stop();
   t.join();
@@ -399,6 +441,7 @@ TEST(PeerClientHappyPath, forward_filters_response_headers) {
   t.join();
 }
 
+// @verifies REQ_INTEROP_018
 TEST(PeerClientHappyPath, forward_and_get_json_returns_parsed_json) {
   httplib::Server svr;
   svr.Get("/api/v1/components/ecu/data", [](const httplib::Request &, httplib::Response & res) {
@@ -421,7 +464,7 @@ TEST(PeerClientHappyPath, forward_and_get_json_returns_parsed_json) {
   t.join();
 }
 
-TEST(PeerClientHappyPath, forward_and_get_json_with_auth_header) {
+TEST(PeerClientHappyPath, forward_and_get_json_with_auth_header_when_enabled) {
   httplib::Server svr;
   svr.Get("/api/v1/health", [](const httplib::Request & req, httplib::Response & res) {
     nlohmann::json body;
@@ -437,12 +480,37 @@ TEST(PeerClientHappyPath, forward_and_get_json_with_auth_header) {
     svr.listen_after_bind();
   });
 
-  PeerClient client("http://127.0.0.1:" + std::to_string(port), "test_peer", 5000);
+  // forward_auth=true: auth header should be sent
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "test_peer", 5000, true);
   auto result = client.forward_and_get_json("GET", "/api/v1/health", "Bearer my-jwt");
 
   ASSERT_TRUE(result.has_value());
   EXPECT_TRUE(result->at("has_auth").get<bool>());
   EXPECT_EQ(result->at("auth_value").get<std::string>(), "Bearer my-jwt");
+
+  svr.stop();
+  t.join();
+}
+
+TEST(PeerClientHappyPath, forward_and_get_json_does_not_forward_auth_by_default) {
+  httplib::Server svr;
+  svr.Get("/api/v1/health", [](const httplib::Request & req, httplib::Response & res) {
+    nlohmann::json body;
+    body["has_auth"] = req.has_header("Authorization");
+    res.set_content(body.dump(), "application/json");
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+
+  // forward_auth=false (default): auth header should NOT be sent
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "test_peer", 5000);
+  auto result = client.forward_and_get_json("GET", "/api/v1/health", "Bearer my-jwt");
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->at("has_auth").get<bool>());
 
   svr.stop();
   t.join();

@@ -93,7 +93,8 @@ if(BUILD_TESTING)
   # Stride of 10 per test so multi-gateway tests can use get_test_port(offset).
   # Each test also gets a unique ROS_DOMAIN_ID to prevent DDS cross-contamination
   # between tests (e.g., stale DDS participants from previous tests leaking into
-  # subsequent test's graph discovery).
+  # subsequent test's graph discovery). Multi-gateway tests (e.g. peer aggregation)
+  # use get_test_domain_id(offset) for additional domains in the 230-232 range.
   set(_INTEG_PORT 9100)
 
   include(ROS2MedkitTestDomain)

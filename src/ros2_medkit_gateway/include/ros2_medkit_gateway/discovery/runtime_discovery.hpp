@@ -88,6 +88,18 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   /// @note Creates Function entities from namespace grouping when enabled
   std::vector<Function> discover_functions() override;
 
+  /**
+   * @brief Create Function entities from pre-discovered apps
+   *
+   * Avoids redundant ROS 2 graph introspection when apps have already been
+   * discovered in the same refresh cycle (e.g., refresh_cache() calls
+   * discover_apps() before discover_functions()).
+   *
+   * @param apps Pre-discovered apps to group by namespace
+   * @return Vector of Function entities
+   */
+  std::vector<Function> discover_functions(const std::vector<App> & apps);
+
   /// @copydoc DiscoveryStrategy::get_name
   std::string get_name() const override {
     return "runtime";

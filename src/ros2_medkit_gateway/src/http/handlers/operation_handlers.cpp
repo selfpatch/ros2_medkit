@@ -40,7 +40,7 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
 
@@ -174,7 +174,7 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
 
@@ -340,7 +340,7 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
 

@@ -100,6 +100,56 @@ mDNS Discovery Parameters
        the same host - otherwise they share the same hostname and filter each
        other out as "self".
 
+.. _aggregation-security:
+
+Security Parameters
+--------------------
+
+These parameters control authentication forwarding and transport security
+for peer communication.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 10 50
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``aggregation.forward_auth``
+     - bool
+     - ``false``
+     - Forward the client's ``Authorization`` header to peer gateways. When
+       ``false`` (default), auth tokens are **never** sent to peers - this
+       prevents token leakage to untrusted or mDNS-discovered peers. Only
+       enable when all peers are trusted and share the same JWT configuration.
+   * - ``aggregation.require_tls``
+     - bool
+     - ``false``
+     - Require HTTPS for all peer URLs. When ``true``, any peer URL using
+       ``http://`` is rejected at startup (static peers) or on discovery
+       (mDNS peers) with an ERROR log. When ``false``, ``http://`` peers
+       produce a WARN log about cleartext communication.
+   * - ``aggregation.peer_scheme``
+     - string
+     - ``"http"``
+     - URL scheme used when constructing URLs for mDNS-discovered peers.
+       mDNS SRV records provide hostname and port but not the URL scheme.
+       Set to ``"https"`` when all peers use TLS. This does not affect
+       static peer URLs (which include the scheme explicitly).
+
+.. warning::
+
+   When ``forward_auth`` is enabled, **all peers** (including mDNS-discovered
+   ones) receive the client's auth token. A malicious peer on the local
+   network could harvest these tokens. For production deployments:
+
+   1. Set ``forward_auth: true`` only if all peers are trusted.
+   2. Set ``require_tls: true`` to prevent tokens from flowing in cleartext.
+   3. Set ``peer_scheme: "https"`` so mDNS-discovered peers also use TLS.
+   4. Consider disabling mDNS discovery (``discover: false``) and using
+      only static peers with known ``https://`` URLs.
+
 Static Peers
 ------------
 
@@ -241,10 +291,35 @@ Combine static peers for known infrastructure with mDNS for dynamic discovery:
 
 .. note::
 
-   When authentication is enabled, the gateway forwards the client's
-   ``Authorization`` header to peer gateways. Ensure all peers use
-   the same JWT configuration. This means peer gateways receive
-   client credentials - only configure peers you trust.
+   By default, ``Authorization`` headers are **not** forwarded to peers
+   (``forward_auth: false``). If your peers require authentication, set
+   ``forward_auth: true`` and ensure all peers use the same JWT
+   configuration. See :ref:`Security Parameters <aggregation-security>`
+   for details on securing peer communication.
+
+Secure Aggregation (TLS + Auth)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Production deployment with TLS enforcement and auth forwarding:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       server:
+         tls:
+           enabled: true
+           cert_file: "/etc/ros2_medkit/certs/cert.pem"
+           key_file: "/etc/ros2_medkit/certs/key.pem"
+       aggregation:
+         enabled: true
+         forward_auth: true      # All peers share JWT config
+         require_tls: true       # Reject any http:// peers
+         peer_scheme: "https"    # mDNS-discovered peers use HTTPS
+         announce: true
+         discover: true
+         peer_urls: ["https://gateway-b:8080"]
+         peer_names: ["subsystem_b"]
 
 Entity Merge Behavior
 ---------------------
@@ -271,31 +346,69 @@ and architecture diagrams.
 Health and Partial Results
 --------------------------
 
-If a peer is unreachable during a fan-out request (e.g., ``GET /api/v1/components``),
-the response body includes:
+Entity collection endpoints (``GET /api/v1/areas``, ``/components``, ``/apps``,
+``/functions``) serve data from the local entity cache, which is populated
+during periodic cache refresh cycles. These endpoints do not perform real-time
+fan-out to peers, so they always return successfully with whatever entities
+were last cached.
+
+The ``GET /api/v1/faults`` endpoint is different - it performs real-time fan-out
+via ``fan_out_get()`` to collect faults from all healthy peers. If a peer is
+unreachable during this fan-out, the response body includes:
 
 - ``x-medkit.partial: true`` in the JSON response body
 - ``x-medkit.failed_peers`` listing which peers failed
 
-This allows clients to detect degraded responses and take appropriate action.
-Individual entity requests for remote entities return ``502 Bad Gateway`` if the
-owning peer is unreachable.
+This allows clients to detect degraded fault responses and take appropriate
+action. Individual entity requests for remote entities (e.g.,
+``GET /api/v1/apps/{id}/data``) return ``502 Bad Gateway`` if the owning peer
+is unreachable.
 
-Migration Notes
----------------
+.. _aggregation-breaking-changes:
 
-The entity model has been simplified. Synthetic/heuristic Area and Component
-creation from ROS 2 namespaces has been removed:
+Breaking Changes (Entity Model Simplification)
+-----------------------------------------------
 
-- **Areas** come from manifest only. Runtime discovery never creates Areas.
-- **Components** come from ``HostInfoProvider`` (single host-level Component)
-  or manifest. Runtime discovery never creates Components.
-- **Functions** are created from namespace grouping (``create_functions_from_namespaces``
-  defaults to ``true``).
-- **Apps** are created from ROS 2 nodes with ``source: "heuristic"``.
+.. warning::
 
-The removed parameters are: ``create_synthetic_areas``,
-``create_synthetic_components``, ``grouping_strategy``,
-``synthetic_component_name_pattern``, ``topic_only_policy``,
-``min_topics_for_component``, ``allow_heuristic_areas``, and
-``allow_heuristic_components``.
+   These changes affect **all discovery modes**, not just aggregation.
+   Users running in ``runtime_only`` mode without aggregation enabled will
+   see different API responses after upgrading.
+
+The entity model has been aligned with the SOVD specification (ISO 17978).
+Synthetic/heuristic Area and Component creation from ROS 2 namespaces has
+been removed. The following behavioral changes apply:
+
+**API response changes:**
+
+- ``GET /api/v1/components`` now returns a **single host-level Component**
+  (from ``HostInfoProvider``) instead of one synthetic Component per ROS 2
+  namespace.
+- ``GET /api/v1/areas`` now returns an **empty list** in runtime-only mode
+  (was namespace-based). Areas come from manifest only.
+- ``GET /api/v1/functions`` is now **populated** in runtime-only mode (was
+  always empty). Each ROS 2 namespace becomes a Function entity, controlled
+  by the ``create_functions_from_namespaces`` parameter (default: ``true``).
+- **Apps** are still created from ROS 2 nodes with ``source: "heuristic"``.
+
+**Removed configuration parameters (7 total):**
+
+The following parameters from the ``discovery.runtime`` section no longer
+exist. The gateway will log a warning and ignore them if present in config:
+
+- ``create_synthetic_areas``
+- ``create_synthetic_components``
+- ``grouping_strategy``
+- ``synthetic_component_name_pattern``
+- ``topic_only_policy``
+- ``min_topics_for_component``
+- ``allow_heuristic_areas``
+- ``allow_heuristic_components``
+
+**Migration path:**
+
+- If you relied on per-namespace Components, switch to ``hybrid`` or
+  ``manifest_only`` mode and declare Components explicitly in a manifest.
+- If you relied on namespace-based Areas, declare them in a manifest.
+- Namespace grouping is now handled by Function entities instead of Areas
+  and Components.

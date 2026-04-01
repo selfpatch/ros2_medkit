@@ -16,7 +16,7 @@
  * @file test_discovery_models.cpp
  * @brief Unit tests for SOVD discovery model serialization
  *
- * @verifies REQ_DISCOVERY_002 App/Function model serialization
+ * @verifies REQ_INTEROP_003
  */
 
 #include <gtest/gtest.h>
@@ -56,6 +56,7 @@ class AreaModelTest : public ::testing::Test {
   Area area_;
 };
 
+// @verifies REQ_INTEROP_003
 TEST_F(AreaModelTest, ToJson_ContainsRequiredFields) {
   json j = area_.to_json();
 
@@ -130,6 +131,7 @@ class ComponentModelTest : public ::testing::Test {
   Component comp_;
 };
 
+// @verifies REQ_INTEROP_003
 TEST_F(ComponentModelTest, ToJson_ContainsRequiredFields) {
   json j = comp_.to_json();
 
@@ -205,6 +207,7 @@ class AppModelTest : public ::testing::Test {
   App app_;
 };
 
+// @verifies REQ_INTEROP_003
 TEST_F(AppModelTest, ToJson_ContainsRequiredFields) {
   json j = app_.to_json();
 
@@ -367,6 +370,7 @@ class FunctionModelTest : public ::testing::Test {
   Function func_;
 };
 
+// @verifies REQ_INTEROP_003
 TEST_F(FunctionModelTest, ToJson_ContainsRequiredFields) {
   json j = func_.to_json();
 

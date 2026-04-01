@@ -15,24 +15,29 @@
 
 """Integration tests for peer aggregation with two gateway instances.
 
-Launches TWO gateway instances on different ports:
-- Primary gateway (port offset 0): aggregation enabled, static peer pointing
-  to the secondary gateway. Manages powertrain demo nodes (temp_sensor, rpm_sensor).
-- Peer gateway (port offset 1): standard gateway, no aggregation.
-  Manages chassis demo nodes (pressure_sensor, actuator).
+Launches TWO gateway instances on different ports AND in separate DDS domains:
+- Primary gateway (port offset 0, domain offset 0): aggregation enabled,
+  static peer pointing to the secondary gateway. Manages powertrain demo
+  nodes (temp_sensor, rpm_sensor).
+- Peer gateway (port offset 1, domain offset 1): standard gateway, no
+  aggregation. Manages chassis demo nodes (pressure_sensor, actuator).
+
+DDS domain isolation ensures the primary cannot discover peer nodes via DDS
+graph introspection - it can only learn about them through HTTP aggregation.
+This validates that the aggregation layer is doing the actual work.
 
 Tests verify:
+- DDS isolation: peer gateway does NOT see primary's nodes
 - Merged entity list: primary /apps includes apps from both gateways
 - Request forwarding: GET /apps/{remote_app}/data is forwarded to peer
 - Health shows peers: GET /health includes peer status
-- Peer down: when peer is unavailable, partial results are returned
 """
 
 import time
 import unittest
 
 from launch import LaunchDescription
-from launch.actions import TimerAction
+from launch.actions import SetEnvironmentVariable, TimerAction
 import launch_ros.actions
 import launch_testing
 import launch_testing.actions
@@ -44,6 +49,7 @@ from ros2_medkit_test_utils.constants import (
     DISCOVERY_TIMEOUT,
     GATEWAY_STARTUP_INTERVAL,
     GATEWAY_STARTUP_TIMEOUT,
+    get_test_domain_id,
     get_test_port,
 )
 from ros2_medkit_test_utils.launch_helpers import (
@@ -58,6 +64,12 @@ PEER_PORT = get_test_port(1)
 PRIMARY_URL = f'http://localhost:{PRIMARY_PORT}{API_BASE_PATH}'
 PEER_URL = f'http://localhost:{PEER_PORT}{API_BASE_PATH}'
 
+# DDS domain isolation: each gateway and its demo nodes run in a separate DDS
+# domain so that the peer gateway cannot discover the primary's nodes via DDS.
+# The primary can only learn about peer entities through aggregation (HTTP).
+PRIMARY_DOMAIN_ID = get_test_domain_id(0)
+PEER_DOMAIN_ID = get_test_domain_id(1)
+
 # Demo nodes split between gateways:
 # Primary manages powertrain nodes
 PRIMARY_NODES = ['temp_sensor', 'rpm_sensor']
@@ -66,7 +78,9 @@ PEER_NODES = ['pressure_sensor', 'actuator']
 
 
 def generate_test_description():
-    # Primary gateway: aggregation enabled with static peer
+    peer_domain_env = {'ROS_DOMAIN_ID': str(PEER_DOMAIN_ID)}
+
+    # Primary gateway: aggregation enabled with static peer, in PRIMARY_DOMAIN_ID
     primary_gateway = create_gateway_node(
         port=PRIMARY_PORT,
         extra_params={
@@ -79,7 +93,7 @@ def generate_test_description():
         },
     )
 
-    # Peer gateway: standard configuration, no aggregation
+    # Peer gateway: standard configuration, no aggregation, in PEER_DOMAIN_ID
     peer_gateway = launch_ros.actions.Node(
         package='ros2_medkit_gateway',
         executable='gateway_node',
@@ -89,18 +103,26 @@ def generate_test_description():
             'refresh_interval_ms': 1000,
             'server.port': PEER_PORT,
         }],
+        additional_env=peer_domain_env,
     )
 
-    # Delay demo nodes to let gateways start first
+    # Demo nodes: each set runs in its gateway's DDS domain.
+    # Primary nodes inherit ROS_DOMAIN_ID from SetEnvironmentVariable below.
+    # Peer nodes get an explicit override via extra_env.
     primary_demo_nodes = create_demo_nodes(PRIMARY_NODES, lidar_faulty=False)
-    peer_demo_nodes = create_demo_nodes(PEER_NODES, lidar_faulty=False)
+    peer_demo_nodes = create_demo_nodes(
+        PEER_NODES, lidar_faulty=False, extra_env=peer_domain_env,
+    )
 
     delayed = TimerAction(
         period=2.0,
         actions=primary_demo_nodes + peer_demo_nodes,
     )
 
+    # SetEnvironmentVariable sets the default ROS_DOMAIN_ID for the launch
+    # context (primary domain). The peer nodes override it via additional_env.
     launch_description = LaunchDescription([
+        SetEnvironmentVariable('ROS_DOMAIN_ID', str(PRIMARY_DOMAIN_ID)),
         primary_gateway,
         peer_gateway,
         delayed,
@@ -203,9 +225,9 @@ class TestPeerAggregation(unittest.TestCase):
     def test_peer_no_aggregation_no_peers(self):
         """Peer gateway does not aggregate - it has no peer status.
 
-        Both gateways share the same DDS domain and discover all nodes,
-        but the peer gateway has aggregation disabled, so it should NOT
-        have 'peers' in its health response or merge from other gateways.
+        The peer gateway runs in its own DDS domain and has aggregation
+        disabled, so it should NOT have 'peers' in its health response
+        or see the primary's nodes.
         """
         response = requests.get(f'{PEER_URL}/health', timeout=10)
         self.assertEqual(response.status_code, 200)
@@ -223,6 +245,29 @@ class TestPeerAggregation(unittest.TestCase):
         app_ids = {a['id'] for a in items}
         self.assertIn('pressure_sensor', app_ids)
         self.assertIn('actuator', app_ids)
+
+    def test_peer_does_not_see_primary_nodes_via_dds(self):
+        """Peer gateway must NOT see primary's nodes (DDS domain isolation).
+
+        Because the two gateways run in separate DDS domains, the peer
+        gateway should only see its own chassis nodes (pressure_sensor,
+        actuator) and NOT the primary's powertrain nodes (temp_sensor,
+        rpm_sensor). This proves the DDS isolation is working.
+        """
+        response = requests.get(f'{PEER_URL}/apps', timeout=10)
+        self.assertEqual(response.status_code, 200)
+        items = response.json().get('items', [])
+        app_ids = {a['id'] for a in items}
+
+        # Peer must NOT see primary's nodes
+        self.assertNotIn(
+            'temp_sensor', app_ids,
+            'Peer gateway should not discover primary nodes via DDS'
+        )
+        self.assertNotIn(
+            'rpm_sensor', app_ids,
+            'Peer gateway should not discover primary nodes via DDS'
+        )
 
     def test_primary_functions_include_peer_functions(self):
         """Primary gateway merges Functions from both gateways.
@@ -309,6 +354,7 @@ class TestPeerAggregation(unittest.TestCase):
             peer_entry,
             f'Expected peer_gateway in peers list: {peers}'
         )
+        assert peer_entry is not None  # type narrowing for Pyright
         self.assertEqual(peer_entry['status'], 'online')
         self.assertIn(str(PEER_PORT), peer_entry['url'])
 

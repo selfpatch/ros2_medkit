@@ -48,6 +48,7 @@ class MdnsDiscovery {
     std::string service{"_medkit._tcp.local"};  ///< Service type to announce/browse
     int port{8080};                             ///< Port this gateway listens on
     std::string name;                           ///< Instance name for announcement
+    std::string peer_scheme{"http"};            ///< URL scheme for discovered peers ("http" or "https")
     ErrorCallback on_error;                     ///< Optional error reporting callback
     LogCallback on_log;                         ///< Optional diagnostic log callback
   };

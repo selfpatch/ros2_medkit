@@ -99,7 +99,8 @@ LayerOutput RuntimeLayer::discover() {
   }
 
   if (gap_fill_config_.allow_heuristic_functions) {
-    output.functions = runtime_strategy_->discover_functions();
+    // Use the pre-discovered apps to avoid redundant ROS 2 graph introspection
+    output.functions = runtime_strategy_->discover_functions(linking_apps_);
   }
 
   return output;

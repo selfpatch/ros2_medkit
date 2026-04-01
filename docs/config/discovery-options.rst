@@ -62,6 +62,25 @@ a single host-level Component from the local system info (hostname, OS,
 architecture) via ``HostInfoProvider``. All discovered Apps are linked to this
 Component.
 
+Internal Node Filtering
+^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+   discovery:
+     runtime:
+       filter_internal_nodes: true
+
+When ``filter_internal_nodes`` is true (the default), ROS 2 nodes whose names
+start with an underscore (``_``) are excluded from the entity tree. This
+filters out ROS 2 internal infrastructure nodes such as ``_ros2cli_*``,
+``_param_client_node``, and similar system nodes that should not appear as
+SOVD entities. The filter applies to both locally discovered Apps and
+peer-discovered Apps (after stripping the peer prefix).
+
+Set to ``false`` if you need to expose all ROS 2 nodes regardless of naming
+convention.
+
 Function Entities from Namespaces
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

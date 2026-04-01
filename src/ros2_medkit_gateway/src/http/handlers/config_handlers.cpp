@@ -223,7 +223,7 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
 
     // Get aggregated configurations info for this entity
@@ -364,7 +364,7 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
 
     // Parameter ID may be prefixed with app_id: for aggregated configs
@@ -525,7 +525,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     // Now validate entity exists and matches route type
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
 
     // Check lock access for configurations
@@ -623,7 +623,7 @@ void ConfigHandlers::handle_delete_configuration(const httplib::Request & req, h
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
 
     // Check lock access for configurations
@@ -705,7 +705,7 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
 
     // Check lock access for configurations

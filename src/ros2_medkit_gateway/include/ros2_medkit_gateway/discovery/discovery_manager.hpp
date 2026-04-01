@@ -171,6 +171,18 @@ class DiscoveryManager {
    */
   std::vector<Function> discover_functions();
 
+  /**
+   * @brief Discover functions using pre-discovered apps
+   *
+   * Avoids redundant ROS 2 graph introspection when apps have already been
+   * discovered in the same refresh cycle. Falls back to the no-arg overload
+   * for modes that don't support this optimization (manifest-only, hybrid).
+   *
+   * @param apps Pre-discovered apps (used only in RUNTIME_ONLY mode)
+   * @return Vector of discovered Function entities
+   */
+  std::vector<Function> discover_functions(const std::vector<App> & apps);
+
   // =========================================================================
   // Entity lookup by ID
   // =========================================================================

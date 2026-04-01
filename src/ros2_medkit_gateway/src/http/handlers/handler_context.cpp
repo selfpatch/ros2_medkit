@@ -256,15 +256,14 @@ std::optional<std::string> HandlerContext::validate_lock_access(const httplib::R
   return std::nullopt;
 }
 
-std::optional<EntityInfo> HandlerContext::validate_entity_for_route(const httplib::Request & req,
-                                                                    httplib::Response & res,
-                                                                    const std::string & entity_id) const {
+ValidateResult HandlerContext::validate_entity_for_route(const httplib::Request & req, httplib::Response & res,
+                                                         const std::string & entity_id) const {
   // Step 1: Validate entity ID format
   auto validation_result = validate_entity_id(entity_id);
   if (!validation_result) {
     send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
                {{"details", validation_result.error()}, {"entity_id", entity_id}});
-    return std::nullopt;
+    return tl::unexpected(ValidationOutcome::kErrorSent);
   }
 
   // Step 2: Get expected type from route path and look up entity
@@ -286,13 +285,13 @@ std::optional<EntityInfo> HandlerContext::validate_entity_for_route(const httpli
       // Entity doesn't exist at all -> 404
       send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
     }
-    return std::nullopt;
+    return tl::unexpected(ValidationOutcome::kErrorSent);
   }
 
   // Step 4: Forward to peer if entity is remote
   if (entity_info.is_remote && aggregation_mgr_) {
     aggregation_mgr_->forward_request(entity_info.peer_name, req, res);
-    return std::nullopt;  // Response already sent by peer forwarding
+    return tl::unexpected(ValidationOutcome::kForwarded);
   }
 
   return entity_info;

@@ -15,9 +15,12 @@
 #include <gtest/gtest.h>
 #include <httplib.h>
 
+#include <future>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 
@@ -195,24 +198,23 @@ TEST(AggregationManager, remove_nonexistent_peer_is_noop) {
 // Health monitoring tests
 // =============================================================================
 
-TEST(AggregationManager, healthy_peers_empty_when_all_unreachable) {
+TEST(AggregationManager, healthy_peer_count_zero_when_all_unreachable) {
   auto config = make_config(3);
   AggregationManager manager(config);
 
   // Peers start unhealthy (never checked)
-  auto healthy = manager.healthy_peers();
-  EXPECT_TRUE(healthy.empty());
+  EXPECT_EQ(manager.healthy_peer_count(), 0u);
 
   // After health check, they should still be unhealthy (unreachable)
   manager.check_all_health();
-  healthy = manager.healthy_peers();
-  EXPECT_TRUE(healthy.empty());
+  EXPECT_EQ(manager.healthy_peer_count(), 0u);
 }
 
 // =============================================================================
 // Fan-out tests
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(AggregationManager, fan_out_returns_partial_when_peers_unreachable) {
   auto config = make_config(2);
   AggregationManager manager(config);
@@ -244,6 +246,7 @@ TEST(AggregationManager, fan_out_returns_empty_array_with_no_peers) {
 // Forward request tests
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(AggregationManager, forward_returns_502_for_unknown_peer) {
   auto config = make_config(1);
   AggregationManager manager(config);
@@ -313,6 +316,7 @@ TEST(AggregationManager, get_peer_status_empty_when_no_peers) {
 // Routing table tests
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(AggregationManager, routing_table_update_and_find) {
   auto config = make_config(0);
   AggregationManager manager(config);
@@ -408,6 +412,7 @@ TEST(AggregationManager, fetch_all_peer_entities_returns_empty_when_none_healthy
 // Prefix stripping tests (forward_request)
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(AggregationManager, forward_strips_peer_prefix_from_path) {
   // This tests the path rewriting logic: when a collision-renamed entity
   // (e.g., peer_0__camera_driver) is forwarded to the peer, the peer prefix
@@ -514,4 +519,733 @@ TEST(AggregationManager, accepts_localhost_for_static_peer) {
 
   // Both should be accepted for static config
   EXPECT_EQ(manager.peer_count(), 2u);
+}
+
+// =============================================================================
+// TLS enforcement tests (require_tls)
+// =============================================================================
+
+TEST(AggregationManager, require_tls_rejects_http_static_peers) {
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 200;
+  config.require_tls = true;
+
+  AggregationConfig::PeerConfig http_peer;
+  http_peer.url = "http://192.168.1.10:8080";
+  http_peer.name = "insecure_peer";
+  config.peers.push_back(http_peer);
+
+  AggregationConfig::PeerConfig https_peer;
+  https_peer.url = "https://192.168.1.11:8443";
+  https_peer.name = "secure_peer";
+  config.peers.push_back(https_peer);
+
+  AggregationManager manager(config);
+
+  // Only the HTTPS peer should be accepted
+  EXPECT_EQ(manager.peer_count(), 1u);
+}
+
+TEST(AggregationManager, require_tls_rejects_http_discovered_peers) {
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 200;
+  config.require_tls = true;
+
+  AggregationManager manager(config);
+
+  // http:// should be rejected
+  manager.add_discovered_peer("http://192.168.1.50:8081", "http_peer");
+  EXPECT_EQ(manager.peer_count(), 0u);
+
+  // https:// should be accepted
+  manager.add_discovered_peer("https://192.168.1.51:8443", "https_peer");
+  EXPECT_EQ(manager.peer_count(), 1u);
+}
+
+TEST(AggregationManager, require_tls_false_accepts_http_peers) {
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 200;
+  config.require_tls = false;
+
+  AggregationConfig::PeerConfig http_peer;
+  http_peer.url = "http://192.168.1.10:8080";
+  http_peer.name = "http_peer";
+  config.peers.push_back(http_peer);
+
+  AggregationManager manager(config);
+
+  EXPECT_EQ(manager.peer_count(), 1u);
+}
+
+// =============================================================================
+// forward_auth config tests
+// =============================================================================
+
+TEST(AggregationManager, forward_auth_config_propagated_to_peer_clients) {
+  // When forward_auth is false (default), PeerClients should not forward auth headers.
+  // This is indirectly tested via fan_out_get tests above.
+  // Here we just verify the config is accepted without error.
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 200;
+  config.forward_auth = false;
+
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(DEAD_PORT);
+  peer.name = "test_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+  EXPECT_EQ(manager.peer_count(), 1u);
+}
+
+// =============================================================================
+// Helper: RAII wrapper for a mock HTTP server
+// =============================================================================
+
+/**
+ * @brief RAII wrapper for httplib::Server that starts listening on a random port
+ * and stops + joins on destruction. All mock server tests use this pattern.
+ */
+class MockPeerServer {
+ public:
+  MockPeerServer() = default;
+
+  ~MockPeerServer() {
+    if (server_) {
+      server_->stop();
+    }
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+  // Non-copyable, non-movable
+  MockPeerServer(const MockPeerServer &) = delete;
+  MockPeerServer & operator=(const MockPeerServer &) = delete;
+
+  httplib::Server & server() {
+    if (!server_) {
+      server_ = std::make_unique<httplib::Server>();
+    }
+    return *server_;
+  }
+
+  /**
+   * @brief Bind to a random port and start listening in a background thread.
+   * @return The port number the server is listening on.
+   */
+  int start() {
+    port_ = server_->bind_to_any_port("127.0.0.1");
+    thread_ = std::thread([this]() {
+      server_->listen_after_bind();
+    });
+    return port_;
+  }
+
+  int port() const {
+    return port_;
+  }
+
+  std::string url() const {
+    return "http://127.0.0.1:" + std::to_string(port_);
+  }
+
+ private:
+  std::unique_ptr<httplib::Server> server_;
+  std::thread thread_;
+  int port_{0};
+};
+
+/**
+ * @brief Install standard entity endpoints on a mock server that return
+ * the given areas, components, apps, and functions counts.
+ * Each entity gets a simple {"id":"entity_N","name":"Entity N"} shape.
+ */
+static void install_entity_endpoints(httplib::Server & svr, size_t num_areas, size_t num_components, size_t num_apps,
+                                     size_t num_functions) {
+  // Health endpoint (required to mark peer as healthy)
+  svr.Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+
+  // Areas list
+  svr.Get("/api/v1/areas", [num_areas](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json items = nlohmann::json::array();
+    for (size_t i = 0; i < num_areas; ++i) {
+      items.push_back({{"id", "area_" + std::to_string(i)}, {"name", "Area " + std::to_string(i)}});
+    }
+    res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
+  });
+
+  // Area subareas (empty for all areas)
+  svr.Get(R"(/api/v1/areas/([^/]+)/subareas)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+
+  // Components list
+  svr.Get("/api/v1/components", [num_components](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json items = nlohmann::json::array();
+    for (size_t i = 0; i < num_components; ++i) {
+      items.push_back({{"id", "comp_" + std::to_string(i)}, {"name", "Component " + std::to_string(i)}});
+    }
+    res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
+  });
+
+  // Component detail (for relationship data)
+  svr.Get(R"(/api/v1/components/([^/]+))", [](const httplib::Request & req, httplib::Response & res) {
+    // Check it's not a sub-resource path
+    std::string match = req.matches[1].str();
+    if (match.find('/') != std::string::npos) {
+      res.status = 404;
+      return;
+    }
+    res.set_content(nlohmann::json({{"id", match}, {"name", match}}).dump(), "application/json");
+  });
+
+  // Component subcomponents (empty for all components)
+  svr.Get(R"(/api/v1/components/([^/]+)/subcomponents)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+
+  // Apps list
+  svr.Get("/api/v1/apps", [num_apps](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json items = nlohmann::json::array();
+    for (size_t i = 0; i < num_apps; ++i) {
+      items.push_back({{"id", "app_" + std::to_string(i)}, {"name", "App " + std::to_string(i)}});
+    }
+    res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
+  });
+
+  // Functions list
+  svr.Get("/api/v1/functions", [num_functions](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json items = nlohmann::json::array();
+    for (size_t i = 0; i < num_functions; ++i) {
+      items.push_back({{"id", "func_" + std::to_string(i)}, {"name", "Function " + std::to_string(i)}});
+    }
+    res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
+  });
+
+  // Function detail (for hosts data)
+  svr.Get(R"(/api/v1/functions/([^/]+))", [](const httplib::Request & req, httplib::Response & res) {
+    std::string match = req.matches[1].str();
+    res.set_content(nlohmann::json({{"id", match}, {"name", match}}).dump(), "application/json");
+  });
+}
+
+// =============================================================================
+// max_entities_per_peer safety limit test
+// =============================================================================
+
+TEST(AggregationManager, fetch_and_merge_skips_peer_exceeding_entity_limit) {
+  // Set up a mock server that returns more entities than the safety limit.
+  // The default limit is 10000; we set a small limit for test speed.
+  MockPeerServer mock;
+  // Return 60 entities total: 10 areas + 20 components + 20 apps + 10 functions
+  install_entity_endpoints(mock.server(), 10, 20, 20, 10);
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "big_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+
+  // Make the peer healthy
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 1u);
+
+  // Use a limit smaller than the 60 entities the peer returns -> should skip
+  auto result = manager.fetch_and_merge_peer_entities({}, {}, {}, {}, /*max_entities_per_peer=*/50);
+
+  // The peer should have been skipped, so merged result is just the empty locals
+  EXPECT_TRUE(result.areas.empty());
+  EXPECT_TRUE(result.components.empty());
+  EXPECT_TRUE(result.apps.empty());
+  EXPECT_TRUE(result.functions.empty());
+  EXPECT_TRUE(result.routing_table.empty());
+}
+
+TEST(AggregationManager, fetch_and_merge_accepts_peer_under_entity_limit) {
+  // Same setup but with a limit higher than the total entities
+  MockPeerServer mock;
+  install_entity_endpoints(mock.server(), 2, 3, 4, 1);
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "small_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 1u);
+
+  // 2+3+4+1 = 10 entities, limit is 100 -> should accept
+  auto result = manager.fetch_and_merge_peer_entities({}, {}, {}, {}, /*max_entities_per_peer=*/100);
+
+  // Peer entities should be merged in
+  EXPECT_EQ(result.areas.size(), 2u);
+  EXPECT_EQ(result.components.size(), 3u);
+  EXPECT_EQ(result.apps.size(), 4u);
+  EXPECT_EQ(result.functions.size(), 1u);
+  // Remote entities should have routing table entries (apps and components are
+  // remote-only, so they get routing entries; areas and functions get merged by ID
+  // but still need routing for non-colliding remote entities)
+  EXPECT_FALSE(result.routing_table.empty());
+}
+
+TEST(AggregationManager, fetch_and_merge_uses_default_10k_limit) {
+  // Verify that the default parameter value is 10000 by calling without explicit limit.
+  // With a small mock peer, it should always be accepted.
+  MockPeerServer mock;
+  install_entity_endpoints(mock.server(), 1, 1, 1, 1);
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "normal_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 1u);
+
+  // Use default limit (10000)
+  auto result = manager.fetch_and_merge_peer_entities({}, {}, {}, {});
+
+  EXPECT_EQ(result.areas.size(), 1u);
+  EXPECT_EQ(result.components.size(), 1u);
+  EXPECT_EQ(result.apps.size(), 1u);
+  EXPECT_EQ(result.functions.size(), 1u);
+}
+
+// =============================================================================
+// fan_out_get happy-path tests with mock server
+// =============================================================================
+
+TEST(AggregationManager, fan_out_get_merges_items_from_single_healthy_peer) {
+  MockPeerServer mock;
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock.server().Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json body = {
+        {"items", {{{"id", "comp_a"}, {"name", "Component A"}}, {{"id", "comp_b"}, {"name", "Component B"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "mock_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 1u);
+
+  auto result = manager.fan_out_get("/api/v1/components", "");
+
+  ASSERT_TRUE(result.merged_items.is_array());
+  EXPECT_EQ(result.merged_items.size(), 2u);
+  EXPECT_EQ(result.merged_items[0]["id"], "comp_a");
+  EXPECT_EQ(result.merged_items[1]["id"], "comp_b");
+  EXPECT_FALSE(result.is_partial);
+  EXPECT_TRUE(result.failed_peers.empty());
+}
+
+TEST(AggregationManager, fan_out_get_merges_items_from_multiple_peers) {
+  MockPeerServer mock1;
+  mock1.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock1.server().Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json body = {{"items", {{{"id", "app_x"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+
+  MockPeerServer mock2;
+  mock2.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock2.server().Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json body = {{"items", {{{"id", "app_y"}}, {{"id", "app_z"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+
+  int port1 = mock1.start();
+  int port2 = mock2.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+
+  AggregationConfig::PeerConfig peer1;
+  peer1.url = "http://127.0.0.1:" + std::to_string(port1);
+  peer1.name = "peer_alpha";
+  config.peers.push_back(peer1);
+
+  AggregationConfig::PeerConfig peer2;
+  peer2.url = "http://127.0.0.1:" + std::to_string(port2);
+  peer2.name = "peer_beta";
+  config.peers.push_back(peer2);
+
+  AggregationManager manager(config);
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 2u);
+
+  auto result = manager.fan_out_get("/api/v1/apps", "");
+
+  ASSERT_TRUE(result.merged_items.is_array());
+  EXPECT_EQ(result.merged_items.size(), 3u);
+  EXPECT_FALSE(result.is_partial);
+  EXPECT_TRUE(result.failed_peers.empty());
+}
+
+TEST(AggregationManager, fan_out_get_partial_results_one_peer_fails) {
+  // peer_ok returns items, peer_bad returns 500
+  MockPeerServer mock_ok;
+  mock_ok.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock_ok.server().Get("/api/v1/data", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json body = {{"items", {{{"id", "item_1"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+
+  MockPeerServer mock_bad;
+  mock_bad.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock_bad.server().Get("/api/v1/data", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 500;
+    res.set_content(R"({"error":"internal"})", "application/json");
+  });
+
+  int port_ok = mock_ok.start();
+  int port_bad = mock_bad.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+
+  AggregationConfig::PeerConfig peer_ok;
+  peer_ok.url = "http://127.0.0.1:" + std::to_string(port_ok);
+  peer_ok.name = "peer_ok";
+  config.peers.push_back(peer_ok);
+
+  AggregationConfig::PeerConfig peer_bad;
+  peer_bad.url = "http://127.0.0.1:" + std::to_string(port_bad);
+  peer_bad.name = "peer_bad";
+  config.peers.push_back(peer_bad);
+
+  AggregationManager manager(config);
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 2u);
+
+  auto result = manager.fan_out_get("/api/v1/data", "");
+
+  // Should have partial results: items from peer_ok, failure from peer_bad
+  ASSERT_TRUE(result.merged_items.is_array());
+  EXPECT_EQ(result.merged_items.size(), 1u);
+  EXPECT_EQ(result.merged_items[0]["id"], "item_1");
+  EXPECT_TRUE(result.is_partial);
+  ASSERT_EQ(result.failed_peers.size(), 1u);
+  EXPECT_EQ(result.failed_peers[0], "peer_bad");
+}
+
+TEST(AggregationManager, fan_out_get_forwards_auth_header_when_enabled) {
+  MockPeerServer mock;
+  std::string captured_auth;
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock.server().Get("/api/v1/secure-data", [&captured_auth](const httplib::Request & req, httplib::Response & res) {
+    if (req.has_header("Authorization")) {
+      captured_auth = req.get_header_value("Authorization");
+    }
+    nlohmann::json body = {{"items", {{{"id", "secret"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+  config.forward_auth = true;  // Enable auth forwarding
+
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "secure_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+  manager.check_all_health();
+
+  auto result = manager.fan_out_get("/api/v1/secure-data", "Bearer test-jwt-token");
+
+  EXPECT_EQ(result.merged_items.size(), 1u);
+  EXPECT_EQ(captured_auth, "Bearer test-jwt-token");
+}
+
+TEST(AggregationManager, fan_out_get_does_not_forward_auth_by_default) {
+  MockPeerServer mock;
+  bool auth_received = false;
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock.server().Get("/api/v1/secure-data", [&auth_received](const httplib::Request & req, httplib::Response & res) {
+    auth_received = req.has_header("Authorization");
+    nlohmann::json body = {{"items", {{{"id", "data"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+  // forward_auth defaults to false
+
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "noauth_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+  manager.check_all_health();
+
+  auto result = manager.fan_out_get("/api/v1/secure-data", "Bearer should-not-forward");
+
+  EXPECT_EQ(result.merged_items.size(), 1u);
+  EXPECT_FALSE(auth_received);
+}
+
+// =============================================================================
+// Concurrent add/remove peer stress test
+// =============================================================================
+
+TEST(AggregationManager, concurrent_add_remove_and_health_check_no_crash) {
+  // Exercise locking by concurrently calling add_discovered_peer,
+  // remove_discovered_peer, check_all_health, peer_count, and routing
+  // table operations from multiple threads. The goal is to verify no
+  // TSAN errors, deadlocks, or crashes.
+  //
+  // We avoid check_all_health() here because peers point to non-routable
+  // IPs that would time out (making the test slow). Instead we exercise
+  // the shared_lock paths via peer_count/healthy_peer_count/get_peer_status
+  // which are fast read-only operations.
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 50;  // Very short timeout (only matters if health is checked)
+
+  AggregationManager manager(config);
+  EXPECT_EQ(manager.peer_count(), 0u);
+
+  constexpr int NUM_ITERATIONS = 500;
+
+  // Thread 1: repeatedly add peers
+  auto adder = std::async(std::launch::async, [&]() {
+    for (int i = 0; i < NUM_ITERATIONS; ++i) {
+      manager.add_discovered_peer("http://192.168.1." + std::to_string((i % 254) + 1) + ":8080",
+                                  "peer_" + std::to_string(i));
+    }
+  });
+
+  // Thread 2: repeatedly remove peers (overlapping range with adder)
+  auto remover = std::async(std::launch::async, [&]() {
+    for (int i = 0; i < NUM_ITERATIONS; ++i) {
+      manager.remove_discovered_peer("peer_" + std::to_string(i));
+    }
+  });
+
+  // Thread 3: repeatedly read peer state (shared lock contention)
+  auto reader = std::async(std::launch::async, [&]() {
+    for (int i = 0; i < NUM_ITERATIONS; ++i) {
+      (void)manager.peer_count();
+      (void)manager.healthy_peer_count();
+      (void)manager.get_peer_status();
+    }
+  });
+
+  // Thread 4: routing table mutations (exclusive lock contention)
+  auto routing = std::async(std::launch::async, [&]() {
+    for (int i = 0; i < NUM_ITERATIONS; ++i) {
+      std::unordered_map<std::string, std::string> table;
+      table["entity_" + std::to_string(i)] = "peer_" + std::to_string(i % 10);
+      manager.update_routing_table(table);
+      (void)manager.find_peer_for_entity("entity_" + std::to_string(i));
+    }
+  });
+
+  adder.get();
+  remover.get();
+  reader.get();
+  routing.get();
+
+  // If we reach here without deadlock or crash, the test passes.
+  // The final peer count is non-deterministic due to interleaving, but it
+  // should be within [0, NUM_ITERATIONS].
+  EXPECT_LE(manager.peer_count(), static_cast<size_t>(NUM_ITERATIONS));
+}
+
+TEST(AggregationManager, concurrent_fan_out_with_peer_mutations) {
+  // Similar stress test but includes fan_out_get and routing table operations
+  MockPeerServer mock;
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock.server().Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json body = {{"items", {{{"id", "comp_1"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 2000;
+
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "stable_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+  manager.check_all_health();
+
+  constexpr int ITERATIONS = 50;
+
+  // Thread 1: fan-out reads
+  auto fan_out_reader = std::async(std::launch::async, [&]() {
+    for (int i = 0; i < ITERATIONS; ++i) {
+      auto result = manager.fan_out_get("/api/v1/components", "");
+      // Result should be valid (not crashed)
+      EXPECT_TRUE(result.merged_items.is_array());
+    }
+  });
+
+  // Thread 2: routing table mutations
+  auto routing_writer = std::async(std::launch::async, [&]() {
+    for (int i = 0; i < ITERATIONS; ++i) {
+      std::unordered_map<std::string, std::string> table;
+      table["entity_" + std::to_string(i)] = "stable_peer";
+      manager.update_routing_table(table);
+      (void)manager.find_peer_for_entity("entity_" + std::to_string(i));
+    }
+  });
+
+  // Thread 3: add and remove discovered peers
+  auto peer_mutator = std::async(std::launch::async, [&]() {
+    for (int i = 0; i < ITERATIONS; ++i) {
+      manager.add_discovered_peer("http://10.0.0." + std::to_string((i % 254) + 1) + ":8080",
+                                  "dynamic_" + std::to_string(i));
+      manager.remove_discovered_peer("dynamic_" + std::to_string(i));
+    }
+  });
+
+  fan_out_reader.get();
+  routing_writer.get();
+  peer_mutator.get();
+
+  // No crash or deadlock = success
+  SUCCEED();
+}
+
+// =============================================================================
+// fetch_all_peer_entities happy-path with mock server
+// =============================================================================
+
+TEST(AggregationManager, fetch_all_peer_entities_returns_entities_from_healthy_peer) {
+  MockPeerServer mock;
+  install_entity_endpoints(mock.server(), 2, 1, 3, 0);
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "entity_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 1u);
+
+  auto entities = manager.fetch_all_peer_entities();
+
+  EXPECT_EQ(entities.areas.size(), 2u);
+  EXPECT_EQ(entities.components.size(), 1u);
+  EXPECT_EQ(entities.apps.size(), 3u);
+  EXPECT_EQ(entities.functions.size(), 0u);
+
+  // Verify source tagging
+  for (const auto & area : entities.areas) {
+    EXPECT_EQ(area.source, "peer:entity_peer");
+  }
+  for (const auto & app : entities.apps) {
+    EXPECT_EQ(app.source, "peer:entity_peer");
+  }
+}
+
+// =============================================================================
+// forward_request happy-path with mock server
+// =============================================================================
+
+TEST(AggregationManager, forward_request_proxies_to_correct_peer) {
+  MockPeerServer mock;
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock.server().Get(R"(/api/v1/apps/camera_driver/data)", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json body = {{"temperature", 42.5}, {"status", "ok"}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "proxy_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+
+  httplib::Request req;
+  req.method = "GET";
+  req.path = "/api/v1/apps/camera_driver/data";
+  httplib::Response res;
+
+  manager.forward_request("proxy_peer", req, res);
+
+  EXPECT_EQ(res.status, 200);
+  auto body = nlohmann::json::parse(res.body, nullptr, false);
+  ASSERT_FALSE(body.is_discarded());
+  EXPECT_DOUBLE_EQ(body["temperature"].get<double>(), 42.5);
+  EXPECT_EQ(body["status"].get<std::string>(), "ok");
 }

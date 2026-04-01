@@ -98,18 +98,19 @@ Step 3: Explore the Merged API
 
    curl -s http://localhost:8080/api/v1/components | jq
 
-The response includes components from both gateways. Components from Gateway B
+The response includes components from both gateways. Remote-only Components
 have ``"source": "peer:subsystem_b"`` in their metadata.
 
 If both gateways have a component with the same ID (e.g., both hosts are named
-``robot``), the remote component gets a prefixed ID:
+``robot``), they are **merged by ID** into a single entity (tags and metadata
+are combined). Remote-only Components appear as separate entries:
 
 .. code-block:: json
 
    {
      "items": [
        {"id": "robot", "source": "runtime"},
-       {"id": "subsystem_b__robot", "source": "peer:subsystem_b"}
+       {"id": "arm_controller", "source": "peer:subsystem_b"}
      ]
    }
 
@@ -214,16 +215,20 @@ Step 5: Handle Peer Failures
 
 When a peer goes down, the gateway handles it gracefully:
 
-1. **Health checks detect failure**: The health check interval
-   (default: 10 seconds) detects the peer is unreachable and marks it
-   unhealthy.
+1. **Health checks detect failure**: The cache refresh cycle
+   (default: 10 seconds) runs ``check_all_health()`` and detects the peer is
+   unreachable, marking it unhealthy.
 
-2. **Collection requests return partial results**: Global endpoints like
-   ``GET /api/v1/components`` return local entities with
-   ``x-medkit.partial: true`` and ``x-medkit.failed_peers`` in the response
-   body when some peers are unreachable.
+2. **Entity collection endpoints serve cached data**: Endpoints like
+   ``GET /api/v1/components`` continue to return the last cached entity set.
+   Remote entities from the unhealthy peer are dropped from the cache on the
+   next refresh cycle.
 
-3. **Entity-specific requests return 502**: If a request targets a remote
+3. **Fault fan-out returns partial results**: ``GET /api/v1/faults`` performs
+   real-time fan-out and includes ``x-medkit.partial: true`` and
+   ``x-medkit.failed_peers`` in the response when some peers are unreachable.
+
+4. **Entity-specific requests return 502**: If a request targets a remote
    entity whose peer is down, the gateway returns ``502 Bad Gateway``.
 
 Test this by stopping Gateway B and querying Gateway A:
@@ -232,12 +237,16 @@ Test this by stopping Gateway B and querying Gateway A:
 
    # Stop Gateway B (Ctrl+C in Terminal 2)
 
-   # Wait for health check interval, then:
+   # Wait for cache refresh interval, then:
    curl -s http://localhost:8080/api/v1/components | jq
-   # Returns only local components + partial flag
+   # Returns only local components (remote entities dropped from cache)
+
+   # Faults show partial results:
+   curl -s http://localhost:8080/api/v1/faults | jq '.["x-medkit.partial"]'
+   # Returns true
 
    # Try accessing a remote entity:
-   curl -s http://localhost:8080/api/v1/components/subsystem_b__some_entity/data
+   curl -s http://localhost:8080/api/v1/apps/subsystem_b__some_node/data
    # Returns 502 Bad Gateway
 
 When Gateway B comes back online, it is automatically re-included after the
@@ -299,12 +308,53 @@ Summary
   ``aggregation.peer_names`` for deterministic connections.
 - **mDNS discovery**: Set ``aggregation.announce`` and ``aggregation.discover``
   to ``true`` for zero-configuration peer discovery.
-- **Entity merging**: Areas and Functions merge by ID. Components and Apps get
+- **Entity merging**: Areas, Functions, and Components merge by ID. Apps get
   peer-name prefixes on collision.
 - **Transparent forwarding**: Requests for remote entities are forwarded to the
   owning peer. Clients interact with a single API endpoint.
 - **Graceful degradation**: Unhealthy peers are excluded from fan-out. Partial
   results are clearly marked.
+
+Troubleshooting
+---------------
+
+**mDNS socket bind failure (port 5353)**
+
+mDNS announcement requires binding to UDP port 5353, which is a privileged
+port (below 1024). If the gateway logs an error like::
+
+   mDNS: Failed to open mDNS announce socket on port 5353.
+
+This means the process does not have permission to bind to port 5353. Solutions
+(choose one):
+
+1. **Grant the capability to the binary** (recommended for production):
+
+   .. code-block:: bash
+
+      sudo setcap cap_net_bind_service=+ep $(which gateway_node)
+
+2. **Run as root** (not recommended for production):
+
+   .. code-block:: bash
+
+      sudo ros2 run ros2_medkit_gateway gateway_node --ros-args ...
+
+3. **Use Docker with host networking**:
+
+   .. code-block:: bash
+
+      docker run --net=host ...
+
+4. **Fall back to static peers**: If mDNS is not viable in your environment,
+   disable ``aggregation.announce`` and ``aggregation.discover``, and configure
+   peers explicitly with ``aggregation.peer_urls`` and ``aggregation.peer_names``.
+
+.. note::
+
+   On systems where another mDNS responder is already running (e.g., Avahi,
+   systemd-resolved), port 5353 may already be in use. Either stop the
+   existing responder or use static peers.
 
 Next Steps
 ----------

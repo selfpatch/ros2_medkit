@@ -91,6 +91,23 @@ struct EntityInfo {
   }
 };
 
+/**
+ * @brief Outcome when validate_entity_for_route() rejects the request
+ *
+ * Disambiguates the two reasons a validation can fail:
+ * - kErrorSent: an error response (400/404) was written to `res`
+ * - kForwarded: the request was proxied to a peer gateway (aggregation)
+ *
+ * In both cases the handler must `return` immediately - the HTTP response
+ * is already committed. The distinction exists so that callers who need to
+ * (e.g., logging, metrics) can tell the two apart.
+ */
+enum class ValidationOutcome { kErrorSent, kForwarded };
+
+/// Result type for validate_entity_for_route(): EntityInfo on success,
+/// ValidationOutcome on failure (response already sent in both cases).
+using ValidateResult = tl::expected<EntityInfo, ValidationOutcome>;
+
 // Forward declarations
 class GatewayNode;
 class AuthManager;
@@ -222,7 +239,8 @@ class HandlerContext {
    * Unified validation helper that:
    * 1. Validates entity ID format
    * 2. Looks up entity in the expected collection (based on route path)
-   * 3. Sends appropriate error responses:
+   * 3. For remote entities (aggregation), forwards the request to the peer gateway
+   * 4. Sends appropriate error responses on failure:
    *    - 400 with "invalid-parameter" if ID format is invalid
    *    - 400 with "invalid-parameter" if entity exists but wrong type for route
    *    - 404 with "entity-not-found" if entity doesn't exist
@@ -230,10 +248,13 @@ class HandlerContext {
    * @param req HTTP request (used to extract expected type from path)
    * @param res HTTP response (error responses sent here)
    * @param entity_id Entity ID to validate
-   * @return EntityInfo if valid, std::nullopt if error response was sent
+   * @return EntityInfo on success. On failure, returns ValidationOutcome indicating
+   *         whether an error was sent (kErrorSent) or the request was forwarded
+   *         to a peer (kForwarded). In both failure cases the response is already
+   *         committed and the handler must return immediately.
    */
-  std::optional<EntityInfo> validate_entity_for_route(const httplib::Request & req, httplib::Response & res,
-                                                      const std::string & entity_id) const;
+  ValidateResult validate_entity_for_route(const httplib::Request & req, httplib::Response & res,
+                                           const std::string & entity_id) const;
 
   /**
    * @brief Set CORS headers on response if origin is allowed

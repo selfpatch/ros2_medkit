@@ -204,6 +204,18 @@ std::vector<Function> DiscoveryManager::discover_functions() {
   return active_strategy_->discover_functions();
 }
 
+std::vector<Function> DiscoveryManager::discover_functions(const std::vector<App> & apps) {
+  if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
+    return manifest_manager_->get_functions();
+  }
+  // In RUNTIME_ONLY mode, delegate to the overload that accepts pre-discovered apps
+  if (config_.mode == DiscoveryMode::RUNTIME_ONLY && runtime_strategy_) {
+    return runtime_strategy_->discover_functions(apps);
+  }
+  // HYBRID mode uses cached pipeline results, so apps parameter is not needed
+  return active_strategy_->discover_functions();
+}
+
 std::optional<Area> DiscoveryManager::get_area(const std::string & id) {
   // In MANIFEST_ONLY mode, use direct manifest lookup (O(1))
   if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
