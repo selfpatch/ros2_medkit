@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <memory>
@@ -56,6 +57,8 @@ class SSEFaultHandler {
    * @param client_tracker Shared SSE client counter (across all SSE handlers)
    */
   SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker);
+  SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
+                  std::chrono::milliseconds keepalive_interval);
 
   /// Destructor - cleanup subscription
   ~SSEFaultHandler();
@@ -108,6 +111,9 @@ class SSEFaultHandler {
 
   /// Shutdown flag for clean termination
   std::atomic<bool> shutdown_flag_{false};
+
+  /// Keepalive interval used by the streaming loop
+  std::chrono::milliseconds keepalive_interval_;
 
   /// Maximum events to buffer (for reconnecting clients)
   static constexpr size_t kMaxBufferedEvents = 100;

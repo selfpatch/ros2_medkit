@@ -471,6 +471,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_sse_transport_provider test/test_sse_transport_provider.cpp)
   target_link_libraries(test_sse_transport_provider gateway_lib)
 
+  # Add SSE fault handler tests
+  ament_add_gtest(test_sse_fault_handler test/test_sse_fault_handler.cpp)
+  target_link_libraries(test_sse_fault_handler gateway_lib)
+  medkit_target_dependencies(test_sse_fault_handler rclcpp ros2_medkit_msgs)
+  medkit_set_test_domain(test_sse_fault_handler)
+
   # Add update manager tests
   ament_add_gtest(test_update_manager test/test_update_manager.cpp)
   target_link_libraries(test_update_manager gateway_lib)
