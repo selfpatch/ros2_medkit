@@ -220,6 +220,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // These control how nodes are mapped to SOVD entities in runtime mode
   declare_parameter("discovery.runtime.default_component.enabled", true);
   declare_parameter("discovery.runtime.create_functions_from_namespaces", true);
+  declare_parameter("discovery.runtime.filter_internal_nodes", true);
 
   // Merge pipeline configuration (hybrid mode only)
   declare_parameter("discovery.merge_pipeline.gap_fill.allow_heuristic_apps", true);
@@ -445,6 +446,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       get_parameter("discovery.runtime.default_component.enabled").as_bool();
   discovery_config.runtime.create_functions_from_namespaces =
       get_parameter("discovery.runtime.create_functions_from_namespaces").as_bool();
+  discovery_config.runtime.filter_internal_nodes = get_parameter("discovery.runtime.filter_internal_nodes").as_bool();
+  filter_internal_nodes_ = discovery_config.runtime.filter_internal_nodes;
 
   // Merge pipeline gap-fill configuration (hybrid mode)
   discovery_config.merge_pipeline.gap_fill.allow_heuristic_apps =
@@ -1377,6 +1380,28 @@ void GatewayNode::refresh_cache() {
       apps = std::move(merged.apps);
       functions = std::move(merged.functions);
       aggregation_mgr_->update_routing_table(merged.routing_table);
+    }
+
+    // Filter ROS 2 internal nodes (underscore prefix convention).
+    // Controlled by discovery.runtime.filter_internal_nodes parameter (default: true).
+    // Covers local heuristic apps (which bypass the merge pipeline orphan filter
+    // in runtime_only mode) and any peer apps that slipped through fetch_entities.
+    if (filter_internal_nodes_) {
+      auto before = apps.size();
+      auto end = std::remove_if(apps.begin(), apps.end(), [](const App & app) {
+        // Strip peer prefix (peer__original_id) to get original ID
+        std::string original_id = app.id;
+        auto sep_pos = original_id.find("__");
+        if (sep_pos != std::string::npos) {
+          original_id = original_id.substr(sep_pos + 2);
+        }
+        // ROS 2 internal nodes use _ prefix convention
+        return !original_id.empty() && original_id[0] == '_';
+      });
+      apps.erase(end, apps.end());
+      if (apps.size() < before) {
+        RCLCPP_DEBUG(get_logger(), "Filtered %zu internal node apps (_ prefix)", before - apps.size());
+      }
     }
 
     // Capture sizes for logging

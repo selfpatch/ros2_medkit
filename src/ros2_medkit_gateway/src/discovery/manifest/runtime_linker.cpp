@@ -192,7 +192,7 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const 
   }
 
   auto it = std::remove_if(result.linked_apps.begin(), result.linked_apps.end(), [&](const App & app) {
-    if (!is_runtime_source(app.source)) {
+    if (is_protected_source(app.source)) {
       return false;
     }
     if (!app.bound_fqn.has_value()) {

@@ -82,6 +82,16 @@ struct DiscoveryConfig {
      * Only used in runtime_only mode.
      */
     bool default_component_enabled{true};
+
+    /**
+     * @brief Filter ROS 2 internal nodes from entity discovery
+     *
+     * When true (default), apps whose ID starts with underscore (_) are
+     * filtered out. These are ROS 2 infrastructure nodes like
+     * _param_client_node that should not appear as SOVD entities.
+     * Applies to both local and peer-discovered apps.
+     */
+    bool filter_internal_nodes{true};
   } runtime;
 
   /**

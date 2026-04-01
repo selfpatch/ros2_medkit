@@ -2044,3 +2044,55 @@ TEST_F(MergePipelineTest, WarnPolicyKeepsOrphanApps) {
   }
   EXPECT_TRUE(found_orphan) << "WARN policy should preserve orphan apps";
 }
+
+TEST_F(MergePipelineTest, IgnorePolicyFiltersHeuristicAppsWithoutBoundFqn) {
+  // Manifest app with ros_binding
+  App manifest_app = make_app("nav_app", "compute_unit");
+  manifest_app.source = "manifest";
+  App::RosBinding binding;
+  binding.node_name = "nav_controller";
+  binding.namespace_pattern = "/navigation";
+  binding.topic_namespace = "";
+  manifest_app.ros_binding = binding;
+
+  // Runtime node matching manifest
+  App runtime_nav;
+  runtime_nav.id = "nav_controller";
+  runtime_nav.name = "nav_controller";
+  runtime_nav.source = "heuristic";
+  runtime_nav.is_online = true;
+  runtime_nav.bound_fqn = "/navigation/nav_controller";
+
+  // Heuristic app WITHOUT bound_fqn (e.g., _param_client_node from topic inspection)
+  App heuristic_no_fqn;
+  heuristic_no_fqn.id = "_param_client_node";
+  heuristic_no_fqn.name = "_param_client_node";
+  heuristic_no_fqn.source = "heuristic";
+  heuristic_no_fqn.is_online = true;
+  // No bound_fqn set - this is the bug scenario
+
+  LayerOutput manifest_out;
+  manifest_out.apps.push_back(manifest_app);
+
+  LayerOutput runtime_out;
+  runtime_out.apps.push_back(runtime_nav);
+  runtime_out.apps.push_back(heuristic_no_fqn);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "runtime", runtime_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::STATUS, MergePolicy::AUTHORITATIVE}}));
+
+  ManifestConfig config;
+  config.unmanifested_nodes = ManifestConfig::UnmanifestedNodePolicy::IGNORE;
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), config);
+
+  auto result = pipeline_.execute();
+
+  // Only manifest app should remain - heuristic app without bound_fqn should be hidden
+  ASSERT_EQ(result.apps.size(), 1u);
+  EXPECT_EQ(result.apps[0].id, "nav_app");
+  EXPECT_EQ(result.apps[0].source, "manifest");
+}
