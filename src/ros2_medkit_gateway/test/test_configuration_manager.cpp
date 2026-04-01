@@ -14,8 +14,19 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <memory>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
+#include <rcl_interfaces/msg/parameter_type.hpp>
+#include <rcl_interfaces/msg/parameter_value.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
+#include <rcl_interfaces/srv/describe_parameters.hpp>
+#include <rcl_interfaces/srv/get_parameter_types.hpp>
+#include <rcl_interfaces/srv/get_parameters.hpp>
+#include <rcl_interfaces/srv/list_parameters.hpp>
+#include <rcl_interfaces/srv/set_parameters.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <thread>
 
@@ -25,6 +36,15 @@ using namespace ros2_medkit_gateway;
 
 class TestConfigurationManager : public ::testing::Test {
  protected:
+  struct DelayedParameterServices {
+    std::shared_ptr<rclcpp::Node> node;
+    rclcpp::Service<rcl_interfaces::srv::ListParameters>::SharedPtr list_parameters_service;
+    rclcpp::Service<rcl_interfaces::srv::GetParameters>::SharedPtr get_parameters_service;
+    rclcpp::Service<rcl_interfaces::srv::GetParameterTypes>::SharedPtr get_parameter_types_service;
+    rclcpp::Service<rcl_interfaces::srv::DescribeParameters>::SharedPtr describe_parameters_service;
+    rclcpp::Service<rcl_interfaces::srv::SetParameters>::SharedPtr set_parameters_service;
+  };
+
   static void SetUpTestSuite() {
     rclcpp::init(0, nullptr);
   }
@@ -58,10 +78,94 @@ class TestConfigurationManager : public ::testing::Test {
     if (spin_thread_.joinable()) {
       spin_thread_.join();
     }
+    for (const auto & services : delayed_parameter_services_) {
+      executor_->remove_node(services->node);
+    }
+    delayed_parameter_services_.clear();
     executor_->remove_node(node_);
     config_manager_.reset();
     node_.reset();
     executor_.reset();
+  }
+
+  std::shared_ptr<DelayedParameterServices> create_delayed_parameter_services(
+      const std::string & remote_node_name, std::chrono::milliseconds list_delay) {
+    auto services = std::make_shared<DelayedParameterServices>();
+
+    rclcpp::NodeOptions options;
+    options.start_parameter_services(false);
+    options.start_parameter_event_publisher(false);
+    services->node = std::make_shared<rclcpp::Node>("delayed_param_service_" + std::to_string(service_node_index_++),
+                                                    options);
+
+    const std::string service_prefix =
+        (!remote_node_name.empty() && remote_node_name.front() == '/') ? remote_node_name : "/" + remote_node_name;
+
+    auto sleep_for_delay = [](std::chrono::milliseconds delay) {
+      if (delay.count() > 0) {
+        std::this_thread::sleep_for(delay);
+      }
+    };
+
+    services->list_parameters_service = services->node->create_service<rcl_interfaces::srv::ListParameters>(
+        service_prefix + "/list_parameters",
+        [list_delay, sleep_for_delay](const std::shared_ptr<rcl_interfaces::srv::ListParameters::Request> request,
+                                      std::shared_ptr<rcl_interfaces::srv::ListParameters::Response> response) {
+          sleep_for_delay(list_delay);
+          const bool full_list = request->prefixes.empty();
+          const bool exact_match = !request->prefixes.empty() && request->prefixes[0] == "slow_param";
+          if (full_list || exact_match) {
+            response->result.names.push_back("slow_param");
+          }
+        });
+
+    services->get_parameters_service = services->node->create_service<rcl_interfaces::srv::GetParameters>(
+        service_prefix + "/get_parameters",
+        [](const std::shared_ptr<rcl_interfaces::srv::GetParameters::Request> request,
+           std::shared_ptr<rcl_interfaces::srv::GetParameters::Response> response) {
+          for (const auto & name : request->names) {
+            rcl_interfaces::msg::ParameterValue value;
+            if (name == "slow_param") {
+              value.type = rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER;
+              value.integer_value = 42;
+            } else {
+              value.type = rcl_interfaces::msg::ParameterType::PARAMETER_NOT_SET;
+            }
+            response->values.push_back(value);
+          }
+        });
+
+    services->get_parameter_types_service = services->node->create_service<rcl_interfaces::srv::GetParameterTypes>(
+        service_prefix + "/get_parameter_types",
+        [](const std::shared_ptr<rcl_interfaces::srv::GetParameterTypes::Request> request,
+           std::shared_ptr<rcl_interfaces::srv::GetParameterTypes::Response> response) {
+          response->types.assign(request->names.size(), rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER);
+        });
+
+    services->describe_parameters_service = services->node->create_service<rcl_interfaces::srv::DescribeParameters>(
+        service_prefix + "/describe_parameters",
+        [](const std::shared_ptr<rcl_interfaces::srv::DescribeParameters::Request> request,
+           std::shared_ptr<rcl_interfaces::srv::DescribeParameters::Response> response) {
+          response->descriptors.resize(request->names.size());
+          for (auto & descriptor : response->descriptors) {
+            descriptor.description = "Delayed parameter service test value";
+            descriptor.read_only = false;
+          }
+        });
+
+    services->set_parameters_service = services->node->create_service<rcl_interfaces::srv::SetParameters>(
+        service_prefix + "/set_parameters",
+        [](const std::shared_ptr<rcl_interfaces::srv::SetParameters::Request> request,
+           std::shared_ptr<rcl_interfaces::srv::SetParameters::Response> response) {
+          response->results.resize(request->parameters.size());
+          for (auto & result : response->results) {
+            result.successful = true;
+          }
+        });
+
+    executor_->add_node(services->node);
+    delayed_parameter_services_.push_back(services);
+    return services;
   }
 
   std::shared_ptr<rclcpp::Node> node_;
@@ -69,6 +173,8 @@ class TestConfigurationManager : public ::testing::Test {
   std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
   std::thread spin_thread_;
   std::atomic<bool> spin_thread_running_{false};
+  std::vector<std::shared_ptr<DelayedParameterServices>> delayed_parameter_services_;
+  size_t service_node_index_{0};
 };
 
 // ==================== LIST PARAMETERS TESTS ====================
@@ -357,7 +463,8 @@ TEST_F(TestConfigurationManager, test_concurrent_queries_no_crash) {
   }
   for (int i = 0; i < 3; ++i) {
     EXPECT_FALSE(results[static_cast<size_t>(i)].success);
-    EXPECT_EQ(results[static_cast<size_t>(i)].error_code, ParameterErrorCode::SERVICE_UNAVAILABLE);
+    EXPECT_TRUE(results[static_cast<size_t>(i)].error_code == ParameterErrorCode::SERVICE_UNAVAILABLE ||
+                results[static_cast<size_t>(i)].error_code == ParameterErrorCode::TIMEOUT);
   }
 }
 
@@ -376,6 +483,53 @@ TEST_F(TestConfigurationManager, test_negative_cache_cross_method) {
   EXPECT_FALSE(set_result.success);
   EXPECT_EQ(set_result.error_code, ParameterErrorCode::SERVICE_UNAVAILABLE);
   EXPECT_TRUE(set_result.error_message.find("cached") != std::string::npos);
+}
+
+TEST_F(TestConfigurationManager, test_list_parameters_times_out_on_slow_service_response) {
+  create_delayed_parameter_services("/slow_response_node", std::chrono::milliseconds(500));
+
+  const auto start = std::chrono::steady_clock::now();
+  auto result = config_manager_->list_parameters("/slow_response_node");
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.error_code, ParameterErrorCode::TIMEOUT);
+  EXPECT_LT(elapsed.count(), 400);
+}
+
+TEST_F(TestConfigurationManager, test_slow_service_concurrent_queries_fail_fast) {
+  create_delayed_parameter_services("/slow_parallel_node", std::chrono::milliseconds(500));
+
+  constexpr size_t kNumThreads = 5;
+  std::array<ParameterResult, kNumThreads> results;
+  std::vector<std::thread> threads;
+  std::atomic<bool> start_flag{false};
+
+  threads.reserve(kNumThreads);
+  for (size_t i = 0; i < kNumThreads; ++i) {
+    threads.emplace_back([this, &results, &start_flag, i]() {
+      while (!start_flag.load()) {
+        std::this_thread::yield();
+      }
+      results[i] = config_manager_->list_parameters("/slow_parallel_node");
+    });
+  }
+
+  const auto start = std::chrono::steady_clock::now();
+  start_flag.store(true);
+
+  for (auto & thread : threads) {
+    thread.join();
+  }
+
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+
+  EXPECT_LT(elapsed.count(), 400);
+  for (const auto & result : results) {
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.error_code == ParameterErrorCode::TIMEOUT ||
+                result.error_code == ParameterErrorCode::SERVICE_UNAVAILABLE);
+  }
 }
 
 // ==================== CONCURRENT ACCESS TEST ====================

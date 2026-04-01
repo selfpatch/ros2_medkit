@@ -137,7 +137,8 @@ class ConfigurationManager {
   /// Timeout for waiting for parameter services (configurable via parameter_service_timeout_sec parameter)
   double service_timeout_sec_{2.0};
 
-  /// Negative cache TTL (configurable via parameter_service_negative_cache_sec parameter)
+  /// Negative cache TTL for unavailable or timed-out parameter services
+  /// (configurable via parameter_service_negative_cache_sec parameter)
   double negative_cache_ttl_sec_{60.0};
 
   /// Gateway's own fully qualified node name (for self-query detection)
@@ -159,11 +160,13 @@ class ConfigurationManager {
   /// Mutex to serialize spin operations on param_node_.
   /// SyncParametersClient::wait_for_service/get_parameters/etc spin param_node_
   /// internally via spin_node_until_future_complete which is NOT thread-safe.
+  /// Acquisition is time-bounded so blocked parameter calls cannot permanently
+  /// starve the HTTP worker pool.
   /// This mutex is ONLY held during the actual ROS 2 IPC call, not during
   /// cache lookups or JSON building. With negative cache + self-guard,
   /// most requests never touch this mutex.
   /// Declared BEFORE param_node_ so it outlives the node during destruction.
-  mutable std::mutex spin_mutex_;
+  mutable std::timed_mutex spin_mutex_;
 
   /// Internal node for parameter client operations.
   /// Created once in constructor - must be in DDS graph early for fast service discovery.
