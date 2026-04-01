@@ -32,7 +32,11 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
 
 SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
                                  std::chrono::milliseconds keepalive_interval)
-  : ctx_(ctx), client_tracker_(std::move(client_tracker)), keepalive_interval_(keepalive_interval) {
+  : ctx_(ctx)
+  , client_tracker_(std::move(client_tracker))
+  , keepalive_interval_(keepalive_interval > std::chrono::milliseconds::zero()
+                            ? keepalive_interval
+                            : std::chrono::seconds(kKeepaliveIntervalSec)) {
   const auto fault_events_topic = build_fault_manager_events_topic(ctx_.node());
 
   // Create subscription to fault events topic
