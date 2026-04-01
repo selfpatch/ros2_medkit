@@ -43,21 +43,17 @@ class SovdServiceInterface : public GatewayPlugin {
   void shutdown() override;
 
  private:
-  void handle_list_entities(
-      const std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Request> request,
-      std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Response> response);
+  void handle_list_entities(const std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Request> request,
+                            std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Response> response);
 
-  void handle_list_entity_faults(
-      const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> request,
-      std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> response);
+  void handle_list_entity_faults(const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> request,
+                                 std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> response);
 
-  void handle_get_entity_data(
-      const std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Request> request,
-      std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Response> response);
+  void handle_get_entity_data(const std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Request> request,
+                              std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Response> response);
 
-  void handle_get_capabilities(
-      const std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Request> request,
-      std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Response> response);
+  void handle_get_capabilities(const std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Request> request,
+                               std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Response> response);
 
   PluginContext * context_{nullptr};
   std::string service_prefix_{"/medkit"};

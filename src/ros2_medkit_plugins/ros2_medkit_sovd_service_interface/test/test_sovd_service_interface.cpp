@@ -138,7 +138,7 @@ class FakePluginContext : public PluginContext {
   void register_sampler(
       const std::string & /*collection*/,
       const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> &
-          /*fn*/) override {
+      /*fn*/) override {
   }
 
   ResourceChangeNotifier * get_resource_change_notifier() override {
@@ -328,8 +328,7 @@ TEST_F(SovdServiceInterfaceTest, ListEntityFaults) {
                     {"reporting_sources", {"temp_sensor"}}});
   context_->set_entity_faults("temp_sensor", faults);
 
-  auto client =
-      node_->create_client<ros2_medkit_msgs::srv::ListFaultsForEntity>("/test_medkit/list_entity_faults");
+  auto client = node_->create_client<ros2_medkit_msgs::srv::ListFaultsForEntity>("/test_medkit/list_entity_faults");
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ListFaultsForEntity::Request>();
   request->entity_id = "temp_sensor";
@@ -347,8 +346,7 @@ TEST_F(SovdServiceInterfaceTest, ListEntityFaults) {
 }
 
 TEST_F(SovdServiceInterfaceTest, ListEntityFaultsNotFound) {
-  auto client =
-      node_->create_client<ros2_medkit_msgs::srv::ListFaultsForEntity>("/test_medkit/list_entity_faults");
+  auto client = node_->create_client<ros2_medkit_msgs::srv::ListFaultsForEntity>("/test_medkit/list_entity_faults");
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ListFaultsForEntity::Request>();
   request->entity_id = "nonexistent";

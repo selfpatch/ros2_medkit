@@ -16,8 +16,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ros2_medkit_gateway/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/discovery/models/function.hpp"
 
@@ -107,12 +107,11 @@ void SovdServiceInterface::handle_list_entities(
       info.fqn = fqn;
       info.capabilities = context_->get_entity_capabilities(id);
       if (info.capabilities.empty()) {
-        info.capabilities = context_->get_type_capabilities(
-            entity_type == "app"       ? SovdEntityType::APP
-            : entity_type == "component" ? SovdEntityType::COMPONENT
-            : entity_type == "area"      ? SovdEntityType::AREA
-            : entity_type == "function"  ? SovdEntityType::FUNCTION
-                                         : SovdEntityType::UNKNOWN);
+        info.capabilities = context_->get_type_capabilities(entity_type == "app"         ? SovdEntityType::APP
+                                                            : entity_type == "component" ? SovdEntityType::COMPONENT
+                                                            : entity_type == "area"      ? SovdEntityType::AREA
+                                                            : entity_type == "function"  ? SovdEntityType::FUNCTION
+                                                                                         : SovdEntityType::UNKNOWN);
       }
       response->entities.push_back(std::move(info));
     };
