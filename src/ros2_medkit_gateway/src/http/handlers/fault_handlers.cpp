@@ -313,6 +313,12 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
     }
     auto entity_info = *entity_opt;
 
+    // Validate entity type supports faults collection (SOVD Table 8)
+    if (auto err = HandlerContext::validate_collection_access(entity_info, ResourceCollection::FAULTS)) {
+      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
+      return;
+    }
+
     auto filter = parse_fault_status_param(req);
     if (!filter.is_valid) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid status parameter value",

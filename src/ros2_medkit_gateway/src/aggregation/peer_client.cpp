@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/aggregation/peer_client.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <set>
 #include <string>
 #include <utility>
@@ -33,6 +34,76 @@ constexpr const char * API_PREFIX = "/api/v1";
 
 /// Maximum response body size to accept from peers (10MB)
 constexpr size_t MAX_PEER_RESPONSE_SIZE = 10 * 1024 * 1024;
+
+/// Maximum number of entities per collection (areas, components, apps, functions)
+/// before detail fetches are skipped to prevent excessive HTTP requests.
+constexpr size_t MAX_ENTITIES_PER_COLLECTION = 1000;
+
+/**
+ * @brief Percent-encode a query parameter key or value (RFC 3986)
+ *
+ * Unreserved characters (A-Z, a-z, 0-9, '-', '.', '_', '~') pass through;
+ * everything else is encoded as %XX. This avoids depending on
+ * httplib::detail internals.
+ */
+std::string encode_query_param(const std::string & value) {
+  std::string result;
+  result.reserve(value.size());
+  for (unsigned char c : value) {
+    if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
+      result += static_cast<char>(c);
+    } else {
+      static const char hex[] = "0123456789ABCDEF";
+      result += '%';
+      result += hex[c >> 4];
+      result += hex[c & 0x0F];
+    }
+  }
+  return result;
+}
+
+/**
+ * @brief Reconstruct path with query string from httplib request
+ *
+ * httplib::Request::path does not include the query string; query parameters
+ * are stored separately in req.params. This helper reconstructs the full
+ * request target (path + "?key=val&...") so forwarded requests preserve
+ * filtering/pagination parameters.
+ */
+std::string path_with_query(const httplib::Request & req) {
+  if (req.params.empty()) {
+    return req.path;
+  }
+  std::string result = req.path + "?";
+  bool first = true;
+  for (const auto & param : req.params) {
+    if (!first) {
+      result += "&";
+    }
+    result += encode_query_param(param.first);
+    result += "=";
+    result += encode_query_param(param.second);
+    first = false;
+  }
+  return result;
+}
+
+/**
+ * @brief Validate an entity ID for safe use in URL paths
+ *
+ * Rejects IDs with path traversal characters (/, ..), null bytes, or other
+ * characters that could be used for SSRF or path injection. Matches the same
+ * rules as HandlerContext::validate_entity_id: alphanumeric + underscore + hyphen,
+ * max 256 chars.
+ */
+bool is_valid_entity_id(const std::string & id) {
+  if (id.empty() || id.size() > 256) {
+    return false;
+  }
+  return std::all_of(id.begin(), id.end(), [](char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-';
+  });
+}
 
 /**
  * @brief Build a SOVD GenericError JSON body
@@ -234,6 +305,16 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       return tl::unexpected<std::string>("Invalid JSON from peer '" + name_ + "' for /areas");
     }
     entities.areas = parse_collection<Area>(response_json, parse_area);
+    // Validate entity IDs and enforce per-collection limit
+    entities.areas.erase(std::remove_if(entities.areas.begin(), entities.areas.end(),
+                                        [](const Area & a) {
+                                          return !is_valid_entity_id(a.id);
+                                        }),
+                         entities.areas.end());
+    if (entities.areas.size() > MAX_ENTITIES_PER_COLLECTION) {
+      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(entities.areas.size()) +
+                                         " areas (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
+    }
     for (auto & area : entities.areas) {
       area.source = peer_source;
     }
@@ -274,6 +355,16 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     }
     // Parse IDs from list, then fetch detail per entity for relationships
     auto comp_list = parse_collection<Component>(response_json, parse_component);
+    // Validate entity IDs and enforce per-collection limit
+    comp_list.erase(std::remove_if(comp_list.begin(), comp_list.end(),
+                                   [](const Component & c) {
+                                     return !is_valid_entity_id(c.id);
+                                   }),
+                    comp_list.end());
+    if (comp_list.size() > MAX_ENTITIES_PER_COLLECTION) {
+      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(comp_list.size()) +
+                                         " components (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
+    }
     for (auto & comp : comp_list) {
       auto detail = cli.Get(std::string(API_PREFIX) + "/components/" + comp.id);
       if (detail && detail->status == 200) {
@@ -329,6 +420,16 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       return tl::unexpected<std::string>("Invalid JSON from peer '" + name_ + "' for /apps");
     }
     entities.apps = parse_collection<App>(response_json, parse_app);
+    // Validate entity IDs and enforce per-collection limit
+    entities.apps.erase(std::remove_if(entities.apps.begin(), entities.apps.end(),
+                                       [](const App & a) {
+                                         return !is_valid_entity_id(a.id);
+                                       }),
+                        entities.apps.end());
+    if (entities.apps.size() > MAX_ENTITIES_PER_COLLECTION) {
+      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(entities.apps.size()) +
+                                         " apps (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
+    }
     for (auto & app : entities.apps) {
       app.source = peer_source;
     }
@@ -361,6 +462,16 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     }
     // Parse IDs from list, then fetch detail per entity for hosts
     auto func_list = parse_collection<Function>(response_json, parse_function);
+    // Validate entity IDs and enforce per-collection limit
+    func_list.erase(std::remove_if(func_list.begin(), func_list.end(),
+                                   [](const Function & f) {
+                                     return !is_valid_entity_id(f.id);
+                                   }),
+                    func_list.end());
+    if (func_list.size() > MAX_ENTITIES_PER_COLLECTION) {
+      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(func_list.size()) +
+                                         " functions (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
+    }
     for (auto & func : func_list) {
       auto detail = cli.Get(std::string(API_PREFIX) + "/functions/" + func.id);
       if (detail && detail->status == 200) {
@@ -378,8 +489,12 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 }
 
 void PeerClient::forward_request(const httplib::Request & req, httplib::Response & res) {
-  std::lock_guard<std::mutex> lock(client_mutex_);
-  ensure_client();
+  // Create a dedicated client per forwarding call to avoid holding client_mutex_
+  // during potentially long I/O operations. The shared client_ is reserved for
+  // short health checks only.
+  httplib::Client cli(url_);
+  cli.set_connection_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
+  cli.set_read_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
 
   httplib::Headers headers;
   // Forward Authorization header only when explicitly enabled (forward_auth).
@@ -389,19 +504,19 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
   }
 
   httplib::Result result{nullptr, httplib::Error::Unknown};
-  const std::string & path = req.path;
+  const std::string path = path_with_query(req);
   const std::string content_type = req.get_header_value("Content-Type");
 
   if (req.method == "GET") {
-    result = client_->Get(path, headers);
+    result = cli.Get(path, headers);
   } else if (req.method == "POST") {
-    result = client_->Post(path, headers, req.body, content_type);
+    result = cli.Post(path, headers, req.body, content_type);
   } else if (req.method == "PUT") {
-    result = client_->Put(path, headers, req.body, content_type);
+    result = cli.Put(path, headers, req.body, content_type);
   } else if (req.method == "DELETE") {
-    result = client_->Delete(path, headers);
+    result = cli.Delete(path, headers);
   } else if (req.method == "PATCH") {
-    result = client_->Patch(path, headers, req.body, content_type);
+    result = cli.Patch(path, headers, req.body, content_type);
   }
 
   if (!result) {
@@ -427,7 +542,9 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
   res.body = result->body;
   for (const auto & header : result->headers) {
     std::string lower_name = header.first;
-    std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
+    std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), [](unsigned char c) {
+      return std::tolower(c);
+    });
     if (allowed_headers.count(lower_name) > 0 || lower_name.find("x-medkit") == 0) {
       res.set_header(header.first, header.second);
     }
@@ -437,8 +554,11 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
 tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const std::string & method,
                                                                            const std::string & path,
                                                                            const std::string & auth_header) {
-  std::lock_guard<std::mutex> lock(client_mutex_);
-  ensure_client();
+  // Create a dedicated client per call to avoid holding client_mutex_ during I/O.
+  // The shared client_ is reserved for short health checks only.
+  httplib::Client cli(url_);
+  cli.set_connection_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
+  cli.set_read_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
 
   httplib::Headers headers;
   // Only forward auth header when forward_auth is enabled
@@ -449,13 +569,13 @@ tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const
   httplib::Result result{nullptr, httplib::Error::Unknown};
 
   if (method == "GET") {
-    result = client_->Get(path, headers);
+    result = cli.Get(path, headers);
   } else if (method == "POST") {
-    result = client_->Post(path, headers, "", "application/json");
+    result = cli.Post(path, headers, "", "application/json");
   } else if (method == "PUT") {
-    result = client_->Put(path, headers, "", "application/json");
+    result = cli.Put(path, headers, "", "application/json");
   } else if (method == "DELETE") {
-    result = client_->Delete(path, headers);
+    result = cli.Delete(path, headers);
   }
 
   if (!result) {

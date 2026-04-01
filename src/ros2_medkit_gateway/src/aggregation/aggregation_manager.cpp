@@ -253,7 +253,10 @@ void AggregationManager::add_discovered_peer(const std::string & url, const std:
 void AggregationManager::remove_discovered_peer(const std::string & name) {
   std::unique_lock<std::shared_mutex> lock(mutex_);
 
-  auto it = std::remove_if(peers_.begin(), peers_.end(), [&name](const std::shared_ptr<PeerClient> & peer) {
+  // Only iterate discovered peers [static_peer_count_, end) to protect
+  // static peers from removal by mDNS goodbye messages or other dynamic events.
+  auto discovered_begin = peers_.begin() + static_cast<ptrdiff_t>(static_peer_count_);
+  auto it = std::remove_if(discovered_begin, peers_.end(), [&name](const std::shared_ptr<PeerClient> & peer) {
     return peer->name() == name;
   });
   peers_.erase(it, peers_.end());
@@ -371,9 +374,37 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
 
     EntityMerger merger(peer->name());
     merged.areas = merger.merge_areas(merged.areas, result->areas);
-    merged.functions = merger.merge_functions(merged.functions, result->functions);
     merged.components = merger.merge_components(merged.components, result->components);
+    // Merge apps BEFORE functions so that collision-prefixed App IDs are known
+    // when we need to remap Function hosts below.
     merged.apps = merger.merge_apps(merged.apps, result->apps);
+
+    // Build a map of original remote App IDs to their (possibly prefixed) final IDs.
+    // When merge_apps prefixes a remote App (e.g., "camera_driver" -> "peer_b__camera_driver"),
+    // Function hosts referencing the original ID need to be updated to the prefixed ID.
+    std::unordered_map<std::string, std::string> app_id_remap;
+    for (const auto & [routed_id, peer_name_val] : merger.get_routing_table()) {
+      // Check if this is a prefixed App ID (contains SEPARATOR)
+      std::string sep = EntityMerger::SEPARATOR;
+      auto sep_pos = routed_id.find(sep);
+      if (sep_pos != std::string::npos) {
+        std::string original_id = routed_id.substr(sep_pos + sep.size());
+        app_id_remap[original_id] = routed_id;
+      }
+    }
+
+    // Remap Function hosts from original remote App IDs to their prefixed IDs
+    // before merging functions.
+    for (auto & func : result->functions) {
+      for (auto & host : func.hosts) {
+        auto remap_it = app_id_remap.find(host);
+        if (remap_it != app_id_remap.end()) {
+          host = remap_it->second;
+        }
+      }
+    }
+
+    merged.functions = merger.merge_functions(merged.functions, result->functions);
 
     for (const auto & [id, name] : merger.get_routing_table()) {
       merged.routing_table[id] = name;
@@ -489,7 +520,7 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
   std::vector<std::future<PeerResult>> futures;
   futures.reserve(snapshot.size());
   for (auto & peer : snapshot) {
-    futures.push_back(std::async(std::launch::async, [peer, &path, &auth_header]() {
+    futures.push_back(std::async(std::launch::async, [peer, path, auth_header]() {
       PeerResult pr;
       pr.peer_name = peer->name();
 

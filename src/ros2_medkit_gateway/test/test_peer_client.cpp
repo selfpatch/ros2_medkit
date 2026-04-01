@@ -539,6 +539,70 @@ TEST(PeerClientHappyPath, forward_and_get_json_error_on_non_2xx) {
   t.join();
 }
 
+// @verifies REQ_INTEROP_003
+TEST(PeerClientHappyPath, forward_request_rejects_oversized_response) {
+  httplib::Server svr;
+
+  // Respond with a body slightly over MAX_PEER_RESPONSE_SIZE (10MB)
+  svr.Get("/api/v1/apps/big/data", [](const httplib::Request &, httplib::Response & res) {
+    // 10MB + 1 byte to exceed the limit
+    std::string large_body(10 * 1024 * 1024 + 1, 'x');
+    res.set_content(large_body, "application/octet-stream");
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "big_peer", 10000);
+
+  httplib::Request req;
+  req.method = "GET";
+  req.path = "/api/v1/apps/big/data";
+  httplib::Response res;
+  client.forward_request(req, res);
+
+  EXPECT_EQ(res.status, 502);
+
+  auto body = nlohmann::json::parse(res.body, nullptr, false);
+  ASSERT_FALSE(body.is_discarded());
+  EXPECT_EQ(body["error_code"], "vendor-error");
+  EXPECT_EQ(body["vendor_code"], "x-medkit-peer-unavailable");
+  EXPECT_TRUE(body["message"].get<std::string>().find("size limit") != std::string::npos);
+
+  svr.stop();
+  t.join();
+}
+
+TEST(PeerClientHappyPath, forward_and_get_json_rejects_oversized_response) {
+  httplib::Server svr;
+
+  // Respond with a body slightly over MAX_PEER_RESPONSE_SIZE (10MB)
+  svr.Get("/api/v1/components/big/data", [](const httplib::Request &, httplib::Response & res) {
+    // Build a valid JSON body that exceeds 10MB
+    std::string padding(10 * 1024 * 1024, 'a');
+    nlohmann::json j;
+    j["payload"] = padding;
+    res.set_content(j.dump(), "application/json");
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "big_peer", 10000);
+  auto result = client.forward_and_get_json("GET", "/api/v1/components/big/data");
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_TRUE(result.error().find("size limit") != std::string::npos);
+  EXPECT_TRUE(result.error().find("big_peer") != std::string::npos);
+
+  svr.stop();
+  t.join();
+}
+
 TEST(PeerClientHappyPath, forward_post_request) {
   httplib::Server svr;
   svr.Post("/api/v1/apps/nav/operations/restart", [](const httplib::Request & req, httplib::Response & res) {
@@ -569,6 +633,110 @@ TEST(PeerClientHappyPath, forward_post_request) {
   auto body = nlohmann::json::parse(res.body);
   EXPECT_TRUE(body["executed"].get<bool>());
   EXPECT_TRUE(body["received_body"]["force"].get<bool>());
+
+  svr.stop();
+  t.join();
+}
+
+// =============================================================================
+// Entity ID validation tests - path traversal IDs are filtered
+// =============================================================================
+
+TEST(PeerClientHappyPath, fetch_entities_skips_entities_with_invalid_ids) {
+  httplib::Server svr;
+  // Return entities with path-traversal and other invalid IDs
+  svr.Get("/api/v1/areas", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json items = nlohmann::json::array();
+    items.push_back({{"id", "valid_area"}, {"name", "Valid Area"}});
+    items.push_back({{"id", "../etc/passwd"}, {"name", "Traversal Area"}});
+    items.push_back({{"id", "area with spaces"}, {"name", "Spaced Area"}});
+    items.push_back({{"id", "area/slash"}, {"name", "Slash Area"}});
+    items.push_back({{"id", ""}, {"name", "Empty ID"}});
+    res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
+  });
+  svr.Get(R"(/api/v1/areas/([^/]+)/subareas)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  svr.Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json items = nlohmann::json::array();
+    items.push_back({{"id", "valid-comp"}, {"name", "Valid"}});
+    items.push_back({{"id", "comp%00null"}, {"name", "Null Byte"}});
+    res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
+  });
+  svr.Get(R"(/api/v1/components/([^/]+))", [](const httplib::Request & req, httplib::Response & res) {
+    std::string match = req.matches[1].str();
+    res.set_content(nlohmann::json({{"id", match}, {"name", match}}).dump(), "application/json");
+  });
+  svr.Get(R"(/api/v1/components/([^/]+)/subcomponents)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  svr.Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json items = nlohmann::json::array();
+    items.push_back({{"id", "good_app"}, {"name", "Good"}});
+    items.push_back({{"id", "../../traversal"}, {"name", "Bad"}});
+    res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
+  });
+  svr.Get("/api/v1/functions", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json items = nlohmann::json::array();
+    items.push_back({{"id", "ok_func"}, {"name", "OK"}});
+    items.push_back({{"id", "func;injection"}, {"name", "Injected"}});
+    res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
+  });
+  svr.Get(R"(/api/v1/functions/([^/]+))", [](const httplib::Request & req, httplib::Response & res) {
+    std::string match = req.matches[1].str();
+    res.set_content(nlohmann::json({{"id", match}, {"name", match}}).dump(), "application/json");
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "malicious_peer", 5000);
+  auto result = client.fetch_entities();
+
+  ASSERT_TRUE(result.has_value());
+  // Only valid entities should survive
+  EXPECT_EQ(result->areas.size(), 1u);
+  EXPECT_EQ(result->areas[0].id, "valid_area");
+  EXPECT_EQ(result->components.size(), 1u);
+  EXPECT_EQ(result->components[0].id, "valid-comp");
+  EXPECT_EQ(result->apps.size(), 1u);
+  EXPECT_EQ(result->apps[0].id, "good_app");
+  EXPECT_EQ(result->functions.size(), 1u);
+  EXPECT_EQ(result->functions[0].id, "ok_func");
+
+  svr.stop();
+  t.join();
+}
+
+// =============================================================================
+// Per-collection limit tests
+// =============================================================================
+
+TEST(PeerClientHappyPath, fetch_entities_rejects_collection_exceeding_limit) {
+  httplib::Server svr;
+  // Return 1001 areas (exceeds MAX_ENTITIES_PER_COLLECTION = 1000)
+  svr.Get("/api/v1/areas", [](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json items = nlohmann::json::array();
+    for (int i = 0; i < 1001; ++i) {
+      items.push_back({{"id", "area_" + std::to_string(i)}, {"name", "Area " + std::to_string(i)}});
+    }
+    res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "oversized_peer", 5000);
+  auto result = client.fetch_entities();
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_TRUE(result.error().find("1001") != std::string::npos);
+  EXPECT_TRUE(result.error().find("areas") != std::string::npos);
+  EXPECT_TRUE(result.error().find("1000") != std::string::npos);
 
   svr.stop();
   t.join();
