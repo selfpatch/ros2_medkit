@@ -99,7 +99,9 @@ class TestScenarioDiscoveryHybrid(GatewayTestCase):
 
     # Hybrid mode needs all demo nodes linked before tests run
     MIN_EXPECTED_APPS = 5
-    REQUIRED_AREAS = {'powertrain', 'chassis', 'body', 'perception', 'engine'}
+    # Only top-level areas appear in GET /areas; subareas like 'engine'
+    # are filtered from the top-level listing and accessed via /subareas.
+    REQUIRED_AREAS = {'powertrain', 'chassis', 'body', 'perception'}
     REQUIRED_APPS = {
         'engine-temp-sensor', 'engine-rpm-sensor',
         'brake-pressure-sensor', 'lidar-sensor',
@@ -110,13 +112,16 @@ class TestScenarioDiscoveryHybrid(GatewayTestCase):
     # =========================================================================
 
     def test_01_areas_from_manifest(self):
-        """Areas are loaded from manifest in hybrid mode.
+        """Top-level areas are loaded from manifest in hybrid mode.
+
+        Subareas (e.g. 'engine') are filtered from the top-level listing
+        and accessible via GET /areas/{id}/subareas.
 
         @verifies REQ_INTEROP_003
         """
         self.assert_entity_list_contains(
             'areas',
-            {'powertrain', 'chassis', 'body', 'perception', 'engine'},
+            {'powertrain', 'chassis', 'body', 'perception'},
         )
 
     def test_02_area_with_description(self):

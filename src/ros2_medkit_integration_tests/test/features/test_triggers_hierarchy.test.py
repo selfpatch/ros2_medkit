@@ -91,7 +91,9 @@ class TestTriggersHierarchy(GatewayTestCase):
     # Manifest entities need time to be loaded and for apps to go online
     MIN_EXPECTED_APPS = 2
     REQUIRED_APPS = {'engine-temp-sensor', 'engine-rpm-sensor'}
-    REQUIRED_AREAS = {'powertrain', 'engine'}
+    # Only top-level areas appear in GET /areas; 'engine' is a subarea
+    # of 'powertrain' and is filtered from the top-level listing.
+    REQUIRED_AREAS = {'powertrain'}
 
     def _delete_trigger(self, entity_type, entity_id, trigger_id):
         """Delete a trigger, ignoring errors for cleanup."""

@@ -101,7 +101,9 @@ class TestScenarioHierarchyDiagnostics(GatewayTestCase):
 
     MIN_EXPECTED_APPS = 2
     REQUIRED_APPS = {'engine-temp-sensor', 'engine-rpm-sensor'}
-    REQUIRED_AREAS = {'powertrain', 'engine'}
+    # Only top-level areas appear in GET /areas; 'engine' is a subarea
+    # of 'powertrain' and is filtered from the top-level listing.
+    REQUIRED_AREAS = {'powertrain'}
 
     app_topic_id = None
     app_resource_uri = None

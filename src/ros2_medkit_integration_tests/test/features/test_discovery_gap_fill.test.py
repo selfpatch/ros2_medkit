@@ -74,7 +74,11 @@ class TestGapFillConfig(GatewayTestCase):
     """Test gap-fill restrictions in hybrid mode."""
 
     def test_only_manifest_areas_present(self):
-        """Areas come from manifest only - no heuristic areas from runtime."""
+        """Areas come from manifest only - no heuristic areas from runtime.
+
+        GET /areas only returns top-level areas; subareas are filtered
+        and accessible via GET /areas/{id}/subareas.
+        """
         data = self.poll_endpoint_until(
             '/areas',
             lambda d: d if len(d.get('items', [])) >= 1 else None,
@@ -82,15 +86,13 @@ class TestGapFillConfig(GatewayTestCase):
         )
         area_ids = [a['id'] for a in data['items']]
 
-        # Manifest defines: powertrain, chassis, body, perception
-        # No heuristic areas from runtime namespaces should appear
+        # Only top-level manifest areas should appear in GET /areas
+        # Subareas (engine, brakes, lidar, door, lights, front-left-door)
+        # are filtered from the top-level listing
         for area_id in area_ids:
             self.assertIn(area_id, [
                 'powertrain', 'chassis', 'body', 'perception',
-                # Subareas defined in manifest
-                'engine', 'brakes', 'lidar', 'door', 'lights',
-                'front-left-door',
-            ], f"Unexpected heuristic area found: {area_id}")
+            ], f"Unexpected area found in top-level listing: {area_id}")
 
     def test_only_manifest_components_present(self):
         """Components come from manifest only - runtime never creates components."""
