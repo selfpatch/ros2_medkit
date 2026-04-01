@@ -20,6 +20,7 @@
 #include <memory>
 #include <netinet/in.h>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -523,8 +524,9 @@ TEST_F(HandlerContextForwardingTest, RemoteEntityWithAggregationForwardsAndRetur
 
   auto result = ctx.validate_entity_for_route(req, res, "remote_sensor");
 
-  // Should return nullopt because the request was forwarded
+  // Should return kForwarded because the request was proxied to a peer
   EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), ValidationOutcome::kForwarded);
 
   // The peer is unreachable, so forward_request sets 502
   EXPECT_EQ(res.status, 502);
@@ -540,8 +542,9 @@ TEST_F(HandlerContextForwardingTest, RemoteAppWithAggregationForwardsAndReturnsN
 
   auto result = ctx.validate_entity_for_route(req, res, "remote_driver");
 
-  // Should return nullopt because the request was forwarded
+  // Should return kForwarded because the request was proxied to a peer
   EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), ValidationOutcome::kForwarded);
 
   // The peer is unreachable, so forward_request sets 502
   EXPECT_EQ(res.status, 502);
@@ -558,6 +561,7 @@ TEST_F(HandlerContextForwardingTest, ForwardingUsesCorrectPeerName) {
 
   auto result = ctx.validate_entity_for_route(req, res, "remote_sensor");
   EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), ValidationOutcome::kForwarded);
 
   // The 502 response from forward_request to an unreachable peer contains
   // information about the peer. Verify it mentions our peer name.
@@ -617,6 +621,7 @@ TEST_F(HandlerContextForwardingTest, UnknownEntityReturns404WithAggregation) {
   auto result = ctx.validate_entity_for_route(req, res, "nonexistent");
 
   EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), ValidationOutcome::kErrorSent);
   EXPECT_EQ(res.status, 404);
 
   auto body = json::parse(res.body);
@@ -648,6 +653,166 @@ TEST_F(HandlerContextForwardingTest, GetEntityInfoNoRemoteWithoutAggregation) {
   EXPECT_FALSE(info.is_remote);
   EXPECT_TRUE(info.peer_name.empty());
   EXPECT_TRUE(info.peer_url.empty());
+}
+
+// =============================================================================
+// filter_internal_node_apps tests (no GatewayNode required)
+// =============================================================================
+
+TEST(FilterInternalNodeAppsTest, FiltersLocalInternalNodes) {
+  std::vector<App> apps;
+  App normal;
+  normal.id = "temp_sensor";
+  normal.name = "Temperature Sensor";
+  apps.push_back(normal);
+
+  App internal;
+  internal.id = "_ros2cli_daemon";
+  internal.name = "ROS 2 CLI Daemon";
+  apps.push_back(internal);
+
+  App another_internal;
+  another_internal.id = "_launch_introspection";
+  another_internal.name = "Launch Introspection";
+  apps.push_back(another_internal);
+
+  std::unordered_map<std::string, std::string> routing;
+  auto removed = filter_internal_node_apps(apps, routing);
+
+  EXPECT_EQ(removed, 2u);
+  ASSERT_EQ(apps.size(), 1u);
+  EXPECT_EQ(apps[0].id, "temp_sensor");
+}
+
+TEST(FilterInternalNodeAppsTest, PreservesAllNormalNodes) {
+  std::vector<App> apps;
+  App a1;
+  a1.id = "temp_sensor";
+  apps.push_back(a1);
+
+  App a2;
+  a2.id = "rpm_sensor";
+  apps.push_back(a2);
+
+  App a3;
+  a3.id = "lidar_driver";
+  apps.push_back(a3);
+
+  std::unordered_map<std::string, std::string> routing;
+  auto removed = filter_internal_node_apps(apps, routing);
+
+  EXPECT_EQ(removed, 0u);
+  EXPECT_EQ(apps.size(), 3u);
+}
+
+TEST(FilterInternalNodeAppsTest, FiltersPeerPrefixedInternalNodes) {
+  // Remote entity: peer_subsystem___ros2cli_daemon
+  // The routing table maps this to peer "peer_subsystem", so after stripping
+  // the prefix we get "_ros2cli_daemon" which starts with '_' -> filtered.
+  std::vector<App> apps;
+  App remote_internal;
+  remote_internal.id = "peer_subsystem___ros2cli_daemon";
+  remote_internal.name = "Remote Internal";
+  apps.push_back(remote_internal);
+
+  App remote_normal;
+  remote_normal.id = "peer_subsystem__lidar_driver";
+  remote_normal.name = "Remote Lidar";
+  apps.push_back(remote_normal);
+
+  std::unordered_map<std::string, std::string> routing;
+  routing["peer_subsystem___ros2cli_daemon"] = "peer_subsystem";
+  routing["peer_subsystem__lidar_driver"] = "peer_subsystem";
+
+  auto removed = filter_internal_node_apps(apps, routing);
+
+  EXPECT_EQ(removed, 1u);
+  ASSERT_EQ(apps.size(), 1u);
+  EXPECT_EQ(apps[0].id, "peer_subsystem__lidar_driver");
+}
+
+TEST(FilterInternalNodeAppsTest, DoesNotStripPrefixWithoutRoutingEntry) {
+  // An entity ID that looks like it has a peer prefix but has no routing entry.
+  // Without routing, we don't know the peer name, so we check the raw ID.
+  // "peer__normal_node" has no routing entry, raw ID doesn't start with '_' -> kept.
+  std::vector<App> apps;
+  App ambiguous;
+  ambiguous.id = "peer__normal_node";
+  ambiguous.name = "Ambiguous";
+  apps.push_back(ambiguous);
+
+  std::unordered_map<std::string, std::string> routing;
+  auto removed = filter_internal_node_apps(apps, routing);
+
+  EXPECT_EQ(removed, 0u);
+  ASSERT_EQ(apps.size(), 1u);
+  EXPECT_EQ(apps[0].id, "peer__normal_node");
+}
+
+TEST(FilterInternalNodeAppsTest, HandlesEmptyAppList) {
+  std::vector<App> apps;
+  std::unordered_map<std::string, std::string> routing;
+
+  auto removed = filter_internal_node_apps(apps, routing);
+
+  EXPECT_EQ(removed, 0u);
+  EXPECT_TRUE(apps.empty());
+}
+
+TEST(FilterInternalNodeAppsTest, MixedLocalAndRemoteInternalNodes) {
+  std::vector<App> apps;
+
+  App local_normal;
+  local_normal.id = "temp_sensor";
+  apps.push_back(local_normal);
+
+  App local_internal;
+  local_internal.id = "_daemon";
+  apps.push_back(local_internal);
+
+  App remote_normal;
+  remote_normal.id = "sub_b__actuator";
+  remote_normal.name = "Remote Actuator";
+  apps.push_back(remote_normal);
+
+  App remote_internal;
+  remote_internal.id = "sub_b___parameter_bridge";
+  remote_internal.name = "Remote Parameter Bridge";
+  apps.push_back(remote_internal);
+
+  std::unordered_map<std::string, std::string> routing;
+  routing["sub_b__actuator"] = "sub_b";
+  routing["sub_b___parameter_bridge"] = "sub_b";
+
+  auto removed = filter_internal_node_apps(apps, routing);
+
+  EXPECT_EQ(removed, 2u);
+  ASSERT_EQ(apps.size(), 2u);
+  // Verify the surviving apps
+  std::set<std::string> remaining_ids;
+  for (const auto & app : apps) {
+    remaining_ids.insert(app.id);
+  }
+  EXPECT_TRUE(remaining_ids.count("temp_sensor"));
+  EXPECT_TRUE(remaining_ids.count("sub_b__actuator"));
+}
+
+TEST(FilterInternalNodeAppsTest, PeerPrefixMatchMustBeExact) {
+  // Entity ID: "my_peer__sensor" with routing mapping to peer "my_peer".
+  // After stripping "my_peer__", we get "sensor" which doesn't start with '_' -> kept.
+  // This verifies the prefix match is exact and doesn't over-strip.
+  std::vector<App> apps;
+  App app;
+  app.id = "my_peer__sensor";
+  apps.push_back(app);
+
+  std::unordered_map<std::string, std::string> routing;
+  routing["my_peer__sensor"] = "my_peer";
+
+  auto removed = filter_internal_node_apps(apps, routing);
+
+  EXPECT_EQ(removed, 0u);
+  ASSERT_EQ(apps.size(), 1u);
 }
 
 // =============================================================================
@@ -719,15 +884,9 @@ class AreaAggregationTest : public ::testing::Test {
   std::unique_ptr<httplib::Client> client_;
 };
 
-// Area faults handler returns 503 when FaultManager service is unavailable
-// (no ros2_medkit_fault_manager node running in unit test). This verifies
-// the handler correctly accepts the area entity and attempts fault aggregation.
-TEST_F(AreaAggregationTest, AreaFaultsReturns503WithoutFaultManagerNode) {
-  auto res = client_->Get("/api/v1/areas/powertrain/faults");
-  ASSERT_NE(res, nullptr) << "HTTP request failed";
-  // FaultManager's ROS 2 service call times out without the fault_manager node
-  EXPECT_EQ(res->status, 503);
-}
+// Note: Area faults handler returns 503 when FaultManager service is unavailable
+// (5s service timeout, too slow for unit tests under load). The area fault
+// aggregation path is tested end-to-end in integration tests instead.
 
 // Area logs handler traverses area -> components -> apps -> FQNs chain and
 // returns aggregated logs with x-medkit metadata. The LogManager is in-process

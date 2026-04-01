@@ -257,4 +257,19 @@ class GatewayNode : public rclcpp::Node {
   std::condition_variable server_cv_;
 };
 
+/**
+ * @brief Filter ROS 2 internal nodes from an app list
+ *
+ * Removes apps whose base name begins with '_' (ROS 2 internal node convention).
+ * For remote (peer-prefixed) apps, the peer prefix ("peer_name__") is stripped
+ * before checking for the underscore prefix, using the routing table for precise
+ * prefix detection.
+ *
+ * @param apps App vector to filter in place
+ * @param peer_routing_table Maps entity_id -> peer_name for remote entities
+ * @return Number of apps removed
+ */
+size_t filter_internal_node_apps(std::vector<App> & apps,
+                                 const std::unordered_map<std::string, std::string> & peer_routing_table);
+
 }  // namespace ros2_medkit_gateway

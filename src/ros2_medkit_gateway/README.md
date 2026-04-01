@@ -1461,14 +1461,14 @@ In runtime discovery mode, the gateway maps the ROS 2 graph to the SOVD entity m
 
 - **Component**: A single host-derived Component is created from `HostInfoProvider` (hostname, OS, architecture). All Apps belong to this Component.
 - **App**: Each discovered ROS 2 node becomes an App entity.
-- **Function**: Namespace prefixes create Function entities that group Apps sharing a namespace (e.g., `/powertrain/engine/temp_sensor` and `/powertrain/engine/rpm_sensor` both belong to Function `engine`).
+- **Function**: The first namespace segment creates a Function entity that groups all Apps under that namespace (e.g., `/powertrain/engine/temp_sensor` and `/powertrain/engine/rpm_sensor` both belong to Function `powertrain`).
 - **Area**: Areas are only created from manifest definitions. They are never auto-generated in runtime mode. Use hybrid or manifest-only mode to organize entities into Areas.
 
 ```
 Runtime mode mapping:
-/powertrain/engine/temp_sensor  -> Component: <hostname>, Function: engine, App: temp_sensor
-/chassis/brakes/pressure_sensor -> Component: <hostname>, Function: brakes, App: pressure_sensor
-/body/lights/controller         -> Component: <hostname>, Function: lights, App: controller
+/powertrain/engine/temp_sensor  -> Component: <hostname>, Function: powertrain, App: temp_sensor
+/chassis/brakes/pressure_sensor -> Component: <hostname>, Function: chassis, App: pressure_sensor
+/body/lights/controller         -> Component: <hostname>, Function: body, App: controller
 /standalone_node                -> Component: <hostname>, App: standalone_node
 ```
 

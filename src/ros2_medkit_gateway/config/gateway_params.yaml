@@ -517,6 +517,13 @@ ros2_medkit_gateway:
       # Default: "http"
       peer_scheme: "http"
 
+      # Maximum number of peers that can be added via mDNS discovery.
+      # Prevents unbounded growth of the peer list from rogue mDNS announcements.
+      # Static peers do not count against this limit.
+      # Valid range: 1-1000
+      # Default: 50
+      max_discovered_peers: 50
+
       # Static peers (override or supplement mDNS discovery):
       # Parallel arrays: peer_urls[i] pairs with peer_names[i]
       # peer_urls: ["http://localhost:8081"]

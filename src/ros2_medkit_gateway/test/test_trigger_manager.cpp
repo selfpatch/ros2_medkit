@@ -317,9 +317,8 @@ TEST_F(TriggerManagerTest, LifetimeExpiry) {
 
   EXPECT_TRUE(manager_->is_active(created->id));
 
-  // Sleep just past expiry - short sleep is acceptable here since we are
-  // verifying that the trigger expires after its lifetime elapses
-  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  // Sleep past expiry with margin for CPU contention during parallel testing
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 
   EXPECT_FALSE(manager_->is_active(created->id));
 }

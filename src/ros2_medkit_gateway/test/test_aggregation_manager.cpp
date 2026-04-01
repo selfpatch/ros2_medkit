@@ -172,7 +172,8 @@ TEST(AggregationManager, accepts_valid_https_peer_url) {
   auto config = make_config(0);
   AggregationManager manager(config);
 
-  manager.add_discovered_peer("https://gateway.local:8443", "secure_peer");
+  // Use IP address (not hostname) to avoid DNS resolution issues in test environments
+  manager.add_discovered_peer("https://10.0.0.1:8443", "secure_peer");
   EXPECT_EQ(manager.peer_count(), 1u);
 }
 
@@ -1058,7 +1059,8 @@ TEST(AggregationManager, concurrent_add_remove_and_health_check_no_crash) {
   // which are fast read-only operations.
   AggregationConfig config;
   config.enabled = true;
-  config.timeout_ms = 50;  // Very short timeout (only matters if health is checked)
+  config.timeout_ms = 50;              // Very short timeout (only matters if health is checked)
+  config.max_discovered_peers = 1000;  // Allow enough room for stress test
 
   AggregationManager manager(config);
   EXPECT_EQ(manager.peer_count(), 0u);
@@ -1248,4 +1250,158 @@ TEST(AggregationManager, forward_request_proxies_to_correct_peer) {
   ASSERT_FALSE(body.is_discarded());
   EXPECT_DOUBLE_EQ(body["temperature"].get<double>(), 42.5);
   EXPECT_EQ(body["status"].get<std::string>(), "ok");
+}
+
+// =============================================================================
+// SSRF protection: IPv6 and edge-case loopback rejection
+// =============================================================================
+
+TEST(AggregationManager, rejects_ipv4_mapped_ipv6_loopback) {
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 200;
+  AggregationManager manager(config);
+
+  // IPv4-mapped IPv6 loopback (::ffff:127.0.0.1)
+  manager.add_discovered_peer("http://[::ffff:127.0.0.1]:8081", "mapped_loopback");
+  EXPECT_EQ(manager.peer_count(), 0u);
+}
+
+TEST(AggregationManager, rejects_expanded_ipv6_loopback) {
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 200;
+  AggregationManager manager(config);
+
+  // Expanded IPv6 loopback (0:0:0:0:0:0:0:1)
+  manager.add_discovered_peer("http://[0:0:0:0:0:0:0:1]:8081", "expanded_v6");
+  EXPECT_EQ(manager.peer_count(), 0u);
+}
+
+TEST(AggregationManager, rejects_zero_address) {
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 200;
+  AggregationManager manager(config);
+
+  // 0.0.0.0 (unspecified, binds all interfaces)
+  manager.add_discovered_peer("http://0.0.0.0:8081", "zero_addr");
+  EXPECT_EQ(manager.peer_count(), 0u);
+
+  // [::] (IPv6 unspecified)
+  manager.add_discovered_peer("http://[::]:8081", "zero_v6");
+  EXPECT_EQ(manager.peer_count(), 0u);
+}
+
+TEST(AggregationManager, rejects_ipv6_link_local) {
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 200;
+  AggregationManager manager(config);
+
+  // fe80:: link-local address
+  manager.add_discovered_peer("http://[fe80::1]:8081", "link_local_v6");
+  EXPECT_EQ(manager.peer_count(), 0u);
+}
+
+// =============================================================================
+// max_discovered_peers limit
+// =============================================================================
+
+TEST(AggregationManager, max_discovered_peers_limits_dynamic_additions) {
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 200;
+  config.max_discovered_peers = 3;
+  AggregationManager manager(config);
+
+  // Add 3 discovered peers (should all succeed)
+  manager.add_discovered_peer("http://192.168.1.10:8081", "peer_a");
+  manager.add_discovered_peer("http://192.168.1.11:8081", "peer_b");
+  manager.add_discovered_peer("http://192.168.1.12:8081", "peer_c");
+  EXPECT_EQ(manager.peer_count(), 3u);
+
+  // 4th should be rejected
+  manager.add_discovered_peer("http://192.168.1.13:8081", "peer_d");
+  EXPECT_EQ(manager.peer_count(), 3u);
+}
+
+TEST(AggregationManager, max_discovered_peers_does_not_count_static_peers) {
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 200;
+  config.max_discovered_peers = 2;
+
+  // Add 2 static peers
+  AggregationConfig::PeerConfig static1;
+  static1.url = "http://10.0.0.1:8080";
+  static1.name = "static_1";
+  config.peers.push_back(static1);
+
+  AggregationConfig::PeerConfig static2;
+  static2.url = "http://10.0.0.2:8080";
+  static2.name = "static_2";
+  config.peers.push_back(static2);
+
+  AggregationManager manager(config);
+  EXPECT_EQ(manager.peer_count(), 2u);
+
+  // Should still be able to add 2 discovered peers
+  manager.add_discovered_peer("http://192.168.1.10:8081", "disc_1");
+  manager.add_discovered_peer("http://192.168.1.11:8081", "disc_2");
+  EXPECT_EQ(manager.peer_count(), 4u);
+
+  // 3rd discovered peer exceeds limit
+  manager.add_discovered_peer("http://192.168.1.12:8081", "disc_3");
+  EXPECT_EQ(manager.peer_count(), 4u);
+}
+
+// =============================================================================
+// Forward request path validation
+// =============================================================================
+
+TEST(AggregationManager, forward_rejects_non_api_path) {
+  auto config = make_config(1);
+  AggregationManager manager(config);
+
+  httplib::Request req;
+  req.method = "GET";
+  req.path = "/internal/metrics";
+  httplib::Response res;
+
+  manager.forward_request("peer_0", req, res);
+
+  EXPECT_EQ(res.status, 400);
+  auto body_json = nlohmann::json::parse(res.body, nullptr, false);
+  ASSERT_FALSE(body_json.is_discarded());
+  EXPECT_EQ(body_json["error_code"], "invalid-request");
+}
+
+TEST(AggregationManager, forward_rejects_root_path) {
+  auto config = make_config(1);
+  AggregationManager manager(config);
+
+  httplib::Request req;
+  req.method = "GET";
+  req.path = "/";
+  httplib::Response res;
+
+  manager.forward_request("peer_0", req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST(AggregationManager, forward_accepts_api_v1_path) {
+  auto config = make_config(1);
+  AggregationManager manager(config);
+
+  httplib::Request req;
+  req.method = "GET";
+  req.path = "/api/v1/components/abc/data";
+  httplib::Response res;
+
+  manager.forward_request("peer_0", req, res);
+
+  // Should get 502 (peer unreachable), not 400 (path rejected)
+  EXPECT_EQ(res.status, 502);
 }

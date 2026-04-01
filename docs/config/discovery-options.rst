@@ -38,6 +38,13 @@ how ROS 2 nodes are mapped to SOVD entities.
 Entity Model
 ^^^^^^^^^^^^
 
+.. important::
+
+   The entity model changed in this release. Synthetic Areas and per-namespace
+   Components are no longer created. If you are upgrading from a previous
+   version, see :ref:`Breaking Changes <aggregation-breaking-changes>` for
+   details, removed parameters, cross-layer impact, and migration guidance.
+
 In runtime mode, the gateway maps the ROS 2 graph to SOVD entities as follows:
 
 - **Areas** - not created by runtime discovery. Areas come from manifest only.

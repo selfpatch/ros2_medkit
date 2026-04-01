@@ -242,7 +242,7 @@ Test this by stopping Gateway B and querying Gateway A:
    # Returns only local components (remote entities dropped from cache)
 
    # Faults show partial results:
-   curl -s http://localhost:8080/api/v1/faults | jq '.["x-medkit.partial"]'
+   curl -s http://localhost:8080/api/v1/faults | jq '.["x-medkit"].partial'
    # Returns true
 
    # Try accessing a remote entity:

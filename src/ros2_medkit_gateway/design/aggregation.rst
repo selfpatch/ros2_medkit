@@ -76,7 +76,8 @@ Prior to this feature, the gateway used only **Areas**, **Components**, and
 where **Components** represent physical hardware (ECUs, hosts) and **Functions**
 represent logical capabilities. This feature aligns the entity model:
 
-- **Area** - Physical or logical domain (unchanged). Namespace grouping.
+- **Area** - Physical or logical domain. Manifest-defined only (never
+  auto-generated from namespaces).
 - **Component** - Physical host or ECU. In runtime-only mode, the gateway
   creates a single Component from the local hostname using ``HostInfoProvider``.
   All Apps discovered on that host are children of this Component.
