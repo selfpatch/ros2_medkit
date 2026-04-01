@@ -238,11 +238,14 @@ TEST(EntityMerger, apps_prefix_on_collision) {
 
   ASSERT_EQ(result.size(), 2u);
   EXPECT_EQ(result[0].id, "camera_driver");
-  EXPECT_EQ(result[0].source, "manifest");  // local unchanged
+  EXPECT_EQ(result[0].source, "manifest");               // local unchanged
+  EXPECT_EQ(result[0].component_id, "perception_comp");  // local keeps original
 
   EXPECT_EQ(result[1].id, "subsystem_b__camera_driver");
   EXPECT_EQ(result[1].name, "subsystem_b__camera_driver");
   EXPECT_EQ(result[1].source, "peer:subsystem_b");
+  // Remote app's component_id remapped to peer name
+  EXPECT_EQ(result[1].component_id, "subsystem_b");
 }
 
 TEST(EntityMerger, no_collision_no_prefix) {
@@ -257,6 +260,8 @@ TEST(EntityMerger, no_collision_no_prefix) {
   EXPECT_EQ(result[0].id, "planner");
   EXPECT_EQ(result[1].id, "localizer");  // No prefix
   EXPECT_EQ(result[1].source, "peer:subsystem_b");
+  // Remote app's component_id remapped to peer name
+  EXPECT_EQ(result[1].component_id, "subsystem_b");
 }
 
 // =============================================================================
