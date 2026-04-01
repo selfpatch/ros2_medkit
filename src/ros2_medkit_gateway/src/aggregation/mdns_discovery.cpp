@@ -61,6 +61,7 @@ struct BrowseContext {
   MdnsDiscovery::PeerFoundCallback * on_found;
   MdnsDiscovery::LogCallback * on_log;
   std::string service_name;
+  std::string peer_scheme;
 };
 
 /**
@@ -139,7 +140,7 @@ int browse_callback(int /*sock*/, const struct sockaddr * from, size_t addrlen, 
   }
   (void)addrlen;  // Suppress unused parameter warning in non-early-return paths
 
-  std::string url = "http://" + addr_str + ":" + std::to_string(srv.port);
+  std::string url = ctx->peer_scheme + "://" + addr_str + ":" + std::to_string(srv.port);
 
   // Use the instance name (before the service type) as the peer name
   // Instance names look like "gateway-name._medkit._tcp.local"
@@ -483,6 +484,7 @@ void MdnsDiscovery::browse_loop() {
   ctx.on_found = &on_found_;
   ctx.on_log = &config_.on_log;
   ctx.service_name = config_.service;
+  ctx.peer_scheme = config_.peer_scheme;
 
   std::array<char, kMdnsBufferSize> buffer{};
   auto last_query = std::chrono::steady_clock::now() - std::chrono::seconds(kBrowseIntervalSec);

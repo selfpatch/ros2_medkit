@@ -279,11 +279,16 @@ maps to a peer, the request is forwarded transparently:
 
    @enduml
 
-**Global collection endpoints** (e.g., ``GET /api/v1/components``,
-``GET /api/v1/faults``) use **fan-out**: the primary gateway sends the
-same request to all healthy peers, collects the responses, and merges the
-``items`` arrays into a single response. If some peers fail, the response
-body includes ``x-medkit.partial: true`` and ``x-medkit.failed_peers``.
+**Entity collection endpoints** (``GET /api/v1/areas``, ``/components``,
+``/apps``, ``/functions``) serve from the local entity cache, which is
+populated during periodic cache refresh cycles that fetch entities from all
+healthy peers.
+
+**Fault collection** (``GET /api/v1/faults``) uses real-time **fan-out** via
+``fan_out_get()``: the primary gateway sends the same request to all healthy
+peers, collects the responses, and merges the ``items`` arrays. If some peers
+fail, the response body includes ``x-medkit.partial: true`` and
+``x-medkit.failed_peers``.
 
 Peer Discovery
 --------------
@@ -325,10 +330,11 @@ and dynamically discovered peers.
 Health Monitoring
 ~~~~~~~~~~~~~~~~~
 
-``AggregationManager`` periodically calls ``check_all_health()`` on a
-configurable interval (default: 10 seconds). Each ``PeerClient`` GETs
-``/api/v1/health`` on its peer. If the health check fails, the peer is
-marked unhealthy and excluded from fan-out queries and entity fetching.
+``AggregationManager`` calls ``check_all_health()`` during each entity cache
+refresh cycle (controlled by ``refresh_interval_ms``, default: 10000 ms). Each
+``PeerClient`` GETs ``/api/v1/health`` on its peer. If the health check fails,
+the peer is marked unhealthy and excluded from fan-out queries and entity
+fetching.
 
 When a peer recovers (health check succeeds again), it is automatically
 re-included.
@@ -410,9 +416,9 @@ Key Classes
 
 ``EntityMerger``
     Stateless merge engine that combines local and remote entity sets using
-    type-specific rules (merge by ID for Area/Function, prefix on collision for
-    Component/App). Produces a routing table mapping remote entity IDs to peer
-    names.
+    type-specific rules (merge by ID for Area/Function/Component, prefix on
+    collision for App). Produces a routing table mapping remote entity IDs to
+    peer names.
 
 ``AggregationManager``
     Central coordinator that manages the set of ``PeerClient`` instances, runs

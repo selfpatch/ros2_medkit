@@ -36,6 +36,7 @@ class HostInfoProviderTest : public ::testing::Test {
   HostInfoProvider provider_;
 };
 
+// @verifies REQ_INTEROP_003
 TEST_F(HostInfoProviderTest, creates_default_component) {
   const auto & comp = provider_.get_default_component();
 
@@ -65,6 +66,7 @@ TEST_F(HostInfoProviderTest, component_has_os_metadata) {
   EXPECT_EQ(host["arch"].get<std::string>(), provider_.arch());
 }
 
+// @verifies REQ_INTEROP_003
 TEST_F(HostInfoProviderTest, sanitizes_hostname_to_valid_entity_id) {
   const auto & comp = provider_.get_default_component();
   const std::string & id = comp.id;

@@ -83,7 +83,7 @@ void ExampleHandlers::handle_request(const httplib::Request & req, httplib::Resp
 
   // 2. Validate entity (sends error response automatically if invalid)
   auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) return;  // Error already sent
+  if (!entity) return;  // Response already sent (error or forwarded to peer)
 
   // 3. Check collection support (static method)
   if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::DATA)) {
@@ -110,7 +110,7 @@ void ExampleHandlers::handle_request(const httplib::Request & req, httplib::Resp
 
 | Method | Returns | Purpose |
 |--------|---------|---------|
-| `validate_entity_for_route(req, res, id)` | `optional<EntityInfo>` | Unified entity validation, sends error if invalid |
+| `validate_entity_for_route(req, res, id)` | `ValidateResult` (`tl::expected<EntityInfo, ValidationOutcome>`) | Unified entity validation; returns error or forward outcome on failure |
 | `validate_collection_access(entity, collection)` | `optional<string>` | Check SOVD capability support |
 | `send_error(res, status, code, msg, params)` | void | SOVD GenericError response |
 | `send_json(res, data)` | void | JSON success response |
@@ -242,7 +242,7 @@ When reviewing pull requests, apply these rules to the diff. Flag violations as 
 - **Flag** dereferencing a `tl::expected` or `std::optional` result without checking `if (!result)` first.
 - **Flag** error responses that don't use `HandlerContext::send_error()` or use string literals instead of constants from `error_codes.hpp`.
 - **Flag** custom vendor error codes that don't start with `x-medkit-` prefix.
-- **Flag** any code after `validate_entity_for_route()` that doesn't check for `nullopt` and return early - the error response is already sent by the validator.
+- **Flag** any code after `validate_entity_for_route()` that doesn't check for failure and return early - the response is already committed by the validator (either error sent or request forwarded to peer).
 
 ### Handler Pattern
 

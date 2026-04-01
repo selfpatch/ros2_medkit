@@ -40,7 +40,7 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
 
@@ -124,7 +124,7 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
 
     // Determine the full ROS topic path
@@ -205,7 +205,7 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
 
     // Check lock access for data

@@ -24,19 +24,27 @@
 using ros2_medkit_gateway::discovery::RuntimeDiscoveryStrategy;
 
 // =============================================================================
+// Global rclcpp lifecycle - runs once for ALL test suites in this binary
+// =============================================================================
+
+class RclcppEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    rclcpp::init(0, nullptr);
+  }
+  void TearDown() override {
+    rclcpp::shutdown();
+  }
+};
+
+::testing::Environment * const rclcpp_env = ::testing::AddGlobalTestEnvironment(new RclcppEnvironment);
+
+// =============================================================================
 // RuntimeDiscoveryStrategy - Function from namespace tests
 // =============================================================================
 
 class RuntimeDiscoveryTest : public ::testing::Test {
  protected:
-  static void SetUpTestSuite() {
-    rclcpp::init(0, nullptr);
-  }
-
-  static void TearDownTestSuite() {
-    rclcpp::shutdown();
-  }
-
   void SetUp() override {
     // Create node in a namespace to test namespace grouping
     rclcpp::NodeOptions options;
@@ -77,6 +85,7 @@ TEST_F(RuntimeDiscoveryTest, DiscoverComponents_AlwaysReturnsEmpty) {
 // discover_functions() - namespace grouping
 // -----------------------------------------------------------------------------
 
+// @verifies REQ_INTEROP_003
 TEST_F(RuntimeDiscoveryTest, DiscoverFunctions_DefaultCreatesFromNamespaces) {
   // Default config has create_functions_from_namespaces=true
   auto functions = strategy_->discover_functions();
@@ -153,14 +162,6 @@ TEST_F(RuntimeDiscoveryTest, DefaultConfig_HasCorrectDefaults) {
 
 class RuntimeDiscoveryMultiNsTest : public ::testing::Test {
  protected:
-  static void SetUpTestSuite() {
-    rclcpp::init(0, nullptr);
-  }
-
-  static void TearDownTestSuite() {
-    rclcpp::shutdown();
-  }
-
   void SetUp() override {
     // Create nodes in different namespaces
     node_sensors_ = std::make_shared<rclcpp::Node>("camera", "/sensors");
@@ -183,6 +184,7 @@ class RuntimeDiscoveryMultiNsTest : public ::testing::Test {
   std::unique_ptr<RuntimeDiscoveryStrategy> strategy_;
 };
 
+// @verifies REQ_INTEROP_003
 TEST_F(RuntimeDiscoveryMultiNsTest, DiscoverFunctions_GroupsByNamespace) {
   auto functions = strategy_->discover_functions();
 

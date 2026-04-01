@@ -186,6 +186,12 @@ ros2_medkit_gateway:
         default_component:
           enabled: true
 
+        # Filter out ROS 2 internal nodes (underscore-prefixed names)
+        # When true (default), nodes like _ros2cli_*, _param_client_node
+        # are excluded from the entity tree. Applies to both local and
+        # peer-discovered Apps.
+        filter_internal_nodes: true
+
         # Create Function entities from ROS 2 namespace grouping
         # When true (default), namespaces are mapped to Function entities
         # Each Function hosts the Apps in that namespace
@@ -490,6 +496,26 @@ ros2_medkit_gateway:
       # Default: "" (uses container/host hostname via gethostname())
       # Set explicitly when running multiple gateways on the same host.
       mdns_name: ""
+
+      # Security: Forward client Authorization headers to peer gateways.
+      # CAUTION: When true, auth tokens are sent to ALL peers including
+      # mDNS-discovered ones. A malicious peer could harvest tokens.
+      # Only enable when all peers are trusted and use the same JWT config.
+      # Default: false (safe default - no token forwarding)
+      forward_auth: false
+
+      # Security: Require TLS (https://) for all peer communication.
+      # When true, peers with http:// URLs are rejected with an error log.
+      # When false, http:// peers produce a warning about cleartext traffic.
+      # Default: false
+      require_tls: false
+
+      # URL scheme for mDNS-discovered peer URLs.
+      # mDNS SRV records provide hostname and port but not the URL scheme.
+      # Set to "https" when all peers use TLS.
+      # Options: "http", "https"
+      # Default: "http"
+      peer_scheme: "http"
 
       # Static peers (override or supplement mDNS discovery):
       # Parallel arrays: peer_urls[i] pairs with peer_names[i]

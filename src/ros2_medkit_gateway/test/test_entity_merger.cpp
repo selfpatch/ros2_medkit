@@ -68,6 +68,7 @@ static App make_app(const std::string & id, const std::string & component_id = "
 // Area merge tests
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(EntityMerger, areas_merge_by_id) {
   EntityMerger merger("peer_a");
 
@@ -129,6 +130,7 @@ TEST(EntityMerger, areas_merge_takes_remote_description_when_local_empty) {
 // Function merge tests
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(EntityMerger, functions_merge_by_id_combining_hosts) {
   EntityMerger merger("peer_b");
 
@@ -169,6 +171,7 @@ TEST(EntityMerger, functions_no_collision_both_kept) {
 // Component merge tests
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(EntityMerger, components_merge_by_id) {
   EntityMerger merger("subsystem_b");
 
@@ -228,6 +231,7 @@ TEST(EntityMerger, components_no_collision_no_prefix) {
 // App merge tests
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(EntityMerger, apps_prefix_on_collision) {
   EntityMerger merger("subsystem_b");
 
@@ -268,6 +272,7 @@ TEST(EntityMerger, no_collision_no_prefix) {
 // Routing table tests
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(EntityMerger, builds_routing_table_for_remote_entities) {
   EntityMerger merger("peer_x");
 

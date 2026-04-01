@@ -435,6 +435,7 @@ if(BUILD_TESTING)
   # Add handler context tests
   ament_add_gtest(test_handler_context test/test_handler_context.cpp)
   target_link_libraries(test_handler_context gateway_lib)
+  medkit_set_test_domain(test_handler_context)
 
   # Add x-medkit extension tests
   ament_add_gtest(test_x_medkit test/test_x_medkit.cpp)

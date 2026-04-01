@@ -309,7 +309,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
 
@@ -544,7 +544,7 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
 
@@ -603,7 +603,7 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
 
@@ -659,7 +659,7 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
     // Validate entity ID and type for this route
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
-      return;  // Error response already sent
+      return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
 

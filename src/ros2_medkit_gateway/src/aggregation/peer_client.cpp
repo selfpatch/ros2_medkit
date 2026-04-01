@@ -170,8 +170,8 @@ Function parse_function(const nlohmann::json & j) {
 
 }  // namespace
 
-PeerClient::PeerClient(const std::string & url, const std::string & name, int timeout_ms)
-  : url_(url), name_(name), timeout_ms_(timeout_ms) {
+PeerClient::PeerClient(const std::string & url, const std::string & name, int timeout_ms, bool forward_auth)
+  : url_(url), name_(name), timeout_ms_(timeout_ms), forward_auth_(forward_auth) {
 }
 
 const std::string & PeerClient::url() const {
@@ -378,8 +378,9 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
   ensure_client();
 
   httplib::Headers headers;
-  // Forward Authorization header if present
-  if (req.has_header("Authorization")) {
+  // Forward Authorization header only when explicitly enabled (forward_auth).
+  // Default is off to prevent token leakage to untrusted/mDNS-discovered peers.
+  if (forward_auth_ && req.has_header("Authorization")) {
     headers.emplace("Authorization", req.get_header_value("Authorization"));
   }
 
@@ -436,7 +437,8 @@ tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const
   ensure_client();
 
   httplib::Headers headers;
-  if (!auth_header.empty()) {
+  // Only forward auth header when forward_auth is enabled
+  if (forward_auth_ && !auth_header.empty()) {
     headers.emplace("Authorization", auth_header);
   }
 

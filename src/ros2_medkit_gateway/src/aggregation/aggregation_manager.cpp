@@ -15,7 +15,9 @@
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 
 #include <algorithm>
+#include <future>
 #include <string>
+#include <vector>
 
 #include <rclcpp/logging.hpp>
 
@@ -54,7 +56,7 @@ bool is_valid_peer_url(const std::string & url) {
 
 }  // namespace
 
-AggregationManager::AggregationManager(const AggregationConfig & config) : config_(config) {
+AggregationManager::AggregationManager(const AggregationConfig & config, rclcpp::Logger * logger) : config_(config) {
   for (const auto & peer_cfg : config_.peers) {
     // Validate scheme for static peers (http/https only).
     // Unlike mDNS peers, loopback addresses are valid for static config
@@ -62,7 +64,25 @@ AggregationManager::AggregationManager(const AggregationConfig & config) : confi
     if (peer_cfg.url.rfind("http://", 0) != 0 && peer_cfg.url.rfind("https://", 0) != 0) {
       continue;
     }
-    peers_.push_back(std::make_unique<PeerClient>(peer_cfg.url, peer_cfg.name, config_.timeout_ms));
+
+    // TLS enforcement: reject http:// peers when require_tls is true,
+    // warn about cleartext when require_tls is false.
+    if (peer_cfg.url.rfind("http://", 0) == 0) {
+      if (config_.require_tls) {
+        if (logger) {
+          RCLCPP_ERROR(*logger, "Aggregation: skipping peer '%s' at %s - require_tls is enabled but URL uses http://",
+                       peer_cfg.name.c_str(), peer_cfg.url.c_str());
+        }
+        continue;
+      }
+      if (logger) {
+        RCLCPP_WARN(*logger, "Aggregation: peer '%s' at %s uses cleartext HTTP - consider using HTTPS",
+                    peer_cfg.name.c_str(), peer_cfg.url.c_str());
+      }
+    }
+
+    peers_.push_back(
+        std::make_unique<PeerClient>(peer_cfg.url, peer_cfg.name, config_.timeout_ms, config_.forward_auth));
   }
 }
 
@@ -77,6 +97,11 @@ void AggregationManager::add_discovered_peer(const std::string & url, const std:
     return;
   }
 
+  // TLS enforcement for discovered peers
+  if (url.rfind("http://", 0) == 0 && config_.require_tls) {
+    return;
+  }
+
   std::unique_lock<std::shared_mutex> lock(mutex_);
 
   // Do not add if a peer with this name already exists
@@ -84,7 +109,7 @@ void AggregationManager::add_discovered_peer(const std::string & url, const std:
     return;
   }
 
-  peers_.push_back(std::make_unique<PeerClient>(url, name, config_.timeout_ms));
+  peers_.push_back(std::make_unique<PeerClient>(url, name, config_.timeout_ms, config_.forward_auth));
 }
 
 void AggregationManager::remove_discovered_peer(const std::string & name) {
@@ -98,27 +123,31 @@ void AggregationManager::remove_discovered_peer(const std::string & name) {
 
 void AggregationManager::check_all_health() {
   // Shared lock blocks add/remove (which need unique lock) during health checks.
-  // This means health checks hold the lock for N * timeout_ms in the worst case,
-  // blocking add_discovered_peer/remove_discovered_peer. This is acceptable because
-  // mDNS add/remove events are rare and health checks are short-lived (2s timeout).
-  // Moving to a snapshot-then-check pattern would require shared_ptr<PeerClient>
-  // instead of unique_ptr to avoid dangling pointers from concurrent removal.
+  // Health checks run in parallel via std::async to reduce worst-case latency
+  // from N * timeout_ms (sequential) to just timeout_ms (parallel).
   std::shared_lock<std::shared_mutex> lock(mutex_);
+  std::vector<std::future<void>> futures;
+  futures.reserve(peers_.size());
   for (auto & peer : peers_) {
-    peer->check_health();
+    futures.push_back(std::async(std::launch::async, [&peer]() {
+      peer->check_health();
+    }));
+  }
+  for (auto & f : futures) {
+    f.get();
   }
 }
 
-std::vector<PeerClient *> AggregationManager::healthy_peers() {
+size_t AggregationManager::healthy_peer_count() const {
   std::shared_lock<std::shared_mutex> lock(mutex_);
 
-  std::vector<PeerClient *> result;
-  for (auto & peer : peers_) {
+  size_t count = 0;
+  for (const auto & peer : peers_) {
     if (peer->is_healthy()) {
-      result.push_back(peer.get());
+      ++count;
     }
   }
-  return result;
+  return count;
 }
 
 PeerEntities AggregationManager::fetch_all_peer_entities() {
@@ -244,10 +273,12 @@ void AggregationManager::forward_request(const std::string & peer_name, const ht
   // When entity ID collision causes renaming (e.g., camera_driver -> peer_b__camera_driver),
   // the peer only knows the entity by its original ID (camera_driver), so we must strip
   // the prefix before forwarding.
+  // Anchor to path segment boundary: the prefix must appear right after '/' to avoid
+  // false matches inside other path segments (e.g., "v1" matching "/api/v1/").
   std::string forwarded_path = req.path;
   std::string prefix = peer_name + EntityMerger::SEPARATOR;
   auto prefix_pos = forwarded_path.find(prefix);
-  if (prefix_pos != std::string::npos) {
+  if (prefix_pos != std::string::npos && prefix_pos > 0 && forwarded_path[prefix_pos - 1] == '/') {
     forwarded_path.erase(prefix_pos, prefix.size());
   }
 

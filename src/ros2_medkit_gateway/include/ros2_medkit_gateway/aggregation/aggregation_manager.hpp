@@ -39,6 +39,19 @@ struct AggregationConfig {
   bool discover{false};
   std::string mdns_service{"_medkit._tcp.local"};
 
+  /// Forward the client's Authorization header to peer gateways.
+  /// Default: false (safe default - prevents token leakage to untrusted peers).
+  bool forward_auth{false};
+
+  /// Require TLS (https://) for all peer URLs.
+  /// When true, peers with http:// URLs are rejected (logged as ERROR and skipped).
+  /// When false, http:// peers produce a WARN at startup about cleartext communication.
+  bool require_tls{false};
+
+  /// URL scheme for mDNS-discovered peer URLs ("http" or "https").
+  /// Default: "http". Set to "https" when peers use TLS.
+  std::string peer_scheme{"http"};
+
   struct PeerConfig {
     std::string url;
     std::string name;
@@ -81,11 +94,13 @@ class AggregationManager {
   /**
    * @brief Construct an AggregationManager from config
    *
-   * Creates a PeerClient for each statically configured peer.
+   * Creates a PeerClient for each statically configured peer. Validates
+   * TLS requirements and logs warnings for cleartext peer URLs.
    *
    * @param config Aggregation configuration
+   * @param logger Optional logger for TLS warnings (pass nullptr to suppress)
    */
-  explicit AggregationManager(const AggregationConfig & config);
+  explicit AggregationManager(const AggregationConfig & config, rclcpp::Logger * logger = nullptr);
 
   /// Get the number of known peers (static + discovered)
   size_t peer_count() const;
@@ -117,10 +132,10 @@ class AggregationManager {
   void check_all_health();
 
   /**
-   * @brief Get all currently healthy peers
-   * @return Vector of raw pointers to healthy PeerClients (valid while lock held)
+   * @brief Get count of currently healthy peers
+   * @return Number of peers that report healthy status
    */
-  std::vector<PeerClient *> healthy_peers();
+  size_t healthy_peer_count() const;
 
   /**
    * @brief Fetch entities from all healthy peers and merge them
@@ -132,7 +147,7 @@ class AggregationManager {
    * @brief Fetch entities from all healthy peers, merge with local entities, and build routing table
    *
    * Holds the shared lock internally during iteration and entity fetching, avoiding
-   * dangling pointer issues with healthy_peers(). Uses EntityMerger per-peer so that
+   * dangling pointer issues from raw peer access. Uses EntityMerger per-peer so that
    * collision-prefixed IDs are correctly tracked in the routing table.
    *
    * @param local_areas Local areas to merge with
@@ -201,9 +216,9 @@ class AggregationManager {
 
  private:
   AggregationConfig config_;
+  mutable std::shared_mutex mutex_;  // Declared before data it protects (destruction order)
   std::vector<std::unique_ptr<PeerClient>> peers_;
   std::unordered_map<std::string, std::string> routing_table_;
-  mutable std::shared_mutex mutex_;
 
   /**
    * @brief Find a peer by name (caller must hold lock)

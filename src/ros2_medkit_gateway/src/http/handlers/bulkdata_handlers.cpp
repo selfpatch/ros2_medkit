@@ -42,7 +42,7 @@ void BulkDataHandlers::handle_list_categories(const httplib::Request & req, http
   // Validate entity exists and matches the route type (e.g., /components/ only accepts components)
   auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
   if (!entity_opt) {
-    return;  // Error response already sent
+    return;  // Response already sent (error or forwarded to peer)
   }
 
   // Validate entity type supports bulk-data collection (SOVD Table 8)
@@ -78,7 +78,7 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
   // Validate entity exists and matches the route type
   auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
   if (!entity_opt) {
-    return;  // Error response already sent
+    return;  // Response already sent (error or forwarded to peer)
   }
   auto entity = *entity_opt;
 
@@ -201,7 +201,7 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
   // Validate entity exists and matches the route type
   auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
   if (!entity_opt) {
-    return;  // Error response already sent
+    return;  // Response already sent (error or forwarded to peer)
   }
 
   // Validate entity type supports bulk-data collection (SOVD Table 8)
@@ -321,7 +321,7 @@ void BulkDataHandlers::handle_delete(const httplib::Request & req, httplib::Resp
   // Validate entity exists and matches the route type
   auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
   if (!entity_opt) {
-    return;  // Error response already sent
+    return;  // Response already sent (error or forwarded to peer)
   }
 
   // Validate entity type supports bulk-data collection (SOVD Table 8)
@@ -392,7 +392,7 @@ void BulkDataHandlers::handle_download(const httplib::Request & req, httplib::Re
   // Validate entity exists and matches the route type
   auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_info->entity_id);
   if (!entity_opt) {
-    return;  // Error response already sent
+    return;  // Response already sent (error or forwarded to peer)
   }
   auto entity = *entity_opt;
 

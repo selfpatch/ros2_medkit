@@ -58,8 +58,9 @@ class PeerClient {
    * @param url Base URL of the peer (e.g., "http://localhost:8081")
    * @param name Human-readable peer name (e.g., "subsystem_b")
    * @param timeout_ms Connection and read timeout in milliseconds
+   * @param forward_auth Whether to forward Authorization headers to this peer
    */
-  PeerClient(const std::string & url, const std::string & name, int timeout_ms);
+  PeerClient(const std::string & url, const std::string & name, int timeout_ms, bool forward_auth = false);
 
   /// Get the peer base URL
   const std::string & url() const;
@@ -92,8 +93,9 @@ class PeerClient {
    * @brief Forward an HTTP request transparently to the peer (proxy)
    *
    * Copies method, path, body, and Content-Type from the incoming request.
-   * Forwards the Authorization header if present. Copies the peer's response
-   * status, headers, and body back to the outgoing response.
+   * Forwards the Authorization header only if forward_auth is enabled.
+   * Copies the peer's response status, headers, and body back to the
+   * outgoing response.
    *
    * On connection failure, returns 502 with x-medkit-peer-unavailable error.
    *
@@ -127,6 +129,7 @@ class PeerClient {
   std::string url_;
   std::string name_;
   int timeout_ms_;
+  bool forward_auth_;
   std::atomic<bool> healthy_{false};
 
   std::mutex client_mutex_;

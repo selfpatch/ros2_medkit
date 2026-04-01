@@ -181,7 +181,8 @@ def create_fault_manager_node(
 # Factory: demo nodes
 # ---------------------------------------------------------------------------
 
-def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True):
+def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True,
+                      extra_env=None):
     """Create demo node launch actions.
 
     Parameters
@@ -194,6 +195,10 @@ def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True):
         that trigger deterministic faults. If False, launch with defaults.
     coverage : bool
         If True, set GCOV_PREFIX env vars for code coverage collection.
+    extra_env : dict or None
+        Additional environment variables merged into each node's
+        ``additional_env``. Useful for setting ``ROS_DOMAIN_ID`` to
+        isolate nodes into a specific DDS domain.
 
     Returns
     -------
@@ -209,7 +214,9 @@ def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True):
     if nodes is None:
         nodes = ALL_DEMO_NODES
 
-    coverage_env = get_coverage_env() if coverage else {}
+    env = dict(get_coverage_env() if coverage else {})
+    if extra_env:
+        env.update(extra_env)
     actions = []
 
     for key in nodes:
@@ -221,7 +228,7 @@ def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True):
             name=ros_name,
             namespace=namespace,
             output='screen',
-            additional_env=coverage_env,
+            additional_env=env,
         )
 
         # Apply faulty parameters for lidar_sensor

@@ -1462,13 +1462,14 @@ In runtime discovery mode, the gateway maps the ROS 2 graph to the SOVD entity m
 - **Component**: A single host-derived Component is created from `HostInfoProvider` (hostname, OS, architecture). All Apps belong to this Component.
 - **App**: Each discovered ROS 2 node becomes an App entity.
 - **Function**: Namespace prefixes create Function entities that group Apps sharing a namespace (e.g., `/powertrain/engine/temp_sensor` and `/powertrain/engine/rpm_sensor` both belong to Function `engine`).
-- **Area**: Top-level namespace segments create Area entities that organize Functions (e.g., `/powertrain/engine/*` nodes create Area `powertrain` containing Function `engine`).
+- **Area**: Areas are only created from manifest definitions. They are never auto-generated in runtime mode. Use hybrid or manifest-only mode to organize entities into Areas.
 
 ```
-/powertrain/engine/temp_sensor  -> Area: powertrain, Function: engine, App: temp_sensor
-/chassis/brakes/pressure_sensor -> Area: chassis, Function: brakes, App: pressure_sensor
-/body/lights/controller         -> Area: body, Function: lights, App: controller
-/standalone_node                -> Area: root, Function: root, App: standalone_node
+Runtime mode mapping:
+/powertrain/engine/temp_sensor  -> Component: <hostname>, Function: engine, App: temp_sensor
+/chassis/brakes/pressure_sensor -> Component: <hostname>, Function: brakes, App: pressure_sensor
+/body/lights/controller         -> Component: <hostname>, Function: lights, App: controller
+/standalone_node                -> Component: <hostname>, App: standalone_node
 ```
 
 ## Demo Nodes
@@ -1548,7 +1549,7 @@ curl http://localhost:8080/api/v1/components | jq
 **Key features:**
 - **Static peers**: List known gateways in config
 - **mDNS auto-discovery**: Zero-configuration peer discovery on local network
-- **Type-aware merging**: Areas and Functions merge by ID; Components and Apps get peer-name prefixes on collision
+- **Type-aware merging**: Areas, Functions, and Components merge by ID; Apps get peer-name prefixes on collision
 - **Transparent forwarding**: Requests for remote entities forwarded to owning peer
 - **Graceful degradation**: Unhealthy peers excluded, partial results clearly marked
 

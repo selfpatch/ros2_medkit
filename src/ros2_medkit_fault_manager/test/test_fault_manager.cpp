@@ -749,6 +749,10 @@ class FaultEventPublishingTest : public ::testing::Test {
     ASSERT_TRUE(clear_fault_client_->wait_for_service(std::chrono::seconds(5)));
     ASSERT_TRUE(get_fault_client_->wait_for_service(std::chrono::seconds(5)));
     ASSERT_TRUE(list_faults_for_entity_client_->wait_for_service(std::chrono::seconds(5)));
+
+    // Drain any stale DDS messages from previous tests (same topic, new subscription)
+    spin_for(std::chrono::milliseconds(50));
+    received_events_.clear();
   }
 
   void TearDown() override {
@@ -771,6 +775,37 @@ class FaultEventPublishingTest : public ::testing::Test {
     }
   }
 
+  /// Spin until a predicate becomes true or timeout expires.
+  /// More robust than fixed spin_for() under CPU contention.
+  bool spin_until(const std::function<bool()> & predicate,
+                  std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < timeout) {
+      rclcpp::spin_some(fault_manager_);
+      rclcpp::spin_some(test_node_);
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return predicate();
+  }
+
+  /// Spin until a future is ready, with 2s timeout. Robust under CPU contention.
+  template <typename FutureT>
+  bool spin_until_future_ready(FutureT & future, std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < timeout) {
+      rclcpp::spin_some(fault_manager_);
+      rclcpp::spin_some(test_node_);
+      if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  }
+
   bool call_report_fault(const std::string & fault_code, uint8_t severity, const std::string & source_id) {
     auto request = std::make_shared<ReportFault::Request>();
     request->fault_code = fault_code;
@@ -780,8 +815,7 @@ class FaultEventPublishingTest : public ::testing::Test {
     request->source_id = source_id;
 
     auto future = report_fault_client_->async_send_request(request);
-    spin_for(std::chrono::milliseconds(100));
-    if (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    if (!spin_until_future_ready(future)) {
       return false;
     }
     return future.get()->accepted;
@@ -792,8 +826,7 @@ class FaultEventPublishingTest : public ::testing::Test {
     request->fault_code = fault_code;
 
     auto future = clear_fault_client_->async_send_request(request);
-    spin_for(std::chrono::milliseconds(100));
-    if (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    if (!spin_until_future_ready(future)) {
       return false;
     }
     return future.get()->success;
@@ -804,8 +837,7 @@ class FaultEventPublishingTest : public ::testing::Test {
     request->fault_code = fault_code;
 
     auto future = get_fault_client_->async_send_request(request);
-    spin_for(std::chrono::milliseconds(100));
-    if (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    if (!spin_until_future_ready(future)) {
       return std::nullopt;
     }
     return *future.get();
@@ -816,8 +848,7 @@ class FaultEventPublishingTest : public ::testing::Test {
     request->entity_id = entity_id;
 
     auto future = list_faults_for_entity_client_->async_send_request(request);
-    spin_for(std::chrono::milliseconds(100));
-    if (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    if (!spin_until_future_ready(future)) {
       return std::nullopt;
     }
     return *future.get();
@@ -837,8 +868,10 @@ TEST_F(FaultEventPublishingTest, NewFaultPublishesConfirmedEvent) {
   // Report a new fault - with threshold=-1, it should immediately confirm
   ASSERT_TRUE(call_report_fault("TEST_FAULT_1", Fault::SEVERITY_ERROR, "/test_node"));
 
-  // Allow time for event to be received
-  spin_for(std::chrono::milliseconds(100));
+  // Wait for event to arrive (polling, robust under CPU contention)
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
 
   // Verify EVENT_CONFIRMED was published
   ASSERT_EQ(received_events_.size(), 1u);
@@ -851,14 +884,18 @@ TEST_F(FaultEventPublishingTest, NewFaultPublishesConfirmedEvent) {
 TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
   // Report a new fault first
   ASSERT_TRUE(call_report_fault("TEST_FAULT_2", Fault::SEVERITY_WARN, "/test_node1"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
 
   // Clear received events
   received_events_.clear();
 
   // Report same fault again - should trigger EVENT_UPDATED
   ASSERT_TRUE(call_report_fault("TEST_FAULT_2", Fault::SEVERITY_ERROR, "/test_node2"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
 
   // Verify EVENT_UPDATED was published
   ASSERT_EQ(received_events_.size(), 1u);
@@ -870,14 +907,18 @@ TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
 TEST_F(FaultEventPublishingTest, ClearFaultPublishesClearedEvent) {
   // Report a fault first
   ASSERT_TRUE(call_report_fault("TEST_FAULT_3", Fault::SEVERITY_ERROR, "/test_node"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
 
   // Clear received events
   received_events_.clear();
 
   // Clear the fault
   ASSERT_TRUE(call_clear_fault("TEST_FAULT_3"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
 
   // Verify EVENT_CLEARED was published
   ASSERT_EQ(received_events_.size(), 1u);
@@ -889,6 +930,7 @@ TEST_F(FaultEventPublishingTest, ClearFaultPublishesClearedEvent) {
 TEST_F(FaultEventPublishingTest, ClearNonExistentFaultNoEvent) {
   // Clear non-existent fault - should not publish event
   ASSERT_FALSE(call_clear_fault("NON_EXISTENT_FAULT"));
+  // Brief spin to confirm no event arrives (negative test - keep short)
   spin_for(std::chrono::milliseconds(100));
 
   // Verify no events published
@@ -899,7 +941,9 @@ TEST_F(FaultEventPublishingTest, EventContainsCorrectTimestamp) {
   auto before = fault_manager_->now();
 
   ASSERT_TRUE(call_report_fault("TEST_FAULT_4", Fault::SEVERITY_WARN, "/test_node"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
 
   auto after = fault_manager_->now();
 
@@ -913,7 +957,9 @@ TEST_F(FaultEventPublishingTest, EventContainsCorrectTimestamp) {
 
 TEST_F(FaultEventPublishingTest, EventContainsFullFaultData) {
   ASSERT_TRUE(call_report_fault("FULL_DATA_TEST", Fault::SEVERITY_CRITICAL, "/sensor/temperature"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
 
   ASSERT_EQ(received_events_.size(), 1u);
   const auto & fault = received_events_[0].fault;
@@ -934,7 +980,9 @@ TEST_F(FaultEventPublishingTest, TimestampUsesWallClockNotSimTime) {
   auto wall_before_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wall_before.time_since_epoch()).count();
 
   ASSERT_TRUE(call_report_fault("WALL_CLOCK_TEST", Fault::SEVERITY_WARN, "/test_node"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
 
   auto wall_after = std::chrono::system_clock::now();
   auto wall_after_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wall_after.time_since_epoch()).count();
@@ -960,7 +1008,9 @@ TEST_F(FaultEventPublishingTest, TimestampUsesWallClockNotSimTime) {
 TEST_F(FaultEventPublishingTest, GetFaultReturnsExpectedFault) {
   // Report a fault first
   ASSERT_TRUE(call_report_fault("GET_FAULT_TEST", Fault::SEVERITY_ERROR, "/test_node"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
 
   // Get fault via service
   auto response = call_get_fault("GET_FAULT_TEST");
@@ -982,7 +1032,9 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsNotFoundForMissingFault) {
 TEST_F(FaultEventPublishingTest, GetFaultReturnsEnvironmentData) {
   // Report a fault
   ASSERT_TRUE(call_report_fault("ENV_DATA_TEST", Fault::SEVERITY_WARN, "/sensor/temp"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
 
   auto response = call_get_fault("ENV_DATA_TEST");
   ASSERT_TRUE(response.has_value());
@@ -1000,9 +1052,13 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsEnvironmentData) {
 TEST_F(FaultEventPublishingTest, GetFaultReturnsExtendedDataRecords) {
   // Report fault twice to have first and last occurrence timestamps differ
   ASSERT_TRUE(call_report_fault("EDR_TEST", Fault::SEVERITY_ERROR, "/node1"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
   ASSERT_TRUE(call_report_fault("EDR_TEST", Fault::SEVERITY_ERROR, "/node2"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 2;
+  }));
 
   auto response = call_get_fault("EDR_TEST");
   ASSERT_TRUE(response.has_value());
@@ -1020,7 +1076,9 @@ TEST_F(FaultEventPublishingTest, ListFaultsForEntitySuccess) {
   ASSERT_TRUE(call_report_fault("MOTOR_FAULT", Fault::SEVERITY_ERROR, "/powertrain/motor_controller"));
   ASSERT_TRUE(call_report_fault("SENSOR_FAULT", Fault::SEVERITY_WARN, "/powertrain/motor_controller"));
   ASSERT_TRUE(call_report_fault("BRAKE_FAULT", Fault::SEVERITY_ERROR, "/chassis/brake_system"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 3;
+  }));
 
   // Query faults for motor_controller entity
   auto response = call_list_faults_for_entity("motor_controller");
@@ -1042,7 +1100,9 @@ TEST_F(FaultEventPublishingTest, ListFaultsForEntitySuccess) {
 TEST_F(FaultEventPublishingTest, ListFaultsForEntityEmptyResult) {
   // Report faults from a different entity
   ASSERT_TRUE(call_report_fault("SOME_FAULT", Fault::SEVERITY_ERROR, "/some/other_entity"));
-  spin_for(std::chrono::milliseconds(100));
+  ASSERT_TRUE(spin_until([this]() {
+    return received_events_.size() >= 1;
+  }));
 
   // Query faults for non-existent entity
   auto response = call_list_faults_for_entity("motor_controller");

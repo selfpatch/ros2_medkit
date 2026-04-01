@@ -171,28 +171,28 @@ ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
 
    **Discovery Modes**
 
-   - **Runtime-only** (default): Each ROS 2 namespace becomes an Area, and
-     ROS 2 nodes within it are exposed as Apps. A single host-level
-     Component is created from system info. Namespaces become Functions.
+   - **Runtime-only** (default): ROS 2 nodes are exposed as Apps. A single
+     host-level Component is created from system info. Namespace prefixes
+     create Functions that group related Apps.
    - **Hybrid**: Manifest defines Areas/Components/Apps/Functions, runtime
      links them to live ROS 2 nodes.
    - **Manifest-only**: Only manifest-declared entities are exposed.
 
-   Areas are optional. In runtime mode, Areas are never created - they
-   come from manifest only. Omit the ``areas:`` section in the manifest
-   for a flat tree.
+   Areas are created from manifest only - they are never auto-generated in
+   runtime mode. Omit the ``areas:`` section in the manifest for a flat tree.
 
    See :doc:`tutorials/manifest-discovery` for details on manifest mode.
 
    In this tutorial, we use runtime-only mode with ``demo_nodes.launch.py``.
 
-**List all areas:**
+**List all functions:**
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/areas
+   curl http://localhost:8080/api/v1/functions
 
-With ``demo_nodes.launch.py``, you'll see areas like ``powertrain``, ``chassis``, and ``body``.
+With ``demo_nodes.launch.py``, you'll see Functions like ``engine``, ``brakes``, and ``lights``
+(created from namespace prefixes).
 
 **List all components:**
 
@@ -200,11 +200,16 @@ With ``demo_nodes.launch.py``, you'll see areas like ``powertrain``, ``chassis``
 
    curl http://localhost:8080/api/v1/components
 
-**List components in a specific area:**
+In runtime mode, you'll see a single host-level Component.
+
+**List all areas:**
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/areas/powertrain/components
+   curl http://localhost:8080/api/v1/areas
+
+In runtime mode, this returns an empty list. Areas require a manifest definition
+(see :doc:`tutorials/manifest-discovery`).
 
 Step 4: Read Sensor Data
 ------------------------

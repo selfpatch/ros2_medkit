@@ -179,9 +179,14 @@ std::vector<Function> RuntimeDiscoveryStrategy::discover_functions() {
   if (!config_.create_functions_from_namespaces) {
     return {};
   }
+  // Discover apps fresh when called without pre-discovered apps
+  return discover_functions(discover_apps());
+}
 
-  // Discover apps to get their IDs and namespaces
-  auto apps = discover_apps();
+std::vector<Function> RuntimeDiscoveryStrategy::discover_functions(const std::vector<App> & apps) {
+  if (!config_.create_functions_from_namespaces) {
+    return {};
+  }
 
   // Group apps by namespace (first segment), similar to discover_areas() logic
   std::map<std::string, std::vector<std::string>> ns_to_app_ids;
