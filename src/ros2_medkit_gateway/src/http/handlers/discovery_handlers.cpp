@@ -68,6 +68,12 @@ void DiscoveryHandlers::handle_list_areas(const httplib::Request & req, httplib:
 
     json items = json::array();
     for (const auto & area : areas) {
+      // Subareas (with parent_area_id) are only visible via
+      // GET /areas/{id}/subareas, not in the top-level list.
+      if (!area.parent_area_id.empty()) {
+        continue;
+      }
+
       json area_item;
       area_item["id"] = area.id;
       area_item["name"] = area.name.empty() ? area.id : area.name;
@@ -82,9 +88,6 @@ void DiscoveryHandlers::handle_list_areas(const httplib::Request & req, httplib:
 
       XMedkit ext;
       ext.ros2_namespace(area.namespace_path);
-      if (!area.parent_area_id.empty()) {
-        ext.add("parent_area_id", area.parent_area_id);
-      }
       area_item["x-medkit"] = ext.build();
 
       items.push_back(area_item);
@@ -422,6 +425,12 @@ void DiscoveryHandlers::handle_list_components(const httplib::Request & req, htt
 
     json items = json::array();
     for (const auto & component : components) {
+      // Subcomponents (with parent_component_id) are only visible via
+      // GET /components/{id}/subcomponents, not in the top-level list.
+      if (!component.parent_component_id.empty()) {
+        continue;
+      }
+
       json item;
       item["id"] = component.id;
       item["name"] = component.name.empty() ? component.id : component.name;

@@ -107,7 +107,10 @@ class TestScenarioDiscoveryManifest(GatewayTestCase):
     # =========================================================================
 
     def test_01_list_areas(self):
-        """GET /areas returns all manifest-defined areas including subareas.
+        """GET /areas returns only top-level areas (subareas are filtered out).
+
+        Sub-entities (areas with parent_area_id) are only accessible via
+        GET /areas/{id}/subareas, not in the top-level listing.
 
         @verifies REQ_INTEROP_003
         """
@@ -121,9 +124,12 @@ class TestScenarioDiscoveryManifest(GatewayTestCase):
         for area_id in ['powertrain', 'chassis', 'body', 'perception']:
             self.assertIn(area_id, area_ids, f'Missing top-level area: {area_id}')
 
-        # Subareas
+        # Subareas must NOT appear in top-level listing
         for area_id in ['engine', 'brakes', 'lidar']:
-            self.assertIn(area_id, area_ids, f'Missing subarea: {area_id}')
+            self.assertNotIn(
+                area_id, area_ids,
+                f'Subarea {area_id} should not appear in top-level /areas listing'
+            )
 
     def test_02_get_area_details(self):
         """GET /areas/{id} returns area with capabilities and links.

@@ -217,24 +217,64 @@ TEST(PeerClientHappyPath, fetch_entities_parses_collections) {
 
 TEST(PeerClientHappyPath, fetch_entities_parses_relationship_fields) {
   httplib::Server svr;
+
+  // Areas: top-level only in list (subareas filtered)
   svr.Get("/api/v1/areas", [](const httplib::Request &, httplib::Response & res) {
-    res.set_content(R"({"items":[]})", "application/json");
+    res.set_content(
+        R"({"items":[
+          {"id":"vehicle","name":"Vehicle"}
+        ]})",
+        "application/json");
   });
+  // Subareas endpoint for "vehicle"
+  svr.Get(R"(/api/v1/areas/vehicle/subareas)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(
+        R"({"items":[
+          {"id":"sensors","name":"Sensors","x-medkit":{"namespace":"/sensors"}}
+        ]})",
+        "application/json");
+  });
+
+  // Components: top-level only in list (subcomponents filtered)
   svr.Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
     res.set_content(
         R"({"items":[
-          {"id":"perception-ecu","name":"Perception ECU",
-           "x-medkit":{"parentComponentId":"robot-alpha","dependsOn":["compute-unit"],
-                       "source":"manifest","namespace":"/perception"}},
           {"id":"robot-alpha","name":"Robot Alpha","x-medkit":{"source":"manifest"}}
         ]})",
         "application/json");
   });
+  // Component detail (for relationship data)
+  svr.Get(R"(/api/v1/components/robot-alpha)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"id":"robot-alpha","name":"Robot Alpha","x-medkit":{"source":"manifest"}})",
+                    "application/json");
+  });
+  // Subcomponents endpoint for "robot-alpha"
+  svr.Get(R"(/api/v1/components/robot-alpha/subcomponents)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(
+        R"({"items":[
+          {"id":"perception-ecu","name":"Perception ECU",
+           "x-medkit":{"source":"manifest","namespace":"/perception"}}
+        ]})",
+        "application/json");
+  });
+  // Subcomponent detail
+  svr.Get(R"(/api/v1/components/perception-ecu)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(
+        R"({"id":"perception-ecu","name":"Perception ECU",
+           "x-medkit":{"parentComponentId":"robot-alpha","dependsOn":["compute-unit"],
+                       "source":"manifest","namespace":"/perception"}})",
+        "application/json");
+  });
+  // No subcomponents for perception-ecu (leaf)
+  svr.Get(R"(/api/v1/components/perception-ecu/subcomponents)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+
   svr.Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
     res.set_content(
         R"({"items":[
           {"id":"lidar-driver","name":"Lidar Driver",
-           "x-medkit":{"componentId":"perception-ecu","source":"manifest"}}
+           "x-medkit":{"component_id":"perception-ecu","source":"manifest","is_online":true}}
         ]})",
         "application/json");
   });
@@ -257,12 +297,18 @@ TEST(PeerClientHappyPath, fetch_entities_parses_relationship_fields) {
 
   ASSERT_TRUE(result.has_value());
 
-  // Component: parent_component_id and depends_on parsed
+  // Areas: top-level + subareas fetched
+  ASSERT_EQ(result->areas.size(), 2u);
+  EXPECT_EQ(result->areas[0].id, "vehicle");
+  EXPECT_EQ(result->areas[1].id, "sensors");
+
+  // Components: top-level + subcomponents fetched (robot-alpha + perception-ecu)
   ASSERT_EQ(result->components.size(), 2u);
-  EXPECT_EQ(result->components[0].id, "perception-ecu");
-  EXPECT_EQ(result->components[0].parent_component_id, "robot-alpha");
-  ASSERT_EQ(result->components[0].depends_on.size(), 1u);
-  EXPECT_EQ(result->components[0].depends_on[0], "compute-unit");
+  EXPECT_EQ(result->components[0].id, "robot-alpha");
+  EXPECT_EQ(result->components[1].id, "perception-ecu");
+  EXPECT_EQ(result->components[1].parent_component_id, "robot-alpha");
+  ASSERT_EQ(result->components[1].depends_on.size(), 1u);
+  EXPECT_EQ(result->components[1].depends_on[0], "compute-unit");
 
   // App: component_id parsed
   ASSERT_EQ(result->apps.size(), 1u);

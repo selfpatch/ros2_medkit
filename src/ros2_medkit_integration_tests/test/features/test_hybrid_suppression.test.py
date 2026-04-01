@@ -22,8 +22,9 @@ counts that entity totals match the manifest - no synthetic "root" areas,
 no underscored duplicates of components or apps that were already linked.
 
 Manifest (demo_nodes_manifest.yaml) defines:
-  - 10 areas   (powertrain, engine, chassis, brakes, body, door,
-                 front-left-door, lights, perception, lidar)
+  - 4 top-level areas (powertrain, chassis, body, perception)
+  - 6 subareas  (engine, brakes, door, front-left-door, lights, lidar)
+    (only accessible via /areas/{id}/subareas, not in GET /areas)
   - 9 components (engine-ecu, temp-sensor-hw, rpm-sensor-hw, brake-ecu,
                    brake-pressure-sensor-hw, brake-actuator-hw,
                    door-sensor-hw, light-module, lidar-unit)
@@ -53,10 +54,16 @@ from ros2_medkit_test_utils.launch_helpers import (
 )
 
 # Expected manifest entity counts and IDs
-MANIFEST_AREAS = {
+# All areas defined in the manifest (top-level + subareas)
+MANIFEST_ALL_AREAS = {
     'powertrain', 'engine', 'chassis', 'brakes', 'body', 'door',
     'front-left-door', 'lights', 'perception', 'lidar',
 }
+# Only top-level areas appear in GET /areas; subareas are filtered
+MANIFEST_TOP_LEVEL_AREAS = {
+    'powertrain', 'chassis', 'body', 'perception',
+}
+MANIFEST_SUBAREAS = MANIFEST_ALL_AREAS - MANIFEST_TOP_LEVEL_AREAS
 MANIFEST_COMPONENTS = {
     'engine-ecu', 'temp-sensor-hw', 'rpm-sensor-hw', 'brake-ecu',
     'brake-pressure-sensor-hw', 'brake-actuator-hw', 'door-sensor-hw',
@@ -112,23 +119,29 @@ class TestHybridSuppression(GatewayTestCase):
     """Verify hybrid mode suppresses duplicate entities after linking."""
 
     # Wait for all manifest apps to be discovered before running tests.
+    # REQUIRED_AREAS only checks top-level areas (subareas are filtered).
     MIN_EXPECTED_APPS = len(MANIFEST_APPS)
-    REQUIRED_AREAS = MANIFEST_AREAS
+    REQUIRED_AREAS = MANIFEST_TOP_LEVEL_AREAS
     REQUIRED_APPS = MANIFEST_APPS
 
     def test_exact_area_count(self):
-        """Area count must match manifest exactly - no synthetic extras."""
+        """Top-level area count must match manifest - no synthetic extras.
+
+        Subareas are filtered from GET /areas and only accessible via
+        GET /areas/{id}/subareas.
+        """
         # @verifies REQ_INTEROP_003
         data = self.get_json('/areas')
         area_ids = {a['id'] for a in data['items']}
         self.assertEqual(
-            area_ids, MANIFEST_AREAS,
-            f'Area mismatch. Extra: {area_ids - MANIFEST_AREAS}, '
-            f'Missing: {MANIFEST_AREAS - area_ids}',
+            area_ids, MANIFEST_TOP_LEVEL_AREAS,
+            f'Area mismatch. Extra: {area_ids - MANIFEST_TOP_LEVEL_AREAS}, '
+            f'Missing: {MANIFEST_TOP_LEVEL_AREAS - area_ids}',
         )
         self.assertEqual(
-            len(data['items']), len(MANIFEST_AREAS),
-            f'Expected {len(MANIFEST_AREAS)} areas, got {len(data["items"])}: '
+            len(data['items']), len(MANIFEST_TOP_LEVEL_AREAS),
+            f'Expected {len(MANIFEST_TOP_LEVEL_AREAS)} top-level areas, '
+            f'got {len(data["items"])}: '
             f'{[a["id"] for a in data["items"]]}',
         )
 
@@ -228,13 +241,13 @@ class TestHybridSuppression(GatewayTestCase):
         )
 
     def test_no_root_or_synthetic_areas(self):
-        """No 'root' or underscored synthetic areas should exist."""
+        """No 'root' or underscored synthetic areas should exist in top-level."""
         # @verifies REQ_INTEROP_003
         data = self.get_json('/areas')
         area_ids = [a['id'] for a in data['items']]
         synthetic = [
             aid for aid in area_ids
-            if aid == 'root' or (aid not in MANIFEST_AREAS)
+            if aid == 'root' or (aid not in MANIFEST_TOP_LEVEL_AREAS)
         ]
         self.assertEqual(
             synthetic, [],

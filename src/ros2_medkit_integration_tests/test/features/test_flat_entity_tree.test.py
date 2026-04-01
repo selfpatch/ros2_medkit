@@ -16,12 +16,12 @@
 """Integration tests for flat entity tree (no areas).
 
 Validates that the gateway works correctly in manifest_only mode with a
-manifest that defines no areas. Components are top-level entities with
-subcomponent hierarchy, and all entity collections return correct counts.
+manifest that defines no areas. Only top-level components appear in
+GET /components; subcomponents are accessible via the /subcomponents endpoint.
 
 Uses flat_robot_manifest.yaml which defines:
   - 0 areas
-  - 4 components (turtlebot3 + 3 subcomponents)
+  - 1 top-level component (turtlebot3) + 3 subcomponents
   - 4 apps (lidar-driver, turtlebot3-node, nav2-controller, robot-state-publisher)
   - 2 functions (autonomous-navigation, teleoperation)
 """
@@ -78,26 +78,24 @@ class TestFlatEntityTree(GatewayTestCase):
         self.assertEqual(len(data['items']), 0)
 
     def test_components_count(self):
-        """GET /components returns exactly 4 components.
+        """GET /components returns only top-level components.
 
-        Expected: turtlebot3 (root) + raspberry-pi, opencr-board, lds-sensor
-        (subcomponents).
+        Expected: turtlebot3 (root) only. Subcomponents (raspberry-pi,
+        opencr-board, lds-sensor) are filtered from the top-level listing
+        and accessible via GET /components/turtlebot3/subcomponents.
 
         @verifies REQ_INTEROP_003
         """
         data = self.poll_endpoint_until(
             '/components',
-            lambda d: d if len(d.get('items', [])) >= 4 else None,
+            lambda d: d if len(d.get('items', [])) >= 1 else None,
             timeout=30.0,
         )
         components = data['items']
-        self.assertEqual(len(components), 4)
+        self.assertEqual(len(components), 1)
 
         component_ids = sorted([c['id'] for c in components])
-        self.assertEqual(
-            component_ids,
-            sorted(['turtlebot3', 'raspberry-pi', 'opencr-board', 'lds-sensor']),
-        )
+        self.assertEqual(component_ids, ['turtlebot3'])
 
     def test_subcomponents_count(self):
         """GET /components/turtlebot3/subcomponents returns exactly 3.

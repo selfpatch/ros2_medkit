@@ -125,11 +125,15 @@ App parse_app(const nlohmann::json & j) {
   App app;
   app.id = j.value("id", "");
   app.name = j.value("name", "");
+  app.description = j.value("description", "");
   if (j.contains("x-medkit") && j["x-medkit"].is_object()) {
     const auto & xm = j["x-medkit"];
-    app.component_id = xm.value("componentId", "");
+    app.component_id = xm.value("component_id", "");
     app.source = xm.value("source", "");
-    app.description = xm.value("description", "");
+    app.is_online = xm.value("is_online", false);
+    if (app.description.empty()) {
+      app.description = xm.value("description", "");
+    }
   }
   if (j.contains("translationId")) {
     app.translation_id = j["translationId"].get<std::string>();
@@ -229,6 +233,22 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     for (auto & area : entities.areas) {
       area.source = peer_source;
     }
+
+    // Fetch subareas for each top-level area (list endpoint filters them out)
+    size_t top_level_count = entities.areas.size();
+    for (size_t i = 0; i < top_level_count; ++i) {
+      auto sub_result = cli.Get(std::string(API_PREFIX) + "/areas/" + entities.areas[i].id + "/subareas");
+      if (sub_result && sub_result->status == 200 && sub_result->body.size() <= MAX_PEER_RESPONSE_SIZE) {
+        auto sub_json = nlohmann::json::parse(sub_result->body, nullptr, false);
+        if (!sub_json.is_discarded()) {
+          auto subareas = parse_collection<Area>(sub_json, parse_area);
+          for (auto & sub : subareas) {
+            sub.source = peer_source;
+            entities.areas.push_back(std::move(sub));
+          }
+        }
+      }
+    }
   }
 
   // Fetch components (list then detail per entity for full relationship data)
@@ -260,6 +280,30 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       }
       comp.source = peer_source;
     }
+    // Fetch subcomponents for each top-level component (list endpoint filters them out)
+    size_t top_comp_count = comp_list.size();
+    for (size_t i = 0; i < top_comp_count; ++i) {
+      auto sub_result = cli.Get(std::string(API_PREFIX) + "/components/" + comp_list[i].id + "/subcomponents");
+      if (sub_result && sub_result->status == 200 && sub_result->body.size() <= MAX_PEER_RESPONSE_SIZE) {
+        auto sub_json = nlohmann::json::parse(sub_result->body, nullptr, false);
+        if (!sub_json.is_discarded()) {
+          auto subcomps = parse_collection<Component>(sub_json, parse_component);
+          for (auto & sub : subcomps) {
+            // Fetch detail for each subcomponent to get full relationships
+            auto detail = cli.Get(std::string(API_PREFIX) + "/components/" + sub.id);
+            if (detail && detail->status == 200) {
+              auto detail_json = nlohmann::json::parse(detail->body, nullptr, false);
+              if (!detail_json.is_discarded()) {
+                sub = parse_component(detail_json);
+              }
+            }
+            sub.source = peer_source;
+            comp_list.push_back(std::move(sub));
+          }
+        }
+      }
+    }
+
     entities.components = std::move(comp_list);
   }
 
@@ -284,6 +328,14 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     for (auto & app : entities.apps) {
       app.source = peer_source;
     }
+    // Filter ROS 2 internal nodes (underscore prefix convention) at source.
+    // These are noise nodes like _param_client_node that should never appear
+    // as SOVD entities.
+    entities.apps.erase(std::remove_if(entities.apps.begin(), entities.apps.end(),
+                                       [](const App & app) {
+                                         return !app.id.empty() && app.id[0] == '_';
+                                       }),
+                        entities.apps.end());
   }
 
   // Fetch functions (list then detail per entity for hosts data)

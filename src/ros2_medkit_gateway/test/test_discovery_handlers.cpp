@@ -271,7 +271,9 @@ TEST_F(DiscoveryHandlersFixtureTest, ListAreasReturnsSeededItems) {
   EXPECT_EQ(res.get_header_value("Content-Type"), "application/json");
   auto body = parse_json(res);
   ASSERT_TRUE(body.contains("items"));
-  ASSERT_EQ(body["items"].size(), 2);
+  // "sensors" has parent_area "vehicle", so it's filtered from top-level list
+  ASSERT_EQ(body["items"].size(), 1);
+  EXPECT_EQ(body["items"][0]["id"], "vehicle");
 }
 
 // @verifies REQ_INTEROP_003
@@ -415,7 +417,8 @@ TEST_F(DiscoveryHandlersFixtureTest, ListComponentsReturnsMetadata) {
   handlers_->handle_list_components(req, res);
 
   auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 2);
+  // lidar_unit has parent_component_id, so it's filtered from top-level list
+  ASSERT_EQ(body["items"].size(), 1);
   EXPECT_EQ(body["items"][0]["id"], "main_ecu");
   EXPECT_EQ(body["items"][0]["description"], "Vehicle control unit");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
