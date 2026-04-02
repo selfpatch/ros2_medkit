@@ -891,6 +891,13 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     agg_config.forward_auth = get_parameter("aggregation.forward_auth").as_bool();
     agg_config.require_tls = get_parameter("aggregation.require_tls").as_bool();
     agg_config.peer_scheme = get_parameter("aggregation.peer_scheme").as_string();
+    if (agg_config.peer_scheme != "http" && agg_config.peer_scheme != "https") {
+      RCLCPP_ERROR(get_logger(),
+                   "Aggregation: peer_scheme '%s' is invalid (must be 'http' or 'https'). "
+                   "Falling back to 'http'.",
+                   agg_config.peer_scheme.c_str());
+      agg_config.peer_scheme = "http";
+    }
     agg_config.max_discovered_peers = static_cast<size_t>(get_parameter("aggregation.max_discovered_peers").as_int());
 
     // Parse static peers from parallel arrays

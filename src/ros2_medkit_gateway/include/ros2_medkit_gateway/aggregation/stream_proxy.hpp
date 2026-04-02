@@ -119,6 +119,7 @@ class SSEStreamProxy : public StreamProxy {
   std::string peer_name_;
   std::atomic<bool> connected_{false};
   std::atomic<bool> should_stop_{false};
+  std::atomic<bool> non_sse_content_type_{false};
   std::function<void(const StreamEvent &)> callback_;
   std::thread reader_thread_;
 };
