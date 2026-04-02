@@ -130,7 +130,9 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
     if (name_namespaces[name].size() > 1 && ns != "/") {
       std::string ns_prefix = ns.substr(1);  // Remove leading '/'
       std::replace(ns_prefix.begin(), ns_prefix.end(), '/', '_');
-      app.id = ns_prefix + "_" + name;
+      app.id = ns_prefix;
+      app.id += "_";
+      app.id += name;
       RCLCPP_DEBUG(node_->get_logger(), "Name collision detected for '%s', using namespaced ID '%s'", name.c_str(),
                    app.id.c_str());
     } else {
