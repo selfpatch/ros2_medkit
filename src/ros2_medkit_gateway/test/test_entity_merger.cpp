@@ -250,8 +250,9 @@ TEST(EntityMerger, apps_prefix_on_collision) {
   EXPECT_EQ(result[1].id, "subsystem_b__camera_driver");
   EXPECT_EQ(result[1].name, "subsystem_b__camera_driver");
   EXPECT_EQ(result[1].source, "peer:subsystem_b");
-  // Remote app's component_id remapped to peer name
-  EXPECT_EQ(result[1].component_id, "subsystem_b");
+  // Remote app preserves its original component_id (the remote component
+  // is merged or added separately, so the reference remains valid)
+  EXPECT_EQ(result[1].component_id, "perception_comp");
 }
 
 // @verifies REQ_INTEROP_003
@@ -297,8 +298,8 @@ TEST(EntityMerger, no_collision_no_prefix) {
   EXPECT_EQ(result[0].id, "planner");
   EXPECT_EQ(result[1].id, "localizer");  // No prefix
   EXPECT_EQ(result[1].source, "peer:subsystem_b");
-  // Remote app's component_id remapped to peer name
-  EXPECT_EQ(result[1].component_id, "subsystem_b");
+  // Remote app preserves its original component_id (empty when not set)
+  EXPECT_EQ(result[1].component_id, "");
 }
 
 // =============================================================================

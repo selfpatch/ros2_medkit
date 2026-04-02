@@ -387,6 +387,11 @@ TEST(CorsConfigBuilderTest, DefaultMaxAge) {
 
 namespace {
 
+// Reserve an ephemeral port for test isolation. There is an inherent TOCTOU
+// between closing this socket and the server binding: another process could
+// grab the port in between. In practice this is astronomically unlikely with
+// ephemeral ports (kernel assigns from a large range) and retrying would add
+// complexity for negligible benefit.
 int reserve_local_port() {
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) {

@@ -131,6 +131,12 @@ bool is_blocked_address(const struct sockaddr * addr) {
  * to resolve the host, which catches IPv4-mapped IPv6 loopback (::ffff:127.0.0.1),
  * expanded IPv6 loopback (0:0:0:0:0:0:0:1), 0.0.0.0, [::], and other bypass
  * variants that substring matching would miss.
+ *
+ * Known TOCTOU: DNS is resolved here at validation time, but PeerClient resolves
+ * again when connecting. A DNS rebinding attack could pass validation with a safe
+ * IP and then resolve to a blocked IP on connection. Mitigation: the 2s read
+ * timeout on PeerClient limits exposure, and IP pinning would break legitimate
+ * DNS failover scenarios. This is inherent to DNS-based validation.
  */
 bool is_valid_peer_url(const std::string & url) {
   // Must start with http:// or https://
@@ -353,31 +359,60 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
     }
   }
 
+  // Per-peer fetch result collected by each async task
+  struct PeerFetchResult {
+    std::string peer_name;
+    bool success{false};
+    std::string error;
+    PeerEntities entities;
+  };
+
+  // Fan out fetch_entities() in parallel via std::async to reduce worst-case
+  // latency from N * timeout_ms (sequential) to just timeout_ms (parallel).
+  std::vector<std::future<PeerFetchResult>> futures;
+  futures.reserve(snapshot.size());
   for (auto & peer : snapshot) {
-    auto result = peer->fetch_entities();
-    if (!result.has_value()) {
+    futures.push_back(std::async(std::launch::async, [peer, max_entities_per_peer]() {
+      PeerFetchResult pfr;
+      pfr.peer_name = peer->name();
+
+      auto result = peer->fetch_entities();
+      if (!result.has_value()) {
+        pfr.success = false;
+        pfr.error = result.error();
+        return pfr;
+      }
+
+      size_t total = result->areas.size() + result->components.size() + result->apps.size() + result->functions.size();
+      if (total > max_entities_per_peer) {
+        pfr.success = false;
+        pfr.error = "returned " + std::to_string(total) + " entities (max " + std::to_string(max_entities_per_peer) +
+                    "), skipping";
+        return pfr;
+      }
+
+      pfr.success = true;
+      pfr.entities = std::move(result.value());
+      return pfr;
+    }));
+  }
+
+  // Collect results and merge sequentially (merge order must be deterministic)
+  for (auto & f : futures) {
+    auto pfr = f.get();
+    if (!pfr.success) {
       if (logger) {
-        RCLCPP_WARN(*logger, "Failed to fetch entities from peer '%s': %s", peer->name().c_str(),
-                    result.error().c_str());
+        RCLCPP_WARN(*logger, "Failed to fetch entities from peer '%s': %s", pfr.peer_name.c_str(), pfr.error.c_str());
       }
       continue;
     }
 
-    size_t total = result->areas.size() + result->components.size() + result->apps.size() + result->functions.size();
-    if (total > max_entities_per_peer) {
-      if (logger) {
-        RCLCPP_WARN(*logger, "Peer '%s' returned %zu entities (max %zu), skipping", peer->name().c_str(), total,
-                    max_entities_per_peer);
-      }
-      continue;
-    }
-
-    EntityMerger merger(peer->name());
-    merged.areas = merger.merge_areas(merged.areas, result->areas);
-    merged.components = merger.merge_components(merged.components, result->components);
+    EntityMerger merger(pfr.peer_name);
+    merged.areas = merger.merge_areas(merged.areas, pfr.entities.areas);
+    merged.components = merger.merge_components(merged.components, pfr.entities.components);
     // Merge apps BEFORE functions so that collision-prefixed App IDs are known
     // when we need to remap Function hosts below.
-    merged.apps = merger.merge_apps(merged.apps, result->apps);
+    merged.apps = merger.merge_apps(merged.apps, pfr.entities.apps);
 
     // Build a map of original remote App IDs to their (possibly prefixed) final IDs.
     // When merge_apps prefixes a remote App (e.g., "camera_driver" -> "peer_b__camera_driver"),
@@ -395,7 +430,7 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
 
     // Remap Function hosts from original remote App IDs to their prefixed IDs
     // before merging functions.
-    for (auto & func : result->functions) {
+    for (auto & func : pfr.entities.functions) {
       for (auto & host : func.hosts) {
         auto remap_it = app_id_remap.find(host);
         if (remap_it != app_id_remap.end()) {
@@ -404,7 +439,7 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
       }
     }
 
-    merged.functions = merger.merge_functions(merged.functions, result->functions);
+    merged.functions = merger.merge_functions(merged.functions, pfr.entities.functions);
 
     for (const auto & [id, name] : merger.get_routing_table()) {
       merged.routing_table[id] = name;

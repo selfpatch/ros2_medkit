@@ -83,6 +83,12 @@ std::string HostInfoProvider::sanitize_entity_id(const std::string & input) {
     result.resize(kMaxEntityIdLength);
   }
 
+  // Fallback: if the input contained only special characters, the result
+  // would be empty. Use a safe default to prevent empty entity IDs.
+  if (result.empty()) {
+    result = "unknown_host";
+  }
+
   return result;
 }
 
