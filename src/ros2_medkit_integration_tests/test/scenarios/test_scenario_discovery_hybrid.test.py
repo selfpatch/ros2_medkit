@@ -295,7 +295,14 @@ class TestScenarioDiscoveryHybrid(GatewayTestCase):
         """Online app has topics from runtime discovery."""
         data = self.poll_endpoint_until(
             '/apps/engine-temp-sensor/data',
-            lambda d: d.get('items'),
+            lambda d: (
+                d.get('items')
+                if any(
+                    'temperature' in item.get('name', '')
+                    for item in d.get('items', [])
+                )
+                else None
+            ),
             timeout=15.0,
         )
         topic_names = [t.get('name', '') for t in data]
