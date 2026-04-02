@@ -389,26 +389,25 @@ class TestOperationsApi(GatewayTestCase):
 
         @verifies REQ_INTEROP_036
         """
-        # Find an action to test with
-        data = self.get_json('/components')
-        components = data['items']
+        # Wait for the known action app to expose its async operation.
+        self.wait_for_operation('/apps/long_calibration', 'long_calibration')
 
+        component_id = 'engine'
+        ops_data = self.poll_endpoint_until(
+            '/components/engine/operations',
+            lambda d: (
+                d if any(op.get('id') == 'long_calibration' for op in d.get('items', []))
+                else None
+            ),
+            timeout=15.0,
+        )
         action_op = None
-        component_id = None
-
-        for comp in components:
-            ops_data = self.get_json(f'/components/{comp["id"]}/operations')
-            for op in ops_data.get('items', []):
-                if op.get('asynchronous_execution', False):
-                    action_op = op
-                    component_id = comp['id']
-                    break
-            if action_op:
+        for op in ops_data.get('items', []):
+            if op.get('id') == 'long_calibration':
+                action_op = op
                 break
 
-        if action_op is None:
-            self.fail('No action operations found')
-            return
+        self.assertIsNotNone(action_op, 'Expected long_calibration action operation')
 
         operation_id = action_op['id']
 
