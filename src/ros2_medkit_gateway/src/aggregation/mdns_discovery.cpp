@@ -227,6 +227,8 @@ int announce_callback(int sock, const struct sockaddr * from, size_t addrlen, md
   // Check if the query matches our service type (case-insensitive per RFC 1035).
   // Use exact match per RFC 6763 - substring matching could cause us to respond
   // to queries for unrelated services that happen to contain our service name.
+  // Strip trailing dots: DNS wire format returns FQDNs with trailing dot
+  // (e.g., "_medkit._tcp.local.") but config uses "_medkit._tcp.local" without.
   std::string queried_lower = queried_name;
   std::string service_lower = config->service;
   std::transform(queried_lower.begin(), queried_lower.end(), queried_lower.begin(), [](unsigned char c) {
@@ -235,6 +237,12 @@ int announce_callback(int sock, const struct sockaddr * from, size_t addrlen, md
   std::transform(service_lower.begin(), service_lower.end(), service_lower.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
   });
+  while (!queried_lower.empty() && queried_lower.back() == '.') {
+    queried_lower.pop_back();
+  }
+  while (!service_lower.empty() && service_lower.back() == '.') {
+    service_lower.pop_back();
+  }
   if (queried_lower != service_lower && rtype != MDNS_RECORDTYPE_ANY) {
     if (ctx->on_log && *ctx->on_log) {
       (*ctx->on_log)("announce: query name '" + queried_name + "' (rtype=" + std::to_string(rtype) +
