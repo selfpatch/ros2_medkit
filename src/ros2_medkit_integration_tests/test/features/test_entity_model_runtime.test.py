@@ -46,7 +46,7 @@ def generate_test_description():
 class TestEntityModelRuntime(GatewayTestCase):
     """Verify the SOVD entity model in runtime_only discovery mode."""
 
-    MIN_EXPECTED_APPS = 9
+    MIN_EXPECTED_APPS = len(ALL_DEMO_NODES)
     REQUIRED_FUNCTIONS = {'powertrain', 'chassis', 'body', 'perception'}
     REQUIRED_APPS = {'temp_sensor', 'rpm_sensor', 'actuator', 'lidar_sensor', 'controller'}
 
