@@ -124,11 +124,13 @@ TEST(SanitizeEntityIdTest, truncates_to_256_chars) {
 }
 
 TEST(SanitizeEntityIdTest, handles_empty_input) {
-  EXPECT_EQ(HostInfoProvider::sanitize_entity_id(""), "");
+  // Empty input falls back to "unknown_host" to prevent empty entity IDs
+  EXPECT_EQ(HostInfoProvider::sanitize_entity_id(""), "unknown_host");
 }
 
 TEST(SanitizeEntityIdTest, handles_all_invalid_chars) {
-  EXPECT_EQ(HostInfoProvider::sanitize_entity_id("@#$%^&*()"), "");
+  // All-invalid input falls back to "unknown_host" to prevent empty entity IDs
+  EXPECT_EQ(HostInfoProvider::sanitize_entity_id("@#$%^&*()"), "unknown_host");
 }
 
 // =============================================================================

@@ -18,6 +18,7 @@
 #include <cctype>
 #include <chrono>
 #include <cinttypes>
+#include <mutex>
 #include <set>
 #include <unordered_set>
 
@@ -959,17 +960,35 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       // Sanitize it the same way browse_callback sanitizes discovered peer names.
       const std::string self_mdns_name = HostInfoProvider::sanitize_entity_id(mdns_discovery_->instance_name());
 
-      // Collect local interface addresses at startup for IP-based self-discovery
-      // filtering. Name-only checks are insufficient: an attacker can send mDNS
-      // responses with a different name but our own IP:port, creating forwarding loops.
+      // Collect local interface addresses for IP-based self-discovery filtering.
+      // Name-only checks are insufficient: an attacker can send mDNS responses with
+      // a different name but our own IP:port, creating forwarding loops.
+      // The address set is refreshed periodically (every 60s) to pick up network
+      // changes (new interfaces, DHCP renewals) without stale data.
       auto local_addrs = std::make_shared<std::unordered_set<std::string>>(collect_local_addresses());
+      auto last_addr_refresh =
+          std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
+      auto addr_mutex = std::make_shared<std::mutex>();
       const int self_port = server_port_;
 
       mdns_discovery_->start(
-          [this, self_mdns_name, local_addrs, self_port](const std::string & url, const std::string & name) {
+          [this, self_mdns_name, local_addrs, last_addr_refresh, addr_mutex, self_port](const std::string & url,
+                                                                                        const std::string & name) {
             if (name == self_mdns_name) {
               return;  // Skip self-discovery (name match)
             }
+
+            // Refresh local addresses periodically (every 60s) to handle network changes.
+            // collect_local_addresses() is cheap (getifaddrs syscall), safe to call often.
+            {
+              std::lock_guard<std::mutex> lock(*addr_mutex);
+              auto now = std::chrono::steady_clock::now();
+              if (std::chrono::duration_cast<std::chrono::seconds>(now - *last_addr_refresh).count() >= 60) {
+                *local_addrs = collect_local_addresses();
+                *last_addr_refresh = now;
+              }
+            }
+
             // Also reject peers whose resolved IP:port matches our own listen address.
             // Prevents forwarding loops from spoofed mDNS responses.
             auto [peer_host, peer_port] = parse_url_host_port(url);

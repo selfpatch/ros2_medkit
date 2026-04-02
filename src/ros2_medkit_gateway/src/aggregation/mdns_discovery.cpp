@@ -124,7 +124,11 @@ int browse_callback(int /*sock*/, const struct sockaddr * from, size_t addrlen, 
   std::string instance_name(entry_name.str, entry_name.length);
   std::string target(srv.name.str, srv.name.length);
 
-  // Build peer URL from the source address
+  // Build peer URL from the source IP of the mDNS response rather than resolving
+  // the SRV target hostname. This is intentional: the source IP is what we can
+  // validate against loopback/link-local, and resolving SRV targets would add
+  // DNS dependency and latency. The mDNS responder's source address is the most
+  // reliable indicator of where the service actually lives on the local network.
   std::array<char, INET6_ADDRSTRLEN> addr_buf{};
   std::string addr_str;
 
@@ -220,7 +224,9 @@ int announce_callback(int sock, const struct sockaddr * from, size_t addrlen, md
   mdns_string_t name = mdns_string_extract(data, size, &name_off, name_buf.data(), name_buf.size());
   std::string queried_name(name.str, name.length);
 
-  // Check if the query matches our service type (case-insensitive per RFC 1035)
+  // Check if the query matches our service type (case-insensitive per RFC 1035).
+  // Use exact match per RFC 6763 - substring matching could cause us to respond
+  // to queries for unrelated services that happen to contain our service name.
   std::string queried_lower = queried_name;
   std::string service_lower = config->service;
   std::transform(queried_lower.begin(), queried_lower.end(), queried_lower.begin(), [](unsigned char c) {
@@ -229,7 +235,7 @@ int announce_callback(int sock, const struct sockaddr * from, size_t addrlen, md
   std::transform(service_lower.begin(), service_lower.end(), service_lower.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
   });
-  if (queried_lower.find(service_lower) == std::string::npos && rtype != MDNS_RECORDTYPE_ANY) {
+  if (queried_lower != service_lower && rtype != MDNS_RECORDTYPE_ANY) {
     if (ctx->on_log && *ctx->on_log) {
       (*ctx->on_log)("announce: query name '" + queried_name + "' (rtype=" + std::to_string(rtype) +
                      ") does not match service '" + config->service + "', ignoring");

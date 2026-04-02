@@ -550,8 +550,12 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
     return;
   }
 
-  // Copy response from peer - only forward safe headers
-  static const std::set<std::string> allowed_headers = {"content-type", "etag", "cache-control", "last-modified"};
+  // Copy response from peer - only forward safe headers.
+  // The x-medkit header allowlist must match headers the gateway actually produces.
+  // Currently the only x-medkit HTTP header is X-Medkit-Local-Only (fault_handlers.cpp).
+  // Update this list when adding new x-medkit HTTP response headers.
+  static const std::set<std::string> allowed_headers = {"content-type", "etag", "cache-control", "last-modified",
+                                                        "x-medkit-local-only"};
 
   res.status = result->status;
   res.body = result->body;
@@ -560,7 +564,7 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
     std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), [](unsigned char c) {
       return std::tolower(c);
     });
-    if (allowed_headers.count(lower_name) > 0 || lower_name.find("x-medkit") == 0) {
+    if (allowed_headers.count(lower_name) > 0) {
       res.set_header(header.first, header.second);
     }
   }
@@ -581,10 +585,33 @@ tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const
     headers.emplace("Authorization", auth_header);
   }
 
+  // Accumulate body with streaming size enforcement via ContentReceiver.
+  // This prevents a malicious peer from pushing hundreds of MB before the
+  // post-download check. The receiver returns false to abort the download
+  // as soon as MAX_PEER_RESPONSE_SIZE is exceeded.
+  std::string accumulated_body;
+  bool size_exceeded = false;
+  int response_status = 0;
+
+  auto content_receiver = [&](const char * data, size_t data_length) -> bool {
+    if (accumulated_body.size() + data_length > MAX_PEER_RESPONSE_SIZE) {
+      size_exceeded = true;
+      return false;  // Abort download
+    }
+    accumulated_body.append(data, data_length);
+    return true;
+  };
+
   httplib::Result result{nullptr, httplib::Error::Unknown};
 
   if (method == "GET") {
-    result = cli.Get(path, headers);
+    result = cli.Get(
+        path, headers,
+        [&response_status](const httplib::Response & resp) -> bool {
+          response_status = resp.status;
+          return true;  // Continue to receive body
+        },
+        content_receiver);
   } else if (method == "POST") {
     result = cli.Post(path, headers, "", "application/json");
   } else if (method == "PUT") {
@@ -593,21 +620,38 @@ tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const
     result = cli.Delete(path, headers);
   }
 
-  if (!result) {
-    return tl::unexpected<std::string>("Failed to connect to peer '" + name_ + "' at " + url_);
+  // For non-GET methods, fall back to post-download size check since
+  // cpp-httplib does not offer ContentReceiver overloads for all methods.
+  bool used_streaming = (method == "GET");
+
+  if (used_streaming) {
+    if (size_exceeded) {
+      return tl::unexpected<std::string>("Response from peer '" + name_ + "' exceeds size limit for " + method + " " +
+                                         path);
+    }
+    if (!result) {
+      return tl::unexpected<std::string>("Failed to connect to peer '" + name_ + "' at " + url_);
+    }
+    if (response_status < 200 || response_status >= 300) {
+      return tl::unexpected<std::string>("Peer '" + name_ + "' returned status " + std::to_string(response_status) +
+                                         " for " + method + " " + path);
+    }
+  } else {
+    if (!result) {
+      return tl::unexpected<std::string>("Failed to connect to peer '" + name_ + "' at " + url_);
+    }
+    if (result->status < 200 || result->status >= 300) {
+      return tl::unexpected<std::string>("Peer '" + name_ + "' returned status " + std::to_string(result->status) +
+                                         " for " + method + " " + path);
+    }
+    if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
+      return tl::unexpected<std::string>("Response from peer '" + name_ + "' exceeds size limit for " + method + " " +
+                                         path);
+    }
+    accumulated_body = std::move(result->body);
   }
 
-  if (result->status < 200 || result->status >= 300) {
-    return tl::unexpected<std::string>("Peer '" + name_ + "' returned status " + std::to_string(result->status) +
-                                       " for " + method + " " + path);
-  }
-
-  if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
-    return tl::unexpected<std::string>("Response from peer '" + name_ + "' exceeds size limit for " + method + " " +
-                                       path);
-  }
-
-  auto parsed = nlohmann::json::parse(result->body, nullptr, false);
+  auto parsed = nlohmann::json::parse(accumulated_body, nullptr, false);
   if (parsed.is_discarded()) {
     return tl::unexpected<std::string>("Invalid JSON response from peer '" + name_ + "' for " + method + " " + path);
   }

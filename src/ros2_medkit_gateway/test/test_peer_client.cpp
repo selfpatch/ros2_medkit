@@ -409,7 +409,8 @@ TEST(PeerClientHappyPath, forward_filters_response_headers) {
     res.set_header("Cache-Control", "no-cache");
     res.set_header("Set-Cookie", "evil=1");
     res.set_header("Access-Control-Allow-Origin", "*");
-    res.set_header("X-Medkit-Custom", "allowed");
+    res.set_header("X-Medkit-Local-Only", "true");
+    res.set_header("X-Medkit-Custom", "injected");
     res.set_content("{}", "application/json");
   });
 
@@ -431,8 +432,10 @@ TEST(PeerClientHappyPath, forward_filters_response_headers) {
   // Safe headers should be present
   EXPECT_TRUE(res.has_header("ETag"));
   EXPECT_TRUE(res.has_header("Cache-Control"));
-  // x-medkit vendor headers should be forwarded
-  EXPECT_TRUE(res.has_header("X-Medkit-Custom"));
+  // Allowlisted x-medkit headers should be forwarded
+  EXPECT_TRUE(res.has_header("X-Medkit-Local-Only"));
+  // Non-allowlisted x-medkit headers should be blocked (injection prevention)
+  EXPECT_FALSE(res.has_header("X-Medkit-Custom"));
   // Dangerous headers should be filtered
   EXPECT_FALSE(res.has_header("Set-Cookie"));
   EXPECT_FALSE(res.has_header("Access-Control-Allow-Origin"));

@@ -14,7 +14,9 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
+#include <thread>
 
 #include "ros2_medkit_gateway/aggregation/mdns_discovery.hpp"
 
@@ -310,4 +312,82 @@ TEST(MdnsDiscovery, privileged_port_documentation) {
   // (the operator intentionally configures it). The check is only in
   // browse_callback for incoming SRV records from peers.
   SUCCEED();
+}
+
+// =============================================================================
+// Constructor validation tests
+// =============================================================================
+
+TEST(MdnsDiscovery, out_of_range_port_triggers_error_callback) {
+  MdnsDiscovery::Config config;
+  config.announce = false;
+  config.discover = false;
+
+  bool error_called = false;
+  std::string error_msg;
+  config.on_error = [&](const std::string & msg) {
+    error_called = true;
+    error_msg = msg;
+  };
+
+  // Port out of valid uint16_t range should trigger error callback and reset to 8080
+  config.port = 70000;
+  MdnsDiscovery discovery(config);
+
+  EXPECT_TRUE(error_called) << "Error callback should fire for out-of-range port";
+  EXPECT_NE(error_msg.find("out of valid range"), std::string::npos);
+}
+
+TEST(MdnsDiscovery, negative_port_triggers_error_callback) {
+  MdnsDiscovery::Config config;
+  config.announce = false;
+  config.discover = false;
+
+  bool error_called = false;
+  config.on_error = [&](const std::string & /*msg*/) {
+    error_called = true;
+  };
+
+  config.port = -1;
+  MdnsDiscovery discovery(config);
+
+  EXPECT_TRUE(error_called) << "Error callback should fire for negative port";
+}
+
+// =============================================================================
+// Socket creation resilience tests
+// =============================================================================
+
+// @verifies REQ_INTEROP_003
+TEST(MdnsDiscovery, start_announce_on_ephemeral_port_does_not_crash) {
+  // Exercise the socket creation path. In CI containers mDNS port 5353 may not
+  // be available (requires CAP_NET_BIND_SERVICE or root). The announce_loop should
+  // handle the failure gracefully via the error callback rather than crashing.
+  MdnsDiscovery::Config config;
+  config.announce = true;
+  config.discover = false;
+  config.port = 0;  // Ephemeral port for our service announcement
+  config.name = "test-socket-resilience";
+
+  bool error_reported = false;
+  config.on_error = [&](const std::string & /*msg*/) {
+    error_reported = true;
+  };
+
+  MdnsDiscovery discovery(config);
+  discovery.start([](const std::string &, const std::string &) {}, [](const std::string &) {});
+
+  // Give the thread a moment to attempt socket creation
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  // Whether or not the socket opened, stop must not hang or crash
+  discovery.stop();
+
+  // Either the announce thread ran (socket opened) or the error callback fired
+  // (socket failed). Both are acceptable outcomes in CI.
+  if (!discovery.is_announcing()) {
+    // Socket likely failed - this is expected in restricted CI environments.
+    // The important thing is we did not crash.
+    SUCCEED();
+  }
 }

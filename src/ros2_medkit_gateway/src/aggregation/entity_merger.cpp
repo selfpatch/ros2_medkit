@@ -182,9 +182,10 @@ std::vector<App> EntityMerger::merge_apps(const std::vector<App> & local, const 
   for (const auto & remote_app : remote) {
     App added = remote_app;
     added.source = peer_source();
-    // Remap component_id to peer name - in the aggregation model, the peer
-    // IS a component/subcomponent and all its apps belong to it.
-    added.component_id = peer_name_;
+    // Preserve the original component_id from the remote peer. The remote component
+    // is either merged with a local component (same ID) or added as a new entry -
+    // in both cases the component_id remains valid. Store the peer origin in
+    // x-medkit metadata via the source field for traceability.
 
     if (local_ids.count(remote_app.id) > 0) {
       // Collision: prefix the remote entity ID, preserve original for clients
