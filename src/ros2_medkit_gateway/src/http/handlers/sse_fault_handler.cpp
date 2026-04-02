@@ -50,8 +50,8 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
                             ? keepalive_interval
                             : std::chrono::seconds(kKeepaliveIntervalSec)) {
   if (keepalive_interval <= std::chrono::milliseconds::zero()) {
-    RCLCPP_WARN(HandlerContext::logger(), "Non-positive SSE keepalive override %" PRId64 "ms rejected; "
-                                           "using default %ds",
+    RCLCPP_WARN(HandlerContext::logger(),
+                "Non-positive SSE keepalive override %" PRId64 "ms rejected; using default %ds",
                 static_cast<int64_t>(keepalive_interval.count()), kKeepaliveIntervalSec);
   }
 
