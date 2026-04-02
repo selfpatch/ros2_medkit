@@ -53,7 +53,7 @@ find_package(SQLite3 REQUIRED)
 find_package(rosidl_typesupport_cpp REQUIRED)
 find_package(rosidl_typesupport_introspection_cpp REQUIRED)
 
-medkit_find_cpp_httplib()
+medkit_find_cpp_httplib(VENDORED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/vendored/cpp_httplib")
 
 # Find OpenSSL (required by jwt-cpp for RS256 and optional TLS support)
 find_package(OpenSSL REQUIRED)
@@ -319,6 +319,7 @@ if(BUILD_TESTING)
     "src/vendored/jwt_cpp/include/picojson/picojson.h"
     "src/vendored/tl_expected/include/tl/expected.hpp"
     "src/vendored/mdns/mdns.h"
+    "src/vendored/cpp_httplib/httplib.h"
   )
   ament_copyright(EXCLUDE ${VENDORED_FILES})
 
@@ -772,6 +773,7 @@ endif()
 # Export include directories for downstream packages (plugins)
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY src/vendored/tl_expected/include/ DESTINATION include/ros2_medkit_gateway/vendored)
+install(FILES src/vendored/cpp_httplib/httplib.h DESTINATION include/ros2_medkit_gateway/vendored)
 ament_export_include_directories(include include/ros2_medkit_gateway/vendored)
 
 ament_package()

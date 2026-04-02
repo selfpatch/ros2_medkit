@@ -83,6 +83,7 @@ endmacro()
 # Creates a unified alias target `cpp_httplib_target` for consumers.
 # ---------------------------------------------------------------------------
 macro(medkit_find_cpp_httplib)
+  cmake_parse_arguments(_mfch "" "VENDORED_DIR" "" ${ARGN})
   find_package(PkgConfig QUIET)
   if(PkgConfig_FOUND)
     pkg_check_modules(cpp_httplib IMPORTED_TARGET cpp-httplib>=0.14)
@@ -95,6 +96,11 @@ macro(medkit_find_cpp_httplib)
     if(TARGET httplib::httplib)
       add_library(cpp_httplib_target ALIAS httplib::httplib)
       message(STATUS "[MedkitCompat] cpp-httplib: using cmake config (source build)")
+    elseif(_mfch_VENDORED_DIR AND EXISTS "${_mfch_VENDORED_DIR}/httplib.h")
+      add_library(cpp_httplib_vendored INTERFACE)
+      target_include_directories(cpp_httplib_vendored INTERFACE "${_mfch_VENDORED_DIR}")
+      add_library(cpp_httplib_target ALIAS cpp_httplib_vendored)
+      message(STATUS "[MedkitCompat] cpp-httplib: using vendored header (${_mfch_VENDORED_DIR}/httplib.h)")
     else()
       message(FATAL_ERROR
         "[MedkitCompat] Could not find cpp-httplib >= 0.14.\n"
@@ -109,6 +115,7 @@ macro(medkit_find_cpp_httplib)
         "  See: https://selfpatch.github.io/ros2_medkit/installation.html")
     endif()
   endif()
+  unset(_mfch_VENDORED_DIR)
 endmacro()
 
 # ---------------------------------------------------------------------------
