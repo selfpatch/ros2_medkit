@@ -174,6 +174,7 @@ add_library(gateway_lib STATIC
   src/plugins/plugin_context.cpp
   src/plugins/plugin_loader.cpp
   src/plugins/plugin_manager.cpp
+  src/plugins/plugin_http_types.cpp
   # OpenAPI documentation module
   src/openapi/schema_builder.cpp
   src/openapi/path_builder.cpp
@@ -592,6 +593,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_plugin_manager test/test_plugin_manager.cpp)
   target_link_libraries(test_plugin_manager gateway_lib)
 
+  # Plugin HTTP types tests
+  ament_add_gtest(test_plugin_http_types test/test_plugin_http_types.cpp)
+  target_link_libraries(test_plugin_http_types gateway_lib)
+
   # Log manager tests
   # Dedicated ROS_DOMAIN_ID to prevent cross-talk with concurrent integration tests
   ament_add_gtest(test_log_manager test/test_log_manager.cpp)
@@ -736,6 +741,7 @@ if(BUILD_TESTING)
       test_operation_handlers
       test_plugin_loader
       test_plugin_manager
+      test_plugin_http_types
       test_log_manager
       test_log_handlers
       test_merge_pipeline
