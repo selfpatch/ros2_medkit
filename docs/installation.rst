@@ -140,10 +140,32 @@ You should see output like:
 Docker Installation
 -------------------
 
-For containerized deployments, see the `selfpatch_demos <https://github.com/selfpatch/selfpatch_demos>`_ repository
-which includes Docker Compose examples with Nav2 and TurtleBot3.
+Pre-built Docker images are published to GitHub Container Registry for all supported
+ROS 2 distributions:
 
-See the :doc:`tutorials/docker` for detailed Docker usage instructions.
+.. code-block:: bash
+
+   # Jazzy (recommended)
+   docker run -p 8080:8080 ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+
+   # Humble
+   docker run -p 8080:8080 ghcr.io/selfpatch/ros2_medkit-humble:latest
+
+   # Rolling
+   docker run -p 8080:8080 ghcr.io/selfpatch/ros2_medkit-rolling:latest
+
+The gateway will be available at http://localhost:8080/api/v1/health.
+
+To use a custom configuration, mount a params file:
+
+.. code-block:: bash
+
+   docker run -p 8080:8080 \
+     -v ./my_params.yaml:/etc/ros2_medkit/params.yaml \
+     ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+
+See the :doc:`tutorials/docker` for detailed Docker usage instructions including
+Docker Compose examples and plugin configuration.
 
 Development Installation
 ------------------------

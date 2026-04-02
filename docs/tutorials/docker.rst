@@ -17,80 +17,159 @@ Docker deployment is useful for:
 - Production deployments
 - Testing with simulation (e.g., Nav2, Isaac Sim)
 
-Quick Start with Demo
----------------------
+Pre-built Images
+----------------
 
-The `selfpatch_demos <https://github.com/selfpatch/selfpatch_demos>`_ repository
-includes a complete Docker setup with TurtleBot3 and Nav2:
+Pre-built images are published to GitHub Container Registry on every push to main.
+Images are available for all supported ROS 2 distributions:
+
+.. list-table::
+   :widths: 30 70
+   :header-rows: 1
+
+   * - Distribution
+     - Image
+   * - Jazzy (recommended)
+     - ``ghcr.io/selfpatch/ros2_medkit-jazzy:latest``
+   * - Humble
+     - ``ghcr.io/selfpatch/ros2_medkit-humble:latest``
+   * - Rolling
+     - ``ghcr.io/selfpatch/ros2_medkit-rolling:latest``
+
+Each image includes the gateway and all open-core packages:
+
+- ``ros2_medkit_gateway`` - HTTP REST server
+- ``ros2_medkit_fault_manager`` - Fault aggregation and management
+- ``ros2_medkit_fault_reporter`` - Client library for fault reporting
+- ``ros2_medkit_diagnostic_bridge`` - Bridges ``/diagnostics`` to fault manager
+- ``ros2_medkit_serialization`` - Runtime JSON/ROS 2 serialization
+- ``ros2_medkit_graph_provider`` - ROS 2 graph introspection plugin
+- ``ros2_medkit_topic_beacon``, ``ros2_medkit_param_beacon`` - Discovery plugins
+- ``ros2_medkit_linux_introspection`` - Linux system introspection plugin
+
+Quick Start
+-----------
 
 .. code-block:: bash
 
-   git clone https://github.com/selfpatch/selfpatch_demos.git
-   cd selfpatch_demos/demos/turtlebot3_integration
-   docker-compose up
+   docker run -p 8080:8080 ghcr.io/selfpatch/ros2_medkit-jazzy:latest
 
-This starts:
-
-- TurtleBot3 simulation with Nav2
-- ros2_medkit_gateway
-- `ros2_medkit_web_ui <https://github.com/selfpatch/ros2_medkit_web_ui>`_ (Web UI)
-
-Access the UI at http://localhost:3000 (Docker container maps port 80 to 3000).
-
-.. note::
-
-   **Port confusion:**
-
-   - **Development** (``npm run dev``): http://localhost:5173 (Vite dev server)
-   - **Docker/Production**: http://localhost:3000 when using ``-p 3000:80``
-
-Building the Gateway Image
---------------------------
-
-**Using the provided Dockerfile:**
+Test the gateway:
 
 .. code-block:: bash
 
-   cd ros2_medkit
-   docker build -t ros2_medkit_gateway:latest \
-     -f src/ros2_medkit_gateway/Dockerfile .
+   curl http://localhost:8080/api/v1/health
+   # {"status":"healthy","timestamp":...}
 
-**Multi-stage build for smaller images:**
+   curl http://localhost:8080/api/v1/version-info
+   # {"items":[{"version":"1.0.0","vendor_info":{"name":"ros2_medkit",...}}]}
 
-.. code-block:: dockerfile
+Custom Configuration
+--------------------
 
-   # Build stage
-   FROM ros:jazzy AS builder
-   WORKDIR /ws
-   COPY . src/ros2_medkit
-   RUN apt-get update && rosdep install --from-paths src --ignore-src -r -y
-   RUN colcon build --packages-select ros2_medkit_gateway
+The default configuration listens on ``0.0.0.0:8080`` with CORS allowing all origins.
+To use a custom configuration, mount a params file:
 
-   # Runtime stage
-   FROM ros:jazzy
-   COPY --from=builder /ws/install /opt/ros2_medkit
-   ENV ROS_PACKAGE_PATH=/opt/ros2_medkit
-   ENTRYPOINT ["/opt/ros2_medkit/ros2_medkit_gateway/lib/ros2_medkit_gateway/gateway_node"]
+.. code-block:: bash
 
-Docker Compose Configuration
-----------------------------
+   docker run -p 8080:8080 \
+     -v ./my_params.yaml:/etc/ros2_medkit/params.yaml \
+     ghcr.io/selfpatch/ros2_medkit-jazzy:latest
 
-Example ``docker-compose.yml`` for your own setup:
+Example ``my_params.yaml``:
 
 .. code-block:: yaml
 
-   version: '3.8'
+   ros2_medkit_gateway:
+     ros__parameters:
+       server:
+         host: "0.0.0.0"
+         port: 8080
+       refresh_interval_ms: 2000
+       cors:
+         allowed_origins: ["http://localhost:5173", "http://localhost:3000"]
+       discovery:
+         mode: "runtime_only"
+
+You can also pass ROS arguments directly:
+
+.. code-block:: bash
+
+   docker run -p 9090:9090 ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
+     --params-file /etc/ros2_medkit/params.yaml \
+     -p server.port:=9090
+
+External Plugins
+----------------
+
+External plugins (e.g., custom providers) can be mounted into the container at
+``/opt/ros2_medkit/plugins/`` and referenced in the params file:
+
+.. code-block:: bash
+
+   docker run -p 8080:8080 \
+     -v ./my_plugin.so:/opt/ros2_medkit/plugins/my_plugin.so \
+     -v ./my_params.yaml:/etc/ros2_medkit/params.yaml \
+     ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+
+With ``my_params.yaml`` referencing the plugin:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       plugins: ["my_plugin"]
+       plugins.my_plugin.path: "/opt/ros2_medkit/plugins/my_plugin.so"
+       # plugin-specific config
+       plugins.my_plugin.some_key: "some_value"
+
+Building from Source
+--------------------
+
+To build the image locally (e.g., for development or custom modifications):
+
+.. code-block:: bash
+
+   git clone https://github.com/selfpatch/ros2_medkit.git
+   cd ros2_medkit
+   docker build -t ros2_medkit .
+
+Build for a specific ROS 2 distribution:
+
+.. code-block:: bash
+
+   docker build --build-arg ROS_DISTRO=humble -t ros2_medkit-humble .
+
+Docker Compose
+--------------
+
+Example ``docker-compose.yml`` with the gateway and web UI:
+
+.. code-block:: yaml
 
    services:
      gateway:
-       image: ros2_medkit_gateway:latest
+       image: ghcr.io/selfpatch/ros2_medkit-jazzy:latest
        ports:
          - "8080:8080"
        environment:
          - ROS_DOMAIN_ID=42
-       command: >
-         ros2 launch ros2_medkit_gateway gateway.launch.py
-         server_host:=0.0.0.0
+       healthcheck:
+         test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+         interval: 10s
+         timeout: 5s
+         retries: 3
+         start_period: 15s
+       networks:
+         - ros2_net
+
+     web-ui:
+       image: ghcr.io/selfpatch/ros2_medkit_web_ui:latest
+       ports:
+         - "3000:80"
+       depends_on:
+         gateway:
+           condition: service_healthy
        networks:
          - ros2_net
 
@@ -98,86 +177,70 @@ Example ``docker-compose.yml`` for your own setup:
      ros2_net:
        driver: bridge
 
+Quick Start with Demos
+----------------------
+
+The `selfpatch_demos <https://github.com/selfpatch/selfpatch_demos>`_ repository
+includes complete Docker Compose setups with simulation:
+
+.. code-block:: bash
+
+   git clone https://github.com/selfpatch/selfpatch_demos.git
+   cd selfpatch_demos/demos/turtlebot3_integration
+   docker compose up
+
+This starts TurtleBot3 with Nav2, the gateway, and the web UI.
+
 Network Configuration
 ---------------------
 
-**Important:** When running in Docker, configure the gateway to listen on all interfaces:
-
-.. code-block:: yaml
-
-   server:
-     host: "0.0.0.0"  # Listen on all interfaces, not just localhost
-
 **ROS 2 Discovery:**
 
-For containers to discover each other, use the same ``ROS_DOMAIN_ID``:
+For containers to discover each other's ROS 2 nodes, use the same ``ROS_DOMAIN_ID``:
 
 .. code-block:: yaml
 
    environment:
      - ROS_DOMAIN_ID=42
 
-Or use the DDS discovery configuration for specific peers.
+**Host network mode** (simplest for development):
+
+.. code-block:: yaml
+
+   network_mode: host
 
 CORS for Web UI
 ---------------
 
-When the Web UI runs in a separate container or host, enable CORS:
+When the Web UI runs in a separate container or host, CORS must be configured.
+The default Docker config allows all origins (``*``). For production, restrict to
+specific origins:
 
 .. code-block:: yaml
 
    cors:
      allowed_origins:
-       - "http://localhost:5173"
-       - "http://web_ui:80"
-     allowed_methods: ["GET", "PUT", "POST", "DELETE", "OPTIONS"]
-     allowed_headers: ["Content-Type", "Accept", "Authorization"]
-
-Volume Mounts
--------------
-
-**For development (live code changes):**
-
-.. code-block:: yaml
-
-   volumes:
-     - ./src:/ws/src:ro
-     - ./config:/ws/config:ro
-
-**For certificates:**
-
-.. code-block:: yaml
-
-   volumes:
-     - ./certs:/etc/ros2_medkit/certs:ro
+       - "http://localhost:3000"
+       - "https://my-dashboard.example.com"
 
 Health Checks
 -------------
 
-Add health checks to ensure the gateway is ready:
+The gateway exposes a health endpoint at ``/api/v1/health``:
 
 .. code-block:: yaml
 
-   services:
-     gateway:
-       # ...
-       healthcheck:
-         test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
-         interval: 10s
-         timeout: 5s
-         retries: 3
-         start_period: 30s
+   healthcheck:
+     test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+     interval: 10s
+     timeout: 5s
+     retries: 3
+     start_period: 15s
 
 Production Considerations
 -------------------------
 
-1. **Use specific image tags** (not ``latest``):
-
-   .. code-block:: yaml
-
-      image: ros2_medkit_gateway:<version-tag>
-
-2. **Set resource limits:**
+1. **Set resource limits:**
 
    .. code-block:: yaml
 
@@ -187,24 +250,11 @@ Production Considerations
             cpus: '1.0'
             memory: 512M
 
-3. **Enable TLS for production:**
+2. **Enable TLS for production:**
 
    See :doc:`https` for certificate configuration.
 
-4. **Use secrets for credentials:**
-
-   .. code-block:: yaml
-
-      secrets:
-        jwt_secret:
-          file: ./secrets/jwt_secret.txt
-
-      services:
-        gateway:
-          secrets:
-            - jwt_secret
-
-5. **Configure logging:**
+3. **Configure logging:**
 
    .. code-block:: yaml
 
@@ -214,38 +264,18 @@ Production Considerations
           max-size: "10m"
           max-file: "3"
 
-Running with Simulation
------------------------
-
-**Nav2 + TurtleBot3:**
-
-See the `TurtleBot3 integration demo <https://github.com/selfpatch/selfpatch_demos/tree/main/demos/turtlebot3_integration>`_
-for a complete example.
-
-**Isaac Sim:**
-
-The gateway's topic-based discovery works with Isaac Sim which publishes
-topics without creating ROS 2 nodes:
-
-.. code-block:: bash
-
-   docker-compose up gateway
-   # Start Isaac Sim separately
-   # Gateway will discover /carter1, /carter2, etc. from topics
-
 Troubleshooting
 ---------------
 
 **Container can't connect to ROS 2 network**
 
-- Ensure all containers use the same network
-- Check ``ROS_DOMAIN_ID`` is consistent
+- Ensure all containers use the same network and ``ROS_DOMAIN_ID``
 - Try ``network_mode: host`` for development
 
 **Gateway returns empty areas/components**
 
 - Wait for ROS 2 discovery (can take a few seconds)
-- Check that other nodes are running and visible
+- Check that other ROS 2 nodes are running and visible
 
 **Web UI can't connect to gateway**
 
