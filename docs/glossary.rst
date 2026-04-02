@@ -9,20 +9,21 @@ This glossary defines key terms used throughout ros2_medkit documentation.
    Area
       A logical or physical grouping of components, representing a vehicle
       subsystem or domain. Examples: ``powertrain``, ``chassis``, ``body``.
-      In runtime-only mode, areas are derived from ROS 2 namespace prefixes.
+      Areas are manifest-defined only and are never auto-generated in
+      runtime mode.
 
       See: :doc:`tutorials/manifest-discovery`
 
    App
       A software application, typically mapping to a single ROS 2 node.
       Apps are hosted on Components and can participate in Functions.
-      Available in manifest mode and hybrid mode.
+      Available in all discovery modes.
 
       See: :doc:`tutorials/heuristic-apps`
 
    Component
       A hardware or virtual unit that hosts Apps. In runtime-only mode,
-      components are synthetic groups created by namespace aggregation.
+      a single host-level Component is created from ``HostInfoProvider``.
       In manifest mode, components are explicitly defined.
 
    Configuration
@@ -61,7 +62,9 @@ This glossary defines key terms used throughout ros2_medkit documentation.
 
    Function
       A high-level capability that spans multiple Apps. Functions aggregate
-      data and operations from their host Apps. Available in manifest mode.
+      data and operations from their host Apps. In runtime mode, Functions
+      are created from the first namespace segment. In manifest/hybrid mode,
+      Functions are explicitly defined.
 
    Gateway
       The ros2_medkit_gateway node that provides the REST API. It discovers

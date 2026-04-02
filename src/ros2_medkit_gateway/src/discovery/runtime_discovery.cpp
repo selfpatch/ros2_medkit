@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/discovery/runtime_discovery.hpp"
 
+#include <algorithm>
 #include <set>
 #include <unordered_map>
 
@@ -98,6 +99,16 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
   // Deduplicate nodes - ROS 2 RMW can report duplicates for nodes with multiple interfaces
   std::set<std::string> seen_fqns;
 
+  // First pass: detect bare-name collisions across different namespaces so we
+  // can disambiguate IDs only when necessary (preserving backward compatibility
+  // for the common case where node names are unique).
+  // Count distinct namespaces per node name to avoid false positives from
+  // RMW duplicates (same FQN reported multiple times).
+  std::unordered_map<std::string, std::set<std::string>> name_namespaces;
+  for (const auto & name_and_ns : names_and_namespaces) {
+    name_namespaces[name_and_ns.first].insert(name_and_ns.second);
+  }
+
   for (const auto & name_and_ns : names_and_namespaces) {
     const auto & name = name_and_ns.first;
     const auto & ns = name_and_ns.second;
@@ -112,7 +123,19 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
     seen_fqns.insert(fqn);
 
     App app;
-    app.id = name;
+    // When multiple namespaces contain nodes with the same bare name
+    // (e.g., /ns1/controller and /ns2/controller), include the namespace in the
+    // ID to avoid collisions. Otherwise, use the bare name for backward
+    // compatibility.
+    if (name_namespaces[name].size() > 1 && ns != "/") {
+      std::string ns_prefix = ns.substr(1);  // Remove leading '/'
+      std::replace(ns_prefix.begin(), ns_prefix.end(), '/', '_');
+      app.id = ns_prefix + "_" + name;
+      RCLCPP_DEBUG(node_->get_logger(), "Name collision detected for '%s', using namespaced ID '%s'", name.c_str(),
+                   app.id.c_str());
+    } else {
+      app.id = name;
+    }
     app.name = name;
     app.source = "heuristic";
     app.is_online = true;

@@ -705,11 +705,15 @@ if(BUILD_TESTING)
       test_discovery_handlers
       test_manifest_parser
       test_manifest_validator
+      test_manifest_manager
       test_capability_builder
       test_handler_context
+      test_x_medkit
       test_rate_limiter
       test_auth_config
       test_data_access_manager
+      test_entity_resource_model
+      test_function_resource_collections
       test_entity_path_utils
       test_fault_handlers
       test_bulk_data_store
