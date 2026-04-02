@@ -40,12 +40,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-example-interfaces \
     python3-colcon-common-extensions \
     nlohmann-json3-dev \
-    libcpp-httplib-dev \
     sqlite3 \
     libsqlite3-dev \
     libsystemd-dev \
+    libssl-dev \
     pkg-config \
+    cmake \
+    g++ \
+    git \
     && rm -rf /var/lib/apt/lists/*
+
+# cpp-httplib: use system package on jazzy/rolling, build from source on humble
+# (Ubuntu 22.04 either lacks the package or provides 0.10.x, we need >= 0.14)
+RUN if apt-cache show libcpp-httplib-dev 2>/dev/null | grep -q "^Version: 0\.1[4-9]\|^Version: 0\.[2-9]"; then \
+      apt-get update && apt-get install -y --no-install-recommends libcpp-httplib-dev && rm -rf /var/lib/apt/lists/*; \
+    else \
+      git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib && \
+      cd /tmp/cpp-httplib && mkdir build && cd build && \
+      cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON && \
+      make install && \
+      rm -rf /tmp/cpp-httplib; \
+    fi
 
 WORKDIR ${COLCON_WS}
 
@@ -65,10 +80,10 @@ COPY src/ros2_medkit_discovery_plugins/ ${COLCON_WS}/src/ros2_medkit_discovery_p
 COPY src/ros2_medkit_plugins/ ${COLCON_WS}/src/ros2_medkit_plugins/
 
 # Install ROS dependencies and build (skip tests for smaller image)
-RUN bash -c "source /opt/ros/jazzy/setup.bash && \
+RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
-      --skip-keys='ament_cmake_clang_format ament_cmake_clang_tidy test_msgs sqlite3' && \
+      --skip-keys='ament_cmake_clang_format ament_cmake_clang_tidy test_msgs sqlite3 libcpp-httplib-dev rosbag2_storage_mcap' && \
     colcon build --cmake-args -DBUILD_TESTING=OFF"
 
 # ============================================================================
@@ -82,15 +97,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=${ROS_DISTRO}
 ENV COLCON_WS=/root/ws
 
-# Runtime dependencies only
+# Runtime dependencies only (header-only libs like nlohmann-json and cpp-httplib
+# are already compiled into the binaries, no need to install here)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-yaml-cpp-vendor \
     ros-${ROS_DISTRO}-example-interfaces \
-    nlohmann-json3-dev \
-    libcpp-httplib-dev \
-    sqlite3 \
-    libsqlite3-dev \
-    libsystemd-dev \
+    libsqlite3-0 \
+    libsystemd0 \
+    libssl3 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy built workspace from builder
