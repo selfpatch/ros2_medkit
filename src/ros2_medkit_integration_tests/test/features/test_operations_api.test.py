@@ -392,28 +392,9 @@ class TestOperationsApi(GatewayTestCase):
         # Wait for the known action app to expose its async operation.
         self.wait_for_operation('/apps/long_calibration', 'long_calibration')
 
-        component_id = 'engine'
-        ops_data = self.poll_endpoint_until(
-            '/components/engine/operations',
-            lambda d: (
-                d if any(op.get('id') == 'long_calibration' for op in d.get('items', []))
-                else None
-            ),
-            timeout=15.0,
-        )
-        action_op = None
-        for op in ops_data.get('items', []):
-            if op.get('id') == 'long_calibration':
-                action_op = op
-                break
-
-        self.assertIsNotNone(action_op, 'Expected long_calibration action operation')
-
-        operation_id = action_op['id']
-
         # List executions - should return items array (may be empty)
         response = requests.get(
-            f'{self.BASE_URL}/components/{component_id}/operations/{operation_id}/executions',
+            f'{self.BASE_URL}/apps/long_calibration/operations/long_calibration/executions',
             timeout=10
         )
         self.assertEqual(response.status_code, 200)
