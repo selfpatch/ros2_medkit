@@ -1,0 +1,28 @@
+# Build artifacts
+build/
+install/
+log/
+.cache/
+
+# IDE and dev files
+.devcontainer/
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Documentation build
+docs/_build/
+.venv/
+
+# CI
+.github/
+
+# Coverage
+coverage_html/
+*.info
+
+# Worktrees
+.worktrees/
