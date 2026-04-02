@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -79,14 +80,27 @@ void SSEStreamProxy::reader_loop() {
     // stream is actually delivering data (avoids race where is_connected()
     // returns true before the HTTP request even starts).
     bool received_first_data = false;
+    non_sse_content_type_.store(false);
 
     // Use chunked content receiver to process SSE data as it arrives
     std::string buffer;
     auto result = client.Get(
         path_,
         [this](const httplib::Response & response) {
-          // Header callback - check that we got the right content type
-          return response.status == 200 && !should_stop_.load();
+          // Header callback - check status and content type before processing body
+          if (response.status != 200 || should_stop_.load()) {
+            return false;
+          }
+          // Validate Content-Type is text/event-stream. A non-SSE 200 response
+          // (e.g., application/json) would be silently misinterpreted as SSE data.
+          auto ct_it = response.headers.find("Content-Type");
+          if (ct_it == response.headers.end() || ct_it->second.find("text/event-stream") == std::string::npos) {
+            // Not an SSE stream - abort connection. Log is not available here
+            // (no rclcpp logger), so we set a flag and log in the outer scope.
+            non_sse_content_type_.store(true);
+            return false;
+          }
+          return true;
         },
         [this, &buffer, &received_first_data, &backoff_ms](const char * data, size_t data_length) {
           if (should_stop_.load()) {
@@ -138,6 +152,15 @@ void SSEStreamProxy::reader_loop() {
 
     // Connection ended (server closed, timeout, or error) - mark disconnected
     connected_.store(false);
+
+    // Log if the peer returned a non-SSE Content-Type (e.g. application/json)
+    if (non_sse_content_type_.load()) {
+      fprintf(stderr,
+              "[SSEStreamProxy] Warning: peer '%s' at %s%s returned non-SSE "
+              "Content-Type. Expected text/event-stream. Skipping.\n",
+              peer_name_.c_str(), peer_url_.c_str(), path_.c_str());
+      non_sse_content_type_.store(false);
+    }
 
     // If stop was requested, exit without retrying
     if (should_stop_.load()) {

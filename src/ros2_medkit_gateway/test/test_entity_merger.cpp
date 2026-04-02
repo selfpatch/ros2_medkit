@@ -16,6 +16,8 @@
 
 #include <algorithm>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/entity_merger.hpp"
@@ -495,4 +497,77 @@ TEST(EntityMerger, routing_table_accumulates_across_merge_calls) {
   EXPECT_EQ(table.count("comp_b"), 1u);
   EXPECT_EQ(table.count("area_c"), 1u);
   EXPECT_EQ(table.count("func_d"), 1u);
+}
+
+// =============================================================================
+// Multi-peer overlapping entity IDs
+// =============================================================================
+
+// @verifies REQ_INTEROP_003
+TEST(EntityMerger, multi_peer_overlapping_app_ids_no_data_loss) {
+  // Scenario: local gateway has "camera_driver", two different peers also have
+  // an app named "camera_driver". After merging both peers sequentially (as
+  // AggregationManager does), all three apps must exist with correct routing.
+  auto local_app = make_app("camera_driver", "perception");
+
+  // --- Merge peer_a's camera_driver ---
+  EntityMerger merger_a("peer_a");
+  auto remote_a = make_app("camera_driver", "sensors");
+  auto after_a = merger_a.merge_apps({local_app}, {remote_a});
+
+  // Two apps now: local "camera_driver" and prefixed "peer_a__camera_driver"
+  ASSERT_EQ(after_a.size(), 2u);
+  EXPECT_EQ(after_a[0].id, "camera_driver");
+  EXPECT_EQ(after_a[0].component_id, "perception");  // local unchanged
+  EXPECT_EQ(after_a[1].id, "peer_a__camera_driver");
+  EXPECT_EQ(after_a[1].original_id, "camera_driver");
+  EXPECT_EQ(after_a[1].source, "peer:peer_a");
+
+  // Routing table for peer_a: prefixed ID routes to peer_a
+  const auto & table_a = merger_a.get_routing_table();
+  ASSERT_EQ(table_a.count("peer_a__camera_driver"), 1u);
+  EXPECT_EQ(table_a.at("peer_a__camera_driver"), "peer_a");
+
+  // --- Merge peer_b's camera_driver into the accumulated result ---
+  EntityMerger merger_b("peer_b");
+  auto remote_b = make_app("camera_driver", "vision");
+  auto after_b = merger_b.merge_apps(after_a, {remote_b});
+
+  // Three apps now: local, peer_a__camera_driver, and peer_b__camera_driver.
+  // peer_b collides with local "camera_driver" and gets prefixed.
+  ASSERT_EQ(after_b.size(), 3u);
+  EXPECT_EQ(after_b[0].id, "camera_driver");
+  EXPECT_EQ(after_b[0].component_id, "perception");  // local still unchanged
+  EXPECT_TRUE(after_b[0].original_id.empty());       // local never renamed
+  EXPECT_EQ(after_b[1].id, "peer_a__camera_driver");
+  EXPECT_EQ(after_b[2].id, "peer_b__camera_driver");
+  EXPECT_EQ(after_b[2].original_id, "camera_driver");
+  EXPECT_EQ(after_b[2].source, "peer:peer_b");
+
+  // Routing table for peer_b: prefixed ID routes to peer_b
+  const auto & table_b = merger_b.get_routing_table();
+  ASSERT_EQ(table_b.count("peer_b__camera_driver"), 1u);
+  EXPECT_EQ(table_b.at("peer_b__camera_driver"), "peer_b");
+
+  // Verify no data loss: all three apps have distinct IDs
+  std::unordered_set<std::string> all_ids;
+  for (const auto & app : after_b) {
+    all_ids.insert(app.id);
+  }
+  EXPECT_EQ(all_ids.size(), 3u);
+  EXPECT_EQ(all_ids.count("camera_driver"), 1u);
+  EXPECT_EQ(all_ids.count("peer_a__camera_driver"), 1u);
+  EXPECT_EQ(all_ids.count("peer_b__camera_driver"), 1u);
+
+  // Combined routing table from both mergers covers both peers
+  std::unordered_map<std::string, std::string> combined_routing;
+  for (const auto & [id, name] : table_a) {
+    combined_routing[id] = name;
+  }
+  for (const auto & [id, name] : table_b) {
+    combined_routing[id] = name;
+  }
+  EXPECT_EQ(combined_routing.size(), 2u);
+  EXPECT_EQ(combined_routing.at("peer_a__camera_driver"), "peer_a");
+  EXPECT_EQ(combined_routing.at("peer_b__camera_driver"), "peer_b");
 }
