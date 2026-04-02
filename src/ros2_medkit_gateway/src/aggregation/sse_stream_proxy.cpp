@@ -14,8 +14,11 @@
 
 #include "ros2_medkit_gateway/aggregation/stream_proxy.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -30,7 +33,9 @@ SSEStreamProxy::~SSEStreamProxy() {
 }
 
 void SSEStreamProxy::open() {
-  if (connected_.load()) {
+  // Guard against double-open: check if the reader thread is already running
+  // (not just connected_, which may be false during reconnect backoff).
+  if (reader_thread_.joinable()) {
     return;
   }
   should_stop_.store(false);
@@ -54,64 +59,102 @@ void SSEStreamProxy::on_event(std::function<void(const StreamEvent &)> cb) {
 }
 
 void SSEStreamProxy::reader_loop() {
-  httplib::Client client(peer_url_);
-  // Set reasonable timeouts - SSE connections are long-lived.
-  // Use a long read timeout instead of 0 (which causes immediate timeout in
-  // cpp-httplib when SO_RCVTIMEO is set to zero). 24 hours allows SSE streams
-  // to stay open indefinitely while still having a finite timeout for cleanup.
-  client.set_read_timeout(86400, 0);
-  client.set_connection_timeout(5, 0);
+  // Reconnect loop with exponential backoff.
+  // On connection failure or stream interruption, retry with increasing delays
+  // (1s, 2s, 4s, ..., max 30s) until should_stop_ is set.
+  constexpr int kInitialBackoffMs = 1000;
+  constexpr int kMaxBackoffMs = 30000;
+  int backoff_ms = kInitialBackoffMs;
 
-  connected_.store(true);
+  while (!should_stop_.load()) {
+    httplib::Client client(peer_url_);
+    // SSE read timeout: 300s. If no data (including heartbeat comments) arrives
+    // within this window, the connection is considered dead and we reconnect.
+    // Peers should send periodic heartbeat comments (": keepalive\n\n") to
+    // prevent timeout on idle streams.
+    client.set_read_timeout(300, 0);
+    client.set_connection_timeout(5, 0);
 
-  // Use chunked content receiver to process SSE data as it arrives
-  std::string buffer;
-  auto result = client.Get(
-      path_,
-      [this](const httplib::Response & response) {
-        // Header callback - check that we got the right content type
-        return response.status == 200 && !should_stop_.load();
-      },
-      [this, &buffer](const char * data, size_t data_length) {
-        if (should_stop_.load()) {
-          return false;  // Stop receiving
-        }
+    // Track whether we received any data to set connected_ only after the
+    // stream is actually delivering data (avoids race where is_connected()
+    // returns true before the HTTP request even starts).
+    bool received_first_data = false;
 
-        constexpr size_t kMaxSSEBufferSize = 1 * 1024 * 1024;  // 1MB
-
-        buffer.append(data, data_length);
-        if (buffer.size() > kMaxSSEBufferSize) {
-          return false;  // Disconnect - peer sending malformed stream
-        }
-
-        // Process complete events (delimited by double newline)
-        size_t pos = 0;
-        while (true) {
-          auto boundary = buffer.find("\n\n", pos);
-          if (boundary == std::string::npos) {
-            break;
+    // Use chunked content receiver to process SSE data as it arrives
+    std::string buffer;
+    auto result = client.Get(
+        path_,
+        [this](const httplib::Response & response) {
+          // Header callback - check that we got the right content type
+          return response.status == 200 && !should_stop_.load();
+        },
+        [this, &buffer, &received_first_data, &backoff_ms](const char * data, size_t data_length) {
+          if (should_stop_.load()) {
+            return false;  // Stop receiving
           }
 
-          std::string event_block = buffer.substr(pos, boundary - pos + 1);
-          pos = boundary + 2;
+          // Mark connected on first chunk of data from the stream.
+          // This avoids the race condition where is_connected() returns true
+          // before the HTTP connection is actually established.
+          if (!received_first_data) {
+            received_first_data = true;
+            connected_.store(true);
+            backoff_ms = 1000;  // Reset backoff on successful connection
+          }
 
-          auto events = parse_sse_data(event_block, peer_name_);
-          if (callback_) {
-            for (const auto & event : events) {
-              callback_(event);
+          constexpr size_t kMaxSSEBufferSize = 1 * 1024 * 1024;  // 1MB
+
+          buffer.append(data, data_length);
+          if (buffer.size() > kMaxSSEBufferSize) {
+            return false;  // Disconnect - peer sending malformed stream
+          }
+
+          // Process complete events (delimited by double newline)
+          size_t pos = 0;
+          while (true) {
+            auto boundary = buffer.find("\n\n", pos);
+            if (boundary == std::string::npos) {
+              break;
+            }
+
+            std::string event_block = buffer.substr(pos, boundary - pos + 1);
+            pos = boundary + 2;
+
+            auto events = parse_sse_data(event_block, peer_name_);
+            if (callback_) {
+              for (const auto & event : events) {
+                callback_(event);
+              }
             }
           }
-        }
 
-        // Keep unprocessed data in buffer
-        if (pos > 0) {
-          buffer.erase(0, pos);
-        }
+          // Keep unprocessed data in buffer
+          if (pos > 0) {
+            buffer.erase(0, pos);
+          }
 
-        return true;  // Continue receiving
-      });
+          return true;  // Continue receiving
+        });
 
-  connected_.store(false);
+    // Connection ended (server closed, timeout, or error) - mark disconnected
+    connected_.store(false);
+
+    // If stop was requested, exit without retrying
+    if (should_stop_.load()) {
+      break;
+    }
+
+    // Exponential backoff before reconnecting
+    // Sleep in small increments so we can check should_stop_ promptly
+    int slept_ms = 0;
+    while (slept_ms < backoff_ms && !should_stop_.load()) {
+      constexpr int kSleepStepMs = 100;
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepStepMs));
+      slept_ms += kSleepStepMs;
+    }
+
+    backoff_ms = std::min(backoff_ms * 2, kMaxBackoffMs);
+  }
 }
 
 std::vector<StreamEvent> SSEStreamProxy::parse_sse_data(const std::string & raw, const std::string & peer) {

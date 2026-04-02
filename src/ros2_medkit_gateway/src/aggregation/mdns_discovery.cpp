@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <string>
@@ -59,6 +60,7 @@ constexpr int kPollIntervalMs = 500;
  */
 struct BrowseContext {
   MdnsDiscovery::PeerFoundCallback * on_found;
+  MdnsDiscovery::PeerRemovedCallback * on_removed;
   MdnsDiscovery::LogCallback * on_log;
   std::string service_name;
   std::string peer_scheme;
@@ -92,7 +94,7 @@ std::string get_hostname() {
  * to build a peer URL.
  */
 int browse_callback(int /*sock*/, const struct sockaddr * from, size_t addrlen, mdns_entry_type_t entry,
-                    uint16_t /*query_id*/, uint16_t rtype, uint16_t /*rclass*/, uint32_t /*ttl*/, const void * data,
+                    uint16_t /*query_id*/, uint16_t rtype, uint16_t /*rclass*/, uint32_t ttl, const void * data,
                     size_t size, size_t name_offset, size_t /*name_length*/, size_t record_offset, size_t record_length,
                     void * user_data) {
   auto * ctx = static_cast<BrowseContext *>(user_data);
@@ -166,6 +168,18 @@ int browse_callback(int /*sock*/, const struct sockaddr * from, size_t addrlen, 
   if (peer_name.empty()) {
     if (ctx->on_log && *ctx->on_log) {
       (*ctx->on_log)("browse: peer name empty after sanitization, instance='" + instance_name + "'");
+    }
+    return 0;
+  }
+
+  // TTL=0 is an mDNS "goodbye" - the service is departing the network
+  if (ttl == 0) {
+    if (ctx->on_log && *ctx->on_log) {
+      (*ctx->on_log)("browse: received goodbye (TTL=0) for peer '" + peer_name + "' (instance='" + instance_name +
+                     "')");
+    }
+    if (ctx->on_removed && *ctx->on_removed) {
+      (*ctx->on_removed)(peer_name);
     }
     return 0;
   }
@@ -297,6 +311,14 @@ MdnsDiscovery::MdnsDiscovery(const Config & config) : config_(config) {
   if (config_.name.empty()) {
     config_.name = get_hostname();
   }
+  // Validate port range for uint16_t safety
+  if (config_.port < 0 || config_.port > 65535) {
+    if (config_.on_error) {
+      config_.on_error("mDNS config port " + std::to_string(config_.port) +
+                       " is out of valid range (0-65535), using default 8080");
+    }
+    config_.port = 8080;
+  }
 }
 
 MdnsDiscovery::~MdnsDiscovery() {
@@ -422,6 +444,9 @@ void MdnsDiscovery::announce_loop() {
 
     int ret = select(sock + 1, &readfds, nullptr, nullptr, &tv);
     if (ret < 0) {
+      if (errno == EINTR) {
+        continue;  // Signal interrupted select(), retry
+      }
       if (config_.on_log) {
         config_.on_log("announce_loop: select() error (errno=" + std::to_string(errno) + ")");
       }
@@ -493,6 +518,7 @@ void MdnsDiscovery::browse_loop() {
 
   BrowseContext ctx;
   ctx.on_found = &on_found_;
+  ctx.on_removed = &on_removed_;
   ctx.on_log = &config_.on_log;
   ctx.service_name = config_.service;
   ctx.peer_scheme = config_.peer_scheme;
@@ -531,6 +557,9 @@ void MdnsDiscovery::browse_loop() {
 
     int ret = select(sock + 1, &readfds, nullptr, nullptr, &tv);
     if (ret < 0) {
+      if (errno == EINTR) {
+        continue;  // Signal interrupted select(), retry
+      }
       if (config_.on_log) {
         config_.on_log("browse_loop: select() error (errno=" + std::to_string(errno) + ")");
       }

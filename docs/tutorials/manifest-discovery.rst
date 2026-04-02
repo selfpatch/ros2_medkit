@@ -41,17 +41,17 @@ Discovery Modes Comparison
      - ✅ Yes
      - ❌ No
    * - Custom areas
-     - ❌ No (derived from namespaces)
-     - ✅ Yes
-     - ✅ Yes
+     - No (Areas come from manifest only)
+     - Yes
+     - Yes
    * - Apps entity type
-     - ✅ Yes (ROS nodes → Apps)
-     - ✅ Yes
-     - ✅ Yes
+     - Yes (ROS nodes -> Apps)
+     - Yes
+     - Yes
    * - Functions entity type
-     - ❌ No
-     - ✅ Yes
-     - ✅ Yes
+     - Yes (from namespace segments)
+     - Yes
+     - Yes
    * - Offline detection
      - ❌ No
      - ✅ Yes

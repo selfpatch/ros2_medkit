@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <set>
 #include <string>
 #include <utility>
@@ -319,21 +320,28 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       area.source = peer_source;
     }
 
-    // Fetch subareas for each top-level area (list endpoint filters them out)
-    size_t top_level_count = entities.areas.size();
-    for (size_t i = 0; i < top_level_count; ++i) {
-      auto sub_result = cli.Get(std::string(API_PREFIX) + "/areas/" + entities.areas[i].id + "/subareas");
+    // Fetch subareas for each top-level area (list endpoint filters them out).
+    // Collect into a separate vector first to avoid push_back during iteration
+    // (which can invalidate references if the vector reallocates).
+    std::vector<Area> all_subareas;
+    for (const auto & area : entities.areas) {
+      auto sub_result = cli.Get(std::string(API_PREFIX) + "/areas/" + area.id + "/subareas");
       if (sub_result && sub_result->status == 200 && sub_result->body.size() <= MAX_PEER_RESPONSE_SIZE) {
         auto sub_json = nlohmann::json::parse(sub_result->body, nullptr, false);
         if (!sub_json.is_discarded()) {
           auto subareas = parse_collection<Area>(sub_json, parse_area);
           for (auto & sub : subareas) {
+            if (!is_valid_entity_id(sub.id)) {
+              continue;
+            }
             sub.source = peer_source;
-            entities.areas.push_back(std::move(sub));
+            all_subareas.push_back(std::move(sub));
           }
         }
       }
     }
+    entities.areas.insert(entities.areas.end(), std::make_move_iterator(all_subareas.begin()),
+                          std::make_move_iterator(all_subareas.end()));
   }
 
   // Fetch components (list then detail per entity for full relationship data)
@@ -375,15 +383,20 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       }
       comp.source = peer_source;
     }
-    // Fetch subcomponents for each top-level component (list endpoint filters them out)
-    size_t top_comp_count = comp_list.size();
-    for (size_t i = 0; i < top_comp_count; ++i) {
-      auto sub_result = cli.Get(std::string(API_PREFIX) + "/components/" + comp_list[i].id + "/subcomponents");
+    // Fetch subcomponents for each top-level component (list endpoint filters them out).
+    // Collect into a separate vector first to avoid push_back during iteration
+    // (which can invalidate references if the vector reallocates).
+    std::vector<Component> all_subcomps;
+    for (const auto & comp : comp_list) {
+      auto sub_result = cli.Get(std::string(API_PREFIX) + "/components/" + comp.id + "/subcomponents");
       if (sub_result && sub_result->status == 200 && sub_result->body.size() <= MAX_PEER_RESPONSE_SIZE) {
         auto sub_json = nlohmann::json::parse(sub_result->body, nullptr, false);
         if (!sub_json.is_discarded()) {
           auto subcomps = parse_collection<Component>(sub_json, parse_component);
           for (auto & sub : subcomps) {
+            if (!is_valid_entity_id(sub.id)) {
+              continue;
+            }
             // Fetch detail for each subcomponent to get full relationships
             auto detail = cli.Get(std::string(API_PREFIX) + "/components/" + sub.id);
             if (detail && detail->status == 200) {
@@ -393,11 +406,13 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
               }
             }
             sub.source = peer_source;
-            comp_list.push_back(std::move(sub));
+            all_subcomps.push_back(std::move(sub));
           }
         }
       }
     }
+    comp_list.insert(comp_list.end(), std::make_move_iterator(all_subcomps.begin()),
+                     std::make_move_iterator(all_subcomps.end()));
 
     entities.components = std::move(comp_list);
   }

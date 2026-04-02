@@ -326,8 +326,8 @@ Notice:
 
    You should see:
 
-   - Areas like ``powertrain``, ``chassis``, ``body``
-   - Components with ``temp_sensor``, ``brake_actuator``, etc.
+   - Functions like ``powertrain``, ``chassis``, ``body`` (from namespace segments)
+   - A single host-level Component (from system info)
    - Live topic data with actual sensor readings
 
 Step 5: Call Services and Actions

@@ -335,8 +335,10 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
 
-    // For Functions, aggregate faults from all host apps
-    // Functions don't have a single namespace_path - they host apps from potentially different namespaces
+    // For Functions, aggregate faults from all host apps.
+    // Functions don't have a single namespace_path (it is always empty in EntityInfo)
+    // because they host apps from potentially different namespaces.
+    // Instead, we collect the FQNs of all host apps and filter by reporting_source.
     if (entity_info.type == EntityType::FUNCTION) {
       // Get all faults (no namespace filter)
       auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
@@ -674,19 +676,90 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
       return;
     }
 
-    // Get all faults for this entity
     auto fault_mgr = ctx_.node()->get_fault_manager();
-    auto faults_result = fault_mgr->list_faults(entity_info.namespace_path);
 
-    if (!faults_result.success) {
-      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
-                                 {{"details", faults_result.error_message}, {entity_info.id_field, entity_id}});
-      return;
+    // For non-App entities (Functions, Components, Areas), namespace_path is
+    // either empty or too broad for accurate filtering. Use the same FQN-based
+    // approach as handle_list_faults: collect host app FQNs and filter by
+    // reporting_source match.
+    json faults_to_clear;
+
+    if (entity_info.type == EntityType::FUNCTION) {
+      auto result = fault_mgr->list_faults("");
+      if (!result.success) {
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
+                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
+        return;
+      }
+      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      auto agg_configs = cache.get_entity_configurations(entity_id);
+      std::set<std::string> host_fqns;
+      for (const auto & node : agg_configs.nodes) {
+        if (!node.node_fqn.empty()) {
+          host_fqns.insert(node.node_fqn);
+        }
+      }
+      faults_to_clear = filter_faults_by_sources(result.data["faults"], host_fqns);
+
+    } else if (entity_info.type == EntityType::COMPONENT) {
+      auto result = fault_mgr->list_faults("");
+      if (!result.success) {
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
+                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
+        return;
+      }
+      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      auto app_ids = cache.get_apps_for_component(entity_id);
+      std::set<std::string> app_fqns;
+      for (const auto & app_id : app_ids) {
+        auto app = cache.get_app(app_id);
+        if (app) {
+          auto fqn = app->effective_fqn();
+          if (!fqn.empty()) {
+            app_fqns.insert(std::move(fqn));
+          }
+        }
+      }
+      faults_to_clear = filter_faults_by_sources(result.data["faults"], app_fqns);
+
+    } else if (entity_info.type == EntityType::AREA) {
+      auto result = fault_mgr->list_faults("");
+      if (!result.success) {
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
+                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
+        return;
+      }
+      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      auto comp_ids = cache.get_components_for_area(entity_id);
+      std::set<std::string> app_fqns;
+      for (const auto & comp_id : comp_ids) {
+        auto app_ids_inner = cache.get_apps_for_component(comp_id);
+        for (const auto & app_id : app_ids_inner) {
+          auto app = cache.get_app(app_id);
+          if (app) {
+            auto fqn = app->effective_fqn();
+            if (!fqn.empty()) {
+              app_fqns.insert(std::move(fqn));
+            }
+          }
+        }
+      }
+      faults_to_clear = filter_faults_by_sources(result.data["faults"], app_fqns);
+
+    } else {
+      // Apps: use namespace_path filtering directly
+      auto result = fault_mgr->list_faults(entity_info.namespace_path);
+      if (!result.success) {
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
+                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
+        return;
+      }
+      faults_to_clear = result.data["faults"];
     }
 
-    // Clear each fault
-    if (faults_result.data.contains("faults") && faults_result.data["faults"].is_array()) {
-      for (const auto & fault : faults_result.data["faults"]) {
+    // Clear each matching fault
+    if (faults_to_clear.is_array()) {
+      for (const auto & fault : faults_to_clear) {
         if (fault.contains("fault_code")) {
           std::string fault_code = fault["fault_code"].get<std::string>();
           auto clear_result = fault_mgr->clear_fault(fault_code);
@@ -783,7 +856,16 @@ void FaultHandlers::handle_clear_all_faults_global(const httplib::Request & req,
       }
     }
 
-    // Return 204 No Content on successful delete
+    // Design limitation: this only clears faults on the local FaultManager.
+    // Peer faults visible via fan_out_get in handle_list_all_faults are NOT
+    // cleared because that would require fan-out DELETE requests to each peer,
+    // which introduces distributed transaction semantics (partial failures,
+    // rollback) that are out of scope. Clients should clear peer faults by
+    // calling each peer's clear endpoint directly.
+    //
+    // The X-Medkit-Local-Only header signals this to clients. A 204 response
+    // cannot carry a JSON body per HTTP spec, so we use a header instead.
+    res.set_header("X-Medkit-Local-Only", "true");
     res.status = 204;
 
   } catch (const std::exception & e) {
