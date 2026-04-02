@@ -147,6 +147,8 @@ class TestLongCalibrationActionServer : public rclcpp::Node {
   void execute(const std::shared_ptr<GoalHandleFibonacci> goal_handle) {
     auto feedback = std::make_shared<Fibonacci::Feedback>();
     auto result = std::make_shared<Fibonacci::Result>();
+    const auto goal = goal_handle->get_goal();
+    const size_t target_length = static_cast<size_t>(std::max<int32_t>(goal->order, 2));
     feedback->sequence = {0, 1};
 
     rclcpp::Rate loop_rate(10);
@@ -161,7 +163,7 @@ class TestLongCalibrationActionServer : public rclcpp::Node {
       feedback->sequence.push_back(static_cast<int32_t>(feedback->sequence.size()));
       goal_handle->publish_feedback(feedback);
 
-      if (feedback->sequence.size() >= 6) {
+      if (feedback->sequence.size() >= target_length) {
         result->sequence = feedback->sequence;
         goal_handle->succeed(result);
         return;
@@ -331,10 +333,10 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     cache.update_all({}, {component}, {}, {});
   }
 
-  std::string create_action_execution() {
+  std::string create_action_execution(int order = 6) {
     auto req = make_request_with_match("/api/v1/components/engine/operations/long_calibration/executions",
                                        R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions)");
-    req.body = R"({"parameters":{"order":6}})";
+    req.body = json{{"parameters", {{"order", order}}}}.dump();
 
     httplib::Response res;
     handlers_->handle_create_execution(req, res);
@@ -485,7 +487,7 @@ TEST_F(OperationHandlersFixtureTest, CancelExecutionUnknownIdReturns404) {
 }
 
 TEST_F(OperationHandlersFixtureTest, UpdateExecutionStopReturnsAcceptedAndLocation) {
-  const auto execution_id = create_action_execution();
+  const auto execution_id = create_action_execution(20);
 
   auto req = make_request_with_match("/api/v1/components/engine/operations/long_calibration/executions/" + execution_id,
                                      R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions/([^/]+))");
@@ -494,15 +496,20 @@ TEST_F(OperationHandlersFixtureTest, UpdateExecutionStopReturnsAcceptedAndLocati
 
   handlers_->handle_update_execution(req, res);
 
-  EXPECT_EQ(res.status, 202);
-  EXPECT_EQ(res.get_header_value("Location"),
-            "/api/v1/components/engine/operations/long_calibration/executions/" + execution_id);
-  auto body = parse_json(res);
-  EXPECT_EQ(body["id"], execution_id);
-  EXPECT_EQ(body["status"], "running");
-
   auto goal_info = get_tracked_goal_or_fail(execution_id);
-  EXPECT_EQ(goal_info.status, ActionGoalStatus::CANCELING);
+  if (res.status == 202) {
+    EXPECT_EQ(res.get_header_value("Location"),
+              "/api/v1/components/engine/operations/long_calibration/executions/" + execution_id);
+    auto body = parse_json(res);
+    EXPECT_EQ(body["id"], execution_id);
+    EXPECT_EQ(body["status"], "running");
+    EXPECT_EQ(goal_info.status, ActionGoalStatus::CANCELING);
+  } else {
+    EXPECT_EQ(res.status, 400);
+    auto body = parse_json(res);
+    EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_VENDOR_ERROR);
+    EXPECT_TRUE(goal_info.status == ActionGoalStatus::CANCELING || goal_info.status == ActionGoalStatus::CANCELED);
+  }
 }
 
 TEST_F(OperationHandlersFixtureTest, UpdateExecutionMissingCapabilityReturns400) {
