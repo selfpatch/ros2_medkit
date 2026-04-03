@@ -15,8 +15,11 @@
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 
 #include <dlfcn.h>
+#include <httplib.h>
 
 #include <rclcpp/rclcpp.hpp>
+
+#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -260,20 +263,43 @@ void PluginManager::register_transport(std::unique_ptr<SubscriptionTransportProv
   transport_registry_->register_transport(std::move(provider));
 }
 
-void PluginManager::register_routes(httplib::Server & server, const std::string & api_prefix) {
+void PluginManager::register_routes(void * server_ptr, const std::string & api_prefix) {
+  auto * server = static_cast<httplib::Server *>(server_ptr);
   std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
   for (auto & lp : plugins_) {
     if (!lp.load_result.plugin) {
       continue;
     }
     try {
-      lp.load_result.plugin->register_routes(server, api_prefix);
+      auto routes = lp.load_result.plugin->get_routes();
+      for (auto & route : routes) {
+        std::string full_pattern = api_prefix + route.pattern;
+        auto handler_fn = route.handler;  // capture by value for lambda
+        auto httplib_handler = [handler_fn](const httplib::Request & req, httplib::Response & res) {
+          PluginRequest plugin_req(&req);
+          PluginResponse plugin_res(&res);
+          handler_fn(plugin_req, plugin_res);
+        };
+
+        if (route.method == "GET") {
+          server->Get(full_pattern.c_str(), httplib_handler);
+        } else if (route.method == "POST") {
+          server->Post(full_pattern.c_str(), httplib_handler);
+        } else if (route.method == "PUT") {
+          server->Put(full_pattern.c_str(), httplib_handler);
+        } else if (route.method == "DELETE") {
+          server->Delete(full_pattern.c_str(), httplib_handler);
+        } else {
+          RCLCPP_WARN(logger(), "Plugin '%s' registered route with unknown method '%s' - skipping",
+                      lp.load_result.plugin->name().c_str(), route.method.c_str());
+        }
+      }
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw during register_routes(): %s - disabling",
+      RCLCPP_ERROR(logger(), "Plugin '%s' threw during get_routes(): %s - disabling",
                    lp.load_result.plugin->name().c_str(), e.what());
       disable_plugin(lp);
     } catch (...) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during register_routes() - disabling",
+      RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during get_routes() - disabling",
                    lp.load_result.plugin->name().c_str());
       disable_plugin(lp);
     }
@@ -355,18 +381,20 @@ std::vector<std::pair<std::string, IntrospectionProvider *>> PluginManager::get_
   return result;
 }
 
-std::vector<GatewayPlugin::RouteDescription> PluginManager::get_all_route_descriptions() const {
+std::vector<std::pair<std::string, std::string>> PluginManager::get_all_route_info() const {
   std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
-  std::vector<GatewayPlugin::RouteDescription> all;
+  std::vector<std::pair<std::string, std::string>> all;
   for (const auto & lp : plugins_) {
     if (!lp.load_result.plugin) {
       continue;
     }
     try {
-      auto routes = lp.load_result.plugin->get_route_descriptions();
-      all.insert(all.end(), routes.begin(), routes.end());
+      auto routes = lp.load_result.plugin->get_routes();
+      for (const auto & route : routes) {
+        all.emplace_back(route.method, route.pattern);
+      }
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' threw in get_route_descriptions(): %s",
+      RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' threw in get_routes(): %s",
                    lp.load_result.plugin->name().c_str(), e.what());
     }
   }

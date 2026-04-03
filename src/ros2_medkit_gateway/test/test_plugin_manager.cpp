@@ -132,16 +132,16 @@ class MockThrowOnSetContext : public GatewayPlugin, public UpdateProvider {
   }
 };
 
-/// Plugin that throws during register_routes
-class MockThrowOnRegisterRoutes : public GatewayPlugin, public IntrospectionProvider {
+/// Plugin that throws during get_routes
+class MockThrowOnGetRoutes : public GatewayPlugin, public IntrospectionProvider {
  public:
   std::string name() const override {
-    return "throw_register_routes";
+    return "throw_get_routes";
   }
   void configure(const json &) override {
   }
-  void register_routes(httplib::Server &, const std::string &) override {
-    throw std::runtime_error("register_routes failed");
+  std::vector<PluginRoute> get_routes() override {
+    throw std::runtime_error("get_routes failed");
   }
 
   IntrospectionResult introspect(const IntrospectionInput &) override {
@@ -296,15 +296,15 @@ TEST(PluginManagerTest, ThrowOnSetContextDisablesPlugin) {
   EXPECT_EQ(mgr.plugin_names()[0], "mock");
 }
 
-TEST(PluginManagerTest, ThrowOnRegisterRoutesDisablesPlugin) {
+TEST(PluginManagerTest, ThrowOnGetRoutesDisablesPlugin) {
   PluginManager mgr;
-  mgr.add_plugin(std::make_unique<MockThrowOnRegisterRoutes>());
+  mgr.add_plugin(std::make_unique<MockThrowOnGetRoutes>());
   auto good = std::make_unique<MockIntrospectionOnly>();
   mgr.add_plugin(std::move(good));
 
   mgr.configure_plugins();
   httplib::Server srv;
-  mgr.register_routes(srv, "/api/v1");
+  mgr.register_routes(&srv, "/api/v1");
 
   // Throwing plugin disabled, good plugin's IntrospectionProvider still works
   EXPECT_EQ(mgr.get_introspection_providers().size(), 1u);
