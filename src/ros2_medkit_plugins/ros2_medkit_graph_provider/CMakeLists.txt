@@ -34,14 +34,6 @@ find_package(ros2_medkit_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(nlohmann_json REQUIRED)
-find_package(OpenSSL REQUIRED)
-
-# cpp-httplib via multi-distro compatibility macro
-medkit_find_cpp_httplib()
-
-# Enable OpenSSL support for cpp-httplib
-add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
-
 # MODULE target: loaded via dlopen at runtime by PluginManager.
 # Symbols from gateway_lib are resolved from the host process at runtime.
 # We only need headers at compile time (via medkit_target_dependencies).
@@ -68,8 +60,6 @@ target_link_options(ros2_medkit_graph_provider_plugin PRIVATE
 
 target_link_libraries(ros2_medkit_graph_provider_plugin
   nlohmann_json::nlohmann_json
-  cpp_httplib_target
-  OpenSSL::SSL OpenSSL::Crypto
 )
 
 install(TARGETS ros2_medkit_graph_provider_plugin
@@ -95,6 +85,11 @@ if(BUILD_TESTING)
 
   find_package(ament_cmake_gtest REQUIRED)
 
+  # The route test uses httplib::Server/Client directly for end-to-end HTTP testing.
+  # Find cpp-httplib so the test binary can link against the compiled implementation.
+  find_package(OpenSSL REQUIRED)
+  medkit_find_cpp_httplib()
+
   include(ROS2MedkitTestDomain)
   medkit_init_test_domains(START 120 END 129)
 
@@ -111,6 +106,7 @@ if(BUILD_TESTING)
     diagnostic_msgs
     ros2_medkit_msgs
   )
+  target_compile_definitions(test_graph_provider_plugin PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
   target_link_libraries(test_graph_provider_plugin
     nlohmann_json::nlohmann_json
     cpp_httplib_target

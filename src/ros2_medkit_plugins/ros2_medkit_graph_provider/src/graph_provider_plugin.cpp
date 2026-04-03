@@ -329,45 +329,46 @@ void GraphProviderPlugin::set_context(PluginContext & context) {
   log_info("Registered x-medkit-graph cyclic subscription sampler");
 }
 
-void GraphProviderPlugin::register_routes(httplib::Server & server, const std::string & api_prefix) {
-  server.Get(api_prefix + R"(/functions/([^/]+)/x-medkit-graph)",
-             [this](const httplib::Request & req, httplib::Response & res) {
-               if (!ctx_) {
-                 PluginContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Graph provider context not initialized");
-                 return;
-               }
+std::vector<GatewayPlugin::PluginRoute> GraphProviderPlugin::get_routes() {
+  std::vector<GatewayPlugin::PluginRoute> routes;
+  routes.push_back(
+      {"GET", R"(functions/([^/]+)/x-medkit-graph)", [this](const PluginRequest & req, PluginResponse & res) {
+         if (!ctx_) {
+           res.send_error(503, ERR_SERVICE_UNAVAILABLE, "Graph provider context not initialized");
+           return;
+         }
 
-               const auto function_id = req.matches[1].str();
-               auto entity = ctx_->validate_entity_for_route(req, res, function_id);
-               if (!entity) {
-                 return;
-               }
+         const auto function_id = req.path_param(1);
+         auto entity = ctx_->validate_entity_for_route(req, res, function_id);
+         if (!entity) {
+           return;
+         }
 
-               // Check lock access for vendor extension collection
-               auto client_id = req.get_header_value("X-Client-Id");
-               auto lock_result = ctx_->check_lock(function_id, client_id, "x-medkit-graph");
-               if (!lock_result.allowed) {
-                 nlohmann::json params = {{"entity_id", function_id}, {"collection", "x-medkit-graph"}};
-                 if (!lock_result.denied_by_lock_id.empty()) {
-                   params["lock_id"] = lock_result.denied_by_lock_id;
-                 }
-                 if (lock_result.denied_code == "lock-required") {
-                   PluginContext::send_error(res, 409, ERR_INVALID_REQUEST, lock_result.denied_reason, params);
-                 } else {
-                   PluginContext::send_error(res, 409, ERR_LOCK_BROKEN, lock_result.denied_reason, params);
-                 }
-                 return;
-               }
+         // Check lock access for vendor extension collection
+         auto client_id = req.header("X-Client-Id");
+         auto lock_result = ctx_->check_lock(function_id, client_id, "x-medkit-graph");
+         if (!lock_result.allowed) {
+           nlohmann::json params = {{"entity_id", function_id}, {"collection", "x-medkit-graph"}};
+           if (!lock_result.denied_by_lock_id.empty()) {
+             params["lock_id"] = lock_result.denied_by_lock_id;
+           }
+           if (lock_result.denied_code == "lock-required") {
+             res.send_error(409, ERR_INVALID_REQUEST, lock_result.denied_reason, params);
+           } else {
+             res.send_error(409, ERR_LOCK_BROKEN, lock_result.denied_reason, params);
+           }
+           return;
+         }
 
-               auto payload = get_cached_or_built_graph(function_id);
-               if (!payload.has_value()) {
-                 PluginContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Graph snapshot not available",
-                                           {{"function_id", function_id}});
-                 return;
-               }
+         auto payload = get_cached_or_built_graph(function_id);
+         if (!payload.has_value()) {
+           res.send_error(503, ERR_SERVICE_UNAVAILABLE, "Graph snapshot not available", {{"function_id", function_id}});
+           return;
+         }
 
-               PluginContext::send_json(res, *payload);
-             });
+         res.send_json(*payload);
+       }});
+  return routes;
 }
 
 IntrospectionResult GraphProviderPlugin::introspect(const IntrospectionInput & input) {
