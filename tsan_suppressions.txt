@@ -17,9 +17,16 @@ race:rclcpp::signal_handler
 race:rcl_logging_*
 race:rcutils_logging_*
 
-# cpp-httplib internal races (system-packaged libcpp-httplib.so)
+# cpp-httplib: data race in Server::stop() and create_server_socket()
+# on internal socket fd between listen and stop threads.
+# System-packaged libcpp-httplib.so, not our code.
 race:httplib::*
 
-# rclcpp/glibc mutex and shutdown ordering during test teardown
+# rclcpp/glibc: unlock-of-unlocked-mutex in __gthread_mutex_unlock during
+# test teardown when executor threads race with node destruction.
 mutex:__gthread_mutex_unlock
+
+# rclcpp: lock-order-inversion in Context::add_on_shutdown_callback
+# during test TearDownTestSuite when rclcpp::shutdown() races with
+# executor threads still calling context methods.
 deadlock:rclcpp::Context*
