@@ -32,7 +32,7 @@ The following diagram shows the three plugins and their shared infrastructure.
            +name(): string
            +configure(config): void
            +set_context(ctx): void
-           +register_routes(server, prefix): void
+           +get_routes(): vector~PluginRoute~
        }
 
        interface IntrospectionProvider {
@@ -43,8 +43,6 @@ The following diagram shows the three plugins and their shared infrastructure.
            +register_capability()
            +validate_entity_for_route()
            +get_child_apps()
-           +send_json()
-           +send_error()
        }
    }
 

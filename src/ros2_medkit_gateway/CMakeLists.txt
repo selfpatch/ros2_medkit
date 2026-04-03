@@ -779,7 +779,11 @@ endif()
 # Export include directories for downstream packages (plugins)
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY src/vendored/tl_expected/include/ DESTINATION include/ros2_medkit_gateway/vendored)
-install(FILES src/vendored/cpp_httplib/httplib.h DESTINATION include/ros2_medkit_gateway/vendored)
+# Vendored httplib.h installed to share/ (NOT include/) so it does not pollute
+# downstream include paths. Used as VENDORED_DIR fallback by packages whose tests
+# need httplib (e.g. graph_provider) on platforms where the system package is too old.
+install(FILES src/vendored/cpp_httplib/httplib.h
+  DESTINATION share/${PROJECT_NAME}/vendored/cpp_httplib)
 ament_export_include_directories(include include/ros2_medkit_gateway/vendored)
 
 ament_package()

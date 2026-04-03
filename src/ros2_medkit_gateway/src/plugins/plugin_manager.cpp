@@ -273,22 +273,36 @@ void PluginManager::register_routes(void * server_ptr, const std::string & api_p
     try {
       auto routes = lp.load_result.plugin->get_routes();
       for (auto & route : routes) {
-        std::string full_pattern = api_prefix + route.pattern;
+        std::string full_pattern = api_prefix + "/" + route.pattern;
         auto handler_fn = route.handler;  // capture by value for lambda
-        auto httplib_handler = [handler_fn](const httplib::Request & req, httplib::Response & res) {
-          PluginRequest plugin_req(&req);
-          PluginResponse plugin_res(&res);
-          handler_fn(plugin_req, plugin_res);
+        auto plugin_name = lp.load_result.plugin->name();
+        auto httplib_handler = [handler_fn, plugin_name, &full_pattern](const httplib::Request & req,
+                                                                        httplib::Response & res) {
+          try {
+            PluginRequest plugin_req(&req);
+            PluginResponse plugin_res(&res);
+            handler_fn(plugin_req, plugin_res);
+          } catch (const std::exception & e) {
+            RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' handler threw on %s: %s",
+                         plugin_name.c_str(), full_pattern.c_str(), e.what());
+            PluginResponse plugin_res(&res);
+            plugin_res.send_error(500, "x-medkit-plugin-error", "Internal plugin error");
+          } catch (...) {
+            RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' handler threw unknown exception on %s",
+                         plugin_name.c_str(), full_pattern.c_str());
+            PluginResponse plugin_res(&res);
+            plugin_res.send_error(500, "x-medkit-plugin-error", "Internal plugin error");
+          }
         };
 
         if (route.method == "GET") {
-          server->Get(full_pattern.c_str(), httplib_handler);
+          server->Get(full_pattern, httplib_handler);
         } else if (route.method == "POST") {
-          server->Post(full_pattern.c_str(), httplib_handler);
+          server->Post(full_pattern, httplib_handler);
         } else if (route.method == "PUT") {
-          server->Put(full_pattern.c_str(), httplib_handler);
+          server->Put(full_pattern, httplib_handler);
         } else if (route.method == "DELETE") {
-          server->Delete(full_pattern.c_str(), httplib_handler);
+          server->Delete(full_pattern, httplib_handler);
         } else {
           RCLCPP_WARN(logger(), "Plugin '%s' registered route with unknown method '%s' - skipping",
                       lp.load_result.plugin->name().c_str(), route.method.c_str());
@@ -379,26 +393,6 @@ std::vector<std::pair<std::string, IntrospectionProvider *>> PluginManager::get_
     }
   }
   return result;
-}
-
-std::vector<std::pair<std::string, std::string>> PluginManager::get_all_route_info() const {
-  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
-  std::vector<std::pair<std::string, std::string>> all;
-  for (const auto & lp : plugins_) {
-    if (!lp.load_result.plugin) {
-      continue;
-    }
-    try {
-      auto routes = lp.load_result.plugin->get_routes();
-      for (const auto & route : routes) {
-        all.emplace_back(route.method, route.pattern);
-      }
-    } catch (const std::exception & e) {
-      RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' threw in get_routes(): %s",
-                   lp.load_result.plugin->name().c_str(), e.what());
-    }
-  }
-  return all;
 }
 
 bool PluginManager::has_plugins() const {

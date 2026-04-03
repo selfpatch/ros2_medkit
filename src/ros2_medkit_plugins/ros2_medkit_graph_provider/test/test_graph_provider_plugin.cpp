@@ -65,14 +65,18 @@ std::string PluginRequest::body() const {
 PluginResponse::PluginResponse(void * impl) : impl_(impl) {
 }
 void PluginResponse::send_json(const nlohmann::json & data) {
-  static_cast<httplib::Response *>(impl_)->set_content(data.dump(), "application/json");
+  auto & res = *static_cast<httplib::Response *>(impl_);
+  res.status = 200;
+  res.body = data.dump();
+  res.headers.emplace("Content-Type", "application/json");
 }
 void PluginResponse::send_error(int status, const std::string & /*error_code*/, const std::string & message,
                                 const nlohmann::json & /*parameters*/) {
   auto & res = *static_cast<httplib::Response *>(impl_);
   res.status = status;
   nlohmann::json err = {{"error", message}};
-  res.set_content(err.dump(), "application/json");
+  res.body = err.dump();
+  res.headers.emplace("Content-Type", "application/json");
 }
 
 }  // namespace ros2_medkit_gateway

@@ -161,14 +161,6 @@ class PluginManager {
     return context_;
   }
 
-  // ---- Route descriptions (for handle_root auto-registration) ----
-
-  /**
-   * @brief Collect route info (method, pattern) from all active plugins
-   * @return Combined (method, pattern) pairs from all plugins
-   */
-  std::vector<std::pair<std::string, std::string>> get_all_route_info() const;
-
   // ---- Info ----
   bool has_plugins() const;
   std::vector<std::string> plugin_names() const;
