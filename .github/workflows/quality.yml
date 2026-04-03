@@ -1,0 +1,325 @@
+name: Quality
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  format-lint:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y clang-format
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Build (minimal, for ament test infrastructure)
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release \
+            --event-handlers console_direct+
+
+      - name: Run format linters
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          colcon test --return-code-on-test-failure \
+            --ctest-args -L linter -E clang_tidy \
+            --event-handlers console_direct+
+
+      - name: Show results
+        if: always()
+        run: colcon test-result --verbose
+
+  clang-tidy:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install ccache and clang-tidy
+        run: apt-get install -y ccache clang-tidy
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-tidy-${{ github.sha }}
+          restore-keys: |
+            ccache-jazzy-tidy-
+
+      - name: Install clang-tidy-cache (ctcache)
+        run: |
+          apt-get install -y python3-pip
+          pip3 install clang-tidy-cache --break-system-packages
+
+      - name: Cache ctcache results
+        uses: actions/cache@v4
+        with:
+          path: /root/.ctcache
+          key: ctcache-jazzy-${{ hashFiles('.clang-tidy') }}-${{ github.sha }}
+          restore-keys: |
+            ctcache-jazzy-${{ hashFiles('.clang-tidy') }}-
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y ros-jazzy-test-msgs
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Build (compile database only, no clang-tidy)
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+              -DENABLE_CLANG_TIDY=OFF \
+            --event-handlers console_direct+
+          ccache -s
+
+      - name: Merge compile databases
+        run: |
+          pip3 install compdb --break-system-packages || true
+          # Simple merge: symlink per-package databases
+          mkdir -p build
+          python3 -c "
+          import json, glob, sys
+          entries = []
+          for db in glob.glob('build/*/compile_commands.json'):
+              with open(db) as f:
+                  entries.extend(json.load(f))
+          with open('build/compile_commands.json', 'w') as f:
+              json.dump(entries, f, indent=2)
+          print(f'Merged {len(entries)} entries from {len(glob.glob(\"build/*/compile_commands.json\"))} packages')
+          "
+
+      - name: Determine files to analyze
+        id: files
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Incremental: only changed C++ files
+            changed=$(git diff --name-only --diff-filter=ACMR origin/main...HEAD -- '*.cpp' '*.hpp' | tr '\n' ' ')
+            if [ -z "$changed" ]; then
+              echo "No C++ files changed - skipping clang-tidy"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Analyzing changed files: $changed"
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              echo "files=$changed" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            # Full: all source files
+            echo "Full analysis on push to main"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "files=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run clang-tidy
+        if: steps.files.outputs.skip != 'true'
+        env:
+          CTCACHE_DIR: /root/.ctcache
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          files="${{ steps.files.outputs.files }}"
+          if [ -n "$files" ]; then
+            # Incremental: specific files
+            run-clang-tidy -p build -clang-tidy-binary clang-tidy-cache \
+              -header-filter='.*ros2_medkit.*' \
+              $files
+          else
+            # Full: all files (filter to our source only)
+            run-clang-tidy -p build -clang-tidy-binary clang-tidy-cache \
+              -header-filter='.*ros2_medkit.*' \
+              'src/ros2_medkit_.*/src/.*\.cpp$'
+          fi
+
+  sanitizer-asan:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install ccache
+        run: apt-get install -y ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-asan-${{ github.sha }}
+          restore-keys: |
+            ccache-jazzy-asan-
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y ros-jazzy-test-msgs
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Build with ASan + UBSan
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install \
+            --cmake-args -DCMAKE_BUILD_TYPE=Debug -DSANITIZER=asan,ubsan \
+            --event-handlers console_direct+
+          ccache -s
+
+      - name: Run unit tests with ASan + UBSan
+        timeout-minutes: 15
+        env:
+          ASAN_OPTIONS: halt_on_error=1:detect_leaks=0:new_delete_type_mismatch=0
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          colcon test --return-code-on-test-failure \
+            --ctest-args -LE "linter|integration" \
+            --event-handlers console_direct+
+
+      - name: Show test results
+        if: always()
+        run: colcon test-result --verbose
+
+  sanitizer-tsan:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install ccache
+        run: apt-get install -y ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-tsan-${{ github.sha }}
+          restore-keys: |
+            ccache-jazzy-tsan-
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y ros-jazzy-test-msgs
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Build with TSan
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install \
+            --cmake-args -DCMAKE_BUILD_TYPE=Debug -DSANITIZER=tsan \
+            --event-handlers console_direct+
+          ccache -s
+
+      - name: Run unit tests with TSan
+        timeout-minutes: 15
+        env:
+          TSAN_OPTIONS: "halt_on_error=1:suppressions=${{ github.workspace }}/tsan_suppressions.txt"
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          colcon test --return-code-on-test-failure \
+            --ctest-args -LE "linter|integration" \
+            --event-handlers console_direct+
+
+      - name: Show test results
+        if: always()
+        run: colcon test-result --verbose
