@@ -105,35 +105,15 @@ TEST(PluginConfig, YamlPluginParamsReachGateway) {
   rclcpp::NodeOptions options;
   auto node = std::make_shared<ros2_medkit_gateway::GatewayNode>(options);
 
-  // Verify: parameter_overrides() should contain the plugin params.
-  // BUG: --params-file YAML params go to the global rcl context,
-  //      NOT to NodeOptions::parameter_overrides().
-  const auto & overrides = node->get_node_options().parameter_overrides();
-  bool found_plugin_config = false;
-  for (const auto & p : overrides) {
-    if (p.get_name().rfind("plugins.test_plugin.", 0) == 0 && p.get_name() != "plugins.test_plugin.path") {
-      found_plugin_config = true;
-      break;
-    }
-  }
+  // After the fix, plugin config params from --params-file should be declared
+  // on the node by extract_plugin_config() via declare_plugin_params_from_yaml().
+  ASSERT_TRUE(node->has_parameter("plugins.test_plugin.custom_key"))
+      << "Plugin config param 'custom_key' from --params-file YAML was not declared on the node. "
+      << "extract_plugin_config() must discover and declare params from the global rcl context.";
 
-  // This assertion proves the bug: YAML plugin params are NOT in parameter_overrides
-  EXPECT_TRUE(found_plugin_config)
-      << "Plugin config from --params-file not found in parameter_overrides(). "
-      << "extract_plugin_config() reads from this source, so plugins receive empty config. "
-      << "Total overrides: " << overrides.size();
-
-  // Sanity check: the params DO exist in the global context (they're just not in overrides).
-  // Declaring them proves the YAML was parsed correctly.
-  try {
-    node->declare_parameter("plugins.test_plugin.custom_key", std::string("default"));
-    auto val = node->get_parameter("plugins.test_plugin.custom_key").as_string();
-    EXPECT_EQ(val, "custom_value") << "YAML param exists in global context but not in parameter_overrides()";
-  } catch (const rclcpp::exceptions::ParameterAlreadyDeclaredException &) {
-    // If already declared (e.g. by a fix), that's fine - get it directly
-    auto val = node->get_parameter("plugins.test_plugin.custom_key").as_string();
-    EXPECT_EQ(val, "custom_value");
-  }
+  EXPECT_EQ(node->get_parameter("plugins.test_plugin.custom_key").as_string(), "custom_value");
+  EXPECT_EQ(node->get_parameter("plugins.test_plugin.mode").as_string(), "testing");
+  EXPECT_EQ(node->get_parameter("plugins.test_plugin.nested.setting").as_int(), 42);
 
   node.reset();
   rclcpp::shutdown();
