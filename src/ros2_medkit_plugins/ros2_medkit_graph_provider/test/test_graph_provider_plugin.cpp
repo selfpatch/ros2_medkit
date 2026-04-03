@@ -33,23 +33,65 @@
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 #include "ros2_medkit_graph_provider/graph_provider_plugin.hpp"
 
 using namespace std::chrono_literals;
 using namespace ros2_medkit_gateway;
 
-// Stubs for PluginContext static methods (defined in gateway_lib, not linked into tests)
+// Stubs for PluginRequest/PluginResponse (implemented in gateway_lib, not linked into tests).
+// These wrap httplib::Request/Response directly so the route tests can use a real HTTP server.
 namespace ros2_medkit_gateway {
-void PluginContext::send_json(httplib::Response & res, const nlohmann::json & data) {
-  res.set_content(data.dump(), "application/json");
+
+PluginRequest::PluginRequest(const void * impl) : impl_(impl) {
 }
-void PluginContext::send_error(httplib::Response & res, int status, const std::string & /*error_code*/,
-                               const std::string & message, const nlohmann::json & /*parameters*/) {
+std::string PluginRequest::path_param(size_t index) const {
+  const auto & req = *static_cast<const httplib::Request *>(impl_);
+  if (index < req.matches.size()) {
+    return req.matches[index].str();
+  }
+  return {};
+}
+std::string PluginRequest::header(const std::string & name) const {
+  return static_cast<const httplib::Request *>(impl_)->get_header_value(name);
+}
+std::string PluginRequest::path() const {
+  return static_cast<const httplib::Request *>(impl_)->path;
+}
+std::string PluginRequest::body() const {
+  return static_cast<const httplib::Request *>(impl_)->body;
+}
+
+PluginResponse::PluginResponse(void * impl) : impl_(impl) {
+}
+void PluginResponse::send_json(const nlohmann::json & data) {
+  static_cast<httplib::Response *>(impl_)->set_content(data.dump(), "application/json");
+}
+void PluginResponse::send_error(int status, const std::string & /*error_code*/, const std::string & message,
+                                const nlohmann::json & /*parameters*/) {
+  auto & res = *static_cast<httplib::Response *>(impl_);
   res.status = status;
   nlohmann::json err = {{"error", message}};
   res.set_content(err.dump(), "application/json");
 }
+
 }  // namespace ros2_medkit_gateway
+
+/// Helper: register all routes from get_routes() on an httplib::Server with a given api_prefix.
+static void register_plugin_routes(httplib::Server & server, const std::string & api_prefix,
+                                   ros2_medkit_gateway::GatewayPlugin & plugin) {
+  for (auto & route : plugin.get_routes()) {
+    auto pattern = api_prefix + "/" + route.pattern;
+    auto handler = route.handler;
+    if (route.method == "GET") {
+      server.Get(pattern.c_str(), [handler](const httplib::Request & req, httplib::Response & res) {
+        PluginRequest preq(&req);
+        PluginResponse pres(&res);
+        handler(preq, pres);
+      });
+    }
+  }
+}
 
 namespace {
 
@@ -156,11 +198,11 @@ class FakePluginContext : public PluginContext {
     return nlohmann::json::array();
   }
 
-  std::optional<PluginEntityInfo> validate_entity_for_route(const httplib::Request & /*req*/, httplib::Response & res,
+  std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest & /*req*/, PluginResponse & res,
                                                             const std::string & entity_id) const override {
     auto entity = get_entity(entity_id);
     if (!entity) {
-      send_error(res, 404, "entity-not-found", "Entity not found");
+      res.send_error(404, "entity-not-found", "Entity not found");
       return std::nullopt;
     }
     return entity;
@@ -587,7 +629,7 @@ TEST(GraphProviderPluginRouteTest, ServesFunctionGraphFromCachedSnapshot) {
   plugin.introspect(input);
 
   httplib::Server server;
-  plugin.register_routes(server, "/api/v1");
+  register_plugin_routes(server, "/api/v1", plugin);
 
   LocalHttpServer local_server;
   local_server.start(server);
@@ -643,7 +685,7 @@ TEST(GraphProviderPluginRouteTest, UsesPreviousOnlineTimestampForOfflineLastSeen
   ctx.entity_snapshot_ = offline_input;
 
   httplib::Server server;
-  plugin.register_routes(server, "/api/v1");
+  register_plugin_routes(server, "/api/v1", plugin);
 
   LocalHttpServer local_server;
   local_server.start(server);

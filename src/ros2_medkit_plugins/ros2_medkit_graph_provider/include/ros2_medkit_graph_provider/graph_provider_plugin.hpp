@@ -58,7 +58,7 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   std::string name() const override;
   void configure(const nlohmann::json & config) override;
   void set_context(PluginContext & context) override;
-  void register_routes(httplib::Server & server, const std::string & api_prefix) override;
+  std::vector<PluginRoute> get_routes() override;
   IntrospectionResult introspect(const IntrospectionInput & input) override;
 
   static nlohmann::json build_graph_document(const std::string & function_id, const IntrospectionInput & input,
