@@ -19,7 +19,7 @@ set -e
 # shellcheck disable=SC1090,SC1091
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
 # shellcheck disable=SC1091
-source /root/ws/install/setup.bash
+source "${COLCON_WS}/install/setup.bash"
 
 # Default to FastDDS (can be overridden via RMW_IMPLEMENTATION env var)
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"

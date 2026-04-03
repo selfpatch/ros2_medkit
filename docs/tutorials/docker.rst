@@ -67,7 +67,7 @@ Test the gateway:
 Custom Configuration
 --------------------
 
-The default configuration listens on ``0.0.0.0:8080`` with CORS allowing all origins.
+The default configuration listens on ``0.0.0.0:8080`` with CORS disabled.
 To use a custom configuration, mount a params file:
 
 .. code-block:: bash

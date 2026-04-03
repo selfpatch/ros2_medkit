@@ -97,7 +97,7 @@ FROM ros:${ROS_DISTRO}-ros-base
 ARG ROS_DISTRO
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=${ROS_DISTRO}
-ENV COLCON_WS=/root/ws
+ENV COLCON_WS=/home/medkit/ws
 
 # Runtime dependencies only (header-only libs like nlohmann-json and cpp-httplib
 # are already compiled into the binaries, no need to install here)
@@ -110,8 +110,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy built workspace from builder
-COPY --from=builder ${COLCON_WS}/install/ ${COLCON_WS}/install/
+# Copy built workspace from builder (builder uses /root/ws, runtime uses /home/medkit/ws)
+COPY --from=builder /root/ws/install/ ${COLCON_WS}/install/
 
 # Default config - can be overridden via volume mount
 COPY docker/gateway_docker_params.yaml /etc/ros2_medkit/params.yaml
