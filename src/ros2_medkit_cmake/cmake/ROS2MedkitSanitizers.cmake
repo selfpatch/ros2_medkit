@@ -61,6 +61,8 @@ foreach(_SAN IN LISTS _SANITIZER_LIST)
 endforeach()
 list(JOIN _FSANITIZE_FLAGS "," _FSANITIZE_VALUE)
 
+# -O1: sanitizers produce fewer false positives and run faster than -O0.
+# This intentionally overrides Debug's -O0 for sanitizer builds.
 add_compile_options(-fsanitize=${_FSANITIZE_VALUE} -fno-omit-frame-pointer -O1)
 add_link_options(-fsanitize=${_FSANITIZE_VALUE})
 

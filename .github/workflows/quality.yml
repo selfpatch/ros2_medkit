@@ -6,6 +6,13 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: quality-${{ github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   format-lint:
     runs-on: ubuntu-latest
@@ -33,12 +40,24 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y clang-format
+          apt-get install -y clang-format ccache
           source /opt/ros/jazzy/setup.bash
           rosdep update
           rosdep install --from-paths src --ignore-src -y
 
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-lint-${{ github.sha }}
+          restore-keys: |
+            ccache-jazzy-lint-
+
       - name: Build (minimal, for ament test infrastructure)
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
         run: |
           source /opt/ros/jazzy/setup.bash
           colcon build --symlink-install \
@@ -99,7 +118,7 @@ jobs:
       - name: Install clang-tidy-cache (ctcache)
         run: |
           apt-get install -y python3-pip
-          pip3 install --break-system-packages git+https://github.com/matus-chochlik/ctcache.git
+          pip3 install --break-system-packages git+https://github.com/matus-chochlik/ctcache.git@3880541496c7ce0d2e2830d2f525375078fe0b1f
           printf '#!/bin/sh\nexec clang-tidy-cache /usr/bin/clang-tidy "$@"\n' > /usr/local/bin/ctcache-wrapper
           chmod +x /usr/local/bin/ctcache-wrapper
 
@@ -135,8 +154,7 @@ jobs:
 
       - name: Merge compile databases
         run: |
-          pip3 install compdb --break-system-packages || true
-          # Simple merge: symlink per-package databases
+          # Simple merge: combine per-package databases into build/compile_commands.json
           mkdir -p build
           python3 -c "
           import json, glob, sys
@@ -174,18 +192,19 @@ jobs:
         if: steps.files.outputs.skip != 'true'
         env:
           CTCACHE_DIR: /root/.ctcache
+          CHANGED_FILES: ${{ steps.files.outputs.files }}
         run: |
           mkdir -p /root/.ctcache
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          files="${{ steps.files.outputs.files }}"
-          if [ -n "$files" ]; then
+          if [ -n "$CHANGED_FILES" ]; then
             # Incremental: specific files
             run-clang-tidy -p build -clang-tidy-binary ctcache-wrapper \
               -header-filter='.*ros2_medkit.*' \
-              $files
+              $CHANGED_FILES
           else
-            # Full: all files (filter to our source only)
+            # Full: analyze all source files under src/ros2_medkit_*/src/
+            # Intentionally excludes test/ directories (tested via sanitizer jobs)
             run-clang-tidy -p build -clang-tidy-binary ctcache-wrapper \
               -header-filter='.*ros2_medkit.*' \
               'src/ros2_medkit_.*/src/.*\.cpp$'
@@ -253,6 +272,8 @@ jobs:
       - name: Run unit tests with ASan + UBSan
         timeout-minutes: 15
         env:
+          # detect_leaks=0: FastDDS allocator leaks on shutdown (not our code)
+          # new_delete_type_mismatch=0: ROS 2 DDS scalar/array new/delete mismatch
           ASAN_OPTIONS: halt_on_error=1:detect_leaks=0:new_delete_type_mismatch=0
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
