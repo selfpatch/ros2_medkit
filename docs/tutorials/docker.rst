@@ -216,10 +216,12 @@ custom params file. CORS is disabled by default for production safety:
 
 .. code-block:: yaml
 
-   cors:
-     allowed_origins:
-       - "http://localhost:3000"
-       - "https://my-dashboard.example.com"
+   ros2_medkit_gateway:
+     ros__parameters:
+       cors:
+         allowed_origins:
+           - "http://localhost:3000"
+           - "https://my-dashboard.example.com"
 
 Health Checks
 -------------
