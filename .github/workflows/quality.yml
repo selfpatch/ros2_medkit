@@ -173,6 +173,7 @@ jobs:
         env:
           CTCACHE_DIR: /root/.ctcache
         run: |
+          mkdir -p /root/.ctcache
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           files="${{ steps.files.outputs.files }}"
