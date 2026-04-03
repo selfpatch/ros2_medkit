@@ -17,8 +17,6 @@
   <depend>rclcpp</depend>
   <depend>diagnostic_msgs</depend>
   <depend>nlohmann-json-dev</depend>
-  <depend>libcpp-httplib-dev</depend>
-  <depend>libssl-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

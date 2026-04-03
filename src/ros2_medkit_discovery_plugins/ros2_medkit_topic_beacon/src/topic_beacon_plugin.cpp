@@ -103,34 +103,31 @@ void TopicBeaconPlugin::shutdown() {
   subscription_.reset();
 }
 
-std::vector<GatewayPlugin::RouteDescription> TopicBeaconPlugin::get_route_descriptions() const {
-  return {
-      {"GET", "apps/{app_id}/x-medkit-topic-beacon"},
-      {"GET", "components/{component_id}/x-medkit-topic-beacon"},
-  };
-}
-
-void TopicBeaconPlugin::register_routes(httplib::Server & server, const std::string & api_prefix) {
+std::vector<GatewayPlugin::PluginRoute> TopicBeaconPlugin::get_routes() {
+  std::vector<GatewayPlugin::PluginRoute> routes;
   // Register beacon metadata endpoint for apps and components
-  for (const auto & entity_type : {"apps", "components"}) {
-    auto pattern = api_prefix + "/" + entity_type + R"(/([^/]+)/x-medkit-topic-beacon)";
-    server.Get(pattern.c_str(), [this](const httplib::Request & req, httplib::Response & res) {
-      auto entity_id = req.matches[1].str();
+  for (const auto * entity_type : {"apps", "components"}) {
+    std::string pattern = std::string(entity_type) + R"(/([^/]+)/x-medkit-topic-beacon)";
+    routes.push_back(
+        {"GET", pattern,
+         [this](const ros2_medkit_gateway::PluginRequest & req, ros2_medkit_gateway::PluginResponse & res) {
+           auto entity_id = req.path_param(1);
 
-      auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
-      if (!entity) {
-        return;
-      }
+           auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
+           if (!entity) {
+             return;
+           }
 
-      auto stored = store_->get(entity_id);
-      if (!stored) {
-        PluginContext::send_error(res, 404, "x-medkit-beacon-not-found", "No beacon data for entity");
-        return;
-      }
+           auto stored = store_->get(entity_id);
+           if (!stored) {
+             res.send_error(404, "x-medkit-beacon-not-found", "No beacon data for entity");
+             return;
+           }
 
-      PluginContext::send_json(res, ros2_medkit_beacon::build_beacon_response(entity_id, *stored));
-    });
+           res.send_json(ros2_medkit_beacon::build_beacon_response(entity_id, *stored));
+         }});
   }
+  return routes;
 }
 
 IntrospectionResult TopicBeaconPlugin::introspect(const IntrospectionInput & input) {
