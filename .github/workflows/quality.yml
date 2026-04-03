@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ubuntu:noble
-    timeout-minutes: 15
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ubuntu:noble
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -195,7 +195,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ubuntu:noble
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -270,7 +270,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ubuntu:noble
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
