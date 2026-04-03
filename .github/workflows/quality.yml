@@ -100,6 +100,8 @@ jobs:
         run: |
           apt-get install -y python3-pip
           pip3 install --break-system-packages git+https://github.com/matus-chochlik/ctcache.git
+          printf '#!/bin/sh\nexec clang-tidy-cache /usr/bin/clang-tidy "$@"\n' > /usr/local/bin/ctcache-wrapper
+          chmod +x /usr/local/bin/ctcache-wrapper
 
       - name: Cache ctcache results
         uses: actions/cache@v4
@@ -179,12 +181,12 @@ jobs:
           files="${{ steps.files.outputs.files }}"
           if [ -n "$files" ]; then
             # Incremental: specific files
-            run-clang-tidy -p build -clang-tidy-binary clang-tidy-cache \
+            run-clang-tidy -p build -clang-tidy-binary ctcache-wrapper \
               -header-filter='.*ros2_medkit.*' \
               $files
           else
             # Full: all files (filter to our source only)
-            run-clang-tidy -p build -clang-tidy-binary clang-tidy-cache \
+            run-clang-tidy -p build -clang-tidy-binary ctcache-wrapper \
               -header-filter='.*ros2_medkit.*' \
               'src/ros2_medkit_.*/src/.*\.cpp$'
           fi
@@ -199,6 +201,11 @@ jobs:
         shell: bash
 
     steps:
+      - name: Free disk space
+        run: |
+          rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
+          apt-get clean
+
       - name: Install Git
         run: |
           apt-get update
@@ -320,8 +327,8 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           colcon test --return-code-on-test-failure \
-            --ctest-args -LE "linter|integration" \
-            --event-handlers console_direct+
+            --event-handlers console_direct+ \
+            --ctest-args -LE "linter|integration"
 
       - name: Show test results
         if: always()

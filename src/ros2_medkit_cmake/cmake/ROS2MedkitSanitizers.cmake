@@ -64,4 +64,8 @@ list(JOIN _FSANITIZE_FLAGS "," _FSANITIZE_VALUE)
 add_compile_options(-fsanitize=${_FSANITIZE_VALUE} -fno-omit-frame-pointer -O1)
 add_link_options(-fsanitize=${_FSANITIZE_VALUE})
 
+# Sanitizers slow down tests significantly. Increase default CTest timeout
+# from 60s to 180s to prevent false timeout failures.
+list(APPEND CMAKE_CTEST_ARGUMENTS "--timeout" "180")
+
 message(STATUS "Sanitizers enabled: ${SANITIZER} (-fsanitize=${_FSANITIZE_VALUE})")

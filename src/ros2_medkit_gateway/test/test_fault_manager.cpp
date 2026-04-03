@@ -84,6 +84,13 @@ class FaultManagerTest : public ::testing::Test {
     });
   }
 
+  void stop_spinning() {
+    if (spin_thread_.joinable()) {
+      executor_->cancel();
+      spin_thread_.join();
+    }
+  }
+
   bool wait_for_subscription_count(const std::string & topic_name, size_t expected_count,
                                    std::chrono::milliseconds timeout = 1s) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -425,6 +432,7 @@ TEST_F(FaultManagerTest, TriggerFaultSubscriberForwardsNamespacedFaultEvents) {
   EXPECT_EQ(change.value["fault_code"], "FAULT_1");
   EXPECT_EQ(change.value["event_type"], "fault_confirmed");
 
+  stop_spinning();
   notifier.unsubscribe(subscription_id);
 }
 
@@ -470,6 +478,7 @@ TEST_F(FaultManagerTest, TriggerFaultSubscriberResolverCalledAndEntityIdUsed) {
   EXPECT_EQ(change.entity_id, "manifest_entity_id");
   EXPECT_EQ(received_fqn, "/pipeline/some_node");
 
+  stop_spinning();
   notifier.unsubscribe(subscription_id);
 }
 
@@ -513,6 +522,7 @@ TEST_F(FaultManagerTest, TriggerFaultSubscriberResolverEmptyFallsBackToLastSegme
   auto change = change_future.get();
   EXPECT_EQ(change.entity_id, "fallback_node");
 
+  stop_spinning();
   notifier.unsubscribe(subscription_id);
 }
 
@@ -552,6 +562,7 @@ TEST_F(FaultManagerTest, TriggerFaultSubscriberNoResolverUsesLastSegment) {
   auto change = change_future.get();
   EXPECT_EQ(change.entity_id, "camera_proc");
 
+  stop_spinning();
   notifier.unsubscribe(subscription_id);
 }
 
