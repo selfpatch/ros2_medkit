@@ -95,6 +95,8 @@ class LidarSensor : public rclcpp::Node {
       initial_check_timer_->cancel();
       initial_check_timer_.reset();
     }
+    param_callback_handle_.reset();
+    calibrate_srv_.reset();
     scan_pub_.reset();
     report_fault_client_.reset();
   }

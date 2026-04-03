@@ -36,6 +36,10 @@ class CalibrationService : public rclcpp::Node {
     RCLCPP_INFO(this->get_logger(), "Calibration service started");
   }
 
+  ~CalibrationService() {
+    calibration_srv_.reset();
+  }
+
  private:
   void calibrate_callback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                           std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
