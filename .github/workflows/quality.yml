@@ -279,13 +279,21 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          colcon test --return-code-on-test-failure \
-            --ctest-args -LE "linter|integration" \
-            --event-handlers console_direct+
+          failed=0
+          for pkg_dir in build/ros2_medkit_*/; do
+            pkg=$(basename "$pkg_dir")
+            echo "::group::Testing $pkg"
+            (cd "$pkg_dir" && ctest --timeout 180 -LE "linter|integration" --output-on-failure) || failed=1
+            echo "::endgroup::"
+          done
+          exit $failed
 
       - name: Show test results
         if: always()
-        run: colcon test-result --verbose
+        run: |
+          for pkg_dir in build/ros2_medkit_*/; do
+            colcon test-result --test-result-base "$pkg_dir" --verbose 2>/dev/null || true
+          done
 
   sanitizer-tsan:
     runs-on: ubuntu-latest
@@ -347,10 +355,18 @@ jobs:
           export TSAN_OPTIONS="halt_on_error=1:suppressions=$(pwd)/tsan_suppressions.txt"
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          colcon test --return-code-on-test-failure \
-            --event-handlers console_direct+ \
-            --ctest-args -LE "linter|integration"
+          failed=0
+          for pkg_dir in build/ros2_medkit_*/; do
+            pkg=$(basename "$pkg_dir")
+            echo "::group::Testing $pkg"
+            (cd "$pkg_dir" && ctest --timeout 180 -LE "linter|integration" --output-on-failure) || failed=1
+            echo "::endgroup::"
+          done
+          exit $failed
 
       - name: Show test results
         if: always()
-        run: colcon test-result --verbose
+        run: |
+          for pkg_dir in build/ros2_medkit_*/; do
+            colcon test-result --test-result-base "$pkg_dir" --verbose 2>/dev/null || true
+          done
