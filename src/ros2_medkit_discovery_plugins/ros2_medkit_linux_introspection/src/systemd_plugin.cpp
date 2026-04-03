@@ -14,13 +14,13 @@
 
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_linux_introspection/plugin_config.hpp"
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
 #include "ros2_medkit_linux_introspection/systemd_utils.hpp"
 
-#include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <systemd/sd-bus.h>
 #include <systemd/sd-login.h>
@@ -136,15 +136,17 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
     ctx.register_capability(SovdEntityType::COMPONENT, "x-medkit-systemd");
   }
 
-  void register_routes(httplib::Server & server, const std::string & api_prefix) override {
-    server.Get((api_prefix + R"(/apps/([^/]+)/x-medkit-systemd)").c_str(),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_app_request(req, res);
-               });
-    server.Get((api_prefix + R"(/components/([^/]+)/x-medkit-systemd)").c_str(),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_component_request(req, res);
-               });
+  std::vector<PluginRoute> get_routes() override {
+    return {
+        {"GET", R"(apps/([^/]+)/x-medkit-systemd)",
+         [this](const PluginRequest & req, PluginResponse & res) {
+           handle_app_request(req, res);
+         }},
+        {"GET", R"(components/([^/]+)/x-medkit-systemd)",
+         [this](const PluginRequest & req, PluginResponse & res) {
+           handle_component_request(req, res);
+         }},
+    };
   }
 
   IntrospectionResult introspect(const IntrospectionInput & input) override {
@@ -197,8 +199,8 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
         {"sub_state", info.sub_state}, {"restart_count", info.restart_count}, {"watchdog_usec", info.watchdog_usec}};
   }
 
-  void handle_app_request(const httplib::Request & req, httplib::Response & res) {
-    auto entity_id = req.matches[1].str();
+  void handle_app_request(const PluginRequest & req, PluginResponse & res) {
+    auto entity_id = req.path_param(1);
     auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
     if (!entity) {
       return;
@@ -206,14 +208,13 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
 
     auto pid_opt = pid_cache_->lookup(entity->fqn, proc_root_);
     if (!pid_opt) {
-      PluginContext::send_error(res, 404, "x-medkit-pid-lookup-failed", "Process not found for entity " + entity_id);
+      res.send_error(404, "x-medkit-pid-lookup-failed", "Process not found for entity " + entity_id);
       return;
     }
 
     char * unit_cstr = nullptr;
     if (sd_pid_get_unit(*pid_opt, &unit_cstr) < 0 || !unit_cstr) {
-      PluginContext::send_error(res, 404, "x-medkit-not-in-systemd-unit",
-                                "Entity " + entity_id + " is not managed by a systemd unit");
+      res.send_error(404, "x-medkit-not-in-systemd-unit", "Entity " + entity_id + " is not managed by a systemd unit");
       return;
     }
     std::string unit_name(unit_cstr);
@@ -221,16 +222,16 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
 
     auto unit_info = query_unit_info(unit_name);
     if (!unit_info) {
-      PluginContext::send_error(res, 503, "x-medkit-systemd-query-failed",
-                                "Failed to query systemd properties for entity " + entity_id);
+      res.send_error(503, "x-medkit-systemd-query-failed",
+                     "Failed to query systemd properties for entity " + entity_id);
       return;
     }
 
-    PluginContext::send_json(res, unit_info_to_json(*unit_info));
+    res.send_json(unit_info_to_json(*unit_info));
   }
 
-  void handle_component_request(const httplib::Request & req, httplib::Response & res) {
-    auto entity_id = req.matches[1].str();
+  void handle_component_request(const PluginRequest & req, PluginResponse & res) {
+    auto entity_id = req.path_param(1);
     auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
     if (!entity) {
       return;
@@ -275,7 +276,7 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
     for (auto & [_, unit_json] : units) {
       result["units"].push_back(std::move(unit_json));
     }
-    PluginContext::send_json(res, result);
+    res.send_json(result);
   }
 };
 

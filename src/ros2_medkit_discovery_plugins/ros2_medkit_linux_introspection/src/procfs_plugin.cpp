@@ -14,13 +14,13 @@
 
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_linux_introspection/plugin_config.hpp"
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
 #include "ros2_medkit_linux_introspection/procfs_utils.hpp"
 
-#include <httplib.h>
 #include <nlohmann/json.hpp>
 
 #include <map>
@@ -47,18 +47,17 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
     ctx.register_capability(SovdEntityType::COMPONENT, "x-medkit-procfs");
   }
 
-  void register_routes(httplib::Server & server, const std::string & api_prefix) override {
-    // App-level endpoint
-    server.Get((api_prefix + R"(/apps/([^/]+)/x-medkit-procfs)").c_str(),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_app_request(req, res);
-               });
-
-    // Component-level aggregation endpoint
-    server.Get((api_prefix + R"(/components/([^/]+)/x-medkit-procfs)").c_str(),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 handle_component_request(req, res);
-               });
+  std::vector<PluginRoute> get_routes() override {
+    return {
+        {"GET", R"(apps/([^/]+)/x-medkit-procfs)",
+         [this](const PluginRequest & req, PluginResponse & res) {
+           handle_app_request(req, res);
+         }},
+        {"GET", R"(components/([^/]+)/x-medkit-procfs)",
+         [this](const PluginRequest & req, PluginResponse & res) {
+           handle_component_request(req, res);
+         }},
+    };
   }
 
   IntrospectionResult introspect(const IntrospectionInput & input) override {
@@ -95,8 +94,8 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
       std::make_unique<ros2_medkit_linux_introspection::PidCache>();
   std::string proc_root_{"/"};
 
-  void handle_app_request(const httplib::Request & req, httplib::Response & res) {
-    auto entity_id = req.matches[1].str();
+  void handle_app_request(const PluginRequest & req, PluginResponse & res) {
+    auto entity_id = req.path_param(1);
     auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
     if (!entity) {
       return;
@@ -104,24 +103,22 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
 
     auto pid_opt = pid_cache_->lookup(entity->fqn, proc_root_);
     if (!pid_opt) {
-      PluginContext::send_error(res, 404, "x-medkit-pid-lookup-failed", "Process not found for entity " + entity_id);
+      res.send_error(404, "x-medkit-pid-lookup-failed", "Process not found for entity " + entity_id);
       return;
     }
 
     auto proc_info = ros2_medkit_linux_introspection::read_process_info(*pid_opt, proc_root_);
     if (!proc_info) {
-      PluginContext::send_error(res, 503, "x-medkit-proc-read-failed",
-                                "Failed to read process information for entity " + entity_id);
+      res.send_error(503, "x-medkit-proc-read-failed", "Failed to read process information for entity " + entity_id);
       return;
     }
 
     auto sys_uptime = ros2_medkit_linux_introspection::read_system_uptime(proc_root_);
-    PluginContext::send_json(
-        res, ros2_medkit_linux_introspection::process_info_to_json(*proc_info, sys_uptime ? *sys_uptime : 0.0));
+    res.send_json(ros2_medkit_linux_introspection::process_info_to_json(*proc_info, sys_uptime ? *sys_uptime : 0.0));
   }
 
-  void handle_component_request(const httplib::Request & req, httplib::Response & res) {
-    auto entity_id = req.matches[1].str();
+  void handle_component_request(const PluginRequest & req, PluginResponse & res) {
+    auto entity_id = req.path_param(1);
     auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
     if (!entity) {
       return;
@@ -156,7 +153,7 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
     for (auto & [_, proc_json] : processes) {
       result["processes"].push_back(std::move(proc_json));
     }
-    PluginContext::send_json(res, result);
+    res.send_json(result);
   }
 };
 
