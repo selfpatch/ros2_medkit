@@ -45,7 +45,9 @@ class BrakeActuator : public rclcpp::Node {
   }
 
   ~BrakeActuator() {
+    cmd_sub_.reset();
     timer_->cancel();
+    timer_.reset();
   }
 
  private:
@@ -90,7 +92,9 @@ class BrakeActuator : public rclcpp::Node {
 
 int main(int argc, char * argv[]) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<BrakeActuator>());
+  auto node = std::make_shared<BrakeActuator>();
+  rclcpp::spin(node);
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }

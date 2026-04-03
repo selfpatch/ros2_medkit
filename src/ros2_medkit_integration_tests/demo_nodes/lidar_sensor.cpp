@@ -88,9 +88,12 @@ class LidarSensor : public rclcpp::Node {
 
   ~LidarSensor() {
     scan_timer_->cancel();
+    scan_timer_.reset();
     fault_check_timer_->cancel();
+    fault_check_timer_.reset();
     if (initial_check_timer_) {
       initial_check_timer_->cancel();
+      initial_check_timer_.reset();
     }
   }
 
@@ -240,7 +243,9 @@ class LidarSensor : public rclcpp::Node {
 
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<LidarSensor>());
+  auto node = std::make_shared<LidarSensor>();
+  rclcpp::spin(node);
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }

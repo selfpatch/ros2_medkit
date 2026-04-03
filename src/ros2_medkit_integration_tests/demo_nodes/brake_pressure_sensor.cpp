@@ -28,6 +28,7 @@ class BrakePressureSensor : public rclcpp::Node {
 
   ~BrakePressureSensor() {
     timer_->cancel();
+    timer_.reset();
   }
 
  private:
@@ -52,7 +53,9 @@ class BrakePressureSensor : public rclcpp::Node {
 
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<BrakePressureSensor>());
+  auto node = std::make_shared<BrakePressureSensor>();
+  rclcpp::spin(node);
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }

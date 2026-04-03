@@ -28,14 +28,23 @@
 
 using namespace ros2_medkit_gateway;
 
+// In every test below, ResourceChangeNotifier is declared AFTER all shared
+// state (promises, atomics, futures) that callbacks capture by reference.
+// C++ destroys locals in reverse declaration order, so the notifier (and its
+// worker thread via shutdown + join) is destroyed FIRST - guaranteeing the
+// worker has exited before any captured variable is destroyed.  Without this,
+// a timeout on wait_for() causes the test to return and destroy the promise
+// while the worker thread is still calling set_value() - undefined behavior
+// that manifests as a hang on CI (see #344).
+
 // --- Subscribe + Notify ---
 
 // @verifies REQ_INTEROP_097
 TEST(ResourceChangeNotifier, SubscribeAndNotify) {
-  ResourceChangeNotifier notifier;
-
   std::promise<ResourceChange> promise;
   auto future = promise.get_future();
+
+  ResourceChangeNotifier notifier;
 
   notifier.subscribe({"faults", "", ""}, [&promise](const ResourceChange & change) {
     promise.set_value(change);
@@ -58,10 +67,10 @@ TEST(ResourceChangeNotifier, SubscribeAndNotify) {
 // --- Filter by collection ---
 
 TEST(ResourceChangeNotifier, FilterByCollection) {
-  ResourceChangeNotifier notifier;
-
   std::promise<ResourceChange> promise;
   auto future = promise.get_future();
+
+  ResourceChangeNotifier notifier;
 
   // Subscribe to "data" collection only
   notifier.subscribe({"data", "", ""}, [&promise](const ResourceChange & change) {
@@ -86,11 +95,11 @@ TEST(ResourceChangeNotifier, FilterByCollection) {
 // --- Filter by entity_id: empty = all entities ---
 
 TEST(ResourceChangeNotifier, EmptyEntityIdMatchesAll) {
-  ResourceChangeNotifier notifier;
-
   std::atomic<int> call_count{0};
   std::promise<void> done;
   auto future = done.get_future();
+
+  ResourceChangeNotifier notifier;
 
   notifier.subscribe({"data", "", ""}, [&](const ResourceChange & /*change*/) {
     if (call_count.fetch_add(1) + 1 == 2) {
@@ -109,10 +118,10 @@ TEST(ResourceChangeNotifier, EmptyEntityIdMatchesAll) {
 // --- Filter by entity_id: specific = only that entity ---
 
 TEST(ResourceChangeNotifier, SpecificEntityIdFilters) {
-  ResourceChangeNotifier notifier;
-
   std::promise<ResourceChange> promise;
   auto future = promise.get_future();
+
+  ResourceChangeNotifier notifier;
 
   notifier.subscribe({"data", "sensor_b", ""}, [&promise](const ResourceChange & change) {
     promise.set_value(change);
@@ -136,11 +145,11 @@ TEST(ResourceChangeNotifier, SpecificEntityIdFilters) {
 // --- Filter by resource_path: empty = all resources ---
 
 TEST(ResourceChangeNotifier, EmptyResourcePathMatchesAll) {
-  ResourceChangeNotifier notifier;
-
   std::atomic<int> call_count{0};
   std::promise<void> done;
   auto future = done.get_future();
+
+  ResourceChangeNotifier notifier;
 
   notifier.subscribe({"data", "sensor", ""}, [&](const ResourceChange & /*change*/) {
     if (call_count.fetch_add(1) + 1 == 2) {
@@ -159,10 +168,10 @@ TEST(ResourceChangeNotifier, EmptyResourcePathMatchesAll) {
 // --- Filter by resource_path: specific = only that resource ---
 
 TEST(ResourceChangeNotifier, SpecificResourcePathFilters) {
-  ResourceChangeNotifier notifier;
-
   std::promise<ResourceChange> promise;
   auto future = promise.get_future();
+
+  ResourceChangeNotifier notifier;
 
   notifier.subscribe({"data", "sensor", "humidity"}, [&promise](const ResourceChange & change) {
     promise.set_value(change);
@@ -186,9 +195,9 @@ TEST(ResourceChangeNotifier, SpecificResourcePathFilters) {
 // --- Unsubscribe ---
 
 TEST(ResourceChangeNotifier, Unsubscribe) {
-  ResourceChangeNotifier notifier;
-
   std::atomic<int> call_count{0};
+
+  ResourceChangeNotifier notifier;
 
   auto id = notifier.subscribe({"data", "", ""}, [&](const ResourceChange & /*change*/) {
     call_count.fetch_add(1);
@@ -216,10 +225,10 @@ TEST(ResourceChangeNotifier, Unsubscribe) {
 
 // @verifies REQ_INTEROP_097
 TEST(ResourceChangeNotifier, AsyncDispatchNonBlocking) {
-  ResourceChangeNotifier notifier;
-
   std::promise<void> callback_started;
   auto started_future = callback_started.get_future();
+
+  ResourceChangeNotifier notifier;
 
   notifier.subscribe({"data", "", ""}, [&](const ResourceChange & /*change*/) {
     callback_started.set_value();
@@ -241,13 +250,13 @@ TEST(ResourceChangeNotifier, AsyncDispatchNonBlocking) {
 // --- Multiple subscribers ---
 
 TEST(ResourceChangeNotifier, MultipleSubscribersAllCalled) {
-  ResourceChangeNotifier notifier;
-
   std::atomic<int> count_a{0};
   std::atomic<int> count_b{0};
   std::atomic<int> total{0};
   std::promise<void> done;
   auto future = done.get_future();
+
+  ResourceChangeNotifier notifier;
 
   auto check_done = [&]() {
     if (total.fetch_add(1) + 1 == 2) {
@@ -276,10 +285,10 @@ TEST(ResourceChangeNotifier, MultipleSubscribersAllCalled) {
 // --- Exception in callback: other subscribers still called ---
 
 TEST(ResourceChangeNotifier, ExceptionInCallbackDoesNotBlockOthers) {
-  ResourceChangeNotifier notifier;
-
   std::promise<ResourceChange> promise;
   auto future = promise.get_future();
+
+  ResourceChangeNotifier notifier;
 
   // First subscriber throws
   notifier.subscribe({"data", "", ""}, [](const ResourceChange & /*change*/) {
@@ -304,12 +313,12 @@ TEST(ResourceChangeNotifier, ExceptionInCallbackDoesNotBlockOthers) {
 
 TEST(ResourceChangeNotifier, ChangeTypePropagation) {
   for (auto ct : {ChangeType::CREATED, ChangeType::UPDATED, ChangeType::DELETED}) {
-    // Each iteration gets its own notifier to guarantee the worker thread
-    // has fully shut down (joined) before the promise goes out of scope.
-    ResourceChangeNotifier notifier;
-
     std::promise<ChangeType> promise;
     auto future = promise.get_future();
+
+    // Notifier declared after promise - destroyed first, guaranteeing the
+    // worker thread has exited before the promise goes out of scope.
+    ResourceChangeNotifier notifier;
 
     notifier.subscribe({"data", "", ""}, [&promise](const ResourceChange & change) {
       promise.set_value(change.change_type);
@@ -320,19 +329,16 @@ TEST(ResourceChangeNotifier, ChangeTypePropagation) {
     auto status = future.wait_for(std::chrono::seconds(2));
     ASSERT_EQ(status, std::future_status::ready);
     EXPECT_EQ(future.get(), ct);
-
-    // notifier destructor calls shutdown() -> joins worker thread,
-    // guaranteeing the callback is no longer running before promise is destroyed.
   }
 }
 
 // --- Timestamp set correctly ---
 
 TEST(ResourceChangeNotifier, TimestampWithinTolerance) {
-  ResourceChangeNotifier notifier;
-
   std::promise<std::chrono::system_clock::time_point> promise;
   auto future = promise.get_future();
+
+  ResourceChangeNotifier notifier;
 
   notifier.subscribe({"data", "", ""}, [&promise](const ResourceChange & change) {
     promise.set_value(change.timestamp);
@@ -353,9 +359,9 @@ TEST(ResourceChangeNotifier, TimestampWithinTolerance) {
 // --- Notify after shutdown is a no-op ---
 
 TEST(ResourceChangeNotifier, NotifyAfterShutdownIsNoop) {
-  ResourceChangeNotifier notifier;
-
   std::atomic<int> call_count{0};
+
+  ResourceChangeNotifier notifier;
 
   notifier.subscribe({"data", "", ""}, [&](const ResourceChange & /*change*/) {
     call_count.fetch_add(1);
@@ -388,15 +394,19 @@ TEST(ResourceChangeNotifier, UnsubscribeInvalidIdIsSafe) {
 // --- Bounded queue: overflow drops oldest notifications ---
 
 TEST(ResourceChangeNotifier, QueueOverflow_DropsOldest) {
-  ResourceChangeNotifier notifier;
-  notifier.set_max_queue_size(5);
-
-  // Block the worker thread so that notifications pile up in the queue.
+  // All shared state declared before notifier so it outlives the worker thread.
   std::promise<void> unblock;
   auto unblock_future = unblock.get_future();
-
   std::promise<void> worker_blocked;
   auto worker_blocked_future = worker_blocked.get_future();
+  std::vector<int> received_indices;
+  std::mutex recv_mutex;
+  std::promise<void> all_done;
+  auto done_future = all_done.get_future();
+  bool promise_set = false;
+
+  ResourceChangeNotifier notifier;
+  notifier.set_max_queue_size(5);
 
   // Subscribe with a blocking callback to hold the worker while we fill the queue.
   notifier.subscribe({"data", "blocker", ""}, [&](const ResourceChange & /*change*/) {
@@ -418,12 +428,6 @@ TEST(ResourceChangeNotifier, QueueOverflow_DropsOldest) {
   }
 
   // Collect all delivered notifications.
-  std::vector<int> received_indices;
-  std::mutex recv_mutex;
-  std::promise<void> all_done;
-  auto done_future = all_done.get_future();
-  bool promise_set = false;
-
   notifier.subscribe({"data", "sensor", ""}, [&](const ResourceChange & change) {
     std::lock_guard<std::mutex> lk(recv_mutex);
     received_indices.push_back(change.value.at("index").get<int>());

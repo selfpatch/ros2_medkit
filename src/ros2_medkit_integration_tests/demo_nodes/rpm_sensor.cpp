@@ -27,6 +27,7 @@ class RPMSensor : public rclcpp::Node {
 
   ~RPMSensor() {
     timer_->cancel();
+    timer_.reset();
   }
 
  private:
@@ -51,7 +52,9 @@ class RPMSensor : public rclcpp::Node {
 
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<RPMSensor>());
+  auto node = std::make_shared<RPMSensor>();
+  rclcpp::spin(node);
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }

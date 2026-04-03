@@ -63,6 +63,7 @@ class EngineTempSensor : public rclcpp::Node {
 
   ~EngineTempSensor() {
     timer_->cancel();
+    timer_.reset();
   }
 
  private:
@@ -129,7 +130,9 @@ class EngineTempSensor : public rclcpp::Node {
 
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<EngineTempSensor>());
+  auto node = std::make_shared<EngineTempSensor>();
+  rclcpp::spin(node);
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }
