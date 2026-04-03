@@ -28,6 +28,7 @@ class RPMSensor : public rclcpp::Node {
   ~RPMSensor() {
     timer_->cancel();
     timer_.reset();
+    rpm_pub_.reset();
   }
 
  private:

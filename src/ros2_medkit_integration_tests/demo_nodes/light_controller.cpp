@@ -48,6 +48,7 @@ class LightController : public rclcpp::Node {
     cmd_sub_.reset();
     timer_->cancel();
     timer_.reset();
+    status_pub_.reset();
   }
 
  private:
