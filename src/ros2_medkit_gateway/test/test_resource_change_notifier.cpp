@@ -14,9 +14,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
