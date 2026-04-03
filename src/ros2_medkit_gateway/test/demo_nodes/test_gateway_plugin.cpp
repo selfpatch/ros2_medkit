@@ -18,7 +18,6 @@
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/providers/update_provider.hpp"
 
-#include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -51,27 +50,27 @@ class TestGatewayPlugin : public GatewayPlugin, public UpdateProvider, public In
     ctx_->register_capability(SovdEntityType::COMPONENT, "x-medkit-diagnostics");
   }
 
-  void register_routes(httplib::Server & server, const std::string & api_prefix) override {
-    // Global vendor extension endpoint
-    server.Get((api_prefix + "/x-test/ping").c_str(), [](const httplib::Request &, httplib::Response & res) {
-      res.set_content("pong", "text/plain");
-    });
-
-    // Entity-scoped vendor extension: GET /components/{id}/x-medkit-diagnostics
-    server.Get((api_prefix + R"(/components/([^/]+)/x-medkit-diagnostics)").c_str(),
-               [this](const httplib::Request & req, httplib::Response & res) {
-                 auto entity_id = req.matches[1].str();
-                 auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
-                 if (!entity) {
-                   return;
-                 }
-                 nlohmann::json data = {{"entity_id", entity->id},
-                                        {"plugin", "test_plugin"},
-                                        {"cpu_usage", 42.5},
-                                        {"memory_mb", 128},
-                                        {"uptime_seconds", 3600}};
-                 PluginContext::send_json(res, data);
-               });
+  std::vector<PluginRoute> get_routes() override {
+    return {
+        {"GET", "x-test/ping",
+         [](const PluginRequest &, PluginResponse & res) {
+           res.send_json({{"response", "pong"}});
+         }},
+        {"GET", R"(components/([^/]+)/x-medkit-diagnostics)",
+         [this](const PluginRequest & req, PluginResponse & res) {
+           auto entity_id = req.path_param(1);
+           auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
+           if (!entity) {
+             return;
+           }
+           nlohmann::json data = {{"entity_id", entity->id},
+                                  {"plugin", "test_plugin"},
+                                  {"cpu_usage", 42.5},
+                                  {"memory_mb", 128},
+                                  {"uptime_seconds", 3600}};
+           res.send_json(data);
+         }},
+    };
   }
 
  private:

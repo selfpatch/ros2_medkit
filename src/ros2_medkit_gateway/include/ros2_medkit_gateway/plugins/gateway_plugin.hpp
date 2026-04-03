@@ -14,10 +14,10 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 
 #include <functional>
-#include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -42,10 +42,11 @@ class PluginContext;
  */
 class GatewayPlugin {
  public:
-  /// Describes a single REST route registered by a plugin (for handle_root auto-registration)
-  struct RouteDescription {
-    std::string method;   ///< HTTP method (e.g. "GET", "POST")
-    std::string pattern;  ///< Path pattern relative to api_prefix (e.g. "apps/{app_id}/x-medkit-topic-beacon")
+  /// Describes a single REST route registered by a plugin
+  struct PluginRoute {
+    std::string method;   ///< HTTP method ("GET", "POST", "PUT", "DELETE")
+    std::string pattern;  ///< Regex pattern relative to api_prefix
+    std::function<void(const PluginRequest &, PluginResponse &)> handler;
   };
 
   virtual ~GatewayPlugin() = default;
@@ -78,27 +79,15 @@ class GatewayPlugin {
   }
 
   /**
-   * @brief Optionally register custom REST routes
+   * @brief Return custom REST routes for this plugin
    *
-   * Called once during REST server setup. Plugins can register
-   * vendor-specific endpoints (e.g., /x-medkit/my-feature).
+   * Called once during REST server setup. The gateway registers the returned
+   * routes on the HTTP server, wrapping PluginRequest/PluginResponse around
+   * the underlying library types.
    *
-   * @param server httplib server instance
-   * @param api_prefix API path prefix (e.g., "/api/v1")
+   * @return Routes to register (method, pattern, handler)
    */
-  virtual void register_routes(httplib::Server & /*server*/, const std::string & /*api_prefix*/) {
-  }
-
-  /**
-   * @brief Describe routes registered by this plugin
-   *
-   * Used by handle_root to dynamically include plugin endpoints in the
-   * API root listing. Patterns should be relative to api_prefix
-   * (e.g. "apps/{app_id}/x-medkit-topic-beacon").
-   *
-   * @return Route descriptions for all endpoints this plugin registers
-   */
-  virtual std::vector<RouteDescription> get_route_descriptions() const {
+  virtual std::vector<PluginRoute> get_routes() {
     return {};
   }
 

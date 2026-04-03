@@ -17,10 +17,10 @@
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/lock_manager.hpp"
 #include "ros2_medkit_gateway/models/entity_types.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
 #include <functional>
-#include <httplib.h>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -92,24 +92,16 @@ class PluginContext {
   /**
    * @brief Validate entity exists and matches route type, sending SOVD error if not
    *
-   * Use this in register_routes() handlers to validate entity IDs from path params.
+   * Use this in get_routes() handlers to validate entity IDs from path params.
    * On failure, an appropriate SOVD GenericError response is sent automatically.
    *
-   * @param req HTTP request (extracts expected entity type from path)
-   * @param res HTTP response (error sent here on failure)
-   * @param entity_id Entity ID from path parameter (e.g., req.matches[1])
+   * @param req Plugin request (extracts expected entity type from path)
+   * @param res Plugin response (error sent here on failure)
+   * @param entity_id Entity ID from path parameter (e.g., req.path_param(1))
    * @return Entity info if valid, nullopt if error was sent
    */
-  virtual std::optional<PluginEntityInfo> validate_entity_for_route(const httplib::Request & req,
-                                                                    httplib::Response & res,
+  virtual std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest & req, PluginResponse & res,
                                                                     const std::string & entity_id) const = 0;
-
-  /// Send SOVD-compliant JSON error response
-  static void send_error(httplib::Response & res, int status, const std::string & error_code,
-                         const std::string & message, const nlohmann::json & parameters = {});
-
-  /// Send JSON success response
-  static void send_json(httplib::Response & res, const nlohmann::json & data);
 
   // ---- Capability registration ----
 
@@ -120,7 +112,7 @@ class PluginContext {
    * auto-generated href. For example, registering "x-medkit-traces" for
    * SovdEntityType::APP produces: {"name": "x-medkit-traces", "href": "/api/v1/apps/{id}/x-medkit-traces"}
    *
-   * The plugin must also register a matching route in register_routes().
+   * The plugin must also return a matching route from get_routes().
    *
    * @param entity_type Entity type to add the capability to
    * @param capability_name Capability name (use x- prefix for vendor extensions)

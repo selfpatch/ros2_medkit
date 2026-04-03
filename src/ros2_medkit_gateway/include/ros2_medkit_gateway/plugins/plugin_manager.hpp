@@ -26,7 +26,6 @@
 #include "ros2_medkit_gateway/resource_sampler.hpp"
 #include "ros2_medkit_gateway/subscription_transport.hpp"
 
-#include <httplib.h>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <shared_mutex>
@@ -97,10 +96,10 @@ class PluginManager {
 
   /**
    * @brief Register custom REST routes from all plugins
-   * @param server httplib server instance
+   * @param server Opaque pointer to httplib::Server (avoids httplib in header)
    * @param api_prefix API path prefix (e.g., "/api/v1")
    */
-  void register_routes(httplib::Server & server, const std::string & api_prefix);
+  void register_routes(void * server, const std::string & api_prefix);
 
   /// Register a resource sampler for a vendor collection (must start with "x-")
   void register_resource_sampler(const std::string & collection, ResourceSamplerFn fn);
@@ -165,10 +164,10 @@ class PluginManager {
   // ---- Route descriptions (for handle_root auto-registration) ----
 
   /**
-   * @brief Collect route descriptions from all active plugins
-   * @return Combined route descriptions from all plugins
+   * @brief Collect route info (method, pattern) from all active plugins
+   * @return Combined (method, pattern) pairs from all plugins
    */
-  std::vector<GatewayPlugin::RouteDescription> get_all_route_descriptions() const;
+  std::vector<std::pair<std::string, std::string>> get_all_route_info() const;
 
   // ---- Info ----
   bool has_plugins() const;

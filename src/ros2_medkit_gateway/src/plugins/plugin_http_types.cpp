@@ -28,7 +28,7 @@ PluginRequest::PluginRequest(const void * impl) : impl_(impl) {
 std::string PluginRequest::path_param(size_t index) const {
   const auto & req = *static_cast<const httplib::Request *>(impl_);
   if (index < req.matches.size()) {
-    return req.matches[static_cast<std::ssub_match::difference_type>(index)].str();
+    return req.matches[index].str();
   }
   return {};
 }

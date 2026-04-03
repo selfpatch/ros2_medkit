@@ -22,24 +22,12 @@
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/lock_manager.hpp"
 #include "ros2_medkit_gateway/resource_change_notifier.hpp"
 #include "ros2_medkit_gateway/resource_sampler.hpp"
 
 namespace ros2_medkit_gateway {
-
-// ---- Static utility methods (delegate to HandlerContext) ----
-
-void PluginContext::send_error(httplib::Response & res, int status, const std::string & error_code,
-                               const std::string & message, const nlohmann::json & parameters) {
-  handlers::HandlerContext::send_error(res, status, error_code, message, parameters);
-}
-
-void PluginContext::send_json(httplib::Response & res, const nlohmann::json & data) {
-  handlers::HandlerContext::send_json(res, data);
-}
 
 // ---- Concrete implementation ----
 
@@ -110,27 +98,28 @@ class GatewayPluginContext : public PluginContext {
     return nlohmann::json::array();
   }
 
-  std::optional<PluginEntityInfo> validate_entity_for_route(const httplib::Request & req, httplib::Response & res,
+  std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest & req, PluginResponse & res,
                                                             const std::string & entity_id) const override {
     // Validate entity ID format
     if (entity_id.empty() || entity_id.size() > 256) {
-      send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID");
+      res.send_error(400, ERR_INVALID_PARAMETER, "Invalid entity ID");
       return std::nullopt;
     }
 
     // Determine expected type from route path (segment-boundary-aware matching)
-    auto expected_type = extract_entity_type_from_path(req.path);
+    auto expected_type = extract_entity_type_from_path(req.path());
 
     auto entity = get_entity(entity_id);
     if (!entity) {
-      send_error(res, 404, ERR_ENTITY_NOT_FOUND, to_string(expected_type) + " not found: " + entity_id);
+      res.send_error(404, ERR_ENTITY_NOT_FOUND, to_string(expected_type) + " not found: " + entity_id);
       return std::nullopt;
     }
 
     // Check type matches route
     if (expected_type != SovdEntityType::UNKNOWN && entity->type != expected_type) {
-      send_error(res, 400, ERR_INVALID_PARAMETER,
-                 "Entity '" + entity_id + "' is a " + to_string(entity->type) + ", not a " + to_string(expected_type));
+      res.send_error(400, ERR_INVALID_PARAMETER,
+                     "Entity '" + entity_id + "' is a " + to_string(entity->type) + ", not a " +
+                         to_string(expected_type));
       return std::nullopt;
     }
 
