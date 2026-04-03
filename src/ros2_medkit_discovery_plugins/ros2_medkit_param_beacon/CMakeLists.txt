@@ -33,13 +33,6 @@ find_package(ros2_medkit_beacon_common REQUIRED)
 find_package(ros2_medkit_gateway REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(nlohmann_json REQUIRED)
-find_package(OpenSSL REQUIRED)
-
-# cpp-httplib via multi-distro compatibility macro
-medkit_find_cpp_httplib()
-
-# Enable OpenSSL support for cpp-httplib
-add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
 
 # MODULE target: loaded via dlopen at runtime by PluginManager.
 add_library(param_beacon_plugin MODULE
@@ -59,8 +52,6 @@ medkit_target_dependencies(param_beacon_plugin
 target_link_libraries(param_beacon_plugin
   nlohmann_json::nlohmann_json
   ros2_medkit_beacon_common::beacon_common_lib
-  cpp_httplib_target
-  OpenSSL::SSL OpenSSL::Crypto
 )
 
 install(TARGETS param_beacon_plugin
@@ -100,9 +91,7 @@ if(BUILD_TESTING)
     ros2_medkit_gateway ros2_medkit_beacon_common rclcpp)
   target_link_libraries(test_param_beacon_plugin
     nlohmann_json::nlohmann_json
-    ros2_medkit_beacon_common::beacon_common_lib
-    cpp_httplib_target
-    OpenSSL::SSL OpenSSL::Crypto)
+    ros2_medkit_beacon_common::beacon_common_lib)
   medkit_set_test_domain(test_param_beacon_plugin)
 endif()
 

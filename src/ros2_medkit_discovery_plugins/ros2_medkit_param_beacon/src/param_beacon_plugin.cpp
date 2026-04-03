@@ -149,33 +149,30 @@ void ParameterBeaconPlugin::shutdown() {
   skip_remaining_.clear();
 }
 
-std::vector<GatewayPlugin::RouteDescription> ParameterBeaconPlugin::get_route_descriptions() const {
-  return {
-      {"GET", "apps/{app_id}/x-medkit-param-beacon"},
-      {"GET", "components/{component_id}/x-medkit-param-beacon"},
-  };
-}
+std::vector<GatewayPlugin::PluginRoute> ParameterBeaconPlugin::get_routes() {
+  std::vector<GatewayPlugin::PluginRoute> routes;
+  for (const auto * entity_type : {"apps", "components"}) {
+    std::string pattern = std::string(entity_type) + R"(/([^/]+)/x-medkit-param-beacon)";
+    routes.push_back(
+        {"GET", pattern,
+         [this](const ros2_medkit_gateway::PluginRequest & req, ros2_medkit_gateway::PluginResponse & res) {
+           auto entity_id = req.path_param(1);
 
-void ParameterBeaconPlugin::register_routes(httplib::Server & server, const std::string & api_prefix) {
-  for (const auto & entity_type : {"apps", "components"}) {
-    auto pattern = api_prefix + "/" + entity_type + R"(/([^/]+)/x-medkit-param-beacon)";
-    server.Get(pattern.c_str(), [this](const httplib::Request & req, httplib::Response & res) {
-      auto entity_id = req.matches[1].str();
+           auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
+           if (!entity) {
+             return;
+           }
 
-      auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
-      if (!entity) {
-        return;
-      }
+           auto stored = store_->get(entity_id);
+           if (!stored) {
+             res.send_error(404, "x-medkit-beacon-not-found", "No beacon data for entity");
+             return;
+           }
 
-      auto stored = store_->get(entity_id);
-      if (!stored) {
-        PluginContext::send_error(res, 404, "x-medkit-beacon-not-found", "No beacon data for entity");
-        return;
-      }
-
-      PluginContext::send_json(res, ros2_medkit_beacon::build_beacon_response(entity_id, *stored));
-    });
+           res.send_json(ros2_medkit_beacon::build_beacon_response(entity_id, *stored));
+         }});
   }
+  return routes;
 }
 
 IntrospectionResult ParameterBeaconPlugin::introspect(const IntrospectionInput & input) {

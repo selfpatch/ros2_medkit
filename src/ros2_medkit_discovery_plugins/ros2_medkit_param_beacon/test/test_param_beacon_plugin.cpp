@@ -24,6 +24,7 @@
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 #include "ros2_medkit_param_beacon/param_beacon_plugin.hpp"
 
 using ros2_medkit_beacon::BeaconHint;
@@ -34,6 +35,8 @@ using ros2_medkit_gateway::IntrospectionProvider;
 using ros2_medkit_gateway::PLUGIN_API_VERSION;
 using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::PluginEntityInfo;
+using ros2_medkit_gateway::PluginRequest;
+using ros2_medkit_gateway::PluginResponse;
 using ros2_medkit_gateway::SovdEntityType;
 using ros2_medkit_param_beacon::ParameterClientInterface;
 using ::testing::_;
@@ -44,16 +47,28 @@ extern "C" int plugin_api_version();
 extern "C" GatewayPlugin * create_plugin();
 extern "C" IntrospectionProvider * get_introspection_provider(GatewayPlugin * plugin);
 
-// Stubs for PluginContext static methods
+// Stubs for PluginRequest/PluginResponse (implemented in gateway_lib, not linked into tests)
 namespace ros2_medkit_gateway {
-void PluginContext::send_json(httplib::Response & res, const nlohmann::json & data) {
-  res.set_content(data.dump(), "application/json");
+PluginRequest::PluginRequest(const void * impl) : impl_(impl) {
 }
-void PluginContext::send_error(httplib::Response & res, int status, const std::string &, const std::string & message,
-                               const nlohmann::json &) {
-  res.status = status;
-  nlohmann::json err = {{"error", message}};
-  res.set_content(err.dump(), "application/json");
+std::string PluginRequest::path_param(size_t /*index*/) const {
+  return {};
+}
+std::string PluginRequest::header(const std::string & /*name*/) const {
+  return {};
+}
+std::string PluginRequest::path() const {
+  return {};
+}
+std::string PluginRequest::body() const {
+  return {};
+}
+PluginResponse::PluginResponse(void * impl) : impl_(impl) {
+}
+void PluginResponse::send_json(const nlohmann::json & /*data*/) {
+}
+void PluginResponse::send_error(int /*status*/, const std::string & /*error_code*/, const std::string & /*message*/,
+                                const nlohmann::json & /*parameters*/) {
 }
 }  // namespace ros2_medkit_gateway
 
@@ -84,7 +99,7 @@ class MockPluginContext : public PluginContext {
   nlohmann::json list_entity_faults(const std::string &) const override {
     return nlohmann::json::array();
   }
-  std::optional<PluginEntityInfo> validate_entity_for_route(const httplib::Request &, httplib::Response &,
+  std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest &, PluginResponse &,
                                                             const std::string &) const override {
     return std::nullopt;
   }
