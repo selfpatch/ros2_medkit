@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/resource_change_notifier.hpp"
 
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -42,7 +43,18 @@ void ResourceChangeNotifier::unsubscribe(NotifierSubscriptionId id) {
 void ResourceChangeNotifier::notify(const std::string & collection, const std::string & entity_id,
                                     const std::string & resource_path, const nlohmann::json & value,
                                     ChangeType change_type) {
-  if (shutdown_flag_.load(std::memory_order_relaxed)) {
+  // Increment active caller count BEFORE checking shutdown flag (seq_cst ordering
+  // guarantees shutdown() will see this increment before it proceeds past its
+  // spin-wait, preventing use-after-destroy races).
+  active_notify_count_.fetch_add(1);
+  struct CountGuard {
+    std::atomic<int> & count;
+    ~CountGuard() {
+      count.fetch_sub(1);
+    }
+  } guard{active_notify_count_};
+
+  if (shutdown_flag_.load()) {
     return;
   }
 
@@ -80,6 +92,13 @@ void ResourceChangeNotifier::shutdown() {
   bool expected = false;
   if (!shutdown_flag_.compare_exchange_strong(expected, true)) {
     return;  // Already shut down
+  }
+
+  // Wait for in-flight notify() calls to finish before destroying members.
+  // seq_cst ordering on shutdown_flag_ and active_notify_count_ guarantees
+  // that either we see the caller's increment, or the caller sees our flag.
+  while (active_notify_count_.load() > 0) {
+    std::this_thread::yield();
   }
 
   queue_cv_.notify_one();
