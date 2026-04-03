@@ -13,3 +13,7 @@ race:rclcpp::signal_handler
 # rcl/rcutils logging lazy initialization (benign one-time race)
 race:rcl_logging_*
 race:rcutils_logging_*
+
+# cpp-httplib internal races in Server::stop() / socket handling
+# (system-packaged libcpp-httplib.so, not our code)
+race:httplib::*
