@@ -62,6 +62,7 @@ class EngineTempSensor : public rclcpp::Node {
   }
 
   ~EngineTempSensor() {
+    param_callback_handle_.reset();
     timer_->cancel();
     timer_.reset();
     temp_pub_.reset();
