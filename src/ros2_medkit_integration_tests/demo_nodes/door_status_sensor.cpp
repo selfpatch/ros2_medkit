@@ -30,6 +30,8 @@ class DoorStatusSensor : public rclcpp::Node {
   ~DoorStatusSensor() {
     timer_->cancel();
     timer_.reset();
+    is_open_pub_.reset();
+    state_pub_.reset();
   }
 
  private:

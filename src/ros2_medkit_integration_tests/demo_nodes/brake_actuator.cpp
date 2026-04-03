@@ -48,6 +48,7 @@ class BrakeActuator : public rclcpp::Node {
     cmd_sub_.reset();
     timer_->cancel();
     timer_.reset();
+    pressure_pub_.reset();
   }
 
  private:

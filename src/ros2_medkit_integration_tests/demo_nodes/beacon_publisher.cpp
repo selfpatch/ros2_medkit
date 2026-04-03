@@ -48,6 +48,7 @@ class BeaconPublisher : public rclcpp::Node {
   ~BeaconPublisher() {
     timer_->cancel();
     timer_.reset();
+    publisher_.reset();
   }
 
  private:
