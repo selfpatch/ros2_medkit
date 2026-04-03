@@ -589,6 +589,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_plugin_loader gateway_lib)
   medkit_target_dependencies(test_plugin_loader ament_index_cpp)
 
+  # Plugin config from YAML tests
+  ament_add_gtest(test_plugin_config test/test_plugin_config.cpp)
+  target_link_libraries(test_plugin_config gateway_lib)
+  medkit_target_dependencies(test_plugin_config ament_index_cpp)
+  medkit_set_test_domain(test_plugin_config)
+
   # Plugin manager tests
   ament_add_gtest(test_plugin_manager test/test_plugin_manager.cpp)
   target_link_libraries(test_plugin_manager gateway_lib)
