@@ -21,6 +21,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(ros2_medkit_cmake REQUIRED)
 include(ROS2MedkitCcache)
+include(ROS2MedkitSanitizers)
 include(ROS2MedkitLinting)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
