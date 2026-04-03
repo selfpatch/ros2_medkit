@@ -96,7 +96,7 @@ jobs:
       - name: Install clang-tidy-cache (ctcache)
         run: |
           apt-get install -y python3-pip
-          pip3 install clang-tidy-cache --break-system-packages
+          pip3 install ctcache --break-system-packages
 
       - name: Cache ctcache results
         uses: actions/cache@v4
@@ -311,9 +311,8 @@ jobs:
 
       - name: Run unit tests with TSan
         timeout-minutes: 15
-        env:
-          TSAN_OPTIONS: "halt_on_error=1:suppressions=${{ github.workspace }}/tsan_suppressions.txt"
         run: |
+          export TSAN_OPTIONS="halt_on_error=1:suppressions=$(pwd)/tsan_suppressions.txt"
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           colcon test --return-code-on-test-failure \
