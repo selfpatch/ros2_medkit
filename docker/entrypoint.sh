@@ -24,7 +24,7 @@ source /root/ws/install/setup.bash
 # Default to FastDDS (can be overridden via RMW_IMPLEMENTATION env var)
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 
-# Pass all arguments to the gateway node
-# Default usage: entrypoint.sh --params-file /etc/ros2_medkit/params.yaml
-# Custom: docker run ros2_medkit --params-file /my/config.yaml --ros-args -p server.port:=9090
-exec ros2 run ros2_medkit_gateway gateway_node --ros-args "$@"
+# Pass all arguments directly to the gateway node.
+# Default CMD: --ros-args --params-file /etc/ros2_medkit/params.yaml
+# Override:    docker run ros2_medkit --ros-args --params-file /my/config.yaml -p server.port:=9090
+exec ros2 run ros2_medkit_gateway gateway_node "$@"

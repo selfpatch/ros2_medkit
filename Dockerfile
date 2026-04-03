@@ -52,15 +52,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # cpp-httplib: use system package on jazzy/rolling, build from source on humble
 # (Ubuntu 22.04 either lacks the package or provides 0.10.x, we need >= 0.14)
-RUN if apt-cache show libcpp-httplib-dev 2>/dev/null | grep -q "^Version: 0\.1[4-9]\|^Version: 0\.[2-9]"; then \
-      apt-get update && apt-get install -y --no-install-recommends libcpp-httplib-dev && rm -rf /var/lib/apt/lists/*; \
+RUN apt-get update && \
+    if apt-cache show libcpp-httplib-dev 2>/dev/null | grep -q "^Version: 0\.1[4-9]\|^Version: 0\.[2-9]"; then \
+      apt-get install -y --no-install-recommends libcpp-httplib-dev; \
     else \
       git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib && \
       cd /tmp/cpp-httplib && mkdir build && cd build && \
       cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON && \
       make install && \
       rm -rf /tmp/cpp-httplib; \
-    fi
+    fi && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR ${COLCON_WS}
 
@@ -114,14 +116,23 @@ COPY --from=builder ${COLCON_WS}/install/ ${COLCON_WS}/install/
 # Default config - can be overridden via volume mount
 COPY docker/gateway_docker_params.yaml /etc/ros2_medkit/params.yaml
 
-# Plugin mount point for downstream (commercial) plugins
+# When running via ros2 run (as this container does), plugin .so paths must be
+# configured explicitly via plugins.<name>.path parameters in the params file.
+# To add external plugins, mount them at /opt/ros2_medkit/plugins/ and reference
+# their full paths in your custom params file.
 RUN mkdir -p /opt/ros2_medkit/plugins
+
+# Non-root user for production safety
+RUN groupadd -r medkit && useradd -r -g medkit -d /home/medkit -s /bin/bash medkit && \
+    mkdir -p /home/medkit && chown medkit:medkit /home/medkit && \
+    chown -R medkit:medkit ${COLCON_WS}/install /etc/ros2_medkit /opt/ros2_medkit
 
 # Entrypoint that sources ROS and starts the gateway
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+USER medkit
 EXPOSE 8080
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["--params-file", "/etc/ros2_medkit/params.yaml"]
+CMD ["--ros-args", "--params-file", "/etc/ros2_medkit/params.yaml"]

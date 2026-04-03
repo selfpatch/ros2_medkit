@@ -62,7 +62,7 @@ Test the gateway:
    # {"status":"healthy","timestamp":...}
 
    curl http://localhost:8080/api/v1/version-info
-   # {"items":[{"version":"1.0.0","vendor_info":{"name":"ros2_medkit",...}}]}
+   # {"items":[{"version":"<gateway-version>","vendor_info":{"name":"ros2_medkit",...}}]}
 
 Custom Configuration
 --------------------
@@ -96,8 +96,7 @@ You can also pass ROS arguments directly:
 .. code-block:: bash
 
    docker run -p 9090:9090 ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
-     --params-file /etc/ros2_medkit/params.yaml \
-     -p server.port:=9090
+     --ros-args --params-file /etc/ros2_medkit/params.yaml -p server.port:=9090
 
 External Plugins
 ----------------
@@ -212,9 +211,8 @@ For containers to discover each other's ROS 2 nodes, use the same ``ROS_DOMAIN_I
 CORS for Web UI
 ---------------
 
-When the Web UI runs in a separate container or host, CORS must be configured.
-The default Docker config allows all origins (``*``). For production, restrict to
-specific origins:
+When the Web UI runs in a separate container or host, enable CORS in your
+custom params file. CORS is disabled by default for production safety:
 
 .. code-block:: yaml
 
