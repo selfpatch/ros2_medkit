@@ -16,7 +16,7 @@ build acceleration, and centralized linting configuration across all packages.
 Resolves dependency differences across ROS 2 distributions:
 
 - `medkit_find_yaml_cpp()` - Finds yaml-cpp (namespaced targets on Jazzy, manual fallback on Humble)
-- `medkit_find_cpp_httplib()` - Finds cpp-httplib >= 0.14 via pkg-config or CMake config
+- `medkit_find_cpp_httplib()` - Finds cpp-httplib >= 0.14 via pkg-config, CMake config, or vendored fallback (`VENDORED_DIR` param)
 - `medkit_target_dependencies()` - Drop-in replacement for `ament_target_dependencies` (removed on Rolling)
 - `medkit_detect_compat_defs()` / `medkit_apply_compat_defs()` - Compile definitions for version-specific APIs
 
