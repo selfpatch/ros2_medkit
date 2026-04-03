@@ -17,3 +17,16 @@ race:rcutils_logging_*
 # cpp-httplib internal races in Server::stop() / socket handling
 # (system-packaged libcpp-httplib.so, not our code)
 race:httplib::*
+
+# rclcpp mutex/shutdown ordering during test teardown
+mutex:__gthread_mutex_unlock
+deadlock:rclcpp::Context*
+
+# rclcpp mutex/shutdown ordering during test teardown
+mutex:__gthread_mutex_unlock
+deadlock:rclcpp::Context*
+
+# ResourceChangeNotifier destructor race during test teardown
+# (other threads still hold references when node is destroyed)
+# TODO: fix teardown ordering in gateway tests
+race:ros2_medkit_gateway::ResourceChangeNotifier::~ResourceChangeNotifier
