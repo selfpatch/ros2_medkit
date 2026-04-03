@@ -557,6 +557,7 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
   state->status = "running";
   state->pid.store(child_pid);
   state->started_at = now_iso8601();
+  state->creation_seq = static_cast<uint64_t>(exec_id_counter_.load());
 
   int timeout_sec = resolved->timeout_sec;
 
@@ -1097,16 +1098,15 @@ void DefaultScriptProvider::evict_old_executions(std::vector<std::unique_ptr<Exe
       break;
     }
 
-    // Find oldest completed entry by completed_at timestamp.
-    // When timestamps are equal (sub-second completions), break ties by
-    // execution ID (lexicographic order of "exec_N" reflects creation order).
+    // Find oldest completed entry by creation order (FIFO).
+    // Using creation_seq instead of completed_at avoids timestamp-precision
+    // issues when fast executions complete within the same millisecond.
     std::string oldest_id;
-    std::string oldest_time = "9999";  // Far future sentinel
+    uint64_t oldest_seq = UINT64_MAX;
     for (const auto & [id, state] : executions_) {
       if (state->status != "running" && state->completed_at.has_value()) {
-        if (oldest_id.empty() || *state->completed_at < oldest_time ||
-            (*state->completed_at == oldest_time && id < oldest_id)) {
-          oldest_time = *state->completed_at;
+        if (state->creation_seq < oldest_seq) {
+          oldest_seq = state->creation_seq;
           oldest_id = id;
         }
       }

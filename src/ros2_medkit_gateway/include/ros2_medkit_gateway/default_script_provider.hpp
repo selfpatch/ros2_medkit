@@ -40,6 +40,10 @@ struct ExecutionState {
   std::optional<nlohmann::json> output_parameters;
   std::optional<nlohmann::json> error;
 
+  // Eviction ordering - monotonic counter set at creation time.
+  // Used instead of completed_at timestamps to guarantee FIFO eviction.
+  uint64_t creation_seq = 0;
+
   // Subprocess I/O
   std::string stdout_data;
   std::string stderr_data;
