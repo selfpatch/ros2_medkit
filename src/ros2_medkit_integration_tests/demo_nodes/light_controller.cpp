@@ -45,7 +45,9 @@ class LightController : public rclcpp::Node {
   }
 
   ~LightController() {
+    cmd_sub_.reset();
     timer_->cancel();
+    timer_.reset();
   }
 
  private:
@@ -69,7 +71,9 @@ class LightController : public rclcpp::Node {
 
 int main(int argc, char * argv[]) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<LightController>());
+  auto node = std::make_shared<LightController>();
+  rclcpp::spin(node);
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }

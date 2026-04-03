@@ -45,6 +45,11 @@ class BeaconPublisher : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "BeaconPublisher started on '%s' at %.1f Hz", topic.c_str(), rate_hz);
   }
 
+  ~BeaconPublisher() {
+    timer_->cancel();
+    timer_.reset();
+  }
+
  private:
   void publish_beacon() {
     if (get_parameter("beacon_pause").as_bool()) {
@@ -72,7 +77,9 @@ class BeaconPublisher : public rclcpp::Node {
 
 int main(int argc, char * argv[]) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<BeaconPublisher>());
+  auto node = std::make_shared<BeaconPublisher>();
+  rclcpp::spin(node);
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }

@@ -56,7 +56,9 @@ class CalibrationService : public rclcpp::Node {
 
 int main(int argc, char * argv[]) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<CalibrationService>());
+  auto node = std::make_shared<CalibrationService>();
+  rclcpp::spin(node);
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }

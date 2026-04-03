@@ -39,7 +39,9 @@ class ParamBeaconNode : public rclcpp::Node {
 
 int main(int argc, char * argv[]) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<ParamBeaconNode>());
+  auto node = std::make_shared<ParamBeaconNode>();
+  rclcpp::spin(node);
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }
