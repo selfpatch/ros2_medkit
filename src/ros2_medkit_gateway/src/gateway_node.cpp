@@ -22,6 +22,9 @@
 #include <set>
 #include <unordered_set>
 
+#include <rcl/arguments.h>
+#include <rcl_yaml_param_parser/parser.h>
+
 #include "ros2_medkit_gateway/aggregation/network_utils.hpp"
 
 #include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
@@ -59,20 +62,82 @@ nlohmann::json parameter_to_json(const rclcpp::Parameter & param) {
   }
 }
 
-/// Extract per-plugin config from YAML parameter overrides.
+/// Declare plugin config parameters from the global --params-file YAML.
+///
+/// Parameters from --params-file go into the ROS 2 global rcl context,
+/// NOT into NodeOptions::parameter_overrides(). We must discover and
+/// declare them explicitly so list_parameters()/get_parameter() can find them.
+void declare_plugin_params_from_yaml(rclcpp::Node * node, const std::string & prefix, const std::string & path_key) {
+  auto rcl_ctx = node->get_node_base_interface()->get_context()->get_rcl_context();
+  rcl_params_t * global_params = nullptr;
+  auto ret = rcl_arguments_get_param_overrides(&rcl_ctx->global_arguments, &global_params);
+  if (ret != RCL_RET_OK || global_params == nullptr) {
+    return;
+  }
+
+  std::string node_name = node->get_name();
+  std::string node_fqn = node->get_fully_qualified_name();
+  for (size_t n = 0; n < global_params->num_nodes; ++n) {
+    std::string yaml_node = global_params->node_names[n];
+    if (yaml_node != node_name && yaml_node != node_fqn && yaml_node != "/**") {
+      continue;
+    }
+    auto * node_p = &global_params->params[n];
+    for (size_t p = 0; p < node_p->num_params; ++p) {
+      std::string pname = node_p->parameter_names[p];
+      if (pname.rfind(prefix, 0) == 0 && pname != path_key && !node->has_parameter(pname)) {
+        // Determine the type from the rcl_variant_t so we can declare with the correct type
+        auto & val = node_p->parameter_values[p];
+        try {
+          if (val.string_value != nullptr) {
+            node->declare_parameter(pname, std::string(val.string_value));
+          } else if (val.bool_value != nullptr) {
+            node->declare_parameter(pname, *val.bool_value);
+          } else if (val.integer_value != nullptr) {
+            node->declare_parameter(pname, static_cast<int64_t>(*val.integer_value));
+          } else if (val.double_value != nullptr) {
+            node->declare_parameter(pname, *val.double_value);
+          }
+        } catch (...) {
+          // Skip params that can't be declared
+        }
+      }
+    }
+  }
+
+  rcl_yaml_node_struct_fini(global_params);
+}
+
+/// Extract per-plugin config from ROS 2 parameters.
 /// Scans for keys matching "plugins.<name>.<key>" (excluding ".path")
 /// and builds a flat JSON object: {"<key>": value, ...}
-nlohmann::json extract_plugin_config(const std::vector<rclcpp::Parameter> & overrides,
-                                     const std::string & plugin_name) {
+///
+/// Checks two sources:
+///   1. NodeOptions::parameter_overrides (set programmatically, e.g. in unit tests)
+///   2. Global YAML overrides from --params-file (declared on-demand, production path)
+nlohmann::json extract_plugin_config(rclcpp::Node * node, const std::string & plugin_name) {
   auto config = nlohmann::json::object();
   std::string prefix = "plugins." + plugin_name + ".";
   std::string path_key = prefix + "path";
 
-  for (const auto & param : overrides) {
+  // Source 1: NodeOptions parameter_overrides (programmatic, used in tests)
+  for (const auto & param : node->get_node_options().parameter_overrides()) {
     const auto & name = param.get_name();
     if (name.rfind(prefix, 0) == 0 && name != path_key) {
-      auto key = name.substr(prefix.size());
-      config[key] = parameter_to_json(param);
+      config[name.substr(prefix.size())] = parameter_to_json(param);
+    }
+  }
+  if (!config.empty()) {
+    return config;
+  }
+
+  // Source 2: global YAML overrides from --params-file
+  declare_plugin_params_from_yaml(node, prefix, path_key);
+
+  auto result = node->list_parameters({prefix}, 10);
+  for (const auto & name : result.names) {
+    if (name != path_key) {
+      config[name.substr(prefix.size())] = parameter_to_json(node->get_parameter(name));
     }
   }
   return config;
@@ -601,7 +666,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
         RCLCPP_ERROR(get_logger(), "Plugin '%s' has no path configured", pname.c_str());
         continue;
       }
-      auto plugin_config = extract_plugin_config(get_node_options().parameter_overrides(), pname);
+      auto plugin_config = extract_plugin_config(this, pname);
       if (!plugin_config.empty()) {
         RCLCPP_INFO(get_logger(), "Plugin '%s' config: %zu key(s)", pname.c_str(), plugin_config.size());
       }
