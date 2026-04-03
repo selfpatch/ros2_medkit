@@ -96,7 +96,7 @@ jobs:
       - name: Install clang-tidy-cache (ctcache)
         run: |
           apt-get install -y python3-pip
-          pip3 install ctcache --break-system-packages
+          pip3 install --break-system-packages git+https://github.com/matus-chochlik/ctcache.git
 
       - name: Cache ctcache results
         uses: actions/cache@v4
