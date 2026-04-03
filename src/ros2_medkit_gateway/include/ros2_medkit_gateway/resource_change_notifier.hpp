@@ -127,6 +127,9 @@ class ResourceChangeNotifier {
 
   // Worker thread lifecycle
   std::atomic<bool> shutdown_flag_{false};
+  std::atomic<int> active_notify_count_{0};
+  std::mutex drain_mutex_;
+  std::condition_variable drain_cv_;
   std::thread worker_thread_;
 };
 

@@ -1,6 +1,9 @@
 # TSan suppression file for ros2_medkit
-# Suppresses known false positives from ROS 2 middleware (DDS, rclcpp).
+# Suppresses known issues in third-party code (DDS, rclcpp, httplib).
 # This file is referenced by TSAN_OPTIONS in CI.
+#
+# RULE: Never suppress ros2_medkit code. If TSan finds a race in our
+# code, fix it. Suppressions are only for libraries we don't control.
 
 # FastDDS internal thread pool and transport layer
 race:eprosima::fastdds::*
@@ -14,19 +17,9 @@ race:rclcpp::signal_handler
 race:rcl_logging_*
 race:rcutils_logging_*
 
-# cpp-httplib internal races in Server::stop() / socket handling
-# (system-packaged libcpp-httplib.so, not our code)
+# cpp-httplib internal races (system-packaged libcpp-httplib.so)
 race:httplib::*
 
-# rclcpp mutex/shutdown ordering during test teardown
+# rclcpp/glibc mutex and shutdown ordering during test teardown
 mutex:__gthread_mutex_unlock
 deadlock:rclcpp::Context*
-
-# rclcpp mutex/shutdown ordering during test teardown
-mutex:__gthread_mutex_unlock
-deadlock:rclcpp::Context*
-
-# ResourceChangeNotifier destructor race during test teardown
-# (other threads still hold references when node is destroyed)
-# TODO: fix teardown ordering in gateway tests
-race:ros2_medkit_gateway::ResourceChangeNotifier::~ResourceChangeNotifier

@@ -42,7 +42,24 @@ void ResourceChangeNotifier::unsubscribe(NotifierSubscriptionId id) {
 void ResourceChangeNotifier::notify(const std::string & collection, const std::string & entity_id,
                                     const std::string & resource_path, const nlohmann::json & value,
                                     ChangeType change_type) {
-  // Build the change before locking (no shared state accessed).
+  // Prevent destruction while we're inside this function. The counter is
+  // incremented BEFORE checking the shutdown flag (both seq_cst) so that
+  // shutdown() is guaranteed to see the increment and wait for us to finish.
+  active_notify_count_.fetch_add(1);
+  struct NotifyGuard {
+    ResourceChangeNotifier & self;
+    ~NotifyGuard() {
+      if (self.active_notify_count_.fetch_sub(1) == 1) {
+        std::lock_guard<std::mutex> lk(self.drain_mutex_);
+        self.drain_cv_.notify_one();
+      }
+    }
+  } guard{*this};
+
+  if (shutdown_flag_.load()) {
+    return;
+  }
+
   ResourceChange change;
   change.collection = collection;
   change.entity_id = entity_id;
@@ -52,12 +69,7 @@ void ResourceChangeNotifier::notify(const std::string & collection, const std::s
   change.timestamp = std::chrono::system_clock::now();
 
   {
-    // Check shutdown under the queue lock to synchronize with the worker thread
-    // and prevent pushing to a queue that will never be drained.
     std::lock_guard<std::mutex> lock(queue_mutex_);
-    if (shutdown_flag_.load(std::memory_order_relaxed)) {
-      return;
-    }
     queue_.push_back(std::move(change));
 
     // Enforce bounded queue: drop oldest entries when limit is exceeded.
@@ -82,6 +94,15 @@ void ResourceChangeNotifier::shutdown() {
   bool expected = false;
   if (!shutdown_flag_.compare_exchange_strong(expected, true)) {
     return;  // Already shut down
+  }
+
+  // Wait for in-flight notify() calls to finish. Uses a CV (not a spin loop)
+  // so TSan can reason about the synchronization correctly.
+  {
+    std::unique_lock<std::mutex> lock(drain_mutex_);
+    drain_cv_.wait(lock, [this]() {
+      return active_notify_count_.load() == 0;
+    });
   }
 
   queue_cv_.notify_one();
@@ -113,10 +134,10 @@ void ResourceChangeNotifier::worker_loop() {
     {
       std::unique_lock<std::mutex> lock(queue_mutex_);
       queue_cv_.wait(lock, [this]() {
-        return !queue_.empty() || shutdown_flag_.load(std::memory_order_relaxed);
+        return !queue_.empty() || shutdown_flag_.load();
       });
 
-      if (shutdown_flag_.load(std::memory_order_relaxed) && queue_.empty()) {
+      if (shutdown_flag_.load() && queue_.empty()) {
         return;
       }
 
