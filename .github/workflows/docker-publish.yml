@@ -40,7 +40,7 @@ jobs:
                   context: .
                   push: true
                   build-args: ROS_DISTRO=${{ matrix.ros_distro }}
-                  tags: ${{ env.REGISTRY }}/selfpatch/ros2_medkit-${{ matrix.ros_distro }}:latest
+                  tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}:latest
                   cache-from: type=gha,scope=${{ matrix.ros_distro }}
                   cache-to: type=gha,mode=max,scope=${{ matrix.ros_distro }}
                   platforms: linux/amd64

@@ -1,15 +1,9 @@
 # Default gateway configuration for Docker deployment.
 # Override by mounting your own file at /etc/ros2_medkit/params.yaml
-# or passing --params-file to the container.
-#
-# Plugin .so paths are resolved automatically at runtime.
-# To add external plugins, mount them at /opt/ros2_medkit/plugins/
-# and reference the path in your custom params file.
+# or passing --ros-args --params-file <path> to the container.
 ros2_medkit_gateway:
   ros__parameters:
     server:
       host: "0.0.0.0"
       port: 8080
     refresh_interval_ms: 2000
-    cors:
-      allowed_origins: ["*"]
