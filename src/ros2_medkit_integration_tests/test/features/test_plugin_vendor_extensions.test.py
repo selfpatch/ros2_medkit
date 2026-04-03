@@ -113,7 +113,7 @@ class TestPluginVendorExtensions(GatewayTestCase):
         """GET /x-test/ping global endpoint still responds."""
         r = requests.get(f'{self.BASE_URL}/x-test/ping', timeout=5)
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.text, 'pong')
+        self.assertEqual(r.json(), {'response': 'pong'})
 
 
 @launch_testing.post_shutdown_test()

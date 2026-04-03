@@ -86,9 +86,12 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
   # The route test uses httplib::Server/Client directly for end-to-end HTTP testing.
-  # Find cpp-httplib so the test binary can link against the compiled implementation.
+  # On Humble/Jammy the system package is too old (0.10.x); fall back to gateway's
+  # vendored copy which is installed alongside the gateway package.
   find_package(OpenSSL REQUIRED)
-  medkit_find_cpp_httplib()
+  set(_gw_vendored "${ros2_medkit_gateway_DIR}/../vendored/cpp_httplib")
+  medkit_find_cpp_httplib(VENDORED_DIR "${_gw_vendored}")
+  unset(_gw_vendored)
 
   include(ROS2MedkitTestDomain)
   medkit_init_test_domains(START 120 END 129)

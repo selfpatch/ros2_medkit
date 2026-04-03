@@ -157,7 +157,6 @@ A self-contained plugin implementing UpdateProvider (copy-paste starting point):
    #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
    #include "ros2_medkit_gateway/providers/update_provider.hpp"
 
-   #include <httplib.h>
    #include <nlohmann/json.hpp>
 
    using namespace ros2_medkit_gateway;
@@ -228,7 +227,7 @@ Plugin Lifecycle
 4. Provider interfaces are queried via ``get_update_provider()`` / ``get_introspection_provider()`` / ``get_log_provider()`` / ``get_script_provider()``
 5. ``configure()`` is called with per-plugin JSON config
 6. ``set_context()`` provides ``PluginContext`` with ROS 2 node, entity cache, faults, and HTTP utilities
-7. ``register_routes()`` allows registering custom REST endpoints
+7. ``get_routes()`` returns custom REST endpoint definitions as ``vector<PluginRoute>``
 8. Runtime: subsystem managers call provider methods as needed
 9. ``shutdown()`` is called before the plugin is destroyed
 
@@ -242,8 +241,14 @@ providing access to gateway data and utilities:
 - ``get_entity(id)`` - look up any entity (area, component, app, function) from the discovery cache
 - ``list_entity_faults(entity_id)`` - query faults for an entity
 - ``validate_entity_for_route(req, res, entity_id)`` - validate entity exists and matches the route type, auto-sending SOVD errors on failure
-- ``send_error()`` / ``send_json()`` - SOVD-compliant HTTP response helpers (static methods)
 - ``register_capability()`` / ``register_entity_capability()`` - register custom capabilities on entities
+
+.. note::
+
+   SOVD-compliant HTTP response helpers (``send_json()``, ``send_error()``) are instance
+   methods on ``PluginResponse``, not static methods on ``PluginContext``. Use
+   ``res.send_json(data)`` and ``res.send_error(status, code, msg)`` inside route handlers.
+
 - ``check_lock(entity_id, client_id, collection)`` - verify lock access before mutating operations; returns ``LockAccessResult`` with ``allowed`` flag and denial details
 - ``acquire_lock()`` / ``release_lock()`` - acquire and release entity locks with optional scope and TTL
 - ``get_entity_snapshot()`` - returns an ``IntrospectionInput`` populated from the current entity cache
@@ -302,13 +307,14 @@ for the lower-level registry API.
    still required because ``plugin_api_version()`` must return the current version
    (exact-match check).
 
-PluginContext API (v4)
+PluginContext API (v5)
 ----------------------
 
-Version 4 of the plugin API introduced several new methods on ``PluginContext``.
-These methods have default no-op implementations, so existing plugins continue to
-compile without changes (though a rebuild is required to match the new
-``PLUGIN_API_VERSION``).
+Version 5 of the plugin API replaced ``register_routes()`` with ``get_routes()``
+and moved ``send_json``/``send_error`` from ``PluginContext`` static methods to
+``PluginResponse`` instance methods. Plugins that implement custom REST routes
+require source changes to adapt to the new API. Plugins that do not implement
+routes only need a rebuild to match the new ``PLUGIN_API_VERSION``.
 
 **check_lock(entity_id, client_id, collection)**
 
@@ -320,7 +326,7 @@ should call this before proceeding:
 
    auto result = ctx_->check_lock(entity_id, client_id, "configurations");
    if (!result.allowed) {
-     PluginContext::send_error(res, 409, result.denied_code, result.denied_reason);
+     res.send_error(409, result.denied_code, result.denied_reason);
      return;
    }
 
@@ -378,30 +384,36 @@ API described in `Cyclic Subscription Extensions`_.
 Custom REST Endpoints
 ---------------------
 
-Any plugin can register vendor-specific endpoints via ``register_routes()``.
-Use ``PluginContext`` utilities for entity validation and SOVD-compliant responses:
+Any plugin can expose vendor-specific endpoints by overriding ``get_routes()``, which
+returns a ``vector<PluginRoute>``. Each route specifies an HTTP method, a URL pattern
+relative to the API prefix (no leading slash), and a handler. Use ``PluginRequest`` and
+``PluginResponse`` for path parameters and SOVD-compliant responses:
 
 .. code-block:: cpp
 
-   void register_routes(httplib::Server& server, const std::string& api_prefix) override {
-     // Global vendor endpoint
-     server.Get(api_prefix + "/x-myvendor/status",
-       [this](const httplib::Request&, httplib::Response& res) {
-         PluginContext::send_json(res, get_status_json());
-       });
+   std::vector<PluginRoute> get_routes() override {
+     return {
+         // Global vendor endpoint
+         {"GET", "x-myvendor/status",
+          [this](const PluginRequest& /*req*/, PluginResponse& res) {
+            res.send_json(get_status_json());
+          }},
 
-     // Entity-scoped endpoint (matches a registered capability)
-     server.Get((api_prefix + R"(/apps/([^/]+)/x-medkit-traces)").c_str(),
-       [this](const httplib::Request& req, httplib::Response& res) {
-         auto entity = ctx_->validate_entity_for_route(req, res, req.matches[1]);
-         if (!entity) return;  // Error already sent
+         // Entity-scoped endpoint (matches a registered capability)
+         {"GET", R"(apps/([^/]+)/x-medkit-traces)",
+          [this](const PluginRequest& req, PluginResponse& res) {
+            auto entity_id = req.path_param(1);
+            auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
+            if (!entity) return;  // Error already sent
 
-         auto faults = ctx_->list_entity_faults(entity->id);
-         PluginContext::send_json(res, {{"entity", entity->id}, {"faults", faults}});
-       });
+            auto faults = ctx_->list_entity_faults(entity->id);
+            res.send_json({{"entity", entity->id}, {"faults", faults}});
+          }},
+     };
    }
 
-Use the ``x-`` prefix for vendor-specific endpoints per SOVD convention.
+Use the ``x-`` prefix for vendor-specific endpoints per SOVD convention. Patterns are
+relative to the API prefix and must not include a leading slash.
 
 For entity-scoped endpoints, register a matching capability via ``register_capability()``
 or ``register_entity_capability()`` in ``set_context()`` so the endpoint appears in the
@@ -750,7 +762,7 @@ Alternatively, simply do not install the ``ros2_medkit_graph_provider`` package 
 Error Handling
 --------------
 
-If a plugin throws during any lifecycle method (``configure``, ``set_context``, ``register_routes``,
+If a plugin throws during any lifecycle method (``configure``, ``set_context``, ``get_routes``,
 ``shutdown``), the exception is caught and logged. The plugin is disabled but the gateway continues
 operating. A failing plugin never crashes the gateway.
 
@@ -761,7 +773,7 @@ Plugins export ``plugin_api_version()`` which must return the gateway's ``PLUGIN
 If the version does not match, the plugin is rejected with a clear error message suggesting
 a rebuild against matching gateway headers.
 
-The current API version is **4**. It is incremented when the ``PluginContext`` vtable changes
+The current API version is **5**. It is incremented when the ``PluginContext`` vtable changes
 or breaking changes are made to ``GatewayPlugin`` or provider interfaces.
 
 Build Requirements

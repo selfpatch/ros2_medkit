@@ -132,6 +132,26 @@ class MockThrowOnSetContext : public GatewayPlugin, public UpdateProvider {
   }
 };
 
+/// Plugin that returns a test route for verifying wrapping logic
+class MockRoutePlugin : public GatewayPlugin {
+ public:
+  std::string name() const override {
+    return "mock_route";
+  }
+  void configure(const json &) override {
+  }
+  std::vector<PluginRoute> get_routes() override {
+    return {
+        {"GET", R"(apps/([^/]+)/x-test-route)",
+         [this](const PluginRequest & req, PluginResponse & res) {
+           last_path_param_ = req.path_param(1);
+           res.send_json({{"handled", true}, {"entity", last_path_param_}});
+         }},
+    };
+  }
+  std::string last_path_param_;
+};
+
 /// Plugin that throws during get_routes
 class MockThrowOnGetRoutes : public GatewayPlugin, public IntrospectionProvider {
  public:
@@ -310,6 +330,37 @@ TEST(PluginManagerTest, ThrowOnGetRoutesDisablesPlugin) {
   EXPECT_EQ(mgr.get_introspection_providers().size(), 1u);
   EXPECT_EQ(mgr.plugin_names().size(), 1u);
   EXPECT_EQ(mgr.plugin_names()[0], "introspection_only");
+}
+
+TEST(PluginManagerTest, RegisterRoutesWrapsPluginHandlers) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<MockRoutePlugin>();
+  auto * raw = plugin.get();
+  mgr.add_plugin(std::move(plugin));
+  mgr.configure_plugins();
+
+  httplib::Server srv;
+  mgr.register_routes(&srv, "/api/v1");
+
+  // Bind to ephemeral port to avoid conflicts in parallel CTest runs
+  auto port = srv.bind_to_any_port("127.0.0.1");
+  std::thread server_thread([&srv]() {
+    srv.listen_after_bind();
+  });
+  srv.wait_until_ready();
+
+  httplib::Client cli("127.0.0.1", port);
+  auto res = cli.Get("/api/v1/apps/test_entity/x-test-route");
+
+  srv.stop();
+  server_thread.join();
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 200);
+  auto body = json::parse(res->body);
+  EXPECT_EQ(body["handled"], true);
+  EXPECT_EQ(body["entity"], "test_entity");
+  EXPECT_EQ(raw->last_path_param_, "test_entity");
 }
 
 TEST(PluginManagerTest, ShutdownAllIdempotent) {
