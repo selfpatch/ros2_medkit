@@ -72,13 +72,13 @@ endmacro()
 # ---------------------------------------------------------------------------
 # medkit_find_cpp_httplib()
 # ---------------------------------------------------------------------------
-# On Jazzy/Noble, libcpp-httplib-dev is available via apt and provides a
-# pkg-config .pc file.  On Humble/Jammy, cpp-httplib must be built from
-# source, which installs a CMake config file (httplibConfig.cmake).
+# Finds cpp-httplib >= 0.14 through a multi-tier fallback chain:
+#   1. pkg-config (Jazzy/Noble system package)
+#   2. cmake find_package(httplib) (source builds, Pixi)
+#   3. VENDORED_DIR parameter (bundled header-only copy)
 #
-# Requires cpp-httplib >= 0.14 (StatusCode enum, std::string overloads).
-# Older system packages (e.g. 0.10.x on Jammy) are rejected by pkg-config
-# so the fallback cmake/source path is used instead.
+# On Humble/Jammy the system package is 0.10.x (too old); the vendored
+# fallback in ros2_medkit_gateway handles this automatically.
 #
 # Creates a unified alias target `cpp_httplib_target` for consumers.
 # ---------------------------------------------------------------------------
@@ -104,14 +104,9 @@ macro(medkit_find_cpp_httplib)
     else()
       message(FATAL_ERROR
         "[MedkitCompat] Could not find cpp-httplib >= 0.14.\n"
-        "  The system libcpp-httplib-dev package on Ubuntu 22.04 provides 0.10.x which is too old.\n"
-        "  ros2_medkit requires cpp-httplib >= 0.14 for httplib::StatusCode and std::string overloads.\n"
-        "  Fix: remove the old system package and install from source:\n"
-        "    sudo apt remove libcpp-httplib-dev\n"
-        "    git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib\n"
-        "    cd /tmp/cpp-httplib && mkdir build && cd build\n"
-        "    cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON\n"
-        "    sudo make install\n"
+        "  Tried: pkg-config, cmake find_package(httplib), VENDORED_DIR.\n"
+        "  ros2_medkit_gateway vendors cpp-httplib 0.14.3 - ensure ros2_medkit_gateway\n"
+        "  is built first, or pass VENDORED_DIR to medkit_find_cpp_httplib().\n"
         "  See: https://selfpatch.github.io/ros2_medkit/installation.html")
     endif()
   endif()

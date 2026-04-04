@@ -36,25 +36,10 @@ for your distribution:
 
 .. note::
 
-   On Ubuntu 22.04 (Humble), the ``libcpp-httplib-dev`` system package is either not
-   available or too old (0.10.x). ros2_medkit requires cpp-httplib >= 0.14 for the
-   ``httplib::StatusCode`` enum and ``std::string`` API overloads.
-
-   If ``libcpp-httplib-dev`` is installed, **remove it first** to avoid version conflicts:
-
-   .. code-block:: bash
-
-      sudo apt remove libcpp-httplib-dev
-
-   Then install cpp-httplib >= 0.14 from source:
-
-   .. code-block:: bash
-
-      sudo apt install cmake g++ libssl-dev
-      git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib
-      cd /tmp/cpp-httplib && mkdir build && cd build
-      cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON
-      sudo make install
+   On Ubuntu 22.04 (Humble), the system ``libcpp-httplib-dev`` package provides
+   cpp-httplib 0.10.x which is too old. ros2_medkit requires >= 0.14 but ships a
+   vendored copy as a fallback - no manual installation is needed. The build system
+   automatically uses the vendored header when the system package is insufficient.
 
 Installation from Source
 ------------------------
@@ -198,19 +183,11 @@ Troubleshooting
 
       gcc --version  # Should show 13.x or higher
 
-**Build fails on Humble with** ``httplib::StatusCode has not been declared``
+**Build fails on Humble with** ``Could not find cpp-httplib >= 0.14``
 
-   The system ``libcpp-httplib-dev`` package on Ubuntu 22.04 provides cpp-httplib 0.10.x,
-   which is too old. ros2_medkit requires cpp-httplib >= 0.14. Remove the system package
-   and install from source:
-
-   .. code-block:: bash
-
-      sudo apt remove libcpp-httplib-dev
-      git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib
-      cd /tmp/cpp-httplib && mkdir build && cd build
-      cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON
-      sudo make install
+   This should not happen with current builds - a vendored copy of cpp-httplib 0.14.3
+   is included as an automatic fallback. If you see this error, ensure ``ros2_medkit_cmake``
+   is built before the gateway (``colcon build`` handles this automatically).
 
 **Cannot find ros2_medkit packages after build**
 
