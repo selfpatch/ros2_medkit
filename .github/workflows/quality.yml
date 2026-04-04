@@ -269,6 +269,11 @@ jobs:
             --event-handlers console_direct+
           ccache -s
 
+      - name: Extend test timeouts for ASan overhead
+        run: |
+          find build/ -name "CTestTestfile.cmake" \
+            -exec sed -i 's/TIMEOUT "60"/TIMEOUT "180"/g' {} +
+
       - name: Run unit tests with ASan + UBSan
         timeout-minutes: 15
         env:
@@ -283,7 +288,7 @@ jobs:
           for pkg_dir in build/ros2_medkit_*/; do
             pkg=$(basename "$pkg_dir")
             echo "::group::Testing $pkg"
-            (cd "$pkg_dir" && ctest --timeout 180 -LE "linter|integration" --output-on-failure) || failed=1
+            (cd "$pkg_dir" && ctest -LE "linter|integration" --output-on-failure) || failed=1
             echo "::endgroup::"
           done
           exit $failed
@@ -349,6 +354,11 @@ jobs:
             --event-handlers console_direct+
           ccache -s
 
+      - name: Extend test timeouts for TSan overhead
+        run: |
+          find build/ -name "CTestTestfile.cmake" \
+            -exec sed -i 's/TIMEOUT "60"/TIMEOUT "180"/g' {} +
+
       - name: Run unit tests with TSan
         timeout-minutes: 15
         run: |
@@ -359,7 +369,7 @@ jobs:
           for pkg_dir in build/ros2_medkit_*/; do
             pkg=$(basename "$pkg_dir")
             echo "::group::Testing $pkg"
-            (cd "$pkg_dir" && ctest --timeout 180 -LE "linter|integration" --output-on-failure) || failed=1
+            (cd "$pkg_dir" && ctest -LE "linter|integration" --output-on-failure) || failed=1
             echo "::endgroup::"
           done
           exit $failed
