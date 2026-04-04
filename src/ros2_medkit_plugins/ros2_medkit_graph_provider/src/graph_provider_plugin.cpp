@@ -25,12 +25,27 @@
 #include <utility>
 
 #include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 
 namespace ros2_medkit_gateway {
 
 namespace {
+
+std::string format_timestamp_ns(int64_t ns) {
+  auto seconds = ns / 1'000'000'000;
+  auto nanos = ns % 1'000'000'000;
+  std::time_t time = static_cast<std::time_t>(seconds);
+  std::tm tm_buf{};
+  std::tm * tm = gmtime_r(&time, &tm_buf);
+  if (!tm) {
+    return "1970-01-01T00:00:00.000Z";
+  }
+  char buf[64];
+  std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", tm);
+  char result[80];
+  std::snprintf(result, sizeof(result), "%s.%03dZ", buf, static_cast<int>(nanos / 1'000'000));
+  return result;
+}
 
 constexpr size_t kMaxCachedTopicMetrics = 512;
 

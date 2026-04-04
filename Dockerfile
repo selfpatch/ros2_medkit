@@ -50,20 +50,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# cpp-httplib: use system package on jazzy/rolling, build from source on humble
-# (Ubuntu 22.04 either lacks the package or provides 0.10.x, we need >= 0.14)
-RUN apt-get update && \
-    if apt-cache show libcpp-httplib-dev 2>/dev/null | grep -q "^Version: 0\.1[4-9]\|^Version: 0\.[2-9]"; then \
-      apt-get install -y --no-install-recommends libcpp-httplib-dev; \
-    else \
-      git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib && \
-      cd /tmp/cpp-httplib && mkdir build && cd build && \
-      cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON && \
-      make install && \
-      rm -rf /tmp/cpp-httplib; \
-    fi && \
-    rm -rf /var/lib/apt/lists/*
-
 WORKDIR ${COLCON_WS}
 
 # Copy shared cmake modules first (depended on by all packages)
@@ -85,7 +71,7 @@ COPY src/ros2_medkit_plugins/ ${COLCON_WS}/src/ros2_medkit_plugins/
 RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
-      --skip-keys='ament_cmake_clang_format ament_cmake_clang_tidy test_msgs sqlite3 libcpp-httplib-dev rosbag2_storage_mcap' && \
+      --skip-keys='ament_cmake_clang_format ament_cmake_clang_tidy test_msgs sqlite3 rosbag2_storage_mcap' && \
     colcon build --cmake-args -DBUILD_TESTING=OFF"
 
 # ============================================================================
@@ -99,8 +85,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=${ROS_DISTRO}
 ENV COLCON_WS=/home/medkit/ws
 
-# Runtime dependencies only (header-only libs like nlohmann-json and cpp-httplib
-# are already compiled into the binaries, no need to install here)
+# Runtime dependencies only (nlohmann-json and cpp-httplib are compiled into
+# the binaries at build time, no need to install here)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-yaml-cpp-vendor \
     ros-${ROS_DISTRO}-example-interfaces \
