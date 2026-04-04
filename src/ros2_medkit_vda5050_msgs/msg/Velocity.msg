@@ -13,8 +13,9 @@
 # limitations under the License.
 #
 # VDA 5050 v2.0.0 - Velocity
-# AGV velocity in robot coordinates. All fields optional.
+# AGV velocity in robot coordinates.
 
+# Optional (all fields)
 float64 vx
 float64 vy
 float64 omega
