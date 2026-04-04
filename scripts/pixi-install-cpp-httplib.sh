@@ -15,7 +15,8 @@
 
 # Install cpp-httplib v0.14.3 into the Pixi prefix ($CONDA_PREFIX).
 # cpp-httplib is not available on conda-forge, so we build from source.
-# This is the same approach used in CI for ROS 2 Humble.
+# Standard CI uses the vendored copy in ros2_medkit_gateway; this script
+# is only needed for Pixi environments where conda-forge is the package source.
 set -euo pipefail
 
 VERSION="v0.14.3"

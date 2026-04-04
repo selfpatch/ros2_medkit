@@ -38,7 +38,7 @@ The package provides four CMake modules installed to the ament index:
 4. **ROS2MedkitCompat.cmake** - Multi-distro compatibility layer
 
    - ``medkit_find_yaml_cpp()`` - Resolves yaml-cpp across Humble (no cmake target) and Jazzy (namespaced target)
-   - ``medkit_find_cpp_httplib()`` - Finds cpp-httplib via pkg-config (Jazzy/Noble) or cmake config (source build on Humble)
+   - ``medkit_find_cpp_httplib()`` - Finds cpp-httplib >= 0.14 via pkg-config, cmake config, or vendored fallback (``VENDORED_DIR`` param)
    - ``medkit_detect_compat_defs()`` - Detects rclcpp and rosbag2 versions, sets ``MEDKIT_RCLCPP_VERSION_MAJOR`` and ``MEDKIT_ROSBAG2_OLD_TIMESTAMP``
    - ``medkit_apply_compat_defs(target)`` - Applies compile definitions based on detected versions
    - ``medkit_target_dependencies(target ...)`` - Drop-in replacement for ``ament_target_dependencies`` that also works on Rolling (where ``ament_target_dependencies`` was removed)
