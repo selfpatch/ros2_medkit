@@ -23,6 +23,18 @@
 
 namespace ros2_medkit_gateway {
 
+namespace {
+
+SovdEntityType entity_type_from_string(const std::string & type) {
+  if (type == "app") return SovdEntityType::APP;
+  if (type == "component") return SovdEntityType::COMPONENT;
+  if (type == "area") return SovdEntityType::AREA;
+  if (type == "function") return SovdEntityType::FUNCTION;
+  return SovdEntityType::UNKNOWN;
+}
+
+}  // namespace
+
 std::string SovdServiceInterface::name() const {
   return "sovd_service_interface";
 }
@@ -107,11 +119,7 @@ void SovdServiceInterface::handle_list_entities(
       info.fqn = fqn;
       info.capabilities = context_->get_entity_capabilities(id);
       if (info.capabilities.empty()) {
-        info.capabilities = context_->get_type_capabilities(entity_type == "app"         ? SovdEntityType::APP
-                                                            : entity_type == "component" ? SovdEntityType::COMPONENT
-                                                            : entity_type == "area"      ? SovdEntityType::AREA
-                                                            : entity_type == "function"  ? SovdEntityType::FUNCTION
-                                                                                         : SovdEntityType::UNKNOWN);
+        info.capabilities = context_->get_type_capabilities(entity_type_from_string(entity_type));
       }
       response->entities.push_back(std::move(info));
     };
@@ -126,7 +134,8 @@ void SovdServiceInterface::handle_list_entities(
       add_entity(app.id, app.name, "app", app.component_id, app.effective_fqn());
     }
     for (const auto & func : snapshot.functions) {
-      add_entity(func.id, func.name, "function", "", func.id);
+      // Functions are namespace groupings - they don't have a ROS 2 FQN
+      add_entity(func.id, func.name, "function", "", "");
     }
 
     response->success = true;
@@ -150,28 +159,21 @@ void SovdServiceInterface::handle_list_entity_faults(
 
     auto faults_json = context_->list_entity_faults(request->entity_id);
 
-    // Convert JSON faults to Fault messages
+    // Convert JSON faults to Fault messages using value() for type safety
     if (faults_json.is_array()) {
       for (const auto & fault_json : faults_json) {
+        if (!fault_json.is_object()) continue;
         ros2_medkit_msgs::msg::Fault fault;
-        if (fault_json.contains("fault_code")) {
-          fault.fault_code = fault_json["fault_code"].get<std::string>();
-        }
-        if (fault_json.contains("severity")) {
-          fault.severity = fault_json["severity"].get<uint8_t>();
-        }
-        if (fault_json.contains("description")) {
-          fault.description = fault_json["description"].get<std::string>();
-        }
-        if (fault_json.contains("status")) {
-          fault.status = fault_json["status"].get<std::string>();
-        }
-        if (fault_json.contains("occurrence_count")) {
-          fault.occurrence_count = fault_json["occurrence_count"].get<uint32_t>();
-        }
+        fault.fault_code = fault_json.value("fault_code", std::string{});
+        fault.severity = fault_json.value("severity", static_cast<uint8_t>(0));
+        fault.description = fault_json.value("description", std::string{});
+        fault.status = fault_json.value("status", std::string{});
+        fault.occurrence_count = fault_json.value("occurrence_count", static_cast<uint32_t>(0));
         if (fault_json.contains("reporting_sources") && fault_json["reporting_sources"].is_array()) {
           for (const auto & src : fault_json["reporting_sources"]) {
-            fault.reporting_sources.push_back(src.get<std::string>());
+            if (src.is_string()) {
+              fault.reporting_sources.push_back(src.get<std::string>());
+            }
           }
         }
         response->faults.push_back(std::move(fault));
@@ -197,15 +199,14 @@ void SovdServiceInterface::handle_get_entity_data(
       return;
     }
 
-    // Use the registered data sampler if available
-    nlohmann::json data = nlohmann::json::object();
-
-    // Try to get data via the sampler registered for "data" collection
-    // The data sampler is registered by the gateway's data handler
-    // For now, return an empty JSON object - the agent can fall back to
-    // other data sources if needed
-    response->data_json = data.dump();
-    response->success = true;
+    // TODO(#332): Implement data retrieval via PluginContext::get_entity_data()
+    // when the method is added. Currently PluginContext exposes entity metadata
+    // and faults but not live topic data. The VDA 5050 agent should use the
+    // HTTP REST API (/api/v1/apps/{id}/data) as the primary data source until
+    // this service is fully implemented.
+    response->data_json = "{}";
+    response->success = false;
+    response->error_message = "GetEntityData not yet implemented - use HTTP REST API for topic data";
   } catch (const std::exception & e) {
     response->success = false;
     response->error_message = std::string("Internal error: ") + e.what();

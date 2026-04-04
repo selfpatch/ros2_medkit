@@ -168,10 +168,21 @@ class FakePluginContext : public PluginContext {
   std::unordered_map<std::string, std::vector<std::string>> entity_capabilities_;
 };
 
+class RclcppEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    rclcpp::init(0, nullptr);
+  }
+  void TearDown() override {
+    rclcpp::shutdown();
+  }
+};
+
+testing::Environment * const rclcpp_env = testing::AddGlobalTestEnvironment(new RclcppEnvironment);
+
 class SovdServiceInterfaceTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    rclcpp::init(0, nullptr);
     node_ = std::make_shared<rclcpp::Node>("test_sovd_service_interface");
     context_ = std::make_unique<FakePluginContext>(node_.get());
 
@@ -217,7 +228,6 @@ class SovdServiceInterfaceTest : public ::testing::Test {
     plugin_.reset();
     context_.reset();
     node_.reset();
-    rclcpp::shutdown();
   }
 
   std::shared_ptr<rclcpp::Node> node_;
@@ -234,7 +244,8 @@ TEST_F(SovdServiceInterfaceTest, ListAllEntities) {
   request->parent_id = "";
 
   auto future = client->async_send_request(request);
-  rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  auto spin_result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(spin_result, rclcpp::FutureReturnCode::SUCCESS);
   auto response = future.get();
 
   ASSERT_TRUE(response->success);
@@ -249,7 +260,8 @@ TEST_F(SovdServiceInterfaceTest, ListEntitiesFilterByType) {
   request->parent_id = "";
 
   auto future = client->async_send_request(request);
-  rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  auto spin_result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(spin_result, rclcpp::FutureReturnCode::SUCCESS);
   auto response = future.get();
 
   ASSERT_TRUE(response->success);
@@ -266,11 +278,48 @@ TEST_F(SovdServiceInterfaceTest, ListEntitiesFilterByParent) {
   request->parent_id = "engine";
 
   auto future = client->async_send_request(request);
-  rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  auto spin_result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(spin_result, rclcpp::FutureReturnCode::SUCCESS);
   auto response = future.get();
 
   ASSERT_TRUE(response->success);
   EXPECT_EQ(response->entities.size(), 2u);  // 2 apps under engine component
+}
+
+TEST_F(SovdServiceInterfaceTest, ListEntitiesFilterByTypeAndParent) {
+  auto client = node_->create_client<ros2_medkit_msgs::srv::ListEntities>("/test_medkit/list_entities");
+
+  auto request = std::make_shared<ros2_medkit_msgs::srv::ListEntities::Request>();
+  request->entity_type = "app";
+  request->parent_id = "engine";
+
+  auto future = client->async_send_request(request);
+  auto spin_result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(spin_result, rclcpp::FutureReturnCode::SUCCESS);
+  auto response = future.get();
+
+  ASSERT_TRUE(response->success);
+  EXPECT_EQ(response->entities.size(), 2u);  // 2 apps under engine, both type "app"
+  for (const auto & e : response->entities) {
+    EXPECT_EQ(e.entity_type, "app");
+    EXPECT_EQ(e.parent_id, "engine");
+  }
+}
+
+TEST_F(SovdServiceInterfaceTest, ListEntitiesFilterByTypeAndParentNoMatch) {
+  auto client = node_->create_client<ros2_medkit_msgs::srv::ListEntities>("/test_medkit/list_entities");
+
+  auto request = std::make_shared<ros2_medkit_msgs::srv::ListEntities::Request>();
+  request->entity_type = "component";
+  request->parent_id = "engine";  // no components under engine
+
+  auto future = client->async_send_request(request);
+  auto spin_result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(spin_result, rclcpp::FutureReturnCode::SUCCESS);
+  auto response = future.get();
+
+  ASSERT_TRUE(response->success);
+  EXPECT_TRUE(response->entities.empty());
 }
 
 TEST_F(SovdServiceInterfaceTest, ListEntitiesEmpty) {
@@ -281,7 +330,8 @@ TEST_F(SovdServiceInterfaceTest, ListEntitiesEmpty) {
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ListEntities::Request>();
   auto future = client->async_send_request(request);
-  rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  auto spin_result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(spin_result, rclcpp::FutureReturnCode::SUCCESS);
   auto response = future.get();
 
   ASSERT_TRUE(response->success);
@@ -295,12 +345,55 @@ TEST_F(SovdServiceInterfaceTest, GetCapabilitiesServerLevel) {
   request->entity_id = "";  // Server-level
 
   auto future = client->async_send_request(request);
-  rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  auto spin_result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(spin_result, rclcpp::FutureReturnCode::SUCCESS);
   auto response = future.get();
 
   ASSERT_TRUE(response->success);
   EXPECT_FALSE(response->capabilities.empty());
   EXPECT_FALSE(response->resource_types.empty());
+}
+
+TEST_F(SovdServiceInterfaceTest, GetCapabilitiesEntityLevel) {
+  // Register entity-specific capability
+  context_->register_entity_capability("engine", "x-medkit-traces");
+  context_->register_entity_capability("engine", "x-medkit-config");
+
+  auto client = node_->create_client<ros2_medkit_msgs::srv::GetCapabilities>("/test_medkit/get_capabilities");
+
+  auto request = std::make_shared<ros2_medkit_msgs::srv::GetCapabilities::Request>();
+  request->entity_id = "engine";
+
+  auto future = client->async_send_request(request);
+  auto result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(result, rclcpp::FutureReturnCode::SUCCESS);
+  auto response = future.get();
+
+  ASSERT_TRUE(response->success);
+  ASSERT_EQ(response->capabilities.size(), 2u);
+  EXPECT_EQ(response->capabilities[0], "x-medkit-traces");
+  EXPECT_EQ(response->capabilities[1], "x-medkit-config");
+}
+
+TEST_F(SovdServiceInterfaceTest, GetCapabilitiesTypeFallback) {
+  // Register type-level capability (no entity-specific ones)
+  context_->register_capability(SovdEntityType::COMPONENT, "faults");
+  context_->register_capability(SovdEntityType::COMPONENT, "data");
+
+  auto client = node_->create_client<ros2_medkit_msgs::srv::GetCapabilities>("/test_medkit/get_capabilities");
+
+  auto request = std::make_shared<ros2_medkit_msgs::srv::GetCapabilities::Request>();
+  request->entity_id = "engine";
+
+  auto future = client->async_send_request(request);
+  auto result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(result, rclcpp::FutureReturnCode::SUCCESS);
+  auto response = future.get();
+
+  ASSERT_TRUE(response->success);
+  ASSERT_EQ(response->capabilities.size(), 2u);
+  EXPECT_EQ(response->capabilities[0], "faults");
+  EXPECT_EQ(response->capabilities[1], "data");
 }
 
 TEST_F(SovdServiceInterfaceTest, GetCapabilitiesEntityNotFound) {
@@ -310,7 +403,8 @@ TEST_F(SovdServiceInterfaceTest, GetCapabilitiesEntityNotFound) {
   request->entity_id = "nonexistent";
 
   auto future = client->async_send_request(request);
-  rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  auto spin_result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(spin_result, rclcpp::FutureReturnCode::SUCCESS);
   auto response = future.get();
 
   ASSERT_FALSE(response->success);
@@ -334,7 +428,8 @@ TEST_F(SovdServiceInterfaceTest, ListEntityFaults) {
   request->entity_id = "temp_sensor";
 
   auto future = client->async_send_request(request);
-  rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  auto spin_result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(spin_result, rclcpp::FutureReturnCode::SUCCESS);
   auto response = future.get();
 
   ASSERT_TRUE(response->success);
@@ -352,27 +447,46 @@ TEST_F(SovdServiceInterfaceTest, ListEntityFaultsNotFound) {
   request->entity_id = "nonexistent";
 
   auto future = client->async_send_request(request);
-  rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  auto spin_result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(spin_result, rclcpp::FutureReturnCode::SUCCESS);
   auto response = future.get();
 
   ASSERT_FALSE(response->success);
   EXPECT_FALSE(response->error_message.empty());
 }
 
-TEST_F(SovdServiceInterfaceTest, GetEntityData) {
+TEST_F(SovdServiceInterfaceTest, GetEntityDataNotImplemented) {
   auto client = node_->create_client<ros2_medkit_msgs::srv::GetEntityData>("/test_medkit/get_entity_data");
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::GetEntityData::Request>();
   request->entity_id = "temp_sensor";
 
   auto future = client->async_send_request(request);
-  rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  auto result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(result, rclcpp::FutureReturnCode::SUCCESS);
   auto response = future.get();
 
-  ASSERT_TRUE(response->success);
-  // data_json should be valid JSON (even if empty object)
+  // GetEntityData is not yet implemented - returns explicit failure
+  ASSERT_FALSE(response->success);
+  EXPECT_FALSE(response->error_message.empty());
+  // data_json should still be valid JSON (empty object)
   auto parsed = nlohmann::json::parse(response->data_json, nullptr, false);
   EXPECT_FALSE(parsed.is_discarded());
+}
+
+TEST_F(SovdServiceInterfaceTest, GetEntityDataEntityNotFound) {
+  auto client = node_->create_client<ros2_medkit_msgs::srv::GetEntityData>("/test_medkit/get_entity_data");
+
+  auto request = std::make_shared<ros2_medkit_msgs::srv::GetEntityData::Request>();
+  request->entity_id = "nonexistent";
+
+  auto future = client->async_send_request(request);
+  auto result = rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5));
+  ASSERT_EQ(result, rclcpp::FutureReturnCode::SUCCESS);
+  auto response = future.get();
+
+  ASSERT_FALSE(response->success);
+  EXPECT_FALSE(response->error_message.empty());
 }
 
 TEST_F(SovdServiceInterfaceTest, PluginName) {

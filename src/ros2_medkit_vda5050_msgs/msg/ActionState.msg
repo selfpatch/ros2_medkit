@@ -28,6 +28,7 @@ string result_description
 string STATUS_WAITING=WAITING
 string STATUS_INITIALIZING=INITIALIZING
 string STATUS_RUNNING=RUNNING
+# Note: PAUSED is not in v2.0.0 - forward-compatible extension from v2.1+
 string STATUS_PAUSED=PAUSED
 string STATUS_FINISHED=FINISHED
 string STATUS_FAILED=FAILED

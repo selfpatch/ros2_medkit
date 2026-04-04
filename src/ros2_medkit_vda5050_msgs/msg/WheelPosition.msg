@@ -15,6 +15,9 @@
 # VDA 5050 v2.0.0 - WheelPosition (Factsheet sub-type)
 # Position of a wheel relative to the AGV origin.
 
+# Required
 float64 x
 float64 y
+
+# Optional
 float64 theta

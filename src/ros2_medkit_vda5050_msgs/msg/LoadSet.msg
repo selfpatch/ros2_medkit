@@ -18,12 +18,22 @@
 # Required
 string set_name
 string load_type
+BoundingBoxReference bounding_box_reference
+LoadDimensions load_dimensions
 
-# Optional (dimensions, weight, handling limits)
+# Optional
+string[] load_positions
 float64 max_weight
-float64 min_length
-float64 max_length
-float64 min_width
-float64 max_width
-float64 min_height
-float64 max_height
+bool rotation_allowed
+string description
+float64 min_loadhandling_height
+float64 max_loadhandling_height
+float64 min_loadhandling_depth
+float64 max_loadhandling_depth
+float64 min_loadhandling_tilt
+float64 max_loadhandling_tilt
+float64 agv_speed_limit
+float64 agv_acceleration_limit
+float64 agv_deceleration_limit
+float64 pick_time
+float64 drop_time

@@ -23,7 +23,7 @@
 # Filter by entity type: "app", "component", "area", "function", "" (all)
 string entity_type
 
-# Filter by parent entity ID, "" for top-level
+# Filter by parent entity ID, "" for no filter (returns all entities)
 string parent_id
 ---
 # Response fields
