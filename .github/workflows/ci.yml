@@ -50,32 +50,13 @@ jobs:
           restore-keys: |
             ccache-${{ matrix.ros_distro }}-
 
-      - name: Install cpp-httplib from source (Humble)
-        if: matrix.ros_distro == 'humble'
-        run: |
-          apt-get update
-          apt-get install -y cmake g++ libssl-dev pkg-config
-          git clone --depth 1 --branch v0.14.3 https://github.com/yhirose/cpp-httplib.git /tmp/cpp-httplib
-          cd /tmp/cpp-httplib
-          mkdir build && cd build
-          cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DHTTPLIB_REQUIRE_OPENSSL=ON
-          make install
-          # Verify installation — cpp-httplib from source installs cmake config (not pkg-config .pc)
-          test -f /usr/include/httplib.h && echo "cpp-httplib installed successfully" || exit 1
-
       - name: Install dependencies
         run: |
           apt-get update
           apt-get install -y ros-${{ matrix.ros_distro }}-test-msgs
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           rosdep update
-          # On Humble, skip the libcpp-httplib-dev rosdep key - the apt version (0.10.3)
-          # is too old; cpp-httplib v0.14.3 is built from source in an earlier step.
-          if [ "${{ matrix.ros_distro }}" = "humble" ]; then
-            rosdep install --from-paths src --ignore-src -r -y --skip-keys="libcpp-httplib-dev"
-          else
-            rosdep install --from-paths src --ignore-src -y
-          fi
+          rosdep install --from-paths src --ignore-src -y
 
       - name: Build packages
         env:
