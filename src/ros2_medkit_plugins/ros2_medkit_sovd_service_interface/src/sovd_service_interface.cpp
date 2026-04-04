@@ -26,10 +26,18 @@ namespace ros2_medkit_gateway {
 namespace {
 
 SovdEntityType entity_type_from_string(const std::string & type) {
-  if (type == "app") return SovdEntityType::APP;
-  if (type == "component") return SovdEntityType::COMPONENT;
-  if (type == "area") return SovdEntityType::AREA;
-  if (type == "function") return SovdEntityType::FUNCTION;
+  if (type == "app") {
+    return SovdEntityType::APP;
+  }
+  if (type == "component") {
+    return SovdEntityType::COMPONENT;
+  }
+  if (type == "area") {
+    return SovdEntityType::AREA;
+  }
+  if (type == "function") {
+    return SovdEntityType::FUNCTION;
+  }
   return SovdEntityType::UNKNOWN;
 }
 
