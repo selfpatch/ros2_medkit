@@ -170,7 +170,9 @@ void SovdServiceInterface::handle_list_entity_faults(
     // Convert JSON faults to Fault messages using value() for type safety
     if (faults_json.is_array()) {
       for (const auto & fault_json : faults_json) {
-        if (!fault_json.is_object()) continue;
+        if (!fault_json.is_object()) {
+          continue;
+        }
         ros2_medkit_msgs::msg::Fault fault;
         fault.fault_code = fault_json.value("fault_code", std::string{});
         fault.severity = fault_json.value("severity", static_cast<uint8_t>(0));
