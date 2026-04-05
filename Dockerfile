@@ -71,7 +71,7 @@ COPY src/ros2_medkit_plugins/ ${COLCON_WS}/src/ros2_medkit_plugins/
 RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
-      --skip-keys='ament_cmake_clang_format ament_cmake_clang_tidy test_msgs sqlite3 rosbag2_storage_mcap' && \
+      --skip-keys='ament_cmake_clang_format ament_cmake_clang_tidy test_msgs sqlite3 libcpp-httplib-dev rosbag2_storage_mcap' && \
     colcon build --cmake-args -DBUILD_TESTING=OFF"
 
 # ============================================================================
