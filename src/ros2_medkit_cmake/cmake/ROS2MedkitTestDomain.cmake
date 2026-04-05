@@ -19,6 +19,7 @@
 # non-overlapping domain ID ranges to prevent DDS cross-contamination.
 #
 # Allocated ranges:
+#   ros2_medkit_sovd_service_iface:   1 -   9 (9 slots)
 #   ros2_medkit_fault_manager:       10 -  29 (20 slots)
 #   ros2_medkit_gateway:             30 -  89 (60 slots)
 #   ros2_medkit_diagnostic_bridge:   90 -  99 (10 slots)
@@ -27,7 +28,7 @@
 #   ros2_medkit_graph_provider:     120 - 129 (10 slots)
 #   ros2_medkit_linux_introspection: 130 - 139 (10 slots)
 #   ros2_medkit_integration_tests:  140 - 229 (90 slots)
-#   ros2_medkit_sovd_service_iface: 230 - 232 (3 slots, max domain ID is 232)
+#   multi-domain tests (secondary): 230 - 232 (3 slots, reserved for peer_aggregation etc.)
 #
 # To add a new package: pick the next free range and update this comment.
 
