@@ -219,9 +219,8 @@ void SovdServiceInterface::handle_get_entity_data(
       return;
     }
 
-    // TODO: Implement data retrieval when PluginContext gains data access.
-    // Currently PluginContext exposes entity metadata and faults but not live
-    // topic data. Use HTTP REST API (/api/v1/apps/{id}/data) as alternative.
+    // Stub: PluginContext does not expose live topic data yet.
+    // Tracked in https://github.com/selfpatch/ros2_medkit/issues/351
     response->data_json = "{}";
     response->success = false;
     response->error_message = "GetEntityData not yet implemented - use HTTP REST API for topic data";
