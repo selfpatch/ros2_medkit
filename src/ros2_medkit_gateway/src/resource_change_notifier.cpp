@@ -105,6 +105,13 @@ void ResourceChangeNotifier::shutdown() {
     });
   }
 
+  // Synchronize with worker_loop()'s predicate check. Without this, the flag
+  // store above can land between the worker's predicate evaluation and its
+  // wait() call, losing the subsequent notify_one(). Acquiring queue_mutex_
+  // here guarantees the worker is either still outside the critical section
+  // (will observe the new flag) or already enqueued on queue_cv_ (notify will
+  // wake it).
+  { std::lock_guard<std::mutex> sync(queue_mutex_); }
   queue_cv_.notify_one();
   if (worker_thread_.joinable()) {
     worker_thread_.join();

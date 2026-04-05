@@ -655,7 +655,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_condition_evaluator gateway_lib)
 
   # Resource change notifier tests (async notification hub for triggers)
-  ament_add_gtest(test_resource_change_notifier test/test_resource_change_notifier.cpp TIMEOUT 600)
+  ament_add_gtest(test_resource_change_notifier test/test_resource_change_notifier.cpp TIMEOUT 180)
   target_link_libraries(test_resource_change_notifier gateway_lib)
 
   # Trigger store tests (SQLite persistence for triggers)
