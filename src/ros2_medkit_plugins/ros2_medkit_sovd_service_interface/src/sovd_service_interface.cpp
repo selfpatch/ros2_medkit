@@ -179,6 +179,16 @@ void SovdServiceInterface::handle_list_entity_faults(
         fault.description = fault_json.value("description", std::string{});
         fault.status = fault_json.value("status", std::string{});
         fault.occurrence_count = fault_json.value("occurrence_count", static_cast<uint32_t>(0));
+        if (fault_json.contains("first_occurred") && fault_json["first_occurred"].is_number()) {
+          double ts = fault_json["first_occurred"].get<double>();
+          fault.first_occurred.sec = static_cast<int32_t>(ts);
+          fault.first_occurred.nanosec = static_cast<uint32_t>((ts - static_cast<int32_t>(ts)) * 1e9);
+        }
+        if (fault_json.contains("last_occurred") && fault_json["last_occurred"].is_number()) {
+          double ts = fault_json["last_occurred"].get<double>();
+          fault.last_occurred.sec = static_cast<int32_t>(ts);
+          fault.last_occurred.nanosec = static_cast<uint32_t>((ts - static_cast<int32_t>(ts)) * 1e9);
+        }
         if (fault_json.contains("reporting_sources") && fault_json["reporting_sources"].is_array()) {
           for (const auto & src : fault_json["reporting_sources"]) {
             if (src.is_string()) {
@@ -209,11 +219,9 @@ void SovdServiceInterface::handle_get_entity_data(
       return;
     }
 
-    // TODO(#332): Implement data retrieval via PluginContext::get_entity_data()
-    // when the method is added. Currently PluginContext exposes entity metadata
-    // and faults but not live topic data. The VDA 5050 agent should use the
-    // HTTP REST API (/api/v1/apps/{id}/data) as the primary data source until
-    // this service is fully implemented.
+    // TODO: Implement data retrieval when PluginContext gains data access.
+    // Currently PluginContext exposes entity metadata and faults but not live
+    // topic data. Use HTTP REST API (/api/v1/apps/{id}/data) as alternative.
     response->data_json = "{}";
     response->success = false;
     response->error_message = "GetEntityData not yet implemented - use HTTP REST API for topic data";

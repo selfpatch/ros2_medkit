@@ -91,7 +91,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(START 230 END 232)
+  medkit_init_test_domains(START 1 END 9)
 
   ament_add_gtest(test_sovd_service_interface
     test/test_sovd_service_interface.cpp
