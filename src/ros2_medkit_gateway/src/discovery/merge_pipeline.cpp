@@ -441,7 +441,7 @@ MergeResult MergePipeline::execute() {
       function_layers.emplace_back(i, std::move(output.functions));
     }
     // entity_metadata is not consumed here - plugins serve their metadata
-    // as SOVD vendor extension resources via register_routes() and register_capability().
+    // as SOVD vendor extension resources via get_routes() and register_capability().
   }
 
   MergeResult result;

@@ -316,7 +316,7 @@ ros2_medkit_gateway:
     #   plugins.my_ota_plugin.server_url: "https://updates.example.com"
     #   plugins.my_ota_plugin.timeout_ms: 5000
     #
-    # Plugin lifecycle: load -> configure -> set_context -> register_routes
+    # Plugin lifecycle: load -> configure -> set_context -> get_routes
     # Plugins that throw during any lifecycle call are disabled (not crashed).
     # Default: [] (no plugins)
     plugins: [""]  # Default: no plugins. gateway.launch.py adds graph_provider automatically.

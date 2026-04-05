@@ -24,7 +24,7 @@ namespace ros2_medkit_gateway {
 /// Constructed by the gateway per-request; plugins receive it by const reference.
 class PluginRequest {
  public:
-  /// Construct from opaque pointer to httplib::Request.
+  /// Construct from opaque HTTP request pointer (gateway-internal).
   explicit PluginRequest(const void * impl);
 
   /// Extract a path parameter by regex capture group index.
@@ -35,10 +35,10 @@ class PluginRequest {
   std::string header(const std::string & name) const;
 
   /// Full request path (e.g. "/api/v1/apps/my_app/data").
-  std::string path() const;
+  const std::string & path() const;
 
-  /// Request body as string.
-  std::string body() const;
+  /// Request body (by reference - avoids copying large payloads).
+  const std::string & body() const;
 
  private:
   const void * impl_;
@@ -49,7 +49,7 @@ class PluginRequest {
 /// Constructed by the gateway per-request; plugins receive it by reference.
 class PluginResponse {
  public:
-  /// Construct from opaque pointer to httplib::Response.
+  /// Construct from opaque HTTP response pointer (gateway-internal).
   explicit PluginResponse(void * impl);
 
   /// Send a JSON success response (HTTP 200).

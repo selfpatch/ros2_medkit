@@ -57,11 +57,13 @@ std::string PluginRequest::path_param(size_t /*index*/) const {
 std::string PluginRequest::header(const std::string & /*name*/) const {
   return {};
 }
-std::string PluginRequest::path() const {
-  return {};
+const std::string & PluginRequest::path() const {
+  static const std::string empty;
+  return empty;
 }
-std::string PluginRequest::body() const {
-  return {};
+const std::string & PluginRequest::body() const {
+  static const std::string empty;
+  return empty;
 }
 PluginResponse::PluginResponse(void * impl) : impl_(impl) {
 }
