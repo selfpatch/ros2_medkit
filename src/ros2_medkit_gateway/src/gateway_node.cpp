@@ -22,10 +22,8 @@
 #include <set>
 #include <unordered_set>
 
-#include <rcl/arguments.h>
-#include <rcl_yaml_param_parser/parser.h>
-
 #include "ros2_medkit_gateway/aggregation/network_utils.hpp"
+#include "ros2_medkit_gateway/param_utils.hpp"
 
 #include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
 #include "ros2_medkit_gateway/sqlite_trigger_store.hpp"
@@ -60,52 +58,6 @@ nlohmann::json parameter_to_json(const rclcpp::Parameter & param) {
     default:
       return nullptr;
   }
-}
-
-/// Declare plugin config parameters from the global --params-file YAML.
-///
-/// Parameters from --params-file go into the ROS 2 global rcl context,
-/// NOT into NodeOptions::parameter_overrides(). We must discover and
-/// declare them explicitly so list_parameters()/get_parameter() can find them.
-void declare_plugin_params_from_yaml(rclcpp::Node * node, const std::string & prefix, const std::string & path_key) {
-  auto rcl_ctx = node->get_node_base_interface()->get_context()->get_rcl_context();
-  rcl_params_t * global_params = nullptr;
-  auto ret = rcl_arguments_get_param_overrides(&rcl_ctx->global_arguments, &global_params);
-  if (ret != RCL_RET_OK || global_params == nullptr) {
-    return;
-  }
-
-  std::string node_name = node->get_name();
-  std::string node_fqn = node->get_fully_qualified_name();
-  for (size_t n = 0; n < global_params->num_nodes; ++n) {
-    std::string yaml_node = global_params->node_names[n];
-    if (yaml_node != node_name && yaml_node != node_fqn && yaml_node != "/**") {
-      continue;
-    }
-    auto * node_p = &global_params->params[n];
-    for (size_t p = 0; p < node_p->num_params; ++p) {
-      std::string pname = node_p->parameter_names[p];
-      if (pname.rfind(prefix, 0) == 0 && pname != path_key && !node->has_parameter(pname)) {
-        // Determine the type from the rcl_variant_t so we can declare with the correct type
-        auto & val = node_p->parameter_values[p];
-        try {
-          if (val.string_value != nullptr) {
-            node->declare_parameter(pname, std::string(val.string_value));
-          } else if (val.bool_value != nullptr) {
-            node->declare_parameter(pname, *val.bool_value);
-          } else if (val.integer_value != nullptr) {
-            node->declare_parameter(pname, static_cast<int64_t>(*val.integer_value));
-          } else if (val.double_value != nullptr) {
-            node->declare_parameter(pname, *val.double_value);
-          }
-        } catch (...) {
-          // Skip params that can't be declared
-        }
-      }
-    }
-  }
-
-  rcl_yaml_node_struct_fini(global_params);
 }
 
 /// Extract per-plugin config from ROS 2 parameters.

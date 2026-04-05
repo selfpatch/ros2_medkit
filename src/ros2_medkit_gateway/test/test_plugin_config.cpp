@@ -28,54 +28,9 @@
 #include <fstream>
 #include <string>
 
-#include <rcl/arguments.h>
-#include <rcl_yaml_param_parser/parser.h>
 #include <rclcpp/rclcpp.hpp>
 
-namespace {
-
-/// Replicate the fix logic from gateway_node.cpp for testability.
-/// Declares plugin params from the global rcl context on a given node.
-void declare_plugin_params_from_yaml(rclcpp::Node * node, const std::string & prefix) {
-  auto rcl_ctx = node->get_node_base_interface()->get_context()->get_rcl_context();
-  rcl_params_t * global_params = nullptr;
-  if (rcl_arguments_get_param_overrides(&rcl_ctx->global_arguments, &global_params) != RCL_RET_OK ||
-      global_params == nullptr) {
-    return;
-  }
-
-  std::string node_name = node->get_name();
-  std::string node_fqn = node->get_fully_qualified_name();
-  for (size_t n = 0; n < global_params->num_nodes; ++n) {
-    std::string yaml_node = global_params->node_names[n];
-    if (yaml_node != node_name && yaml_node != node_fqn && yaml_node != "/**") {
-      continue;
-    }
-    auto * node_p = &global_params->params[n];
-    for (size_t p = 0; p < node_p->num_params; ++p) {
-      std::string pname = node_p->parameter_names[p];
-      if (pname.rfind(prefix, 0) == 0 && !node->has_parameter(pname)) {
-        auto & val = node_p->parameter_values[p];
-        try {
-          if (val.string_value != nullptr) {
-            node->declare_parameter(pname, std::string(val.string_value));
-          } else if (val.bool_value != nullptr) {
-            node->declare_parameter(pname, *val.bool_value);
-          } else if (val.integer_value != nullptr) {
-            node->declare_parameter(pname, static_cast<int64_t>(*val.integer_value));
-          } else if (val.double_value != nullptr) {
-            node->declare_parameter(pname, *val.double_value);
-          }
-        } catch (...) {
-        }
-      }
-    }
-  }
-
-  rcl_yaml_node_struct_fini(global_params);
-}
-
-}  // namespace
+#include "ros2_medkit_gateway/param_utils.hpp"
 
 /// Proves the bug and validates the fix using a lightweight rclcpp::Node.
 ///
@@ -111,7 +66,7 @@ TEST(PluginConfig, YamlPluginParamsReachGateway) {
                                   << "(this confirms the root cause of the bug)";
 
   // FIX: declare_plugin_params_from_yaml discovers and declares them
-  declare_plugin_params_from_yaml(node.get(), "plugins.my_plugin.");
+  ros2_medkit_gateway::declare_plugin_params_from_yaml(node.get(), "plugins.my_plugin.");
 
   // Verify all param types are correctly declared
   ASSERT_TRUE(node->has_parameter("plugins.my_plugin.custom_key"));
