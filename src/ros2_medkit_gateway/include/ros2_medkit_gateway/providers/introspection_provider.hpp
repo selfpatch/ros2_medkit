@@ -52,7 +52,7 @@ struct NewEntities {
 struct IntrospectionResult {
   /// Per-entity metadata for plugin-internal use. Key = entity_id.
   /// Plugins serve this data as SOVD vendor extension resources
-  /// via register_routes() and register_capability().
+  /// via get_routes() and register_capability().
   std::unordered_map<std::string, nlohmann::json> metadata;
 
   /// New entities discovered by this provider

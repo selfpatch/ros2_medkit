@@ -55,10 +55,10 @@ std::string PluginRequest::path_param(size_t index) const {
 std::string PluginRequest::header(const std::string & name) const {
   return static_cast<const httplib::Request *>(impl_)->get_header_value(name);
 }
-std::string PluginRequest::path() const {
+const std::string & PluginRequest::path() const {
   return static_cast<const httplib::Request *>(impl_)->path;
 }
-std::string PluginRequest::body() const {
+const std::string & PluginRequest::body() const {
   return static_cast<const httplib::Request *>(impl_)->body;
 }
 

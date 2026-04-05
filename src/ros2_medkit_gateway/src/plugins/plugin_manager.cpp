@@ -263,8 +263,7 @@ void PluginManager::register_transport(std::unique_ptr<SubscriptionTransportProv
   transport_registry_->register_transport(std::move(provider));
 }
 
-void PluginManager::register_routes(void * server_ptr, const std::string & api_prefix) {
-  auto * server = static_cast<httplib::Server *>(server_ptr);
+void PluginManager::register_routes(httplib::Server & server, const std::string & api_prefix) {
   std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
   for (auto & lp : plugins_) {
     if (!lp.load_result.plugin) {
@@ -276,8 +275,8 @@ void PluginManager::register_routes(void * server_ptr, const std::string & api_p
         std::string full_pattern = api_prefix + "/" + route.pattern;
         auto handler_fn = route.handler;  // capture by value for lambda
         auto plugin_name = lp.load_result.plugin->name();
-        auto httplib_handler = [handler_fn, plugin_name, &full_pattern](const httplib::Request & req,
-                                                                        httplib::Response & res) {
+        auto httplib_handler = [handler_fn, plugin_name, full_pattern](const httplib::Request & req,
+                                                                       httplib::Response & res) {
           try {
             PluginRequest plugin_req(&req);
             PluginResponse plugin_res(&res);
@@ -296,13 +295,13 @@ void PluginManager::register_routes(void * server_ptr, const std::string & api_p
         };
 
         if (route.method == "GET") {
-          server->Get(full_pattern, httplib_handler);
+          server.Get(full_pattern, httplib_handler);
         } else if (route.method == "POST") {
-          server->Post(full_pattern, httplib_handler);
+          server.Post(full_pattern, httplib_handler);
         } else if (route.method == "PUT") {
-          server->Put(full_pattern, httplib_handler);
+          server.Put(full_pattern, httplib_handler);
         } else if (route.method == "DELETE") {
-          server->Delete(full_pattern, httplib_handler);
+          server.Delete(full_pattern, httplib_handler);
         } else {
           RCLCPP_WARN(logger(), "Plugin '%s' registered route with unknown method '%s' - skipping",
                       lp.load_result.plugin->name().c_str(), route.method.c_str());

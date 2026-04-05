@@ -324,7 +324,7 @@ TEST(PluginManagerTest, ThrowOnGetRoutesDisablesPlugin) {
 
   mgr.configure_plugins();
   httplib::Server srv;
-  mgr.register_routes(&srv, "/api/v1");
+  mgr.register_routes(srv, "/api/v1");
 
   // Throwing plugin disabled, good plugin's IntrospectionProvider still works
   EXPECT_EQ(mgr.get_introspection_providers().size(), 1u);
@@ -340,7 +340,7 @@ TEST(PluginManagerTest, RegisterRoutesWrapsPluginHandlers) {
   mgr.configure_plugins();
 
   httplib::Server srv;
-  mgr.register_routes(&srv, "/api/v1");
+  mgr.register_routes(srv, "/api/v1");
 
   // Bind to ephemeral port to avoid conflicts in parallel CTest runs
   auto port = srv.bind_to_any_port("127.0.0.1");

@@ -32,6 +32,10 @@
 #include <string>
 #include <vector>
 
+namespace httplib {
+class Server;
+}
+
 namespace ros2_medkit_gateway {
 
 /**
@@ -96,10 +100,10 @@ class PluginManager {
 
   /**
    * @brief Register custom REST routes from all plugins
-   * @param server Opaque pointer to httplib::Server (avoids httplib in header)
+   * @param server httplib::Server instance
    * @param api_prefix API path prefix (e.g., "/api/v1")
    */
-  void register_routes(void * server, const std::string & api_prefix);
+  void register_routes(httplib::Server & server, const std::string & api_prefix);
 
   /// Register a resource sampler for a vendor collection (must start with "x-")
   void register_resource_sampler(const std::string & collection, ResourceSamplerFn fn);
