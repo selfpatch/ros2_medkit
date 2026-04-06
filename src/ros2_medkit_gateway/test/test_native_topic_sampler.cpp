@@ -270,3 +270,108 @@ TEST_F(NativeTopicSamplerWithPublishersTest, GetTopicsForNamespace_ReturnsCorrec
   EXPECT_TRUE(found_status) << "Should find /test_robot/status topic";
   EXPECT_TRUE(found_sensor) << "Should find /test_robot/sensor/data topic";
 }
+
+// =============================================================================
+// Thread-safety tests for sample_topic()
+// =============================================================================
+
+class NativeTopicSamplerThreadSafetyTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    rclcpp::init(0, nullptr);
+  }
+  static void TearDownTestSuite() {
+    rclcpp::shutdown();
+  }
+
+  void SetUp() override {
+    node_ = std::make_shared<rclcpp::Node>("test_thread_safety_node");
+    sampler_ = std::make_unique<NativeTopicSampler>(node_.get());
+
+    // Spin the node in a background thread so subscription callbacks fire
+    executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
+    executor_->add_node(node_);
+    spin_thread_ = std::thread([this]() {
+      executor_->spin();
+    });
+
+    // Publisher on a known topic with high frequency
+    pub_ = node_->create_publisher<std_msgs::msg::String>("/thread_safety_test/data", 10);
+    timer_ = node_->create_wall_timer(std::chrono::milliseconds(50), [this]() {
+      std_msgs::msg::String msg;
+      msg.data = "test";
+      pub_->publish(msg);
+    });
+
+    // Let DDS discover the topic
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  }
+
+  void TearDown() override {
+    executor_->cancel();
+    spin_thread_.join();
+    executor_.reset();
+    timer_.reset();
+    pub_.reset();
+    sampler_.reset();
+    node_.reset();
+  }
+
+  std::shared_ptr<rclcpp::Node> node_;
+  std::unique_ptr<NativeTopicSampler> sampler_;
+  std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
+  std::thread spin_thread_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_;
+  rclcpp::TimerBase::SharedPtr timer_;
+};
+
+/// Verify that sample_topic on timeout path does not crash.
+/// Exercises the shared_ptr SampleState fix: the callback may fire after
+/// wait_for returns timeout, and must not access destroyed stack locals.
+TEST_F(NativeTopicSamplerThreadSafetyTest, SampleTopicTimeoutDoesNotCrash) {
+  for (int i = 0; i < 20; ++i) {
+    auto result = sampler_->sample_topic("/no_such_topic_xyz", 0.05);
+    EXPECT_FALSE(result.has_data);
+  }
+}
+
+/// Verify that concurrent sample_topic calls from multiple threads do not crash.
+/// Exercises the sampling_mutex_ + dedicated callback group fix: concurrent
+/// create_generic_subscription calls must be serialized.
+TEST_F(NativeTopicSamplerThreadSafetyTest, ConcurrentSampleTopicDoesNotCrash) {
+  constexpr int kThreads = 4;
+  constexpr int kIterations = 5;
+  std::vector<std::thread> threads;
+  threads.reserve(kThreads);
+  std::atomic<int> successes{0};
+  std::atomic<int> completions{0};
+
+  for (int t = 0; t < kThreads; ++t) {
+    threads.emplace_back([this, &successes, &completions]() {
+      for (int i = 0; i < kIterations; ++i) {
+        auto result = sampler_->sample_topic("/thread_safety_test/data", 0.5);
+        if (result.has_data) {
+          successes.fetch_add(1);
+        }
+        completions.fetch_add(1);
+      }
+    });
+  }
+
+  for (auto & t : threads) {
+    t.join();
+  }
+
+  EXPECT_EQ(completions.load(), kThreads * kIterations);
+  EXPECT_GT(successes.load(), 0) << "At least one concurrent sample should receive data";
+}
+
+/// Verify that sample_topic with a very short timeout and active publisher
+/// does not crash when the message arrives right at the timeout boundary.
+/// Stress-tests the SampleState fix: callback fires while stack is unwinding.
+TEST_F(NativeTopicSamplerThreadSafetyTest, RapidTimeoutWithActivePublisher) {
+  for (int i = 0; i < 30; ++i) {
+    auto result = sampler_->sample_topic("/thread_safety_test/data", 0.02);
+    // Don't check has_data - timing is non-deterministic. Just don't crash.
+  }
+}

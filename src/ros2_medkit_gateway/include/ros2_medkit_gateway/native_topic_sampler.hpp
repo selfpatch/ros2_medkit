@@ -292,6 +292,17 @@ class NativeTopicSampler {
   /// Native JSON serializer for topic deserialization
   std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
 
+  /// Dedicated callback group for sampling subscriptions. Isolates short-lived
+  /// sampling subscriptions from the main callback group so subscription
+  /// creation/destruction from httplib threads does not race with the executor
+  /// iterating the default group's entity list.
+  rclcpp::CallbackGroup::SharedPtr sampling_cb_group_;
+
+  /// Serializes subscription creation/destruction in sample_topic(). Only one
+  /// sampling subscription is active at a time, preventing concurrent
+  /// create_generic_subscription calls from multiple httplib threads.
+  std::mutex sampling_mutex_;
+
   /// Cached component topic map, updated by build_component_topic_map()
   std::map<std::string, ComponentTopics> topic_map_cache_;
 

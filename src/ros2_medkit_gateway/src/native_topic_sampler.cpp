@@ -125,6 +125,10 @@ NativeTopicSampler::NativeTopicSampler(rclcpp::Node * node)
   if (!node_) {
     throw std::invalid_argument("NativeTopicSampler requires a valid node pointer");
   }
+  // Dedicated callback group isolates sampling subscriptions from the default
+  // group. This prevents subscription create/destroy from httplib threads
+  // racing with the executor iterating the default group's entity list.
+  sampling_cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   RCLCPP_INFO(node_->get_logger(), "NativeTopicSampler initialized with native serialization");
 }
 
@@ -238,6 +242,11 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
     return result;
   }
 
+  // Serialize sampling: only one subscription active at a time.
+  // This prevents concurrent create_generic_subscription calls from multiple
+  // httplib threads racing with each other and with the executor.
+  std::lock_guard<std::mutex> sampling_lock(sampling_mutex_);
+
   // Use native GenericSubscription for sampling
   try {
     constexpr double kDefaultTimeoutSec = 1.0;
@@ -248,10 +257,16 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
       timeout_sec = kDefaultTimeoutSec;
     }
 
-    // Set up one-shot subscription with promise/future
-    std::promise<rclcpp::SerializedMessage> message_promise;
-    auto message_future = message_promise.get_future();
-    std::atomic<bool> received{false};
+    // Heap-allocated state shared between the callback and this function.
+    // The callback captures a shared_ptr (not stack references) so it remains
+    // valid even if the subscription outlives sample_topic()'s stack frame -
+    // e.g. when the executor dispatches a callback after wait_for() times out.
+    struct SampleState {
+      std::promise<rclcpp::SerializedMessage> message_promise;
+      std::atomic<bool> received{false};
+    };
+    auto state = std::make_shared<SampleState>();
+    auto message_future = state->message_promise.get_future();
 
     // Choose QoS based on publisher QoS (best effort for sensor data, reliable for others)
     rclcpp::QoS qos = rclcpp::SensorDataQoS();  // Best effort, keep last 1
@@ -266,17 +281,19 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
 
     // Create generic subscription
     // NOLINTNEXTLINE(performance-unnecessary-value-param) - GenericSubscription requires value type in callback
-    auto callback = [&message_promise, &received](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+    auto callback = [state](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
       // Only process first message (one-shot)
       bool expected = false;
-      if (received.compare_exchange_strong(expected, true)) {
-        message_promise.set_value(*msg);
+      if (state->received.compare_exchange_strong(expected, true)) {
+        state->message_promise.set_value(*msg);
       }
     };
 
     rclcpp::GenericSubscription::SharedPtr subscription;
     try {
-      subscription = node_->create_generic_subscription(topic_name, info->type, qos, callback);
+      rclcpp::SubscriptionOptions sub_opts;
+      sub_opts.callback_group = sampling_cb_group_;
+      subscription = node_->create_generic_subscription(topic_name, info->type, qos, callback, sub_opts);
     } catch (const std::exception & e) {
       RCLCPP_WARN(node_->get_logger(), "Failed to create subscription for '%s': %s", topic_name.c_str(), e.what());
       result.has_data = false;
@@ -285,10 +302,11 @@ TopicSampleResult NativeTopicSampler::sample_topic(const std::string & topic_nam
 
     RCLCPP_DEBUG(node_->get_logger(), "sample_topic: Created GenericSubscription for '%s'", topic_name.c_str());
 
-    // Wait for message using future with timeout
-    // The main executor will deliver callbacks - we just wait for the result
-    // Note: This works because HTTP requests are handled in a separate thread,
-    // while the main executor processes ROS callbacks
+    // Wait for message using future with timeout.
+    // The main executor delivers callbacks on the executor thread; we block here.
+    // Thread safety: sampling_mutex_ serializes subscription lifecycle,
+    // sampling_cb_group_ isolates from the default callback group, and
+    // SampleState (heap-allocated, shared_ptr) keeps callback state alive.
     const auto timeout = std::chrono::duration<double>(timeout_sec);
     auto future_status = message_future.wait_for(timeout);
 
