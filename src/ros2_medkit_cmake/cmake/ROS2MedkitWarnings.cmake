@@ -129,22 +129,7 @@ endif()
 function(ros2_medkit_relax_vendor_warnings)
   foreach(_target gmock gmock_main gtest gtest_main)
     if(TARGET ${_target})
-      target_compile_options(${_target} PRIVATE
-        -Wno-error=switch-enum
-        -Wno-error=old-style-cast
-        -Wno-error=useless-cast
-        -Wno-error=cast-qual
-        -Wno-error=zero-as-null-pointer-constant
-        -Wno-error=undef
-        -Wno-error=extra-semi
-        -Wno-error=float-equal
-        -Wno-error=shadow
-        -Wno-error=format
-        -Wno-error=implicit-fallthrough
-        -Wno-error=duplicated-cond
-        -Wno-error=duplicated-branches
-        -Wno-error=logical-op
-      )
+      target_compile_options(${_target} PRIVATE -w)
     endif()
   endforeach()
 endfunction()

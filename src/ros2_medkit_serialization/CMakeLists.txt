@@ -57,7 +57,7 @@ set_source_files_properties(
   src/vendored/dynmsg/string_utils.cpp
   src/vendored/dynmsg/vector_utils.cpp
   src/vendored/dynmsg/yaml_utils.cpp
-  PROPERTIES COMPILE_OPTIONS "-Wno-error;-Wno-old-style-cast;-Wno-sign-conversion"
+  PROPERTIES COMPILE_OPTIONS "-w"
 )
 
 # Enable PIC so this static library can be linked into shared objects
