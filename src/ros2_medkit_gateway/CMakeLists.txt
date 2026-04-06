@@ -595,6 +595,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_plugin_manager test/test_plugin_manager.cpp)
   target_link_libraries(test_plugin_manager gateway_lib)
 
+  # Plugin entity routing tests
+  ament_add_gtest(test_plugin_entity_routing test/test_plugin_entity_routing.cpp)
+  target_link_libraries(test_plugin_entity_routing gateway_lib)
+
   # Plugin HTTP types tests
   ament_add_gtest(test_plugin_http_types test/test_plugin_http_types.cpp)
   target_link_libraries(test_plugin_http_types gateway_lib)
