@@ -866,6 +866,26 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     trigger_topic_subscriber_ = std::make_unique<TriggerTopicSubscriber>(this, *resource_change_notifier_);
     trigger_mgr_->set_topic_subscriber(trigger_topic_subscriber_.get());
 
+    // Wire deferred topic resolution: when a trigger's resource_path couldn't
+    // be resolved to a ROS 2 topic at creation time, retry periodically using
+    // the entity cache to find matching topics.
+    trigger_mgr_->set_resolve_topic_fn([this](const std::string & entity_id,
+                                              const std::string & resource_path) -> std::string {
+      const auto & cache = get_thread_safe_cache();
+      auto aggregated = cache.get_entity_data(entity_id);
+      for (const auto & topic : aggregated.topics) {
+        if (topic.name == resource_path ||
+            (topic.name.size() > resource_path.size() &&
+             topic.name.compare(topic.name.size() - resource_path.size(), resource_path.size(), resource_path) == 0)) {
+          return topic.name;
+        }
+      }
+      return "";
+    });
+    trigger_topic_subscriber_->set_retry_callback([this]() {
+      trigger_mgr_->retry_unresolved_triggers();
+    });
+
     // Wire node-to-entity resolver for trigger notifications (#305).
     // The resolver looks up node FQNs in the ThreadSafeEntityCache's node_to_app
     // mapping (populated from linking result). Captures 'this' - the lambda is

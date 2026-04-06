@@ -149,6 +149,17 @@ class TriggerManager {
   /// Called by GatewayNode after both TriggerManager and LogManager are available.
   void set_log_manager(LogManager * log_manager);
 
+  /// Resolves a resource_path to a full ROS 2 topic name for a given entity.
+  /// Returns the topic name, or empty string if unresolvable.
+  using ResolveTopicFn = std::function<std::string(const std::string & entity_id, const std::string & resource_path)>;
+
+  /// Set the topic name resolver. Called by GatewayNode after cache is available.
+  void set_resolve_topic_fn(ResolveTopicFn fn);
+
+  /// Retry resolving data triggers whose topic names were unknown at creation.
+  /// Called periodically by TriggerTopicSubscriber's retry timer.
+  void retry_unresolved_triggers();
+
   // --- Entity existence check (for orphan sweep) ----------------------------
 
   /// Function that checks whether an entity still exists in the discovery cache.
@@ -255,6 +266,18 @@ class TriggerManager {
   // that would re-enter on_resource_change(). Only accessed from the notifier
   // worker thread (single-threaded dispatch), so no synchronization needed.
   bool evaluating_trigger_{false};
+
+  // Deferred resolution for data triggers created before topic was discoverable.
+  // Periodically retried via retry_unresolved_triggers().
+  struct UnresolvedTrigger {
+    std::string trigger_id;
+    std::string entity_id;
+    std::string resource_path;
+    std::chrono::steady_clock::time_point created_at;
+  };
+  std::vector<UnresolvedTrigger> unresolved_data_triggers_;  // guarded by triggers_mutex_
+  ResolveTopicFn resolve_topic_fn_;                          // guarded by triggers_mutex_
+  static constexpr int kUnresolvedTimeoutSec = 60;
 };
 
 }  // namespace ros2_medkit_gateway
