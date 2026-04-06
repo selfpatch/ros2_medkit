@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/http/handlers/operation_handlers.hpp"
 
+#include <algorithm>
 #include <unordered_set>
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -55,7 +56,10 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
         if (result) {
           HandlerContext::send_json(res, *result);
         } else {
-          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+          auto status = std::clamp(result.error().http_status, 400, 599);
+          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
+                                                         : result.error().message;
+          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
         }
         return;
       }
@@ -368,6 +372,11 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
     }
     auto entity_info = *entity_opt;
 
+    // Check lock access for operations (before plugin delegation - locks apply to all entities)
+    if (ctx_.validate_lock_access(req, res, entity_info, "operations")) {
+      return;
+    }
+
     // Delegate to plugin OperationProvider if entity is plugin-owned
     if (entity_info.is_plugin) {
       auto * pmgr = ctx_.node()->get_plugin_manager();
@@ -385,17 +394,15 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
         if (result) {
           HandlerContext::send_json(res, *result);
         } else {
-          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+          auto status = std::clamp(result.error().http_status, 400, 599);
+          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
+                                                         : result.error().message;
+          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
         }
         return;
       }
       HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND,
                                  "No operation provider for plugin entity '" + entity_id + "'");
-      return;
-    }
-
-    // Check lock access for operations
-    if (ctx_.validate_lock_access(req, res, entity_info, "operations")) {
       return;
     }
 

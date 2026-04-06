@@ -16,6 +16,7 @@
 
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/providers/data_provider.hpp"
+#include "ros2_medkit_gateway/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/providers/operation_provider.hpp"
 
 using namespace ros2_medkit_gateway;
@@ -174,4 +175,175 @@ TEST(PluginEntityRouting, UnownedEntityReturnsNullProviders) {
   // Don't register ownership - entity is not owned by any plugin
   EXPECT_EQ(mgr.get_data_provider_for_entity("unowned"), nullptr);
   EXPECT_EQ(mgr.get_operation_provider_for_entity("unowned"), nullptr);
+}
+
+// =============================================================================
+// FaultProvider Routing Tests
+// =============================================================================
+
+class MockFaultPlugin : public GatewayPlugin, public FaultProvider {
+ public:
+  std::string name() const override {
+    return "fault_plugin";
+  }
+  void configure(const json &) override {
+  }
+  void shutdown() override {
+  }
+
+  tl::expected<json, FaultProviderErrorInfo> list_faults(const std::string & entity_id) override {
+    return json{{"items", json::array({{{"code", "DTC_001"}, {"entity", entity_id}}})}};
+  }
+  tl::expected<json, FaultProviderErrorInfo> get_fault(const std::string &, const std::string & code) override {
+    return json{{"code", code}, {"status", "pending"}};
+  }
+  tl::expected<json, FaultProviderErrorInfo> clear_fault(const std::string &, const std::string & code) override {
+    return json{{"code", code}, {"cleared", true}};
+  }
+};
+
+TEST(PluginEntityRouting, FaultProviderResolvedForOwnedEntity) {
+  PluginManager mgr;
+
+  auto plugin = std::make_unique<MockFaultPlugin>();
+  auto * raw = plugin.get();
+  mgr.add_plugin(std::move(plugin));
+
+  mgr.register_entity_ownership("fault_plugin", {"my_ecu"});
+
+  auto * fp = mgr.get_fault_provider_for_entity("my_ecu");
+  ASSERT_NE(fp, nullptr);
+  EXPECT_EQ(fp, static_cast<FaultProvider *>(raw));
+
+  auto result = fp->list_faults("my_ecu");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ((*result)["items"][0]["code"], "DTC_001");
+}
+
+TEST(PluginEntityRouting, BarePluginReturnsNullFaultProvider) {
+  PluginManager mgr;
+
+  auto plugin = std::make_unique<MockBarePlugin>();
+  mgr.add_plugin(std::move(plugin));
+
+  mgr.register_entity_ownership("bare_plugin", {"entity1"});
+  EXPECT_EQ(mgr.get_fault_provider_for_entity("entity1"), nullptr);
+}
+
+TEST(PluginEntityRouting, UnownedEntityReturnsNullFaultProvider) {
+  PluginManager mgr;
+
+  auto plugin = std::make_unique<MockFaultPlugin>();
+  mgr.add_plugin(std::move(plugin));
+
+  EXPECT_EQ(mgr.get_fault_provider_for_entity("unowned"), nullptr);
+}
+
+// =============================================================================
+// Error Propagation Tests
+// =============================================================================
+
+class MockErrorPlugin : public GatewayPlugin, public DataProvider, public FaultProvider {
+ public:
+  std::string name() const override {
+    return "error_plugin";
+  }
+  void configure(const json &) override {
+  }
+  void shutdown() override {
+  }
+
+  tl::expected<json, DataProviderErrorInfo> list_data(const std::string &) override {
+    return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::TransportError, "backend unavailable", 503});
+  }
+  tl::expected<json, DataProviderErrorInfo> read_data(const std::string &, const std::string &) override {
+    return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::ResourceNotFound, "no such resource", 404});
+  }
+  tl::expected<json, DataProviderErrorInfo> write_data(const std::string &, const std::string &,
+                                                       const json &) override {
+    return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::ReadOnly, "read-only entity", 403});
+  }
+
+  tl::expected<json, FaultProviderErrorInfo> list_faults(const std::string &) override {
+    return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::TransportError, "not reachable", 503});
+  }
+  tl::expected<json, FaultProviderErrorInfo> get_fault(const std::string &, const std::string &) override {
+    return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::FaultNotFound, "unknown fault", 404});
+  }
+  tl::expected<json, FaultProviderErrorInfo> clear_fault(const std::string &, const std::string &) override {
+    return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "cannot clear", 409});
+  }
+};
+
+TEST(PluginEntityRouting, DataProviderErrorPropagation) {
+  PluginManager mgr;
+
+  auto plugin = std::make_unique<MockErrorPlugin>();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("error_plugin", {"bad_ecu"});
+
+  auto * dp = mgr.get_data_provider_for_entity("bad_ecu");
+  ASSERT_NE(dp, nullptr);
+
+  auto result = dp->list_data("bad_ecu");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 503);
+  EXPECT_EQ(result.error().message, "backend unavailable");
+  EXPECT_EQ(result.error().code, DataProviderError::TransportError);
+}
+
+TEST(PluginEntityRouting, FaultProviderErrorPropagation) {
+  PluginManager mgr;
+
+  auto plugin = std::make_unique<MockErrorPlugin>();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("error_plugin", {"bad_ecu"});
+
+  auto * fp = mgr.get_fault_provider_for_entity("bad_ecu");
+  ASSERT_NE(fp, nullptr);
+
+  auto result = fp->get_fault("bad_ecu", "DTC_999");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().message, "unknown fault");
+}
+
+// =============================================================================
+// Entity Ownership Conflict Tests
+// =============================================================================
+
+TEST(PluginEntityRouting, OwnershipConflictLastWins) {
+  PluginManager mgr;
+  mgr.register_entity_ownership("plugin_a", {"shared_entity"});
+  mgr.register_entity_ownership("plugin_b", {"shared_entity"});
+
+  auto owner = mgr.get_entity_owner("shared_entity");
+  ASSERT_TRUE(owner.has_value());
+  EXPECT_EQ(*owner, "plugin_b");
+}
+
+TEST(PluginEntityRouting, ClearEntityOwnership) {
+  PluginManager mgr;
+  mgr.register_entity_ownership("plugin_a", {"ent1", "ent2"});
+  mgr.register_entity_ownership("plugin_b", {"ent3"});
+
+  mgr.clear_entity_ownership("plugin_a");
+
+  EXPECT_FALSE(mgr.get_entity_owner("ent1").has_value());
+  EXPECT_FALSE(mgr.get_entity_owner("ent2").has_value());
+  // plugin_b's entity should be unaffected
+  EXPECT_EQ(*mgr.get_entity_owner("ent3"), "plugin_b");
+}
+
+TEST(PluginEntityRouting, ClearAndReregisterOwnership) {
+  PluginManager mgr;
+  mgr.register_entity_ownership("plugin_a", {"ent1", "ent2"});
+
+  // Simulate refresh: entity2 disappeared, entity3 appeared
+  mgr.clear_entity_ownership("plugin_a");
+  mgr.register_entity_ownership("plugin_a", {"ent1", "ent3"});
+
+  EXPECT_TRUE(mgr.get_entity_owner("ent1").has_value());
+  EXPECT_FALSE(mgr.get_entity_owner("ent2").has_value());  // removed
+  EXPECT_TRUE(mgr.get_entity_owner("ent3").has_value());   // added
 }

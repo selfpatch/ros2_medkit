@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// @verifies REQ_INTEROP_098
 /// Tests that plugin config from --params-file YAML reaches the gateway plugin framework.
 ///
 /// The bug: extract_plugin_config() read from get_node_options().parameter_overrides(),

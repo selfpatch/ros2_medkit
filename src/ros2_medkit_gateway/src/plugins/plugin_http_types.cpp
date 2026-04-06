@@ -46,6 +46,10 @@ const std::string & PluginRequest::body() const {
   return static_cast<const httplib::Request *>(impl_)->body;
 }
 
+std::string PluginRequest::query_param(const std::string & name) const {
+  return static_cast<const httplib::Request *>(impl_)->get_param_value(name);
+}
+
 // --- PluginResponse ---
 
 PluginResponse::PluginResponse(void * impl) : impl_(impl) {

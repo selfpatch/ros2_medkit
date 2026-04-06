@@ -140,6 +140,9 @@ constexpr const char * ERR_SCRIPT_NOT_RUNNING = "x-medkit-script-not-running";
 constexpr const char * ERR_SCRIPT_CONCURRENCY_LIMIT = "x-medkit-concurrency-limit";
 constexpr const char * ERR_SCRIPT_FILE_TOO_LARGE = "x-medkit-script-too-large";
 
+/// Plugin provider returned an error (used for DataProvider/OperationProvider/FaultProvider errors)
+constexpr const char * ERR_PLUGIN_ERROR = "x-medkit-plugin-error";
+
 /**
  * @brief Check if an error code is a vendor-specific code
  * @param error_code Error code to check

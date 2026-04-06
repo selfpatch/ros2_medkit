@@ -40,6 +40,9 @@ class PluginRequest {
   /// Request body (by reference - avoids copying large payloads).
   const std::string & body() const;
 
+  /// Get a query parameter value by name. Returns empty string if not present.
+  std::string query_param(const std::string & name) const;
+
  private:
   const void * impl_;
 };

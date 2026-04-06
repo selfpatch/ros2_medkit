@@ -1,4 +1,4 @@
-// Copyright 2026 mfaferek93
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/plugins/plugin_types.hpp"
-#include "sovd_service_interface.hpp"
+#pragma once
 
-using namespace ros2_medkit_gateway;
+#include <string>
 
-extern "C" GATEWAY_PLUGIN_EXPORT int plugin_api_version() {
-  return PLUGIN_API_VERSION;  // Must match PLUGIN_API_VERSION (exact match required)
-}
+#include <tl/expected.hpp>
 
-extern "C" GATEWAY_PLUGIN_EXPORT GatewayPlugin * create_plugin() {
-  return new SovdServiceInterface();
-}
+namespace ros2_medkit_gateway {
+
+/// Validate an entity ID against naming conventions.
+/// Allow: alphanumeric (a-z, A-Z, 0-9), underscore (_), hyphen (-).
+/// Max 256 characters.
+/// @return void on success, error message string on failure.
+tl::expected<void, std::string> validate_entity_id(const std::string & entity_id);
+
+}  // namespace ros2_medkit_gateway

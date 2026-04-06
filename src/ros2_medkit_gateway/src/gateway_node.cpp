@@ -1586,6 +1586,34 @@ void GatewayNode::refresh_cache() {
       }
     }
 
+    // Refresh entity ownership for per-entity provider routing.
+    // Re-register ownership each cycle to pick up dynamically discovered entities
+    // and remove stale entries for entities that are no longer reported.
+    if (plugin_mgr_ && plugin_mgr_->has_plugins()) {
+      auto providers = plugin_mgr_->get_named_introspection_providers();
+      for (auto & [name, provider] : providers) {
+        IntrospectionInput input;
+        auto result = provider->introspect(input);
+        std::vector<std::string> entity_ids;
+        entity_ids.reserve(result.new_entities.areas.size() + result.new_entities.components.size() +
+                           result.new_entities.apps.size() + result.new_entities.functions.size());
+        for (const auto & area : result.new_entities.areas) {
+          entity_ids.push_back(area.id);
+        }
+        for (const auto & comp : result.new_entities.components) {
+          entity_ids.push_back(comp.id);
+        }
+        for (const auto & app : result.new_entities.apps) {
+          entity_ids.push_back(app.id);
+        }
+        for (const auto & func : result.new_entities.functions) {
+          entity_ids.push_back(func.id);
+        }
+        plugin_mgr_->clear_entity_ownership(name);
+        plugin_mgr_->register_entity_ownership(name, entity_ids);
+      }
+    }
+
     // Filter ROS 2 internal nodes (underscore prefix convention).
     // Controlled by discovery.runtime.filter_internal_nodes parameter (default: true).
     // Covers local heuristic apps (which bypass the merge pipeline orphan filter

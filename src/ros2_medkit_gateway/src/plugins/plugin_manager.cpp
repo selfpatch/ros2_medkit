@@ -19,6 +19,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 
 namespace ros2_medkit_gateway {
@@ -297,12 +298,12 @@ void PluginManager::register_routes(httplib::Server & server, const std::string 
             RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' handler threw on %s: %s",
                          plugin_name.c_str(), full_pattern.c_str(), e.what());
             PluginResponse plugin_res(&res);
-            plugin_res.send_error(500, "x-medkit-plugin-error", "Internal plugin error");
+            plugin_res.send_error(500, ERR_PLUGIN_ERROR, "Internal plugin error");
           } catch (...) {
             RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' handler threw unknown exception on %s",
                          plugin_name.c_str(), full_pattern.c_str());
             PluginResponse plugin_res(&res);
-            plugin_res.send_error(500, "x-medkit-plugin-error", "Internal plugin error");
+            plugin_res.send_error(500, ERR_PLUGIN_ERROR, "Internal plugin error");
           }
         };
 
@@ -431,7 +432,23 @@ void PluginManager::register_entity_ownership(const std::string & plugin_name,
                                               const std::vector<std::string> & entity_ids) {
   std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
   for (const auto & eid : entity_ids) {
+    auto it = entity_ownership_.find(eid);
+    if (it != entity_ownership_.end() && it->second != plugin_name) {
+      RCLCPP_WARN(logger(), "Entity '%s' ownership transferred from plugin '%s' to '%s'", eid.c_str(),
+                  it->second.c_str(), plugin_name.c_str());
+    }
     entity_ownership_[eid] = plugin_name;
+  }
+}
+
+void PluginManager::clear_entity_ownership(const std::string & plugin_name) {
+  std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
+  for (auto it = entity_ownership_.begin(); it != entity_ownership_.end();) {
+    if (it->second == plugin_name) {
+      it = entity_ownership_.erase(it);
+    } else {
+      ++it;
+    }
   }
 }
 

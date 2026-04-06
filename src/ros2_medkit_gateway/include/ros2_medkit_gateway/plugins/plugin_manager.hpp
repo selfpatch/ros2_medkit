@@ -178,6 +178,10 @@ class PluginManager {
   /// provider routing in handlers.
   void register_entity_ownership(const std::string & plugin_name, const std::vector<std::string> & entity_ids);
 
+  /// Clear all entity ownership entries for a given plugin.
+  /// Called before re-registering during refresh to remove stale entries.
+  void clear_entity_ownership(const std::string & plugin_name);
+
   /// Get DataProvider for a specific entity (if plugin-owned)
   /// @return Non-owning pointer, or nullptr if entity is not plugin-owned
   ///         or owning plugin doesn't implement DataProvider

@@ -35,6 +35,8 @@ Message Definitions
      - Muted fault tracking (code, entity, mute reason, expiry)
    * - ``MedkitDiscoveryHint.msg``
      - Beacon discovery hint published by nodes for the topic beacon plugin
+   * - ``EntityInfo.msg``
+     - SOVD entity representation for service interface: ID, type, capabilities, metadata
 
 Service Definitions
 -------------------
@@ -61,6 +63,12 @@ Service Definitions
      - Retrieve rosbag file path for download
    * - ``ListRosbags.srv``
      - List all available rosbag snapshots
+   * - ``ListEntities.srv``
+     - List entities with optional type filtering (for SOVD service interface)
+   * - ``GetEntityData.srv``
+     - Get data items for a specific entity (for SOVD service interface)
+   * - ``GetCapabilities.srv``
+     - Get capabilities/resource collections for a specific entity (for SOVD service interface)
 
 Design Decisions
 ----------------
