@@ -21,6 +21,8 @@
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/providers/data_provider.hpp"
 
 using json = nlohmann::json;
 
@@ -43,6 +45,23 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
       return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
+
+    // Delegate to plugin DataProvider if entity is plugin-owned
+    if (entity_info.is_plugin) {
+      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
+      if (data_prov) {
+        auto result = data_prov->list_data(entity_id);
+        if (result) {
+          HandlerContext::send_json(res, *result);
+        } else {
+          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+        }
+        return;
+      }
+      HandlerContext::send_json(res, json{{"items", json::array()}});
+      return;
+    }
 
     // Use unified cache method to get aggregated data
     const auto & cache = ctx_.node()->get_thread_safe_cache();
@@ -127,6 +146,24 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
       return;  // Response already sent (error or forwarded to peer)
     }
 
+    // Delegate to plugin DataProvider if entity is plugin-owned
+    if (entity_opt->is_plugin) {
+      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
+      if (data_prov) {
+        auto result = data_prov->read_data(entity_id, topic_name);
+        if (result) {
+          HandlerContext::send_json(res, *result);
+        } else {
+          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+        }
+        return;
+      }
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
+                                 "No data provider for plugin entity '" + entity_id + "'");
+      return;
+    }
+
     // Determine the full ROS topic path
     std::string full_topic_path;
     if (topic_name.empty() || topic_name[0] == '/') {
@@ -206,6 +243,32 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
     auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
     if (!entity_opt) {
       return;  // Response already sent (error or forwarded to peer)
+    }
+
+    // Delegate to plugin DataProvider if entity is plugin-owned
+    if (entity_opt->is_plugin) {
+      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
+      if (data_prov) {
+        json value;
+        if (!req.body.empty()) {
+          value = json::parse(req.body, nullptr, false);
+          if (value.is_discarded()) {
+            HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON body");
+            return;
+          }
+        }
+        auto result = data_prov->write_data(entity_id, topic_name, value);
+        if (result) {
+          HandlerContext::send_json(res, *result);
+        } else {
+          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+        }
+        return;
+      }
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
+                                 "No data provider for plugin entity '" + entity_id + "'");
+      return;
     }
 
     // Check lock access for data
