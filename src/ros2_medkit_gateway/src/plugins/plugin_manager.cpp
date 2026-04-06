@@ -423,6 +423,51 @@ std::vector<std::string> PluginManager::plugin_names() const {
   return names;
 }
 
+void PluginManager::register_entity_ownership(const std::string & plugin_name,
+                                              const std::vector<std::string> & entity_ids) {
+  std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
+  for (const auto & eid : entity_ids) {
+    entity_ownership_[eid] = plugin_name;
+  }
+}
+
+DataProvider * PluginManager::get_data_provider_for_entity(const std::string & entity_id) const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
+  auto own_it = entity_ownership_.find(entity_id);
+  if (own_it == entity_ownership_.end()) {
+    return nullptr;
+  }
+  for (const auto & lp : plugins_) {
+    if (lp.load_result.plugin && lp.load_result.plugin->name() == own_it->second) {
+      return lp.data_provider;
+    }
+  }
+  return nullptr;
+}
+
+OperationProvider * PluginManager::get_operation_provider_for_entity(const std::string & entity_id) const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
+  auto own_it = entity_ownership_.find(entity_id);
+  if (own_it == entity_ownership_.end()) {
+    return nullptr;
+  }
+  for (const auto & lp : plugins_) {
+    if (lp.load_result.plugin && lp.load_result.plugin->name() == own_it->second) {
+      return lp.operation_provider;
+    }
+  }
+  return nullptr;
+}
+
+std::optional<std::string> PluginManager::get_entity_owner(const std::string & entity_id) const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
+  auto it = entity_ownership_.find(entity_id);
+  if (it != entity_ownership_.end()) {
+    return it->second;
+  }
+  return std::nullopt;
+}
+
 std::vector<openapi::RouteDescriptions> PluginManager::collect_route_descriptions() const {
   std::vector<openapi::RouteDescriptions> all_descriptions;
   std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
