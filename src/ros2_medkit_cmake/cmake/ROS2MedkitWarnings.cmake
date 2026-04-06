@@ -110,12 +110,14 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
       -Wlogical-op
       -Wuseless-cast
     )
+    # Note: -Wuseless-cast NOT promoted - type aliases (time_t, int64_t, size_t)
+    # resolve differently across distros, making casts useless on one but needed
+    # on another.
     if(ENABLE_WERROR)
       add_compile_options(
         -Werror=duplicated-cond
         -Werror=duplicated-branches
         -Werror=logical-op
-        -Werror=useless-cast
       )
     endif()
   endif()
