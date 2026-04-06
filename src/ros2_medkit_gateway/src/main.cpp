@@ -21,7 +21,14 @@ int main(int argc, char ** argv) {
 
   auto node = std::make_shared<ros2_medkit_gateway::GatewayNode>();
 
-  rclcpp::spin(node);
+  // MultiThreadedExecutor is required because cpp-httplib handler threads call
+  // Node::create_generic_subscription() for topic sampling. SingleThreadedExecutor
+  // does not synchronize external subscription creation with its internal iteration,
+  // causing non-deterministic SIGSEGV on rolling. All gateway callbacks are already
+  // protected by mutexes (EntityCache, LogManager, TriggerManager, etc.).
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.spin();
 
   rclcpp::shutdown();
   return 0;
