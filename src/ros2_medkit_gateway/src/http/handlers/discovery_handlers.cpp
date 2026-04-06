@@ -22,6 +22,7 @@
 #include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 
 using json = nlohmann::json;
 
@@ -30,17 +31,41 @@ namespace handlers {
 
 namespace {
 
+/// Check if a capability name is already present in the capabilities array
+bool has_capability(const json & capabilities, const std::string & name) {
+  for (const auto & cap : capabilities) {
+    if (cap.contains("name") && cap["name"] == name) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Append plugin-registered capabilities to a capabilities JSON array
 void append_plugin_capabilities(json & capabilities, const std::string & entity_type_path,
                                 const std::string & entity_id, SovdEntityType entity_type, const GatewayNode * node) {
   auto * pmgr = node->get_plugin_manager();
-  if (!pmgr || !pmgr->get_context()) {
+  if (!pmgr) {
     return;
   }
-  auto * ctx = pmgr->get_context();
+
   std::string href_prefix;
   href_prefix.reserve(64);
   href_prefix.append("/api/v1/").append(entity_type_path).append("/").append(entity_id).append("/");
+
+  // Auto-add standard capabilities based on registered providers
+  if (pmgr->get_data_provider_for_entity(entity_id) && !has_capability(capabilities, "data")) {
+    capabilities.push_back({{"name", "data"}, {"href", href_prefix + "data"}});
+  }
+  if (pmgr->get_operation_provider_for_entity(entity_id) && !has_capability(capabilities, "operations")) {
+    capabilities.push_back({{"name", "operations"}, {"href", href_prefix + "operations"}});
+  }
+
+  // Plugin-registered custom capabilities (via PluginContext)
+  auto * ctx = pmgr->get_context();
+  if (!ctx) {
+    return;
+  }
 
   // Type-level capabilities (registered for all entities of this type)
   for (const auto & cap_name : ctx->get_type_capabilities(entity_type)) {
