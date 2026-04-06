@@ -19,8 +19,10 @@
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_loader.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
+#include "ros2_medkit_gateway/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/providers/log_provider.hpp"
+#include "ros2_medkit_gateway/providers/operation_provider.hpp"
 #include "ros2_medkit_gateway/providers/script_provider.hpp"
 #include "ros2_medkit_gateway/providers/update_provider.hpp"
 #include "ros2_medkit_gateway/resource_sampler.hpp"
@@ -179,6 +181,8 @@ class PluginManager {
     IntrospectionProvider * introspection_provider = nullptr;
     LogProvider * log_provider = nullptr;
     ScriptProvider * script_provider = nullptr;
+    DataProvider * data_provider = nullptr;
+    OperationProvider * operation_provider = nullptr;
   };
 
   /// Disable a plugin after a lifecycle error (nulls providers, resets plugin).

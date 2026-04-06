@@ -15,7 +15,9 @@
 #include "ros2_medkit_gateway/plugins/plugin_loader.hpp"
 
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
+#include "ros2_medkit_gateway/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+#include "ros2_medkit_gateway/providers/operation_provider.hpp"
 #include "ros2_medkit_gateway/providers/script_provider.hpp"
 #include "ros2_medkit_gateway/providers/update_provider.hpp"
 
@@ -223,6 +225,34 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
                   e.what());
     } catch (...) {
       RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_script_provider threw unknown exception in %s",
+                  plugin_path.c_str());
+    }
+  }
+
+  using DataProviderFn = DataProvider * (*)(GatewayPlugin *);
+  auto data_fn = reinterpret_cast<DataProviderFn>(dlsym(handle, "get_data_provider"));
+  if (data_fn) {
+    try {
+      result.data_provider = data_fn(raw_plugin);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_data_provider threw in %s: %s", plugin_path.c_str(),
+                  e.what());
+    } catch (...) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_data_provider threw unknown exception in %s",
+                  plugin_path.c_str());
+    }
+  }
+
+  using OperationProviderFn = OperationProvider * (*)(GatewayPlugin *);
+  auto operation_fn = reinterpret_cast<OperationProviderFn>(dlsym(handle, "get_operation_provider"));
+  if (operation_fn) {
+    try {
+      result.operation_provider = operation_fn(raw_plugin);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_operation_provider threw in %s: %s", plugin_path.c_str(),
+                  e.what());
+    } catch (...) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_operation_provider threw unknown exception in %s",
                   plugin_path.c_str());
     }
   }
