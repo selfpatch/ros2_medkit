@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
-#include <httplib.h>
 
 #include <map>
 #include <memory>
@@ -29,20 +28,35 @@
 #include "ros2_medkit_gateway/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 #include "sovd_service_interface.hpp"
 
 using namespace ros2_medkit_gateway;
 
-// Stubs for PluginContext static methods (defined in gateway_lib, not linked into tests)
+// Stubs for PluginRequest/PluginResponse (defined in gateway_lib, not linked into plugin tests)
 namespace ros2_medkit_gateway {
-void PluginContext::send_json(httplib::Response & res, const nlohmann::json & data) {
-  res.set_content(data.dump(), "application/json");
+PluginRequest::PluginRequest(const void * impl) : impl_(impl) {
 }
-void PluginContext::send_error(httplib::Response & res, int status, const std::string & /*error_code*/,
-                               const std::string & message, const nlohmann::json & /*parameters*/) {
-  res.status = status;
-  nlohmann::json err = {{"error", message}};
-  res.set_content(err.dump(), "application/json");
+std::string PluginRequest::path_param(size_t /*index*/) const {
+  return {};
+}
+std::string PluginRequest::header(const std::string & /*name*/) const {
+  return {};
+}
+const std::string & PluginRequest::path() const {
+  static const std::string empty;
+  return empty;
+}
+const std::string & PluginRequest::body() const {
+  static const std::string empty;
+  return empty;
+}
+PluginResponse::PluginResponse(void * impl) : impl_(impl) {
+}
+void PluginResponse::send_json(const nlohmann::json & /*data*/) {
+}
+void PluginResponse::send_error(int /*status*/, const std::string & /*error_code*/, const std::string & /*message*/,
+                                const nlohmann::json & /*parameters*/) {
 }
 }  // namespace ros2_medkit_gateway
 
@@ -73,11 +87,11 @@ class FakePluginContext : public PluginContext {
     return it->second;
   }
 
-  std::optional<PluginEntityInfo> validate_entity_for_route(const httplib::Request & /*req*/, httplib::Response & res,
+  std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest & /*req*/, PluginResponse & res,
                                                             const std::string & entity_id) const override {
     auto entity = get_entity(entity_id);
     if (!entity) {
-      send_error(res, 404, "entity-not-found", "Entity not found");
+      res.send_error(404, "entity-not-found", "Entity not found");
       return std::nullopt;
     }
     return entity;
