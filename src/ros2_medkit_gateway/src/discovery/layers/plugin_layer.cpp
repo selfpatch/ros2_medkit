@@ -69,6 +69,20 @@ LayerOutput PluginLayer::discover() {
   output.apps = std::move(result.new_entities.apps);
   output.functions = std::move(result.new_entities.functions);
 
+  // Tag all plugin-created entities with source="plugin"
+  for (auto & area : output.areas) {
+    area.source = "plugin";
+  }
+  for (auto & comp : output.components) {
+    comp.source = "plugin";
+  }
+  for (auto & app : output.apps) {
+    app.source = "plugin";
+  }
+  for (auto & func : output.functions) {
+    func.source = "plugin";
+  }
+
   // Validate entity IDs from plugin
   validate_entities(output.areas, name_, logger_);
   validate_entities(output.components, name_, logger_);
