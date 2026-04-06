@@ -89,6 +89,17 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
         ei.peer_url = aggregation_mgr_->get_peer_url(*peer);
       }
     }
+    // Check plugin ownership (only if not already a remote entity)
+    if (!ei.is_remote) {
+      auto * pmgr = node_->get_plugin_manager();
+      if (pmgr) {
+        auto owner = pmgr->get_entity_owner(ei.id);
+        if (owner) {
+          ei.is_plugin = true;
+          ei.plugin_name = *owner;
+        }
+      }
+    }
   };
 
   // If expected_type is specified, search ONLY in that collection
