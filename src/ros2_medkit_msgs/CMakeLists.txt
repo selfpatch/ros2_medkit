@@ -15,6 +15,8 @@
 cmake_minimum_required(VERSION 3.8)
 project(ros2_medkit_msgs)
 
+# Note: ROS2MedkitWarnings is intentionally NOT included here.
+# rosidl-generated code triggers strict warnings we cannot fix.
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(builtin_interfaces REQUIRED)

@@ -134,6 +134,11 @@ static ErrorClassification classify_error_code(ParameterErrorCode error_code) {
       result.error_code = ERR_INVALID_PARAMETER;
       break;
     case ParameterErrorCode::NONE:
+      // NONE means "no error" - caller (classify_parameter_error) pre-filters
+      // this case, so reaching here indicates a programming error.
+      result.status_code = 500;
+      result.error_code = ERR_INTERNAL_ERROR;
+      break;
     case ParameterErrorCode::SHUT_DOWN:
     case ParameterErrorCode::INTERNAL_ERROR:
     default:
