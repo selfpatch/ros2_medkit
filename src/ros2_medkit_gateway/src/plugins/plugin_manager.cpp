@@ -62,6 +62,8 @@ void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
   lp.introspection_provider = dynamic_cast<IntrospectionProvider *>(plugin.get());
   lp.log_provider = dynamic_cast<LogProvider *>(plugin.get());
   lp.script_provider = dynamic_cast<ScriptProvider *>(plugin.get());
+  lp.data_provider = dynamic_cast<DataProvider *>(plugin.get());
+  lp.operation_provider = dynamic_cast<OperationProvider *>(plugin.get());
 
   // Cache first UpdateProvider, warn on duplicates
   if (lp.update_provider) {
@@ -112,6 +114,8 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
       // IntrospectionProvider mechanism - safe across the dlopen boundary).
       lp.log_provider = result->log_provider;
       lp.script_provider = result->script_provider;
+      lp.data_provider = result->data_provider;
+      lp.operation_provider = result->operation_provider;
 
       // Cache first UpdateProvider, warn on duplicates
       if (lp.update_provider) {
@@ -196,10 +200,14 @@ void PluginManager::disable_plugin(LoadedPlugin & lp) {
   lp.introspection_provider = nullptr;
   lp.log_provider = nullptr;
   lp.script_provider = nullptr;
+  lp.data_provider = nullptr;
+  lp.operation_provider = nullptr;
   lp.load_result.update_provider = nullptr;
   lp.load_result.introspection_provider = nullptr;
   lp.load_result.log_provider = nullptr;
   lp.load_result.script_provider = nullptr;
+  lp.load_result.data_provider = nullptr;
+  lp.load_result.operation_provider = nullptr;
   lp.load_result.plugin.reset();
 }
 

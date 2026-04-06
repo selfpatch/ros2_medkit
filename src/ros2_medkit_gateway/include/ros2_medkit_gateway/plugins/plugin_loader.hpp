@@ -27,6 +27,8 @@ class UpdateProvider;
 class IntrospectionProvider;
 class LogProvider;
 class ScriptProvider;
+class DataProvider;
+class OperationProvider;
 
 /**
  * @brief Result of loading a gateway plugin.
@@ -63,6 +65,13 @@ struct GatewayPluginLoadResult {
   /// Lifetime tied to plugin - do not use after plugin is destroyed.
   ScriptProvider * script_provider = nullptr;
 
+  /// Non-owning pointer to DataProvider interface (null if not provided).
+  /// Unlike LogProvider/ScriptProvider, multiple plugins can each provide data for different entities.
+  DataProvider * data_provider = nullptr;
+
+  /// Non-owning pointer to OperationProvider interface (null if not provided).
+  OperationProvider * operation_provider = nullptr;
+
   /// Get the dlopen handle (for dlsym queries by PluginManager)
   void * dl_handle() const {
     return handle_;
@@ -85,6 +94,8 @@ struct GatewayPluginLoadResult {
  *   extern "C" IntrospectionProvider* get_introspection_provider(GatewayPlugin* plugin);
  *   extern "C" LogProvider* get_log_provider(GatewayPlugin* plugin);
  *   extern "C" ScriptProvider* get_script_provider(GatewayPlugin* plugin);
+ *   extern "C" DataProvider* get_data_provider(GatewayPlugin* plugin);
+ *   extern "C" OperationProvider* get_operation_provider(GatewayPlugin* plugin);
  *
  * Path requirements: must be absolute, have .so extension, and resolve to a real file.
  */
