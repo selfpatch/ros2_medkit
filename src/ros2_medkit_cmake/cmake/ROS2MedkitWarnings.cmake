@@ -22,7 +22,7 @@ include_guard(GLOBAL)
 # Flags that DO fire on external code remain as warnings for visibility.
 #
 # Provides:
-#   option ENABLE_WERROR (default ON) - selective warnings-as-errors
+#   option MEDKIT_ENABLE_WERROR (default ON) - selective warnings-as-errors
 #   function ros2_medkit_relax_vendor_warnings() - call after ament_add_gtest/gmock
 #
 # Usage:
@@ -34,7 +34,7 @@ include_guard(GLOBAL)
 #     ros2_medkit_relax_vendor_warnings()
 #   endif()
 
-option(ENABLE_WERROR "Treat select compiler warnings as errors" ON)
+option(MEDKIT_ENABLE_WERROR "Treat select compiler warnings as errors" ON)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   # -- All warnings (report everything, some as errors, rest as warnings) ------
@@ -85,7 +85,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   # -- Selective -Werror for flags safe from external header false positives ----
   # NOT promoted: -Wconversion, -Wsign-conversion, -Wdouble-promotion,
   #   -Wnull-dereference, -Wcast-align (false positives on STL/ROS 2/nlohmann)
-  if(ENABLE_WERROR)
+  if(MEDKIT_ENABLE_WERROR)
     add_compile_options(
       -Werror=shadow
       -Werror=switch-enum
@@ -113,7 +113,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # Note: -Wuseless-cast NOT promoted - type aliases (time_t, int64_t, size_t)
     # resolve differently across distros, making casts useless on one but needed
     # on another.
-    if(ENABLE_WERROR)
+    if(MEDKIT_ENABLE_WERROR)
       add_compile_options(
         -Werror=duplicated-cond
         -Werror=duplicated-branches
