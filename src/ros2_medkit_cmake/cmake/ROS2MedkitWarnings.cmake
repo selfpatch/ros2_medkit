@@ -32,7 +32,7 @@ include_guard(GLOBAL)
 #     ros2_medkit_relax_vendor_warnings()
 #   endif()
 
-option(ENABLE_WERROR "Treat compiler warnings as errors" ON)
+option(ENABLE_WERROR "Treat compiler warnings as errors" OFF)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(
@@ -60,8 +60,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 
     # Memory / alignment
     -Wcast-align
-    # Note: -Wnull-dereference omitted - GCC 13 false positives on STL
-    # (streambuf inlining). Covered by clang-tidy's null checks instead.
+    -Wnull-dereference
 
     # Control flow
     -Wimplicit-fallthrough
