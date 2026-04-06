@@ -23,6 +23,7 @@
  */
 
 #include <chrono>
+#include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/float32.hpp>
 
@@ -47,6 +48,7 @@ class BrakeActuator : public rclcpp::Node {
   ~BrakeActuator() {
     cmd_sub_.reset();
     timer_->cancel();
+    std::lock_guard<std::mutex> lock(callback_mutex_);
     timer_.reset();
     pressure_pub_.reset();
   }
@@ -67,6 +69,10 @@ class BrakeActuator : public rclcpp::Node {
   }
 
   void timer_callback() {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (!pressure_pub_) {
+      return;
+    }
     // Simulate gradual pressure change (5 bar/sec = 0.5 bar per 100ms)
     const float step = 0.5f;
 
@@ -84,6 +90,7 @@ class BrakeActuator : public rclcpp::Node {
     pressure_pub_->publish(msg);
   }
 
+  std::mutex callback_mutex_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr cmd_sub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pressure_pub_;
   rclcpp::TimerBase::SharedPtr timer_;

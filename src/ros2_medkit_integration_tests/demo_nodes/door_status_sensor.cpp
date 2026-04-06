@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -29,6 +30,7 @@ class DoorStatusSensor : public rclcpp::Node {
 
   ~DoorStatusSensor() {
     timer_->cancel();
+    std::lock_guard<std::mutex> lock(callback_mutex_);
     timer_.reset();
     is_open_pub_.reset();
     state_pub_.reset();
@@ -36,6 +38,10 @@ class DoorStatusSensor : public rclcpp::Node {
 
  private:
   void publish_data() {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (!is_open_pub_) {
+      return;
+    }
     // Toggle door state
     is_open_ = !is_open_;
 
@@ -50,6 +56,7 @@ class DoorStatusSensor : public rclcpp::Node {
     RCLCPP_INFO(this->get_logger(), "Door: %s", state_msg.data.c_str());
   }
 
+  std::mutex callback_mutex_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr is_open_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
   rclcpp::TimerBase::SharedPtr timer_;

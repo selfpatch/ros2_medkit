@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <diagnostic_msgs/msg/key_value.hpp>
+#include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <ros2_medkit_msgs/msg/medkit_discovery_hint.hpp>
 
@@ -47,12 +48,17 @@ class BeaconPublisher : public rclcpp::Node {
 
   ~BeaconPublisher() {
     timer_->cancel();
+    std::lock_guard<std::mutex> lock(callback_mutex_);
     timer_.reset();
     publisher_.reset();
   }
 
  private:
   void publish_beacon() {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (!publisher_) {
+      return;
+    }
     if (get_parameter("beacon_pause").as_bool()) {
       return;
     }
@@ -72,6 +78,7 @@ class BeaconPublisher : public rclcpp::Node {
     publisher_->publish(msg);
   }
 
+  std::mutex callback_mutex_;
   rclcpp::Publisher<ros2_medkit_msgs::msg::MedkitDiscoveryHint>::SharedPtr publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

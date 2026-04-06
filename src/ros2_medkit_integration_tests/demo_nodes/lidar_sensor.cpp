@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <mutex>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
@@ -87,15 +88,16 @@ class LidarSensor : public rclcpp::Node {
   }
 
   ~LidarSensor() {
+    param_callback_handle_.reset();
     scan_timer_->cancel();
-    scan_timer_.reset();
     fault_check_timer_->cancel();
-    fault_check_timer_.reset();
     if (initial_check_timer_) {
       initial_check_timer_->cancel();
-      initial_check_timer_.reset();
     }
-    param_callback_handle_.reset();
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    scan_timer_.reset();
+    fault_check_timer_.reset();
+    initial_check_timer_.reset();
     calibrate_srv_.reset();
     scan_pub_.reset();
     report_fault_client_.reset();
@@ -103,6 +105,10 @@ class LidarSensor : public rclcpp::Node {
 
  private:
   rcl_interfaces::msg::SetParametersResult on_parameter_change(const std::vector<rclcpp::Parameter> & parameters) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (!scan_pub_) {
+      return rcl_interfaces::msg::SetParametersResult();
+    }
     rcl_interfaces::msg::SetParametersResult result;
     result.successful = true;
 
@@ -133,7 +139,7 @@ class LidarSensor : public rclcpp::Node {
     }
 
     // Trigger fault check after parameter change
-    check_and_report_faults();
+    check_and_report_faults_unlocked();
 
     return result;
   }
@@ -155,6 +161,17 @@ class LidarSensor : public rclcpp::Node {
   }
 
   void check_and_report_faults() {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (!report_fault_client_) {
+      return;
+    }
+    check_and_report_faults_unlocked();
+  }
+
+  void check_and_report_faults_unlocked() {
+    if (!report_fault_client_) {
+      return;
+    }
     if (!report_fault_client_->service_is_ready()) {
       RCLCPP_DEBUG(this->get_logger(), "Fault manager service not available, skipping fault check");
       return;
@@ -194,6 +211,10 @@ class LidarSensor : public rclcpp::Node {
   }
 
   void publish_scan() {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (!scan_pub_) {
+      return;
+    }
     auto scan_msg = sensor_msgs::msg::LaserScan();
     scan_msg.header.stamp = this->now();
     scan_msg.header.frame_id = "lidar_link";
@@ -220,6 +241,8 @@ class LidarSensor : public rclcpp::Node {
 
     scan_pub_->publish(scan_msg);
   }
+
+  std::mutex callback_mutex_;
 
   // Publishers and services
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub_;
