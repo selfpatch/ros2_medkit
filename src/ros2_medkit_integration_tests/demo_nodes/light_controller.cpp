@@ -23,6 +23,7 @@
  */
 
 #include <chrono>
+#include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
 
@@ -47,6 +48,7 @@ class LightController : public rclcpp::Node {
   ~LightController() {
     cmd_sub_.reset();
     timer_->cancel();
+    std::lock_guard<std::mutex> lock(callback_mutex_);
     timer_.reset();
     status_pub_.reset();
   }
@@ -58,12 +60,17 @@ class LightController : public rclcpp::Node {
   }
 
   void timer_callback() {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (!status_pub_) {
+      return;
+    }
     // Publish current status
     auto msg = std_msgs::msg::Bool();
     msg.data = light_on_;
     status_pub_->publish(msg);
   }
 
+  std::mutex callback_mutex_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr cmd_sub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr status_pub_;
   rclcpp::TimerBase::SharedPtr timer_;

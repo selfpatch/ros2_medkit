@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <mutex>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/temperature.hpp>
@@ -64,12 +65,17 @@ class EngineTempSensor : public rclcpp::Node {
   ~EngineTempSensor() {
     param_callback_handle_.reset();
     timer_->cancel();
+    std::lock_guard<std::mutex> lock(callback_mutex_);
     timer_.reset();
     temp_pub_.reset();
   }
 
  private:
   rcl_interfaces::msg::SetParametersResult on_parameter_change(const std::vector<rclcpp::Parameter> & parameters) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (!temp_pub_) {
+      return rcl_interfaces::msg::SetParametersResult();
+    }
     rcl_interfaces::msg::SetParametersResult result;
     result.successful = true;
 
@@ -103,6 +109,10 @@ class EngineTempSensor : public rclcpp::Node {
   }
 
   void publish_data() {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (!temp_pub_) {
+      return;
+    }
     current_temp_ += temp_step_;
     if (current_temp_ > max_temp_) {
       current_temp_ = min_temp_;
@@ -119,6 +129,7 @@ class EngineTempSensor : public rclcpp::Node {
     RCLCPP_INFO(this->get_logger(), "Temperature: %.1f°C", current_temp_);
   }
 
+  std::mutex callback_mutex_;
   rclcpp::Publisher<sensor_msgs::msg::Temperature>::SharedPtr temp_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
