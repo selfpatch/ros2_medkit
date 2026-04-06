@@ -76,6 +76,10 @@ struct EntityInfo {
   std::string peer_url;   ///< Base URL of the peer (e.g., "http://localhost:8081")
   std::string peer_name;  ///< Peer name for metadata (e.g., "subsystem_b")
 
+  // Plugin routing fields
+  bool is_plugin{false};    ///< True if entity is owned by a plugin
+  std::string plugin_name;  ///< Plugin name (empty if not plugin-owned)
+
   /**
    * @brief Get SovdEntityType equivalent
    */
