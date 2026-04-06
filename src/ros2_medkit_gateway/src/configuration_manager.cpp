@@ -607,6 +607,8 @@ rclcpp::ParameterValue ConfigurationManager::json_to_parameter_value(const json 
           return rclcpp::ParameterValue(value.get<std::vector<std::string>>());
         }
         break;
+      case rclcpp::ParameterType::PARAMETER_NOT_SET:
+      case rclcpp::ParameterType::PARAMETER_BYTE_ARRAY:
       default:
         break;
     }

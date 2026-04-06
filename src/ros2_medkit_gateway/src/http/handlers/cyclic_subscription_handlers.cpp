@@ -409,6 +409,9 @@ std::string CyclicSubscriptionHandlers::extract_entity_type(const httplib::Reque
       return "components";
     case SovdEntityType::FUNCTION:
       return "functions";
+    case SovdEntityType::SERVER:
+    case SovdEntityType::AREA:
+    case SovdEntityType::UNKNOWN:
     default:
       RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in cyclic subscription path: %s", req.path.c_str());
       return "apps";

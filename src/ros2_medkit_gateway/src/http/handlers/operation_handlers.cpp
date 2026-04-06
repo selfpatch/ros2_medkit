@@ -68,6 +68,8 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
         ops = cache.get_function_operations(entity_id);
         entity_type = "function";
         break;
+      case SovdEntityType::SERVER:
+      case SovdEntityType::UNKNOWN:
       default:
         HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
         return;
@@ -201,6 +203,8 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
         ops = cache.get_function_operations(entity_id);
         entity_type = "function";
         break;
+      case SovdEntityType::SERVER:
+      case SovdEntityType::UNKNOWN:
       default:
         HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity type does not support operations",
                                    {{"entity_id", entity_id}});
@@ -320,6 +324,7 @@ static std::string sovd_status_from_ros2(ActionGoalStatus status) {
     case ActionGoalStatus::CANCELED:
     case ActionGoalStatus::ABORTED:
       return "failed";
+    case ActionGoalStatus::UNKNOWN:
     default:
       return "running";
   }
@@ -384,6 +389,8 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
         ops = cache.get_function_operations(entity_id);
         entity_type = "function";
         break;
+      case SovdEntityType::SERVER:
+      case SovdEntityType::UNKNOWN:
       default:
         HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity type does not support operations",
                                    {{"entity_id", entity_id}});

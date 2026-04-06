@@ -133,6 +133,8 @@ static ErrorClassification classify_error_code(ParameterErrorCode error_code) {
       result.status_code = 400;
       result.error_code = ERR_INVALID_PARAMETER;
       break;
+    case ParameterErrorCode::NONE:
+    case ParameterErrorCode::SHUT_DOWN:
     case ParameterErrorCode::INTERNAL_ERROR:
     default:
       result.status_code = 500;

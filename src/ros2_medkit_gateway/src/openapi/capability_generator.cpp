@@ -458,6 +458,8 @@ bool CapabilityGenerator::validate_entity_hierarchy(const ResolvedPath & resolve
           return false;
         }
         break;
+      case SovdEntityType::SERVER:
+      case SovdEntityType::UNKNOWN:
       default:
         return false;
     }
@@ -487,6 +489,8 @@ bool CapabilityGenerator::validate_entity_hierarchy(const ResolvedPath & resolve
           return false;
         }
         break;
+      case SovdEntityType::SERVER:
+      case SovdEntityType::UNKNOWN:
       default:
         return false;
     }
@@ -680,6 +684,8 @@ void CapabilityGenerator::add_resource_collection_paths(nlohmann::json & paths, 
           case SovdEntityType::FUNCTION:
             ops = cache.get_function_operations(entity_id);
             break;
+          case SovdEntityType::SERVER:
+          case SovdEntityType::UNKNOWN:
           default:
             break;
         }
@@ -702,6 +708,13 @@ void CapabilityGenerator::add_resource_collection_paths(nlohmann::json & paths, 
         paths[col_path] = path_builder.build_logs_collection(entity_path);
         add_log_configuration_path(paths, col_path, entity_path);
         break;
+      case ResourceCollection::DATA_LISTS:
+      case ResourceCollection::LOCKS:
+      case ResourceCollection::MODES:
+      case ResourceCollection::COMMUNICATION_LOGS:
+      case ResourceCollection::TRIGGERS:
+      case ResourceCollection::SCRIPTS:
+      case ResourceCollection::UPDATES:
       default:
         // For other collections we don't have specific builders, add generic listing
         {

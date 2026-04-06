@@ -15,10 +15,6 @@
 cmake_minimum_required(VERSION 3.8)
 project(ros2_medkit_beacon_common)
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic -Wshadow -Wconversion)
-endif()
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -27,6 +23,7 @@ find_package(ros2_medkit_cmake REQUIRED)
 include(ROS2MedkitCompat)
 include(ROS2MedkitCcache)
 include(ROS2MedkitSanitizers)
+include(ROS2MedkitWarnings)
 
 find_package(ament_cmake REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
@@ -102,6 +99,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_beacon_entity_mapper test/test_beacon_entity_mapper.cpp)
   target_link_libraries(test_beacon_entity_mapper beacon_common_lib)
   medkit_target_dependencies(test_beacon_entity_mapper ros2_medkit_gateway)
+  ros2_medkit_relax_vendor_warnings()
 endif()
 
 ament_package()

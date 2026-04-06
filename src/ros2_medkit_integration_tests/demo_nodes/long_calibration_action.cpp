@@ -122,7 +122,8 @@ class LongCalibrationAction : public rclcpp::Node {
         }
 
         // Compute next Fibonacci number (simulating calibration step)
-        sequence.push_back(sequence[i] + sequence[i - 1]);
+        auto idx = static_cast<size_t>(i);
+        sequence.push_back(sequence[idx] + sequence[idx - 1]);
 
         // Publish feedback
         goal_handle->publish_feedback(feedback);

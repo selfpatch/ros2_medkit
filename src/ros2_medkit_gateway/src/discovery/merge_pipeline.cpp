@@ -186,6 +186,8 @@ void apply_field_group_merge(Entity & target, const Entity & source, FieldGroup 
       case FieldGroup::METADATA:
         merge_scalar(target.source, source.source, res.scalar);
         break;
+      case FieldGroup::LIVE_DATA:
+      case FieldGroup::STATUS:
       default:
         break;
     }
@@ -223,6 +225,7 @@ void apply_field_group_merge(Entity & target, const Entity & source, FieldGroup 
         merge_scalar(target.source, source.source, res.scalar);
         merge_scalar(target.variant, source.variant, res.scalar);
         break;
+      case FieldGroup::STATUS:
       default:
         break;
     }
@@ -282,6 +285,8 @@ void apply_field_group_merge(Entity & target, const Entity & source, FieldGroup 
       case FieldGroup::METADATA:
         merge_scalar(target.source, source.source, res.scalar);
         break;
+      case FieldGroup::LIVE_DATA:
+      case FieldGroup::STATUS:
       default:
         break;
     }

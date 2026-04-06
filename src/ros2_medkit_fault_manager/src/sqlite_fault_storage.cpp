@@ -363,7 +363,7 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
     int64_t existing_count = check_stmt.column_int64(1);
     std::string sources_json = check_stmt.column_text(2);
     std::string current_status = check_stmt.column_text(3);
-    int32_t debounce_counter = static_cast<int32_t>(check_stmt.column_int(4));
+    int32_t debounce_counter = check_stmt.column_int(4);
 
     // CLEARED faults can be reactivated by FAILED events
     bool is_reactivation = false;

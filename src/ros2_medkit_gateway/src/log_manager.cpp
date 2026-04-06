@@ -247,7 +247,7 @@ void LogManager::add_log_entry(const std::string & entity_id, const std::string 
   auto secs = std::chrono::duration_cast<std::chrono::seconds>(epoch);
   auto nsecs = std::chrono::duration_cast<std::chrono::nanoseconds>(epoch - secs);
 
-  entry.stamp_sec = static_cast<int64_t>(secs.count());
+  entry.stamp_sec = secs.count();
   entry.stamp_nanosec = static_cast<uint32_t>(nsecs.count());
   entry.level = severity_to_level(severity);
   if (entry.level == 0) {

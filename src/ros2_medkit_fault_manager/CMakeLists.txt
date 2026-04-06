@@ -25,10 +25,7 @@ include(ROS2MedkitCompat)
 include(ROS2MedkitCcache)
 include(ROS2MedkitSanitizers)
 include(ROS2MedkitLinting)
-
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic -Wshadow -Wconversion)
-endif()
+include(ROS2MedkitWarnings)
 
 # Code coverage option
 option(ENABLE_COVERAGE "Enable code coverage reporting" OFF)
@@ -220,6 +217,7 @@ if(BUILD_TESTING)
     TIMEOUT 60
   )
   set_tests_properties(test_entity_thresholds_integration PROPERTIES LABELS "integration")
+  ros2_medkit_relax_vendor_warnings()
 endif()
 
 ament_package()

@@ -53,6 +53,10 @@ std::string get_type_segment(SovdEntityType type, bool is_nested) {
         return "subareas";
       case SovdEntityType::COMPONENT:
         return "subcomponents";
+      case SovdEntityType::SERVER:
+      case SovdEntityType::APP:
+      case SovdEntityType::FUNCTION:
+      case SovdEntityType::UNKNOWN:
       default:
         break;
     }
@@ -66,6 +70,8 @@ std::string get_type_segment(SovdEntityType type, bool is_nested) {
       return "areas";
     case SovdEntityType::FUNCTION:
       return "functions";
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
     default:
       return "";
   }

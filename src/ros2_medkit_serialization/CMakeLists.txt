@@ -11,10 +11,7 @@ include(ROS2MedkitCompat)
 include(ROS2MedkitCcache)
 include(ROS2MedkitSanitizers)
 include(ROS2MedkitLinting)
-
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
+include(ROS2MedkitWarnings)
 
 # Code coverage option
 option(ENABLE_COVERAGE "Enable code coverage reporting" OFF)
@@ -50,6 +47,17 @@ add_library(${PROJECT_NAME}
   src/vendored/dynmsg/string_utils.cpp
   src/vendored/dynmsg/vector_utils.cpp
   src/vendored/dynmsg/yaml_utils.cpp
+)
+
+# Vendored dynmsg is third-party code - suppress our strict warnings
+set_source_files_properties(
+  src/vendored/dynmsg/typesupport.cpp
+  src/vendored/dynmsg/message_reading_cpp.cpp
+  src/vendored/dynmsg/msg_parser_cpp.cpp
+  src/vendored/dynmsg/string_utils.cpp
+  src/vendored/dynmsg/vector_utils.cpp
+  src/vendored/dynmsg/yaml_utils.cpp
+  PROPERTIES COMPILE_OPTIONS "-Wno-error;-Wno-old-style-cast;-Wno-sign-conversion"
 )
 
 # Enable PIC so this static library can be linked into shared objects
@@ -173,6 +181,7 @@ if(BUILD_TESTING)
     target_compile_options(test_service_action_types PRIVATE --coverage -O0 -g)
     target_link_options(test_service_action_types PRIVATE --coverage)
   endif()
+  ros2_medkit_relax_vendor_warnings()
 endif()
 
 ament_package()

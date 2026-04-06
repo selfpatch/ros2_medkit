@@ -65,7 +65,7 @@ class BrakeActuator : public rclcpp::Node {
       target_pressure_ = 100.0f;
     }
 
-    RCLCPP_INFO(this->get_logger(), "Received command: %.2f bar", target_pressure_);
+    RCLCPP_INFO(this->get_logger(), "Received command: %.2f bar", static_cast<double>(target_pressure_));
   }
 
   void timer_callback() {

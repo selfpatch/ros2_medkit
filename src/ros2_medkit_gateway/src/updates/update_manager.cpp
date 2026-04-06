@@ -93,6 +93,8 @@ tl::expected<void, UpdateError> UpdateManager::register_update(const nlohmann::j
         return tl::make_unexpected(UpdateError{UpdateErrorCode::AlreadyExists, err.message});
       case UpdateBackendError::InvalidInput:
         return tl::make_unexpected(UpdateError{UpdateErrorCode::InvalidRequest, err.message});
+      case UpdateBackendError::NotFound:
+      case UpdateBackendError::Internal:
       default:
         return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, err.message});
     }
@@ -148,6 +150,9 @@ tl::expected<void, UpdateError> UpdateManager::delete_update(const std::string &
     switch (err.code) {
       case UpdateBackendError::NotFound:
         return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, err.message});
+      case UpdateBackendError::AlreadyExists:
+      case UpdateBackendError::InvalidInput:
+      case UpdateBackendError::Internal:
       default:
         return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, err.message});
     }

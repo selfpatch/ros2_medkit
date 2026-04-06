@@ -145,6 +145,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
         break;
 
       case SovdEntityType::SERVER:
+      case SovdEntityType::UNKNOWN:
       default:
         break;
     }

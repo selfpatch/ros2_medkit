@@ -278,6 +278,7 @@ std::string ManifestConfig::policy_to_string(UnmanifestedNodePolicy policy) {
       return "error";
     case UnmanifestedNodePolicy::INCLUDE_AS_ORPHAN:
       return "include_as_orphan";
+    case UnmanifestedNodePolicy::WARN:
     default:
       return "warn";
   }

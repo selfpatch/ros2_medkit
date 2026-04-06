@@ -16,6 +16,7 @@
 # Adds the installed cmake module directory to CMAKE_MODULE_PATH so that
 # include(ROS2MedkitCompat), include(ROS2MedkitCcache),
 # include(ROS2MedkitLinting), include(ROS2MedkitSanitizers),
-# and include(ROS2MedkitTestDomain) work transparently.
+# include(ROS2MedkitTestDomain), and include(ROS2MedkitWarnings)
+# work transparently.
 
 list(APPEND CMAKE_MODULE_PATH "${ros2_medkit_cmake_DIR}")

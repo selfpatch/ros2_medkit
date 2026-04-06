@@ -124,6 +124,14 @@ void UpdateHandlers::handle_register_update(const httplib::Request & req, httpli
         case UpdateErrorCode::AlreadyExists:
           HandlerContext::send_error(res, 400, ERR_X_MEDKIT_UPDATE_ALREADY_EXISTS, result.error().message);
           break;
+        case UpdateErrorCode::NotFound:
+        case UpdateErrorCode::InProgress:
+        case UpdateErrorCode::NotPrepared:
+        case UpdateErrorCode::NotAutomated:
+        case UpdateErrorCode::InvalidRequest:
+        case UpdateErrorCode::Deleting:
+        case UpdateErrorCode::NoBackend:
+        case UpdateErrorCode::Internal:
         default:
           HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error().message);
           break;
@@ -162,6 +170,13 @@ void UpdateHandlers::handle_delete_update(const httplib::Request & req, httplib:
         case UpdateErrorCode::NotFound:
           HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error().message);
           break;
+        case UpdateErrorCode::AlreadyExists:
+        case UpdateErrorCode::NotPrepared:
+        case UpdateErrorCode::NotAutomated:
+        case UpdateErrorCode::InvalidRequest:
+        case UpdateErrorCode::Deleting:
+        case UpdateErrorCode::NoBackend:
+        case UpdateErrorCode::Internal:
         default:
           HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, result.error().message);
           break;
@@ -197,6 +212,12 @@ void UpdateHandlers::handle_prepare(const httplib::Request & req, httplib::Respo
         case UpdateErrorCode::Deleting:
           HandlerContext::send_error(res, 409, ERR_X_MEDKIT_UPDATE_IN_PROGRESS, result.error().message);
           break;
+        case UpdateErrorCode::AlreadyExists:
+        case UpdateErrorCode::NotPrepared:
+        case UpdateErrorCode::NotAutomated:
+        case UpdateErrorCode::InvalidRequest:
+        case UpdateErrorCode::NoBackend:
+        case UpdateErrorCode::Internal:
         default:
           HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error().message);
           break;
@@ -236,6 +257,11 @@ void UpdateHandlers::handle_execute(const httplib::Request & req, httplib::Respo
         case UpdateErrorCode::Deleting:
           HandlerContext::send_error(res, 409, ERR_X_MEDKIT_UPDATE_IN_PROGRESS, result.error().message);
           break;
+        case UpdateErrorCode::AlreadyExists:
+        case UpdateErrorCode::NotAutomated:
+        case UpdateErrorCode::InvalidRequest:
+        case UpdateErrorCode::NoBackend:
+        case UpdateErrorCode::Internal:
         default:
           HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error().message);
           break;
@@ -275,6 +301,11 @@ void UpdateHandlers::handle_automated(const httplib::Request & req, httplib::Res
         case UpdateErrorCode::Deleting:
           HandlerContext::send_error(res, 409, ERR_X_MEDKIT_UPDATE_IN_PROGRESS, result.error().message);
           break;
+        case UpdateErrorCode::AlreadyExists:
+        case UpdateErrorCode::NotPrepared:
+        case UpdateErrorCode::InvalidRequest:
+        case UpdateErrorCode::NoBackend:
+        case UpdateErrorCode::Internal:
         default:
           HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, result.error().message);
           break;

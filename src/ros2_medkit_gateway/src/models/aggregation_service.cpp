@@ -155,6 +155,7 @@ nlohmann::json AggregationService::build_collection_x_medkit(SovdEntityType type
     case SovdEntityType::SERVER:
       x_medkit["aggregation_level"] = "server";
       break;
+    case SovdEntityType::UNKNOWN:
     default:
       break;
   }

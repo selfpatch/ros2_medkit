@@ -55,6 +55,7 @@ nlohmann::json parameter_to_json(const rclcpp::Parameter & param) {
       return param.as_double_array();
     case rclcpp::ParameterType::PARAMETER_STRING_ARRAY:
       return param.as_string_array();
+    case rclcpp::ParameterType::PARAMETER_NOT_SET:
     default:
       return nullptr;
   }
@@ -1073,7 +1074,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
           payload["data"] = *sample.data;
           return payload;
         }
-        return tl::make_unexpected(std::string("Topic data not available: " + resource_path));
+        return tl::make_unexpected("Topic data not available: " + resource_path);
       },
       true);
 
@@ -1089,7 +1090,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
         const auto & cache = get_thread_safe_cache();
         auto entity_ref = cache.find_entity(entity_id);
         if (!entity_ref) {
-          return tl::make_unexpected(std::string("Entity not found: " + entity_id));
+          return tl::make_unexpected("Entity not found: " + entity_id);
         }
 
         if (entity_ref->type == SovdEntityType::FUNCTION) {
@@ -1157,7 +1158,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
           }
         }
         if (source_id.empty()) {
-          return tl::make_unexpected(std::string("Entity no longer available: " + entity_id));
+          return tl::make_unexpected("Entity no longer available: " + entity_id);
         }
         auto result = fault_mgr->list_faults(source_id);
         if (!result.success) {
@@ -1207,7 +1208,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
         const auto & cache = get_thread_safe_cache();
         auto entity_ref = cache.find_entity(entity_id);
         if (!entity_ref) {
-          return tl::make_unexpected(std::string("Entity not found: " + entity_id));
+          return tl::make_unexpected("Entity not found: " + entity_id);
         }
 
         if (entity_ref->type == SovdEntityType::FUNCTION) {
@@ -1266,7 +1267,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
         }
 
         if (fqn.empty()) {
-          return tl::make_unexpected(std::string("Entity no longer available: " + entity_id));
+          return tl::make_unexpected("Entity no longer available: " + entity_id);
         }
         auto result = log_mgr->get_logs({fqn}, prefix_match, "", "", entity_id);
         if (!result.has_value()) {

@@ -1,0 +1,108 @@
+# Copyright 2026 bburda
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+include_guard(GLOBAL)
+
+# Production-grade compiler warning configuration for ros2_medkit packages.
+# Aligned with AUTOSAR C++14, MISRA C++, OpenSSF, and Airbus SecLab guidelines
+# for ASIL QM/B level code.
+#
+# Provides:
+#   option ENABLE_WERROR (default ON) - treat warnings as errors
+#   function ros2_medkit_relax_vendor_warnings() - call after ament_add_gtest/gmock
+#     to suppress strict warnings on gtest/gmock vendored targets
+#
+# Usage:
+#   find_package(ros2_medkit_cmake REQUIRED)
+#   include(ROS2MedkitWarnings)
+#   ...
+#   if(BUILD_TESTING)
+#     ament_add_gtest(...)
+#     ros2_medkit_relax_vendor_warnings()
+#   endif()
+
+option(ENABLE_WERROR "Treat compiler warnings as errors" ON)
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(
+    # Core warnings
+    -Wall
+    -Wextra
+    -Wpedantic
+
+    # Type safety (MISRA, OpenSSF)
+    -Wconversion
+    -Wsign-conversion
+    -Wdouble-promotion
+    -Wfloat-equal            # MISRA M6-2-2, AUTOSAR M6-2-2
+
+    # Shadow / hiding
+    -Wshadow
+    -Woverloaded-virtual
+
+    # OOP correctness
+    -Wnon-virtual-dtor
+    -Wold-style-cast
+
+    # Const correctness (MISRA, Airbus SecLab)
+    -Wcast-qual
+
+    # Memory / alignment
+    -Wcast-align
+    -Wnull-dereference
+
+    # Control flow
+    -Wimplicit-fallthrough
+    -Wswitch-enum            # AUTOSAR A6-4-6
+
+    # Preprocessor (MISRA)
+    -Wundef
+
+    # Format strings (OpenSSF)
+    -Wformat=2
+
+    # Modern C++ (AUTOSAR A4-10-1)
+    -Wzero-as-null-pointer-constant
+
+    # Code cleanliness (AUTOSAR)
+    -Wextra-semi
+  )
+
+  if(ENABLE_WERROR)
+    add_compile_options(-Werror)
+  endif()
+
+  # GCC-only warnings
+  if(CMAKE_COMPILER_IS_GNUCXX)
+    add_compile_options(
+      -Wduplicated-cond
+      -Wduplicated-branches
+      -Wlogical-op
+      -Wuseless-cast
+    )
+  endif()
+endif()
+
+# Suppress strict warnings on gtest/gmock vendor targets.
+# ament_add_gtest/ament_add_gmock build gtest/gmock sources as subdirectory
+# targets, which inherit add_compile_options flags. The vendored code triggers
+# warnings from our strict flag set that we cannot fix.
+# Call this once at the end of the BUILD_TESTING block.
+function(ros2_medkit_relax_vendor_warnings)
+  foreach(_target gmock gmock_main gtest gtest_main)
+    if(TARGET ${_target})
+      target_compile_options(${_target} PRIVATE -Wno-error)
+    endif()
+  endforeach()
+endfunction()

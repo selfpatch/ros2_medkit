@@ -161,6 +161,7 @@ void DiscoveryManager::create_strategy() {
       break;
     }
 
+    case DiscoveryMode::RUNTIME_ONLY:
     default:
       active_strategy_ = runtime_strategy_.get();
       RCLCPP_INFO(node_->get_logger(), "Discovery mode: runtime_only (default_component=%s)",

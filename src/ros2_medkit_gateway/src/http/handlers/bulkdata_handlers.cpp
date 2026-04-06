@@ -133,7 +133,7 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
     for (const auto & rosbag : all_rosbags) {
       std::string fault_code = rosbag.value("fault_code", "");
       std::string format = rosbag.value("format", "mcap");
-      uint64_t size_bytes = rosbag.value("size_bytes", 0);
+      uint64_t size_bytes = rosbag.value("size_bytes", uint64_t{0});
       double duration_sec = rosbag.value("duration_sec", 0.0);
 
       // Use fault_code as bulk_data_id
