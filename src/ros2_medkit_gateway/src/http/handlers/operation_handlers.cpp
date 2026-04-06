@@ -21,6 +21,8 @@
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/providers/operation_provider.hpp"
 
 using json = nlohmann::json;
 
@@ -43,6 +45,23 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
       return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
+
+    // Delegate to plugin OperationProvider if entity is plugin-owned
+    if (entity_info.is_plugin) {
+      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
+      if (op_prov) {
+        auto result = op_prov->list_operations(entity_id);
+        if (result) {
+          HandlerContext::send_json(res, *result);
+        } else {
+          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+        }
+        return;
+      }
+      HandlerContext::send_json(res, json{{"items", json::array()}});
+      return;
+    }
 
     // Use ThreadSafeEntityCache for O(1) entity lookup and aggregated operations
     const auto & cache = ctx_.node()->get_thread_safe_cache();
@@ -348,6 +367,32 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
       return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
+
+    // Delegate to plugin OperationProvider if entity is plugin-owned
+    if (entity_info.is_plugin) {
+      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
+      if (op_prov) {
+        json params = json::object();
+        if (!req.body.empty()) {
+          params = json::parse(req.body, nullptr, false);
+          if (params.is_discarded()) {
+            HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON body");
+            return;
+          }
+        }
+        auto result = op_prov->execute_operation(entity_id, operation_id, params);
+        if (result) {
+          HandlerContext::send_json(res, *result);
+        } else {
+          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+        }
+        return;
+      }
+      HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND,
+                                 "No operation provider for plugin entity '" + entity_id + "'");
+      return;
+    }
 
     // Check lock access for operations
     if (ctx_.validate_lock_access(req, res, entity_info, "operations")) {
