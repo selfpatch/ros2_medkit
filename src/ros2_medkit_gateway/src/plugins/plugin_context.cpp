@@ -18,6 +18,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <vector>
 
+#include "ros2_medkit_gateway/entity_validation.hpp"
+
 #include "ros2_medkit_gateway/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -100,9 +102,9 @@ class GatewayPluginContext : public PluginContext {
 
   std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest & req, PluginResponse & res,
                                                             const std::string & entity_id) const override {
-    // Validate entity ID format
-    if (entity_id.empty() || entity_id.size() > 256) {
-      res.send_error(400, ERR_INVALID_PARAMETER, "Invalid entity ID");
+    // Validate entity ID format (shared validation with HandlerContext)
+    if (auto err = validate_entity_id(entity_id); !err) {
+      res.send_error(400, ERR_INVALID_PARAMETER, err.error());
       return std::nullopt;
     }
 

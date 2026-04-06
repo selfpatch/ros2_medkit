@@ -31,16 +31,6 @@ find_package(ros2_medkit_gateway REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(nlohmann_json REQUIRED)
-find_package(OpenSSL REQUIRED)
-
-# cpp-httplib via multi-distro compatibility macro.
-# On Humble the system package is too old (0.10.x); fall back to gateway's
-# vendored copy which is installed alongside the gateway package.
-set(_gw_vendored "${ros2_medkit_gateway_DIR}/../vendored/cpp_httplib")
-medkit_find_cpp_httplib(VENDORED_DIR "${_gw_vendored}")
-
-# Enable OpenSSL support for cpp-httplib
-add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
 
 # MODULE target: loaded via dlopen at runtime by PluginManager.
 # Symbols from gateway_lib are resolved from the host process at runtime.
@@ -66,8 +56,6 @@ target_link_options(sovd_service_interface PRIVATE
 
 target_link_libraries(sovd_service_interface
   nlohmann_json::nlohmann_json
-  cpp_httplib_target
-  OpenSSL::SSL OpenSSL::Crypto
 )
 
 install(TARGETS sovd_service_interface
@@ -110,8 +98,6 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_sovd_service_interface
     nlohmann_json::nlohmann_json
-    cpp_httplib_target
-    OpenSSL::SSL OpenSSL::Crypto
   )
   medkit_set_test_domain(test_sovd_service_interface)
 endif()

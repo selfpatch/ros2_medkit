@@ -85,6 +85,7 @@ include_directories(include)
 # Gateway library (shared between executable and tests for coverage)
 add_library(gateway_lib STATIC
   src/config.cpp
+  src/entity_validation.cpp
   src/gateway_node.cpp
   src/data_access_manager.cpp
   src/type_introspection.cpp

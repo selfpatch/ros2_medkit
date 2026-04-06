@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/entity_validation.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/lock_manager.hpp"
@@ -27,41 +28,7 @@ namespace ros2_medkit_gateway {
 namespace handlers {
 
 tl::expected<void, std::string> HandlerContext::validate_entity_id(const std::string & entity_id) const {
-  // Check for empty string
-  if (entity_id.empty()) {
-    return tl::unexpected("Entity ID cannot be empty");
-  }
-
-  // Check length (reasonable limit to prevent abuse)
-  if (entity_id.length() > 256) {
-    return tl::unexpected("Entity ID too long (max 256 characters)");
-  }
-
-  // Validate characters according to naming conventions
-  // Allow: alphanumeric (a-z, A-Z, 0-9), underscore (_), hyphen (-)
-  // Reject: forward slash (conflicts with URL routing), special characters, escape sequences
-  // Note: Hyphens are allowed in manifest entity IDs (e.g., "engine-ecu", "front-left-door")
-  for (char c : entity_id) {
-    bool is_alphanumeric = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
-    bool is_allowed_special = (c == '_' || c == '-');
-
-    if (!is_alphanumeric && !is_allowed_special) {
-      // For non-printable characters, show the character code
-      std::string char_repr;
-      if (c < 32 || c > 126) {
-        std::ostringstream oss;
-        oss << "0x" << std::hex << std::setfill('0') << std::setw(2)
-            << static_cast<unsigned int>(static_cast<unsigned char>(c));
-        char_repr = oss.str();
-      } else {
-        char_repr = std::string(1, c);
-      }
-      return tl::unexpected("Entity ID contains invalid character: '" + char_repr +
-                            "'. Only alphanumeric, underscore and hyphen are allowed");
-    }
-  }
-
-  return {};
+  return ::ros2_medkit_gateway::validate_entity_id(entity_id);
 }
 
 tl::expected<std::string, std::string>

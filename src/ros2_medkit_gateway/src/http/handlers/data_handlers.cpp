@@ -55,7 +55,10 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
         if (result) {
           HandlerContext::send_json(res, *result);
         } else {
-          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+          auto status = std::clamp(result.error().http_status, 400, 599);
+          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
+                                                         : result.error().message;
+          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
         }
         return;
       }
@@ -155,7 +158,10 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
         if (result) {
           HandlerContext::send_json(res, *result);
         } else {
-          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+          auto status = std::clamp(result.error().http_status, 400, 599);
+          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
+                                                         : result.error().message;
+          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
         }
         return;
       }
@@ -245,6 +251,11 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
       return;  // Response already sent (error or forwarded to peer)
     }
 
+    // Check lock access for data (before plugin delegation - locks apply to all entities)
+    if (ctx_.validate_lock_access(req, res, *entity_opt, "data")) {
+      return;
+    }
+
     // Delegate to plugin DataProvider if entity is plugin-owned
     if (entity_opt->is_plugin) {
       auto * pmgr = ctx_.node()->get_plugin_manager();
@@ -262,17 +273,15 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
         if (result) {
           HandlerContext::send_json(res, *result);
         } else {
-          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+          auto status = std::clamp(result.error().http_status, 400, 599);
+          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
+                                                         : result.error().message;
+          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
         }
         return;
       }
       HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                  "No data provider for plugin entity '" + entity_id + "'");
-      return;
-    }
-
-    // Check lock access for data
-    if (ctx_.validate_lock_access(req, res, *entity_opt, "data")) {
       return;
     }
 

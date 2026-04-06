@@ -20,6 +20,13 @@ Plugins implement the ``GatewayPlugin`` C++ base class plus one or more typed pr
 - **ScriptProvider** - replaces or augments the default filesystem-based script backend.
   Plugins can provide script listings, create custom scripts, and execute them using
   alternative runtimes. See the ``/scripts`` endpoints in :doc:`/api/rest`.
+- **DataProvider** - per-entity data resource backend (list, read, write data). Plugins
+  that create entities via IntrospectionProvider can serve data for those entities.
+  Entity requests are routed to the owning plugin automatically.
+- **OperationProvider** - per-entity operation backend (list operations, execute). Uses
+  the same per-entity routing model as DataProvider.
+- **FaultProvider** - per-entity fault backend (list faults, get fault details, clear
+  faults). Uses the same per-entity routing model as DataProvider.
 
 A single plugin can implement multiple provider interfaces. For example, a "systemd" plugin
 could provide both introspection (discover systemd units) and updates (manage service restarts).
@@ -224,7 +231,7 @@ Plugin Lifecycle
 1. ``dlopen`` loads the ``.so`` with ``RTLD_NOW | RTLD_LOCAL``
 2. ``plugin_api_version()`` is checked against the gateway's ``PLUGIN_API_VERSION``
 3. ``create_plugin()`` factory function creates the plugin instance
-4. Provider interfaces are queried via ``get_update_provider()`` / ``get_introspection_provider()`` / ``get_log_provider()`` / ``get_script_provider()``
+4. Provider interfaces are queried via ``get_update_provider()`` / ``get_introspection_provider()`` / ``get_log_provider()`` / ``get_script_provider()`` / ``get_data_provider()`` / ``get_operation_provider()`` / ``get_fault_provider()``
 5. ``configure()`` is called with per-plugin JSON config
 6. ``set_context()`` provides ``PluginContext`` with ROS 2 node, entity cache, faults, and HTTP utilities
 7. ``get_routes()`` returns custom REST endpoint definitions as ``vector<PluginRoute>``
@@ -665,7 +672,30 @@ Multiple plugins can be loaded simultaneously:
 - **LogProvider**: Only the first plugin's LogProvider is used for queries (same as UpdateProvider).
   All LogProvider plugins receive ``on_log_entry()`` calls as observers.
 - **ScriptProvider**: Only the first plugin's ScriptProvider is used (same as UpdateProvider).
+- **DataProvider / OperationProvider / FaultProvider**: These use per-entity routing based
+  on entity ownership. Entities created by a plugin's IntrospectionProvider are automatically
+  routed to that same plugin's DataProvider, OperationProvider, and FaultProvider. Multiple
+  plugins can each serve different entities concurrently - there is no "first wins" conflict
+  because each plugin only handles requests for its own entities.
 - **Custom routes**: All plugins can register endpoints (use unique path prefixes)
+
+Entity Ownership
+~~~~~~~~~~~~~~~~
+
+DataProvider, OperationProvider, and FaultProvider use an entity ownership model to
+route requests to the correct plugin.
+
+- ``IntrospectionProvider::introspect()`` determines ownership: entities returned in a
+  plugin's ``IntrospectionResult::new_entities`` are owned by that plugin.
+- Entity ownership is refreshed periodically during cache updates (each discovery cycle
+  re-evaluates ``introspect()`` results from all plugins).
+- The gateway maintains an internal map from entity ID to the plugin that created it.
+- When a data, operation, or fault request arrives for an entity, the handler looks up
+  the owning plugin and delegates to its corresponding provider. Entities not owned by
+  any plugin fall through to the default gateway behavior.
+
+This model allows multiple plugins to coexist without conflict - each plugin manages
+its own entities independently.
 
 Graph Provider Plugin (ros2_medkit_graph_provider)
 ---------------------------------------------------

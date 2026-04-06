@@ -63,6 +63,17 @@ TEST(PluginRequestTest, Body) {
   EXPECT_EQ(preq.body(), R"({"key": "value"})");
 }
 
+TEST(PluginRequestTest, QueryParam) {
+  httplib::Request req;
+  req.params.emplace("filter", "active");
+  req.params.emplace("limit", "10");
+
+  PluginRequest preq(&req);
+  EXPECT_EQ(preq.query_param("filter"), "active");
+  EXPECT_EQ(preq.query_param("limit"), "10");
+  EXPECT_EQ(preq.query_param("nonexistent"), "");
+}
+
 TEST(PluginResponseTest, SendJson) {
   httplib::Response res;
 

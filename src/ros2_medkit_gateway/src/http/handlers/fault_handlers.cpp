@@ -324,7 +324,10 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
         if (result) {
           HandlerContext::send_json(res, *result);
         } else {
-          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+          auto status = std::clamp(result.error().http_status, 400, 599);
+          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
+                                                         : result.error().message;
+          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
         }
         return;
       }
@@ -584,7 +587,10 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
         if (result) {
           HandlerContext::send_json(res, *result);
         } else {
-          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+          auto status = std::clamp(result.error().http_status, 400, 599);
+          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
+                                                         : result.error().message;
+          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
         }
         return;
       }
@@ -652,6 +658,11 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     }
     auto entity_info = *entity_opt;
 
+    // Check lock access for faults (before plugin delegation - locks apply to all entities)
+    if (ctx_.validate_lock_access(req, res, entity_info, "faults")) {
+      return;
+    }
+
     // Delegate to plugin FaultProvider if entity is plugin-owned
     if (entity_info.is_plugin) {
       auto * pmgr = ctx_.node()->get_plugin_manager();
@@ -661,17 +672,15 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
         if (result) {
           HandlerContext::send_json(res, *result);
         } else {
-          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+          auto status = std::clamp(result.error().http_status, 400, 599);
+          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
+                                                         : result.error().message;
+          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
         }
         return;
       }
       HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
                                  "No fault provider for plugin entity '" + entity_id + "'");
-      return;
-    }
-
-    // Check lock access for faults
-    if (ctx_.validate_lock_access(req, res, entity_info, "faults")) {
       return;
     }
 
