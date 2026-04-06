@@ -633,14 +633,36 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   plugin_mgr_->set_context(*plugin_ctx_);
   RCLCPP_INFO(get_logger(), "Loaded %zu plugin(s)", loaded);
 
-  // Register IntrospectionProvider plugins as pipeline layers (hybrid mode only)
-  if (discovery_mgr_->get_mode() == DiscoveryMode::HYBRID) {
-    auto providers = plugin_mgr_->get_named_introspection_providers();
-    for (auto & [name, provider] : providers) {
-      discovery_mgr_->add_plugin_layer(name, provider);
-    }
-    if (!providers.empty()) {
+  // Register IntrospectionProvider plugins
+  auto introspection_providers = plugin_mgr_->get_named_introspection_providers();
+  if (!introspection_providers.empty()) {
+    if (discovery_mgr_->get_mode() == DiscoveryMode::HYBRID) {
+      // Hybrid: add as pipeline layers for merge
+      for (auto & [name, provider] : introspection_providers) {
+        discovery_mgr_->add_plugin_layer(name, provider);
+      }
       discovery_mgr_->refresh_pipeline();
+    }
+    // Non-hybrid modes: plugin entities are injected during refresh_cache()
+
+    // Register entity ownership for per-entity provider routing
+    for (auto & [name, provider] : introspection_providers) {
+      IntrospectionInput input;
+      auto result = provider->introspect(input);
+      std::vector<std::string> entity_ids;
+      for (const auto & area : result.new_entities.areas) {
+        entity_ids.push_back(area.id);
+      }
+      for (const auto & comp : result.new_entities.components) {
+        entity_ids.push_back(comp.id);
+      }
+      for (const auto & app : result.new_entities.apps) {
+        entity_ids.push_back(app.id);
+      }
+      for (const auto & func : result.new_entities.functions) {
+        entity_ids.push_back(func.id);
+      }
+      plugin_mgr_->register_entity_ownership(name, entity_ids);
     }
   }
 
@@ -1535,6 +1557,33 @@ void GatewayNode::refresh_cache() {
       functions = std::move(merged.functions);
       peer_routing_table = std::move(merged.routing_table);
       aggregation_mgr_->update_routing_table(peer_routing_table);
+    }
+
+    // Inject plugin entities for non-hybrid modes.
+    // In hybrid mode, plugin entities are merged via the pipeline (PluginLayer).
+    // In runtime_only/manifest_only modes, we append them directly.
+    if (discovery_mgr_->get_mode() != DiscoveryMode::HYBRID && plugin_mgr_ && plugin_mgr_->has_plugins()) {
+      auto providers = plugin_mgr_->get_named_introspection_providers();
+      for (auto & [name, provider] : providers) {
+        IntrospectionInput input;
+        auto result = provider->introspect(input);
+        for (auto & area : result.new_entities.areas) {
+          area.source = "plugin";
+          areas.push_back(std::move(area));
+        }
+        for (auto & comp : result.new_entities.components) {
+          comp.source = "plugin";
+          all_components.push_back(std::move(comp));
+        }
+        for (auto & app : result.new_entities.apps) {
+          app.source = "plugin";
+          apps.push_back(std::move(app));
+        }
+        for (auto & func : result.new_entities.functions) {
+          func.source = "plugin";
+          functions.push_back(std::move(func));
+        }
+      }
     }
 
     // Filter ROS 2 internal nodes (underscore prefix convention).
