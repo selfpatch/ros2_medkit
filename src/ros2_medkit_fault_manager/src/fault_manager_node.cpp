@@ -17,7 +17,6 @@
 #include <yaml-cpp/yaml.h>
 
 #include <cctype>
-#include <cinttypes>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -111,8 +110,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   }
   auto max_snapshots = declare_parameter<int>("snapshots.max_per_fault", 10);
   if (max_snapshots < 0) {
-    RCLCPP_WARN(get_logger(), "snapshots.max_per_fault should be >= 0, got %" PRId64 ". Disabling limit.",
-                static_cast<int64_t>(max_snapshots));
+    RCLCPP_WARN(get_logger(), "snapshots.max_per_fault should be >= 0, got %ld. Disabling limit.", max_snapshots);
     max_snapshots = 0;
   }
 
