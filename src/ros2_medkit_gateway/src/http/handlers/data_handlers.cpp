@@ -240,7 +240,7 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
     json data = body["data"];
 
     // Validate message type format (e.g., std_msgs/msg/Float32)
-    size_t slash_count = std::count(msg_type.begin(), msg_type.end(), '/');
+    auto slash_count = static_cast<size_t>(std::count(msg_type.begin(), msg_type.end(), '/'));
     size_t msg_pos = msg_type.find("/msg/");
     bool valid_format =
         (slash_count == 2) && (msg_pos != std::string::npos) && (msg_pos > 0) && (msg_pos + 5 < msg_type.length());

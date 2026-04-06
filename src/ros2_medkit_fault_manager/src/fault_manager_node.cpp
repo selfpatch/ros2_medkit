@@ -108,9 +108,9 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
                 snapshot_recapture_cooldown_sec_);
     snapshot_recapture_cooldown_sec_ = 0.0;
   }
-  int max_snapshots = declare_parameter<int>("snapshots.max_per_fault", 10);
+  auto max_snapshots = declare_parameter<int>("snapshots.max_per_fault", 10);
   if (max_snapshots < 0) {
-    RCLCPP_WARN(get_logger(), "snapshots.max_per_fault should be >= 0, got %d. Disabling limit.", max_snapshots);
+    RCLCPP_WARN(get_logger(), "snapshots.max_per_fault should be >= 0, got %ld. Disabling limit.", max_snapshots);
     max_snapshots = 0;
   }
 

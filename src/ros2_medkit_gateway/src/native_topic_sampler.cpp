@@ -49,6 +49,7 @@ std::string reliability_to_string(rclcpp::ReliabilityPolicy policy) {
     case rclcpp::ReliabilityPolicy::BestAvailable:
       return "best_available";
 #endif
+    case rclcpp::ReliabilityPolicy::Unknown:
     default:
       return "unknown";
   }
@@ -67,6 +68,7 @@ std::string durability_to_string(rclcpp::DurabilityPolicy policy) {
     case rclcpp::DurabilityPolicy::BestAvailable:
       return "best_available";
 #endif
+    case rclcpp::DurabilityPolicy::Unknown:
     default:
       return "unknown";
   }
@@ -81,6 +83,7 @@ std::string history_to_string(rclcpp::HistoryPolicy policy) {
       return "keep_all";
     case rclcpp::HistoryPolicy::SystemDefault:
       return "system_default";
+    case rclcpp::HistoryPolicy::Unknown:
     default:
       return "unknown";
   }
@@ -99,6 +102,7 @@ std::string liveliness_to_string(rclcpp::LivelinessPolicy policy) {
     case rclcpp::LivelinessPolicy::BestAvailable:
       return "best_available";
 #endif
+    case rclcpp::LivelinessPolicy::Unknown:
     default:
       return "unknown";
   }

@@ -54,6 +54,9 @@ std::string LockManager::get_entity_type_string(const std::string & entity_id) c
       return "component";
     case SovdEntityType::APP:
       return "app";
+    case SovdEntityType::SERVER:
+    case SovdEntityType::FUNCTION:
+    case SovdEntityType::UNKNOWN:
     default:
       return "unknown";
   }

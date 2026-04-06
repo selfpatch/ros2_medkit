@@ -50,7 +50,8 @@ constexpr size_t MAX_ENTITIES_PER_COLLECTION = 1000;
 std::string encode_query_param(const std::string & value) {
   std::string result;
   result.reserve(value.size());
-  for (unsigned char c : value) {
+  for (char ch : value) {
+    auto c = static_cast<unsigned char>(ch);
     if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
       result += static_cast<char>(c);
     } else {

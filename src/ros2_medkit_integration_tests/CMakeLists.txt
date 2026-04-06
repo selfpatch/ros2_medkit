@@ -4,15 +4,12 @@ project(ros2_medkit_integration_tests)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
-
 find_package(ament_cmake REQUIRED)
 
 # Shared cmake modules (multi-distro compat, ccache, linting)
 find_package(ros2_medkit_cmake REQUIRED)
 include(ROS2MedkitCompat)
+include(ROS2MedkitWarnings)
 
 find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)

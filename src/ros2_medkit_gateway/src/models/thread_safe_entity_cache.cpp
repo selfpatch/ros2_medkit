@@ -419,6 +419,8 @@ AggregatedConfigurations ThreadSafeEntityCache::get_entity_configurations(const 
       return get_area_configurations(entity_id);
     case SovdEntityType::FUNCTION:
       return get_function_configurations(entity_id);
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
     default:
       return {};
   }
@@ -865,6 +867,8 @@ AggregatedData ThreadSafeEntityCache::get_entity_data(const std::string & entity
       return get_area_data(entity_id);
     case SovdEntityType::FUNCTION:
       return get_function_data(entity_id);
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
     default:
       return {};
   }

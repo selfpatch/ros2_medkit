@@ -11,10 +11,7 @@ include(ROS2MedkitCompat)
 include(ROS2MedkitCcache)
 include(ROS2MedkitSanitizers)
 include(ROS2MedkitLinting)
-
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic -Wshadow -Wconversion)
-endif()
+include(ROS2MedkitWarnings)
 
 # Code coverage option
 option(ENABLE_COVERAGE "Enable code coverage reporting" OFF)
@@ -778,7 +775,7 @@ if(BUILD_TESTING)
       target_link_options(${_target} PRIVATE --coverage)
     endforeach()
   endif()
-
+  ros2_medkit_relax_vendor_warnings()
 endif()
 
 # Export include directories for downstream packages (plugins)

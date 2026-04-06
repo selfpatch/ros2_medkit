@@ -498,6 +498,8 @@ std::string TriggerHandlers::extract_entity_type(const httplib::Request & req) {
       return "areas";
     case SovdEntityType::FUNCTION:
       return "functions";
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
     default:
       RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in trigger path: %s", req.path.c_str());
       return "apps";

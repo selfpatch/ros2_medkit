@@ -270,9 +270,10 @@ nlohmann::json JsonSerializer::yaml_to_json(const YAML::Node & yaml) {
       return obj;
     }
 
-    default:
+    case YAML::NodeType::Undefined:
       return nullptr;
   }
+  return nullptr;  // Unreachable - all enum values handled above
 }
 
 YAML::Node JsonSerializer::json_to_yaml(const nlohmann::json & json) {

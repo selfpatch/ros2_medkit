@@ -32,6 +32,7 @@ std::string discovery_mode_to_string(DiscoveryMode mode) {
       return "manifest_only";
     case DiscoveryMode::HYBRID:
       return "hybrid";
+    case DiscoveryMode::RUNTIME_ONLY:
     default:
       return "runtime_only";
   }
