@@ -47,11 +47,15 @@ GatewayPluginLoadResult::GatewayPluginLoadResult(GatewayPluginLoadResult && othe
   , introspection_provider(other.introspection_provider)
   , log_provider(other.log_provider)
   , script_provider(other.script_provider)
+  , data_provider(other.data_provider)
+  , operation_provider(other.operation_provider)
   , handle_(other.handle_) {
   other.update_provider = nullptr;
   other.introspection_provider = nullptr;
   other.log_provider = nullptr;
   other.script_provider = nullptr;
+  other.data_provider = nullptr;
+  other.operation_provider = nullptr;
   other.handle_ = nullptr;
 }
 
@@ -62,6 +66,8 @@ GatewayPluginLoadResult & GatewayPluginLoadResult::operator=(GatewayPluginLoadRe
     introspection_provider = nullptr;
     log_provider = nullptr;
     script_provider = nullptr;
+    data_provider = nullptr;
+    operation_provider = nullptr;
     plugin.reset();
     if (handle_) {
       dlclose(handle_);
@@ -73,12 +79,16 @@ GatewayPluginLoadResult & GatewayPluginLoadResult::operator=(GatewayPluginLoadRe
     introspection_provider = other.introspection_provider;
     log_provider = other.log_provider;
     script_provider = other.script_provider;
+    data_provider = other.data_provider;
+    operation_provider = other.operation_provider;
     handle_ = other.handle_;
 
     other.update_provider = nullptr;
     other.introspection_provider = nullptr;
     other.log_provider = nullptr;
     other.script_provider = nullptr;
+    other.data_provider = nullptr;
+    other.operation_provider = nullptr;
     other.handle_ = nullptr;
   }
   return *this;
