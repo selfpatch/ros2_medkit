@@ -33,8 +33,11 @@ find_package(rclcpp REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(OpenSSL REQUIRED)
 
-# cpp-httplib via multi-distro compatibility macro
-medkit_find_cpp_httplib()
+# cpp-httplib via multi-distro compatibility macro.
+# On Humble the system package is too old (0.10.x); fall back to gateway's
+# vendored copy which is installed alongside the gateway package.
+set(_gw_vendored "${ros2_medkit_gateway_DIR}/../vendored/cpp_httplib")
+medkit_find_cpp_httplib(VENDORED_DIR "${_gw_vendored}")
 
 # Enable OpenSSL support for cpp-httplib
 add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
