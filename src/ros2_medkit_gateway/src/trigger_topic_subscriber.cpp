@@ -203,7 +203,16 @@ void TriggerTopicSubscriber::shutdown() {
   RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: shutdown complete");
 }
 
+void TriggerTopicSubscriber::set_retry_callback(RetryCallback cb) {
+  retry_callback_ = std::move(cb);
+}
+
 void TriggerTopicSubscriber::retry_pending_subscriptions() {
+  // Also retry unresolved triggers in TriggerManager (resource_path -> topic_name)
+  if (retry_callback_) {
+    retry_callback_();
+  }
+
   if (shutdown_flag_.load()) {
     return;
   }

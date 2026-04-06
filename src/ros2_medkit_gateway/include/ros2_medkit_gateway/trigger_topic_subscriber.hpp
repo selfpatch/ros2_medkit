@@ -98,6 +98,12 @@ class TriggerTopicSubscriber {
    */
   void shutdown();
 
+  /// Callback invoked by the retry timer alongside topic type resolution.
+  /// Used to let TriggerManager re-resolve triggers whose topic names
+  /// were unknown at creation time.
+  using RetryCallback = std::function<void()>;
+  void set_retry_callback(RetryCallback cb);
+
  private:
   /// Per-topic subscription state with multi-entity support.
   struct SubscriptionEntry {
@@ -144,6 +150,7 @@ class TriggerTopicSubscriber {
   std::unordered_map<std::string, SubscriptionEntry> subscriptions_;
   std::unordered_map<std::string, PendingSubscription> pending_;  ///< Topics awaiting type resolution
   rclcpp::TimerBase::SharedPtr retry_timer_;
+  RetryCallback retry_callback_;
   std::atomic<bool> shutdown_flag_{false};
 };
 

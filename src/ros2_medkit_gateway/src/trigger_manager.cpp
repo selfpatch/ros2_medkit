@@ -114,6 +114,57 @@ void TriggerManager::set_log_manager(LogManager * log_manager) {
   log_manager_ = log_manager;
 }
 
+void TriggerManager::set_resolve_topic_fn(ResolveTopicFn fn) {
+  std::lock_guard<std::mutex> lock(triggers_mutex_);
+  resolve_topic_fn_ = std::move(fn);
+}
+
+void TriggerManager::retry_unresolved_triggers() {
+  if (shutdown_flag_.load()) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(triggers_mutex_);
+
+  if (unresolved_data_triggers_.empty() || !resolve_topic_fn_ || !topic_subscriber_) {
+    return;
+  }
+
+  auto now = std::chrono::steady_clock::now();
+  std::vector<size_t> resolved_indices;
+  std::vector<size_t> expired_indices;
+
+  for (size_t i = 0; i < unresolved_data_triggers_.size(); ++i) {
+    auto & entry = unresolved_data_triggers_[i];
+
+    if (now - entry.created_at > std::chrono::seconds(kUnresolvedTimeoutSec)) {
+      expired_indices.push_back(i);
+      continue;
+    }
+
+    std::string topic_name = resolve_topic_fn_(entry.entity_id, entry.resource_path);
+    if (!topic_name.empty()) {
+      // Update the trigger's resolved_topic_name
+      auto it = triggers_.find(entry.trigger_id);
+      if (it != triggers_.end()) {
+        std::lock_guard<std::mutex> state_lock(it->second->mtx);
+        it->second->info.resolved_topic_name = topic_name;
+      }
+      topic_subscriber_->subscribe(topic_name, entry.resource_path, entry.entity_id);
+      resolved_indices.push_back(i);
+    }
+  }
+
+  // Remove resolved and expired entries (reverse order to maintain indices)
+  std::vector<size_t> to_remove;
+  to_remove.insert(to_remove.end(), resolved_indices.begin(), resolved_indices.end());
+  to_remove.insert(to_remove.end(), expired_indices.begin(), expired_indices.end());
+  std::sort(to_remove.rbegin(), to_remove.rend());
+  for (size_t idx : to_remove) {
+    unresolved_data_triggers_.erase(unresolved_data_triggers_.begin() + static_cast<std::ptrdiff_t>(idx));
+  }
+}
+
 void TriggerManager::set_entity_exists_fn(EntityExistsFn fn) {
   std::lock_guard<std::mutex> lock(entity_exists_mutex_);
   entity_exists_fn_ = std::move(fn);
@@ -258,9 +309,17 @@ tl::expected<TriggerInfo, TriggerCreateError> TriggerManager::create(const Trigg
     triggers_[state->info.id] = std::move(state);
   }
 
-  // Subscribe to topic for data triggers
-  if (topic_subscriber_ && req.collection == "data" && !req.resolved_topic_name.empty()) {
-    topic_subscriber_->subscribe(req.resolved_topic_name, req.resource_path, req.entity_id);
+  // Subscribe to topic for data triggers.
+  // When resolved_topic_name is empty (topic not yet discoverable at creation time),
+  // queue for deferred resolution - retry_unresolved_triggers() will pick it up.
+  if (topic_subscriber_ && req.collection == "data") {
+    if (!req.resolved_topic_name.empty()) {
+      topic_subscriber_->subscribe(req.resolved_topic_name, req.resource_path, req.entity_id);
+    } else if (!req.resource_path.empty()) {
+      std::lock_guard<std::mutex> lock(triggers_mutex_);
+      unresolved_data_triggers_.push_back(
+          {info_copy.id, req.entity_id, req.resource_path, std::chrono::steady_clock::now()});
+    }
   }
 
   return info_copy;
