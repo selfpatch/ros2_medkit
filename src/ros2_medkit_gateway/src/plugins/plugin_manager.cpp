@@ -64,6 +64,7 @@ void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
   lp.script_provider = dynamic_cast<ScriptProvider *>(plugin.get());
   lp.data_provider = dynamic_cast<DataProvider *>(plugin.get());
   lp.operation_provider = dynamic_cast<OperationProvider *>(plugin.get());
+  lp.fault_provider = dynamic_cast<FaultProvider *>(plugin.get());
 
   // Cache first UpdateProvider, warn on duplicates
   if (lp.update_provider) {
@@ -116,6 +117,7 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
       lp.script_provider = result->script_provider;
       lp.data_provider = result->data_provider;
       lp.operation_provider = result->operation_provider;
+      lp.fault_provider = result->fault_provider;
 
       // Cache first UpdateProvider, warn on duplicates
       if (lp.update_provider) {
@@ -202,12 +204,14 @@ void PluginManager::disable_plugin(LoadedPlugin & lp) {
   lp.script_provider = nullptr;
   lp.data_provider = nullptr;
   lp.operation_provider = nullptr;
+  lp.fault_provider = nullptr;
   lp.load_result.update_provider = nullptr;
   lp.load_result.introspection_provider = nullptr;
   lp.load_result.log_provider = nullptr;
   lp.load_result.script_provider = nullptr;
   lp.load_result.data_provider = nullptr;
   lp.load_result.operation_provider = nullptr;
+  lp.load_result.fault_provider = nullptr;
   lp.load_result.plugin.reset();
 }
 
@@ -454,6 +458,20 @@ OperationProvider * PluginManager::get_operation_provider_for_entity(const std::
   for (const auto & lp : plugins_) {
     if (lp.load_result.plugin && lp.load_result.plugin->name() == own_it->second) {
       return lp.operation_provider;
+    }
+  }
+  return nullptr;
+}
+
+FaultProvider * PluginManager::get_fault_provider_for_entity(const std::string & entity_id) const {
+  std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
+  auto own_it = entity_ownership_.find(entity_id);
+  if (own_it == entity_ownership_.end()) {
+    return nullptr;
+  }
+  for (const auto & lp : plugins_) {
+    if (lp.load_result.plugin && lp.load_result.plugin->name() == own_it->second) {
+      return lp.fault_provider;
     }
   }
   return nullptr;

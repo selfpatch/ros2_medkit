@@ -28,6 +28,7 @@ class IntrospectionProvider;
 class LogProvider;
 class ScriptProvider;
 class DataProvider;
+class FaultProvider;
 class OperationProvider;
 
 /**
@@ -72,6 +73,9 @@ struct GatewayPluginLoadResult {
   /// Non-owning pointer to OperationProvider interface (null if not provided).
   OperationProvider * operation_provider = nullptr;
 
+  /// Non-owning pointer to FaultProvider interface (null if not provided).
+  FaultProvider * fault_provider = nullptr;
+
   /// Get the dlopen handle (for dlsym queries by PluginManager)
   void * dl_handle() const {
     return handle_;
@@ -96,6 +100,7 @@ struct GatewayPluginLoadResult {
  *   extern "C" ScriptProvider* get_script_provider(GatewayPlugin* plugin);
  *   extern "C" DataProvider* get_data_provider(GatewayPlugin* plugin);
  *   extern "C" OperationProvider* get_operation_provider(GatewayPlugin* plugin);
+ *   extern "C" FaultProvider* get_fault_provider(GatewayPlugin* plugin);
  *
  * Path requirements: must be absolute, have .so extension, and resolve to a real file.
  */

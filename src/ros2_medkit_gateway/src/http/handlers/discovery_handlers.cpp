@@ -60,6 +60,9 @@ void append_plugin_capabilities(json & capabilities, const std::string & entity_
   if (pmgr->get_operation_provider_for_entity(entity_id) && !has_capability(capabilities, "operations")) {
     capabilities.push_back({{"name", "operations"}, {"href", href_prefix + "operations"}});
   }
+  if (pmgr->get_fault_provider_for_entity(entity_id) && !has_capability(capabilities, "faults")) {
+    capabilities.push_back({{"name", "faults"}, {"href", href_prefix + "faults"}});
+  }
 
   // Plugin-registered custom capabilities (via PluginContext)
   auto * ctx = pmgr->get_context();
