@@ -60,7 +60,8 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 
     # Memory / alignment
     -Wcast-align
-    -Wnull-dereference
+    # Note: -Wnull-dereference omitted - GCC 13 false positives on STL
+    # (streambuf inlining). Covered by clang-tidy's null checks instead.
 
     # Control flow
     -Wimplicit-fallthrough
