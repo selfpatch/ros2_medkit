@@ -30,8 +30,10 @@
 
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <shared_mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace httplib {
@@ -167,6 +169,28 @@ class PluginManager {
     return context_;
   }
 
+  // ---- Entity ownership (per-entity provider routing) ----
+
+  /// Register entity ownership for a plugin.
+  /// Called after IntrospectionProvider::introspect() returns new entities.
+  /// Maps entity IDs to the plugin that created them, enabling per-entity
+  /// provider routing in handlers.
+  void register_entity_ownership(const std::string & plugin_name, const std::vector<std::string> & entity_ids);
+
+  /// Get DataProvider for a specific entity (if plugin-owned)
+  /// @return Non-owning pointer, or nullptr if entity is not plugin-owned
+  ///         or owning plugin doesn't implement DataProvider
+  DataProvider * get_data_provider_for_entity(const std::string & entity_id) const;
+
+  /// Get OperationProvider for a specific entity (if plugin-owned)
+  /// @return Non-owning pointer, or nullptr if entity is not plugin-owned
+  ///         or owning plugin doesn't implement OperationProvider
+  OperationProvider * get_operation_provider_for_entity(const std::string & entity_id) const;
+
+  /// Check if an entity is owned by a plugin
+  /// @return Plugin name if owned, nullopt otherwise
+  std::optional<std::string> get_entity_owner(const std::string & entity_id) const;
+
   // ---- Info ----
   bool has_plugins() const;
   std::vector<std::string> plugin_names() const;
@@ -196,6 +220,8 @@ class PluginManager {
   ScriptProvider * first_script_provider_ = nullptr;
   ResourceSamplerRegistry * sampler_registry_ = nullptr;
   TransportRegistry * transport_registry_ = nullptr;
+  /// Entity ID -> plugin name mapping (populated from IntrospectionProvider results)
+  std::unordered_map<std::string, std::string> entity_ownership_;
   bool shutdown_called_ = false;
   mutable std::shared_mutex plugins_mutex_;
 };
