@@ -20,6 +20,7 @@
 #include "ros2_medkit_gateway/plugins/plugin_loader.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/data_provider.hpp"
+#include "ros2_medkit_gateway/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/providers/log_provider.hpp"
 #include "ros2_medkit_gateway/providers/operation_provider.hpp"
@@ -187,6 +188,9 @@ class PluginManager {
   ///         or owning plugin doesn't implement OperationProvider
   OperationProvider * get_operation_provider_for_entity(const std::string & entity_id) const;
 
+  /// Get FaultProvider for a specific entity (if plugin-owned)
+  FaultProvider * get_fault_provider_for_entity(const std::string & entity_id) const;
+
   /// Check if an entity is owned by a plugin
   /// @return Plugin name if owned, nullopt otherwise
   std::optional<std::string> get_entity_owner(const std::string & entity_id) const;
@@ -207,6 +211,7 @@ class PluginManager {
     ScriptProvider * script_provider = nullptr;
     DataProvider * data_provider = nullptr;
     OperationProvider * operation_provider = nullptr;
+    FaultProvider * fault_provider = nullptr;
   };
 
   /// Disable a plugin after a lifecycle error (nulls providers, resets plugin).

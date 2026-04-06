@@ -29,6 +29,8 @@
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
+#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/providers/fault_provider.hpp"
 
 using json = nlohmann::json;
 
@@ -313,6 +315,23 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
     }
     auto entity_info = *entity_opt;
 
+    // Delegate to plugin FaultProvider if entity is plugin-owned
+    if (entity_info.is_plugin) {
+      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
+      if (fault_prov) {
+        auto result = fault_prov->list_faults(entity_id);
+        if (result) {
+          HandlerContext::send_json(res, *result);
+        } else {
+          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+        }
+        return;
+      }
+      HandlerContext::send_json(res, json{{"items", json::array()}});
+      return;
+    }
+
     // Validate entity type supports faults collection (SOVD Table 8)
     if (auto err = HandlerContext::validate_collection_access(entity_info, ResourceCollection::FAULTS)) {
       HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
@@ -556,6 +575,24 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
     }
     auto entity_info = *entity_opt;
 
+    // Delegate to plugin FaultProvider if entity is plugin-owned
+    if (entity_info.is_plugin) {
+      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
+      if (fault_prov) {
+        auto result = fault_prov->get_fault(entity_id, fault_code);
+        if (result) {
+          HandlerContext::send_json(res, *result);
+        } else {
+          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+        }
+        return;
+      }
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
+                                 "No fault provider for plugin entity '" + entity_id + "'");
+      return;
+    }
+
     // Fault codes may contain dots and underscores, validate basic constraints
     if (fault_code.empty() || fault_code.length() > 256) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid fault code",
@@ -614,6 +651,24 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
       return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
+
+    // Delegate to plugin FaultProvider if entity is plugin-owned
+    if (entity_info.is_plugin) {
+      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
+      if (fault_prov) {
+        auto result = fault_prov->clear_fault(entity_id, fault_code);
+        if (result) {
+          HandlerContext::send_json(res, *result);
+        } else {
+          HandlerContext::send_error(res, result.error().http_status, "x-plugin-error", result.error().message);
+        }
+        return;
+      }
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
+                                 "No fault provider for plugin entity '" + entity_id + "'");
+      return;
+    }
 
     // Check lock access for faults
     if (ctx_.validate_lock_access(req, res, entity_info, "faults")) {
