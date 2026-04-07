@@ -667,8 +667,11 @@ via ``DataProvider``. OperationProvider and FaultProvider follow the same patter
 .. code-block:: cpp
 
    #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+   #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
    #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
    #include "ros2_medkit_gateway/providers/data_provider.hpp"
+
+   using namespace ros2_medkit_gateway;
 
    class MyDataPlugin : public GatewayPlugin, public IntrospectionProvider, public DataProvider {
     public:
@@ -693,7 +696,7 @@ via ``DataProvider``. OperationProvider and FaultProvider follow the same patter
      tl::expected<nlohmann::json, DataProviderErrorInfo> read_data(
          const std::string &, const std::string & resource_name) override {
        if (resource_name == "temperature") {
-         return nlohmann::json{{"value", 42.5}};
+         return nlohmann::json{{"id", resource_name}, {"data", {{"temperature", 42.5}}}};
        }
        return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::ResourceNotFound, "Unknown resource", 404});
      }
@@ -717,6 +720,14 @@ The gateway automatically adds ``data`` capability to entities owned by a plugin
 registers a ``DataProvider``. Similarly for ``operations`` (OperationProvider) and ``faults``
 (FaultProvider). There is no need to call ``register_entity_capability()`` for these
 standard resource collections.
+
+.. warning::
+
+   All provider methods may be called concurrently from multiple HTTP handler
+   threads. Implementations that access shared state must provide their own
+   synchronization (e.g., ``std::mutex``). Plugin responses are passed through
+   verbatim to the API consumer - match the SOVD response format for consistency
+   with native entities.
 
 Multiple Plugins
 ----------------

@@ -141,6 +141,8 @@ TEST(SendPluginErrorTest, PassesThroughValidStatus) {
   EXPECT_EQ(res.status, 503);
   auto body = nlohmann::json::parse(res.body);
   EXPECT_EQ(body["message"], "service unavailable");
+  EXPECT_EQ(body["error_code"], "vendor-error");
+  EXPECT_EQ(body["vendor_code"], "x-medkit-plugin-error");
 }
 
 TEST(SendPluginErrorTest, TruncatesLongMessage) {

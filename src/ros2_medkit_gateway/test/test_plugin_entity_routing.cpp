@@ -20,7 +20,7 @@
 #include "ros2_medkit_gateway/providers/operation_provider.hpp"
 
 using namespace ros2_medkit_gateway;
-using json = nlohmann::json;
+// json alias already available via ros2_medkit_gateway namespace headers
 
 // --- Mock plugin implementing DataProvider + OperationProvider ---
 
@@ -372,6 +372,19 @@ TEST(PluginEntityRouting, OperationListFilterFindsMatchingItem) {
     }
   }
   EXPECT_FALSE(found_nonexistent);
+}
+
+TEST(PluginEntityRouting, OwnershipForNonLoadedPluginReturnsNullProviders) {
+  PluginManager mgr;
+  mgr.register_entity_ownership("ghost_plugin", {"entity1"});
+
+  auto owner = mgr.get_entity_owner("entity1");
+  ASSERT_TRUE(owner.has_value());
+  EXPECT_EQ(*owner, "ghost_plugin");
+
+  EXPECT_EQ(mgr.get_data_provider_for_entity("entity1"), nullptr);
+  EXPECT_EQ(mgr.get_operation_provider_for_entity("entity1"), nullptr);
+  EXPECT_EQ(mgr.get_fault_provider_for_entity("entity1"), nullptr);
 }
 
 TEST(PluginEntityRouting, ClearAndReregisterOwnership) {
