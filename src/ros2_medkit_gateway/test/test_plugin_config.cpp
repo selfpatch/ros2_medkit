@@ -83,6 +83,16 @@ TEST(PluginConfig, YamlPluginParamsReachGateway) {
   ASSERT_TRUE(node->has_parameter("plugins.my_plugin.threshold"));
   EXPECT_DOUBLE_EQ(node->get_parameter("plugins.my_plugin.threshold").as_double(), 3.14);
 
+  // Verify list_parameters finds declared params with the correct prefix.
+  // ROS 2 list_parameters uses "." as hierarchy separator.
+  // Prefix WITHOUT trailing dot works; prefix WITH trailing dot returns nothing.
+  auto result_no_dot = node->list_parameters({"plugins.my_plugin"}, 10);
+  EXPECT_GE(result_no_dot.names.size(), 5u) << "list_parameters with prefix (no trailing dot) should find params";
+
+  auto result_with_dot = node->list_parameters({"plugins.my_plugin."}, 10);
+  EXPECT_EQ(result_with_dot.names.size(), 0u) << "list_parameters with trailing dot returns nothing - "
+                                              << "extract_plugin_config must use prefix without trailing dot";
+
   node.reset();
   rclcpp::shutdown();
   std::remove(yaml_path.c_str());
