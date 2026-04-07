@@ -174,6 +174,11 @@ class SnapshotCapture {
   mutable std::mutex cache_mutex_;
   std::map<std::string, CachedMessage> message_cache_;
 
+  /// Serializes node_->create_callback_group() and node_->create_generic_subscription()
+  /// across concurrent capture threads. rclcpp node internals (rcutils_hash_map) are
+  /// not thread-safe for concurrent entity creation.
+  std::mutex node_ops_mutex_;
+
   /// Background subscriptions (kept alive for continuous caching)
   std::vector<rclcpp::GenericSubscription::SharedPtr> background_subscriptions_;
 };
