@@ -62,6 +62,8 @@ class UpdateManager {
   /// Construct without a backend. Use set_backend() to wire one in.
   UpdateManager();
   ~UpdateManager();
+
+  // Non-copyable, non-movable (owns async update tasks)
   UpdateManager(const UpdateManager &) = delete;
   UpdateManager & operator=(const UpdateManager &) = delete;
   UpdateManager(UpdateManager &&) = delete;
