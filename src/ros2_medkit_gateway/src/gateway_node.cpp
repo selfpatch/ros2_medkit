@@ -88,7 +88,9 @@ nlohmann::json extract_plugin_config(rclcpp::Node * node, const std::string & pl
   // Source 2: global YAML overrides from --params-file
   declare_plugin_params_from_yaml(node, prefix, path_key);
 
-  auto result = node->list_parameters({prefix}, 10);
+  // list_parameters uses "." as hierarchy separator - prefix must NOT have trailing dot.
+  std::string list_prefix = "plugins." + plugin_name;
+  auto result = node->list_parameters({list_prefix}, 10);
   for (const auto & name : result.names) {
     if (name != path_key) {
       config[name.substr(prefix.size())] = parameter_to_json(node->get_parameter(name));
