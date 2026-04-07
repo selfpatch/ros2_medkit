@@ -16,7 +16,9 @@
 #include <httplib.h>
 
 #include <regex>
+#include <string>
 
+#include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 
 using namespace ros2_medkit_gateway;
@@ -94,4 +96,66 @@ TEST(PluginResponseTest, SendError) {
   auto body = nlohmann::json::parse(res.body);
   EXPECT_EQ(body["error_code"], "not-found");
   EXPECT_EQ(body["message"], "Entity not found");
+}
+
+TEST(PluginResponseTest, SendErrorClampsLowStatus) {
+  httplib::Response res;
+  PluginResponse pres(&res);
+  pres.send_error(200, "bad-status", "Should clamp to 400");
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST(PluginResponseTest, SendErrorClampsHighStatus) {
+  httplib::Response res;
+  PluginResponse pres(&res);
+  pres.send_error(999, "bad-status", "Should clamp to 599");
+  EXPECT_EQ(res.status, 599);
+}
+
+TEST(PluginResponseTest, SendErrorClampsNegativeStatus) {
+  httplib::Response res;
+  PluginResponse pres(&res);
+  pres.send_error(-1, "bad-status", "Should clamp to 400");
+  EXPECT_EQ(res.status, 400);
+}
+
+// =============================================================================
+// send_plugin_error tests (HandlerContext static method)
+// =============================================================================
+
+TEST(SendPluginErrorTest, ClampsLowStatus) {
+  httplib::Response res;
+  handlers::HandlerContext::send_plugin_error(res, 200, "test error");
+  EXPECT_EQ(res.status, 400);
+}
+
+TEST(SendPluginErrorTest, ClampsHighStatus) {
+  httplib::Response res;
+  handlers::HandlerContext::send_plugin_error(res, 999, "test error");
+  EXPECT_EQ(res.status, 599);
+}
+
+TEST(SendPluginErrorTest, PassesThroughValidStatus) {
+  httplib::Response res;
+  handlers::HandlerContext::send_plugin_error(res, 503, "service unavailable");
+  EXPECT_EQ(res.status, 503);
+  auto body = nlohmann::json::parse(res.body);
+  EXPECT_EQ(body["message"], "service unavailable");
+}
+
+TEST(SendPluginErrorTest, TruncatesLongMessage) {
+  httplib::Response res;
+  std::string long_msg(600, 'x');
+  handlers::HandlerContext::send_plugin_error(res, 500, long_msg);
+  auto body = nlohmann::json::parse(res.body);
+  std::string msg = body["message"];
+  EXPECT_LE(msg.size(), 516u);  // 512 + "..."
+  EXPECT_TRUE(msg.find("...") != std::string::npos);
+}
+
+TEST(SendPluginErrorTest, IncludesExtraParams) {
+  httplib::Response res;
+  handlers::HandlerContext::send_plugin_error(res, 500, "fail", {{"entity_id", "ecu1"}});
+  auto body = nlohmann::json::parse(res.body);
+  EXPECT_EQ(body["parameters"]["entity_id"], "ecu1");
 }

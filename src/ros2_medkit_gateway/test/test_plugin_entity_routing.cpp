@@ -335,6 +335,45 @@ TEST(PluginEntityRouting, ClearEntityOwnership) {
   EXPECT_EQ(*mgr.get_entity_owner("ent3"), "plugin_b");
 }
 
+// =============================================================================
+// OperationProvider list+filter contract (used by handle_get_operation)
+// =============================================================================
+
+TEST(PluginEntityRouting, OperationListFilterFindsMatchingItem) {
+  // Verifies the contract that handle_get_operation depends on:
+  // list_operations returns {"items": [...]}, handler scans for matching "id"
+  PluginManager mgr;
+  auto plugin = std::make_unique<MockDataOpPlugin>();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("test_plugin", {"my_ecu"});
+
+  auto * op = mgr.get_operation_provider_for_entity("my_ecu");
+  ASSERT_NE(op, nullptr);
+  auto result = op->list_operations("my_ecu");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_TRUE(result->contains("items"));
+  ASSERT_TRUE((*result)["items"].is_array());
+
+  // Simulate handler's filter logic: find item with matching "id"
+  bool found = false;
+  for (const auto & item : (*result)["items"]) {
+    if (item.value("id", "") == "test_op") {
+      found = true;
+      EXPECT_EQ(item["entity"], "my_ecu");
+    }
+  }
+  EXPECT_TRUE(found);
+
+  // Non-matching ID should not be found
+  bool found_nonexistent = false;
+  for (const auto & item : (*result)["items"]) {
+    if (item.value("id", "") == "nonexistent_op") {
+      found_nonexistent = true;
+    }
+  }
+  EXPECT_FALSE(found_nonexistent);
+}
+
 TEST(PluginEntityRouting, ClearAndReregisterOwnership) {
   PluginManager mgr;
   mgr.register_entity_ownership("plugin_a", {"ent1", "ent2"});

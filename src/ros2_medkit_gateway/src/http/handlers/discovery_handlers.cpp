@@ -72,12 +72,16 @@ void append_plugin_capabilities(json & capabilities, const std::string & entity_
 
   // Type-level capabilities (registered for all entities of this type)
   for (const auto & cap_name : ctx->get_type_capabilities(entity_type)) {
-    capabilities.push_back({{"name", cap_name}, {"href", href_prefix + cap_name}});
+    if (!has_capability(capabilities, cap_name)) {
+      capabilities.push_back({{"name", cap_name}, {"href", href_prefix + cap_name}});
+    }
   }
 
   // Entity-specific capabilities
   for (const auto & cap_name : ctx->get_entity_capabilities(entity_id)) {
-    capabilities.push_back({{"name", cap_name}, {"href", href_prefix + cap_name}});
+    if (!has_capability(capabilities, cap_name)) {
+      capabilities.push_back({{"name", cap_name}, {"href", href_prefix + cap_name}});
+    }
   }
 }
 

@@ -658,6 +658,66 @@ The ``scripts.scripts_dir`` parameter must be set for the scripts subsystem to
 initialize, even when using a plugin backend. The plugin replaces how scripts are
 stored and executed, but the subsystem must be enabled first.
 
+Per-Entity Provider Example (DataProvider)
+-------------------------------------------
+
+A plugin that creates entities via ``IntrospectionProvider`` and serves data for them
+via ``DataProvider``. OperationProvider and FaultProvider follow the same pattern.
+
+.. code-block:: cpp
+
+   #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+   #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+   #include "ros2_medkit_gateway/providers/data_provider.hpp"
+
+   class MyDataPlugin : public GatewayPlugin, public IntrospectionProvider, public DataProvider {
+    public:
+     std::string name() const override { return "my_data_plugin"; }
+     void configure(const nlohmann::json &) override {}
+     void shutdown() override {}
+
+     // IntrospectionProvider: create entities owned by this plugin
+     IntrospectionResult introspect(const IntrospectionInput &) override {
+       IntrospectionResult result;
+       App ecu;
+       ecu.id = "my_ecu";
+       ecu.name = "My ECU";
+       result.new_entities.apps.push_back(std::move(ecu));
+       return result;
+     }
+
+     // DataProvider: serve data for owned entities
+     tl::expected<nlohmann::json, DataProviderErrorInfo> list_data(const std::string & entity_id) override {
+       return nlohmann::json{{"items", {{{"id", "temperature"}, {"name", "Temperature"}}}}};
+     }
+     tl::expected<nlohmann::json, DataProviderErrorInfo> read_data(
+         const std::string &, const std::string & resource_name) override {
+       if (resource_name == "temperature") {
+         return nlohmann::json{{"value", 42.5}};
+       }
+       return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::ResourceNotFound, "Unknown resource", 404});
+     }
+     tl::expected<nlohmann::json, DataProviderErrorInfo> write_data(
+         const std::string &, const std::string &, const nlohmann::json &) override {
+       return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::ReadOnly, "Read-only data", 403});
+     }
+   };
+
+   // Plugin exports - both providers must be exported via extern "C"
+   extern "C" GATEWAY_PLUGIN_EXPORT GatewayPlugin* create_plugin() { return new MyDataPlugin(); }
+   extern "C" GATEWAY_PLUGIN_EXPORT int plugin_api_version() { return PLUGIN_API_VERSION; }
+   extern "C" GATEWAY_PLUGIN_EXPORT IntrospectionProvider* get_introspection_provider(GatewayPlugin* p) {
+     return static_cast<MyDataPlugin*>(p);
+   }
+   extern "C" GATEWAY_PLUGIN_EXPORT DataProvider* get_data_provider(GatewayPlugin* p) {
+     return static_cast<MyDataPlugin*>(p);
+   }
+
+The gateway automatically adds ``data`` capability to entities owned by a plugin that
+registers a ``DataProvider``. Similarly for ``operations`` (OperationProvider) and ``faults``
+(FaultProvider). There is no need to call ``register_entity_capability()`` for these
+standard resource collections.
+
 Multiple Plugins
 ----------------
 

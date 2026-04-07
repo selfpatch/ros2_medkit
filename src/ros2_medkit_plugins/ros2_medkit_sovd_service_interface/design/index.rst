@@ -48,8 +48,7 @@ Key Components
   the ``PluginContext`` entity cache for data.
 
 **Service Exports** (``src/service_exports.cpp``)
-  Standard plugin C API: ``plugin_api_version()``, ``create_plugin()``,
-  ``destroy_plugin()``.
+  Standard plugin C API: ``plugin_api_version()``, ``create_plugin()``.
 
 Message Types
 -------------
