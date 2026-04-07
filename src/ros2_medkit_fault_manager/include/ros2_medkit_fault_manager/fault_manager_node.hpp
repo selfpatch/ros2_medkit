@@ -50,6 +50,10 @@ class FaultManagerNode : public rclcpp::Node {
  public:
   explicit FaultManagerNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
   ~FaultManagerNode() override;
+  FaultManagerNode(const FaultManagerNode &) = delete;
+  FaultManagerNode & operator=(const FaultManagerNode &) = delete;
+  FaultManagerNode(FaultManagerNode &&) = delete;
+  FaultManagerNode & operator=(FaultManagerNode &&) = delete;
 
   /// Get read-only access to fault storage (for testing)
   const FaultStorage & get_storage() const {

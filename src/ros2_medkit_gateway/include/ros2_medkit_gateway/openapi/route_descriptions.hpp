@@ -259,6 +259,7 @@ class RouteDescriptions {
   friend class RouteDescriptionsTestAccess;
 
  public:
+  ~RouteDescriptions() = default;
   RouteDescriptions(const RouteDescriptions &) = default;
   RouteDescriptions(RouteDescriptions &&) = default;
   RouteDescriptions & operator=(const RouteDescriptions &) = default;

@@ -206,6 +206,7 @@ class GenericServiceClient : public rclcpp::ClientBase {
     FutureAndRequestId(Future f, int64_t id) : future(std::move(f)), request_id(id) {
     }
 
+    ~FutureAndRequestId() = default;
     FutureAndRequestId(FutureAndRequestId && other) noexcept = default;
     FutureAndRequestId & operator=(FutureAndRequestId && other) noexcept = default;
     FutureAndRequestId(const FutureAndRequestId &) = delete;

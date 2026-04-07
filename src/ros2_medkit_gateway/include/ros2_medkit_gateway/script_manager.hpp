@@ -31,6 +31,7 @@ namespace ros2_medkit_gateway {
 class ScriptManager {
  public:
   ScriptManager() = default;
+  ~ScriptManager() = default;
   ScriptManager(const ScriptManager &) = delete;
   ScriptManager & operator=(const ScriptManager &) = delete;
   ScriptManager(ScriptManager &&) = delete;

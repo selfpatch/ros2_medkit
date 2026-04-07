@@ -59,6 +59,10 @@ class GatewayNode : public rclcpp::Node {
  public:
   explicit GatewayNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions{});
   ~GatewayNode() override;
+  GatewayNode(const GatewayNode &) = delete;
+  GatewayNode & operator=(const GatewayNode &) = delete;
+  GatewayNode(GatewayNode &&) = delete;
+  GatewayNode & operator=(GatewayNode &&) = delete;
 
   /**
    * @brief Get the thread-safe entity cache with O(1) lookups
