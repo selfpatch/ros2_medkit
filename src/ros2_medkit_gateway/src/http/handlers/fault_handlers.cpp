@@ -759,8 +759,43 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
     }
     auto entity_info = *entity_opt;
 
-    // Check lock access for faults
+    // Check lock access for faults (before plugin delegation - locks apply to all entities)
     if (ctx_.validate_lock_access(req, res, entity_info, "faults")) {
+      return;
+    }
+
+    // Delegate to plugin FaultProvider if entity is plugin-owned
+    if (entity_info.is_plugin) {
+      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
+      if (fault_prov) {
+        try {
+          auto list_result = fault_prov->list_faults(entity_id);
+          if (list_result && list_result->contains("items") && (*list_result)["items"].is_array()) {
+            for (const auto & fault : (*list_result)["items"]) {
+              auto code = fault.value("code", "");
+              if (!code.empty()) {
+                (void)fault_prov->clear_fault(entity_id, code);
+              }
+            }
+          } else if (!list_result) {
+            HandlerContext::send_plugin_error(res, list_result.error().http_status, list_result.error().message,
+                                              {{"entity_id", entity_id}});
+            return;
+          }
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
+          return;
+        } catch (...) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
+          return;
+        }
+      }
+      res.status = 204;
       return;
     }
 

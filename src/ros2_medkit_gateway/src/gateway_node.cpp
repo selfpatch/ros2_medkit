@@ -1559,24 +1559,9 @@ void GatewayNode::refresh_cache() {
           continue;
         }
 
-        // Collect entity IDs for ownership before any move
+        // In non-hybrid modes, inject plugin entities directly (with validation).
+        // Collect validated entity IDs for ownership registration.
         std::vector<std::string> entity_ids;
-        entity_ids.reserve(result.new_entities.areas.size() + result.new_entities.components.size() +
-                           result.new_entities.apps.size() + result.new_entities.functions.size());
-        for (const auto & area : result.new_entities.areas) {
-          entity_ids.push_back(area.id);
-        }
-        for (const auto & comp : result.new_entities.components) {
-          entity_ids.push_back(comp.id);
-        }
-        for (const auto & app : result.new_entities.apps) {
-          entity_ids.push_back(app.id);
-        }
-        for (const auto & func : result.new_entities.functions) {
-          entity_ids.push_back(func.id);
-        }
-
-        // In non-hybrid modes, inject plugin entities directly (with validation)
         if (inject_entities) {
           for (auto & area : result.new_entities.areas) {
             if (!validate_entity_id(area.id)) {
@@ -1584,6 +1569,7 @@ void GatewayNode::refresh_cache() {
                           area.id.c_str());
               continue;
             }
+            entity_ids.push_back(area.id);
             area.source = "plugin";
             areas.push_back(std::move(area));
           }
@@ -1593,6 +1579,7 @@ void GatewayNode::refresh_cache() {
                           comp.id.c_str());
               continue;
             }
+            entity_ids.push_back(comp.id);
             comp.source = "plugin";
             all_components.push_back(std::move(comp));
           }
@@ -1601,6 +1588,7 @@ void GatewayNode::refresh_cache() {
               RCLCPP_WARN(get_logger(), "Plugin '%s': dropping app with invalid ID '%s'", name.c_str(), app.id.c_str());
               continue;
             }
+            entity_ids.push_back(app.id);
             app.source = "plugin";
             apps.push_back(std::move(app));
           }
@@ -1610,12 +1598,36 @@ void GatewayNode::refresh_cache() {
                           func.id.c_str());
               continue;
             }
+            entity_ids.push_back(func.id);
             func.source = "plugin";
             functions.push_back(std::move(func));
           }
+        } else {
+          // Hybrid mode: PluginLayer validates in discover(). Collect IDs
+          // with validation for ownership (entities are not injected here).
+          for (const auto & area : result.new_entities.areas) {
+            if (validate_entity_id(area.id)) {
+              entity_ids.push_back(area.id);
+            }
+          }
+          for (const auto & comp : result.new_entities.components) {
+            if (validate_entity_id(comp.id)) {
+              entity_ids.push_back(comp.id);
+            }
+          }
+          for (const auto & app : result.new_entities.apps) {
+            if (validate_entity_id(app.id)) {
+              entity_ids.push_back(app.id);
+            }
+          }
+          for (const auto & func : result.new_entities.functions) {
+            if (validate_entity_id(func.id)) {
+              entity_ids.push_back(func.id);
+            }
+          }
         }
 
-        // Refresh ownership (IDs collected before move)
+        // Refresh ownership with validated IDs only
         plugin_mgr_->clear_entity_ownership(name);
         plugin_mgr_->register_entity_ownership(name, entity_ids);
       }

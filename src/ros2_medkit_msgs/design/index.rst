@@ -36,7 +36,7 @@ Message Definitions
    * - ``MedkitDiscoveryHint.msg``
      - Beacon discovery hint published by nodes for the topic beacon plugin
    * - ``EntityInfo.msg``
-     - SOVD entity representation for service interface: ID, type, capabilities, metadata
+     - SOVD entity representation for service interface: ID, type, name, parent, FQN, capabilities
 
 Service Definitions
 -------------------
