@@ -45,6 +45,7 @@ class ParameterBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin,
                               public ros2_medkit_gateway::IntrospectionProvider {
  public:
   ParameterBeaconPlugin() = default;
+  ~ParameterBeaconPlugin() override;
 
   /// Constructor with injectable client factory (for testing).
   explicit ParameterBeaconPlugin(ros2_medkit_param_beacon::ParameterClientFactory factory)

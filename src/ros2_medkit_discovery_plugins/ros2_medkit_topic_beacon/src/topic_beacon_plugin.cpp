@@ -32,6 +32,10 @@ using ros2_medkit_gateway::PLUGIN_API_VERSION;
 using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::SovdEntityType;
 
+TopicBeaconPlugin::~TopicBeaconPlugin() {
+  shutdown();
+}
+
 std::string TopicBeaconPlugin::name() const {
   return "topic_beacon";
 }
@@ -100,6 +104,9 @@ void TopicBeaconPlugin::set_context(PluginContext & context) {
 }
 
 void TopicBeaconPlugin::shutdown() {
+  if (shutdown_requested_.exchange(true)) {
+    return;
+  }
   subscription_.reset();
 }
 
@@ -153,6 +160,9 @@ IntrospectionResult TopicBeaconPlugin::introspect(const IntrospectionInput & inp
 }
 
 void TopicBeaconPlugin::on_beacon(const ros2_medkit_msgs::msg::MedkitDiscoveryHint::SharedPtr & msg) {
+  if (shutdown_requested_.load()) {
+    return;
+  }
   // Rate limiting
   if (!rate_limiter_.try_consume()) {
     return;  // drop silently

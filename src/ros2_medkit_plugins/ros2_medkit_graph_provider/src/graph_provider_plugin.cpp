@@ -317,6 +317,17 @@ nlohmann::json build_graph_document_for_apps(const std::string & function_id,
 
 }  // namespace
 
+GraphProviderPlugin::~GraphProviderPlugin() {
+  shutdown();
+}
+
+void GraphProviderPlugin::shutdown() {
+  if (shutdown_requested_.exchange(true)) {
+    return;
+  }
+  diagnostics_sub_.reset();
+}
+
 std::string GraphProviderPlugin::name() const {
   return "graph-provider";
 }
@@ -426,6 +437,9 @@ void GraphProviderPlugin::subscribe_to_diagnostics() {
 }
 
 void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg) {
+  if (shutdown_requested_.load()) {
+    return;
+  }
   std::unordered_map<std::string, TopicMetrics> updates;
   for (const auto & status : msg->status) {
     if (is_filtered_topic_name(status.name)) {
