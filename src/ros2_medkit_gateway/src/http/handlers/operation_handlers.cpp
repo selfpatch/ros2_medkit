@@ -70,7 +70,8 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
         }
         return;
       }
-      HandlerContext::send_json(res, json{{"items", json::array()}});
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
+                                 "No operation provider for plugin entity '" + entity_id + "'");
       return;
     }
 
@@ -216,22 +217,12 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
       auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
       if (op_prov) {
         try {
-          auto result = op_prov->list_operations(entity_id);
+          auto result = op_prov->get_operation(entity_id, operation_id);
           if (result) {
-            // Find matching operation in the items array
-            if (result->contains("items") && (*result)["items"].is_array()) {
-              for (const auto & item : (*result)["items"]) {
-                if (item.value("id", "") == operation_id) {
-                  HandlerContext::send_json(res, json{{"item", item}});
-                  return;
-                }
-              }
-            }
-            HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND, "Operation not found",
-                                       {{"entity_id", entity_id}, {"operation_id", operation_id}});
+            HandlerContext::send_json(res, json{{"item", *result}});
           } else {
             HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
-                                              {{"entity_id", entity_id}});
+                                              {{"entity_id", entity_id}, {"operation_id", operation_id}});
           }
         } catch (const std::exception & e) {
           RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",

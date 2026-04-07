@@ -58,6 +58,29 @@ class OperationProvider {
   /// @return JSON with {"items": [...]} array of operation descriptors
   virtual tl::expected<nlohmann::json, OperationProviderErrorInfo> list_operations(const std::string & entity_id) = 0;
 
+  /// Get a specific operation by name
+  /// @param entity_id SOVD entity ID
+  /// @param operation_name Operation name
+  /// @return JSON with operation detail, or OperationNotFound error
+  /// @note Default implementation calls list_operations + linear scan.
+  ///       Override for O(1) lookup in plugins with many operations.
+  virtual tl::expected<nlohmann::json, OperationProviderErrorInfo> get_operation(const std::string & entity_id,
+                                                                                 const std::string & operation_name) {
+    auto result = list_operations(entity_id);
+    if (!result) {
+      return tl::make_unexpected(result.error());
+    }
+    if (result->contains("items") && (*result)["items"].is_array()) {
+      for (const auto & item : (*result)["items"]) {
+        if (item.value("id", "") == operation_name) {
+          return item;
+        }
+      }
+    }
+    return tl::make_unexpected(
+        OperationProviderErrorInfo{OperationProviderError::OperationNotFound, "Operation not found", 404});
+  }
+
   /// Execute an operation
   /// @param entity_id SOVD entity ID
   /// @param operation_name Operation name (e.g., "session_control")

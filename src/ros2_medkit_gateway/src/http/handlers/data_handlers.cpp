@@ -70,7 +70,8 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
         }
         return;
       }
-      HandlerContext::send_json(res, json{{"items", json::array()}});
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
+                                 "No data provider for plugin entity '" + entity_id + "'");
       return;
     }
 

@@ -339,7 +339,8 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
         }
         return;
       }
-      HandlerContext::send_json(res, json{{"items", json::array()}});
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
+                                 "No fault provider for plugin entity '" + entity_id + "'");
       return;
     }
 
@@ -772,11 +773,21 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
         try {
           auto list_result = fault_prov->list_faults(entity_id);
           if (list_result && list_result->contains("items") && (*list_result)["items"].is_array()) {
+            std::vector<std::string> failed_codes;
             for (const auto & fault : (*list_result)["items"]) {
               auto code = fault.value("code", "");
               if (!code.empty()) {
-                (void)fault_prov->clear_fault(entity_id, code);
+                auto clear_result = fault_prov->clear_fault(entity_id, code);
+                if (!clear_result) {
+                  failed_codes.push_back(code);
+                }
               }
+            }
+            if (!failed_codes.empty()) {
+              HandlerContext::send_plugin_error(res, 500,
+                                                "Failed to clear " + std::to_string(failed_codes.size()) + " fault(s)",
+                                                {{"entity_id", entity_id}, {"failed_codes", failed_codes}});
+              return;
             }
           } else if (!list_result) {
             HandlerContext::send_plugin_error(res, list_result.error().http_status, list_result.error().message,
@@ -794,8 +805,11 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
           HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
           return;
         }
+        res.status = 204;
+        return;
       }
-      res.status = 204;
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
+                                 "No fault provider for plugin entity '" + entity_id + "'");
       return;
     }
 
