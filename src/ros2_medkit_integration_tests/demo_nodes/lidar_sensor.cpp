@@ -82,8 +82,14 @@ class LidarSensor : public rclcpp::Node {
 
     // Initial fault check after short delay (allow fault_manager to start)
     initial_check_timer_ = this->create_wall_timer(std::chrono::seconds(3), [this]() {
-      check_and_report_faults();
-      initial_check_timer_->cancel();  // Only run once
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      if (!report_fault_client_) {
+        return;
+      }
+      check_and_report_faults_unlocked();
+      if (initial_check_timer_) {
+        initial_check_timer_->cancel();
+      }
     });
   }
 
@@ -128,6 +134,7 @@ class LidarSensor : public rclcpp::Node {
         }
         scan_frequency_ = new_freq;
         // Recreate timer with new frequency
+        scan_timer_->cancel();
         int period_ms = static_cast<int>(1000.0 / scan_frequency_);
         scan_timer_ =
             this->create_wall_timer(std::chrono::milliseconds(period_ms), std::bind(&LidarSensor::publish_scan, this));
