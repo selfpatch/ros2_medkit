@@ -452,3 +452,17 @@ TEST_F(ParamBeaconPluginTest, ExceptionInPollNodeTriggersBackoff) {
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   EXPECT_EQ(plugin_->store().size(), 0u);
 }
+
+TEST_F(ParamBeaconPluginTest, PollCycleAfterShutdownIsNoop) {
+  setup_plugin();
+
+  // Let initial poll happen
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  plugin_->shutdown();
+
+  // Store should not grow after shutdown (poll_cycle exits early)
+  size_t store_size = plugin_->store().size();
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  EXPECT_EQ(plugin_->store().size(), store_size);
+}

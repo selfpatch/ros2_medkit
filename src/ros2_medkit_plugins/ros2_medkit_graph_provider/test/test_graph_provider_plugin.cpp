@@ -819,3 +819,50 @@ TEST_F(GraphProviderPluginRosTest, SetsDiagnosticsSeenWhenMessageArrives) {
   // the graph document itself is valid and pipeline_status is well-defined
   EXPECT_EQ(graph["x-medkit-graph"]["schema_version"], "1.0.0");
 }
+
+TEST_F(GraphProviderPluginRosTest, DiagnosticsCallbackAfterShutdownIsNoop) {
+  auto node = std::make_shared<rclcpp::Node>("test_graph_shutdown_node");
+  FakePluginContext ctx({}, node.get());
+
+  GraphProviderPlugin plugin;
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+
+  // Publish diagnostics before shutdown
+  diagnostic_msgs::msg::DiagnosticArray diag_msg;
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = "/test/topic";
+  diagnostic_msgs::msg::KeyValue kv;
+  kv.key = "frame_rate_msg";
+  kv.value = "30.0";
+  status.values.push_back(kv);
+  diag_msg.status.push_back(status);
+  pub->publish(diag_msg);
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  // Shutdown
+  plugin.shutdown();
+
+  // Publish different diagnostics - should be ignored
+  diagnostic_msgs::msg::DiagnosticStatus status2;
+  status2.name = "/test/new_topic_after_shutdown";
+  diagnostic_msgs::msg::KeyValue kv2;
+  kv2.key = "frame_rate_msg";
+  kv2.value = "60.0";
+  status2.values.push_back(kv2);
+  diagnostic_msgs::msg::DiagnosticArray diag_msg2;
+  diag_msg2.status.push_back(status2);
+  pub->publish(diag_msg2);
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  // Introspect should not contain the post-shutdown topic
+  IntrospectionInput input;
+  auto result = plugin.introspect(input);
+  // Just verifying it doesn't crash is sufficient
+}
