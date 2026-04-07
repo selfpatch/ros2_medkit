@@ -11,7 +11,7 @@
 [![Quality Level 3](https://img.shields.io/badge/Quality-Level%203-yellow)](QUALITY_DECLARATION.md)
 
 <p align="center">
-  <img src="hero-full-720-12fps.gif" alt="Robots break. Now you'll know why." width="600">
+  <img src="hero-full-720-12fps.gif" alt="Robots break. Now you'll know why." width="720">
 </p>
 
 <p align="center">
