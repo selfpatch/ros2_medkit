@@ -22,6 +22,10 @@ Checks:          '-*,
                   readability-simplify-boolean-expr,
                   readability-container-size-empty,
                   readability-static-definition-in-anonymous-namespace,
+                  bugprone-dangling-handle,
+                  bugprone-exception-escape,
+                  bugprone-use-after-move,
+                  cppcoreguidelines-special-member-functions,
                   '
 HeaderFilterRegex: ''
 CheckOptions:
@@ -33,3 +37,5 @@ CheckOptions:
     value:           '1'
   - key:             readability-braces-around-statements.ShortStatementLines
     value:           '2'
+  - key:             cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
+    value:           '1'

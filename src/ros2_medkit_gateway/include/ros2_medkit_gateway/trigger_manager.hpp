@@ -84,10 +84,10 @@ class TriggerManager {
   TriggerManager(ResourceChangeNotifier & notifier, ConditionRegistry & conditions, TriggerStore & store,
                  const TriggerConfig & config);
   ~TriggerManager();
-
-  // Non-copyable
   TriggerManager(const TriggerManager &) = delete;
   TriggerManager & operator=(const TriggerManager &) = delete;
+  TriggerManager(TriggerManager &&) = delete;
+  TriggerManager & operator=(TriggerManager &&) = delete;
 
   // --- CRUD -----------------------------------------------------------------
 
