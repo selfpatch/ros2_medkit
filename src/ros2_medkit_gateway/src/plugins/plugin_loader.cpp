@@ -36,6 +36,9 @@ GatewayPluginLoadResult::~GatewayPluginLoadResult() {
   introspection_provider = nullptr;
   log_provider = nullptr;
   script_provider = nullptr;
+  data_provider = nullptr;
+  operation_provider = nullptr;
+  fault_provider = nullptr;
   plugin.reset();
   if (handle_) {
     dlclose(handle_);

@@ -51,14 +51,18 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
       auto * pmgr = ctx_.node()->get_plugin_manager();
       auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
       if (data_prov) {
-        auto result = data_prov->list_data(entity_id);
-        if (result) {
-          HandlerContext::send_json(res, *result);
-        } else {
-          auto status = std::clamp(result.error().http_status, 400, 599);
-          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
-                                                         : result.error().message;
-          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
+        try {
+          auto result = data_prov->list_data(entity_id);
+          if (result) {
+            HandlerContext::send_json(res, *result);
+          } else {
+            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
+                                              {{"entity_id", entity_id}});
+          }
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
         }
         return;
       }
@@ -154,14 +158,18 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
       auto * pmgr = ctx_.node()->get_plugin_manager();
       auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
       if (data_prov) {
-        auto result = data_prov->read_data(entity_id, topic_name);
-        if (result) {
-          HandlerContext::send_json(res, *result);
-        } else {
-          auto status = std::clamp(result.error().http_status, 400, 599);
-          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
-                                                         : result.error().message;
-          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
+        try {
+          auto result = data_prov->read_data(entity_id, topic_name);
+          if (result) {
+            HandlerContext::send_json(res, *result);
+          } else {
+            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
+                                              {{"entity_id", entity_id}});
+          }
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
         }
         return;
       }
@@ -269,14 +277,18 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
             return;
           }
         }
-        auto result = data_prov->write_data(entity_id, topic_name, value);
-        if (result) {
-          HandlerContext::send_json(res, *result);
-        } else {
-          auto status = std::clamp(result.error().http_status, 400, 599);
-          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
-                                                         : result.error().message;
-          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
+        try {
+          auto result = data_prov->write_data(entity_id, topic_name, value);
+          if (result) {
+            HandlerContext::send_json(res, *result);
+          } else {
+            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
+                                              {{"entity_id", entity_id}});
+          }
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
         }
         return;
       }

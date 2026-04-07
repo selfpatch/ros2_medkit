@@ -222,6 +222,7 @@ class PluginManager {
   /// Also clears provider pointers in load_result to prevent dangling references.
   void disable_plugin(LoadedPlugin & lp);
 
+  mutable std::shared_mutex plugins_mutex_;
   std::vector<LoadedPlugin> plugins_;
   PluginContext * context_ = nullptr;
   UpdateProvider * first_update_provider_ = nullptr;
@@ -232,7 +233,6 @@ class PluginManager {
   /// Entity ID -> plugin name mapping (populated from IntrospectionProvider results)
   std::unordered_map<std::string, std::string> entity_ownership_;
   bool shutdown_called_ = false;
-  mutable std::shared_mutex plugins_mutex_;
 };
 
 }  // namespace ros2_medkit_gateway

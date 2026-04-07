@@ -648,8 +648,16 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     // Register entity ownership for per-entity provider routing
     for (auto & [name, provider] : introspection_providers) {
       IntrospectionInput input;
-      auto result = provider->introspect(input);
+      IntrospectionResult result;
+      try {
+        result = provider->introspect(input);
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(get_logger(), "Plugin '%s' introspect() threw during init: %s", name.c_str(), e.what());
+        continue;
+      }
       std::vector<std::string> entity_ids;
+      entity_ids.reserve(result.new_entities.areas.size() + result.new_entities.components.size() +
+                         result.new_entities.apps.size() + result.new_entities.functions.size());
       for (const auto & area : result.new_entities.areas) {
         entity_ids.push_back(area.id);
       }
@@ -1559,41 +1567,23 @@ void GatewayNode::refresh_cache() {
       aggregation_mgr_->update_routing_table(peer_routing_table);
     }
 
-    // Inject plugin entities for non-hybrid modes.
-    // In hybrid mode, plugin entities are merged via the pipeline (PluginLayer).
-    // In runtime_only/manifest_only modes, we append them directly.
-    if (discovery_mgr_->get_mode() != DiscoveryMode::HYBRID && plugin_mgr_ && plugin_mgr_->has_plugins()) {
-      auto providers = plugin_mgr_->get_named_introspection_providers();
-      for (auto & [name, provider] : providers) {
-        IntrospectionInput input;
-        auto result = provider->introspect(input);
-        for (auto & area : result.new_entities.areas) {
-          area.source = "plugin";
-          areas.push_back(std::move(area));
-        }
-        for (auto & comp : result.new_entities.components) {
-          comp.source = "plugin";
-          all_components.push_back(std::move(comp));
-        }
-        for (auto & app : result.new_entities.apps) {
-          app.source = "plugin";
-          apps.push_back(std::move(app));
-        }
-        for (auto & func : result.new_entities.functions) {
-          func.source = "plugin";
-          functions.push_back(std::move(func));
-        }
-      }
-    }
-
-    // Refresh entity ownership for per-entity provider routing.
-    // Re-register ownership each cycle to pick up dynamically discovered entities
-    // and remove stale entries for entities that are no longer reported.
+    // Inject plugin entities (non-hybrid) and refresh entity ownership (all modes).
+    // Single introspect() call per plugin handles both concerns.
     if (plugin_mgr_ && plugin_mgr_->has_plugins()) {
+      bool inject_entities = (discovery_mgr_->get_mode() != DiscoveryMode::HYBRID);
       auto providers = plugin_mgr_->get_named_introspection_providers();
       for (auto & [name, provider] : providers) {
         IntrospectionInput input;
-        auto result = provider->introspect(input);
+        IntrospectionResult result;
+        try {
+          result = provider->introspect(input);
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(get_logger(), "Plugin '%s' introspect() threw during refresh: %s", name.c_str(), e.what());
+          plugin_mgr_->clear_entity_ownership(name);
+          continue;
+        }
+
+        // Collect entity IDs for ownership before any move
         std::vector<std::string> entity_ids;
         entity_ids.reserve(result.new_entities.areas.size() + result.new_entities.components.size() +
                            result.new_entities.apps.size() + result.new_entities.functions.size());
@@ -1609,6 +1599,28 @@ void GatewayNode::refresh_cache() {
         for (const auto & func : result.new_entities.functions) {
           entity_ids.push_back(func.id);
         }
+
+        // In non-hybrid modes, inject plugin entities directly
+        if (inject_entities) {
+          for (auto & area : result.new_entities.areas) {
+            area.source = "plugin";
+            areas.push_back(std::move(area));
+          }
+          for (auto & comp : result.new_entities.components) {
+            comp.source = "plugin";
+            all_components.push_back(std::move(comp));
+          }
+          for (auto & app : result.new_entities.apps) {
+            app.source = "plugin";
+            apps.push_back(std::move(app));
+          }
+          for (auto & func : result.new_entities.functions) {
+            func.source = "plugin";
+            functions.push_back(std::move(func));
+          }
+        }
+
+        // Refresh ownership (IDs collected before move)
         plugin_mgr_->clear_entity_ownership(name);
         plugin_mgr_->register_entity_ownership(name, entity_ids);
       }

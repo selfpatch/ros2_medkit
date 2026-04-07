@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
+#include <algorithm>
+
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/entity_validation.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -330,6 +332,14 @@ void HandlerContext::send_error(httplib::Response & res, int status, const std::
   }
 
   res.set_content(error_json.dump(2), "application/json");
+}
+
+void HandlerContext::send_plugin_error(httplib::Response & res, int http_status, const std::string & message,
+                                       const json & extra_params) {
+  static constexpr size_t kMaxMessageLength = 512;
+  int status = std::clamp(http_status, 400, 599);
+  std::string msg = message.size() > kMaxMessageLength ? message.substr(0, kMaxMessageLength) + "..." : message;
+  send_error(res, status, ERR_PLUGIN_ERROR, msg, extra_params);
 }
 
 void HandlerContext::send_json(httplib::Response & res, const json & data) {
