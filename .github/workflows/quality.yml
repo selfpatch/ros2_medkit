@@ -272,10 +272,11 @@ jobs:
       - name: Extend test timeouts for ASan overhead
         run: |
           find build/ -name "CTestTestfile.cmake" \
-            -exec sed -i 's/TIMEOUT "60"/TIMEOUT "180"/g' {} +
+            -exec sed -i 's/TIMEOUT "60"/TIMEOUT "180"/g' {} + \
+            -exec sed -i 's/TIMEOUT "120"/TIMEOUT "360"/g' {} +
 
-      - name: Run unit tests with ASan + UBSan
-        timeout-minutes: 15
+      - name: Run unit + integration tests with ASan + UBSan
+        timeout-minutes: 30
         env:
           # detect_leaks=0: FastDDS allocator leaks on shutdown (not our code)
           # new_delete_type_mismatch=0: ROS 2 DDS scalar/array new/delete mismatch
@@ -288,7 +289,7 @@ jobs:
           for pkg_dir in build/ros2_medkit_*/; do
             pkg=$(basename "$pkg_dir")
             echo "::group::Testing $pkg"
-            (cd "$pkg_dir" && ctest -LE "linter|integration" --output-on-failure) || failed=1
+            (cd "$pkg_dir" && ctest -LE "linter" --output-on-failure) || failed=1
             echo "::endgroup::"
           done
           exit $failed
@@ -357,10 +358,11 @@ jobs:
       - name: Extend test timeouts for TSan overhead
         run: |
           find build/ -name "CTestTestfile.cmake" \
-            -exec sed -i 's/TIMEOUT "60"/TIMEOUT "180"/g' {} +
+            -exec sed -i 's/TIMEOUT "60"/TIMEOUT "180"/g' {} + \
+            -exec sed -i 's/TIMEOUT "120"/TIMEOUT "360"/g' {} +
 
-      - name: Run unit tests with TSan
-        timeout-minutes: 15
+      - name: Run unit + integration tests with TSan
+        timeout-minutes: 30
         run: |
           export TSAN_OPTIONS="halt_on_error=0:history_size=4:suppressions=$(pwd)/tsan_suppressions.txt"
           source /opt/ros/jazzy/setup.bash
@@ -369,7 +371,7 @@ jobs:
           for pkg_dir in build/ros2_medkit_*/; do
             pkg=$(basename "$pkg_dir")
             echo "::group::Testing $pkg"
-            (cd "$pkg_dir" && ctest -j1 -LE "linter|integration" --output-on-failure) || failed=1
+            (cd "$pkg_dir" && ctest -j1 -LE "linter" --output-on-failure) || failed=1
             echo "::endgroup::"
           done
           exit $failed
