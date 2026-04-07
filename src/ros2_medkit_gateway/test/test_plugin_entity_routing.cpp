@@ -339,9 +339,54 @@ TEST(PluginEntityRouting, ClearEntityOwnership) {
 // OperationProvider list+filter contract (used by handle_get_operation)
 // =============================================================================
 
-TEST(PluginEntityRouting, OperationListFilterFindsMatchingItem) {
-  // Verifies the contract that handle_get_operation depends on:
-  // list_operations returns {"items": [...]}, handler scans for matching "id"
+// =============================================================================
+// OperationProvider Error Propagation Tests
+// =============================================================================
+
+class MockErrorOpPlugin : public GatewayPlugin, public OperationProvider {
+ public:
+  std::string name() const override {
+    return "error_op_plugin";
+  }
+  void configure(const json &) override {
+  }
+  void shutdown() override {
+  }
+
+  tl::expected<json, OperationProviderErrorInfo> list_operations(const std::string &) override {
+    return tl::make_unexpected(OperationProviderErrorInfo{OperationProviderError::TransportError, "unreachable", 503});
+  }
+  tl::expected<json, OperationProviderErrorInfo> execute_operation(const std::string &, const std::string &,
+                                                                   const json &) override {
+    return tl::make_unexpected(OperationProviderErrorInfo{OperationProviderError::Rejected, "rejected", 409});
+  }
+};
+
+TEST(PluginEntityRouting, OperationProviderErrorPropagation) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<MockErrorOpPlugin>();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("error_op_plugin", {"bad_ecu"});
+
+  auto * op = mgr.get_operation_provider_for_entity("bad_ecu");
+  ASSERT_NE(op, nullptr);
+
+  auto list_result = op->list_operations("bad_ecu");
+  ASSERT_FALSE(list_result.has_value());
+  EXPECT_EQ(list_result.error().http_status, 503);
+  EXPECT_EQ(list_result.error().code, OperationProviderError::TransportError);
+
+  auto exec_result = op->execute_operation("bad_ecu", "reset", json::object());
+  ASSERT_FALSE(exec_result.has_value());
+  EXPECT_EQ(exec_result.error().http_status, 409);
+  EXPECT_EQ(exec_result.error().code, OperationProviderError::Rejected);
+}
+
+// =============================================================================
+// get_operation() default implementation tests
+// =============================================================================
+
+TEST(PluginEntityRouting, GetOperationDefaultFindsMatch) {
   PluginManager mgr;
   auto plugin = std::make_unique<MockDataOpPlugin>();
   mgr.add_plugin(std::move(plugin));
@@ -349,29 +394,40 @@ TEST(PluginEntityRouting, OperationListFilterFindsMatchingItem) {
 
   auto * op = mgr.get_operation_provider_for_entity("my_ecu");
   ASSERT_NE(op, nullptr);
-  auto result = op->list_operations("my_ecu");
+
+  auto result = op->get_operation("my_ecu", "test_op");
   ASSERT_TRUE(result.has_value());
-  ASSERT_TRUE(result->contains("items"));
-  ASSERT_TRUE((*result)["items"].is_array());
+  EXPECT_EQ((*result)["id"], "test_op");
+  EXPECT_EQ((*result)["entity"], "my_ecu");
+}
 
-  // Simulate handler's filter logic: find item with matching "id"
-  bool found = false;
-  for (const auto & item : (*result)["items"]) {
-    if (item.value("id", "") == "test_op") {
-      found = true;
-      EXPECT_EQ(item["entity"], "my_ecu");
-    }
-  }
-  EXPECT_TRUE(found);
+TEST(PluginEntityRouting, GetOperationDefaultReturnsNotFound) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<MockDataOpPlugin>();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("test_plugin", {"my_ecu"});
 
-  // Non-matching ID should not be found
-  bool found_nonexistent = false;
-  for (const auto & item : (*result)["items"]) {
-    if (item.value("id", "") == "nonexistent_op") {
-      found_nonexistent = true;
-    }
-  }
-  EXPECT_FALSE(found_nonexistent);
+  auto * op = mgr.get_operation_provider_for_entity("my_ecu");
+  ASSERT_NE(op, nullptr);
+
+  auto result = op->get_operation("my_ecu", "nonexistent_op");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, OperationProviderError::OperationNotFound);
+}
+
+TEST(PluginEntityRouting, GetOperationPropagatesListError) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<MockErrorOpPlugin>();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("error_op_plugin", {"bad_ecu"});
+
+  auto * op = mgr.get_operation_provider_for_entity("bad_ecu");
+  ASSERT_NE(op, nullptr);
+
+  auto result = op->get_operation("bad_ecu", "any_op");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 503);
 }
 
 TEST(PluginEntityRouting, OwnershipForNonLoadedPluginReturnsNullProviders) {
