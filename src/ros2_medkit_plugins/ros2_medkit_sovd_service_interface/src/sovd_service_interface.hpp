@@ -42,7 +42,7 @@ class SovdServiceInterface : public GatewayPlugin {
   void configure(const nlohmann::json & config) override;
   void set_context(PluginContext & context) override;
   void shutdown() override;
-  ~SovdServiceInterface();
+  ~SovdServiceInterface() override;
 
  private:
   void handle_list_entities(const std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Request> request,

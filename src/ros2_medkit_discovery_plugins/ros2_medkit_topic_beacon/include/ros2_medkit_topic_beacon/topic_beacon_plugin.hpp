@@ -81,7 +81,7 @@ class TopicBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin, public ros2
   void configure(const nlohmann::json & config) override;
   void set_context(ros2_medkit_gateway::PluginContext & context) override;
   void shutdown() override;
-  ~TopicBeaconPlugin();
+  ~TopicBeaconPlugin() override;
   std::vector<ros2_medkit_gateway::GatewayPlugin::PluginRoute> get_routes() override;
   ros2_medkit_gateway::IntrospectionResult introspect(const ros2_medkit_gateway::IntrospectionInput & input) override;
 
