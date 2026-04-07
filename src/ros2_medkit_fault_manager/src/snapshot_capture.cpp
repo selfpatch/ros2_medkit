@@ -158,27 +158,35 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
   // Create a local callback group for this capture operation (ensures clean executor lifecycle).
   // Pass false to prevent automatic association with the node's main executor —
   // we manually add this group to a local SingleThreadedExecutor below.
-  auto local_callback_group = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
-
+  //
+  // node_ops_mutex_ serializes create_callback_group + create_generic_subscription across
+  // concurrent capture threads. rclcpp node internals (rcutils_hash_map) are not thread-safe
+  // for concurrent entity creation - TSAN confirmed data race without this lock.
+  rclcpp::CallbackGroup::SharedPtr local_callback_group;
   rclcpp::GenericSubscription::SharedPtr subscription;
-  try {
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
-    auto callback = [&received, &captured_msg, &msg_mutex](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
-      bool expected = false;
-      if (received.compare_exchange_strong(expected, true)) {
-        std::lock_guard<std::mutex> lock(msg_mutex);
-        captured_msg = *msg;
-      }
-    };
+  {
+    std::lock_guard<std::mutex> lock(node_ops_mutex_);
+    local_callback_group = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
 
-    // Use local callback group to avoid reentrancy with service callbacks
-    rclcpp::SubscriptionOptions sub_options;
-    sub_options.callback_group = local_callback_group;
+    try {
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
+      auto callback = [&received, &captured_msg, &msg_mutex](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+        bool expected = false;
+        if (received.compare_exchange_strong(expected, true)) {
+          std::lock_guard<std::mutex> msg_lock(msg_mutex);
+          captured_msg = *msg;
+        }
+      };
 
-    subscription = node_->create_generic_subscription(topic, msg_type, qos, callback, sub_options);
-  } catch (const std::exception & e) {
-    RCLCPP_WARN(node_->get_logger(), "Failed to create subscription for '%s': %s", topic.c_str(), e.what());
-    return false;
+      // Use local callback group to avoid reentrancy with service callbacks
+      rclcpp::SubscriptionOptions sub_options;
+      sub_options.callback_group = local_callback_group;
+
+      subscription = node_->create_generic_subscription(topic, msg_type, qos, callback, sub_options);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(node_->get_logger(), "Failed to create subscription for '%s': %s", topic.c_str(), e.what());
+      return false;
+    }
   }
 
   // Use a local executor with the local callback group (both destroyed together on exit)
