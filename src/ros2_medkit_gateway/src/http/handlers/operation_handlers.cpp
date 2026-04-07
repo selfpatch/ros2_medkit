@@ -52,14 +52,18 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
       auto * pmgr = ctx_.node()->get_plugin_manager();
       auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
       if (op_prov) {
-        auto result = op_prov->list_operations(entity_id);
-        if (result) {
-          HandlerContext::send_json(res, *result);
-        } else {
-          auto status = std::clamp(result.error().http_status, 400, 599);
-          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
-                                                         : result.error().message;
-          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
+        try {
+          auto result = op_prov->list_operations(entity_id);
+          if (result) {
+            HandlerContext::send_json(res, *result);
+          } else {
+            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
+                                              {{"entity_id", entity_id}});
+          }
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
+                       entity_id.c_str(), e.what());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
         }
         return;
       }
@@ -202,6 +206,43 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
       return;  // Response already sent (error or forwarded to peer)
     }
     auto entity_info = *entity_opt;
+
+    // Delegate to plugin OperationProvider if entity is plugin-owned
+    if (entity_info.is_plugin) {
+      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
+      if (op_prov) {
+        try {
+          auto result = op_prov->list_operations(entity_id);
+          if (result) {
+            // Find matching operation in the items array
+            if (result->contains("items") && (*result)["items"].is_array()) {
+              for (const auto & item : (*result)["items"]) {
+                if (item.value("id", "") == operation_id) {
+                  HandlerContext::send_json(res, json{{"item", item}});
+                  return;
+                }
+              }
+            }
+            HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND, "Operation not found",
+                                       {{"entity_id", entity_id}, {"operation_id", operation_id}});
+          } else {
+            auto status = std::clamp(result.error().http_status, 400, 599);
+            auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
+                                                           : result.error().message;
+            HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg, {{"entity_id", entity_id}});
+          }
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
+                       entity_id.c_str(), e.what());
+          HandlerContext::send_error(res, 500, ERR_PLUGIN_ERROR, "Plugin threw exception", {{"entity_id", entity_id}});
+        }
+        return;
+      }
+      HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND,
+                                 "No operation provider for plugin entity '" + entity_id + "'");
+      return;
+    }
 
     // Use ThreadSafeEntityCache for O(1) entity lookup
     const auto & cache = ctx_.node()->get_thread_safe_cache();
@@ -390,14 +431,18 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
             return;
           }
         }
-        auto result = op_prov->execute_operation(entity_id, operation_id, params);
-        if (result) {
-          HandlerContext::send_json(res, *result);
-        } else {
-          auto status = std::clamp(result.error().http_status, 400, 599);
-          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
-                                                         : result.error().message;
-          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
+        try {
+          auto result = op_prov->execute_operation(entity_id, operation_id, params);
+          if (result) {
+            HandlerContext::send_json(res, *result);
+          } else {
+            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
+                                              {{"entity_id", entity_id}});
+          }
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
+                       entity_id.c_str(), e.what());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
         }
         return;
       }

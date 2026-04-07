@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 
+#include <algorithm>
+
 #include <httplib.h>
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
@@ -61,7 +63,8 @@ void PluginResponse::send_json(const nlohmann::json & data) {
 
 void PluginResponse::send_error(int status, const std::string & error_code, const std::string & message,
                                 const nlohmann::json & parameters) {
-  handlers::HandlerContext::send_error(*static_cast<httplib::Response *>(impl_), status, error_code, message,
+  int clamped = std::clamp(status, 400, 599);
+  handlers::HandlerContext::send_error(*static_cast<httplib::Response *>(impl_), clamped, error_code, message,
                                        parameters);
 }
 

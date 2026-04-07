@@ -136,7 +136,7 @@ Writing a Plugin
      return static_cast<MyPlugin*>(p);
    }
 
-The ``get_update_provider`` (and ``get_introspection_provider``, ``get_log_provider``, ``get_script_provider``) functions use ``extern "C"``
+The ``get_update_provider`` (and ``get_introspection_provider``, ``get_log_provider``, ``get_script_provider``, ``get_data_provider``, ``get_operation_provider``, ``get_fault_provider``) functions use ``extern "C"``
 to avoid RTTI issues across shared library boundaries. The ``static_cast`` is safe because
 these functions execute inside the plugin's own ``.so`` where the type hierarchy is known.
 

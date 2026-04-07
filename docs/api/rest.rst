@@ -2077,6 +2077,9 @@ Common Error Codes
    * - ``ERR_FORBIDDEN``
      - 403
      - Insufficient permissions for this operation
+   * - ``x-medkit-plugin-error``
+     - 400-599
+     - Plugin provider returned an error. Status varies by plugin. Message truncated to 512 chars.
 
 URL Encoding
 ------------

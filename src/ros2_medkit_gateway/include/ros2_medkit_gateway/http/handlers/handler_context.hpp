@@ -300,6 +300,10 @@ class HandlerContext {
   static void send_error(httplib::Response & res, int status, const std::string & error_code,
                          const std::string & message, const nlohmann::json & parameters = {});
 
+  /// Sanitize and send a plugin provider error (clamp status 400-599, truncate message 512 chars)
+  static void send_plugin_error(httplib::Response & res, int http_status, const std::string & message,
+                                const nlohmann::json & extra_params = {});
+
   /**
    * @brief Send JSON success response
    */

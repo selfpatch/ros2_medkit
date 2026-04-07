@@ -320,14 +320,18 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       auto * pmgr = ctx_.node()->get_plugin_manager();
       auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
       if (fault_prov) {
-        auto result = fault_prov->list_faults(entity_id);
-        if (result) {
-          HandlerContext::send_json(res, *result);
-        } else {
-          auto status = std::clamp(result.error().http_status, 400, 599);
-          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
-                                                         : result.error().message;
-          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
+        try {
+          auto result = fault_prov->list_faults(entity_id);
+          if (result) {
+            HandlerContext::send_json(res, *result);
+          } else {
+            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
+                                              {{"entity_id", entity_id}});
+          }
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
         }
         return;
       }
@@ -583,14 +587,18 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
       auto * pmgr = ctx_.node()->get_plugin_manager();
       auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
       if (fault_prov) {
-        auto result = fault_prov->get_fault(entity_id, fault_code);
-        if (result) {
-          HandlerContext::send_json(res, *result);
-        } else {
-          auto status = std::clamp(result.error().http_status, 400, 599);
-          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
-                                                         : result.error().message;
-          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
+        try {
+          auto result = fault_prov->get_fault(entity_id, fault_code);
+          if (result) {
+            HandlerContext::send_json(res, *result);
+          } else {
+            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
+                                              {{"entity_id", entity_id}});
+          }
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
         }
         return;
       }
@@ -668,14 +676,18 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
       auto * pmgr = ctx_.node()->get_plugin_manager();
       auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
       if (fault_prov) {
-        auto result = fault_prov->clear_fault(entity_id, fault_code);
-        if (result) {
-          HandlerContext::send_json(res, *result);
-        } else {
-          auto status = std::clamp(result.error().http_status, 400, 599);
-          auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
-                                                         : result.error().message;
-          HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg);
+        try {
+          auto result = fault_prov->clear_fault(entity_id, fault_code);
+          if (result) {
+            HandlerContext::send_json(res, *result);
+          } else {
+            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
+                                              {{"entity_id", entity_id}});
+          }
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
         }
         return;
       }

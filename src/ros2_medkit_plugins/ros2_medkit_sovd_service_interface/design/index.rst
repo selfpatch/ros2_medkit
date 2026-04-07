@@ -8,11 +8,12 @@ The ``ros2_medkit_sovd_service_interface`` package implements a gateway plugin t
 exposes the medkit entity tree and fault data via standard ROS 2 services. This enables
 other ROS 2 nodes to query gateway entities and faults without going through the HTTP API.
 
-The plugin creates three ROS 2 services:
+The plugin creates four ROS 2 services:
 
 - ``~/list_entities`` - lists entities by type (areas, components, apps, functions)
 - ``~/get_entity_data`` - returns data items for a specific entity
 - ``~/get_capabilities`` - returns the capability set for a specific entity
+- ``~/list_entity_faults`` - lists faults for a specific entity
 
 Architecture
 ------------
@@ -32,6 +33,7 @@ existing managers and exposes it via ROS 2 service interfaces.
    |   |           |-- ~/list_entities service             |
    |   |           |-- ~/get_entity_data service           |
    |   |           |-- ~/get_capabilities service          |
+   |   |           |-- ~/list_entity_faults service        |
    |   |           +-- PluginContext (read-only access)     |
    |   +-- EntityCache <---+                               |
    |   +-- FaultManager <--+                               |
@@ -58,6 +60,7 @@ The plugin uses custom message types from ``ros2_medkit_msgs``:
 - ``ListEntities.srv`` - request/response for entity listing with type filter
 - ``GetEntityData.srv`` - request/response for entity data retrieval
 - ``GetCapabilities.srv`` - request/response for entity capability queries
+- ``ListFaultsForEntity.srv`` - request/response for entity fault listing
 
 Design Decisions
 ----------------
@@ -79,5 +82,6 @@ This keeps it simple and avoids circular dependencies.
 PluginContext Read-Only Access
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The plugin only uses read-only ``PluginContext`` methods (``list_entities()``,
-``get_entity()``, ``get_entity_data()``). It never mutates gateway state.
+The plugin only uses read-only ``PluginContext`` methods (``get_entity_snapshot()``,
+``get_entity()``, ``list_entity_faults()``, ``get_entity_capabilities()``,
+``get_type_capabilities()``). It never mutates gateway state.
