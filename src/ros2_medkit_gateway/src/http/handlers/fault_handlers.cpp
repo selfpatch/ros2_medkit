@@ -332,6 +332,10 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
           RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
                        e.what());
           HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
+        } catch (...) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
         }
         return;
       }
@@ -599,6 +603,10 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
           RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
                        e.what());
           HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
+        } catch (...) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
         }
         return;
       }
@@ -688,6 +696,10 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
           RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
                        e.what());
           HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
+        } catch (...) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
         }
         return;
       }

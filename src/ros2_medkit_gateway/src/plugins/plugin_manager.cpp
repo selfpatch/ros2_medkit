@@ -54,6 +54,7 @@ PluginManager::~PluginManager() {
   plugins_.clear();
 }
 
+// Called during init only (before HTTP server starts). No lock needed.
 void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
   LoadedPlugin lp;
   lp.config = nlohmann::json::object();
@@ -99,6 +100,7 @@ void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
   plugins_.push_back(std::move(lp));
 }
 
+// Called during init only (before HTTP server starts). No lock needed.
 size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
   size_t loaded = 0;
   for (const auto & cfg : configs) {

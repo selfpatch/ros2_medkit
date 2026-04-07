@@ -23,6 +23,7 @@
 #include <unordered_set>
 
 #include "ros2_medkit_gateway/aggregation/network_utils.hpp"
+#include "ros2_medkit_gateway/entity_validation.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
 
 #include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
@@ -643,35 +644,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       }
       discovery_mgr_->refresh_pipeline();
     }
-    // Non-hybrid modes: plugin entities are injected during refresh_cache()
-
-    // Register entity ownership for per-entity provider routing
-    for (auto & [name, provider] : introspection_providers) {
-      IntrospectionInput input;
-      IntrospectionResult result;
-      try {
-        result = provider->introspect(input);
-      } catch (const std::exception & e) {
-        RCLCPP_ERROR(get_logger(), "Plugin '%s' introspect() threw during init: %s", name.c_str(), e.what());
-        continue;
-      }
-      std::vector<std::string> entity_ids;
-      entity_ids.reserve(result.new_entities.areas.size() + result.new_entities.components.size() +
-                         result.new_entities.apps.size() + result.new_entities.functions.size());
-      for (const auto & area : result.new_entities.areas) {
-        entity_ids.push_back(area.id);
-      }
-      for (const auto & comp : result.new_entities.components) {
-        entity_ids.push_back(comp.id);
-      }
-      for (const auto & app : result.new_entities.apps) {
-        entity_ids.push_back(app.id);
-      }
-      for (const auto & func : result.new_entities.functions) {
-        entity_ids.push_back(func.id);
-      }
-      plugin_mgr_->register_entity_ownership(name, entity_ids);
-    }
+    // Non-hybrid modes: plugin entities are injected during refresh_cache().
+    // Entity ownership is also registered during refresh_cache() (single introspect() call
+    // per plugin handles both injection and ownership). No separate init-time registration
+    // needed because refresh_cache() runs before the HTTP server accepts requests.
   }
 
   // Initialize log manager (subscribes to /rosout, delegates to plugin if available)
@@ -1600,21 +1576,40 @@ void GatewayNode::refresh_cache() {
           entity_ids.push_back(func.id);
         }
 
-        // In non-hybrid modes, inject plugin entities directly
+        // In non-hybrid modes, inject plugin entities directly (with validation)
         if (inject_entities) {
           for (auto & area : result.new_entities.areas) {
+            if (!validate_entity_id(area.id)) {
+              RCLCPP_WARN(get_logger(), "Plugin '%s': dropping area with invalid ID '%s'", name.c_str(),
+                          area.id.c_str());
+              continue;
+            }
             area.source = "plugin";
             areas.push_back(std::move(area));
           }
           for (auto & comp : result.new_entities.components) {
+            if (!validate_entity_id(comp.id)) {
+              RCLCPP_WARN(get_logger(), "Plugin '%s': dropping component with invalid ID '%s'", name.c_str(),
+                          comp.id.c_str());
+              continue;
+            }
             comp.source = "plugin";
             all_components.push_back(std::move(comp));
           }
           for (auto & app : result.new_entities.apps) {
+            if (!validate_entity_id(app.id)) {
+              RCLCPP_WARN(get_logger(), "Plugin '%s': dropping app with invalid ID '%s'", name.c_str(), app.id.c_str());
+              continue;
+            }
             app.source = "plugin";
             apps.push_back(std::move(app));
           }
           for (auto & func : result.new_entities.functions) {
+            if (!validate_entity_id(func.id)) {
+              RCLCPP_WARN(get_logger(), "Plugin '%s': dropping function with invalid ID '%s'", name.c_str(),
+                          func.id.c_str());
+              continue;
+            }
             func.source = "plugin";
             functions.push_back(std::move(func));
           }

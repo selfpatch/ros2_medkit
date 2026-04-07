@@ -14,7 +14,6 @@
 
 #include "ros2_medkit_gateway/http/handlers/operation_handlers.hpp"
 
-#include <algorithm>
 #include <unordered_set>
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -64,6 +63,10 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
           RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
                        entity_id.c_str(), e.what());
           HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
+        } catch (...) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
         }
         return;
       }
@@ -227,15 +230,17 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
             HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND, "Operation not found",
                                        {{"entity_id", entity_id}, {"operation_id", operation_id}});
           } else {
-            auto status = std::clamp(result.error().http_status, 400, 599);
-            auto msg = result.error().message.size() > 512 ? result.error().message.substr(0, 512) + "..."
-                                                           : result.error().message;
-            HandlerContext::send_error(res, status, ERR_PLUGIN_ERROR, msg, {{"entity_id", entity_id}});
+            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
+                                              {{"entity_id", entity_id}});
           }
         } catch (const std::exception & e) {
           RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
                        entity_id.c_str(), e.what());
-          HandlerContext::send_error(res, 500, ERR_PLUGIN_ERROR, "Plugin threw exception", {{"entity_id", entity_id}});
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
+        } catch (...) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
         }
         return;
       }
@@ -443,6 +448,10 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
           RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
                        entity_id.c_str(), e.what());
           HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
+        } catch (...) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
+          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
         }
         return;
       }

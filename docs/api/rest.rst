@@ -2081,6 +2081,17 @@ Common Error Codes
      - 400-599
      - Plugin provider returned an error. Status varies by plugin. Message truncated to 512 chars.
 
+Plugin Entity Delegation
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Entities created by gateway plugins (via ``IntrospectionProvider``) have their
+data, operations, and faults requests transparently routed to the owning plugin's
+``DataProvider``, ``OperationProvider``, or ``FaultProvider``. The response format
+is determined by the plugin. If the plugin returns an error, the response uses the
+``x-medkit-plugin-error`` vendor code with an ``entity_id`` parameter identifying
+the affected entity. See :doc:`/tutorials/plugin-system` for details on per-entity
+provider routing.
+
 URL Encoding
 ------------
 
