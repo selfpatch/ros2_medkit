@@ -73,7 +73,7 @@ class OperationProvider {
     if (result->contains("items") && (*result)["items"].is_array()) {
       for (const auto & item : (*result)["items"]) {
         if (item.value("id", "") == operation_name) {
-          return item;
+          return tl::expected<nlohmann::json, OperationProviderErrorInfo>{item};
         }
       }
     }
