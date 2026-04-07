@@ -64,6 +64,8 @@ class PluginManager {
  public:
   PluginManager() = default;
   ~PluginManager();
+
+  // Non-copyable, non-movable (owns dlopen handles)
   PluginManager(const PluginManager &) = delete;
   PluginManager & operator=(const PluginManager &) = delete;
   PluginManager(PluginManager &&) = delete;

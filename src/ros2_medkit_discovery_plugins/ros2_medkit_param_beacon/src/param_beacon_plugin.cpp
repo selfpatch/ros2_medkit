@@ -138,12 +138,8 @@ void ParameterBeaconPlugin::set_context(PluginContext & context) {
 }
 
 void ParameterBeaconPlugin::shutdown() {
-  if (shutdown_requested_.load()) {
+  if (shutdown_requested_.exchange(true)) {
     return;
-  }
-  {
-    std::lock_guard<std::mutex> lock(shutdown_mutex_);
-    shutdown_requested_ = true;
   }
   shutdown_cv_.notify_one();
   if (poll_thread_.joinable()) {
