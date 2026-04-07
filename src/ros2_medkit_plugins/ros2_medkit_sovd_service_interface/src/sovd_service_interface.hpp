@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -41,6 +42,7 @@ class SovdServiceInterface : public GatewayPlugin {
   void configure(const nlohmann::json & config) override;
   void set_context(PluginContext & context) override;
   void shutdown() override;
+  ~SovdServiceInterface();
 
  private:
   void handle_list_entities(const std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Request> request,
@@ -57,6 +59,7 @@ class SovdServiceInterface : public GatewayPlugin {
 
   PluginContext * context_{nullptr};
   std::string service_prefix_{"/medkit"};
+  std::atomic<bool> shutdown_requested_{false};
 
   rclcpp::Service<ros2_medkit_msgs::srv::ListEntities>::SharedPtr list_entities_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ListFaultsForEntity>::SharedPtr list_faults_srv_;

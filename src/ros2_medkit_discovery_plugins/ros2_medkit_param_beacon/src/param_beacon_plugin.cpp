@@ -34,6 +34,10 @@ using ros2_medkit_gateway::PLUGIN_API_VERSION;
 using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::SovdEntityType;
 
+ParameterBeaconPlugin::~ParameterBeaconPlugin() {
+  shutdown();
+}
+
 std::string ParameterBeaconPlugin::name() const {
   return "parameter_beacon";
 }
@@ -134,6 +138,9 @@ void ParameterBeaconPlugin::set_context(PluginContext & context) {
 }
 
 void ParameterBeaconPlugin::shutdown() {
+  if (shutdown_requested_.load()) {
+    return;
+  }
   {
     std::lock_guard<std::mutex> lock(shutdown_mutex_);
     shutdown_requested_ = true;
@@ -142,11 +149,13 @@ void ParameterBeaconPlugin::shutdown() {
   if (poll_thread_.joinable()) {
     poll_thread_.join();
   }
+  {
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    clients_.clear();
+    backoff_counts_.clear();
+    skip_remaining_.clear();
+  }
   param_node_.reset();
-  std::lock_guard<std::mutex> lock(clients_mutex_);
-  clients_.clear();
-  backoff_counts_.clear();
-  skip_remaining_.clear();
 }
 
 std::vector<GatewayPlugin::PluginRoute> ParameterBeaconPlugin::get_routes() {
@@ -221,6 +230,9 @@ void ParameterBeaconPlugin::poll_loop() {
 }
 
 void ParameterBeaconPlugin::poll_cycle() {
+  if (shutdown_requested_.load()) {
+    return;
+  }
   // Get targets: prefer introspection-provided list, fall back to ROS graph discovery
   std::vector<std::string> targets;
   {

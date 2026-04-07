@@ -94,7 +94,14 @@ void SovdServiceInterface::set_context(PluginContext & context) {
   log_info("Service servers created: list_entities, list_entity_faults, get_entity_data, get_capabilities");
 }
 
+SovdServiceInterface::~SovdServiceInterface() {
+  shutdown();
+}
+
 void SovdServiceInterface::shutdown() {
+  if (shutdown_requested_.exchange(true)) {
+    return;
+  }
   list_entities_srv_.reset();
   list_faults_srv_.reset();
   get_data_srv_.reset();
@@ -105,6 +112,11 @@ void SovdServiceInterface::shutdown() {
 void SovdServiceInterface::handle_list_entities(
     const std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Request> request,
     std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Response> response) {
+  if (shutdown_requested_.load()) {
+    response->success = false;
+    response->error_message = "Plugin shutting down";
+    return;
+  }
   try {
     auto snapshot = context_->get_entity_snapshot();
     const auto & type_filter = request->entity_type;
@@ -157,6 +169,11 @@ void SovdServiceInterface::handle_list_entities(
 void SovdServiceInterface::handle_list_entity_faults(
     const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> request,
     std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> response) {
+  if (shutdown_requested_.load()) {
+    response->success = false;
+    response->error_message = "Plugin shutting down";
+    return;
+  }
   try {
     auto entity = context_->get_entity(request->entity_id);
     if (!entity) {
@@ -211,6 +228,11 @@ void SovdServiceInterface::handle_list_entity_faults(
 void SovdServiceInterface::handle_get_entity_data(
     const std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Request> request,
     std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Response> response) {
+  if (shutdown_requested_.load()) {
+    response->success = false;
+    response->error_message = "Plugin shutting down";
+    return;
+  }
   try {
     auto entity = context_->get_entity(request->entity_id);
     if (!entity) {
@@ -234,6 +256,11 @@ void SovdServiceInterface::handle_get_entity_data(
 void SovdServiceInterface::handle_get_capabilities(
     const std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Request> request,
     std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Response> response) {
+  if (shutdown_requested_.load()) {
+    response->success = false;
+    response->error_message = "Plugin shutting down";
+    return;
+  }
   try {
     if (request->entity_id.empty()) {
       // Server-level capabilities

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <deque>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <mutex>
@@ -53,12 +54,13 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   };
 
   GraphProviderPlugin() = default;
-  ~GraphProviderPlugin() override = default;
+  ~GraphProviderPlugin() override;
 
   std::string name() const override;
   void configure(const nlohmann::json & config) override;
   void set_context(PluginContext & context) override;
   std::vector<PluginRoute> get_routes() override;
+  void shutdown() override;
   IntrospectionResult introspect(const IntrospectionInput & input) override;
 
   static nlohmann::json build_graph_document(const std::string & function_id, const IntrospectionInput & input,
@@ -105,6 +107,7 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   ConfigOverrides config_;
 
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_sub_;
+  std::atomic<bool> shutdown_requested_{false};
 };
 
 }  // namespace ros2_medkit_gateway
