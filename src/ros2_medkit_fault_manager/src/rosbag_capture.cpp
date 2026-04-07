@@ -140,6 +140,11 @@ void RosbagCapture::stop() {
     post_fault_timer_.reset();
   }
 
+  if (discovery_retry_timer_) {
+    discovery_retry_timer_->cancel();
+    discovery_retry_timer_.reset();
+  }
+
   // Clear subscriptions
   subscriptions_.clear();
 

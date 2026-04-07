@@ -64,6 +64,10 @@ class LongCalibrationAction : public rclcpp::Node {
     action_server_.reset();
   }
 
+  ~LongCalibrationAction() {
+    prepare_shutdown();
+  }
+
  private:
   rclcpp_action::Server<Fibonacci>::SharedPtr action_server_;
   std::thread execution_thread_;

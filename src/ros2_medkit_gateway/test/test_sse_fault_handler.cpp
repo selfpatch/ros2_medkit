@@ -193,6 +193,9 @@ class SSEFaultHandlerTest : public ::testing::Test {
   }
 
   void TearDown() override {
+    if (executor_) {
+      executor_->cancel();
+    }
     executor_.reset();
     publisher_.reset();
     publisher_node_.reset();

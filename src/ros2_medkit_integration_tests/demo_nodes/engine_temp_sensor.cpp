@@ -89,6 +89,7 @@ class EngineTempSensor : public rclcpp::Node {
         }
         publish_rate_ = new_rate;
         // Recreate timer with new rate
+        timer_->cancel();
         int period_ms = static_cast<int>(1000.0 / publish_rate_);
         timer_ = this->create_wall_timer(std::chrono::milliseconds(period_ms),
                                          std::bind(&EngineTempSensor::publish_data, this));
