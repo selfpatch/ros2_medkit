@@ -507,4 +507,15 @@ TEST_F(SovdServiceInterfaceTest, PluginName) {
   EXPECT_EQ(plugin_->name(), "sovd_service_interface");
 }
 
+TEST_F(SovdServiceInterfaceTest, ServiceCallAfterShutdownReturnsFailure) {
+  plugin_->shutdown();
+
+  // Create client and call list_entities after shutdown
+  auto client = node_->create_client<ros2_medkit_msgs::srv::ListEntities>("/test_medkit/list_entities");
+
+  // Service should no longer be available after shutdown (services are reset)
+  bool available = client->wait_for_service(std::chrono::milliseconds(100));
+  EXPECT_FALSE(available) << "Service should not be available after shutdown";
+}
+
 }  // namespace

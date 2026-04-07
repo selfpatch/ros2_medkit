@@ -366,3 +366,23 @@ TEST_F(TopicBeaconPluginTest, RateLimitingRejectsExcessMessages) {
 
   rate_limited_plugin->shutdown();
 }
+
+TEST_F(TopicBeaconPluginTest, CallbackAfterShutdownDoesNotMutateStore) {
+  // Publish a message before shutdown to have baseline data
+  auto msg = make_hint("pre_shutdown_entity");
+  publisher_->publish(msg);
+  spin_for(std::chrono::milliseconds(200));
+
+  size_t store_size_before = plugin_->store().size();
+
+  // Shutdown the plugin
+  plugin_->shutdown();
+
+  // Publish another message - should be ignored by the callback
+  auto msg2 = make_hint("post_shutdown_entity");
+  publisher_->publish(msg2);
+  spin_for(std::chrono::milliseconds(200));
+
+  // Store should not have grown
+  EXPECT_EQ(plugin_->store().size(), store_size_before);
+}
