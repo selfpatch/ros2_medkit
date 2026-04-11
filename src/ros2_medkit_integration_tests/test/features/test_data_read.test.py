@@ -83,7 +83,11 @@ class TestDataRead(GatewayTestCase):
 
         @verifies REQ_INTEROP_018
         """
-        data = self.poll_endpoint('/apps/temp_sensor/data')
+        data = self.poll_endpoint_until(
+            '/apps/temp_sensor/data',
+            condition=lambda d: d if d.get('items') else None,
+            timeout=15.0,
+        )
         self.assertIn('items', data)
         items = data['items']
         self.assertIsInstance(items, list)
@@ -105,7 +109,11 @@ class TestDataRead(GatewayTestCase):
 
         @verifies REQ_INTEROP_018
         """
-        data = self.poll_endpoint('/apps/pressure_sensor/data')
+        data = self.poll_endpoint_until(
+            '/apps/pressure_sensor/data',
+            condition=lambda d: d if d.get('items') else None,
+            timeout=15.0,
+        )
         self.assertIn('items', data)
         items = data['items']
         self.assertIsInstance(items, list)
@@ -124,7 +132,11 @@ class TestDataRead(GatewayTestCase):
 
         @verifies REQ_INTEROP_018
         """
-        data = self.poll_endpoint('/apps/status_sensor/data')
+        data = self.poll_endpoint_until(
+            '/apps/status_sensor/data',
+            condition=lambda d: d if d.get('items') else None,
+            timeout=15.0,
+        )
         self.assertIn('items', data)
         items = data['items']
         self.assertIsInstance(items, list)
@@ -143,7 +155,11 @@ class TestDataRead(GatewayTestCase):
 
         @verifies REQ_INTEROP_018
         """
-        data = self.poll_endpoint('/apps/temp_sensor/data')
+        data = self.poll_endpoint_until(
+            '/apps/temp_sensor/data',
+            condition=lambda d: d if d.get('items') else None,
+            timeout=15.0,
+        )
         self.assertIn('items', data)
         items = data['items']
         self.assertIsInstance(items, list, 'Response should have items array')

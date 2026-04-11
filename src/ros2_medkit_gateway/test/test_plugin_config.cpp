@@ -26,10 +26,39 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <utility>
 
 #include <rclcpp/rclcpp.hpp>
 
 #include "ros2_medkit_gateway/param_utils.hpp"
+
+namespace {
+
+/// RAII guard that removes a temp YAML file when it goes out of scope so
+/// aborted tests (ASSERT_* failures) do not leak files under /tmp.
+class ScopedYamlFile {
+ public:
+  ScopedYamlFile(std::string path, const std::string & content) : path_(std::move(path)) {
+    std::ofstream yaml(path_);
+    yaml << content;
+  }
+  ~ScopedYamlFile() {
+    std::remove(path_.c_str());
+  }
+  ScopedYamlFile(const ScopedYamlFile &) = delete;
+  ScopedYamlFile & operator=(const ScopedYamlFile &) = delete;
+  ScopedYamlFile(ScopedYamlFile &&) = delete;
+  ScopedYamlFile & operator=(ScopedYamlFile &&) = delete;
+
+  const std::string & path() const {
+    return path_;
+  }
+
+ private:
+  std::string path_;
+};
+
+}  // namespace
 
 /// Proves the bug and validates the fix using a lightweight rclcpp::Node.
 ///
@@ -39,21 +68,19 @@
 /// 4. Verifies NodeOptions::parameter_overrides() is empty (the bug)
 /// 5. Verifies declare_plugin_params_from_yaml() resolves the YAML values (the fix)
 TEST(PluginConfig, YamlPluginParamsReachGateway) {
-  // Write YAML with plugin config using the gateway node name
-  std::string yaml_path = "/tmp/test_plugin_config_" + std::to_string(getpid()) + ".yaml";
-  {
-    std::ofstream yaml(yaml_path);
-    yaml << "test_plugin_config_node:\n"
-         << "  ros__parameters:\n"
-         << "    plugins.my_plugin.custom_key: \"custom_value\"\n"
-         << "    plugins.my_plugin.mode: \"testing\"\n"
-         << "    plugins.my_plugin.timeout: 42\n"
-         << "    plugins.my_plugin.verbose: true\n"
-         << "    plugins.my_plugin.threshold: 3.14\n";
-  }
+  // Write YAML with plugin config using the gateway node name. ScopedYamlFile
+  // cleans up on scope exit so an ASSERT_* abort does not leak /tmp files.
+  ScopedYamlFile yaml("/tmp/test_plugin_config_" + std::to_string(getpid()) + ".yaml",
+                      "test_plugin_config_node:\n"
+                      "  ros__parameters:\n"
+                      "    plugins.my_plugin.custom_key: \"custom_value\"\n"
+                      "    plugins.my_plugin.mode: \"testing\"\n"
+                      "    plugins.my_plugin.timeout: 42\n"
+                      "    plugins.my_plugin.verbose: true\n"
+                      "    plugins.my_plugin.threshold: 3.14\n");
 
   // Init rclcpp with --params-file (simulates: ros2 run ... --ros-args --params-file ...)
-  const char * args[] = {"test", "--ros-args", "--params-file", yaml_path.c_str()};
+  const char * args[] = {"test", "--ros-args", "--params-file", yaml.path().c_str()};
   rclcpp::init(4, const_cast<char **>(args));
 
   // Create a lightweight node (no HTTP server, no DDS subscriptions)
@@ -95,7 +122,111 @@ TEST(PluginConfig, YamlPluginParamsReachGateway) {
 
   node.reset();
   rclcpp::shutdown();
-  std::remove(yaml_path.c_str());
+}
+
+/// Verifies that YAML array params (string, bool, int, double) survive the
+/// --params-file -> global rcl context -> declare_plugin_params_from_yaml path
+/// and are retrievable as typed arrays. Includes an empty-string list element
+/// case to lock in the null/empty substitution in the production code.
+TEST(PluginConfig, YamlPluginArrayParamsReachGateway) {
+  ScopedYamlFile yaml("/tmp/test_plugin_config_arrays_" + std::to_string(getpid()) + ".yaml",
+                      "test_plugin_config_arrays_node:\n"
+                      "  ros__parameters:\n"
+                      "    plugins.arr_plugin.peer_urls: [\"http://host-a:8081\", \"http://host-b:8081\"]\n"
+                      "    plugins.arr_plugin.labels: [\"\", \"mid\", \"\"]\n"
+                      "    plugins.arr_plugin.enabled_flags: [true, false, true]\n"
+                      "    plugins.arr_plugin.timeouts_ms: [100, 200, 300]\n"
+                      "    plugins.arr_plugin.thresholds: [0.5, 1.5, 2.5]\n");
+
+  const char * args[] = {"test", "--ros-args", "--params-file", yaml.path().c_str()};
+  rclcpp::init(4, const_cast<char **>(args));
+
+  auto node = std::make_shared<rclcpp::Node>("test_plugin_config_arrays_node");
+  ros2_medkit_gateway::declare_plugin_params_from_yaml(node.get(), "plugins.arr_plugin.");
+
+  ASSERT_TRUE(node->has_parameter("plugins.arr_plugin.peer_urls"));
+  auto peer_urls = node->get_parameter("plugins.arr_plugin.peer_urls").as_string_array();
+  ASSERT_EQ(peer_urls.size(), 2u);
+  EXPECT_EQ(peer_urls[0], "http://host-a:8081");
+  EXPECT_EQ(peer_urls[1], "http://host-b:8081");
+
+  // Empty-string elements must round-trip as empty strings, keeping index
+  // alignment. Exercises the `elem != nullptr ? elem : ""` branch in
+  // declare_plugin_params_from_yaml (empty YAML strings are the closest
+  // we can get to a null entry without building rcl_variant_t by hand).
+  ASSERT_TRUE(node->has_parameter("plugins.arr_plugin.labels"));
+  auto labels = node->get_parameter("plugins.arr_plugin.labels").as_string_array();
+  ASSERT_EQ(labels.size(), 3u);
+  EXPECT_EQ(labels[0], "");
+  EXPECT_EQ(labels[1], "mid");
+  EXPECT_EQ(labels[2], "");
+
+  ASSERT_TRUE(node->has_parameter("plugins.arr_plugin.enabled_flags"));
+  auto flags = node->get_parameter("plugins.arr_plugin.enabled_flags").as_bool_array();
+  ASSERT_EQ(flags.size(), 3u);
+  EXPECT_TRUE(flags[0]);
+  EXPECT_FALSE(flags[1]);
+  EXPECT_TRUE(flags[2]);
+
+  ASSERT_TRUE(node->has_parameter("plugins.arr_plugin.timeouts_ms"));
+  auto timeouts = node->get_parameter("plugins.arr_plugin.timeouts_ms").as_integer_array();
+  ASSERT_EQ(timeouts.size(), 3u);
+  EXPECT_EQ(timeouts[0], 100);
+  EXPECT_EQ(timeouts[1], 200);
+  EXPECT_EQ(timeouts[2], 300);
+
+  ASSERT_TRUE(node->has_parameter("plugins.arr_plugin.thresholds"));
+  auto thresholds = node->get_parameter("plugins.arr_plugin.thresholds").as_double_array();
+  ASSERT_EQ(thresholds.size(), 3u);
+  EXPECT_DOUBLE_EQ(thresholds[0], 0.5);
+  EXPECT_DOUBLE_EQ(thresholds[1], 1.5);
+  EXPECT_DOUBLE_EQ(thresholds[2], 2.5);
+
+  node.reset();
+  rclcpp::shutdown();
+}
+
+/// Prefix scoping + dotted-key flattening.
+///
+/// Two things get verified here that the positive-path tests do not:
+///
+/// 1. Params OUTSIDE the requested prefix must not be declared on the node
+///    (guards the `rfind(prefix, 0) == 0` filter).
+/// 2. Dotted-key YAML like `plugins.foo.nested.leaf: "value"` gets flattened
+///    by rcl into one scalar parameter named verbatim - no intermediate
+///    "plugins.foo.nested" parameter is created.
+///
+/// NOTE on the "unsupported type" else-branch in declare_plugin_params_from_yaml:
+/// that branch fires only when rcl_variant_t has all *_value fields nullptr,
+/// which rcl_yaml_param_parser never emits for well-formed YAML. Exercising
+/// it would require constructing an rcl_variant_t by hand and injecting it,
+/// which is out of scope for this helper's black-box tests.
+TEST(PluginConfig, YamlPluginPrefixScopingAndDottedKeys) {
+  ScopedYamlFile yaml("/tmp/test_plugin_config_scoping_" + std::to_string(getpid()) + ".yaml",
+                      "test_plugin_config_scoping_node:\n"
+                      "  ros__parameters:\n"
+                      "    plugins.foo_plugin.scalar_ok: \"ok\"\n"
+                      "    plugins.foo_plugin.nested.leaf: \"value\"\n"
+                      "    plugins.bar_plugin.outside_prefix: \"nope\"\n");
+
+  const char * args[] = {"test", "--ros-args", "--params-file", yaml.path().c_str()};
+  rclcpp::init(4, const_cast<char **>(args));
+
+  auto node = std::make_shared<rclcpp::Node>("test_plugin_config_scoping_node");
+  ros2_medkit_gateway::declare_plugin_params_from_yaml(node.get(), "plugins.foo_plugin.");
+
+  // In-prefix scalars (including dotted-key leaves) are declared.
+  EXPECT_TRUE(node->has_parameter("plugins.foo_plugin.scalar_ok"));
+  EXPECT_TRUE(node->has_parameter("plugins.foo_plugin.nested.leaf"));
+
+  // No intermediate parameter is synthesized for the dotted path.
+  EXPECT_FALSE(node->has_parameter("plugins.foo_plugin.nested"));
+
+  // Out-of-prefix params must be skipped by the prefix filter.
+  EXPECT_FALSE(node->has_parameter("plugins.bar_plugin.outside_prefix"));
+
+  node.reset();
+  rclcpp::shutdown();
 }
 
 int main(int argc, char ** argv) {

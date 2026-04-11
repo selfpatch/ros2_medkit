@@ -16,6 +16,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <rcl/arguments.h>
 #include <rcl_yaml_param_parser/parser.h>
@@ -64,11 +65,49 @@ inline void declare_plugin_params_from_yaml(rclcpp::Node * node, const std::stri
             node->declare_parameter(pname, static_cast<int64_t>(*val.integer_value));
           } else if (val.double_value != nullptr) {
             node->declare_parameter(pname, *val.double_value);
+          } else if (val.string_array_value != nullptr) {
+            // Preserve index alignment: map null elements to empty strings rather than
+            // dropping them, so plugin configs see the same length the YAML declared.
+            std::vector<std::string> arr;
+            arr.reserve(val.string_array_value->size);
+            for (size_t i = 0; i < val.string_array_value->size; ++i) {
+              const char * elem = val.string_array_value->data[i];
+              arr.emplace_back(elem != nullptr ? elem : "");
+            }
+            node->declare_parameter(pname, arr);
+          } else if (val.bool_array_value != nullptr) {
+            // Explicit loop (rather than range ctor) avoids UB when size==0 and
+            // values==nullptr - nullptr+0 pointer arithmetic is undefined in C++.
+            std::vector<bool> arr;
+            arr.reserve(val.bool_array_value->size);
+            for (size_t i = 0; i < val.bool_array_value->size; ++i) {
+              arr.push_back(val.bool_array_value->values[i]);
+            }
+            node->declare_parameter(pname, arr);
+          } else if (val.integer_array_value != nullptr) {
+            std::vector<int64_t> arr;
+            arr.reserve(val.integer_array_value->size);
+            for (size_t i = 0; i < val.integer_array_value->size; ++i) {
+              arr.push_back(val.integer_array_value->values[i]);
+            }
+            node->declare_parameter(pname, arr);
+          } else if (val.double_array_value != nullptr) {
+            std::vector<double> arr;
+            arr.reserve(val.double_array_value->size);
+            for (size_t i = 0; i < val.double_array_value->size; ++i) {
+              arr.push_back(val.double_array_value->values[i]);
+            }
+            node->declare_parameter(pname, arr);
           } else {
-            RCLCPP_WARN(node->get_logger(), "Skipping param '%s': unsupported type (array?)", pname.c_str());
+            RCLCPP_WARN(node->get_logger(), "Skipping param '%s': unsupported type", pname.c_str());
           }
+        } catch (const rclcpp::exceptions::ParameterAlreadyDeclaredException &) {
+          // Expected when a base class / earlier pass already declared the
+          // same parameter - ignore silently to keep idempotency.
         } catch (const std::exception & e) {
-          RCLCPP_DEBUG(node->get_logger(), "Could not declare param '%s': %s", pname.c_str(), e.what());
+          // Real errors (invalid type/value, RCL errors, bad YAML typos) must
+          // surface to the operator, not vanish into DEBUG.
+          RCLCPP_WARN(node->get_logger(), "Could not declare param '%s': %s", pname.c_str(), e.what());
         }
       }
     }

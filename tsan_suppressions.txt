@@ -8,6 +8,16 @@
 # FastDDS internal thread pool and transport layer
 race:eprosima::fastdds::*
 race:eprosima::fastrtps::*
+# FastCDR serialize/deserialize races on TopicPayloadPool buffer during
+# intra-process communication. Write by publisher thread via serialize_array
+# races against read by subscriber thread via deserialize_array on the same
+# payload allocation from eprosima::fastrtps::rtps::TopicPayloadPool::do_get_payload.
+# Upstream tracking: https://github.com/eProsima/Fast-DDS/issues/6340 (open).
+# Narrowed to the exact symbols on the reported TSan stack so future races
+# introduced by our own FastCDR misuse (e.g. sharing a Cdr across threads)
+# would still be reported.
+race:eprosima::fastcdr::Cdr::serialize*
+race:eprosima::fastcdr::Cdr::deserialize*
 
 # rclcpp signal handler (writes to global atomic from signal context)
 race:rclcpp::SignalHandler*
