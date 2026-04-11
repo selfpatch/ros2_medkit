@@ -1,0 +1,57 @@
+# Builds ros2_medkit gateway + OPC-UA plugin in one image.
+# Build context: ros2_medkit repo root (the directory containing `src/`).
+
+# Stage 1: Build ros2_medkit + OPC-UA plugin
+FROM ros:jazzy-ros-base AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV COLCON_WS=/root/ws
+
+# hadolint ignore=DL3008
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-colcon-common-extensions nlohmann-json3-dev libcpp-httplib-dev \
+    sqlite3 libsqlite3-dev libsystemd-dev libssl-dev libyaml-cpp-dev \
+    pkg-config git ros-jazzy-ament-cmake-gtest ros-jazzy-yaml-cpp-vendor \
+    ros-jazzy-example-interfaces && rm -rf /var/lib/apt/lists/*
+
+COPY src/ ${COLCON_WS}/src/
+WORKDIR ${COLCON_WS}
+
+# Skip VDA 5050 packages in base build: they pull in nav2_msgs which is not
+# yet available as a jazzy apt package. The OPC-UA plugin has no dependency
+# on VDA 5050, so this does not affect our target.
+RUN bash -c "source /opt/ros/jazzy/setup.bash && \
+    rosdep update && \
+    rosdep install --from-paths src --ignore-src -r -y \
+      --skip-keys='ament_cmake_clang_format ament_cmake_clang_tidy test_msgs sqlite3 ros2_medkit_graph_provider python3-requests launch_testing_ament_cmake launch_testing launch_ros ament_index_python ros2_medkit_param_beacon nav2_msgs' && \
+    colcon build --cmake-args -DBUILD_TESTING=OFF \
+      --packages-skip vda5050_agent ros2_medkit_vda5050_msgs ros2_medkit_opcua"
+
+# Build the plugin separately so it picks up headers from the installed
+# ros2_medkit_gateway from the previous step. BUILD_TESTING=OFF avoids
+# pulling ament linters into the runtime image; unit tests run via a
+# dedicated colcon test step in CI, not from this image.
+RUN bash -c "source /opt/ros/jazzy/setup.bash && \
+    source ${COLCON_WS}/install/setup.bash && \
+    colcon build --packages-select ros2_medkit_opcua \
+      --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF"
+
+# Stage 2: Runtime
+FROM ros:jazzy-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV COLCON_WS=/root/ws
+
+# hadolint ignore=DL3008
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-jazzy-yaml-cpp-vendor ros-jazzy-example-interfaces \
+    nlohmann-json3-dev libcpp-httplib-dev sqlite3 libsqlite3-dev curl jq \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder ${COLCON_WS}/install/ ${COLCON_WS}/install/
+
+RUN mkdir -p /config
+COPY src/ros2_medkit_plugins/ros2_medkit_opcua/config/tank_demo_nodes.yaml /config/tank_nodes.yaml
+COPY src/ros2_medkit_plugins/ros2_medkit_opcua/docker/gateway_params.yaml /config/gateway_params.yaml
+
+EXPOSE 8080

@@ -1,0 +1,11 @@
+ros2_medkit_gateway:
+  ros__parameters:
+    server:
+      host: "0.0.0.0"
+      port: 8080
+    refresh_interval_ms: 2000
+    cors:
+      # DEMO ONLY - restrict origins in production deployments
+      allowed_origins: ["*"]
+    plugins: ["opcua"]
+    plugins.opcua.poll_interval_ms: 1000

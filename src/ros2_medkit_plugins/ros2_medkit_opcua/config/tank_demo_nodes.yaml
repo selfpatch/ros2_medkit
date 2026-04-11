@@ -1,0 +1,71 @@
+# OPC-UA Node Map for OpenPLC Tank Demo
+# Node IDs are NUMERIC (ns=2;i=N), mapped from OpenPLC OPC-UA address space
+
+area_id: plc_systems
+area_name: PLC Systems
+component_id: openplc_runtime
+component_name: OpenPLC Runtime
+auto_browse: false
+
+nodes:
+  - node_id: "ns=2;i=1"
+    entity_id: tank_process
+    data_name: tank_level
+    display_name: Tank Level
+    unit: mm
+    data_type: float
+    writable: true
+    alarm:
+      fault_code: PLC_LOW_LEVEL
+      severity: WARNING
+      message: Tank level below minimum (100mm)
+      threshold: 100.0
+      above_threshold: false
+
+  - node_id: "ns=2;i=2"
+    entity_id: tank_process
+    data_name: tank_temperature
+    display_name: Tank Temperature
+    unit: C
+    data_type: float
+    writable: true
+    alarm:
+      fault_code: PLC_HIGH_TEMP
+      severity: ERROR
+      message: Tank temperature above maximum (80C)
+      threshold: 80.0
+      above_threshold: true
+
+  - node_id: "ns=2;i=3"
+    entity_id: tank_process
+    data_name: tank_pressure
+    display_name: Tank Pressure
+    unit: bar
+    data_type: float
+    writable: false
+    alarm:
+      fault_code: PLC_OVERPRESSURE
+      severity: ERROR
+      message: Tank pressure above maximum (5 bar)
+      threshold: 5.0
+      above_threshold: true
+
+  - node_id: "ns=2;i=4"
+    entity_id: fill_pump
+    data_name: pump_speed
+    display_name: Pump Speed Setpoint
+    unit: "%"
+    data_type: float
+    writable: true
+    min_value: 0.0
+    max_value: 100.0
+
+  - node_id: "ns=2;i=5"
+    entity_id: drain_valve
+    data_name: valve_position
+    display_name: Valve Position Setpoint
+    unit: "%"
+    data_type: float
+    writable: true
+    min_value: 0.0
+    max_value: 100.0
