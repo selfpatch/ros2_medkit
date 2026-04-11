@@ -1,0 +1,134 @@
+name: OPC-UA Plugin Integration
+
+# Runs the OpenPLC-based Docker integration suite for ros2_medkit_opcua.
+# Triggers only when the plugin itself, the gateway plugin/provider API, or
+# ros2_medkit_msgs change. A nightly cron provides a safety net against silent
+# breaks that slip past the path filter.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/ros2_medkit_plugins/ros2_medkit_opcua/**'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/plugins/**'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/providers/**'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/http/error_codes.hpp'
+      - 'src/ros2_medkit_msgs/**'
+      - '.github/workflows/opcua-plugin.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/ros2_medkit_plugins/ros2_medkit_opcua/**'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/plugins/**'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/providers/**'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/http/error_codes.hpp'
+      - 'src/ros2_medkit_msgs/**'
+      - '.github/workflows/opcua-plugin.yml'
+  schedule:
+    # Daily at 04:00 UTC - safety net against breaks that slip past the path filter.
+    - cron: '0 4 * * *'
+
+jobs:
+  integration:
+    name: Integration (OpenPLC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build OpenPLC container
+        run: |
+          docker build \
+            -t openplc-tank \
+            src/ros2_medkit_plugins/ros2_medkit_opcua/docker/openplc/
+
+      - name: Build gateway + OPC-UA plugin image
+        run: |
+          docker build \
+            -f src/ros2_medkit_plugins/ros2_medkit_opcua/docker/Dockerfile.gateway \
+            -t gateway-opcua .
+
+      - name: Start OpenPLC
+        timeout-minutes: 3
+        run: |
+          docker network create plc-demo
+          docker run -d --name openplc --network plc-demo openplc-tank
+          for i in $(seq 1 60); do
+            if docker logs openplc 2>&1 | grep -q "PLC State: RUNNING"; then
+              echo "OpenPLC running after $((i * 2))s"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "FAIL: OpenPLC did not start"
+              docker logs openplc 2>&1 | tail -20
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Start gateway
+        run: |
+          docker run -d --name gateway --network plc-demo -p 8080:8080 \
+            -e ROS_DOMAIN_ID=60 \
+            -e OPCUA_ENDPOINT_URL="opc.tcp://openplc:4840/openplc/opcua" \
+            -e OPCUA_NODE_MAP_PATH="/config/tank_nodes.yaml" \
+            gateway-opcua \
+            bash -c "
+              mkdir -p /var/lib/ros2_medkit/rosbags /config
+              echo 'manifest_version: \"1.0\"' > /config/manifest.yaml
+              source /opt/ros/jazzy/setup.bash && source /root/ws/install/setup.bash
+              PLUGIN_PATH=\$(find /root/ws/install -name 'libros2_medkit_opcua_plugin.so' | head -1)
+              ros2 run ros2_medkit_gateway gateway_node \
+                --ros-args --params-file /config/gateway_params.yaml \
+                -p plugins.opcua.path:=\$PLUGIN_PATH \
+                -p discovery.mode:=hybrid \
+                -p discovery.manifest_path:=/config/manifest.yaml \
+                -p discovery.manifest_strict_validation:=false"
+
+      - name: Wait for PLC entities and live data
+        timeout-minutes: 3
+        run: |
+          echo "Waiting for entity discovery..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/api/v1/apps 2>/dev/null | \
+               jq -e '.items | map(.id) | contains(["tank_process"])' >/dev/null 2>&1; then
+              echo "Entities discovered after $((i * 2))s"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "Timeout waiting for entities"
+              docker logs gateway 2>&1 | tail -20
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for PLC data to flow..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/api/v1/components/openplc_runtime/x-plc-status 2>/dev/null | \
+               jq -e '.connected == true and .poll_count > 0' >/dev/null 2>&1; then
+              echo "PLC data flowing after extra $((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "WARNING: PLC not connected yet, running tests anyway"
+          curl -sf http://localhost:8080/api/v1/components/openplc_runtime/x-plc-status 2>/dev/null | jq . || true
+          docker logs gateway 2>&1 | tail -10
+
+      - name: Run integration tests
+        run: bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_integration_tests.sh
+
+      - name: Dump gateway logs on failure
+        if: failure()
+        run: |
+          echo "=== OpenPLC logs ==="
+          docker logs openplc 2>&1 | tail -60 || true
+          echo "=== Gateway logs ==="
+          docker logs gateway 2>&1 | tail -60 || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f gateway openplc 2>/dev/null || true
+          docker network rm plc-demo 2>/dev/null || true
