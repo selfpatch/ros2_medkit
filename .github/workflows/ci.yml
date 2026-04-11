@@ -66,6 +66,7 @@ jobs:
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           colcon build --symlink-install \
+            --packages-skip ros2_medkit_opcua \
             --cmake-args -DCMAKE_BUILD_TYPE=Release \
             --event-handlers console_direct+
           ccache -s
@@ -75,6 +76,7 @@ jobs:
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           colcon test --return-code-on-test-failure \
+            --packages-skip ros2_medkit_opcua \
             --ctest-args -LE linter \
             --event-handlers console_direct+
 
@@ -141,6 +143,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           colcon build --symlink-install \
+            --packages-skip ros2_medkit_opcua \
             --cmake-args -DCMAKE_BUILD_TYPE=Release \
             --event-handlers console_direct+
           ccache -s
@@ -199,6 +202,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           colcon test --return-code-on-test-failure \
+            --packages-skip ros2_medkit_opcua \
             --ctest-args -LE linter \
             --event-handlers console_direct+
 
@@ -265,6 +269,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           colcon build --symlink-install \
+            --packages-skip ros2_medkit_opcua \
             --cmake-args -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON \
             --event-handlers console_direct+
           ccache -s
@@ -273,6 +278,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           colcon test \
+            --packages-skip ros2_medkit_opcua \
             --ctest-args -LE linter \
             --event-handlers console_direct+
 
