@@ -27,7 +27,8 @@
 #   ros2_medkit_topic_beacon:       110 - 119 (10 slots)
 #   ros2_medkit_graph_provider:     120 - 129 (10 slots)
 #   ros2_medkit_linux_introspection: 130 - 139 (10 slots)
-#   ros2_medkit_integration_tests:  140 - 229 (90 slots)
+#   ros2_medkit_integration_tests:  140 - 219 (80 slots)
+#   ros2_medkit_opcua:              220 - 229 (10 slots, carved from integration_tests)
 #   multi-domain tests (secondary): 230 - 232 (3 slots, reserved for peer_aggregation etc.)
 #
 # To add a new package: pick the next free range and update this comment.
