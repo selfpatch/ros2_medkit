@@ -274,10 +274,14 @@ TEST(PeerClientHappyPath, fetch_entities_parses_relationship_fields) {
     res.set_content(R"({"items":[]})", "application/json");
   });
 
+  // Apps response matches what real SOVD peers emit: is-located-on is the
+  // standard app->component relationship (ISO 17978-3, §7.6), and the gateway
+  // also emits x-medkit.component_id (snake_case) as a vendor extension.
   svr.Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
     res.set_content(
         R"({"items":[
           {"id":"lidar-driver","name":"Lidar Driver",
+           "is-located-on":"/api/v1/components/perception-ecu",
            "x-medkit":{"component_id":"perception-ecu","source":"manifest","is_online":true}}
         ]})",
         "application/json");
@@ -324,6 +328,59 @@ TEST(PeerClientHappyPath, fetch_entities_parses_relationship_fields) {
   ASSERT_EQ(result->functions[0].hosts.size(), 2u);
   EXPECT_EQ(result->functions[0].hosts[0], "lidar-driver");
   EXPECT_EQ(result->functions[0].hosts[1], "path-planner");
+
+  svr.stop();
+  t.join();
+}
+
+// App->component binding via SOVD-standard is-located-on relationship only
+// (no x-medkit vendor extension). Exercises the parse path used by peers
+// implementing the ISO 17978-3 standard from other vendors.
+// @verifies REQ_INTEROP_018
+TEST(PeerClientHappyPath, fetch_entities_parses_is_located_on_without_vendor_extension) {
+  httplib::Server svr;
+
+  svr.Get("/api/v1/areas", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  svr.Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[{"id":"ecu-a","name":"ECU A"}]})", "application/json");
+  });
+  svr.Get(R"(/api/v1/components/ecu-a)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"id":"ecu-a","name":"ECU A"})", "application/json");
+  });
+  svr.Get(R"(/api/v1/components/ecu-a/subcomponents)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  // Absolute URL form of is-located-on (SOVD allows both)
+  svr.Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(
+        R"({"items":[
+          {"id":"app-standard","name":"Standard App",
+           "is-located-on":"http://peer.local:8080/api/v1/components/ecu-a"},
+          {"id":"app-hateoas","name":"HATEOAS App",
+           "_links":{"is-located-on":"/api/v1/components/ecu-a"}}
+        ]})",
+        "application/json");
+  });
+  svr.Get("/api/v1/functions", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "peer_sovd", 5000);
+  auto result = client.fetch_entities();
+
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->apps.size(), 2u);
+  EXPECT_EQ(result->apps[0].id, "app-standard");
+  EXPECT_EQ(result->apps[0].component_id, "ecu-a");
+  EXPECT_EQ(result->apps[1].id, "app-hateoas");
+  EXPECT_EQ(result->apps[1].component_id, "ecu-a");
 
   svr.stop();
   t.join();
