@@ -5,7 +5,7 @@
   <version>0.4.0</version>
   <description>Bridge node converting ROS2 /diagnostics to FaultManager faults</description>
 
-  <maintainer email="michal.faferek.coe@gmail.com">mfaferek93</maintainer>
+  <maintainer email="michal.faferek@selfpatch.ai">mfaferek93</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
