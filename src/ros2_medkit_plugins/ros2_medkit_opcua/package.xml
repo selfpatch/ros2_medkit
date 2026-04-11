@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ros2_medkit_opcua</name>
+  <version>0.4.0</version>
+  <description>OPC-UA gateway plugin for ros2_medkit - bridges PLC systems into the SOVD entity tree</description>
+  <maintainer email="michal@selfpatch.ai">Michal Faferek</maintainer>
+  <license>Apache-2.0</license>
+  <url type="website">https://selfpatch.ai</url>
+  <url type="repository">https://github.com/selfpatch/ros2_medkit</url>
+  <author email="michal@selfpatch.ai">Michal Faferek</author>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ros2_medkit_cmake</buildtool_depend>
+  <buildtool_depend>git</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>ros2_medkit_msgs</depend>
+  <depend>ros2_medkit_gateway</depend>
+  <depend>nlohmann-json-dev</depend>
+  <depend>yaml-cpp</depend>
+  <depend>libssl-dev</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_clang_format</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

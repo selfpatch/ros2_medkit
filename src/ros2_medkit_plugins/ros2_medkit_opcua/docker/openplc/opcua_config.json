@@ -1,0 +1,96 @@
+[
+  {
+    "name": "opcua_server",
+    "protocol": "OPC-UA",
+    "config": {
+      "server": {
+        "name": "OpenPLC Tank Demo",
+        "application_uri": "urn:selfpatch:openplc:tank",
+        "product_uri": "urn:selfpatch:openplc:tank",
+        "endpoint_url": "opc.tcp://0.0.0.0:4840/openplc/opcua",
+        "security_profiles": [
+          {
+            "name": "insecure",
+            "enabled": true,
+            "security_policy": "None",
+            "security_mode": "None",
+            "auth_methods": ["Anonymous"]
+          }
+        ]
+      },
+      "security": {
+        "server_certificate_strategy": "auto_self_signed",
+        "server_certificate_custom": null,
+        "server_private_key_custom": null,
+        "trusted_client_certificates": []
+      },
+      "users": [
+        {
+          "_comment": "DEMO ONLY - replace credentials before any non-local deployment",
+          "type": "password",
+          "username": "admin",
+          "password_hash": "$2b$12$dummy_hash_for_demo_only",
+          "role": "engineer"
+        }
+      ],
+      "cycle_time_ms": 100,
+      "address_space": {
+        "namespace_uri": "urn:selfpatch:openplc:tank:ns",
+        "variables": [
+          {
+            "node_id": "PLC.Tank.TankLevel",
+            "browse_name": "TankLevel",
+            "display_name": "Tank Level",
+            "datatype": "REAL",
+            "initial_value": 500.0,
+            "description": "Tank level in mm (0-1000)",
+            "index": 0,
+            "permissions": {"viewer": "rw", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Tank.TankTemperature",
+            "browse_name": "TankTemperature",
+            "display_name": "Tank Temperature",
+            "datatype": "REAL",
+            "initial_value": 25.0,
+            "description": "Tank temperature in C (0-120)",
+            "index": 1,
+            "permissions": {"viewer": "rw", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Tank.TankPressure",
+            "browse_name": "TankPressure",
+            "display_name": "Tank Pressure",
+            "datatype": "REAL",
+            "initial_value": 1.0,
+            "description": "Tank pressure in bar (0-10)",
+            "index": 2,
+            "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+          },
+          {
+            "node_id": "PLC.Tank.PumpSpeed",
+            "browse_name": "PumpSpeed",
+            "display_name": "Pump Speed",
+            "datatype": "REAL",
+            "initial_value": 0.0,
+            "description": "Pump speed setpoint % (0-100)",
+            "index": 3,
+            "permissions": {"viewer": "rw", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Tank.ValvePosition",
+            "browse_name": "ValvePosition",
+            "display_name": "Valve Position",
+            "datatype": "REAL",
+            "initial_value": 0.0,
+            "description": "Valve position setpoint % (0-100)",
+            "index": 5,
+            "permissions": {"viewer": "rw", "operator": "rw", "engineer": "rw"}
+          }
+        ],
+        "structures": [],
+        "arrays": []
+      }
+    }
+  }
+]
