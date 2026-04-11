@@ -4,11 +4,11 @@
   <name>ros2_medkit_opcua</name>
   <version>0.4.0</version>
   <description>OPC-UA gateway plugin for ros2_medkit - bridges PLC systems into the SOVD entity tree</description>
-  <maintainer email="michal@selfpatch.ai">Michal Faferek</maintainer>
+  <maintainer email="michal.faferek@selfpatch.ai">mfaferek93</maintainer>
   <license>Apache-2.0</license>
   <url type="website">https://selfpatch.ai</url>
   <url type="repository">https://github.com/selfpatch/ros2_medkit</url>
-  <author email="michal@selfpatch.ai">Michal Faferek</author>
+  <author email="michal.faferek@selfpatch.ai">mfaferek93</author>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ros2_medkit_cmake</buildtool_depend>

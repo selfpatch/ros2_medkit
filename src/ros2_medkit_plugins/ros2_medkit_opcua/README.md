@@ -333,7 +333,7 @@ When the value returns below threshold, the fault is automatically cleared.
 
 Apache License 2.0. See the `LICENSE` file at the repository root for the full text.
 
-Copyright 2026 Michal Faferek
+Copyright 2026 mfaferek93
 
 ## Third-party Dependencies
 
