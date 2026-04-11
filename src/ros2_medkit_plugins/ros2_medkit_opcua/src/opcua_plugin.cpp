@@ -95,9 +95,11 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
 void OpcuaPlugin::set_context(PluginContext & context) {
   ctx_ = &context;
 
-  ctx_->register_capability(SovdEntityType::APP, "x-plc-data");
-  ctx_->register_capability(SovdEntityType::APP, "x-plc-operations");
-  ctx_->register_capability(SovdEntityType::COMPONENT, "x-plc-status");
+  // NOTE: capabilities (x-plc-data, x-plc-operations, x-plc-status) are
+  // registered per entity in introspect() rather than type-level here, so
+  // that only PLC-backed entities advertise them. Type-level registration
+  // would leak the capabilities onto every ROS 2 app/component in the SOVD
+  // entity tree, misleading clients into calling endpoints that return 404.
 
   auto * node = ctx_->node();
   if (node) {
@@ -192,6 +194,13 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
   comp.description = "PLC runtime connected at " + client_config_.endpoint_url;
   result.new_entities.components.push_back(std::move(comp));
 
+  // Register x-plc-status on the PLC runtime component only, so non-PLC
+  // components in the shared SOVD entity tree do not advertise a
+  // capability they cannot serve.
+  if (ctx_) {
+    ctx_->register_entity_capability(node_map_.component_id(), "x-plc-status");
+  }
+
   for (const auto & def : node_map_.entity_defs()) {
     App app;
     app.id = def.id;
@@ -203,8 +212,14 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
     app.description = "PLC application with " + std::to_string(def.data_names.size()) + " data points";
     result.new_entities.apps.push_back(std::move(app));
 
-    if (ctx_ && !def.writable_names.empty()) {
-      ctx_->register_entity_capability(def.id, "x-plc-operations");
+    // Register capabilities per entity (never type-level): only PLC-backed
+    // apps advertise x-plc-data; apps with writable nodes also get
+    // x-plc-operations.
+    if (ctx_) {
+      ctx_->register_entity_capability(def.id, "x-plc-data");
+      if (!def.writable_names.empty()) {
+        ctx_->register_entity_capability(def.id, "x-plc-operations");
+      }
     }
   }
 
