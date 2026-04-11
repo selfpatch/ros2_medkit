@@ -1,5 +1,67 @@
 # OPC-UA Node Map for OpenPLC Tank Demo
-# Node IDs are NUMERIC (ns=2;i=N), mapped from OpenPLC OPC-UA address space
+#
+# Each `nodes` entry maps one OPC-UA Variable on a PLC server to one data
+# point inside a SOVD entity. The `node_id` field follows the OPC-UA string
+# format defined in OPC 10000-6 section 5.3.1.10:
+#
+#     [ns=<ns-index>;]<type>=<identifier>
+#
+# where <type> is one of:
+#
+#     i = <uint32>             numeric identifier (most compact, auto-IDs)
+#     s = <string>             string identifier (human-readable tag names)
+#     g = <guid>               GUID identifier (rare, Microsoft-style UUID)
+#     b = <base64 bytestring>  opaque binary identifier (legacy, rare)
+#
+# If the `ns=` prefix is omitted the namespace defaults to 0 (standard
+# OPC-UA namespace, reserved for the base information model - you almost
+# never point at user data there). The vendor-specific namespace index is
+# server-dependent; most PLC servers place user data at ns=2, ns=3 or ns=4.
+#
+# This demo uses OpenPLC which auto-generates numeric identifiers in
+# declaration order under a single user namespace (ns=2). Other industrial
+# PLC servers use different conventions - here are typical examples from
+# the wild that all parse correctly with the same `node_id:` field:
+#
+#   OpenPLC (numeric, this demo):
+#     node_id: "ns=2;i=1"
+#     node_id: "ns=2;i=42"
+#
+#   Siemens S7-1500 TIA Portal OPC-UA server (string, DB.field syntax):
+#     node_id: 'ns=3;s="Tank_DB"."level_mm"'
+#     node_id: 'ns=3;s="Pump_DB"."setpoint"'
+#
+#   Beckhoff TwinCAT 3 (string, dot path through POUs):
+#     node_id: 'ns=4;s=MAIN.Tank.level'
+#     node_id: 'ns=4;s=GVL_Safety.eStopActive'
+#
+#   Allen-Bradley ControlLogix via Kepware OPC-UA gateway (string tags):
+#     node_id: 'ns=2;s=Tank.Level'
+#     node_id: 'ns=2;s=Conveyor1.Speed'
+#
+#   KUKA KR C5 robot controller (string, KRC path syntax):
+#     node_id: 'ns=2;s=KRC.Axis1.Position'
+#     node_id: 'ns=2;s=KRC.Robot.Mode'
+#
+#   Legacy system with GUID identifiers:
+#     node_id: 'ns=3;g=09087e75-8e5e-499e-954f-f2a9603db28a'
+#
+#   Opaque (base64 ByteString) identifiers:
+#     node_id: 'ns=2;b=M/RbKBsRVkePCePcx24oRA=='
+#
+# Quoting tip: YAML string values that contain colons, double quotes, curly
+# braces or other punctuation should be wrapped in single quotes ('...') so
+# YAML does not try to parse them as flow mappings. Numeric and simple
+# string identifiers work without quoting.
+#
+# Tip: if you do not know the namespace or identifiers on your server, use
+# a browser like UaExpert (https://www.unified-automation.com) or the
+# upcoming `ros2_medkit_opcua_browse` CLI (tracked as an open follow-up
+# issue). Both let you navigate the address space and copy ready-to-paste
+# node IDs.
+#
+# Below is the tank demo map. Node IDs are numeric (ns=2;i=N) matching the
+# OpenPLC runtime at docker/openplc/ in this package.
 
 area_id: plc_systems
 area_name: PLC Systems
