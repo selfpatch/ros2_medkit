@@ -198,7 +198,11 @@ Component parse_component(const nlohmann::json & j) {
  * URI (ISO 17978-3, §7.6). Peers may emit it as either an absolute URL
  * (``http://host:port/api/v1/components/{id}``) or a path-only reference
  * (``/api/v1/components/{id}``). Extract the trailing segment after the
- * ``/components/`` marker.
+ * ``/components/`` marker and validate it with ``is_valid_entity_id`` so
+ * that a malformed or hostile peer URI cannot smuggle path traversal or
+ * percent-encoded junk into the aggregator's entity cache.
+ * Returns an empty string if the URI contains no marker or if the
+ * extracted segment fails validation.
  */
 std::string component_id_from_located_on(const std::string & uri) {
   static const std::string kMarker = "/components/";
@@ -211,7 +215,8 @@ std::string component_id_from_located_on(const std::string & uri) {
     return "";
   }
   auto id_end = uri.find_first_of("/?#", id_start);
-  return uri.substr(id_start, id_end - id_start);
+  auto candidate = uri.substr(id_start, id_end - id_start);
+  return is_valid_entity_id(candidate) ? candidate : std::string{};
 }
 
 /**
@@ -243,9 +248,13 @@ App parse_app(const nlohmann::json & j) {
     const auto & xm = j["x-medkit"];
     // Vendor fallback: gateway emits x-medkit.component_id (snake_case) via
     // XMedkit builder in discovery_handlers.cpp. Only used if the SOVD
-    // standard is-located-on field is absent.
+    // standard is-located-on field is absent. Validated for the same
+    // reasons as component_id_from_located_on - the value is peer-provided.
     if (app.component_id.empty()) {
-      app.component_id = xm.value("component_id", "");
+      auto candidate = xm.value("component_id", "");
+      if (is_valid_entity_id(candidate)) {
+        app.component_id = candidate;
+      }
     }
     app.source = xm.value("source", "");
     app.is_online = xm.value("is_online", false);

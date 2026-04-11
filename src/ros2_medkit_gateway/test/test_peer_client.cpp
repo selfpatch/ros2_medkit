@@ -386,6 +386,56 @@ TEST(PeerClientHappyPath, fetch_entities_parses_is_located_on_without_vendor_ext
   t.join();
 }
 
+// Malicious peer attempts to smuggle path traversal / percent-encoding /
+// oversize IDs through the app->component binding. Both the SOVD-standard
+// is-located-on parser and the x-medkit vendor fallback must reject these
+// candidates (leaving App::component_id empty) so they cannot propagate into
+// the aggregator's entity cache or response-side path construction.
+// @verifies REQ_INTEROP_018
+TEST(PeerClientHappyPath, fetch_entities_rejects_malicious_component_id_in_located_on) {
+  httplib::Server svr;
+
+  svr.Get("/api/v1/areas", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  svr.Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  svr.Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(
+        R"({"items":[
+          {"id":"app-traversal","name":"A","is-located-on":"/api/v1/components/..%2Fetc%2Fpasswd"},
+          {"id":"app-percent","name":"A","is-located-on":"/api/v1/components/bad%20id"},
+          {"id":"app-vendor-slash","name":"A",
+           "x-medkit":{"component_id":"bad/id","source":"manifest"}},
+          {"id":"app-vendor-empty","name":"A",
+           "x-medkit":{"component_id":"","source":"manifest"}}
+        ]})",
+        "application/json");
+  });
+  svr.Get("/api/v1/functions", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "peer_hostile", 5000);
+  auto result = client.fetch_entities();
+
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->apps.size(), 4u);
+  for (const auto & app : result->apps) {
+    EXPECT_TRUE(app.component_id.empty())
+        << "app " << app.id << " should have empty component_id, got '" << app.component_id << "'";
+  }
+
+  svr.stop();
+  t.join();
+}
+
 // @verifies REQ_INTEROP_018
 TEST(PeerClientHappyPath, forward_request_proxies_response_with_auth) {
   httplib::Server svr;
