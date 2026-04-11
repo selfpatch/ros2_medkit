@@ -119,6 +119,34 @@ GET /api/v1/components/openplc_runtime/x-plc-status
 }
 ```
 
+## Finding Node IDs on your PLC
+
+The plugin identifies PLC tags by OPC-UA node IDs in the canonical string
+format (`ns=N;i=M` numeric, `ns=N;s=tag` string, `ns=N;g=...` GUID, or
+`ns=N;b=...` opaque). To discover the correct node IDs for a real PLC
+without guessing, use one of the standard OPC-UA browser tools:
+
+- **UaExpert** - free GUI browser from Unified Automation. Download at
+  <https://www.unified-automation.com/downloads/uaexpert.html>. Connect
+  to your PLC's `opc.tcp://` endpoint, navigate the address space tree,
+  right-click any Variable node, copy the NodeId property into the YAML
+  map below.
+
+- **`asyncua` command line** - `pip install asyncua` and then
+  `python -m asyncua.tools.uals -u opc.tcp://your-plc:4840` walks the
+  address space from a terminal, no GUI required.
+
+- **Vendor toolchains** - Siemens TIA Portal's OPC-UA configuration
+  exports DB/variable node IDs in the `ns=3;s="..."` format. Beckhoff
+  TwinCAT 3 XAE displays them as `ns=4;s=MAIN.Tank.level`. Allen-Bradley
+  users typically deploy Kepware or Ignition as an OPC-UA gateway which
+  auto-maps tag names.
+
+`config/tank_demo_nodes.yaml` ships a commented example with
+ready-to-paste templates for OpenPLC, Siemens S7-1500, Beckhoff TwinCAT,
+Allen-Bradley via Kepware and KUKA KR C5. Copy one of those blocks as a
+starting point.
+
 ## Configuration
 
 ### Node Map (YAML)
