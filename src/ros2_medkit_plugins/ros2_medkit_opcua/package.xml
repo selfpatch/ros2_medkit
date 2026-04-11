@@ -19,7 +19,7 @@
   <depend>ros2_medkit_msgs</depend>
   <depend>ros2_medkit_gateway</depend>
   <depend>nlohmann-json-dev</depend>
-  <depend>yaml-cpp</depend>
+  <depend>yaml_cpp_vendor</depend>
   <depend>libssl-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>
