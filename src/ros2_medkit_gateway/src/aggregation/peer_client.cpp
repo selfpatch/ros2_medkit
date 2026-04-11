@@ -192,16 +192,61 @@ Component parse_component(const nlohmann::json & j) {
 }
 
 /**
- * @brief Parse an App from JSON
+ * @brief Extract the component ID from an ``is-located-on`` URI.
+ *
+ * SOVD exposes the app-to-component binding as a standard relationship
+ * URI (ISO 17978-3, §7.6). Peers may emit it as either an absolute URL
+ * (``http://host:port/api/v1/components/{id}``) or a path-only reference
+ * (``/api/v1/components/{id}``). Extract the trailing segment after the
+ * ``/components/`` marker.
+ */
+std::string component_id_from_located_on(const std::string & uri) {
+  static const std::string kMarker = "/components/";
+  auto pos = uri.rfind(kMarker);
+  if (pos == std::string::npos) {
+    return "";
+  }
+  auto id_start = pos + kMarker.size();
+  if (id_start >= uri.size()) {
+    return "";
+  }
+  auto id_end = uri.find_first_of("/?#", id_start);
+  return uri.substr(id_start, id_end - id_start);
+}
+
+/**
+ * @brief Parse an App from JSON.
+ *
+ * The app-to-component binding is recovered from SOVD's standard
+ * ``is-located-on`` relationship (body field or ``_links`` entry),
+ * which every SOVD-compliant peer emits. Vendor fallback:
+ * ``x-medkit.component_id`` (gateway's own extension).
  */
 App parse_app(const nlohmann::json & j) {
   App app;
   app.id = j.value("id", "");
   app.name = j.value("name", "");
   app.description = j.value("description", "");
+
+  // SOVD-standard: is-located-on relationship (ISO 17978-3, §7.6)
+  if (j.contains("is-located-on") && j["is-located-on"].is_string()) {
+    app.component_id = component_id_from_located_on(j["is-located-on"].get<std::string>());
+  }
+  if (app.component_id.empty() && j.contains("_links") && j["_links"].is_object()) {
+    const auto & links = j["_links"];
+    if (links.contains("is-located-on") && links["is-located-on"].is_string()) {
+      app.component_id = component_id_from_located_on(links["is-located-on"].get<std::string>());
+    }
+  }
+
   if (j.contains("x-medkit") && j["x-medkit"].is_object()) {
     const auto & xm = j["x-medkit"];
-    app.component_id = xm.value("component_id", "");
+    // Vendor fallback: gateway emits x-medkit.component_id (snake_case) via
+    // XMedkit builder in discovery_handlers.cpp. Only used if the SOVD
+    // standard is-located-on field is absent.
+    if (app.component_id.empty()) {
+      app.component_id = xm.value("component_id", "");
+    }
     app.source = xm.value("source", "");
     app.is_online = xm.value("is_online", false);
     if (app.description.empty()) {
