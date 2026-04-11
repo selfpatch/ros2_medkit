@@ -158,9 +158,23 @@ What the plugin can NOT do today (regardless of vendor):
 Future work
 ===========
 
-- Certificate-based OPC-UA authentication (Basic256Sha256)
+Tracked issues in the `ros2_medkit issue tracker
+<https://github.com/selfpatch/ros2_medkit/issues>`_:
+
+- `#367 <https://github.com/selfpatch/ros2_medkit/issues/367>`_
+  Certificate-based OPC-UA authentication (Basic256Sha256)
+- `#368 <https://github.com/selfpatch/ros2_medkit/issues/368>`_
+  Optional auto-browse of the OPC-UA address space to seed the node map
+  (deferred pending validated user demand; UaExpert and ``python -m
+  asyncua.tools.uals`` are recommended for now)
+- `#366 <https://github.com/selfpatch/ros2_medkit/issues/366>`_
+  Vendor ``open62541pp`` inline so the package can be added to the
+  rosdistro release list
+
+Untracked (open the issue if you hit the pain):
+
 - Hot-reload of the node map without restarting the plugin
-- Optional auto-browse of the OPC-UA address space to seed the node map
 - Complex OPC-UA type support (structures, arrays, enums)
-- Native AlarmCondition event subscription as a complement to threshold
-  polling
+- Native ``AlarmCondition`` event subscription as a complement to
+  threshold polling
+- Vendor information model bindings (Euromap 77, Siemens DI, PA-DIM)
