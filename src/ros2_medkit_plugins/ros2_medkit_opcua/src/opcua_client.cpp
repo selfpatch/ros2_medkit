@@ -15,6 +15,7 @@
 #include "ros2_medkit_opcua/opcua_client.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <deque>
 #include <iostream>
 #include <thread>
@@ -23,6 +24,19 @@
 namespace ros2_medkit_gateway {
 
 namespace {
+
+/// Set the connected flag to false when the BadStatus code indicates a
+/// terminal connection loss (as opposed to e.g. BadNodeIdUnknown which is a
+/// per-node issue). Called from read_value, read_values and write_value so
+/// that OpcuaPoller's reconnect logic (which keys off is_connected()) fires
+/// regardless of which operation detected the drop first.
+void maybe_mark_disconnected(std::atomic<bool> & connected_flag, const opcua::BadStatus & e) {
+  const auto code = e.code();
+  if (code == UA_STATUSCODE_BADCONNECTIONCLOSED || code == UA_STATUSCODE_BADSECURECHANNELCLOSED ||
+      code == UA_STATUSCODE_BADNOTCONNECTED) {
+    connected_flag = false;
+  }
+}
 
 OpcuaValue variant_to_value(const opcua::Variant & var) {
   if (var.isEmpty()) {
@@ -210,11 +224,7 @@ ReadResult OpcuaClient::read_value(const opcua::NodeId & node_id) {
     result.good = true;
   } catch (const opcua::BadStatus & e) {
     result.good = false;
-    auto code = e.code();
-    if (code == UA_STATUSCODE_BADCONNECTIONCLOSED || code == UA_STATUSCODE_BADSECURECHANNELCLOSED ||
-        code == UA_STATUSCODE_BADNOTCONNECTED) {
-      impl_->connected = false;
-    }
+    maybe_mark_disconnected(impl_->connected, e);
   }
 
   return result;
@@ -241,8 +251,9 @@ std::vector<ReadResult> OpcuaClient::read_values(const std::vector<opcua::NodeId
       opcua::Node node(impl_->client, nid);
       r.value = variant_to_value(node.readValue());
       r.good = true;
-    } catch (const opcua::BadStatus &) {
+    } catch (const opcua::BadStatus & e) {
       r.good = false;
+      maybe_mark_disconnected(impl_->connected, e);
     }
     results.push_back(std::move(r));
   }
@@ -318,7 +329,8 @@ bool OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & 
       node.writeValue(var);
     }
     return true;
-  } catch (const opcua::BadStatus &) {
+  } catch (const opcua::BadStatus & e) {
+    maybe_mark_disconnected(impl_->connected, e);
     return false;
   }
 }
