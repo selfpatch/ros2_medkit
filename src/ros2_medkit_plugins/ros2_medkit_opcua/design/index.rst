@@ -130,10 +130,37 @@ The current implementation uses anonymous OPC-UA authentication with ``SecurityP
 This is explicitly **not suitable for untrusted networks** - the plugin logs a warning on
 startup. Proper username/password and certificate-based authentication are planned.
 
+Supported PLC servers
+=====================
+
+The plugin speaks plain OPC-UA and supports all four node identifier types
+defined by OPC 10000-6 section 5.3.1.10 (``i=`` numeric, ``s=`` string,
+``g=`` GUID, ``b=`` opaque ByteString). This means the same binary works
+against any compliant OPC-UA server without a code change - only the
+``node_map.yaml`` changes per vendor. ``config/tank_demo_nodes.yaml`` carries
+ready-to-paste examples for OpenPLC (this demo), Siemens S7-1500 TIA Portal,
+Beckhoff TwinCAT 3, Allen-Bradley via Kepware, and KUKA KR C5.
+
+What the plugin can NOT do today (regardless of vendor):
+
+- Complex OPC-UA types: only scalar Variables (``int``, ``float``, ``bool``,
+  ``string``) are mapped. Structures, arrays, enums, unions and
+  ExtensionObjects are ignored.
+- Vendor information models: profiles like Euromap 77 (injection molding),
+  Siemens DI (device integration), and PA-DIM (process automation) are not
+  interpreted natively. Tags exposed through those models can still be
+  mapped manually via their node IDs, but the plugin does not understand
+  the model semantics.
+- Native OPC-UA Alarms & Conditions: the plugin detects alarms by applying
+  thresholds to polled values. Servers that publish native AlarmCondition
+  events (e.g. Siemens ``AlarmConditionType``) are not subscribed to.
+
 Future work
 ===========
 
 - Certificate-based OPC-UA authentication (Basic256Sha256)
 - Hot-reload of the node map without restarting the plugin
 - Optional auto-browse of the OPC-UA address space to seed the node map
-- Vendor-specific extensions for common PLC brands (Siemens, Beckhoff, Allen-Bradley)
+- Complex OPC-UA type support (structures, arrays, enums)
+- Native AlarmCondition event subscription as a complement to threshold
+  polling
