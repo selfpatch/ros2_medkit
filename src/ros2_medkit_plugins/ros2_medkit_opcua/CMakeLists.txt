@@ -31,8 +31,13 @@ find_package(ros2_medkit_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(nlohmann_json REQUIRED)
-find_package(yaml-cpp REQUIRED)
 find_package(OpenSSL REQUIRED)
+
+# yaml-cpp via the medkit compat helper: jazzy exports the native
+# ``yaml-cpp::yaml-cpp`` cmake target via ``yaml_cpp_vendor``; humble may fall
+# back to the system library. The macro handles both cases and fails with a
+# clear error if ``yaml_cpp_vendor`` is missing.
+medkit_find_yaml_cpp()
 
 # ---- open62541pp via FetchContent ----
 # open62541pp v0.16.0 is MPLv2 licensed. Linking from Apache 2.0 code to MPLv2
@@ -97,12 +102,6 @@ medkit_target_dependencies(ros2_medkit_opcua_plugin
   std_msgs
 )
 
-# open62541pp headers emit -Wconversion warnings that would propagate under
-# the strict project-wide warning flags from ROS2MedkitWarnings. Relax only
-# on this target; our own code still compiles with full warnings via the
-# ROS2MedkitWarnings include above.
-target_compile_options(ros2_medkit_opcua_plugin PRIVATE -Wno-conversion)
-
 # Allow unresolved symbols - they resolve from the host process at runtime
 target_link_options(ros2_medkit_opcua_plugin PRIVATE
   -Wl,--unresolved-symbols=ignore-all
@@ -111,7 +110,7 @@ target_link_options(ros2_medkit_opcua_plugin PRIVATE
 target_link_libraries(ros2_medkit_opcua_plugin
   open62541pp::open62541pp
   nlohmann_json::nlohmann_json
-  yaml-cpp
+  yaml-cpp::yaml-cpp
   OpenSSL::SSL OpenSSL::Crypto
 )
 
@@ -153,11 +152,10 @@ if(BUILD_TESTING)
   target_include_directories(test_node_map PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
-  target_compile_options(test_node_map PRIVATE -Wno-conversion)
   target_link_libraries(test_node_map
     open62541pp::open62541pp
     nlohmann_json::nlohmann_json
-    yaml-cpp
+    yaml-cpp::yaml-cpp
   )
   medkit_set_test_domain(test_node_map)
 
@@ -168,7 +166,6 @@ if(BUILD_TESTING)
   target_include_directories(test_opcua_client PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
-  target_compile_options(test_opcua_client PRIVATE -Wno-conversion)
   target_link_libraries(test_opcua_client
     open62541pp::open62541pp
     nlohmann_json::nlohmann_json
