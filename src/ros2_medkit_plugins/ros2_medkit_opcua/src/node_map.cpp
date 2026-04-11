@@ -370,6 +370,14 @@ void NodeMap::build_entity_defs() {
     def.name = name;
     entity_defs_.push_back(std::move(def));
   }
+
+  // Sort entity_defs_ by id so discovery output is deterministic across
+  // runs and platforms. ``defs`` above is an unordered_map whose
+  // iteration order is implementation-defined, which previously produced
+  // noisy diffs in downstream tools consuming the IntrospectionResult.
+  std::sort(entity_defs_.begin(), entity_defs_.end(), [](const PlcEntityDef & a, const PlcEntityDef & b) {
+    return a.id < b.id;
+  });
 }
 
 }  // namespace ros2_medkit_gateway
