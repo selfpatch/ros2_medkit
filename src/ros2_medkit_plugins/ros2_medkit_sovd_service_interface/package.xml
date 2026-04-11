@@ -5,7 +5,7 @@
   <version>0.4.0</version>
   <description>SOVD Service Interface plugin - exposes medkit entity tree and fault data via ROS 2 services</description>
   <maintainer email="bartoszburda93@gmail.com">bburda</maintainer>
-  <maintainer email="mfaferek93@gmail.com">mfaferek93</maintainer>
+  <maintainer email="michal.faferek@selfpatch.ai">mfaferek93</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
