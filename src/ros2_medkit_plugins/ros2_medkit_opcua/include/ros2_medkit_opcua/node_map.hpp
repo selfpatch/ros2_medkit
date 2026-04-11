@@ -119,10 +119,23 @@ class NodeMap {
     return auto_browse_;
   }
 
- private:
-  /// Parse a node ID string into opcua::NodeId
+  /// Parse an OPC-UA node ID string into an `opcua::NodeId`.
+  ///
+  /// Supports the full OPC 10000-6 section 5.3.1.10 format:
+  ///
+  ///     [ns=<ns-index>;]i=<uint32>     numeric
+  ///     [ns=<ns-index>;]s=<string>     string (Siemens, Beckhoff, ...)
+  ///     [ns=<ns-index>;]g=<guid>       GUID   (Microsoft-style UUID)
+  ///     [ns=<ns-index>;]b=<base64>     opaque ByteString
+  ///
+  /// When the `ns=` prefix is omitted the namespace defaults to 0.
+  /// Returns a default-constructed `opcua::NodeId` on parse failure; the
+  /// plugin treats such an entry as unresolvable at runtime.
+  ///
+  /// Declared public so it can be unit-tested directly.
   static opcua::NodeId parse_node_id(const std::string & str);
 
+ private:
   /// Build entity_defs_ from entries_
   void build_entity_defs();
 

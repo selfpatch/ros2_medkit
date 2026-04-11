@@ -15,46 +15,140 @@
 #include "ros2_medkit_opcua/node_map.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 
 #include <nlohmann/json.hpp>
 #include <yaml-cpp/yaml.h>
 
 namespace ros2_medkit_gateway {
 
-opcua::NodeId NodeMap::parse_node_id(const std::string & str) {
-  // Parse strings like "ns=1;s=TankLevel" or "ns=1;i=1001"
-  uint16_t ns = 0;
-  std::string identifier;
-  bool is_numeric = false;
+namespace {
 
-  auto ns_pos = str.find("ns=");
-  auto s_pos = str.find(";s=");
-  auto i_pos = str.find(";i=");
-
-  if (ns_pos != std::string::npos) {
-    auto end = str.find(';', ns_pos);
-    if (end != std::string::npos) {
-      ns = static_cast<uint16_t>(std::stoi(str.substr(ns_pos + 3, end - ns_pos - 3)));
+// Parse "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX" into a 16-byte array.
+// Returns std::nullopt if the input is not a valid GUID.
+std::optional<std::array<uint8_t, 16>> parse_guid_hex(const std::string & s) {
+  // Strip braces if present ("{...}" is the Microsoft registry form).
+  std::string clean = s;
+  if (!clean.empty() && clean.front() == '{' && clean.back() == '}') {
+    clean = clean.substr(1, clean.size() - 2);
+  }
+  // Expected pattern: 8-4-4-4-12 hex digits with 4 dashes = 36 chars total.
+  if (clean.size() != 36) {
+    return std::nullopt;
+  }
+  constexpr std::array<size_t, 4> dash_pos{8, 13, 18, 23};
+  for (auto p : dash_pos) {
+    if (clean[p] != '-') {
+      return std::nullopt;
     }
   }
+  // Collapse to 32 hex chars by stripping dashes.
+  std::string hex;
+  hex.reserve(32);
+  for (char c : clean) {
+    if (c != '-') {
+      hex += c;
+    }
+  }
+  std::array<uint8_t, 16> bytes{};
+  for (size_t i = 0; i < 16; ++i) {
+    const char hi = hex[i * 2];
+    const char lo = hex[i * 2 + 1];
+    if (!std::isxdigit(static_cast<unsigned char>(hi)) || !std::isxdigit(static_cast<unsigned char>(lo))) {
+      return std::nullopt;
+    }
+    try {
+      bytes[i] = static_cast<uint8_t>(std::stoul(hex.substr(i * 2, 2), nullptr, 16));
+    } catch (const std::exception &) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
 
-  if (s_pos != std::string::npos) {
-    identifier = str.substr(s_pos + 3);
-    is_numeric = false;
-  } else if (i_pos != std::string::npos) {
-    identifier = str.substr(i_pos + 3);
-    is_numeric = true;
+}  // namespace
+
+opcua::NodeId NodeMap::parse_node_id(const std::string & str) {
+  // OPC-UA Node ID string format is defined in OPC 10000-6 section 5.3.1.10:
+  //
+  //     [ns=<ns-index>;]<type>=<identifier>
+  //
+  // where <type> is one of:
+  //
+  //     i=<uint32>             numeric (most common for compact servers)
+  //     s=<string>             string   (Siemens DB addresses, Beckhoff tags)
+  //     g=<guid>               GUID     (rare, MS-style uuid)
+  //     b=<base64 bytestring>  opaque   (binary identifiers, legacy)
+  //
+  // If the `ns=` prefix is missing the namespace defaults to 0 (standard
+  // namespace). The identifier portion extends to the end of the string, so
+  // string identifiers may contain semicolons and other characters as long as
+  // they are not the identifier type prefix of a second node ID.
+  uint16_t ns = 0;
+  size_t type_pos = std::string::npos;
+
+  // Detect optional namespace prefix.
+  if (str.rfind("ns=", 0) == 0) {
+    const auto sep = str.find(';');
+    if (sep == std::string::npos) {
+      return {};  // malformed - no separator after namespace
+    }
+    try {
+      ns = static_cast<uint16_t>(std::stoul(str.substr(3, sep - 3)));
+    } catch (const std::exception &) {
+      return {};
+    }
+    type_pos = sep + 1;
+  } else {
+    type_pos = 0;
   }
 
-  if (is_numeric) {
-    return {ns, static_cast<uint32_t>(std::stoul(identifier))};
+  if (type_pos + 1 >= str.size() || str[type_pos + 1] != '=') {
+    return {};  // identifier type prefix missing
   }
-  return {ns, identifier};
+  const char type_char = str[type_pos];
+  const std::string identifier = str.substr(type_pos + 2);
+
+  switch (type_char) {
+    case 'i': {
+      try {
+        return {ns, static_cast<uint32_t>(std::stoul(identifier))};
+      } catch (const std::exception &) {
+        return {};
+      }
+    }
+    case 's': {
+      // String identifier is taken verbatim. OPC-UA explicitly allows any
+      // Unicode characters in string node IDs, including semicolons, quotes,
+      // dots etc. (e.g. Siemens: `"Tank_DB"."level"`, Beckhoff:
+      // `MAIN.Tank.level`).
+      return {ns, identifier};
+    }
+    case 'g': {
+      const auto parsed = parse_guid_hex(identifier);
+      if (!parsed) {
+        return {};
+      }
+      return {ns, opcua::Guid{*parsed}};
+    }
+    case 'b': {
+      try {
+        return {ns, opcua::ByteString::fromBase64(identifier)};
+      } catch (const std::exception &) {
+        return {};
+      }
+    }
+    default:
+      return {};
+  }
 }
 
 bool NodeMap::load(const std::string & yaml_path) {

@@ -310,4 +310,92 @@ nodes:
   EXPECT_EQ(map.entries()[0].ros2_topic, "/plc/_unnamed/val");
 }
 
+// -- parse_node_id tests --
+//
+// OPC-UA Node IDs per OPC 10000-6 section 5.3.1.10. The parser supports all
+// four identifier types (i, s, g, b) plus the optional namespace prefix.
+
+TEST(ParseNodeIdTest, NumericWithNamespace) {
+  const auto nid = NodeMap::parse_node_id("ns=2;i=42");
+  EXPECT_EQ(nid.getNamespaceIndex(), 2);
+  ASSERT_EQ(nid.getIdentifierType(), opcua::NodeIdType::Numeric);
+  EXPECT_EQ(nid.getIdentifierAs<uint32_t>(), 42u);
+}
+
+TEST(ParseNodeIdTest, NumericDefaultNamespace) {
+  const auto nid = NodeMap::parse_node_id("i=2253");  // Server_ServerStatus
+  EXPECT_EQ(nid.getNamespaceIndex(), 0);
+  ASSERT_EQ(nid.getIdentifierType(), opcua::NodeIdType::Numeric);
+  EXPECT_EQ(nid.getIdentifierAs<uint32_t>(), 2253u);
+}
+
+TEST(ParseNodeIdTest, StringSiemensStyle) {
+  // Siemens TIA Portal uses quoted DB addresses with embedded dots.
+  const auto nid = NodeMap::parse_node_id("ns=3;s=\"Tank_DB\".\"level_mm\"");
+  EXPECT_EQ(nid.getNamespaceIndex(), 3);
+  ASSERT_EQ(nid.getIdentifierType(), opcua::NodeIdType::String);
+  EXPECT_EQ(nid.getIdentifierAs<opcua::String>(), std::string_view{"\"Tank_DB\".\"level_mm\""});
+}
+
+TEST(ParseNodeIdTest, StringBeckhoffStyle) {
+  const auto nid = NodeMap::parse_node_id("ns=4;s=MAIN.Tank.level");
+  EXPECT_EQ(nid.getNamespaceIndex(), 4);
+  ASSERT_EQ(nid.getIdentifierType(), opcua::NodeIdType::String);
+  EXPECT_EQ(nid.getIdentifierAs<opcua::String>(), std::string_view{"MAIN.Tank.level"});
+}
+
+TEST(ParseNodeIdTest, StringWithEmbeddedSemicolon) {
+  // Pathological but legal: string identifier can contain semicolons.
+  // The parser takes the rest of the string after `;s=` verbatim.
+  const auto nid = NodeMap::parse_node_id("ns=2;s=value;with;semicolons");
+  EXPECT_EQ(nid.getNamespaceIndex(), 2);
+  EXPECT_EQ(nid.getIdentifierAs<opcua::String>(), std::string_view{"value;with;semicolons"});
+}
+
+TEST(ParseNodeIdTest, GuidWithNamespace) {
+  const auto nid = NodeMap::parse_node_id("ns=3;g=09087e75-8e5e-499e-954f-f2a9603db28a");
+  EXPECT_EQ(nid.getNamespaceIndex(), 3);
+  ASSERT_EQ(nid.getIdentifierType(), opcua::NodeIdType::Guid);
+}
+
+TEST(ParseNodeIdTest, GuidWithBracesMicrosoftForm) {
+  // Microsoft registry GUID format with curly braces is accepted.
+  const auto nid = NodeMap::parse_node_id("ns=3;g={09087e75-8e5e-499e-954f-f2a9603db28a}");
+  EXPECT_EQ(nid.getNamespaceIndex(), 3);
+  EXPECT_EQ(nid.getIdentifierType(), opcua::NodeIdType::Guid);
+}
+
+TEST(ParseNodeIdTest, OpaqueBase64) {
+  // Base64 of "helloworld12345!" (16 bytes).
+  const auto nid = NodeMap::parse_node_id("ns=2;b=aGVsbG93b3JsZDEyMzQ1IQ==");
+  EXPECT_EQ(nid.getNamespaceIndex(), 2);
+  EXPECT_EQ(nid.getIdentifierType(), opcua::NodeIdType::ByteString);
+}
+
+TEST(ParseNodeIdTest, MalformedMissingType) {
+  const auto nid = NodeMap::parse_node_id("ns=2");
+  // Should return default-constructed (empty) NodeId on parse failure.
+  EXPECT_EQ(nid.getIdentifierType(), opcua::NodeIdType::Numeric);
+  EXPECT_EQ(nid.getIdentifierAs<uint32_t>(), 0u);
+}
+
+TEST(ParseNodeIdTest, MalformedBadNamespace) {
+  const auto nid = NodeMap::parse_node_id("ns=abc;i=1");
+  EXPECT_EQ(nid.getNamespaceIndex(), 0);
+  EXPECT_EQ(nid.getIdentifierAs<uint32_t>(), 0u);
+}
+
+TEST(ParseNodeIdTest, MalformedBadGuid) {
+  const auto nid = NodeMap::parse_node_id("ns=3;g=not-a-valid-guid");
+  EXPECT_EQ(nid.getNamespaceIndex(), 0);
+  EXPECT_EQ(nid.getIdentifierAs<uint32_t>(), 0u);
+}
+
+TEST(ParseNodeIdTest, MalformedUnknownTypeChar) {
+  const auto nid = NodeMap::parse_node_id("ns=2;x=42");
+  // Unknown identifier type falls through to default.
+  EXPECT_EQ(nid.getNamespaceIndex(), 0);
+  EXPECT_EQ(nid.getIdentifierAs<uint32_t>(), 0u);
+}
+
 }  // namespace ros2_medkit_gateway
