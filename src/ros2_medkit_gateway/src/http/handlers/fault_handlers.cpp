@@ -550,10 +550,8 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
 
       merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
       ext.add("count", response["items"].size());
-      // muted_count and cluster_count are local-only metrics from FaultManager.
-      // They are not aggregated from peers (peer correlation data is opaque).
-      ext.add("local_muted_count", result.data["muted_count"]);
-      ext.add("local_cluster_count", result.data["cluster_count"]);
+      ext.add("muted_count", result.data["muted_count"]);
+      ext.add("cluster_count", result.data["cluster_count"]);
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
     } else {
