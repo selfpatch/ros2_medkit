@@ -402,7 +402,6 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       ext.entity_id(entity_id);
       ext.add("aggregation_level", "function");
       ext.add("aggregated", true);
-      ext.add("count", filtered_faults.size());
       ext.add("host_count", host_fqns.size());
       // Include source app IDs for cross-referencing aggregated results
       json source_ids = json::array();
@@ -412,6 +411,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       ext.add("aggregation_sources", source_ids);
 
       merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
+      ext.add("count", response["items"].size());
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
       return;
@@ -454,7 +454,6 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       ext.entity_id(entity_id);
       ext.add("aggregation_level", "component");
       ext.add("aggregated", true);
-      ext.add("count", filtered_faults.size());
       ext.add("app_count", app_fqns.size());
       // Include source app FQNs for cross-referencing aggregated results
       json source_fqns = json::array();
@@ -464,6 +463,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       ext.add("aggregation_sources", source_fqns);
 
       merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
+      ext.add("count", response["items"].size());
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
       return;
@@ -509,7 +509,6 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       ext.entity_id(entity_id);
       ext.add("aggregation_level", "area");
       ext.add("aggregated", true);
-      ext.add("count", filtered_faults.size());
       ext.add("component_count", comp_ids.size());
       ext.add("app_count", app_fqns.size());
       // Include source app FQNs for cross-referencing aggregated results
@@ -520,6 +519,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       ext.add("aggregation_sources", area_source_fqns);
 
       merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
+      ext.add("count", response["items"].size());
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
       return;
@@ -539,7 +539,6 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       XMedkit ext;
       ext.entity_id(entity_id);
       ext.add("source_id", namespace_path);
-      ext.add("count", result.data["count"]);
       ext.add("muted_count", result.data["muted_count"]);
       ext.add("cluster_count", result.data["cluster_count"]);
 
@@ -552,6 +551,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       }
 
       merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
+      ext.add("count", response["items"].size());
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
     } else {

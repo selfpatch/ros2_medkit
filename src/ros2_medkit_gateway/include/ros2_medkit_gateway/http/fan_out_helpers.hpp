@@ -68,7 +68,10 @@ inline void merge_peer_items(AggregationManager * agg, const httplib::Request & 
   }
   auto fan_path = build_fan_out_path(req);
   auto fan_result = agg->fan_out_get(fan_path, req.get_header_value("Authorization"));
-  if (fan_result.merged_items.is_array()) {
+  if (fan_result.merged_items.is_array() && !fan_result.merged_items.empty()) {
+    if (!result.contains("items") || !result["items"].is_array()) {
+      result["items"] = nlohmann::json::array();
+    }
     for (const auto & item : fan_result.merged_items) {
       result["items"].push_back(item);
     }
