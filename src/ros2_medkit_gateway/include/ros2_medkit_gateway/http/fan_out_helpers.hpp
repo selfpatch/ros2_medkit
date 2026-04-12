@@ -69,6 +69,13 @@ inline void merge_peer_items(AggregationManager * agg, const httplib::Request & 
   if (req.has_header("X-Medkit-No-Fan-Out")) {
     return;
   }
+  // Skip fan-out when no healthy peers to avoid blocking the httplib handler
+  // thread on network I/O (up to timeout_ms per request). With fan-out on all
+  // per-entity collection endpoints, concurrent requests during a peer outage
+  // could exhaust httplib's thread pool if we don't bail out early here.
+  if (agg->healthy_peer_count() == 0) {
+    return;
+  }
   auto fan_path = build_fan_out_path(req);
   auto fan_result = agg->fan_out_get(fan_path, req.get_header_value("Authorization"));
   if (fan_result.merged_items.is_array() && !fan_result.merged_items.empty()) {
