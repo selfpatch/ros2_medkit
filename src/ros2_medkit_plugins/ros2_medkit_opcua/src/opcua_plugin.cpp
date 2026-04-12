@@ -30,6 +30,47 @@
 namespace ros2_medkit_gateway {
 
 namespace {
+
+/// Parse a JSON "value" field, coerce to the node's declared data_type, and
+/// validate against the optional min/max range. Shared by handle_plc_operations,
+/// DataProvider::write_data, and OperationProvider::execute_operation to keep
+/// the three write paths in sync.
+tl::expected<OpcuaValue, std::string> parse_coerce_validate(const nlohmann::json & json_value,
+                                                            const NodeMapEntry & entry) {
+  OpcuaValue val;
+  try {
+    if (entry.data_type == "bool") {
+      val = json_value.get<bool>();
+    } else if (entry.data_type == "int") {
+      val = json_value.get<int32_t>();
+    } else if (entry.data_type == "string") {
+      val = json_value.get<std::string>();
+    } else {
+      val = json_value.get<double>();
+    }
+  } catch (const nlohmann::json::type_error &) {
+    return tl::make_unexpected("Value type mismatch for data_type: " + entry.data_type);
+  }
+
+  if (entry.has_range()) {
+    double v = std::visit(
+        [](auto && x) -> double {
+          using T = std::decay_t<decltype(x)>;
+          if constexpr (std::is_arithmetic_v<T>) {
+            return static_cast<double>(x);
+          }
+          return 0.0;
+        },
+        val);
+    if (v < *entry.min_value || v > *entry.max_value) {
+      return tl::make_unexpected("Value " + std::to_string(v) + " out of range [" + std::to_string(*entry.min_value) +
+                                 ", " + std::to_string(*entry.max_value) + "]");
+    }
+  }
+
+  return val;
+}
+
 bool is_valid_path_segment(const std::string & s) {
   if (s.empty() || s.size() > 256) {
     return false;
@@ -355,42 +396,13 @@ void OpcuaPlugin::handle_plc_operations(const PluginRequest & req, PluginRespons
     return;
   }
 
-  OpcuaValue write_val;
-  try {
-    if (entry->data_type == "bool") {
-      write_val = body["value"].get<bool>();
-    } else if (entry->data_type == "int") {
-      write_val = body["value"].get<int32_t>();
-    } else if (entry->data_type == "string") {
-      write_val = body["value"].get<std::string>();
-    } else {
-      write_val = body["value"].get<double>();
-    }
-  } catch (const nlohmann::json::type_error &) {
-    res.send_error(400, ERR_INVALID_REQUEST, "Value type mismatch for data_type: " + entry->data_type);
+  auto parsed = parse_coerce_validate(body["value"], *entry);
+  if (!parsed) {
+    res.send_error(400, ERR_INVALID_REQUEST, parsed.error());
     return;
   }
 
-  // Range validation for safety
-  if (entry->has_range()) {
-    double v = std::visit(
-        [](auto && x) -> double {
-          using T = std::decay_t<decltype(x)>;
-          if constexpr (std::is_arithmetic_v<T>) {
-            return static_cast<double>(x);
-          }
-          return 0.0;
-        },
-        write_val);
-    if (v < *entry->min_value || v > *entry->max_value) {
-      res.send_error(400, ERR_INVALID_REQUEST,
-                     "Value " + std::to_string(v) + " out of range [" + std::to_string(*entry->min_value) + ", " +
-                         std::to_string(*entry->max_value) + "]");
-      return;
-    }
-  }
-
-  auto write_result = client_->write_value(entry->node_id, write_val, entry->data_type);
+  auto write_result = client_->write_value(entry->node_id, *parsed, entry->data_type);
   if (!write_result) {
     int status = (write_result.error().code == OpcuaClient::WriteError::NotConnected ||
                   write_result.error().code == OpcuaClient::WriteError::TransportError)
@@ -408,7 +420,7 @@ void OpcuaPlugin::handle_plc_operations(const PluginRequest & req, PluginRespons
       [&response](auto && v) {
         response["value_written"] = v;
       },
-      write_val);
+      *parsed);
 
   res.send_json(response);
 }
@@ -710,42 +722,12 @@ tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::write_data(cons
         DataProviderErrorInfo{DataProviderError::InvalidValue, "Missing 'value' field in write body", 400});
   }
 
-  OpcuaValue write_val;
-  try {
-    if (entry->data_type == "bool") {
-      write_val = value["value"].get<bool>();
-    } else if (entry->data_type == "int") {
-      write_val = value["value"].get<int32_t>();
-    } else if (entry->data_type == "string") {
-      write_val = value["value"].get<std::string>();
-    } else {
-      write_val = value["value"].get<double>();
-    }
-  } catch (const nlohmann::json::type_error &) {
-    return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::InvalidValue,
-                                                     "Value type mismatch for data_type: " + entry->data_type, 400});
+  auto parsed = parse_coerce_validate(value["value"], *entry);
+  if (!parsed) {
+    return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::InvalidValue, parsed.error(), 400});
   }
 
-  if (entry->has_range()) {
-    double v = std::visit(
-        [](auto && x) -> double {
-          using T = std::decay_t<decltype(x)>;
-          if constexpr (std::is_arithmetic_v<T>) {
-            return static_cast<double>(x);
-          }
-          return 0.0;
-        },
-        write_val);
-    if (v < *entry->min_value || v > *entry->max_value) {
-      return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::InvalidValue,
-                                                       "Value " + std::to_string(v) + " out of range [" +
-                                                           std::to_string(*entry->min_value) + ", " +
-                                                           std::to_string(*entry->max_value) + "]",
-                                                       400});
-    }
-  }
-
-  auto write_result = client_->write_value(entry->node_id, write_val, entry->data_type);
+  auto write_result = client_->write_value(entry->node_id, *parsed, entry->data_type);
   if (!write_result) {
     auto wcode = write_result.error().code;
     if (wcode == OpcuaClient::WriteError::TypeMismatch) {
@@ -766,7 +748,7 @@ tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::write_data(cons
       [&result](auto && v) {
         result["value_written"] = v;
       },
-      write_val);
+      *parsed);
   return tl::expected<nlohmann::json, DataProviderErrorInfo>{result};
 }
 
@@ -824,42 +806,13 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
                                                           "Missing 'value' field in parameters", 400});
   }
 
-  OpcuaValue write_val;
-  try {
-    if (entry->data_type == "bool") {
-      write_val = parameters["value"].get<bool>();
-    } else if (entry->data_type == "int") {
-      write_val = parameters["value"].get<int32_t>();
-    } else if (entry->data_type == "string") {
-      write_val = parameters["value"].get<std::string>();
-    } else {
-      write_val = parameters["value"].get<double>();
-    }
-  } catch (const nlohmann::json::type_error &) {
-    return tl::make_unexpected(OperationProviderErrorInfo{
-        OperationProviderError::InvalidParameters, "Value type mismatch for data_type: " + entry->data_type, 400});
+  auto parsed = parse_coerce_validate(parameters["value"], *entry);
+  if (!parsed) {
+    return tl::make_unexpected(
+        OperationProviderErrorInfo{OperationProviderError::InvalidParameters, parsed.error(), 400});
   }
 
-  if (entry->has_range()) {
-    double v = std::visit(
-        [](auto && x) -> double {
-          using T = std::decay_t<decltype(x)>;
-          if constexpr (std::is_arithmetic_v<T>) {
-            return static_cast<double>(x);
-          }
-          return 0.0;
-        },
-        write_val);
-    if (v < *entry->min_value || v > *entry->max_value) {
-      return tl::make_unexpected(OperationProviderErrorInfo{OperationProviderError::InvalidParameters,
-                                                            "Value " + std::to_string(v) + " out of range [" +
-                                                                std::to_string(*entry->min_value) + ", " +
-                                                                std::to_string(*entry->max_value) + "]",
-                                                            400});
-    }
-  }
-
-  auto write_result = client_->write_value(entry->node_id, write_val, entry->data_type);
+  auto write_result = client_->write_value(entry->node_id, *parsed, entry->data_type);
   if (!write_result) {
     auto wcode = write_result.error().code;
     if (wcode == OpcuaClient::WriteError::TypeMismatch) {
@@ -882,7 +835,7 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
       [&result](auto && v) {
         result["value_written"] = v;
       },
-      write_val);
+      *parsed);
   return tl::expected<nlohmann::json, OperationProviderErrorInfo>{result};
 }
 
