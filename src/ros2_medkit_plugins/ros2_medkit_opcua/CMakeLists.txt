@@ -145,6 +145,30 @@ if(BUILD_TESTING)
   include(ROS2MedkitTestDomain)
   medkit_init_test_domains(START 220 END 229)
 
+  ament_add_gtest(test_opcua_plugin
+    test/test_opcua_plugin.cpp
+    src/opcua_plugin.cpp
+    src/opcua_client.cpp
+    src/node_map.cpp
+    src/opcua_poller.cpp
+  )
+  target_include_directories(test_opcua_plugin PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_opcua_plugin
+    ros2_medkit_msgs
+    ros2_medkit_gateway
+    rclcpp
+    std_msgs
+  )
+  target_link_libraries(test_opcua_plugin
+    open62541pp::open62541pp
+    nlohmann_json::nlohmann_json
+    yaml-cpp::yaml-cpp
+    OpenSSL::SSL OpenSSL::Crypto
+  )
+  medkit_set_test_domain(test_opcua_plugin)
+
   ament_add_gtest(test_node_map
     test/test_node_map.cpp
     src/node_map.cpp

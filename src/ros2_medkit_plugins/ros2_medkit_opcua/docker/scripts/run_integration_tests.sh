@@ -86,6 +86,27 @@ assert "404 unknown entity" "$(curl -s "$API/apps/nonexistent/x-plc-data" | jq '
 assert "404 unknown operation" "$(curl -s -X POST "$API/apps/tank_process/x-plc-operations/nonexistent" -H "Content-Type: application/json" -d '{"value":1}' | jq 'has("error_code")' 2>/dev/null)"
 assert "400 invalid JSON" "$(curl -s -X POST "$API/apps/fill_pump/x-plc-operations/set_pump_speed" -H "Content-Type: application/json" -d 'bad' | jq 'has("error_code")' 2>/dev/null)"
 
+# 8. Alarm -> Fault Bridge
+echo -e "\n${YELLOW}8. Alarm -> Fault Bridge${NC}"
+# Trigger PLC_LOW_LEVEL alarm by writing tank_level below threshold (100mm)
+curl -s -X POST "$API/apps/tank_process/x-plc-operations/set_tank_level" \
+    -H "Content-Type: application/json" -d '{"value": 50.0}' >/dev/null 2>&1
+sleep 3
+FAULTS=$(curl -s "$API/apps/tank_process/faults" 2>/dev/null)
+assert "alarm triggers fault" "$(echo "$FAULTS" | jq '[.faults[]?.fault_code] | contains(["PLC_LOW_LEVEL"])' 2>/dev/null)"
+# Clear alarm by writing tank_level back above threshold
+curl -s -X POST "$API/apps/tank_process/x-plc-operations/set_tank_level" \
+    -H "Content-Type: application/json" -d '{"value": 500.0}' >/dev/null 2>&1
+sleep 3
+FAULTS_AFTER=$(curl -s "$API/apps/tank_process/faults" 2>/dev/null)
+assert "alarm clears fault" "$(echo "$FAULTS_AFTER" | jq '[.faults[]?.fault_code] | contains(["PLC_LOW_LEVEL"]) | not' 2>/dev/null)"
+
+# 9. Standard SOVD Data Endpoint (DataProvider integration)
+echo -e "\n${YELLOW}9. Standard SOVD Data Endpoint${NC}"
+SOVD_DATA=$(curl -s "$API/apps/tank_process/data" 2>/dev/null)
+assert "SOVD /data returns items" "$(echo "$SOVD_DATA" | jq 'has("items")' 2>/dev/null)"
+assert "SOVD /data has tank_level" "$(echo "$SOVD_DATA" | jq '[.items[].id] | contains(["tank_level"])' 2>/dev/null)"
+
 # Cleanup - stop pump
 curl -s -X POST "$API/apps/fill_pump/x-plc-operations/set_pump_speed" \
     -H "Content-Type: application/json" -d '{"value": 0}' >/dev/null 2>&1
