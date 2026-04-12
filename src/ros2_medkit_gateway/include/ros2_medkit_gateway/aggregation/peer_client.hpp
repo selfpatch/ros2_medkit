@@ -113,6 +113,8 @@ class PeerClient {
    * @param method HTTP method (e.g., "GET")
    * @param path Request path (e.g., "/api/v1/components/abc/data")
    * @param auth_header Authorization header value (empty to omit)
+   * @param extra_headers Additional headers to include in the request
+   *   (e.g., X-Medkit-No-Fan-Out to prevent recursive fan-out loops)
    * @return Parsed JSON on success, error message on failure
    */
   tl::expected<nlohmann::json, std::string> forward_and_get_json(const std::string & method, const std::string & path,
