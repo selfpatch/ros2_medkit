@@ -29,8 +29,6 @@
 
 namespace ros2_medkit_gateway {
 
-using namespace ros2_medkit_gateway;
-
 namespace {
 bool is_valid_path_segment(const std::string & s) {
   if (s.empty() || s.size() > 256) {
@@ -747,9 +745,18 @@ tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::write_data(cons
     }
   }
 
-  if (!client_->write_value(entry->node_id, write_val)) {
-    return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::TransportError,
-                                                     "Failed to write value to PLC node: " + entry->node_id_str, 502});
+  auto write_result = client_->write_value(entry->node_id, write_val, entry->data_type);
+  if (!write_result) {
+    auto wcode = write_result.error().code;
+    if (wcode == OpcuaClient::WriteError::TypeMismatch) {
+      return tl::make_unexpected(
+          DataProviderErrorInfo{DataProviderError::InvalidValue, write_result.error().message, 400});
+    }
+    if (wcode == OpcuaClient::WriteError::AccessDenied) {
+      return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::ReadOnly, write_result.error().message, 403});
+    }
+    return tl::make_unexpected(
+        DataProviderErrorInfo{DataProviderError::TransportError, write_result.error().message, 502});
   }
 
   nlohmann::json result;
