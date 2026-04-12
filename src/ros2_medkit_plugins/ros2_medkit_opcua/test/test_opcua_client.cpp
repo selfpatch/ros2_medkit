@@ -76,4 +76,32 @@ TEST(OpcuaClientTest, RemoveSubscriptionsWhenEmpty) {
   client.remove_subscriptions();
 }
 
+TEST(OpcuaClientTest, WriteValueReturnsNotConnected) {
+  OpcuaClient client;
+  // Client never connected - write should return NotConnected error
+  auto result = client.write_value(opcua::NodeId(0, 1), OpcuaValue{42.0});
+  EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, OpcuaClient::WriteError::NotConnected);
+}
+
+TEST(OpcuaClientTest, WriteValueWithTypeHintDisconnected) {
+  OpcuaClient client;
+  // Even with a type hint, disconnected client returns NotConnected
+  auto result = client.write_value(opcua::NodeId(2, 1), OpcuaValue{75.0}, "float");
+  EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, OpcuaClient::WriteError::NotConnected);
+}
+
+TEST(OpcuaClientTest, CurrentConfigPersistence) {
+  OpcuaClient client;
+  OpcuaClientConfig cfg;
+  cfg.endpoint_url = "opc.tcp://test:4840";
+  cfg.connect_timeout = std::chrono::milliseconds(1000);
+  // connect will fail (no server) but config should be stored
+  client.connect(cfg);
+  auto stored = client.current_config();
+  EXPECT_EQ(stored.endpoint_url, "opc.tcp://test:4840");
+  EXPECT_EQ(stored.connect_timeout, std::chrono::milliseconds(1000));
+}
+
 }  // namespace ros2_medkit_gateway
