@@ -2227,7 +2227,7 @@ metadata indicating partial results:
 .. code-block:: json
 
    {
-     "items": [...],
+     "items": [],
      "x-medkit": {
        "partial": true,
        "failed_peers": ["secondary_gateway"]
@@ -2235,7 +2235,7 @@ metadata indicating partial results:
    }
 
 When all peers respond successfully, these fields are omitted. See the
-:ref:`aggregation configuration guide <aggregation>` for setup details.
+:doc:`aggregation configuration guide </config/aggregation>` for setup details.
 
 Capability Description (OpenAPI Docs)
 --------------------------------------
