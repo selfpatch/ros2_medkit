@@ -230,38 +230,24 @@ TEST(FanOutHelpers, merge_peer_items_appends_peer_items_to_result) {
 }
 
 TEST(FanOutHelpers, merge_peer_items_sets_partial_on_peer_failure) {
-  // Use a dead port so the peer is unreachable
-  AggregationConfig config;
-  config.enabled = true;
-  config.timeout_ms = 200;
-  AggregationConfig::PeerConfig peer;
-  peer.url = "http://127.0.0.1:59999";
-  peer.name = "dead_peer";
-  config.peers.push_back(peer);
-
-  AggregationManager agg(config);
-  // Don't check health - peer starts as unhealthy, fan_out_get skips it.
-  // Force healthy flag via a mock health endpoint that 404s:
-  // Actually, fan_out_get only queries healthy peers. With no health check,
-  // peers default to unhealthy and fan_out returns empty. Instead, use a
-  // mock that returns health OK but fails on the actual request.
+  // Mock server responds to health but has no handler for the actual
+  // resource path, so the peer returns 404 (non-2xx = failure).
   MockServer mock;
   mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
     res.set_content(R"({"status":"healthy"})", "application/json");
   });
-  // No handler for /api/v1/functions/f1/logs -> peer returns 404
   int port = mock.start();
 
-  AggregationConfig config2;
-  config2.enabled = true;
-  config2.timeout_ms = 2000;
-  AggregationConfig::PeerConfig peer2;
-  peer2.url = "http://127.0.0.1:" + std::to_string(port);
-  peer2.name = "failing_peer";
-  config2.peers.push_back(peer2);
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 2000;
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "failing_peer";
+  config.peers.push_back(peer);
 
-  AggregationManager agg2(config2);
-  agg2.check_all_health();
+  AggregationManager agg(config);
+  agg.check_all_health();
 
   httplib::Request req;
   req.path = "/api/v1/functions/f1/logs";
@@ -269,7 +255,7 @@ TEST(FanOutHelpers, merge_peer_items_sets_partial_on_peer_failure) {
   result["items"] = json::array();
   XMedkit ext;
 
-  merge_peer_items(&agg2, req, result, ext);
+  merge_peer_items(&agg, req, result, ext);
 
   EXPECT_EQ(result["items"].size(), 0u);
   EXPECT_FALSE(ext.empty());
