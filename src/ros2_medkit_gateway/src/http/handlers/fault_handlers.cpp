@@ -27,6 +27,7 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/entity_path_utils.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
@@ -410,6 +411,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       }
       ext.add("aggregation_sources", source_ids);
 
+      merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
       return;
@@ -461,6 +463,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       }
       ext.add("aggregation_sources", source_fqns);
 
+      merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
       return;
@@ -516,6 +519,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       }
       ext.add("aggregation_sources", area_source_fqns);
 
+      merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
       return;
@@ -547,6 +551,7 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
         ext.add("clusters", result.data["clusters"]);
       }
 
+      merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
     } else {

@@ -19,6 +19,7 @@
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 
@@ -345,6 +346,7 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
 
     json response;
     response["items"] = items;
+    merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
     response["x-medkit"] = ext.build();
     HandlerContext::send_json(res, response);
 
