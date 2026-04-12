@@ -241,6 +241,12 @@ App parse_app(const nlohmann::json & j) {
     const auto & links = j["_links"];
     if (links.contains("is-located-on") && links["is-located-on"].is_string()) {
       app.component_id = component_id_from_located_on(links["is-located-on"].get<std::string>());
+    } else if (links.contains("is-located-on") && links["is-located-on"].is_object()) {
+      // HAL+JSON object form: {"href": "/api/v1/components/ecu-a"}
+      auto href = links["is-located-on"].value("href", "");
+      if (!href.empty()) {
+        app.component_id = component_id_from_located_on(href);
+      }
     }
   }
 
