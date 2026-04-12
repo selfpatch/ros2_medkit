@@ -46,15 +46,19 @@ class LightController : public rclcpp::Node {
   }
 
   ~LightController() {
-    cmd_sub_.reset();
     timer_->cancel();
     std::lock_guard<std::mutex> lock(callback_mutex_);
+    cmd_sub_.reset();
     timer_.reset();
     status_pub_.reset();
   }
 
  private:
   void command_callback(const std_msgs::msg::Bool::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (!status_pub_) {
+      return;
+    }
     light_on_ = msg->data;
     RCLCPP_INFO(this->get_logger(), "Light command: %s", light_on_ ? "ON" : "OFF");
   }

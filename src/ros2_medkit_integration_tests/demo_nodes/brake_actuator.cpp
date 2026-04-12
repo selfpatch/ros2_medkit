@@ -46,15 +46,19 @@ class BrakeActuator : public rclcpp::Node {
   }
 
   ~BrakeActuator() {
-    cmd_sub_.reset();
     timer_->cancel();
     std::lock_guard<std::mutex> lock(callback_mutex_);
+    cmd_sub_.reset();
     timer_.reset();
     pressure_pub_.reset();
   }
 
  private:
   void command_callback(const std_msgs::msg::Float32::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (!pressure_pub_) {
+      return;
+    }
     target_pressure_ = msg->data;
 
     // Clamp to valid range (0-100 bar)
