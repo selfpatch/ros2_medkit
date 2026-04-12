@@ -25,6 +25,7 @@
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
+#include "ros2_medkit_gateway/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/version.hpp"
 
 #include "../../openapi/route_registry.hpp"

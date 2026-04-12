@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include <cctype>
 #include <string>
 
 #include <httplib.h>
@@ -31,7 +30,11 @@ inline std::string url_encode_param(const std::string & value) {
   static constexpr char kHex[] = "0123456789ABCDEF";
   for (const auto ch : value) {
     auto c = static_cast<unsigned char>(ch);
-    if (std::isalnum(c) != 0 || c == '-' || c == '_' || c == '.' || c == '~') {
+    // Locale-independent RFC 3986 unreserved character check (ASCII-only).
+    // std::isalnum is locale-dependent and could pass bytes >= 0x80.
+    bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
+                      c == '_' || c == '.' || c == '~';
+    if (unreserved) {
       result += static_cast<char>(c);
     } else {
       result += '%';
