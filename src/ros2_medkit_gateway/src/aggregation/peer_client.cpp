@@ -578,6 +578,11 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
   if (forward_auth_ && req.has_header("Authorization")) {
     headers.emplace("Authorization", req.get_header_value("Authorization"));
   }
+  // Propagate fan-out suppression header to prevent recursive loops when
+  // a forwarded request bounces back to the origin via bidirectional peering.
+  if (req.has_header("X-Medkit-No-Fan-Out")) {
+    headers.emplace("X-Medkit-No-Fan-Out", "1");
+  }
 
   httplib::Result result{nullptr, httplib::Error::Unknown};
   const std::string path = path_with_query(req);

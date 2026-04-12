@@ -2221,8 +2221,8 @@ operations, faults, configurations, logs, and the global ``GET /api/v1/faults``
 endpoint. The gateway sends the same request to all healthy peers, merges their
 ``items`` arrays into the local response, and returns the combined result.
 
-If some peers are unreachable during fan-out, the response includes vendor
-metadata indicating partial results:
+If some peer requests fail during fan-out (peer unreachable or non-2xx
+response), the response includes vendor metadata indicating partial results:
 
 .. code-block:: json
 
