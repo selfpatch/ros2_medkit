@@ -76,7 +76,9 @@ inline void merge_peer_items(AggregationManager * agg, const httplib::Request & 
       result["items"] = nlohmann::json::array();
     }
     for (const auto & item : fan_result.merged_items) {
-      result["items"].push_back(item);
+      if (item.is_object()) {
+        result["items"].push_back(item);
+      }
     }
   }
   if (fan_result.is_partial) {
