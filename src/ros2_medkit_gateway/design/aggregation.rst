@@ -295,6 +295,18 @@ peers fail, the response body includes ``x-medkit.partial: true`` and
 ``X-Medkit-No-Fan-Out`` header to prevent recursive loops when peers have
 bidirectional aggregation.
 
+.. warning::
+
+   Fan-out is synchronous on the httplib handler thread. Each request blocks
+   for up to ``timeout_ms`` (default 2000ms) waiting for the slowest healthy
+   peer (parallel via ``std::async``, so max-not-sum across peers).
+   ``merge_peer_items()`` skips fan-out when ``healthy_peer_count() == 0`` to
+   avoid blocking after a peer outage is detected by health checks, but during
+   the window between a peer going down and the next health check cycle, handler
+   threads can block. Under concurrent load, this could exhaust httplib's thread
+   pool. Consider reducing ``aggregation.timeout_ms`` for deployments with many
+   per-entity fan-out consumers.
+
 Peer Discovery
 --------------
 
