@@ -50,7 +50,7 @@ inline std::string build_fan_out_path(const httplib::Request & req) {
   char sep = '?';
   for (const auto & [key, value] : req.params) {
     path += sep;
-    path += key;
+    path += url_encode_param(key);
     path += '=';
     path += url_encode_param(value);
     sep = '&';
@@ -61,6 +61,9 @@ inline std::string build_fan_out_path(const httplib::Request & req) {
 inline void merge_peer_items(AggregationManager * agg, const httplib::Request & req, nlohmann::json & result,
                              XMedkit & ext) {
   if (agg == nullptr) {
+    return;
+  }
+  if (req.has_header("X-Medkit-No-Fan-Out")) {
     return;
   }
   auto fan_path = build_fan_out_path(req);

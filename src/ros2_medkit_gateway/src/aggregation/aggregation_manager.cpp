@@ -559,7 +559,7 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
       PeerResult pr;
       pr.peer_name = peer->name();
 
-      auto result = peer->forward_and_get_json("GET", path, auth_header);
+      auto result = peer->forward_and_get_json("GET", path, auth_header, {{"X-Medkit-No-Fan-Out", "1"}});
       if (!result.has_value()) {
         pr.success = false;
         return pr;

@@ -633,7 +633,8 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
 
 tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const std::string & method,
                                                                            const std::string & path,
-                                                                           const std::string & auth_header) {
+                                                                           const std::string & auth_header,
+                                                                           const httplib::Headers & extra_headers) {
   // Create a dedicated client per call to avoid holding client_mutex_ during I/O.
   // The shared client_ is reserved for short health checks only.
   httplib::Client cli(url_);
@@ -644,6 +645,9 @@ tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const
   // Only forward auth header when forward_auth is enabled
   if (forward_auth_ && !auth_header.empty()) {
     headers.emplace("Authorization", auth_header);
+  }
+  for (const auto & [key, value] : extra_headers) {
+    headers.emplace(key, value);
   }
 
   // Accumulate body with streaming size enforcement via ContentReceiver.
