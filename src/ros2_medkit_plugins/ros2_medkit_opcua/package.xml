@@ -22,6 +22,11 @@
   <depend>yaml_cpp_vendor</depend>
   <depend>libssl-dev</depend>
 
+  <!-- open62541pp (OPC-UA C++ wrapper, MPLv2) is pulled via FetchContent at
+       build time. Not declared as a rosdep dependency because it has no apt
+       package. See https://github.com/selfpatch/ros2_medkit/issues/366 for
+       vendoring follow-up before rosdistro release. -->
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
   <test_depend>ament_cmake_clang_format</test_depend>

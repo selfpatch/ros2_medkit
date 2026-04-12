@@ -21,8 +21,12 @@
 #include <ros2_medkit_gateway/plugins/gateway_plugin.hpp>
 #include <ros2_medkit_gateway/plugins/plugin_context.hpp>
 #include <ros2_medkit_gateway/plugins/plugin_http_types.hpp>
+#include <ros2_medkit_gateway/providers/data_provider.hpp>
+#include <ros2_medkit_gateway/providers/fault_provider.hpp>
 #include <ros2_medkit_gateway/providers/introspection_provider.hpp>
+#include <ros2_medkit_gateway/providers/operation_provider.hpp>
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -36,15 +40,32 @@ namespace ros2_medkit_gateway {
 
 /// OPC-UA Gateway Plugin - bridges OPC-UA PLCs into the SOVD entity tree
 ///
-/// Implements GatewayPlugin (lifecycle, routes) and IntrospectionProvider
-/// (entity discovery from OPC-UA address space).
+/// Implements GatewayPlugin (lifecycle, routes), IntrospectionProvider
+/// (entity discovery from OPC-UA address space), and the typed provider
+/// interfaces (DataProvider, OperationProvider, FaultProvider) so that
+/// standard SOVD endpoints (/data, /operations, /faults) work for PLC
+/// entities alongside the vendor x-plc-* extensions.
 ///
-/// Vendor REST endpoints:
+/// Standard SOVD endpoints (via provider interfaces):
+///   GET  /{type}/{id}/data                    - DataProvider::list_data
+///   GET  /{type}/{id}/data/{name}             - DataProvider::read_data
+///   PUT  /{type}/{id}/data/{name}             - DataProvider::write_data
+///   GET  /{type}/{id}/operations              - OperationProvider::list_operations
+///   POST /{type}/{id}/operations/{name}       - OperationProvider::execute_operation
+///   GET  /{type}/{id}/faults                  - FaultProvider::list_faults
+///   GET  /{type}/{id}/faults/{code}           - FaultProvider::get_fault
+///   DELETE /{type}/{id}/faults/{code}         - FaultProvider::clear_fault
+///
+/// Vendor REST extensions (via get_routes):
 ///   GET  /apps/{id}/x-plc-data          - All OPC-UA values for entity
 ///   GET  /apps/{id}/x-plc-data/{node}   - Single node value
 ///   POST /apps/{id}/x-plc-operations/{op} - Write value to PLC
 ///   GET  /components/{id}/x-plc-status  - Connection state and stats
-class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin, public ros2_medkit_gateway::IntrospectionProvider {
+class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
+                    public ros2_medkit_gateway::IntrospectionProvider,
+                    public ros2_medkit_gateway::DataProvider,
+                    public ros2_medkit_gateway::OperationProvider,
+                    public ros2_medkit_gateway::FaultProvider {
  public:
   OpcuaPlugin();
   ~OpcuaPlugin() override;
@@ -61,6 +82,26 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin, public ros2_medki
   // -- IntrospectionProvider interface --
   ros2_medkit_gateway::IntrospectionResult introspect(const ros2_medkit_gateway::IntrospectionInput & input) override;
 
+  // -- DataProvider interface --
+  tl::expected<nlohmann::json, DataProviderErrorInfo> list_data(const std::string & entity_id) override;
+  tl::expected<nlohmann::json, DataProviderErrorInfo> read_data(const std::string & entity_id,
+                                                                const std::string & resource_name) override;
+  tl::expected<nlohmann::json, DataProviderErrorInfo>
+  write_data(const std::string & entity_id, const std::string & resource_name, const nlohmann::json & value) override;
+
+  // -- OperationProvider interface --
+  tl::expected<nlohmann::json, OperationProviderErrorInfo> list_operations(const std::string & entity_id) override;
+  tl::expected<nlohmann::json, OperationProviderErrorInfo>
+  execute_operation(const std::string & entity_id, const std::string & operation_name,
+                    const nlohmann::json & parameters) override;
+
+  // -- FaultProvider interface --
+  tl::expected<nlohmann::json, FaultProviderErrorInfo> list_faults(const std::string & entity_id) override;
+  tl::expected<nlohmann::json, FaultProviderErrorInfo> get_fault(const std::string & entity_id,
+                                                                 const std::string & fault_code) override;
+  tl::expected<nlohmann::json, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
+                                                                   const std::string & fault_code) override;
+
  private:
   // Route handlers
   void handle_plc_data(const ros2_medkit_gateway::PluginRequest & req, ros2_medkit_gateway::PluginResponse & res);
@@ -72,10 +113,10 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin, public ros2_medki
   // Alarm -> Fault bridge
   void on_alarm_change(const std::string & fault_code, const AlarmConfig & config, bool active);
 
-  // Report/clear fault via ROS 2 service
-  void report_fault(const std::string & entity_id, const std::string & fault_code, const std::string & severity_str,
-                    const std::string & message);
-  void clear_fault(const std::string & fault_code);
+  // Report/clear fault via ROS 2 service (private helpers, not the FaultProvider overrides)
+  void send_report_fault(const std::string & entity_id, const std::string & fault_code,
+                         const std::string & severity_str, const std::string & message);
+  void send_clear_fault(const std::string & fault_code);
 
   // Publish PLC values to ROS 2 topics (called after each poll)
   void publish_values(const PollSnapshot & snap);
@@ -83,6 +124,7 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin, public ros2_medki
   // Build JSON response for data endpoint
   nlohmann::json build_data_response(const std::string & entity_id) const;
 
+  std::atomic<bool> shutdown_requested_{false};
   ros2_medkit_gateway::PluginContext * ctx_{nullptr};
   OpcuaClientConfig client_config_;
   PollerConfig poller_config_;

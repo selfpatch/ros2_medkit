@@ -48,7 +48,7 @@ include(FetchContent)
 fetchcontent_declare(
   open62541pp
   GIT_REPOSITORY https://github.com/open62541pp/open62541pp.git
-  GIT_TAG v0.16.0
+  GIT_TAG 122ea4c842193918b97fd2f2def4fbecabb33ffe  # v0.16.0 pinned by SHA
   GIT_SUBMODULES_RECURSE ON
 )
 # Build open62541 as part of open62541pp, with -fPIC for shared library
