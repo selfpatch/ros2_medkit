@@ -22,6 +22,7 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
+#include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
