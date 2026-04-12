@@ -398,4 +398,127 @@ TEST(ParseNodeIdTest, MalformedUnknownTypeChar) {
   EXPECT_EQ(nid.getIdentifierAs<uint32_t>(), 0u);
 }
 
+// -- YAML validation edge cases (#17, #19) --
+
+TEST_F(NodeMapTest, MalformedYamlSyntax) {
+  std::string path = "/tmp/test_node_map_malformed.yaml";
+  std::ofstream f(path);
+  f << "{{{{this is not valid yaml at all";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
+TEST_F(NodeMapTest, MissingRequiredFields) {
+  std::string path = "/tmp/test_node_map_missing.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - entity_id: ent1
+    data_name: val1
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  // Entry without node_id should be skipped
+  EXPECT_TRUE(map.entries().empty());
+}
+
+TEST_F(NodeMapTest, DuplicateNodeId) {
+  std::string path = "/tmp/test_node_map_dup.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: ent1
+    data_name: first
+  - node_id: "ns=1;i=1"
+    entity_id: ent1
+    data_name: second
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  // Duplicate node_id - first wins, second skipped
+  ASSERT_EQ(map.entries().size(), 1u);
+  EXPECT_EQ(map.entries()[0].data_name, "first");
+}
+
+TEST_F(NodeMapTest, UnknownDataTypeDefaultsToFloat) {
+  std::string path = "/tmp/test_node_map_badtype.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: ent1
+    data_name: val1
+    data_type: custom_weird_type
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  EXPECT_EQ(map.entries()[0].data_type, "float");
+}
+
+TEST_F(NodeMapTest, RangeValidationFieldsParsed) {
+  std::string path = "/tmp/test_node_map_range.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: ent1
+    data_name: val1
+    min_value: -10.5
+    max_value: 100.0
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_TRUE(map.entries()[0].min_value.has_value());
+  ASSERT_TRUE(map.entries()[0].max_value.has_value());
+  EXPECT_DOUBLE_EQ(*map.entries()[0].min_value, -10.5);
+  EXPECT_DOUBLE_EQ(*map.entries()[0].max_value, 100.0);
+  EXPECT_TRUE(map.entries()[0].has_range());
+}
+
+TEST_F(NodeMapTest, AlarmPartialConfigDefaultsSeverity) {
+  std::string path = "/tmp/test_node_map_alarm.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: ent1
+    data_name: val1
+    alarm:
+      fault_code: TEST_FAULT
+      threshold: 50.0
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_TRUE(map.entries()[0].alarm.has_value());
+  EXPECT_EQ(map.entries()[0].alarm->fault_code, "TEST_FAULT");
+  // severity defaults to "ERROR" when not specified
+  EXPECT_EQ(map.entries()[0].alarm->severity, "ERROR");
+  EXPECT_DOUBLE_EQ(map.entries()[0].alarm->threshold, 50.0);
+  // above_threshold defaults to true
+  EXPECT_TRUE(map.entries()[0].alarm->above_threshold);
+}
+
 }  // namespace ros2_medkit_gateway
