@@ -19,6 +19,7 @@
 #include "ros2_medkit_gateway/exceptions.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
@@ -128,6 +129,7 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
       resp_ext.add("aggregation_sources", aggregated.source_ids);
       resp_ext.add("aggregation_level", aggregated.aggregation_level);
     }
+    merge_peer_items(ctx_.aggregation_manager(), req, response, resp_ext);
     response["x-medkit"] = resp_ext.build();
 
     HandlerContext::send_json(res, response);

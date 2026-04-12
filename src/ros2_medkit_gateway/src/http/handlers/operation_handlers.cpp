@@ -18,6 +18,7 @@
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
@@ -183,6 +184,11 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
     // Return response with items array
     json response;
     response["items"] = operations;
+    XMedkit ext;
+    merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
+    if (!ext.empty()) {
+      response["x-medkit"] = ext.build();
+    }
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to list operations",
