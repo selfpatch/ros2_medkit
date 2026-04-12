@@ -2213,6 +2213,30 @@ Other extensions beyond SOVD:
 - SSE fault streaming - Real-time fault notifications
 - ``x-medkit`` extension fields in responses
 
+**Cross-Gateway Resource Aggregation:**
+
+When aggregation is enabled, per-entity resource collection endpoints perform
+real-time fan-out to peer gateways. The affected endpoints are: data,
+operations, faults, configurations, logs, and the global ``GET /api/v1/faults``
+endpoint. The gateway sends the same request to all healthy peers, merges their
+``items`` arrays into the local response, and returns the combined result.
+
+If some peers are unreachable during fan-out, the response includes vendor
+metadata indicating partial results:
+
+.. code-block:: json
+
+   {
+     "items": [...],
+     "x-medkit": {
+       "partial": true,
+       "failed_peers": ["secondary_gateway"]
+     }
+   }
+
+When all peers respond successfully, these fields are omitted. See the
+:ref:`aggregation configuration guide <aggregation>` for setup details.
+
 Capability Description (OpenAPI Docs)
 --------------------------------------
 

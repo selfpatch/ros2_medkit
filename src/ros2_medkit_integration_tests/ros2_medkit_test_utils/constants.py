@@ -41,9 +41,11 @@ def get_test_domain_id(offset=0):
 
     For offset > 0 (multi-gateway tests needing a second DDS domain),
     derives a unique secondary domain from the primary via modular
-    mapping into the 230-232 range (DDS max domain is 232). Each
-    test's unique primary ensures a deterministic secondary. With 3
-    buckets and currently 2 multi-gateway tests, collisions are avoided.
+    mapping into the 230-232 range (DDS max domain is 232). The offset
+    value itself is not used as a multiplier - any non-zero offset
+    selects the same derived secondary for a given primary. Each test's
+    unique primary ensures a deterministic secondary. With 3 buckets
+    and currently 2 multi-gateway tests, collisions are avoided.
     """
     if offset == 0:
         return DEFAULT_DOMAIN_ID

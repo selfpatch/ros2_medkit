@@ -370,12 +370,12 @@ Per-entity resource collection endpoints perform real-time fan-out via
 ``fan_out_get()`` to collect items from all healthy peers and merge them
 into the local response. This applies to:
 
-- ``GET /{entity_type}/{id}/data``
-- ``GET /{entity_type}/{id}/operations``
-- ``GET /{entity_type}/{id}/faults``
-- ``GET /{entity_type}/{id}/configurations``
-- ``GET /{entity_type}/{id}/logs``
-- ``GET /faults`` (global fault list)
+- ``GET /api/v1/{entity_type}/{id}/data``
+- ``GET /api/v1/{entity_type}/{id}/operations``
+- ``GET /api/v1/{entity_type}/{id}/faults``
+- ``GET /api/v1/{entity_type}/{id}/configurations``
+- ``GET /api/v1/{entity_type}/{id}/logs``
+- ``GET /api/v1/faults`` (global fault list)
 
 If a peer is unreachable during fan-out, the response body includes:
 

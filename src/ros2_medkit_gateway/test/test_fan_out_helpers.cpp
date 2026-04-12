@@ -132,7 +132,7 @@ TEST(FanOutHelpers, merge_peer_items_skips_when_no_fan_out_header_set) {
   EXPECT_TRUE(ext.empty());
 }
 
-TEST(FanOutHelpers, merge_peer_items_creates_items_array_if_missing) {
+TEST(FanOutHelpers, merge_peer_items_null_agg_does_not_touch_result) {
   httplib::Request req;
   req.path = "/api/v1/test";
   json result;
@@ -141,6 +141,6 @@ TEST(FanOutHelpers, merge_peer_items_creates_items_array_if_missing) {
 
   merge_peer_items(nullptr, req, result, ext);
 
-  // null agg = no-op, items should not be created
+  // null agg = no-op, result should be untouched
   EXPECT_FALSE(result.contains("items"));
 }
