@@ -73,7 +73,8 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     poller_config_.subscription_interval_ms = config["subscription_interval_ms"].get<double>();
   }
   if (config.contains("poll_interval_ms")) {
-    poller_config_.poll_interval = std::chrono::milliseconds(config["poll_interval_ms"].get<int>());
+    auto ms = std::clamp(config["poll_interval_ms"].get<int>(), 100, 60000);
+    poller_config_.poll_interval = std::chrono::milliseconds(ms);
   }
 
   // Environment variables override YAML config (for Docker)
@@ -391,8 +392,13 @@ void OpcuaPlugin::handle_plc_operations(const PluginRequest & req, PluginRespons
     }
   }
 
-  if (!client_->write_value(entry->node_id, write_val)) {
-    res.send_error(502, ERR_SERVICE_UNAVAILABLE, "Failed to write value to PLC node: " + entry->node_id_str);
+  auto write_result = client_->write_value(entry->node_id, write_val, entry->data_type);
+  if (!write_result) {
+    int status = (write_result.error().code == OpcuaClient::WriteError::NotConnected ||
+                  write_result.error().code == OpcuaClient::WriteError::TransportError)
+                     ? 502
+                     : 400;
+    res.send_error(status, ERR_SERVICE_UNAVAILABLE, write_result.error().message);
     return;
   }
 
@@ -846,9 +852,19 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
     }
   }
 
-  if (!client_->write_value(entry->node_id, write_val)) {
-    return tl::make_unexpected(OperationProviderErrorInfo{
-        OperationProviderError::TransportError, "Failed to write value to PLC node: " + entry->node_id_str, 502});
+  auto write_result = client_->write_value(entry->node_id, write_val, entry->data_type);
+  if (!write_result) {
+    auto wcode = write_result.error().code;
+    if (wcode == OpcuaClient::WriteError::TypeMismatch) {
+      return tl::make_unexpected(
+          OperationProviderErrorInfo{OperationProviderError::InvalidParameters, write_result.error().message, 400});
+    }
+    if (wcode == OpcuaClient::WriteError::AccessDenied) {
+      return tl::make_unexpected(
+          OperationProviderErrorInfo{OperationProviderError::Rejected, write_result.error().message, 403});
+    }
+    return tl::make_unexpected(
+        OperationProviderErrorInfo{OperationProviderError::TransportError, write_result.error().message, 502});
   }
 
   nlohmann::json result;

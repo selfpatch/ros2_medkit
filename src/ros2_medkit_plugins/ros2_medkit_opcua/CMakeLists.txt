@@ -152,6 +152,10 @@ if(BUILD_TESTING)
   target_include_directories(test_node_map PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
+  medkit_target_dependencies(test_node_map
+    ros2_medkit_gateway
+    rclcpp
+  )
   target_link_libraries(test_node_map
     open62541pp::open62541pp
     nlohmann_json::nlohmann_json
@@ -165,6 +169,9 @@ if(BUILD_TESTING)
   )
   target_include_directories(test_opcua_client PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_opcua_client
+    ros2_medkit_gateway
   )
   target_link_libraries(test_opcua_client
     open62541pp::open62541pp

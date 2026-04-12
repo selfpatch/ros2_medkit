@@ -26,6 +26,7 @@
 #include <string>
 
 #include <nlohmann/json.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <yaml-cpp/yaml.h>
 
 namespace ros2_medkit_gateway {
@@ -187,17 +188,53 @@ bool NodeMap::load(const std::string & yaml_path) {
     entity_index_.clear();
     node_id_index_.clear();
 
+    if (nodes.size() > 10000) {
+      RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
+                   "Node map has %zu entries (max 10000) - refusing to load to prevent resource exhaustion",
+                   nodes.size());
+      return false;
+    }
+
     for (size_t i = 0; i < nodes.size(); ++i) {
       const auto & n = nodes[i];
+
+      // Validate required fields
+      if (!n["node_id"] || !n["entity_id"] || !n["data_name"]) {
+        RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
+                    "Entry %zu missing required field (node_id/entity_id/data_name) - skipping", i);
+        continue;
+      }
+
       NodeMapEntry entry;
 
       entry.node_id_str = n["node_id"].as<std::string>();
       entry.node_id = parse_node_id(entry.node_id_str);
+      if (entry.node_id_str.empty()) {
+        RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"), "Entry %zu has empty node_id - skipping", i);
+        continue;
+      }
       entry.entity_id = n["entity_id"].as<std::string>();
       entry.data_name = n["data_name"].as<std::string>();
       entry.display_name = n["display_name"].as<std::string>(entry.data_name);
       entry.unit = n["unit"].as<std::string>("");
       entry.data_type = n["data_type"].as<std::string>("float");
+
+      // Validate data_type is one of the known types
+      if (entry.data_type != "bool" && entry.data_type != "int" && entry.data_type != "float" &&
+          entry.data_type != "string") {
+        RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
+                    "Entry %zu (%s) has unknown data_type '%s' - defaulting to 'float'", i, entry.node_id_str.c_str(),
+                    entry.data_type.c_str());
+        entry.data_type = "float";
+      }
+
+      // Detect duplicate node_id (first wins)
+      if (node_id_index_.count(entry.node_id_str) > 0) {
+        RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"), "Duplicate node_id '%s' at entry %zu - skipping (first wins)",
+                    entry.node_id_str.c_str(), i);
+        continue;
+      }
+
       entry.writable = n["writable"].as<bool>(false);
       if (n["min_value"]) {
         entry.min_value = n["min_value"].as<double>();
@@ -241,8 +278,8 @@ bool NodeMap::load(const std::string & yaml_path) {
       if (n["ros2_topic"]) {
         entry.ros2_topic = n["ros2_topic"].as<std::string>();
         if (!is_valid_ros2_topic(entry.ros2_topic)) {
-          std::cerr << "NodeMap: invalid custom ros2_topic '" << entry.ros2_topic << "' for " << entry.node_id_str
-                    << ", auto-generating" << std::endl;
+          RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"), "Invalid custom ros2_topic '%s' for %s - auto-generating",
+                      entry.ros2_topic.c_str(), entry.node_id_str.c_str());
           entry.ros2_topic.clear();
         }
       }
@@ -271,7 +308,7 @@ bool NodeMap::load(const std::string & yaml_path) {
     return true;
 
   } catch (const std::exception & e) {
-    std::cerr << "NodeMap::load failed: " << e.what() << std::endl;
+    RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"), "NodeMap::load failed: %s", e.what());
     return false;
   }
 }

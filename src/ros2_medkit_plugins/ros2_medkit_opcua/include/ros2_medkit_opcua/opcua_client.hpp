@@ -24,6 +24,7 @@
 #include <vector>
 
 #include <open62541pp/open62541pp.hpp>
+#include <tl/expected.hpp>
 
 namespace ros2_medkit_gateway {
 
@@ -84,9 +85,22 @@ class OpcuaClient {
   /// Read multiple values
   std::vector<ReadResult> read_values(const std::vector<opcua::NodeId> & node_ids);
 
+  /// OPC-UA write error classification
+  enum class WriteError { NotConnected, TypeMismatch, AccessDenied, NodeNotFound, TransportError };
+
+  /// Detailed write error info
+  struct WriteErrorInfo {
+    WriteError code;
+    std::string message;
+  };
+
   /// Write a value to a node
-  /// @return true if write succeeded
-  bool write_value(const opcua::NodeId & node_id, const OpcuaValue & value);
+  /// @param data_type_hint If non-empty, skip readValue type-probe and use this hint
+  ///        ("bool", "int", "float", "string") to select the write coercion directly.
+  ///        Halves mutex hold time by eliminating a round-trip to the server.
+  /// @return void on success, WriteErrorInfo on failure with specific error code
+  tl::expected<void, WriteErrorInfo> write_value(const opcua::NodeId & node_id, const OpcuaValue & value,
+                                                 const std::string & data_type_hint = "");
 
   /// Create a subscription with data change notifications
   /// @return Subscription ID, or 0 on failure

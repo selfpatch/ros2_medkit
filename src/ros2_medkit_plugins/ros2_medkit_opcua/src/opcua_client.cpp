@@ -260,78 +260,113 @@ std::vector<ReadResult> OpcuaClient::read_values(const std::vector<opcua::NodeId
   return results;
 }
 
-bool OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value) {
+tl::expected<void, OpcuaClient::WriteErrorInfo>
+OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value, const std::string & data_type_hint) {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
 
   if (!impl_->connected) {
-    return false;
+    return tl::make_unexpected(WriteErrorInfo{WriteError::NotConnected, "Not connected to OPC-UA server"});
   }
+
+  // Helper: coerce OpcuaValue to double for numeric writes
+  auto to_double = [](const OpcuaValue & v) -> double {
+    return std::visit(
+        [](auto && x) -> double {
+          if constexpr (std::is_arithmetic_v<std::decay_t<decltype(x)>>) {
+            return static_cast<double>(x);
+          }
+          return 0.0;
+        },
+        v);
+  };
+
+  // Helper: coerce OpcuaValue to int32 for integer writes
+  auto to_int32 = [](const OpcuaValue & v) -> int32_t {
+    return std::visit(
+        [](auto && x) -> int32_t {
+          if constexpr (std::is_arithmetic_v<std::decay_t<decltype(x)>>) {
+            return static_cast<int32_t>(x);
+          }
+          return 0;
+        },
+        v);
+  };
+
+  // Helper: coerce OpcuaValue to bool
+  auto to_bool = [](const OpcuaValue & v) -> bool {
+    return std::visit(
+        [](auto && x) -> bool {
+          using T = std::decay_t<decltype(x)>;
+          if constexpr (std::is_integral_v<T>) {
+            return x != 0;
+          } else if constexpr (std::is_floating_point_v<T>) {
+            return x > T{0} || x < T{0};
+          }
+          return false;
+        },
+        v);
+  };
 
   try {
     opcua::Node node(impl_->client, node_id);
 
-    // Read the node's current value to determine the expected type,
-    // then cast our value to match. OPC-UA servers reject type mismatches.
+    // Fast path: use the data_type_hint from NodeMap instead of probing
+    // the server with a readValue round-trip. Halves mutex hold time.
+    if (!data_type_hint.empty()) {
+      if (data_type_hint == "float") {
+        node.writeValueScalar(static_cast<float>(to_double(value)));
+      } else if (data_type_hint == "int") {
+        node.writeValueScalar(to_int32(value));
+      } else if (data_type_hint == "bool") {
+        node.writeValueScalar(to_bool(value));
+      } else if (data_type_hint == "string") {
+        auto sval = std::visit(
+            [](auto && x) -> std::string {
+              using T = std::decay_t<decltype(x)>;
+              if constexpr (std::is_same_v<T, std::string>) {
+                return x;
+              } else {
+                return std::to_string(x);
+              }
+            },
+            value);
+        node.writeValueScalar(opcua::String(sval));
+      } else {
+        // Unknown hint - fall through to probe path
+        node.writeValueScalar(static_cast<float>(to_double(value)));
+      }
+      return {};
+    }
+
+    // Slow path: read current value to discover expected type, then write.
     auto current = node.readValue();
 
     if (current.isType<float>()) {
-      double dval = std::visit(
-          [](auto && v) -> double {
-            if constexpr (std::is_arithmetic_v<std::decay_t<decltype(v)>>) {
-              return static_cast<double>(v);
-            } else {
-              return 0.0;
-            }
-          },
-          value);
-      node.writeValueScalar(static_cast<float>(dval));
+      node.writeValueScalar(static_cast<float>(to_double(value)));
     } else if (current.isType<double>()) {
-      double dval = std::visit(
-          [](auto && v) -> double {
-            if constexpr (std::is_arithmetic_v<std::decay_t<decltype(v)>>) {
-              return static_cast<double>(v);
-            } else {
-              return 0.0;
-            }
-          },
-          value);
-      node.writeValueScalar(dval);
+      node.writeValueScalar(to_double(value));
     } else if (current.isType<int32_t>()) {
-      int32_t ival = std::visit(
-          [](auto && v) -> int32_t {
-            if constexpr (std::is_arithmetic_v<std::decay_t<decltype(v)>>) {
-              return static_cast<int32_t>(v);
-            } else {
-              return 0;
-            }
-          },
-          value);
-      node.writeValueScalar(ival);
+      node.writeValueScalar(to_int32(value));
     } else if (current.isType<bool>()) {
-      bool bval = std::visit(
-          [](auto && v) -> bool {
-            using T = std::decay_t<decltype(v)>;
-            if constexpr (std::is_integral_v<T>) {
-              return v != 0;
-            } else if constexpr (std::is_floating_point_v<T>) {
-              // Any non-zero finite or subnormal value is truthy; use ordered
-              // comparisons to avoid triggering -Wfloat-equal.
-              return v > T{0} || v < T{0};
-            } else {
-              return false;
-            }
-          },
-          value);
-      node.writeValueScalar(bval);
+      node.writeValueScalar(to_bool(value));
     } else {
-      // Fallback: try direct variant write
       auto var = value_to_variant(value);
       node.writeValue(var);
     }
-    return true;
+    return {};
   } catch (const opcua::BadStatus & e) {
     maybe_mark_disconnected(impl_->connected, e);
-    return false;
+    auto code = e.code();
+    if (code == UA_STATUSCODE_BADTYPEMISMATCH) {
+      return tl::make_unexpected(WriteErrorInfo{WriteError::TypeMismatch, e.what()});
+    }
+    if (code == UA_STATUSCODE_BADUSERACCESSDENIED || code == UA_STATUSCODE_BADNOTWRITABLE) {
+      return tl::make_unexpected(WriteErrorInfo{WriteError::AccessDenied, e.what()});
+    }
+    if (code == UA_STATUSCODE_BADNODEIDUNKNOWN) {
+      return tl::make_unexpected(WriteErrorInfo{WriteError::NodeNotFound, e.what()});
+    }
+    return tl::make_unexpected(WriteErrorInfo{WriteError::TransportError, e.what()});
   }
 }
 
