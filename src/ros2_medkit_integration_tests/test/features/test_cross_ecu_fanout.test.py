@@ -558,6 +558,39 @@ class TestCrossEcuFanout(unittest.TestCase):
         )
 
     # ------------------------------------------------------------------
+    # Version-info aggregation
+    # ------------------------------------------------------------------
+
+    def test_version_info_includes_peer_entries(self):
+        """Primary version-info includes entries from peer gateways.
+
+        SOVD version-info returns an items array designed for multi-server
+        aggregation. With one peer, primary should have at least 2 entries
+        (local + peer), each with version and vendor_info.
+        """
+        data = _get_json(f'{PRIMARY_URL}/version-info')
+        self.assertIsNotNone(data)
+        items = data.get('items', [])
+        self.assertGreaterEqual(
+            len(items), 2,
+            f'Expected at least 2 version entries (local + peer), '
+            f'got {len(items)}: {items}',
+        )
+        for item in items:
+            self.assertIn('version', item)
+            self.assertIn('vendor_info', item)
+
+    def test_peer_version_info_is_local_only(self):
+        """Secondary version-info has only 1 entry (no aggregation)."""
+        data = _get_json(f'{PEER_URL}/version-info')
+        self.assertIsNotNone(data)
+        items = data.get('items', [])
+        self.assertEqual(
+            len(items), 1,
+            f'Peer should have exactly 1 version entry, got {len(items)}',
+        )
+
+    # ------------------------------------------------------------------
     # Peer isolation (sanity check)
     # ------------------------------------------------------------------
 
