@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -99,6 +100,9 @@ class OpcuaPoller {
   std::thread poll_thread_;
   std::atomic<bool> running_{false};
   std::atomic<bool> using_subscriptions_{false};
+
+  std::mutex stop_mutex_;
+  std::condition_variable stop_cv_;
 
   mutable std::mutex snapshot_mutex_;
   PollSnapshot snapshot_;

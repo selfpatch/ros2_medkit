@@ -1,5 +1,8 @@
 name: OPC-UA Plugin Integration
 
+permissions:
+  contents: read
+
 # Runs the OpenPLC-based Docker integration suite for ros2_medkit_opcua.
 # Triggers only when the plugin itself, the gateway plugin/provider API, or
 # ros2_medkit_msgs change. A nightly cron provides a safety net against silent

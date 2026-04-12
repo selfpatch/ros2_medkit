@@ -14,9 +14,9 @@
 
 #include "ros2_medkit_opcua/opcua_poller.hpp"
 
-#include <cassert>
 #include <cmath>
 #include <iostream>
+#include <stdexcept>
 
 namespace ros2_medkit_gateway {
 
@@ -46,6 +46,7 @@ void OpcuaPoller::start(const PollerConfig & config) {
 
 void OpcuaPoller::stop() {
   running_ = false;
+  stop_cv_.notify_all();
   if (poll_thread_.joinable()) {
     poll_thread_.join();
   }
@@ -72,7 +73,9 @@ void OpcuaPoller::set_alarm_callback(AlarmChangeCallback callback) {
 }
 
 void OpcuaPoller::set_poll_callback(PollCallback callback) {
-  assert(!running_.load() && "poll_callback_ must be set before start()");
+  if (running_.load()) {
+    throw std::logic_error("set_poll_callback must be called before start()");
+  }
   poll_callback_ = std::move(callback);
 }
 
@@ -129,11 +132,14 @@ void OpcuaPoller::poll_loop() {
           setup_subscriptions();
         }
       } else {
-        // Wait before retry using configured interval
-        auto wait_ms = config_.reconnect_interval.count();
-        for (int64_t i = 0; i < wait_ms / 100 && running_.load(); ++i) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Wait before retry. condition_variable so stop() wakes us immediately.
+        {
+          std::unique_lock<std::mutex> lock(stop_mutex_);
+          stop_cv_.wait_for(lock, config_.reconnect_interval, [this] {
+            return !running_.load();
+          });
         }
+
         continue;
       }
     }
@@ -150,10 +156,12 @@ void OpcuaPoller::poll_loop() {
       poll_callback_(snapshot());
     }
 
-    // Sleep for poll interval
-    auto sleep_ms = config_.poll_interval.count();
-    for (int64_t i = 0; i < sleep_ms / 100 && running_.load(); ++i) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Sleep for poll interval. condition_variable so stop() wakes immediately.
+    {
+      std::unique_lock<std::mutex> lock(stop_mutex_);
+      stop_cv_.wait_for(lock, config_.poll_interval, [this] {
+        return !running_.load();
+      });
     }
   }
 }

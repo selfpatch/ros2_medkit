@@ -28,3 +28,15 @@ extern "C" GATEWAY_PLUGIN_EXPORT GatewayPlugin * create_plugin() {
 extern "C" GATEWAY_PLUGIN_EXPORT IntrospectionProvider * get_introspection_provider(GatewayPlugin * plugin) {
   return static_cast<ros2_medkit_gateway::OpcuaPlugin *>(plugin);
 }
+
+extern "C" GATEWAY_PLUGIN_EXPORT DataProvider * get_data_provider(GatewayPlugin * plugin) {
+  return static_cast<ros2_medkit_gateway::OpcuaPlugin *>(plugin);
+}
+
+extern "C" GATEWAY_PLUGIN_EXPORT OperationProvider * get_operation_provider(GatewayPlugin * plugin) {
+  return static_cast<ros2_medkit_gateway::OpcuaPlugin *>(plugin);
+}
+
+extern "C" GATEWAY_PLUGIN_EXPORT FaultProvider * get_fault_provider(GatewayPlugin * plugin) {
+  return static_cast<ros2_medkit_gateway::OpcuaPlugin *>(plugin);
+}
