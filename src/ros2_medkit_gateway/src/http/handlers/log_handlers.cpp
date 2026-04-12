@@ -21,7 +21,7 @@
 
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/x_medkit.hpp"
+#include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -69,86 +69,62 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
     return;
   }
 
-  // Components and areas use prefix matching (all nodes under the namespace);
-  // Apps use exact matching (single node FQN);
-  // Functions aggregate logs from all hosted apps.
+  // -----------------------------------------------------------------------
+  // FUNCTION - aggregate local hosted app logs + fan-out to peers
+  // -----------------------------------------------------------------------
   if (entity.type == EntityType::FUNCTION) {
-    // Aggregate logs from all hosted apps
-    // This is an x-medkit extension - SOVD spec defines only data/operations for Functions
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto func = cache.get_function(entity_id);
-    if (!func || func->hosts.empty()) {
-      json result;
-      result["items"] = json::array();
-      XMedkit ext;
-      ext.entity_id(entity_id);
-      ext.add("aggregation_level", "function");
-      ext.add("aggregated", true);
-      result["x-medkit"] = ext.build();
-      HandlerContext::send_json(res, result);
-      return;
-    }
-
-    // Collect FQNs of hosted apps via effective_fqn() which falls back
-    // to ros_binding in manifest_only mode where bound_fqn is not set.
-    std::vector<std::string> host_fqns;
-    for (const auto & app_id : func->hosts) {
-      auto app = cache.get_app(app_id);
-      if (!app) {
-        continue;
-      }
-      auto fqn = app->effective_fqn();
-      if (!fqn.empty()) {
-        host_fqns.push_back(std::move(fqn));
-      }
-    }
-
-    if (host_fqns.empty()) {
-      json result;
-      result["items"] = json::array();
-      XMedkit ext;
-      ext.entity_id(entity_id);
-      ext.add("aggregation_level", "function");
-      ext.add("aggregated", true);
-      result["x-medkit"] = ext.build();
-      HandlerContext::send_json(res, result);
-      return;
-    }
-
-    // get_logs accepts multiple FQNs with exact match - one call for all hosts
-    auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
-    if (!logs) {
-      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
-      return;
-    }
 
     json result;
-    result["items"] = std::move(*logs);
-
+    result["items"] = json::array();
     XMedkit ext;
     ext.entity_id(entity_id);
     ext.add("aggregation_level", "function");
     ext.add("aggregated", true);
-    ext.add("host_count", host_fqns.size());
-    // Include source app FQNs for cross-referencing aggregated results
-    nlohmann::json log_source_fqns = nlohmann::json::array();
-    for (const auto & fqn : host_fqns) {
-      log_source_fqns.push_back(fqn);
-    }
-    ext.add("aggregation_sources", log_source_fqns);
-    result["x-medkit"] = ext.build();
 
+    if (func && !func->hosts.empty()) {
+      std::vector<std::string> host_fqns;
+      for (const auto & app_id : func->hosts) {
+        auto app = cache.get_app(app_id);
+        if (!app) {
+          continue;
+        }
+        auto fqn = app->effective_fqn();
+        if (!fqn.empty()) {
+          host_fqns.push_back(std::move(fqn));
+        }
+      }
+
+      if (!host_fqns.empty()) {
+        auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
+        if (!logs) {
+          HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
+          return;
+        }
+        result["items"] = std::move(*logs);
+        ext.add("host_count", host_fqns.size());
+        nlohmann::json log_source_fqns = nlohmann::json::array();
+        for (const auto & fqn : host_fqns) {
+          log_source_fqns.push_back(fqn);
+        }
+        ext.add("aggregation_sources", log_source_fqns);
+      }
+    }
+
+    merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
+    result["x-medkit"] = ext.build();
     HandlerContext::send_json(res, result);
     return;
   }
 
-  // For Areas, aggregate logs from all apps in all components within the area
-  // This is an x-medkit extension - SOVD spec does not define log collections for Areas
+  // -----------------------------------------------------------------------
+  // AREA - aggregate local app logs from all components + fan-out to peers
+  // -----------------------------------------------------------------------
   if (entity.type == EntityType::AREA) {
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_ids = cache.get_components_for_area(entity_id);
 
-    // Collect FQNs from all apps in all components belonging to this area
     std::vector<std::string> host_fqns;
     for (const auto & comp_id : comp_ids) {
       auto app_ids = cache.get_apps_for_component(comp_id);
@@ -164,20 +140,19 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
       }
     }
 
+    json result;
+    XMedkit ext;
+    ext.entity_id(entity_id);
+    ext.add("aggregation_level", "area");
+    ext.add("aggregated", true);
+
     if (!host_fqns.empty()) {
       auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
       if (!logs) {
         HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
         return;
       }
-
-      json result;
       result["items"] = std::move(*logs);
-
-      XMedkit ext;
-      ext.entity_id(entity_id);
-      ext.add("aggregation_level", "area");
-      ext.add("aggregated", true);
       ext.add("component_count", comp_ids.size());
       ext.add("app_count", host_fqns.size());
       nlohmann::json area_log_source_fqns = nlohmann::json::array();
@@ -185,15 +160,25 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
         area_log_source_fqns.push_back(fqn);
       }
       ext.add("aggregation_sources", area_log_source_fqns);
-      result["x-medkit"] = ext.build();
-
-      HandlerContext::send_json(res, result);
-      return;
+    } else {
+      auto logs = log_mgr->get_logs({entity.fqn}, true, min_severity, context_filter, entity_id);
+      if (!logs) {
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
+        return;
+      }
+      result["items"] = std::move(*logs);
     }
-    // No components linked to area - fall through to namespace prefix matching
+
+    merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
+    result["x-medkit"] = ext.build();
+    HandlerContext::send_json(res, result);
+    return;
   }
 
-  const bool prefix_match = (entity.type == EntityType::COMPONENT || entity.type == EntityType::AREA);
+  // -----------------------------------------------------------------------
+  // COMPONENT / APP - local query + fan-out to peers
+  // -----------------------------------------------------------------------
+  const bool prefix_match = (entity.type == EntityType::COMPONENT);
 
   auto logs = log_mgr->get_logs({entity.fqn}, prefix_match, min_severity, context_filter, entity_id);
   if (!logs) {
@@ -203,6 +188,12 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
 
   json result;
   result["items"] = std::move(*logs);
+
+  XMedkit ext;
+  merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
+  if (!ext.empty()) {
+    result["x-medkit"] = ext.build();
+  }
   HandlerContext::send_json(res, result);
 }
 
