@@ -639,7 +639,7 @@ tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::list_data(const
     items.push_back(std::move(item));
   }
 
-  return nlohmann::json{{"items", items}};
+  return tl::expected<nlohmann::json, DataProviderErrorInfo>{nlohmann::json{{"items", items}}};
 }
 
 tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::read_data(const std::string & entity_id,
@@ -681,7 +681,7 @@ tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::read_data(const
   auto ts = std::chrono::system_clock::to_time_t(snap.timestamp);
   result["timestamp"] = ts;
 
-  return result;
+  return tl::expected<nlohmann::json, DataProviderErrorInfo>{result};
 }
 
 tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::write_data(const std::string & entity_id,
@@ -754,7 +754,7 @@ tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::write_data(cons
         result["value_written"] = v;
       },
       write_val);
-  return result;
+  return tl::expected<nlohmann::json, DataProviderErrorInfo>{result};
 }
 
 // -- OperationProvider interface --
@@ -775,7 +775,7 @@ tl::expected<nlohmann::json, OperationProviderErrorInfo> OpcuaPlugin::list_opera
       item["asynchronous_execution"] = false;
       items.push_back(std::move(item));
     }
-    return nlohmann::json{{"items", items}};
+    return tl::expected<nlohmann::json, OperationProviderErrorInfo>{nlohmann::json{{"items", items}}};
   }
 
   return tl::make_unexpected(
@@ -860,7 +860,7 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
         result["value_written"] = v;
       },
       write_val);
-  return result;
+  return tl::expected<nlohmann::json, OperationProviderErrorInfo>{result};
 }
 
 // -- FaultProvider interface --
@@ -872,7 +872,7 @@ tl::expected<nlohmann::json, FaultProviderErrorInfo> OpcuaPlugin::list_faults(co
 
   auto faults = ctx_->list_entity_faults(entity_id);
   if (faults.is_null() || faults.empty()) {
-    return nlohmann::json{{"items", nlohmann::json::array()}};
+    return tl::expected<nlohmann::json, FaultProviderErrorInfo>{nlohmann::json{{"items", nlohmann::json::array()}}};
   }
 
   if (faults.contains("faults") && faults["faults"].is_array()) {
@@ -886,10 +886,10 @@ tl::expected<nlohmann::json, FaultProviderErrorInfo> OpcuaPlugin::list_faults(co
       item["source_id"] = f.value("source_id", "");
       items.push_back(std::move(item));
     }
-    return nlohmann::json{{"items", items}};
+    return tl::expected<nlohmann::json, FaultProviderErrorInfo>{nlohmann::json{{"items", items}}};
   }
 
-  return nlohmann::json{{"items", nlohmann::json::array()}};
+  return tl::expected<nlohmann::json, FaultProviderErrorInfo>{nlohmann::json{{"items", nlohmann::json::array()}}};
 }
 
 tl::expected<nlohmann::json, FaultProviderErrorInfo> OpcuaPlugin::get_fault(const std::string & entity_id,
@@ -902,7 +902,7 @@ tl::expected<nlohmann::json, FaultProviderErrorInfo> OpcuaPlugin::get_fault(cons
   if (faults.contains("faults") && faults["faults"].is_array()) {
     for (const auto & f : faults["faults"]) {
       if (f.value("fault_code", "") == fault_code) {
-        return f;
+        return tl::expected<nlohmann::json, FaultProviderErrorInfo>{f};
       }
     }
   }
@@ -918,7 +918,8 @@ tl::expected<nlohmann::json, FaultProviderErrorInfo> OpcuaPlugin::clear_fault(co
   }
 
   send_clear_fault(fault_code);
-  return nlohmann::json{{"status", "cleared"}, {"fault_code", fault_code}, {"entity_id", entity_id}};
+  return tl::expected<nlohmann::json, FaultProviderErrorInfo>{
+      nlohmann::json{{"status", "cleared"}, {"fault_code", fault_code}, {"entity_id", entity_id}}};
 }
 
 }  // namespace ros2_medkit_gateway
