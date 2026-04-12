@@ -91,15 +91,27 @@ echo -e "\n${YELLOW}8. Alarm -> Fault Bridge${NC}"
 # Trigger PLC_LOW_LEVEL alarm by writing tank_level below threshold (100mm)
 curl -s -X POST "$API/apps/tank_process/x-plc-operations/set_tank_level" \
     -H "Content-Type: application/json" -d '{"value": 50.0}' >/dev/null 2>&1
-sleep 3
-FAULTS=$(curl -s "$API/apps/tank_process/faults" 2>/dev/null)
-assert "alarm triggers fault" "$(echo "$FAULTS" | jq '[.faults[]?.fault_code] | contains(["PLC_LOW_LEVEL"])' 2>/dev/null)"
+# Poll for fault to appear (poller → alarm → ROS 2 service → fault_manager pipeline)
+ALARM_OK=false
+for _ in $(seq 1 15); do
+    if curl -s "$API/apps/tank_process/faults" 2>/dev/null | jq -e '[.faults[]?.fault_code] | contains(["PLC_LOW_LEVEL"])' >/dev/null 2>&1; then
+        ALARM_OK=true; break
+    fi
+    sleep 1
+done
+assert "alarm triggers fault" "$ALARM_OK"
 # Clear alarm by writing tank_level back above threshold
 curl -s -X POST "$API/apps/tank_process/x-plc-operations/set_tank_level" \
     -H "Content-Type: application/json" -d '{"value": 500.0}' >/dev/null 2>&1
-sleep 3
-FAULTS_AFTER=$(curl -s "$API/apps/tank_process/faults" 2>/dev/null)
-assert "alarm clears fault" "$(echo "$FAULTS_AFTER" | jq '[.faults[]?.fault_code] | contains(["PLC_LOW_LEVEL"]) | not' 2>/dev/null)"
+# Poll for fault to clear
+CLEAR_OK=false
+for _ in $(seq 1 15); do
+    if curl -s "$API/apps/tank_process/faults" 2>/dev/null | jq -e '[.faults[]?.fault_code] | contains(["PLC_LOW_LEVEL"]) | not' >/dev/null 2>&1; then
+        CLEAR_OK=true; break
+    fi
+    sleep 1
+done
+assert "alarm clears fault" "$CLEAR_OK"
 
 # 9. Standard SOVD Data Endpoint (DataProvider integration)
 echo -e "\n${YELLOW}9. Standard SOVD Data Endpoint${NC}"
