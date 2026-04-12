@@ -285,11 +285,15 @@ maps to a peer, the request is forwarded transparently:
 populated during periodic cache refresh cycles that fetch entities from all
 healthy peers.
 
-**Fault collection** (``GET /api/v1/faults``) uses real-time **fan-out** via
-``fan_out_get()``: the primary gateway sends the same request to all healthy
-peers, collects the responses, and merges the ``items`` arrays. If some peers
-fail, the response body includes ``x-medkit.partial: true`` and
-``x-medkit.failed_peers``.
+**Per-entity resource collections** (data, operations, faults, configurations,
+logs) and the global ``GET /api/v1/faults`` endpoint use real-time **fan-out**
+via ``fan_out_get()`` (handlers call the ``merge_peer_items()`` helper from
+``fan_out_helpers.hpp``): the primary gateway sends the same request to all
+healthy peers, collects the responses, and merges the ``items`` arrays. If some
+peers fail, the response body includes ``x-medkit.partial: true`` and
+``x-medkit.failed_peers``. Fan-out requests include an
+``X-Medkit-No-Fan-Out`` header to prevent recursive loops when peers have
+bidirectional aggregation.
 
 Peer Discovery
 --------------

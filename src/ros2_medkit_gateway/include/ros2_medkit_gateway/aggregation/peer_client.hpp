@@ -116,7 +116,8 @@ class PeerClient {
    * @return Parsed JSON on success, error message on failure
    */
   tl::expected<nlohmann::json, std::string> forward_and_get_json(const std::string & method, const std::string & path,
-                                                                 const std::string & auth_header = "");
+                                                                 const std::string & auth_header = "",
+                                                                 const httplib::Headers & extra_headers = {});
 
  private:
   /**

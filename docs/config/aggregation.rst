@@ -366,16 +366,25 @@ during periodic cache refresh cycles. These endpoints do not perform real-time
 fan-out to peers, so they always return successfully with whatever entities
 were last cached.
 
-The ``GET /api/v1/faults`` endpoint is different - it performs real-time fan-out
-via ``fan_out_get()`` to collect faults from all healthy peers. If a peer is
-unreachable during this fan-out, the response body includes:
+Per-entity resource collection endpoints perform real-time fan-out via
+``fan_out_get()`` to collect items from all healthy peers and merge them
+into the local response. This applies to:
+
+- ``GET /{entity_type}/{id}/data``
+- ``GET /{entity_type}/{id}/operations``
+- ``GET /{entity_type}/{id}/faults``
+- ``GET /{entity_type}/{id}/configurations``
+- ``GET /{entity_type}/{id}/logs``
+- ``GET /faults`` (global fault list)
+
+If a peer is unreachable during fan-out, the response body includes:
 
 - ``x-medkit.partial: true`` in the JSON response body
 - ``x-medkit.failed_peers`` listing which peers failed
 
-This allows clients to detect degraded fault responses and take appropriate
+This allows clients to detect degraded responses and take appropriate
 action. Individual entity requests for remote entities (e.g.,
-``GET /api/v1/apps/{id}/data``) return ``502 Bad Gateway`` if the owning peer
+``GET /api/v1/apps/{id}``) return ``502 Bad Gateway`` if the owning peer
 is unreachable.
 
 .. _aggregation-breaking-changes:

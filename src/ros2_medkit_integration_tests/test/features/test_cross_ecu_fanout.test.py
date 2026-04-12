@@ -391,13 +391,21 @@ class TestCrossEcuFanout(unittest.TestCase):
 
     # @verifies REQ_INTEROP_061
     def test_logs_severity_filter_forwarded(self):
-        """Severity filter is forwarded to peer via query params."""
+        """Severity filter is forwarded to peer via query params.
+
+        Querying with ?severity=error should return only error+ entries.
+        If the filter is NOT forwarded, the peer would return ALL entries
+        (including info). Verify every entry is error+.
+        """
         data = _get_json(
-            f'{PRIMARY_URL}{FUNC_ENDPOINT}/logs?severity=fatal'
+            f'{PRIMARY_URL}{FUNC_ENDPOINT}/logs?severity=error'
         )
         self.assertIsNotNone(data)
         for entry in data.get('items', []):
-            self.assertEqual(entry['severity'], 'fatal')
+            self.assertIn(
+                entry['severity'], {'error', 'fatal'},
+                f'Entry has severity below error: {entry["severity"]}'
+            )
 
     # ------------------------------------------------------------------
     # Data fan-out
@@ -505,9 +513,9 @@ class TestCrossEcuFanout(unittest.TestCase):
         fault_codes = {
             f.get('fault_code', f.get('code', '')) for f in items
         }
-        self.assertTrue(
-            len(fault_codes) > 0,
-            f'Expected peer faults, got: {items}',
+        self.assertIn(
+            'LIDAR_RANGE_INVALID', fault_codes,
+            f'Expected LIDAR_RANGE_INVALID from peer, got: {fault_codes}',
         )
 
     # ------------------------------------------------------------------
