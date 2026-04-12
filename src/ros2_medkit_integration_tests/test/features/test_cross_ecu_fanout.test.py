@@ -18,10 +18,10 @@
 Launches TWO hybrid-mode gateways in separate DDS domains with a shared
 cross-ECU function 'vehicle_health' defined in manifests:
 
-- Primary (port 0, domain 0): aggregation enabled, manages powertrain nodes
-  (temp_sensor, rpm_sensor, calibration service).
-- Secondary (port 1, domain 1): standalone, manages chassis + perception nodes
-  (pressure_sensor, actuator, lidar_sensor with faulty params).
+- Primary (port offset 0, domain offset 0): aggregation enabled, manages
+  powertrain nodes (temp_sensor, rpm_sensor, calibration service).
+- Secondary (port offset 1, domain offset 1): standalone, manages chassis +
+  perception nodes (pressure_sensor, actuator, lidar_sensor with faulty params).
 
 Both define the same function 'vehicle_health' with different hosts.
 Tests verify that querying per-entity resource collections (logs, data,
