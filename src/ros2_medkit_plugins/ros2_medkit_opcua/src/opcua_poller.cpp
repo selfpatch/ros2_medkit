@@ -118,6 +118,9 @@ void OpcuaPoller::on_data_change(const std::string & node_id, const OpcuaValue &
 }
 
 void OpcuaPoller::poll_loop() {
+  auto reconnect_wait = config_.reconnect_interval;
+  constexpr auto max_reconnect_wait = std::chrono::milliseconds(60000);
+
   while (running_.load()) {
     // Handle reconnection
     if (!client_.is_connected()) {
@@ -128,18 +131,19 @@ void OpcuaPoller::poll_loop() {
 
       // Attempt reconnect with original config (preserves timeout, etc.)
       if (client_.connect(client_.current_config())) {
+        reconnect_wait = config_.reconnect_interval;  // reset on success
         if (config_.prefer_subscriptions) {
           setup_subscriptions();
         }
       } else {
-        // Wait before retry. condition_variable so stop() wakes us immediately.
+        // Exponential backoff capped at 60s. condition_variable so stop() wakes immediately.
         {
           std::unique_lock<std::mutex> lock(stop_mutex_);
-          stop_cv_.wait_for(lock, config_.reconnect_interval, [this] {
+          stop_cv_.wait_for(lock, reconnect_wait, [this] {
             return !running_.load();
           });
         }
-
+        reconnect_wait = std::min(reconnect_wait * 2, max_reconnect_wait);
         continue;
       }
     }
