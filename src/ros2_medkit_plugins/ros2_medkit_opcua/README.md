@@ -193,8 +193,19 @@ ros2_medkit_gateway:
 |-----------|---------|-------------|
 | `endpoint_url` | `opc.tcp://localhost:4840` | OPC-UA server endpoint |
 | `node_map_path` | (none) | Path to node map YAML (required) |
-| `poll_interval_ms` | `1000` | Polling interval in milliseconds |
+| `poll_interval_ms` | `1000` | Polling interval in ms (clamped to [100, 60000]) |
 | `prefer_subscriptions` | `false` | Use OPC-UA subscriptions instead of polling |
+| `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true` |
+
+Node map entries also support an optional `ros2_topic` field to override the auto-generated ROS 2 topic name for the PLC value bridge:
+
+```yaml
+nodes:
+  - node_id: "ns=2;i=1"
+    entity_id: tank_process
+    data_name: tank_level
+    ros2_topic: /custom/plc/tank_level   # optional, overrides auto-generated /plc/tank_process/tank_level
+```
 
 ### Operation Naming Convention
 
