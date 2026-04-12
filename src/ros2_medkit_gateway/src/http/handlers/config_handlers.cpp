@@ -238,7 +238,8 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto agg_configs = cache.get_entity_configurations(entity_id);
 
-    // If no nodes to query, return empty result
+    // If no local nodes to query, still fan-out to peers (cross-gateway
+    // functions may have all ROS-bound nodes on a peer gateway).
     if (agg_configs.nodes.empty()) {
       json response;
       response["items"] = json::array();
@@ -247,6 +248,7 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
       ext.entity_id(entity_id).source("runtime");
       ext.add("aggregation_level", agg_configs.aggregation_level);
       ext.add("is_aggregated", agg_configs.is_aggregated);
+      merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
       response["x-medkit"] = ext.build();
 
       HandlerContext::send_json(res, response);
