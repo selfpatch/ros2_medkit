@@ -572,6 +572,39 @@ class TestCrossEcuFanout(unittest.TestCase):
                 f'Secondary should not have primary logs: {node}',
             )
 
+    def test_peer_data_has_no_primary_topics(self):
+        """Secondary data contains only local topics (DDS isolation)."""
+        data = _poll_until(
+            f'{PEER_URL}{FUNC_ENDPOINT}/data',
+            lambda d: d if d.get('items') else None,
+            timeout=15.0,
+        )
+        self.assertIsNotNone(data)
+        for item in data['items']:
+            topic = item.get('x-medkit', {}).get('ros2', {}).get('topic', '')
+            self.assertNotIn(
+                '/powertrain/engine/', topic,
+                f'Secondary should not have primary topics: {topic}',
+            )
+
+    # ------------------------------------------------------------------
+    # Error cases
+    # ------------------------------------------------------------------
+
+    def test_nonexistent_function_returns_404(self):
+        """Querying a non-existent function returns 404, not a fan-out error."""
+        r = requests.get(
+            f'{PRIMARY_URL}/functions/nonexistent/logs', timeout=10
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_invalid_severity_returns_400(self):
+        """Invalid severity param returns 400 on primary, not forwarded."""
+        r = requests.get(
+            f'{PRIMARY_URL}{FUNC_ENDPOINT}/logs?severity=bogus', timeout=10
+        )
+        self.assertEqual(r.status_code, 400)
+
 
 @launch_testing.post_shutdown_test()
 class TestShutdown(unittest.TestCase):

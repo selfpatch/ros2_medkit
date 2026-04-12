@@ -685,6 +685,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_entity_merger test/test_entity_merger.cpp)
   target_link_libraries(test_entity_merger gateway_lib)
 
+  # Fan-out helper tests (shared URL encoding and peer merge utilities)
+  ament_add_gtest(test_fan_out_helpers test/test_fan_out_helpers.cpp)
+  target_link_libraries(test_fan_out_helpers gateway_lib)
+
   # Aggregation manager tests (aggregation module)
   ament_add_gtest(test_aggregation_manager test/test_aggregation_manager.cpp)
   target_link_libraries(test_aggregation_manager gateway_lib)
@@ -770,6 +774,7 @@ if(BUILD_TESTING)
       test_trigger_handlers
       test_peer_client
       test_entity_merger
+      test_fan_out_helpers
       test_aggregation_manager
       test_stream_proxy
       test_mdns_discovery
