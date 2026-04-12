@@ -352,14 +352,23 @@ TEST(PeerClientHappyPath, fetch_entities_parses_is_located_on_without_vendor_ext
   svr.Get(R"(/api/v1/components/ecu-a/subcomponents)", [](const httplib::Request &, httplib::Response & res) {
     res.set_content(R"({"items":[]})", "application/json");
   });
-  // Absolute URL form of is-located-on (SOVD allows both)
+  // Exercises multiple URI forms: absolute URL, path-only _links (string),
+  // HAL+JSON object-form _links, trailing slash, query string, and fragment.
   svr.Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
     res.set_content(
         R"({"items":[
           {"id":"app-standard","name":"Standard App",
            "is-located-on":"http://peer.local:8080/api/v1/components/ecu-a"},
           {"id":"app-hateoas","name":"HATEOAS App",
-           "_links":{"is-located-on":"/api/v1/components/ecu-a"}}
+           "_links":{"is-located-on":"/api/v1/components/ecu-a"}},
+          {"id":"app-hal-object","name":"HAL Object App",
+           "_links":{"is-located-on":{"href":"/api/v1/components/ecu-a"}}},
+          {"id":"app-trailing-slash","name":"Trailing Slash",
+           "is-located-on":"/api/v1/components/ecu-a/"},
+          {"id":"app-query","name":"Query Param",
+           "is-located-on":"/api/v1/components/ecu-a?foo=bar"},
+          {"id":"app-fragment","name":"Fragment",
+           "is-located-on":"/api/v1/components/ecu-a#section"}
         ]})",
         "application/json");
   });
@@ -376,11 +385,19 @@ TEST(PeerClientHappyPath, fetch_entities_parses_is_located_on_without_vendor_ext
   auto result = client.fetch_entities();
 
   ASSERT_TRUE(result.has_value());
-  ASSERT_EQ(result->apps.size(), 2u);
+  ASSERT_EQ(result->apps.size(), 6u);
   EXPECT_EQ(result->apps[0].id, "app-standard");
   EXPECT_EQ(result->apps[0].component_id, "ecu-a");
   EXPECT_EQ(result->apps[1].id, "app-hateoas");
   EXPECT_EQ(result->apps[1].component_id, "ecu-a");
+  EXPECT_EQ(result->apps[2].id, "app-hal-object");
+  EXPECT_EQ(result->apps[2].component_id, "ecu-a");
+  EXPECT_EQ(result->apps[3].id, "app-trailing-slash");
+  EXPECT_EQ(result->apps[3].component_id, "ecu-a");
+  EXPECT_EQ(result->apps[4].id, "app-query");
+  EXPECT_EQ(result->apps[4].component_id, "ecu-a");
+  EXPECT_EQ(result->apps[5].id, "app-fragment");
+  EXPECT_EQ(result->apps[5].component_id, "ecu-a");
 
   svr.stop();
   t.join();
@@ -431,6 +448,54 @@ TEST(PeerClientHappyPath, fetch_entities_rejects_malicious_component_id_in_locat
     EXPECT_TRUE(app.component_id.empty())
         << "app " << app.id << " should have empty component_id, got '" << app.component_id << "'";
   }
+
+  svr.stop();
+  t.join();
+}
+
+// Vendor-only fallback: app has x-medkit.component_id but no is-located-on.
+// Covers the happy-path for peers using the gateway's own vendor extension
+// without the SOVD standard relationship field.
+// @verifies REQ_INTEROP_018
+TEST(PeerClientHappyPath, fetch_entities_parses_vendor_only_component_id_fallback) {
+  httplib::Server svr;
+
+  svr.Get("/api/v1/areas", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  svr.Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[{"id":"perception-ecu","name":"Perception ECU"}]})", "application/json");
+  });
+  svr.Get(R"(/api/v1/components/perception-ecu)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"id":"perception-ecu","name":"Perception ECU"})", "application/json");
+  });
+  svr.Get(R"(/api/v1/components/perception-ecu/subcomponents)", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  svr.Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(
+        R"({"items":[
+          {"id":"lidar-driver","name":"Lidar Driver",
+           "x-medkit":{"component_id":"perception-ecu","source":"manifest","is_online":true}}
+        ]})",
+        "application/json");
+  });
+  svr.Get("/api/v1/functions", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "peer_vendor", 5000);
+  auto result = client.fetch_entities();
+
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->apps.size(), 1u);
+  EXPECT_EQ(result->apps[0].id, "lidar-driver");
+  EXPECT_EQ(result->apps[0].component_id, "perception-ecu");
 
   svr.stop();
   t.join();
