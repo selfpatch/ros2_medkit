@@ -23,6 +23,7 @@
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/version.hpp"
 
@@ -164,8 +165,6 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
 }
 
 void HealthHandlers::handle_version_info(const httplib::Request & req, httplib::Response & res) {
-  (void)req;  // Unused parameter
-
   try {
     // SOVD 7.4.1 compliant response format
     json sovd_info_entry = {
@@ -176,6 +175,11 @@ void HealthHandlers::handle_version_info(const httplib::Request & req, httplib::
 
     json response = {{"items", json::array({sovd_info_entry})}};
 
+    XMedkit ext;
+    merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
+    if (!ext.empty()) {
+      response["x-medkit"] = ext.build();
+    }
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error");
