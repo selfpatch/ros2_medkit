@@ -226,8 +226,9 @@ When a peer goes down, the gateway handles it gracefully:
 
 3. **Resource fan-out returns partial results**: Per-entity resource collection
    endpoints (data, operations, faults, configurations, logs) perform real-time
-   fan-out. When some peers are unreachable, the response includes
-   ``x-medkit.partial: true`` and ``x-medkit.failed_peers``.
+   fan-out. When some peer requests fail (peer unreachable or non-2xx
+   response), the response includes ``x-medkit.partial: true`` and
+   ``x-medkit.failed_peers``.
 
 4. **Entity-specific requests return 502**: If a request targets a remote
    entity whose peer is down, the gateway returns ``502 Bad Gateway``.

@@ -377,7 +377,8 @@ into the local response. This applies to:
 - ``GET /api/v1/{entity_type}/{id}/logs``
 - ``GET /api/v1/faults`` (global fault list)
 
-If a peer is unreachable during fan-out, the response body includes:
+If a peer request fails during fan-out (peer unreachable or non-2xx response),
+the response body includes:
 
 - ``x-medkit.partial: true`` in the JSON response body
 - ``x-medkit.failed_peers`` listing which peers failed
