@@ -340,17 +340,40 @@ TEST(EntityMerger, routing_table_uses_prefixed_id_on_app_collision) {
   EXPECT_EQ(table.count("shared_app"), 0u);
 }
 
-TEST(EntityMerger, merged_components_not_in_routing_table) {
+TEST(EntityMerger, merged_components_route_to_peer) {
   EntityMerger merger("peer_x");
 
-  // Same component ID -> merged, should NOT appear in routing table
+  // Same component ID across peers refers to the same physical ECU, but only
+  // the peer owns the runtime state (data, logs, hosts, operations). The
+  // collision-merged entity must route to the peer so sub-resource requests
+  // reach the owning gateway instead of returning empty locally.
   auto local_comps = std::vector<Component>{make_component("robot-alpha")};
   auto remote_comps = std::vector<Component>{make_component("robot-alpha")};
 
   merger.merge_components(local_comps, remote_comps);
 
   const auto & table = merger.get_routing_table();
-  EXPECT_EQ(table.count("robot-alpha"), 0u);
+  ASSERT_EQ(table.count("robot-alpha"), 1u);
+  EXPECT_EQ(table.at("robot-alpha"), "peer_x");
+}
+
+// @verifies REQ_INTEROP_003
+TEST(EntityMerger, merged_component_hybrid_synthetic_collision_routes_to_peer) {
+  // Scenario: primary in hybrid mode creates a synthetic component from its
+  // namespace (source "node"), and a peer announces a real component with the
+  // same ID. The peer is the authoritative owner of runtime state - all
+  // sub-resource requests (/logs, /hosts, /data, /operations) must forward
+  // to the peer instead of being handled locally.
+  EntityMerger merger("ecu_peer");
+
+  auto local_synthetic = make_component("engine_ctrl", "powertrain", "node");
+  auto remote_real = make_component("engine_ctrl", "powertrain", "manifest");
+
+  merger.merge_components({local_synthetic}, {remote_real});
+
+  const auto & table = merger.get_routing_table();
+  ASSERT_EQ(table.count("engine_ctrl"), 1u);
+  EXPECT_EQ(table.at("engine_ctrl"), "ecu_peer");
 }
 
 TEST(EntityMerger, remote_only_component_gets_routing_entry) {
