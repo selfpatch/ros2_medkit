@@ -190,9 +190,17 @@ type-specific merge rules:
 
    start
    :Receive remote entity from peer;
-   if (Entity type?) then (Area, Function, or Component)
+   if (Entity type?) then (Area or Function)
        if (Same ID exists locally?) then (yes)
            :Merge into existing entity\n(combine relations/tags);
+       else (no)
+           :Add as new entity;
+           :Add routing entry;
+       endif
+   elseif (Component) then
+       if (Same ID exists locally?) then (yes)
+           :Merge metadata (tags, description);
+           :Add routing entry\n(peer owns runtime state);
        else (no)
            :Add as new entity;
            :Add routing entry;
@@ -223,8 +231,13 @@ type-specific merge rules:
 
 - **Components**: Merge by ID, combining tags and metadata. Components represent
   physical hosts or ECUs defined in manifests - the same Component ID across
-  peers refers to the same physical entity. Remote-only Components get a routing
-  table entry.
+  peers refers to the same physical entity, and the peer owns the authoritative
+  runtime state (data, logs, hosts, operations, faults). Both remote-only
+  Components and collision-merged Components therefore get a routing table
+  entry, so that every request for such a Component - including the detail
+  endpoint and all sub-resources - is forwarded to the peer. The primary's
+  role for merged Components is limited to aggregating their presence in
+  discovery listings; it never serves their runtime data locally.
 
 - **Apps**: Prefix on collision. If a remote App has the same ID as a local one,
   the remote entity's ID is prefixed with ``peername__`` (double underscore
@@ -233,7 +246,9 @@ type-specific merge rules:
 
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
 separator for Apps. The routing table maps ``entity_id -> peer_name`` for
-remote-only entities and prefixed Apps that need request forwarding.
+entities whose runtime state lives on the peer: remote-only Areas/Functions,
+remote-only and collision-merged Components, and remote-only or prefixed
+Apps.
 
 Request Routing
 ---------------
