@@ -154,7 +154,11 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
         merged.description = remote_comp.description;
       }
 
-      // Merged components do NOT go into routing table - they are combined local+remote
+      // Merged components get a routing entry so sub-resource requests
+      // (data, logs, hosts, operations) are forwarded to the peer that
+      // owns the component's runtime state. Without this, requests like
+      // GET /components/{id}/logs return empty on the primary.
+      routing_table_[merged.id] = peer_name_;
     } else {
       // No collision: add remote component with source tagged
       Component added = remote_comp;
