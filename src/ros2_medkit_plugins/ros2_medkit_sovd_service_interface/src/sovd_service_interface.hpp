@@ -34,8 +34,8 @@ namespace ros2_medkit_gateway {
 ///
 /// Exposes medkit entity tree, fault data, and capabilities via ROS 2
 /// services. Designed for consumption by VDA 5050 agent, BT.CPP,
-/// PlotJuggler, RTMaps, and any other ROS 2 node that needs SOVD data
-/// without going through HTTP.
+/// PlotJuggler, and any other ROS 2 node that needs SOVD data without
+/// going through HTTP.
 class SovdServiceInterface : public GatewayPlugin {
  public:
   std::string name() const override;
