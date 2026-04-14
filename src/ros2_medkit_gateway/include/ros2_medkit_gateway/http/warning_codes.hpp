@@ -1,0 +1,37 @@
+// Copyright 2026 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+namespace ros2_medkit_gateway {
+
+/// Warning codes surfaced on /health.warnings.
+///
+/// These describe deployment anomalies the gateway chooses to flag without
+/// taking itself offline (contrast with error codes in error_codes.hpp which
+/// fail individual requests). Operators can key on these strings to drive
+/// dashboards, alerts, or automated remediation.
+///
+/// Keep this list in sync with docs/api/warning_codes.rst. All codes MUST be
+/// stable strings; rename = breaking change for downstream consumers.
+
+/// A leaf (non-hierarchical) Component ID was announced by more than one peer
+/// during aggregation merge. Routing falls back to last-writer-wins, so
+/// requests for the affected Component reach one peer non-deterministically.
+/// Resolve by renaming the Component on one side or by modelling it as a
+/// hierarchical parent (declare a child Component with
+/// ``parentComponentId`` pointing at the colliding ID on the owning peer).
+inline constexpr const char * WARN_LEAF_ID_COLLISION = "leaf_id_collision";
+
+}  // namespace ros2_medkit_gateway
