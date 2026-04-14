@@ -20,8 +20,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/classification.hpp"
-#include "ros2_medkit_gateway/models/app.hpp"
-#include "ros2_medkit_gateway/models/component.hpp"
+#include "ros2_medkit_gateway/discovery/models/component.hpp"
 
 using namespace ros2_medkit_gateway;
 
@@ -118,10 +117,9 @@ TEST(AggregationClassification, hierarchical_parent_drops_routing_across_multipl
   // as parent; each peer brings its own ECU-leaf child. "robot" stays local,
   // each ECU-leaf routes to the peer that contributed it.
   std::vector<Component> merged = {
-      make_comp("robot"),
-      make_comp("perception-ecu", "robot"),  // local
-      make_comp("planning-ecu", "robot"),    // from peer_b
-      make_comp("actuation-ecu", "robot"),   // from peer_c
+      make_comp("robot"), make_comp("perception-ecu", "robot"),  // local
+      make_comp("planning-ecu", "robot"),                        // from peer_b
+      make_comp("actuation-ecu", "robot"),                       // from peer_c
   };
   std::vector<PeerClaim> claims = {
       make_claim("peer_b", {"robot", "planning-ecu"}),
