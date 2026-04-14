@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <future>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -397,6 +398,11 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
     }));
   }
 
+  // Per-peer Component IDs each peer claimed, fed into classify_component_routing
+  // after the loop so that hierarchical-vs-leaf classification sees the full
+  // merged Component set (including subcomponents from other peers).
+  std::vector<PeerClaim> peer_component_claims;
+
   // Collect results and merge sequentially (merge order must be deterministic)
   for (auto & f : futures) {
     auto pfr = f.get();
@@ -406,6 +412,13 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
       }
       continue;
     }
+
+    PeerClaim claim;
+    claim.peer_name = pfr.peer_name;
+    for (const auto & c : pfr.entities.components) {
+      claim.claimed_entity_ids.insert(c.id);
+    }
+    peer_component_claims.push_back(std::move(claim));
 
     EntityMerger merger(pfr.peer_name);
     merged.areas = merger.merge_areas(merged.areas, pfr.entities.areas);
@@ -449,6 +462,43 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
           RCLCPP_WARN(*logger, "Entity ID collision: '%s' prefixed for peer '%s'", id.c_str(), name.c_str());
         }
       }
+    }
+  }
+
+  // Reclassify Component routing entries against the fully-merged Component
+  // set. Hierarchical parents (Components referenced as parent_component_id by
+  // another Component) are removed from the routing table so they are served
+  // locally with the merged view, mirroring Areas and Functions. Leaves keep
+  // routing to the owning peer. Multi-peer leaf collisions surface as warnings.
+  std::unordered_set<std::string> all_component_ids;
+  all_component_ids.reserve(merged.components.size());
+  for (const auto & c : merged.components) {
+    all_component_ids.insert(c.id);
+  }
+  for (auto it = merged.routing_table.begin(); it != merged.routing_table.end();) {
+    if (all_component_ids.count(it->first) > 0u) {
+      it = merged.routing_table.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  auto classified = classify_component_routing(merged.components, peer_component_claims);
+  for (auto & [id, name] : classified.routing_table) {
+    merged.routing_table[id] = std::move(name);
+  }
+  merged.leaf_warnings = std::move(classified.leaf_warnings);
+
+  for (const auto & w : merged.leaf_warnings) {
+    if (logger) {
+      std::string peers_str;
+      for (size_t i = 0; i < w.peer_names.size(); ++i) {
+        if (i > 0u) {
+          peers_str += ", ";
+        }
+        peers_str += w.peer_names[i];
+      }
+      RCLCPP_WARN(*logger, "Leaf Component '%s' announced by multiple peers: %s. Routing uses last-writer-wins.",
+                  w.entity_id.c_str(), peers_str.c_str());
     }
   }
 
