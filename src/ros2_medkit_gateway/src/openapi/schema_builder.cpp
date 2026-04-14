@@ -122,12 +122,30 @@ nlohmann::json SchemaBuilder::fault_list_schema() {
 }
 
 nlohmann::json SchemaBuilder::entity_detail_schema() {
+  // Aggregation provenance surfaced on every merged entity (x-medkit vendor
+  // extension). Present only when non-empty; ordering is stable ("local"
+  // first when present, then "peer:<name>" entries alphabetically) so that
+  // clients and snapshot tests can rely on it. See design/aggregation.rst.
+  nlohmann::json x_medkit_schema = {
+      {"type", "object"},
+      {"properties",
+       {{"contributors",
+         {{"type", "array"},
+          {"items", {{"type", "string"}}},
+          {"description",
+           "Aggregation provenance: 'local' and/or 'peer:<name>' entries naming the sources that "
+           "contributed to this merged entity. Sorted with 'local' first and 'peer:*' entries "
+           "alphabetically. Present only when aggregation is active and the entity has at least "
+           "one known source."}}}}},
+      {"additionalProperties", true}};
+
   return {{"type", "object"},
           {"properties",
            {{"id", {{"type", "string"}}},
             {"name", {{"type", "string"}}},
             {"type", {{"type", "string"}}},
-            {"uri", {{"type", "string"}}}}},
+            {"uri", {{"type", "string"}}},
+            {"x-medkit", x_medkit_schema}}},
           {"required", {"id", "name"}}};
 }
 
