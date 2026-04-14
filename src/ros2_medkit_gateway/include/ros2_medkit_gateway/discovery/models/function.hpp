@@ -46,7 +46,8 @@ struct Function {
   std::vector<std::string> depends_on;  ///< depends-on relationship (Function IDs)
 
   // === Discovery metadata ===
-  std::string source = "manifest";  ///< Discovery source: manifest or runtime
+  std::string source = "manifest";        ///< Discovery source: manifest or runtime
+  std::vector<std::string> contributors;  ///< Aggregation provenance: "local" and/or "peer:<name>"
 
   // === Serialization methods ===
 

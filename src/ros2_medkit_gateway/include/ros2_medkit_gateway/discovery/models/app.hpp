@@ -118,8 +118,9 @@ struct App {
   std::vector<ActionInfo> actions;
 
   // === Discovery metadata ===
-  std::string source = "manifest";  ///< "manifest" or "runtime"
-  std::string original_id;          ///< Pre-rename ID when collision-prefixed by aggregation
+  std::string source = "manifest";        ///< "manifest" or "runtime"
+  std::string original_id;                ///< Pre-rename ID when collision-prefixed by aggregation
+  std::vector<std::string> contributors;  ///< Aggregation provenance: "local" and/or "peer:<name>"
 
   // === Serialization methods ===
 

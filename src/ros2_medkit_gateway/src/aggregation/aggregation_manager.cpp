@@ -347,6 +347,21 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
   merged.apps = local_apps;
   merged.functions = local_functions;
 
+  // Seed aggregation provenance: every locally-sourced entity contributes
+  // "local" to its own contributors list. EntityMerger will append
+  // "peer:<name>" entries as peer contributions are folded in.
+  auto seed_local = [](auto & entities) {
+    for (auto & e : entities) {
+      if (e.contributors.empty()) {
+        e.contributors.emplace_back("local");
+      }
+    }
+  };
+  seed_local(merged.areas);
+  seed_local(merged.components);
+  seed_local(merged.apps);
+  seed_local(merged.functions);
+
   // Snapshot healthy peers under lock, release before network I/O.
   // shared_ptr copies keep PeerClients alive even if remove_discovered_peer()
   // erases them from peers_ concurrently.
