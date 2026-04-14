@@ -603,6 +603,9 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     if (!comp.description.empty()) {
       ext.add("description", comp.description);
     }
+    if (!comp.contributors.empty()) {
+      ext.add("contributors", nlohmann::json(comp.contributors));
+    }
 
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {
