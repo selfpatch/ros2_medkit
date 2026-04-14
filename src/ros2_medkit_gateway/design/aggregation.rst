@@ -200,7 +200,7 @@ type-specific merge rules:
    elseif (Component) then
        if (Same ID exists locally?) then (yes)
            :Merge metadata (tags, description);
-           :Add routing entry\n(peer owns runtime state);
+           :Add provisional routing entry;
        else (no)
            :Add as new entity;
            :Add routing entry;
@@ -214,6 +214,39 @@ type-specific merge rules:
        :Add routing entry;
    endif
    :Tag with peer source metadata;
+   :Append "peer:<name>" to contributors;
+   stop
+
+   @enduml
+
+After every peer has been merged, ``AggregationManager`` runs a
+classification pass over the full Component set:
+
+.. plantuml::
+   :caption: Component Classification (post-merge)
+
+   @startuml component_classification
+
+   title Component Classification (post-merge)
+
+   start
+   :Collect all merged Components
+   and per-peer Component claims;
+   repeat
+     :Pick next Component;
+     if (Referenced as parent_component_id
+     by any other Component?) then (yes)
+       :Classify as hierarchical parent;
+       :Remove routing entry\n(serve locally like an Area);
+     else (no)
+       :Classify as leaf (ECU);
+       :Keep routing entry\n(forward to owning peer);
+       if (Claimed by >1 peer?) then (yes)
+         :Emit LeafCollisionWarning\n(last-writer-wins for routing);
+       endif
+     endif
+   repeat while (more Components?)
+   :Attach warnings to /health.warnings;
    stop
 
    @enduml
@@ -229,15 +262,35 @@ type-specific merge rules:
   If both gateways expose a ``navigation`` Function, the merged entity lists
   hosts from both gateways. Same ownership semantics as Areas.
 
-- **Components**: Merge by ID, combining tags and metadata. Components represent
-  physical hosts or ECUs defined in manifests - the same Component ID across
-  peers refers to the same physical entity, and the peer owns the authoritative
-  runtime state (data, logs, hosts, operations, faults). Both remote-only
-  Components and collision-merged Components therefore get a routing table
-  entry, so that every request for such a Component - including the detail
-  endpoint and all sub-resources - is forwarded to the peer. The primary's
-  role for merged Components is limited to aggregating their presence in
-  discovery listings; it never serves their runtime data locally.
+- **Components**: Merge by ID, combining tags and metadata. Components
+  represent either a single physical ECU *or* a hierarchical parent that
+  groups other Components across ECUs (``parent_component_id`` is used to
+  model the hierarchy). The ownership rule is applied symmetrically to how
+  Areas handle shared roots:
+
+  * **Leaf Component** - no other Component in the merged set references it
+    as ``parent_component_id``. Leaves are tied to exactly one ECU, so on
+    collision the peer owns the runtime state (data, logs, hosts,
+    operations, faults). Leaves get a routing table entry and every request
+    - detail endpoint and all sub-resources - is forwarded to the peer.
+  * **Hierarchical parent Component** - referenced as
+    ``parent_component_id`` by at least one other Component in the merged
+    set (local, remote, or transitively merged from any peer). The parent
+    itself has no runtime state; it only groups its children. The parent is
+    served locally with the merged view (tags/description/``contributors``
+    combined) exactly like an Area. No routing table entry is created for
+    a hierarchical parent, even when multiple peers announce it.
+
+  Classification happens after all peers have been merged
+  (``classify_component_routing`` in ``aggregation/classification.hpp``) so
+  that sub-components arriving from different peers still unlock parent
+  behaviour on the primary.
+
+  **Multi-peer leaf collisions** (two or more peers announce the same leaf
+  Component ID) are surfaced as structured ``/health.warnings`` entries and
+  RCLCPP_WARN log lines. Routing falls back to last-writer-wins;
+  rejection would not fix the deployment and would only take the gateway
+  offline.
 
 - **Apps**: Prefix on collision. If a remote App has the same ID as a local one,
   the remote entity's ID is prefixed with ``peername__`` (double underscore
@@ -246,9 +299,34 @@ type-specific merge rules:
 
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
 separator for Apps. The routing table maps ``entity_id -> peer_name`` for
-entities whose runtime state lives on the peer: remote-only Areas/Functions,
-remote-only and collision-merged Components, and remote-only or prefixed
-Apps.
+entities whose runtime state lives on the peer: remote-only Areas and
+Functions, leaf Components (remote-only or collision-merged), and
+remote-only or prefixed Apps. Hierarchical parent Components are not in the
+routing table - they are served locally.
+
+Provenance (``x-medkit.contributors``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Every merged entity carries a ``contributors`` list in its ``x-medkit``
+block that names each source which contributed to the merged view. The
+list is populated during merge:
+
+- Each local entity is seeded with ``"local"`` before the peer merge loop
+  runs.
+- ``EntityMerger`` appends ``"peer:<name>"`` on collisions (Areas,
+  hierarchical parent Components, Functions) and on remote-only additions;
+  the append is deduplicated, so merging with the same peer twice does not
+  produce duplicate entries.
+- Apps that collide receive only ``"peer:<name>"`` because the
+  prefix strategy turns them into distinct entities.
+
+Clients (web UI, MCP, Foxglove, VDA 5050 agent) can use ``contributors``
+to distinguish a locally-owned entity from one that came in over
+aggregation, and to display which peers participated in a hierarchical
+parent's view. In daisy-chain topologies each hop surfaces only its
+direct upstream; an operator looking at the top-level aggregator sees
+``"peer:<direct_neighbour>"`` and must drill into the neighbour to see
+its own contributor list.
 
 Request Routing
 ---------------
