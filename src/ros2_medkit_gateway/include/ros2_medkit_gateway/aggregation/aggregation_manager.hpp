@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "ros2_medkit_gateway/aggregation/classification.hpp"
 #include "ros2_medkit_gateway/aggregation/peer_client.hpp"
 
 namespace ros2_medkit_gateway {
@@ -86,6 +87,10 @@ class AggregationManager {
     std::vector<App> apps;
     std::vector<Function> functions;
     std::unordered_map<std::string, std::string> routing_table;
+    /// Multi-peer leaf-Component collisions detected during merge. Surfaced
+    /// to operators via /health.warnings; runtime falls back to last-writer
+    /// for routing.
+    std::vector<LeafCollisionWarning> leaf_warnings;
   };
 
   /**
