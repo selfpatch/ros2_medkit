@@ -182,6 +182,21 @@ class AggregationManager {
   void update_routing_table(const std::unordered_map<std::string, std::string> & table);
 
   /**
+   * @brief Publish the latest leaf-collision warnings (replaces previous list).
+   *
+   * Warnings describe deployment-level anomalies where more than one peer
+   * announced the same leaf Component ID. Exposed on /health.warnings so
+   * operators can notice without tailing logs. Thread-safe.
+   */
+  void set_leaf_warnings(std::vector<LeafCollisionWarning> warnings);
+
+  /**
+   * @brief Snapshot the current leaf-collision warnings.
+   * @return Copy of the warning list (may be empty). Thread-safe.
+   */
+  std::vector<LeafCollisionWarning> get_leaf_warnings() const;
+
+  /**
    * @brief Look up which peer owns a given entity
    * @param entity_id Entity ID to look up
    * @return Peer name if entity is remote, std::nullopt if local or unknown
@@ -233,6 +248,7 @@ class AggregationManager {
   mutable std::shared_mutex mutex_;  // Declared before data it protects (destruction order)
   std::vector<std::shared_ptr<PeerClient>> peers_;
   std::unordered_map<std::string, std::string> routing_table_;
+  std::vector<LeafCollisionWarning> leaf_warnings_;
 
   /**
    * @brief Find a peer by name (caller must hold lock)

@@ -69,6 +69,19 @@ void HealthHandlers::handle_health(const httplib::Request & req, httplib::Respon
     // Add peer status when aggregation is active
     if (auto * agg = ctx_.aggregation_manager()) {
       response["peers"] = agg->get_peer_status();
+
+      // Surface operator-actionable aggregation warnings (x-medkit extension).
+      // Empty array when there are no active warnings.
+      json warnings = json::array();
+      for (const auto & w : agg->get_leaf_warnings()) {
+        warnings.push_back({
+            {"code", "leaf_id_collision"},
+            {"message", "Component '" + w.entity_id + "' announced by multiple peers; routing uses last-writer-wins."},
+            {"entity_ids", json::array({w.entity_id})},
+            {"peer_names", w.peer_names},
+        });
+      }
+      response["warnings"] = std::move(warnings);
     }
 
     HandlerContext::send_json(res, response);

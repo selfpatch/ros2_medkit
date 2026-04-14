@@ -510,6 +510,16 @@ void AggregationManager::update_routing_table(const std::unordered_map<std::stri
   routing_table_ = table;
 }
 
+void AggregationManager::set_leaf_warnings(std::vector<LeafCollisionWarning> warnings) {
+  std::unique_lock<std::shared_mutex> lock(mutex_);
+  leaf_warnings_ = std::move(warnings);
+}
+
+std::vector<LeafCollisionWarning> AggregationManager::get_leaf_warnings() const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  return leaf_warnings_;
+}
+
 std::optional<std::string> AggregationManager::find_peer_for_entity(const std::string & entity_id) const {
   std::shared_lock<std::shared_mutex> lock(mutex_);
   auto it = routing_table_.find(entity_id);

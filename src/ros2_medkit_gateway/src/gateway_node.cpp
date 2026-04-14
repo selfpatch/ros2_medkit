@@ -1543,6 +1543,7 @@ void GatewayNode::refresh_cache() {
       functions = std::move(merged.functions);
       peer_routing_table = std::move(merged.routing_table);
       aggregation_mgr_->update_routing_table(peer_routing_table);
+      aggregation_mgr_->set_leaf_warnings(std::move(merged.leaf_warnings));
     }
 
     // Inject plugin entities (non-hybrid) and refresh entity ownership (all modes).
