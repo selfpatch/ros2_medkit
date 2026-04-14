@@ -137,9 +137,11 @@ if(BUILD_TESTING)
   # Serialise multi-gateway tests that share the secondary DDS domain pool
   # (230-232, see ros2_medkit_test_utils.constants.get_test_domain_id). CTest
   # will not run two tests holding this resource lock concurrently, so they
-  # cannot collide on those shared domains.
+  # cannot collide on those shared domains. Every integration test that
+  # calls get_test_domain_id(offset>0) must be listed here.
   set_tests_properties(
     test_peer_aggregation
+    test_cross_ecu_fanout
     test_daisy_chain_aggregation
     PROPERTIES RESOURCE_LOCK medkit_secondary_dds_domains
   )
