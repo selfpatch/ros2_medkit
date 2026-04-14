@@ -54,11 +54,16 @@ Server Capabilities
         }
       }
 
-   The ``capabilities.aggregation`` flag is ``true`` when the gateway has
-   one or more aggregation peers configured. Clients can feature-detect
-   aggregation-only response fields (``peers``, ``warnings`` on ``/health``
-   and ``x-medkit.contributors`` on entities) using this flag instead of
-   probing for field presence.
+   The ``capabilities.aggregation`` flag is ``true`` when the aggregation
+   subsystem is enabled on this gateway (i.e. ``aggregation.enabled=true``
+   in config, which wires up an ``AggregationManager``). It does NOT
+   require peers to be present - a gateway with aggregation enabled but
+   zero peers still reports ``true`` and still emits the
+   aggregation-only response fields (``peers``, which may be an empty
+   array, and ``warnings`` on ``/health``; ``x-medkit.contributors`` on
+   entities, which will contain only ``"local"`` until a peer
+   contributes). Clients can feature-detect those fields using this
+   flag instead of probing for field presence.
 
 ``GET /api/v1/version-info``
    Get gateway version and status information.
