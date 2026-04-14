@@ -435,6 +435,7 @@ TEST(EntityMerger, remote_only_area_gets_routing_entry) {
 // Contributors provenance tests
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(EntityMerger, components_collision_appends_peer_contributor) {
   EntityMerger merger("peer_b");
 
@@ -450,6 +451,7 @@ TEST(EntityMerger, components_collision_appends_peer_contributor) {
   EXPECT_EQ(result[0].contributors[1], "peer:peer_b");
 }
 
+// @verifies REQ_INTEROP_003
 TEST(EntityMerger, components_remote_only_gets_peer_contributor_only) {
   EntityMerger merger("peer_b");
 
@@ -462,6 +464,7 @@ TEST(EntityMerger, components_remote_only_gets_peer_contributor_only) {
   EXPECT_EQ(result[0].contributors[0], "peer:peer_b");
 }
 
+// @verifies REQ_INTEROP_003
 TEST(EntityMerger, apps_collision_prefixed_gets_peer_contributor_only) {
   EntityMerger merger("peer_b");
 
@@ -480,6 +483,7 @@ TEST(EntityMerger, apps_collision_prefixed_gets_peer_contributor_only) {
   EXPECT_EQ(result[1].contributors[0], "peer:peer_b");
 }
 
+// @verifies REQ_INTEROP_003
 TEST(EntityMerger, contributors_no_duplicate_on_repeat_merge) {
   // If the same peer is merged twice (defensive check), contributors must
   // stay unique.

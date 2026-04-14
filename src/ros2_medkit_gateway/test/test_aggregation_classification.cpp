@@ -49,6 +49,7 @@ PeerClaim make_claim(const std::string & peer, std::initializer_list<std::string
 // Leaf ECU Component: collision routes to peer
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(AggregationClassification, leaf_collision_keeps_routing_to_peer) {
   // Two peers each with an ECU-level leaf "ecu-x" that collides with primary's
   // local one. No Component references "ecu-x" as its parent -> leaf -> stays
@@ -71,6 +72,7 @@ TEST(AggregationClassification, leaf_collision_keeps_routing_to_peer) {
 // Hierarchical parent Component: collision stays local (merged view)
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(AggregationClassification, hierarchical_parent_drops_routing_when_local_subcomponents_exist) {
   // Primary declares "robot" as parent of its local "perception-ecu".
   // Peer also declares "robot" (collision). Because "perception-ecu" in the
@@ -90,6 +92,7 @@ TEST(AggregationClassification, hierarchical_parent_drops_routing_when_local_sub
   EXPECT_TRUE(result.leaf_warnings.empty());
 }
 
+// @verifies REQ_INTEROP_003
 TEST(AggregationClassification, hierarchical_parent_drops_routing_when_remote_subcomponents_exist) {
   // Primary has only "robot" (no local children). Peer brings both "robot"
   // (collision) and "planning-ecu" with parent_component_id=robot. After
@@ -112,6 +115,7 @@ TEST(AggregationClassification, hierarchical_parent_drops_routing_when_remote_su
   EXPECT_TRUE(result.leaf_warnings.empty());
 }
 
+// @verifies REQ_INTEROP_003
 TEST(AggregationClassification, hierarchical_parent_drops_routing_across_multiple_peers) {
   // multi_ecu_aggregation demo case: primary + 2 peers all declare "robot"
   // as parent; each peer brings its own ECU-leaf child. "robot" stays local,
@@ -145,6 +149,7 @@ TEST(AggregationClassification, hierarchical_parent_drops_routing_across_multipl
 // Sub-components of hierarchical parent still route
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(AggregationClassification, subcomponents_of_hierarchical_parent_still_route_to_peer) {
   // Confirms that removing routing for a hierarchical parent does NOT cascade
   // to its sub-components - those remain peer-owned leaves.
@@ -167,6 +172,7 @@ TEST(AggregationClassification, subcomponents_of_hierarchical_parent_still_route
 // Multi-peer leaf collision: warning + last-writer-wins
 // =============================================================================
 
+// @verifies REQ_INTEROP_003
 TEST(AggregationClassification, leaf_collision_across_multiple_peers_emits_warning) {
   // Two peers both claim the same leaf ECU "ecu-shared" (deployment anomaly -
   // two peers exposing the same physical ECU). Routing uses last-writer; a
