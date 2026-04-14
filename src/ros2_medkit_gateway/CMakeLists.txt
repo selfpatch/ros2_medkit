@@ -693,6 +693,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_aggregation_manager test/test_aggregation_manager.cpp)
   target_link_libraries(test_aggregation_manager gateway_lib)
 
+  # Aggregation classification tests (hierarchical vs leaf Component routing)
+  ament_add_gtest(test_aggregation_classification test/test_aggregation_classification.cpp)
+  target_link_libraries(test_aggregation_classification gateway_lib)
+
   # Stream proxy tests (SSE parsing, aggregation module)
   ament_add_gtest(test_stream_proxy test/test_stream_proxy.cpp)
   target_link_libraries(test_stream_proxy gateway_lib)
@@ -776,6 +780,7 @@ if(BUILD_TESTING)
       test_entity_merger
       test_fan_out_helpers
       test_aggregation_manager
+      test_aggregation_classification
       test_stream_proxy
       test_mdns_discovery
       test_network_utils
