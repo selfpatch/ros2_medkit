@@ -25,6 +25,7 @@
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
+#include "ros2_medkit_gateway/http/warning_codes.hpp"
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/version.hpp"
 
@@ -71,12 +72,26 @@ void HealthHandlers::handle_health(const httplib::Request & req, httplib::Respon
       response["peers"] = agg->get_peer_status();
 
       // Surface operator-actionable aggregation warnings (x-medkit extension).
-      // Empty array when there are no active warnings.
+      // Always an array when aggregation is active; empty means no active
+      // warnings. Clients can feature-detect via /.capabilities.aggregation
+      // in the root response.
       json warnings = json::array();
       for (const auto & w : agg->get_leaf_warnings()) {
+        std::string peers_list;
+        for (size_t i = 0; i < w.peer_names.size(); ++i) {
+          if (i > 0u) {
+            peers_list += ", ";
+          }
+          peers_list += w.peer_names[i];
+        }
+        std::string message = "Component '" + w.entity_id + "' is announced by multiple peers (" + peers_list +
+                              "); routing falls back to last-writer-wins which is non-deterministic. Resolve by "
+                              "renaming the Component on one side or by modelling it as a hierarchical parent "
+                              "(declare a child Component with parentComponentId='" +
+                              w.entity_id + "' on the owning peer).";
         warnings.push_back({
-            {"code", "leaf_id_collision"},
-            {"message", "Component '" + w.entity_id + "' announced by multiple peers; routing uses last-writer-wins."},
+            {"code", WARN_LEAF_ID_COLLISION},
+            {"message", std::move(message)},
             {"entity_ids", json::array({w.entity_id})},
             {"peer_names", w.peer_names},
         });
@@ -143,6 +158,7 @@ void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response
         {"tls", tls_config.enabled},
         {"scripts", ctx_.node() && ctx_.node()->get_script_manager() != nullptr &&
                         ctx_.node()->get_script_manager()->has_backend()},
+        {"aggregation", ctx_.aggregation_manager() != nullptr},
         {"vendor_extensions",
          ctx_.node() && ctx_.node()->get_plugin_manager() && ctx_.node()->get_plugin_manager()->has_plugins()},
     };

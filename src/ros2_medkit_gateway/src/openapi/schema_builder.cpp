@@ -199,10 +199,44 @@ nlohmann::json SchemaBuilder::health_schema() {
                                        {"linking", linking_schema}}},
                                      {"description", "Discovery subsystem status"}};
 
-  return {{"type", "object"},
-          {"properties",
-           {{"status", {{"type", "string"}}}, {"timestamp", {{"type", "integer"}}}, {"discovery", discovery_schema}}},
-          {"required", {"status"}}};
+  nlohmann::json peer_status_schema = {{"type", "object"}, {"additionalProperties", true}};
+
+  nlohmann::json aggregation_warning_schema = {
+      {"type", "object"},
+      {"description",
+       "Operator-actionable aggregation warning. Codes are documented in "
+       "docs/api/warning_codes.rst and stable across releases."},
+      {"properties",
+       {{"code",
+         {{"type", "string"}, {"description", "Stable machine-readable identifier, e.g. 'leaf_id_collision'."}}},
+        {"message", {{"type", "string"}, {"description", "Human-readable description including remediation hints."}}},
+        {"entity_ids",
+         {{"type", "array"},
+          {"items", {{"type", "string"}}},
+          {"description", "SOVD entity IDs affected by the warning."}}},
+        {"peer_names",
+         {{"type", "array"},
+          {"items", {{"type", "string"}}},
+          {"description", "Aggregation peers involved in the anomaly."}}}}},
+      {"required", {"code", "message", "entity_ids", "peer_names"}}};
+
+  return {
+      {"type", "object"},
+      {"properties",
+       {{"status", {{"type", "string"}}},
+        {"timestamp", {{"type", "integer"}}},
+        {"discovery", discovery_schema},
+        {"peers",
+         {{"type", "array"},
+          {"items", peer_status_schema},
+          {"description", "Aggregation peer status (x-medkit extension; present only when aggregation is enabled)."}}},
+        {"warnings",
+         {{"type", "array"},
+          {"items", aggregation_warning_schema},
+          {"description",
+           "Operator-actionable aggregation warnings (x-medkit extension; always an array when "
+           "aggregation is enabled, empty when there are no active warnings)."}}}}},
+      {"required", {"status"}}};
 }
 
 nlohmann::json SchemaBuilder::version_info_schema() {

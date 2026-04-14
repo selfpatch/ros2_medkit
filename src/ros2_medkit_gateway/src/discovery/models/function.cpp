@@ -42,7 +42,7 @@ json Function::to_json() const {
     x_medkit["dependsOn"] = depends_on;
   }
   if (!contributors.empty()) {
-    x_medkit["contributors"] = contributors;
+    x_medkit["contributors"] = sorted_contributors(contributors);
   }
   j["x-medkit"] = x_medkit;
 

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -22,6 +23,23 @@
 namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
+
+/// Order aggregation `contributors` for stable presentation: "local" first
+/// (when present), then "peer:<name>" entries alphabetically. Used by every
+/// entity to_json() so list and detail responses agree on ordering regardless
+/// of how peers were merged internally.
+inline std::vector<std::string> sorted_contributors(const std::vector<std::string> & input) {
+  std::vector<std::string> out(input.begin(), input.end());
+  std::sort(out.begin(), out.end(), [](const std::string & a, const std::string & b) {
+    const bool a_local = (a == "local");
+    const bool b_local = (b == "local");
+    if (a_local != b_local) {
+      return a_local;
+    }
+    return a < b;
+  });
+  return out;
+}
 
 /**
  * @brief QoS profile information for a topic endpoint

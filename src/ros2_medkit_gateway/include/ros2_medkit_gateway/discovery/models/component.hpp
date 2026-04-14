@@ -88,7 +88,7 @@ struct Component {
       x_medkit["dependsOn"] = depends_on;
     }
     if (!contributors.empty()) {
-      x_medkit["contributors"] = contributors;
+      x_medkit["contributors"] = sorted_contributors(contributors);
     }
     x_medkit["topics"] = topics.to_json();
     if (host_metadata.has_value()) {

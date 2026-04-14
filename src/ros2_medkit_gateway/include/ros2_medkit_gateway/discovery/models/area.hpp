@@ -73,7 +73,7 @@ struct Area {
       x_medkit["source"] = source;
     }
     if (!contributors.empty()) {
-      x_medkit["contributors"] = contributors;
+      x_medkit["contributors"] = sorted_contributors(contributors);
     }
     j["x-medkit"] = x_medkit;
 

@@ -16,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 
 namespace ros2_medkit_gateway {
 
@@ -170,6 +171,16 @@ class XMedkit {
   XMedkit & last_feedback(const nlohmann::json & feedback);
 
   // ==================== Generic methods ====================
+
+  /**
+   * @brief Append aggregation provenance ("local" and/or "peer:<name>").
+   *
+   * Emits ``contributors`` only when the vector is non-empty, so single-origin
+   * entities on non-aggregating gateways do not see the field.
+   *
+   * @param contributors Provenance list populated by the aggregation layer
+   */
+  XMedkit & contributors(const std::vector<std::string> & contributors);
 
   /**
    * @brief Add a custom field to the x-medkit object (top level).

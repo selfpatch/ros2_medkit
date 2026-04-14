@@ -14,6 +14,9 @@
 
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 
+#include <algorithm>
+#include <utility>
+
 namespace ros2_medkit_gateway {
 
 // ==================== ROS2 metadata ====================
@@ -101,6 +104,26 @@ XMedkit & XMedkit::goal_status(const std::string & status) {
 
 XMedkit & XMedkit::last_feedback(const nlohmann::json & feedback) {
   other_["last_feedback"] = feedback;
+  return *this;
+}
+
+XMedkit & XMedkit::contributors(const std::vector<std::string> & contributors) {
+  if (contributors.empty()) {
+    return *this;
+  }
+  // Stable presentation order: "local" first (when present), then "peer:<name>"
+  // entries alphabetically. Lets UI badges and snapshot tests rely on a
+  // consistent order regardless of how peers were merged internally.
+  std::vector<std::string> sorted(contributors.begin(), contributors.end());
+  std::sort(sorted.begin(), sorted.end(), [](const std::string & a, const std::string & b) {
+    const bool a_local = (a == "local");
+    const bool b_local = (b == "local");
+    if (a_local != b_local) {
+      return a_local;
+    }
+    return a < b;
+  });
+  other_["contributors"] = std::move(sorted);
   return *this;
 }
 

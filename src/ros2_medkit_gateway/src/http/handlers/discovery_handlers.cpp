@@ -210,6 +210,7 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
     if (!area.parent_area_id.empty()) {
       ext.add("parent_area_id", area.parent_area_id);
     }
+    ext.contributors(area.contributors);
     response["x-medkit"] = ext.build();
 
     HandlerContext::send_json(res, response);
@@ -603,9 +604,7 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     if (!comp.description.empty()) {
       ext.add("description", comp.description);
     }
-    if (!comp.contributors.empty()) {
-      ext.add("contributors", nlohmann::json(comp.contributors));
-    }
+    ext.contributors(comp.contributors);
 
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {
@@ -1014,6 +1013,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     if (!app.component_id.empty()) {
       ext.component_id(app.component_id);
     }
+    ext.contributors(app.contributors);
     response["x-medkit"] = ext.build();
 
     HandlerContext::send_json(res, response);
@@ -1306,6 +1306,7 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
     if (!func.description.empty()) {
       ext.add("description", func.description);
     }
+    ext.contributors(func.contributors);
     response["x-medkit"] = ext.build();
 
     HandlerContext::send_json(res, response);
