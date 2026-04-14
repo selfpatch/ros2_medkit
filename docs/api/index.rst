@@ -8,6 +8,7 @@ This section contains API documentation for ros2_medkit.
 
    rest
    locking
+   warning_codes
    messages
    cpp
 
@@ -21,6 +22,10 @@ REST API
 :doc:`locking`
    SOVD resource locking API - acquire, extend, release locks on components
    and apps with scoped access control and automatic expiry.
+
+:doc:`warning_codes`
+   Stable aggregation warning codes surfaced via the ``/health.warnings``
+   x-medkit extension, with remediation guidance.
 
 Message Definitions
 -------------------

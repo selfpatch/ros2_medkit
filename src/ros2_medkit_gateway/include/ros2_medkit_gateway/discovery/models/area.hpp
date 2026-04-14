@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/discovery/models/common.hpp"
+
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
