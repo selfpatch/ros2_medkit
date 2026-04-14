@@ -29,6 +29,17 @@ std::string EntityMerger::peer_source() const {
   return "peer:" + peer_name_;
 }
 
+namespace {
+void append_contributor_unique(std::vector<std::string> & contributors, const std::string & entry) {
+  for (const auto & existing : contributors) {
+    if (existing == entry) {
+      return;
+    }
+  }
+  contributors.push_back(entry);
+}
+}  // namespace
+
 const std::unordered_map<std::string, std::string> & EntityMerger::get_routing_table() const {
   return routing_table_;
 }
@@ -62,11 +73,14 @@ std::vector<Area> EntityMerger::merge_areas(const std::vector<Area> & local, con
         merged.description = remote_area.description;
       }
 
+      append_contributor_unique(merged.contributors, peer_source());
+
       // Merged areas do NOT go into routing table - they are combined local+remote
     } else {
       // No collision: add remote area with source tagged
       Area added = remote_area;
       added.source = peer_source();
+      append_contributor_unique(added.contributors, peer_source());
       result.push_back(added);
 
       // Remote-only areas get a routing entry
@@ -109,11 +123,14 @@ std::vector<Function> EntityMerger::merge_functions(const std::vector<Function> 
         }
       }
 
+      append_contributor_unique(merged.contributors, peer_source());
+
       // Merged functions do NOT go into routing table
     } else {
       // No collision: add remote function with source tagged
       Function added = remote_func;
       added.source = peer_source();
+      append_contributor_unique(added.contributors, peer_source());
       result.push_back(added);
 
       // Remote-only functions get a routing entry
@@ -160,10 +177,12 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
       // faults). Route all requests for the merged Component to the peer;
       // the primary only aggregates its presence in discovery listings.
       routing_table_[merged.id] = peer_name_;
+      append_contributor_unique(merged.contributors, peer_source());
     } else {
       // No collision: add remote component with source tagged
       Component added = remote_comp;
       added.source = peer_source();
+      append_contributor_unique(added.contributors, peer_source());
       result.push_back(added);
 
       // Remote-only components get a routing entry
@@ -199,6 +218,7 @@ std::vector<App> EntityMerger::merge_apps(const std::vector<App> & local, const 
       added.name = peer_name_ + SEPARATOR + remote_app.name;
     }
 
+    append_contributor_unique(added.contributors, peer_source());
     routing_table_[added.id] = peer_name_;
     result.push_back(added);
   }

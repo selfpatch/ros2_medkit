@@ -431,6 +431,77 @@ TEST(EntityMerger, remote_only_area_gets_routing_entry) {
 // Source tagging tests
 // =============================================================================
 
+// =============================================================================
+// Contributors provenance tests
+// =============================================================================
+
+TEST(EntityMerger, components_collision_appends_peer_contributor) {
+  EntityMerger merger("peer_b");
+
+  auto local_comp = make_component("robot-alpha");
+  local_comp.contributors = {"local"};
+  auto remote_comp = make_component("robot-alpha");
+
+  auto result = merger.merge_components({local_comp}, {remote_comp});
+
+  ASSERT_EQ(result.size(), 1u);
+  ASSERT_EQ(result[0].contributors.size(), 2u);
+  EXPECT_EQ(result[0].contributors[0], "local");
+  EXPECT_EQ(result[0].contributors[1], "peer:peer_b");
+}
+
+TEST(EntityMerger, components_remote_only_gets_peer_contributor_only) {
+  EntityMerger merger("peer_b");
+
+  auto remote_comp = make_component("ecu-c");
+
+  auto result = merger.merge_components({}, {remote_comp});
+
+  ASSERT_EQ(result.size(), 1u);
+  ASSERT_EQ(result[0].contributors.size(), 1u);
+  EXPECT_EQ(result[0].contributors[0], "peer:peer_b");
+}
+
+TEST(EntityMerger, apps_collision_prefixed_gets_peer_contributor_only) {
+  EntityMerger merger("peer_b");
+
+  auto local_app = make_app("camera");
+  local_app.contributors = {"local"};
+  auto remote_app = make_app("camera");
+
+  auto result = merger.merge_apps({local_app}, {remote_app});
+
+  ASSERT_EQ(result.size(), 2u);
+  // Local keeps "local"
+  ASSERT_EQ(result[0].contributors.size(), 1u);
+  EXPECT_EQ(result[0].contributors[0], "local");
+  // Prefixed remote gets only peer contributor
+  ASSERT_EQ(result[1].contributors.size(), 1u);
+  EXPECT_EQ(result[1].contributors[0], "peer:peer_b");
+}
+
+TEST(EntityMerger, contributors_no_duplicate_on_repeat_merge) {
+  // If the same peer is merged twice (defensive check), contributors must
+  // stay unique.
+  EntityMerger merger("peer_b");
+
+  auto local_area = make_area("root");
+  local_area.contributors = {"local"};
+  auto remote_area = make_area("root");
+
+  auto first = merger.merge_areas({local_area}, {remote_area});
+  auto second = merger.merge_areas(first, {remote_area});
+
+  ASSERT_EQ(second.size(), 1u);
+  ASSERT_EQ(second[0].contributors.size(), 2u);
+  EXPECT_EQ(second[0].contributors[0], "local");
+  EXPECT_EQ(second[0].contributors[1], "peer:peer_b");
+}
+
+// =============================================================================
+// Source tagging tests
+// =============================================================================
+
 TEST(EntityMerger, remote_source_tagged) {
   EntityMerger merger("robot_arm");
 

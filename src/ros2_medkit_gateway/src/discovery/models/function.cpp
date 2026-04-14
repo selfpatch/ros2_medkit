@@ -41,6 +41,9 @@ json Function::to_json() const {
   if (!depends_on.empty()) {
     x_medkit["dependsOn"] = depends_on;
   }
+  if (!contributors.empty()) {
+    x_medkit["contributors"] = contributors;
+  }
   j["x-medkit"] = x_medkit;
 
   return j;

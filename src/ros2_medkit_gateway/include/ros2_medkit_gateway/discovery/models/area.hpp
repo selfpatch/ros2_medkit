@@ -29,15 +29,16 @@ using json = nlohmann::json;
  * They provide a hierarchical organization of components.
  */
 struct Area {
-  std::string id;                 ///< Unique identifier (e.g., "powertrain")
-  std::string name;               ///< Human-readable name (e.g., "Powertrain System")
-  std::string namespace_path;     ///< ROS 2 namespace path (e.g., "/powertrain")
-  std::string type = "Area";      ///< Entity type (always "Area")
-  std::string translation_id;     ///< Internationalization key
-  std::string description;        ///< Human-readable description
-  std::vector<std::string> tags;  ///< Tags for filtering
-  std::string parent_area_id;     ///< Parent area ID for sub-areas
-  std::string source;             ///< Origin of this area (e.g., "manifest", "heuristic")
+  std::string id;                         ///< Unique identifier (e.g., "powertrain")
+  std::string name;                       ///< Human-readable name (e.g., "Powertrain System")
+  std::string namespace_path;             ///< ROS 2 namespace path (e.g., "/powertrain")
+  std::string type = "Area";              ///< Entity type (always "Area")
+  std::string translation_id;             ///< Internationalization key
+  std::string description;                ///< Human-readable description
+  std::vector<std::string> tags;          ///< Tags for filtering
+  std::string parent_area_id;             ///< Parent area ID for sub-areas
+  std::string source;                     ///< Origin of this area (e.g., "manifest", "heuristic")
+  std::vector<std::string> contributors;  ///< Aggregation provenance: "local" and/or "peer:<name>"
 
   /**
    * @brief Convert to JSON representation
@@ -70,6 +71,9 @@ struct Area {
     }
     if (!source.empty()) {
       x_medkit["source"] = source;
+    }
+    if (!contributors.empty()) {
+      x_medkit["contributors"] = contributors;
     }
     j["x-medkit"] = x_medkit;
 
