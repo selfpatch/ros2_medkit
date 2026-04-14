@@ -133,6 +133,16 @@ if(BUILD_TESTING)
   if(_MEDKIT_DOMAIN_COUNTER GREATER _MEDKIT_DOMAIN_END)
     message(FATAL_ERROR "Integration test domain range exhausted (${_MEDKIT_DOMAIN_START}-${_MEDKIT_DOMAIN_END})")
   endif()
+
+  # Serialise multi-gateway tests that share the secondary DDS domain pool
+  # (230-232, see ros2_medkit_test_utils.constants.get_test_domain_id). CTest
+  # will not run two tests holding this resource lock concurrently, so they
+  # cannot collide on those shared domains.
+  set_tests_properties(
+    test_peer_aggregation
+    test_daisy_chain_aggregation
+    PROPERTIES RESOURCE_LOCK medkit_secondary_dds_domains
+  )
 endif()
 
 ament_package()

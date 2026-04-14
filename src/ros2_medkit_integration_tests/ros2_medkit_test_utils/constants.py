@@ -39,17 +39,27 @@ def get_test_domain_id(offset=0):
     (stride of 1, range 140-229). For offset 0, returns the assigned
     domain ID directly.
 
-    For offset > 0 (multi-gateway tests needing a second DDS domain),
-    derives a unique secondary domain from the primary via modular
-    mapping into the 230-232 range (DDS max domain is 232). The offset
-    value itself is not used as a multiplier - any non-zero offset
-    selects the same derived secondary for a given primary. Each test's
-    unique primary ensures a deterministic secondary. With 3 buckets
-    and currently 2 multi-gateway tests, collisions are avoided.
+    For offset in 1..3 (multi-gateway tests needing extra DDS domains),
+    returns one of the three secondary domains 230, 231, 232 so each
+    offset produces a distinct domain. These three secondaries sit
+    outside the per-package allocation in
+    ``ROS2MedkitTestDomain.cmake`` and are shared across every
+    multi-gateway integration test; CTest serialises those tests via a
+    ``RESOURCE_LOCK`` (see ``CMakeLists.txt``) so two of them never
+    hold the same secondary domain simultaneously.
+
+    DDS max domain ID is 232 (UDP port formula: 7400 + 250 * domain_id).
+    Offsets above 3 would exceed that ceiling and are rejected up front.
     """
     if offset == 0:
         return DEFAULT_DOMAIN_ID
-    return 230 + ((DEFAULT_DOMAIN_ID - 140) % 3)
+    if not 1 <= offset <= 3:
+        raise ValueError(
+            f'secondary DDS domain offset {offset} out of range 1..3 '
+            '(only domains 230-232 are available; DDS max is 232). '
+            'Add a new offset only after extending the allocation scheme.'
+        )
+    return 229 + offset
 
 
 # Gateway startup

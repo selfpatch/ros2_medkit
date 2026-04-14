@@ -301,15 +301,22 @@ class TestDaisyChainAggregation(unittest.TestCase):
     # --- Contributors on non-Component entity types ----------------------
 
     def test_leaf_component_detail_contributors_single_peer(self):
-        # A leaf ECU that came entirely from peer_b must have contributors
-        # ["peer:peer_b"]. This used to pass silently even if the field
-        # was dropped (because the test looked at a forwarded response from
-        # peer_b which emits the field itself). We only assert the shape
-        # here - forwarding origin is covered by the 1-hop test above.
+        """@verifies REQ_INTEROP_003.
+
+        GET /components/ecu-b through the primary is transparently forwarded
+        to peer_b (1-hop). The response body is peer_b's own serialised view
+        of ecu-b, where peer_b is the local gateway, so contributors starts
+        with "local" under the stable "local first, then peer:* sorted"
+        ordering. The assertion therefore validates that peer_b's
+        x-medkit.contributors is present and proxied intact - a regression
+        dropping the field on Area/App/Function detail handlers would flip
+        this test. That the request is forwarded (not served with a merged
+        primary view) is verified separately by
+        test_primary_forwards_ecu_b_detail_one_hop.
+        """
         r = requests.get(f'{PRIMARY_URL}/components/ecu-b', timeout=5)
         self.assertEqual(r.status_code, 200)
         contributors = r.json().get('x-medkit', {}).get('contributors', [])
-        # Stable ordering: "local" first when present, then peer:* sorted.
         self.assertEqual(contributors[:1], ['local'])
 
     def test_app_detail_contributors_present(self):

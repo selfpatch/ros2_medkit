@@ -49,9 +49,16 @@ Server Capabilities
           "triggers": true,
           "updates": false,
           "authentication": false,
-          "tls": false
+          "tls": false,
+          "aggregation": false
         }
       }
+
+   The ``capabilities.aggregation`` flag is ``true`` when the gateway has
+   one or more aggregation peers configured. Clients can feature-detect
+   aggregation-only response fields (``peers``, ``warnings`` on ``/health``
+   and ``x-medkit.contributors`` on entities) using this flag instead of
+   probing for field presence.
 
 ``GET /api/v1/version-info``
    Get gateway version and status information.
@@ -75,6 +82,43 @@ Server Capabilities
 
 ``GET /api/v1/health``
    Health check endpoint. Returns HTTP 200 if gateway is operational.
+
+   When aggregation is enabled (``capabilities.aggregation == true`` in
+   the root response), the body includes two additional x-medkit
+   extension fields:
+
+   - ``peers`` - array of peer status objects (URL, name, reachability,
+     last-seen timestamp) for every configured or discovered peer.
+   - ``warnings`` - array of structured operator-actionable aggregation
+     warnings (always present when aggregation is active; empty when
+     there are no active anomalies). Each warning carries ``code``,
+     ``message``, ``entity_ids``, and ``peer_names``. See
+     :doc:`warning_codes` for the stable list of codes.
+
+   **Example Response (aggregation enabled, one leaf collision):**
+
+   .. code-block:: json
+
+      {
+        "status": "healthy",
+        "timestamp": 1776185189048036615,
+        "discovery": {
+          "mode": "hybrid",
+          "strategy": "hybrid_discovery"
+        },
+        "peers": [
+          {"name": "peer_b", "url": "http://peer-b:8080", "healthy": true},
+          {"name": "peer_c", "url": "http://peer-c:8080", "healthy": true}
+        ],
+        "warnings": [
+          {
+            "code": "leaf_id_collision",
+            "message": "Component 'ecu-x' is announced by multiple peers (peer_b, peer_c); routing falls back to last-writer-wins which is non-deterministic. Resolve by renaming the Component on one side or by modelling it as a hierarchical parent (declare a child Component with parentComponentId='ecu-x' on the owning peer).",
+            "entity_ids": ["ecu-x"],
+            "peer_names": ["peer_b", "peer_c"]
+          }
+        ]
+      }
 
 Discovery Endpoints
 -------------------
