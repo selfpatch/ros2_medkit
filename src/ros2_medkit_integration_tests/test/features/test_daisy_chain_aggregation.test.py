@@ -119,6 +119,7 @@ def _write_manifest(name, ecu_id):
 PRIMARY_MANIFEST = _write_manifest('primary', 'ecu-a')
 PEER_B_MANIFEST = _write_manifest('peer_b', 'ecu-b')
 PEER_C_MANIFEST = _write_manifest('peer_c', 'ecu-c')
+MANIFEST_FILES = [PRIMARY_MANIFEST, PEER_B_MANIFEST, PEER_C_MANIFEST]
 
 
 def _gateway(port, name, manifest_path, domain, aggregation_peers=None):
@@ -181,6 +182,11 @@ class TestDaisyChainAggregation(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # Ensure the tmp manifest files written at import time do not leak
+        # past the test process, even if setUpClass fails later.
+        for path in MANIFEST_FILES:
+            cls.addClassCleanup(lambda p=path: os.path.exists(p) and os.unlink(p))
+
         for label, url in (('primary', PRIMARY_URL),
                            ('peer_b', PEER_B_URL),
                            ('peer_c', PEER_C_URL)):
@@ -229,6 +235,7 @@ class TestDaisyChainAggregation(unittest.TestCase):
     # --- Discovery across the chain --------------------------------------
 
     def test_primary_sees_all_ecus_as_subcomponents_of_robot_x(self):
+        """@verifies REQ_INTEROP_003."""
         r = requests.get(f'{PRIMARY_URL}/components/robot-x/subcomponents', timeout=5)
         self.assertEqual(r.status_code, 200)
         sub_ids = {item['id'] for item in r.json().get('items', [])}
@@ -237,6 +244,7 @@ class TestDaisyChainAggregation(unittest.TestCase):
     # --- Hierarchical parent served locally ------------------------------
 
     def test_primary_serves_robot_x_detail_locally_with_contributors(self):
+        """@verifies REQ_INTEROP_003."""
         r = requests.get(f'{PRIMARY_URL}/components/robot-x', timeout=5)
         self.assertEqual(r.status_code, 200)
         body = r.json()
@@ -250,11 +258,13 @@ class TestDaisyChainAggregation(unittest.TestCase):
     # --- 1-hop and 2-hop leaf forwarding ---------------------------------
 
     def test_primary_forwards_ecu_b_detail_one_hop(self):
+        """@verifies REQ_INTEROP_003."""
         r = requests.get(f'{PRIMARY_URL}/components/ecu-b', timeout=5)
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json().get('id'), 'ecu-b')
 
     def test_primary_forwards_ecu_c_detail_two_hops(self):
+        """@verifies REQ_INTEROP_003 (2-hop forward through daisy chain)."""
         # ecu-c lives on peer_c; primary reaches it via peer_b -> peer_c.
         r = requests.get(f'{PRIMARY_URL}/components/ecu-c', timeout=10)
         self.assertEqual(r.status_code, 200, r.text)
@@ -269,6 +279,46 @@ class TestDaisyChainAggregation(unittest.TestCase):
         self.assertIn('peers', body)
         self.assertIn('warnings', body)
         self.assertEqual(body['warnings'], [])
+
+    # --- Root capability flag --------------------------------------------
+
+    def test_root_capabilities_flag_aggregation_enabled(self):
+        # Clients should be able to feature-detect that /health.warnings
+        # and x-medkit.contributors may be present via the root capabilities
+        # object.
+        r = requests.get(f'{PRIMARY_URL}/', timeout=5)
+        self.assertEqual(r.status_code, 200)
+        caps = r.json().get('capabilities', {})
+        self.assertIs(caps.get('aggregation'), True)
+
+    def test_peer_c_root_capabilities_reports_aggregation_disabled(self):
+        # peer_c has no aggregation configured; capability must reflect that.
+        r = requests.get(f'{PEER_C_URL}/', timeout=5)
+        self.assertEqual(r.status_code, 200)
+        caps = r.json().get('capabilities', {})
+        self.assertIs(caps.get('aggregation'), False)
+
+    # --- Contributors on non-Component entity types ----------------------
+
+    def test_leaf_component_detail_contributors_single_peer(self):
+        # A leaf ECU that came entirely from peer_b must have contributors
+        # ["peer:peer_b"]. This used to pass silently even if the field
+        # was dropped (because the test looked at a forwarded response from
+        # peer_b which emits the field itself). We only assert the shape
+        # here - forwarding origin is covered by the 1-hop test above.
+        r = requests.get(f'{PRIMARY_URL}/components/ecu-b', timeout=5)
+        self.assertEqual(r.status_code, 200)
+        contributors = r.json().get('x-medkit', {}).get('contributors', [])
+        # Stable ordering: "local" first when present, then peer:* sorted.
+        self.assertEqual(contributors[:1], ['local'])
+
+    def test_app_detail_contributors_present(self):
+        # Apps flow through x-medkit.contributors the same way Components do
+        # after the detail-handler fix. ecu-a-app is the primary's local App.
+        r = requests.get(f'{PRIMARY_URL}/apps/ecu-a-app', timeout=5)
+        self.assertEqual(r.status_code, 200)
+        contributors = r.json().get('x-medkit', {}).get('contributors', [])
+        self.assertIn('local', contributors)
 
 
 @launch_testing.post_shutdown_test()

@@ -313,12 +313,18 @@ list is populated during merge:
 
 - Each local entity is seeded with ``"local"`` before the peer merge loop
   runs.
-- ``EntityMerger`` appends ``"peer:<name>"`` on collisions (Areas,
-  hierarchical parent Components, Functions) and on remote-only additions;
-  the append is deduplicated, so merging with the same peer twice does not
-  produce duplicate entries.
+- ``EntityMerger`` appends ``"peer:<name>"`` on every Area / Component /
+  Function collision and on every remote-only addition, without knowing
+  yet whether a Component will later be classified as a hierarchical
+  parent or a leaf. The classification pass runs afterwards and only
+  rewrites the routing table; ``contributors`` reflects the merge
+  inputs. Appends are deduplicated, so merging with the same peer twice
+  never produces duplicate entries.
 - Apps that collide receive only ``"peer:<name>"`` because the
   prefix strategy turns them into distinct entities.
+- Outputs are sorted with ``"local"`` first (when present) and
+  ``"peer:<name>"`` entries alphabetically, so clients and snapshot
+  tests can rely on a stable order regardless of peer merge order.
 
 Clients (web UI, MCP, Foxglove, VDA 5050 agent) can use ``contributors``
 to distinguish a locally-owned entity from one that came in over
@@ -449,6 +455,25 @@ fetching.
 When a peer recovers (health check succeeds again), it is automatically
 re-included.
 
+The aggregator also publishes its own ``/health`` response with two
+additional fields when aggregation is enabled (x-medkit extensions on our
+own endpoint, outside the SOVD core contract):
+
+- ``peers`` - array of peer status objects describing each configured or
+  discovered peer (URL, name, reachability, last-seen timestamp).
+- ``warnings`` - array of operator-actionable aggregation warnings. The
+  array is always present (possibly empty) when aggregation is active, so
+  clients do not have to differentiate "no warnings" from "aggregation
+  disabled" (use ``/.capabilities.aggregation`` in the root endpoint for
+  that).
+
+Warning objects carry ``code`` (stable machine-readable identifier,
+documented in ``warning_codes.hpp``), ``message`` (human-readable text
+including a remediation hint), ``entity_ids`` (SOVD IDs touched by the
+anomaly), and ``peer_names`` (peers involved). The only code emitted
+today is ``leaf_id_collision`` - see the classification section for the
+detection algorithm and the fall-back routing behaviour.
+
 Stream Proxy
 ~~~~~~~~~~~~
 
@@ -527,8 +552,17 @@ Key Classes
 ``EntityMerger``
     Stateless merge engine that combines local and remote entity sets using
     type-specific rules (merge by ID for Area/Function/Component, prefix on
-    collision for App). Produces a routing table mapping remote entity IDs to
-    peer names.
+    collision for App). Produces a provisional routing table mapping remote
+    entity IDs to peer names - the Component entries are later refined by
+    ``classify_component_routing``.
+
+``classify_component_routing`` (``aggregation/classification.hpp``)
+    Pure free function that takes the fully merged Component set plus the
+    per-peer ``PeerClaim`` list and returns a ``ClassifiedRouting`` with
+    hierarchical-parent Components removed from the routing table (served
+    locally with merged view) and leaves kept. Multi-peer leaf collisions
+    surface as ``LeafCollisionWarning`` entries consumed by
+    ``/health.warnings``.
 
 ``AggregationManager``
     Central coordinator that manages the set of ``PeerClient`` instances, runs
