@@ -193,6 +193,7 @@ add_library(gateway_lib STATIC
   # Aggregation module
   src/aggregation/peer_client.cpp
   src/aggregation/entity_merger.cpp
+  src/aggregation/classification.cpp
   src/aggregation/aggregation_manager.cpp
   src/aggregation/mdns_discovery.cpp
   src/aggregation/sse_stream_proxy.cpp
