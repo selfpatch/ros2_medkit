@@ -28,7 +28,14 @@
 namespace ros2_medkit_gateway {
 
 /// Current plugin API version. Plugins must export this value from plugin_api_version().
-constexpr int PLUGIN_API_VERSION = 6;
+///
+/// Version history:
+/// - v6: ScriptProvider, locking API, extended PluginContext (entity snapshot,
+///       fault listing, sampler registration).
+/// - v7: PluginContext::notify_entities_changed(EntityChangeScope) for plugins
+///       that mutate the entity surface at runtime. Default implementation is
+///       a no-op so plugins built against v6 continue to load.
+constexpr int PLUGIN_API_VERSION = 7;
 
 /// Log severity levels for plugin logging callback
 enum class PluginLogLevel { kInfo, kWarn, kError };

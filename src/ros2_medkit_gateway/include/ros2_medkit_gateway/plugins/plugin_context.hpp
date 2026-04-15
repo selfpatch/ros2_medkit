@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/lock_manager.hpp"
 #include "ros2_medkit_gateway/models/entity_types.hpp"
+#include "ros2_medkit_gateway/plugins/entity_change_scope.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
@@ -214,6 +215,35 @@ class PluginContext {
    * in GatewayNode regardless of trigger configuration.
    */
   virtual ConditionRegistry * get_condition_registry() = 0;
+
+  // ---- Entity surface notifications (plugin API v7) ----
+
+  /**
+   * @brief Tell the gateway that this plugin has finished mutating entities.
+   *
+   * Call this AFTER any change that adds, removes, or restructures entities
+   * on disk or in the running runtime (deploying a new node under a manifest
+   * fragment, removing a previously-deployed app, renaming a component).
+   * The gateway responds by re-reading its manifest sources (including any
+   * configured fragments directory) and running a discovery pass for the
+   * affected scope. By the time this returns, subsequent `get_entity` and
+   * HTTP discovery endpoints reflect the new surface.
+   *
+   * @param scope Hint that lets the gateway limit the rediscovery work.
+   *              `EntityChangeScope::full_refresh()` asks for a global pass.
+   *
+   * @par Thread safety
+   * Safe to call from any thread. Implementations must be non-blocking for
+   * the caller's critical section (they may post to an internal work queue).
+   *
+   * @par Backwards compatibility
+   * Default implementation is a no-op so plugins built against plugin API v6
+   * continue to load and run against a v7 gateway without code changes. A
+   * gateway built against v7 but loading a v6 plugin simply never receives a
+   * notification from that plugin.
+   */
+  virtual void notify_entities_changed(const EntityChangeScope & /*scope*/) {
+  }
 };
 
 // Forward declarations

@@ -236,6 +236,16 @@ class GatewayPluginContext : public PluginContext {
     return node_->get_condition_registry();
   }
 
+  // ---- Entity surface notifications (plugin API v7) ----
+
+  void notify_entities_changed(const EntityChangeScope & scope) override {
+    // Delegate to GatewayNode::handle_entity_change_notification which
+    // serializes concurrent plugin notifications onto the discovery thread.
+    // Pass the scope by value because the caller's copy may disappear
+    // before the worker thread dequeues the request.
+    node_->handle_entity_change_notification(scope);
+  }
+
  private:
   GatewayNode * node_;
   FaultManager * fault_manager_;
