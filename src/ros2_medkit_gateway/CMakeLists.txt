@@ -358,6 +358,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_manifest_fragments test/test_manifest_fragments.cpp)
   target_link_libraries(test_manifest_fragments gateway_lib)
 
+  ament_add_gtest(test_plugin_notify_integration test/test_plugin_notify_integration.cpp)
+  target_link_libraries(test_plugin_notify_integration gateway_lib)
+  medkit_set_test_domain(test_plugin_notify_integration)
+
   ament_add_gtest(test_auth_manager test/test_auth_manager.cpp)
   target_link_libraries(test_auth_manager gateway_lib)
 

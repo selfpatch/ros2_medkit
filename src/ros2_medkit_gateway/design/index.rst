@@ -554,3 +554,4 @@ Additional Design Documents
    :maxdepth: 1
 
    aggregation
+   plugin_entity_notifications

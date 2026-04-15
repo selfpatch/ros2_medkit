@@ -2,6 +2,16 @@
 Changelog for package ros2_medkit_gateway
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Unreleased
+----------
+
+**Features:**
+
+* Plugin API version bumped to v7. Adds ``PluginContext::notify_entities_changed(EntityChangeScope)`` lifecycle hook for plugins that mutate the entity surface at runtime; default no-op preserves v6 source and binary compatibility (`#376 <https://github.com/selfpatch/ros2_medkit/issues/376>`_)
+* New ``discovery.manifest.fragments_dir`` parameter: gateway scans the directory for ``*.yaml`` / ``*.yml`` fragment files on every manifest load / reload and merges apps, components, and functions on top of the base manifest. Fragments are forbidden from declaring areas, metadata, scripts, capabilities, or lock_overrides (those stay in the base). Files merged in alphabetical order for deterministic duplicate-id errors (`#376 <https://github.com/selfpatch/ros2_medkit/issues/376>`_)
+* ``ManifestParser::parse_fragment_file`` convenience entrypoint that injects a synthetic ``manifest_version`` header when the fragment omits one
+* See ``design/plugin_entity_notifications.rst`` for the lifecycle and merge-rule walkthrough
+
 0.4.0 (2026-03-20)
 ------------------
 
