@@ -41,6 +41,7 @@
 #include "ros2_medkit_gateway/log_manager.hpp"
 #include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
+#include "ros2_medkit_gateway/plugins/entity_change_scope.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/resource_change_notifier.hpp"
 #include "ros2_medkit_gateway/resource_sampler.hpp"
@@ -185,6 +186,17 @@ class GatewayNode : public rclcpp::Node {
    * @return Raw pointer to AggregationManager (valid for lifetime of GatewayNode), or nullptr if disabled
    */
   AggregationManager * get_aggregation_manager() const;
+
+  /**
+   * @brief Handle a plugin's `PluginContext::notify_entities_changed` request.
+   *
+   * Runs a single `refresh_cache()` pass synchronously. The scope hint is
+   * accepted and logged but the current implementation ignores it and always
+   * does a full refresh - future work may limit the rediscovery to the
+   * indicated area / component. The entry point is thread-safe: concurrent
+   * callers serialize on the cache's internal mutex.
+   */
+  void handle_entity_change_notification(const EntityChangeScope & scope);
 
  private:
   void refresh_cache();

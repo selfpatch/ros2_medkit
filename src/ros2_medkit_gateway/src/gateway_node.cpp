@@ -1497,6 +1497,21 @@ AggregationManager * GatewayNode::get_aggregation_manager() const {
   return aggregation_mgr_.get();
 }
 
+void GatewayNode::handle_entity_change_notification(const EntityChangeScope & scope) {
+  if (scope.is_full_refresh()) {
+    RCLCPP_INFO(get_logger(), "Plugin entity-change notification: full refresh");
+  } else {
+    RCLCPP_INFO(get_logger(), "Plugin entity-change notification: area=%s component=%s",
+                scope.area_id.value_or("<any>").c_str(), scope.component_id.value_or("<any>").c_str());
+  }
+  // Scope hints are informational in v7. Future versions may restrict the
+  // refresh to the named area / component subtree when the discovery
+  // pipeline gains that capability. For now every notification triggers a
+  // single full pass, which is idempotent and cheap relative to the network
+  // side-effects the caller typically just performed.
+  refresh_cache();
+}
+
 void GatewayNode::refresh_cache() {
   RCLCPP_DEBUG(get_logger(), "Refreshing entity cache...");
 
