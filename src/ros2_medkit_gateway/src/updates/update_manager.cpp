@@ -99,6 +99,24 @@ tl::expected<void, UpdateError> UpdateManager::register_update(const nlohmann::j
         return tl::make_unexpected(UpdateError{UpdateErrorCode::Internal, err.message});
     }
   }
+  // Seed an initial Pending state so GET /updates/<id>/status returns
+  // {"status":"pending"} immediately after register, rather than 404. UI
+  // consumers (UpdatesDashboard) gate action buttons on the status field
+  // and won't render "Prepare" when the status query fails, so a newly-
+  // registered update would otherwise be stuck from the frontend's view.
+  // Preserve an already-seeded state if a concurrent caller raced us
+  // through the backend (shouldn't happen with current backends, but the
+  // defensive check keeps the method idempotent).
+  if (metadata.contains("id") && metadata["id"].is_string()) {
+    const auto id = metadata["id"].get<std::string>();
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto & state_ptr = states_[id];
+    if (!state_ptr) {
+      state_ptr = std::make_unique<PackageState>();
+      state_ptr->phase = UpdatePhase::None;
+      state_ptr->status = UpdateStatusInfo{UpdateStatus::Pending, std::nullopt, std::nullopt, std::nullopt};
+    }
+  }
   return {};
 }
 
