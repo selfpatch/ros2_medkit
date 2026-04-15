@@ -73,9 +73,49 @@ class ManifestManager {
 
   /**
    * @brief Reload manifest from previously loaded file path
+   *
+   * Re-parses the base manifest file AND re-scans the fragments directory
+   * (if one has been configured via `set_fragments_dir`). Fragments are
+   * merged on top of the base manifest before validation runs. A missing
+   * fragments directory is treated as "no fragments" and does not fail the
+   * reload.
+   *
    * @return true if reloaded successfully
    */
   bool reload_manifest();
+
+  /**
+   * @brief Configure a directory containing manifest fragment files.
+   *
+   * When set, every `load_manifest` / `reload_manifest` call scans the
+   * directory for files whose name ends in `.yaml` or `.yml` (recursion is
+   * not performed), parses each one with the standard `ManifestParser`, and
+   * merges the declared entities on top of the base manifest before
+   * validation. Plugins that deploy new nodes at runtime can drop a
+   * per-deploy fragment alongside their deployed files without editing
+   * the base manifest.
+   *
+   * Merge rules:
+   *   * apps / components / functions are appended; duplicate IDs across
+   *     the merged manifest cause validation to fail the same way they
+   *     would in a single file.
+   *   * fragments may not declare top-level `areas`, `metadata`, `config`,
+   *     `scripts`, `capabilities`, or `lock_overrides` - those must stay in
+   *     the base manifest. A fragment that declares any of them is skipped
+   *     with a warning.
+   *
+   * Call with an empty string to disable fragment scanning.
+   *
+   * @param dir Absolute or gateway-relative path to a directory. Does not
+   *            need to exist at call time; a missing directory on load is
+   *            treated as "no fragments found".
+   */
+  void set_fragments_dir(const std::string & dir);
+
+  /**
+   * @brief Get the currently configured fragments directory (empty if unset).
+   */
+  std::string get_fragments_dir() const;
 
   /**
    * @brief Unload current manifest (revert to runtime-only mode)
@@ -216,8 +256,16 @@ class ManifestManager {
   rclcpp::Node * node_;
   mutable std::mutex mutex_;
 
+  /// Merge the fragments found in `fragments_dir_` on top of `base`.
+  /// Returns true on success (or no fragments); false if any fragment
+  /// rejected the merge (conflicting IDs, disallowed top-level fields).
+  /// Validation errors from individual fragments are appended to
+  /// `validation_result_` so callers see them in the normal error flow.
+  bool apply_fragments(Manifest & base);
+
   std::optional<Manifest> manifest_;
   std::string manifest_path_;
+  std::string fragments_dir_;
   ValidationResult validation_result_;
   bool strict_mode_{true};
 

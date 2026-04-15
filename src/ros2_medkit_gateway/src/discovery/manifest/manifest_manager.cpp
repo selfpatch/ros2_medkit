@@ -14,6 +14,9 @@
 
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
 
+#include <algorithm>
+#include <filesystem>
+
 namespace ros2_medkit_gateway {
 namespace discovery {
 
@@ -30,8 +33,25 @@ bool ManifestManager::load_manifest(const std::string & file_path, bool strict) 
     log_info("Loading manifest from: " + file_path);
     Manifest loaded = parser_.parse_file(file_path);
 
-    // Validate
+    // Apply any fragments dropped in the fragments directory on top of the
+    // base manifest before validation. `apply_fragments` appends its own
+    // errors to validation_result_ so they surface in the normal flow.
+    validation_result_ = ValidationResult{};
+    if (!apply_fragments(loaded)) {
+      // apply_fragments already recorded the errors; fall through to the
+      // regular validation step so the full error set is reported.
+    }
+
+    // Validate the merged manifest.
+    auto merge_errors = std::move(validation_result_);
     validation_result_ = validator_.validate(loaded);
+    // Preserve any fragment errors recorded above.
+    for (auto & err : merge_errors.errors) {
+      validation_result_.errors.push_back(std::move(err));
+    }
+    for (auto & warn : merge_errors.warnings) {
+      validation_result_.warnings.push_back(std::move(warn));
+    }
 
     // Always fail on ERRORs (broken references, circular deps, duplicate bindings)
     // These indicate a fundamentally broken manifest that would cause runtime issues
@@ -442,6 +462,88 @@ void ManifestManager::build_lookup_maps() {
   for (size_t i = 0; i < manifest_->functions.size(); ++i) {
     function_index_[manifest_->functions[i].id] = i;
   }
+}
+
+void ManifestManager::set_fragments_dir(const std::string & dir) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  fragments_dir_ = dir;
+}
+
+std::string ManifestManager::get_fragments_dir() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return fragments_dir_;
+}
+
+bool ManifestManager::apply_fragments(Manifest & base) {
+  // Called with mutex_ held by the caller.
+  if (fragments_dir_.empty()) {
+    return true;
+  }
+  std::filesystem::path dir(fragments_dir_);
+  std::error_code ec;
+  if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) {
+    // A missing directory is "no fragments", not an error. This lets the
+    // deploy side create the directory lazily on first install.
+    return true;
+  }
+
+  // Collect + sort file paths so the merge order is deterministic. Without
+  // this the validator's "duplicate id" error could point at a different
+  // fragment run to run, which is nightmarish to diagnose.
+  std::vector<std::filesystem::path> files;
+  for (auto const & entry : std::filesystem::directory_iterator(dir, ec)) {
+    if (ec) break;
+    if (!entry.is_regular_file(ec)) continue;
+    auto ext = entry.path().extension().string();
+    if (ext == ".yaml" || ext == ".yml") {
+      files.push_back(entry.path());
+    }
+  }
+  std::sort(files.begin(), files.end());
+
+  bool ok = true;
+  for (const auto & path : files) {
+    log_info("Merging manifest fragment: " + path.string());
+    Manifest fragment;
+    try {
+      fragment = parser_.parse_fragment_file(path.string());
+    } catch (const std::exception & e) {
+      validation_result_.add_error("FRAGMENT_PARSE", e.what(), path.string());
+      log_error("Failed to parse fragment " + path.string() + ": " + e.what());
+      ok = false;
+      continue;
+    }
+
+    // Fragments may only contribute apps, components, functions. Reject any
+    // attempt to redeclare top-level properties owned by the base manifest.
+    auto reject = [&](const std::string & field) {
+      validation_result_.add_error("FRAGMENT_FORBIDDEN_FIELD",
+                                   "fragment may not declare '" + field + "'", path.string());
+      log_error("Fragment " + path.string() + " declares forbidden field '" + field + "'");
+      ok = false;
+    };
+    if (!fragment.areas.empty()) reject("areas");
+    // manifest_version is auto-injected by parse_fragment_file when the
+    // fragment omits it, so we don't check that field here - fragments are
+    // free to declare or omit it without penalty.
+    if (!fragment.metadata.name.empty() || !fragment.metadata.version.empty()) reject("metadata");
+    if (!fragment.scripts.empty()) reject("scripts");
+    if (!fragment.capabilities.empty()) reject("capabilities");
+    if (!fragment.lock_overrides.empty()) reject("lock_overrides");
+
+    // Append allowed entity lists. Duplicate IDs are caught by the regular
+    // validator run once all fragments have been merged.
+    for (auto & comp : fragment.components) {
+      base.components.push_back(std::move(comp));
+    }
+    for (auto & app : fragment.apps) {
+      base.apps.push_back(std::move(app));
+    }
+    for (auto & fn : fragment.functions) {
+      base.functions.push_back(std::move(fn));
+    }
+  }
+  return ok;
 }
 
 void ManifestManager::log_info(const std::string & msg) const {

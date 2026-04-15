@@ -50,6 +50,12 @@ struct DiscoveryConfig {
   bool manifest_strict_validation{true};
   bool manifest_enabled{true};  // enable/disable manifest layer in hybrid mode
   bool runtime_enabled{true};   // enable/disable runtime layer in hybrid mode
+  /// Directory scanned for manifest fragment yaml files on every manifest
+  /// load / reload. Empty = disabled. Fragments may contribute apps,
+  /// components, and functions; top-level fields (areas, metadata, config,
+  /// scripts, capabilities, lock_overrides) are reserved for the base
+  /// manifest. See `ManifestManager::set_fragments_dir`.
+  std::string manifest_fragments_dir;
 
   /**
    * @brief Runtime (heuristic) discovery options
