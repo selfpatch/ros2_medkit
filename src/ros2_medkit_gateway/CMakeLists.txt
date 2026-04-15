@@ -355,6 +355,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_entity_change_scope test/test_entity_change_scope.cpp)
   target_link_libraries(test_entity_change_scope gateway_lib)
 
+  ament_add_gtest(test_manifest_fragments test/test_manifest_fragments.cpp)
+  target_link_libraries(test_manifest_fragments gateway_lib)
+
   ament_add_gtest(test_auth_manager test/test_auth_manager.cpp)
   target_link_libraries(test_auth_manager gateway_lib)
 

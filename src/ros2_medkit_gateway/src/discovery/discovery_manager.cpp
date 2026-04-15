@@ -48,6 +48,11 @@ bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
   // Create manifest manager if needed
   if (config.mode == DiscoveryMode::MANIFEST_ONLY || config.mode == DiscoveryMode::HYBRID) {
     manifest_manager_ = std::make_unique<discovery::ManifestManager>(node_);
+    if (!config.manifest_fragments_dir.empty()) {
+      manifest_manager_->set_fragments_dir(config.manifest_fragments_dir);
+      RCLCPP_INFO(node_->get_logger(), "Manifest fragments_dir: %s",
+                  config.manifest_fragments_dir.c_str());
+    }
 
     if (config.manifest_path.empty()) {
       if (config.mode == DiscoveryMode::HYBRID) {

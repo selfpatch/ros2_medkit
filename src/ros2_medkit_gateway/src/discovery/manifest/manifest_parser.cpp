@@ -36,6 +36,46 @@ Manifest ManifestParser::parse_file(const std::string & file_path) const {
   return parse_string(buffer.str());
 }
 
+Manifest ManifestParser::parse_fragment_file(const std::string & file_path) const {
+  // Read the yaml into a string, inject a synthetic manifest_version if the
+  // fragment omits one (fragments are not required to declare it), then
+  // reuse the main parse_string pipeline so every field is parsed with the
+  // exact same logic as a full manifest. Anything forbidden in fragments
+  // (areas, metadata, scripts, ...) is still parsed, which lets the caller
+  // detect and reject it with a specific error message.
+  std::ifstream file(file_path);
+  if (!file.is_open()) {
+    throw std::runtime_error("Cannot open manifest fragment: " + file_path);
+  }
+  std::stringstream buffer;
+  buffer << file.rdbuf();
+  std::string contents = buffer.str();
+
+  // Version prefix is appended-only when the source yaml does not set one.
+  // Looking for the bare word as the start of a line is sufficient for the
+  // yaml dialect we accept (no flow-style top-level document).
+  auto has_version_field = [](const std::string & s) {
+    // Scan line-by-line for a line beginning with "manifest_version:".
+    size_t pos = 0;
+    while (pos < s.size()) {
+      size_t end = s.find('\n', pos);
+      std::string line = s.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+      size_t first = line.find_first_not_of(" \t");
+      if (first != std::string::npos && line.compare(first, sizeof("manifest_version:") - 1,
+                                                      "manifest_version:") == 0) {
+        return true;
+      }
+      if (end == std::string::npos) break;
+      pos = end + 1;
+    }
+    return false;
+  };
+  if (!has_version_field(contents)) {
+    contents = "manifest_version: \"1.0\"\n" + contents;
+  }
+  return parse_string(contents);
+}
+
 Manifest ManifestParser::parse_string(const std::string & yaml_content) const {
   YAML::Node root;
   try {

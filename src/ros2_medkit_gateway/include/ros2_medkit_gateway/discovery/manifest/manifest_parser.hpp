@@ -51,6 +51,19 @@ class ManifestParser {
    */
   Manifest parse_string(const std::string & yaml_content) const;
 
+  /**
+   * @brief Parse a manifest fragment from file.
+   *
+   * Fragments declare a subset of a manifest (apps, components, functions)
+   * intended to be merged on top of a base manifest at load time. They do
+   * NOT carry a manifest_version - that field is owned by the base.
+   *
+   * @param file_path Path to fragment YAML
+   * @return Parsed manifest with only the fragment-allowed sections populated
+   * @throws std::runtime_error if file cannot be read or parsed
+   */
+  Manifest parse_fragment_file(const std::string & file_path) const;
+
  private:
   /// Recursively parse area and its nested subareas
   void parse_area_recursive(const YAML::Node & node, const std::string & parent_id, std::vector<Area> & areas) const;
