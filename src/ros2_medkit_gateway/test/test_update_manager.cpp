@@ -298,6 +298,22 @@ TEST_F(UpdateManagerTest, StatusNotFoundForUnknown) {
   EXPECT_EQ(result.error().code, UpdateErrorCode::NotFound);
 }
 
+// @verifies REQ_INTEROP_094
+TEST_F(UpdateManagerTest, StatusPendingRightAfterRegister) {
+  // Registering an update must immediately yield a Pending status so the
+  // UpdatesDashboard (which gates action buttons on a non-null status
+  // response) can render Prepare / Execute / Delete without waiting for a
+  // separate prepare call.
+  json pkg = {{"id", "fresh-pkg"}, {"update_name", "Fresh"}, {"automated", false}};
+  ASSERT_TRUE(manager_->register_update(pkg).has_value());
+
+  auto status = manager_->get_status("fresh-pkg");
+  ASSERT_TRUE(status.has_value()) << status.error().message;
+  EXPECT_EQ(status->status, UpdateStatus::Pending);
+  EXPECT_FALSE(status->progress.has_value());
+  EXPECT_FALSE(status->error_message.has_value());
+}
+
 // @verifies REQ_INTEROP_083
 TEST_F(UpdateManagerTest, DuplicateRegistration) {
   json pkg = {{"id", "test-pkg"}, {"update_name", "Test"}, {"automated", false}};
