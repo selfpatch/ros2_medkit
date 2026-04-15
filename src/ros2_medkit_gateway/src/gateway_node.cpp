@@ -1516,6 +1516,17 @@ void GatewayNode::handle_entity_change_notification(const EntityChangeScope & sc
   // pipeline gains that capability. For now every notification triggers a
   // single full pass, which is idempotent and cheap relative to the network
   // side-effects the caller typically just performed.
+  //
+  // The pass has to re-parse the manifest source (base + fragments dir)
+  // BEFORE running the cache refresh, otherwise fragments added or removed
+  // since the last load stay invisible to the pipeline.
+  if (discovery_mgr_) {
+    if (auto * manifest = discovery_mgr_->get_manifest_manager()) {
+      if (!manifest->get_manifest_path().empty()) {
+        manifest->reload_manifest();
+      }
+    }
+  }
   refresh_cache();
 }
 
