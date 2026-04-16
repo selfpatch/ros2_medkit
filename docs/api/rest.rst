@@ -1134,6 +1134,7 @@ Without such a plugin, all endpoints return ``501 Not Implemented``.
 
       {
         "status": "inProgress",
+        "x-medkit-phase": "preparing",
         "progress": 65,
         "sub_progress": [
           {"name": "download", "progress": 100},
@@ -1146,6 +1147,13 @@ Without such a plugin, all endpoints return ``501 Not Implemented``.
    A successful ``POST /api/v1/updates`` seeds a ``pending`` status for the package,
    so this endpoint returns ``200`` with ``{"status": "pending"}`` immediately after
    registration, before any ``prepare`` or ``execute`` call.
+
+   **Vendor extension ``x-medkit-phase``** (non-standard, SOVD-compatible):
+   ``none``, ``preparing``, ``prepared``, ``executing``, ``executed``,
+   ``failed``, ``deleting``. Differentiates "prepare completed" (``status``
+   ``completed`` + ``x-medkit-phase`` ``prepared``) from "execute completed"
+   (``status`` ``completed`` + ``x-medkit-phase`` ``executed``). Clients that
+   only consume the standard ``status`` field continue to work unchanged.
 
    When ``status`` is ``failed``, an ``error`` object is included:
 

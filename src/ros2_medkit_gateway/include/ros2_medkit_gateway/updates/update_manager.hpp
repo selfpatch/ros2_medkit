@@ -101,7 +101,6 @@ class UpdateManager {
   void notify_status_change(const std::string & id, const UpdateStatusInfo & status);
 
   struct PackageState {
-    UpdatePhase phase = UpdatePhase::None;
     UpdateStatusInfo status;
     std::future<void> active_task;
   };

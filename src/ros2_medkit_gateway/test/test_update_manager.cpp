@@ -599,3 +599,25 @@ TEST(UpdateManagerFailureTest, ExecuteExceptionSetsFailedStatus) {
   manager.reset();
   backend.reset();
 }
+
+TEST(UpdateStatusToJson, SerializesPhaseAsVendorExtension) {
+  UpdateStatusInfo status{UpdateStatus::Completed, UpdatePhase::Prepared, std::nullopt, std::nullopt, std::nullopt};
+  auto j = update_status_to_json(status);
+  EXPECT_EQ(j["status"], "completed");
+  EXPECT_EQ(j["x-medkit-phase"], "prepared");
+}
+
+TEST(UpdateStatusToJson, ExposesExecutedPhaseForTerminalCompletion) {
+  UpdateStatusInfo status{UpdateStatus::Completed, UpdatePhase::Executed, 100, std::nullopt, std::nullopt};
+  auto j = update_status_to_json(status);
+  EXPECT_EQ(j["status"], "completed");
+  EXPECT_EQ(j["x-medkit-phase"], "executed");
+  EXPECT_EQ(j["progress"], 100);
+}
+
+TEST(UpdateStatusToJson, EmitsNonePhaseForFreshlyRegistered) {
+  UpdateStatusInfo status;
+  auto j = update_status_to_json(status);
+  EXPECT_EQ(j["status"], "pending");
+  EXPECT_EQ(j["x-medkit-phase"], "none");
+}
