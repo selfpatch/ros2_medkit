@@ -113,8 +113,8 @@ tl::expected<void, UpdateError> UpdateManager::register_update(const nlohmann::j
   auto & state_ptr = states_[id];
   if (!state_ptr) {
     state_ptr = std::make_unique<PackageState>();
-    state_ptr->phase = UpdatePhase::None;
-    state_ptr->status = UpdateStatusInfo{UpdateStatus::Pending, std::nullopt, std::nullopt, std::nullopt};
+    state_ptr->status =
+        UpdateStatusInfo{UpdateStatus::Pending, UpdatePhase::None, std::nullopt, std::nullopt, std::nullopt};
   }
   return {};
 }
@@ -139,11 +139,11 @@ tl::expected<void, UpdateError> UpdateManager::delete_update(const std::string &
         it->second->active_task.wait();
       }
       // Mark as deleting so no new operations can start on this package
-      it->second->phase = UpdatePhase::Deleting;
+      it->second->status.phase = UpdatePhase::Deleting;
     } else {
       // Create sentinel to prevent concurrent start_prepare
       states_[id] = std::make_unique<PackageState>();
-      states_[id]->phase = UpdatePhase::Deleting;
+      states_[id]->status.phase = UpdatePhase::Deleting;
     }
   }
 
@@ -157,7 +157,7 @@ tl::expected<void, UpdateError> UpdateManager::delete_update(const std::string &
     if (had_state) {
       auto it = states_.find(id);
       if (it != states_.end() && it->second) {
-        it->second->phase = UpdatePhase::Failed;
+        it->second->status.phase = UpdatePhase::Failed;
       }
     } else {
       // Remove the sentinel we created - package never had state before
@@ -203,12 +203,12 @@ tl::expected<void, UpdateError> UpdateManager::start_prepare(const std::string &
     state_ptr = std::make_unique<PackageState>();
   }
 
-  if (state_ptr->phase == UpdatePhase::Deleting) {
+  if (state_ptr->status.phase == UpdatePhase::Deleting) {
     return tl::make_unexpected(UpdateError{UpdateErrorCode::Deleting, "Package is being deleted"});
   }
 
-  state_ptr->phase = UpdatePhase::Preparing;
-  state_ptr->status = UpdateStatusInfo{UpdateStatus::Pending, std::nullopt, std::nullopt, std::nullopt};
+  state_ptr->status =
+      UpdateStatusInfo{UpdateStatus::Pending, UpdatePhase::Preparing, std::nullopt, std::nullopt, std::nullopt};
   state_ptr->active_task = std::async(std::launch::async, &UpdateManager::run_prepare, this, id);
   return {};
 }
@@ -229,7 +229,7 @@ tl::expected<void, UpdateError> UpdateManager::start_execute(const std::string &
   }
 
   auto it = states_.find(id);
-  if (it == states_.end() || !it->second || it->second->phase != UpdatePhase::Prepared) {
+  if (it == states_.end() || !it->second || it->second->status.phase != UpdatePhase::Prepared) {
     return tl::make_unexpected(UpdateError{UpdateErrorCode::NotPrepared, "Package must be prepared before execution"});
   }
   if (is_task_active(id)) {
@@ -238,8 +238,8 @@ tl::expected<void, UpdateError> UpdateManager::start_execute(const std::string &
   }
 
   auto & state = *it->second;
-  state.phase = UpdatePhase::Executing;
-  state.status = UpdateStatusInfo{UpdateStatus::Pending, std::nullopt, std::nullopt, std::nullopt};
+  state.status =
+      UpdateStatusInfo{UpdateStatus::Pending, UpdatePhase::Executing, std::nullopt, std::nullopt, std::nullopt};
   state.active_task = std::async(std::launch::async, &UpdateManager::run_execute, this, id);
   return {};
 }
@@ -273,12 +273,12 @@ tl::expected<void, UpdateError> UpdateManager::start_automated(const std::string
     state_ptr = std::make_unique<PackageState>();
   }
 
-  if (state_ptr->phase == UpdatePhase::Deleting) {
+  if (state_ptr->status.phase == UpdatePhase::Deleting) {
     return tl::make_unexpected(UpdateError{UpdateErrorCode::Deleting, "Package is being deleted"});
   }
 
-  state_ptr->phase = UpdatePhase::Preparing;
-  state_ptr->status = UpdateStatusInfo{UpdateStatus::Pending, std::nullopt, std::nullopt, std::nullopt};
+  state_ptr->status =
+      UpdateStatusInfo{UpdateStatus::Pending, UpdatePhase::Preparing, std::nullopt, std::nullopt, std::nullopt};
   state_ptr->active_task = std::async(std::launch::async, &UpdateManager::run_automated, this, id);
   return {};
 }
@@ -321,11 +321,11 @@ void UpdateManager::run_prepare(const std::string & id) {
       std::lock_guard<std::mutex> lock(mutex_);
       if (result) {
         state->status.status = UpdateStatus::Completed;
-        state->phase = UpdatePhase::Prepared;
+        state->status.phase = UpdatePhase::Prepared;
       } else {
         state->status.status = UpdateStatus::Failed;
         state->status.error_message = result.error().message;
-        state->phase = UpdatePhase::Failed;
+        state->status.phase = UpdatePhase::Failed;
       }
       snapshot = state->status;
     }
@@ -338,7 +338,7 @@ void UpdateManager::run_prepare(const std::string & id) {
       if (it != states_.end() && it->second) {
         it->second->status.status = UpdateStatus::Failed;
         it->second->status.error_message = std::string("Exception: ") + e.what();
-        it->second->phase = UpdatePhase::Failed;
+        it->second->status.phase = UpdatePhase::Failed;
         snapshot = it->second->status;
       }
     }
@@ -351,7 +351,7 @@ void UpdateManager::run_prepare(const std::string & id) {
       if (it != states_.end() && it->second) {
         it->second->status.status = UpdateStatus::Failed;
         it->second->status.error_message = "Unknown exception during prepare";
-        it->second->phase = UpdatePhase::Failed;
+        it->second->status.phase = UpdatePhase::Failed;
         snapshot = it->second->status;
       }
     }
@@ -377,11 +377,11 @@ void UpdateManager::run_execute(const std::string & id) {
       std::lock_guard<std::mutex> lock(mutex_);
       if (result) {
         state->status.status = UpdateStatus::Completed;
-        state->phase = UpdatePhase::Executed;
+        state->status.phase = UpdatePhase::Executed;
       } else {
         state->status.status = UpdateStatus::Failed;
         state->status.error_message = result.error().message;
-        state->phase = UpdatePhase::Failed;
+        state->status.phase = UpdatePhase::Failed;
       }
       snapshot = state->status;
     }
@@ -394,7 +394,7 @@ void UpdateManager::run_execute(const std::string & id) {
       if (it != states_.end() && it->second) {
         it->second->status.status = UpdateStatus::Failed;
         it->second->status.error_message = std::string("Exception: ") + e.what();
-        it->second->phase = UpdatePhase::Failed;
+        it->second->status.phase = UpdatePhase::Failed;
         snapshot = it->second->status;
       }
     }
@@ -407,7 +407,7 @@ void UpdateManager::run_execute(const std::string & id) {
       if (it != states_.end() && it->second) {
         it->second->status.status = UpdateStatus::Failed;
         it->second->status.error_message = "Unknown exception during execute";
-        it->second->phase = UpdatePhase::Failed;
+        it->second->status.phase = UpdatePhase::Failed;
         snapshot = it->second->status;
       }
     }
@@ -435,7 +435,7 @@ void UpdateManager::run_automated(const std::string & id) {
         std::lock_guard<std::mutex> lock(mutex_);
         state->status.status = UpdateStatus::Failed;
         state->status.error_message = prep_result.error().message;
-        state->phase = UpdatePhase::Failed;
+        state->status.phase = UpdatePhase::Failed;
         snapshot = state->status;
       }
       notify_status_change(id, snapshot);
@@ -445,7 +445,7 @@ void UpdateManager::run_automated(const std::string & id) {
     // Phase 2: Execute (reset progress for execute phase)
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      state->phase = UpdatePhase::Executing;
+      state->status.phase = UpdatePhase::Executing;
       state->status.progress = std::nullopt;
       state->status.sub_progress = std::nullopt;
     }
@@ -457,11 +457,11 @@ void UpdateManager::run_automated(const std::string & id) {
       std::lock_guard<std::mutex> lock(mutex_);
       if (exec_result) {
         state->status.status = UpdateStatus::Completed;
-        state->phase = UpdatePhase::Executed;
+        state->status.phase = UpdatePhase::Executed;
       } else {
         state->status.status = UpdateStatus::Failed;
         state->status.error_message = exec_result.error().message;
-        state->phase = UpdatePhase::Failed;
+        state->status.phase = UpdatePhase::Failed;
       }
       snapshot = state->status;
     }
@@ -474,7 +474,7 @@ void UpdateManager::run_automated(const std::string & id) {
       if (it != states_.end() && it->second) {
         it->second->status.status = UpdateStatus::Failed;
         it->second->status.error_message = std::string("Exception: ") + e.what();
-        it->second->phase = UpdatePhase::Failed;
+        it->second->status.phase = UpdatePhase::Failed;
         snapshot = it->second->status;
       }
     }
@@ -487,7 +487,7 @@ void UpdateManager::run_automated(const std::string & id) {
       if (it != states_.end() && it->second) {
         it->second->status.status = UpdateStatus::Failed;
         it->second->status.error_message = "Unknown exception during automated update";
-        it->second->phase = UpdatePhase::Failed;
+        it->second->status.phase = UpdatePhase::Failed;
         snapshot = it->second->status;
       }
     }

@@ -30,8 +30,13 @@ struct UpdateFilter {
   std::optional<std::string> target_version;  // Filter by target version
 };
 
-/// Status of an update operation
+/// Status of an update operation (SOVD-compliant enum values)
 enum class UpdateStatus { Pending, InProgress, Completed, Failed };
+
+/// Lifecycle phase - exposed as SOVD vendor extension `x-medkit-phase`.
+/// Differentiates "prepare completed" from "execute completed" which share
+/// status=completed in the SOVD standard enum.
+enum class UpdatePhase { None, Preparing, Prepared, Executing, Executed, Failed, Deleting };
 
 /// Detailed progress for a sub-step of an update operation
 struct UpdateSubProgress {
@@ -42,13 +47,11 @@ struct UpdateSubProgress {
 /// Full status information for an update operation
 struct UpdateStatusInfo {
   UpdateStatus status = UpdateStatus::Pending;
+  UpdatePhase phase = UpdatePhase::None;
   std::optional<int> progress;                                 // 0-100
   std::optional<std::vector<UpdateSubProgress>> sub_progress;  // Detailed per-step progress
   std::optional<std::string> error_message;                    // Set when status == Failed
 };
-
-/// Internal phase tracking for update lifecycle
-enum class UpdatePhase { None, Preparing, Prepared, Executing, Executed, Failed, Deleting };
 
 /// Error codes for backend return values
 enum class UpdateBackendError {
@@ -91,7 +94,30 @@ class UpdateProgressReporter {
   std::mutex & mutex_;
 };
 
-/// Serialize UpdateStatusInfo to SOVD-compliant JSON
+/// Serialize UpdatePhase to its `x-medkit-phase` string value.
+inline const char * update_phase_to_string(UpdatePhase phase) {
+  switch (phase) {
+    case UpdatePhase::None:
+      return "none";
+    case UpdatePhase::Preparing:
+      return "preparing";
+    case UpdatePhase::Prepared:
+      return "prepared";
+    case UpdatePhase::Executing:
+      return "executing";
+    case UpdatePhase::Executed:
+      return "executed";
+    case UpdatePhase::Failed:
+      return "failed";
+    case UpdatePhase::Deleting:
+      return "deleting";
+  }
+  return "none";
+}
+
+/// Serialize UpdateStatusInfo to SOVD-compliant JSON.
+/// Adds vendor extension `x-medkit-phase` to distinguish prepare-completed from
+/// execute-completed (both report SOVD status=completed).
 inline nlohmann::json update_status_to_json(const UpdateStatusInfo & status) {
   nlohmann::json j;
   switch (status.status) {
@@ -108,6 +134,7 @@ inline nlohmann::json update_status_to_json(const UpdateStatusInfo & status) {
       j["status"] = "failed";
       break;
   }
+  j["x-medkit-phase"] = update_phase_to_string(status.phase);
   if (status.progress.has_value()) {
     j["progress"] = *status.progress;
   }
