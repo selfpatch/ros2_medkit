@@ -193,8 +193,12 @@ class GatewayNode : public rclcpp::Node {
    * Runs a single `refresh_cache()` pass synchronously. The scope hint is
    * accepted and logged but the current implementation ignores it and always
    * does a full refresh - future work may limit the rediscovery to the
-   * indicated area / component. The entry point is thread-safe: concurrent
-   * callers serialize on the cache's internal mutex.
+   * indicated area / component. The entry point is safe to call from any
+   * thread: refresh passes triggered by plugin notifications, the periodic
+   * refresh timer, and startup are serialized by an internal mutex inside
+   * `refresh_cache()` because refresh touches discovery state (e.g.,
+   * `HybridDiscoveryStrategy::refresh()`) that itself assumes single-threaded
+   * execution - `ThreadSafeEntityCache`'s own mutex is not sufficient.
    */
   void handle_entity_change_notification(const EntityChangeScope & scope);
 
@@ -256,6 +260,15 @@ class GatewayNode : public rclcpp::Node {
 
   // Timer for periodic refresh
   rclcpp::TimerBase::SharedPtr refresh_timer_;
+
+  // Serializes `refresh_cache()` across the refresh timer, plugin
+  // `notify_entities_changed` calls and any other caller. Required because
+  // the refresh pipeline touches discovery state that is not itself
+  // thread-safe (e.g., `HybridDiscoveryStrategy::refresh()`). Recursive so
+  // that `handle_entity_change_notification` can also cover the preceding
+  // `reload_manifest()` call without deadlocking when it subsequently
+  // invokes `refresh_cache()`.
+  std::recursive_mutex refresh_mutex_;
 
   // Timer for periodic cleanup of old action goals
   rclcpp::TimerBase::SharedPtr cleanup_timer_;

@@ -55,8 +55,14 @@ class ManifestParser {
    * @brief Parse a manifest fragment from file.
    *
    * Fragments declare a subset of a manifest (apps, components, functions)
-   * intended to be merged on top of a base manifest at load time. They do
-   * NOT carry a manifest_version - that field is owned by the base.
+   * intended to be merged on top of a base manifest at load time. A
+   * fragment MAY declare `manifest_version` but is not required to - when
+   * omitted, a synthetic `"1.0"` value is injected so the shared
+   * `parse_string` pipeline still sees a well-formed manifest. Forbidden
+   * top-level fields (`areas`, `metadata`, `discovery`, `scripts`,
+   * `capabilities`, `lock_overrides`) are still parsed into the returned
+   * `Manifest` so the caller (`ManifestManager::apply_fragments`) can
+   * detect and reject them with a specific validation error.
    *
    * @param file_path Path to fragment YAML
    * @return Parsed manifest with only the fragment-allowed sections populated

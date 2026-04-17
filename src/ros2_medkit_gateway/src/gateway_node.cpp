@@ -1505,6 +1505,14 @@ AggregationManager * GatewayNode::get_aggregation_manager() const {
 }
 
 void GatewayNode::handle_entity_change_notification(const EntityChangeScope & scope) {
+  // Take the recursive refresh mutex for the whole notification so that
+  // `reload_manifest()` and the subsequent `refresh_cache()` (which takes
+  // the same mutex re-entrantly) see a consistent discovery state even when
+  // several plugins notify concurrently or a notification overlaps with the
+  // periodic refresh timer. ThreadSafeEntityCache's own mutex is not
+  // sufficient because the refresh pipeline reaches beyond the cache.
+  std::lock_guard<std::recursive_mutex> refresh_lock(refresh_mutex_);
+
   if (scope.is_full_refresh()) {
     RCLCPP_INFO(get_logger(), "Plugin entity-change notification: full refresh");
   } else {
@@ -1531,6 +1539,13 @@ void GatewayNode::handle_entity_change_notification(const EntityChangeScope & sc
 }
 
 void GatewayNode::refresh_cache() {
+  // Serialize refresh passes across the refresh timer, plugin
+  // `notify_entities_changed` notifications, and any other caller. The
+  // discovery pipeline (e.g., HybridDiscoveryStrategy::refresh()) is not
+  // thread-safe on its own - holding this lock for the full pass is cheap
+  // compared with the network I/O the caller typically just performed.
+  std::lock_guard<std::recursive_mutex> refresh_lock(refresh_mutex_);
+
   RCLCPP_DEBUG(get_logger(), "Refreshing entity cache...");
 
   try {

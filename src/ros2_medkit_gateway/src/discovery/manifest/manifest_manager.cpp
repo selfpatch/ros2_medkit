@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
 
+#include <yaml-cpp/yaml.h>
+
 #include <algorithm>
 #include <filesystem>
 
@@ -491,9 +493,13 @@ bool ManifestManager::apply_fragments(Manifest & base) {
   // this the validator's "duplicate id" error could point at a different
   // fragment run to run, which is nightmarish to diagnose.
   std::vector<std::filesystem::path> files;
-  for (auto const & entry : std::filesystem::directory_iterator(dir, ec)) {
-    if (ec) break;
-    if (!entry.is_regular_file(ec)) continue;
+  for (const auto & entry : std::filesystem::directory_iterator(dir, ec)) {
+    if (ec) {
+      break;
+    }
+    if (!entry.is_regular_file(ec)) {
+      continue;
+    }
     auto ext = entry.path().extension().string();
     if (ext == ".yaml" || ext == ".yml") {
       files.push_back(entry.path());
@@ -517,19 +523,44 @@ bool ManifestManager::apply_fragments(Manifest & base) {
     // Fragments may only contribute apps, components, functions. Reject any
     // attempt to redeclare top-level properties owned by the base manifest.
     auto reject = [&](const std::string & field) {
-      validation_result_.add_error("FRAGMENT_FORBIDDEN_FIELD",
-                                   "fragment may not declare '" + field + "'", path.string());
+      validation_result_.add_error("FRAGMENT_FORBIDDEN_FIELD", "fragment may not declare '" + field + "'",
+                                   path.string());
       log_error("Fragment " + path.string() + " declares forbidden field '" + field + "'");
       ok = false;
     };
-    if (!fragment.areas.empty()) reject("areas");
+    if (!fragment.areas.empty()) {
+      reject("areas");
+    }
     // manifest_version is auto-injected by parse_fragment_file when the
     // fragment omits it, so we don't check that field here - fragments are
     // free to declare or omit it without penalty.
-    if (!fragment.metadata.name.empty() || !fragment.metadata.version.empty()) reject("metadata");
-    if (!fragment.scripts.empty()) reject("scripts");
-    if (!fragment.capabilities.empty()) reject("capabilities");
-    if (!fragment.lock_overrides.empty()) reject("lock_overrides");
+    if (!fragment.metadata.name.empty() || !fragment.metadata.version.empty() ||
+        !fragment.metadata.description.empty() || !fragment.metadata.created_at.empty()) {
+      reject("metadata");
+    }
+    if (!fragment.scripts.empty()) {
+      reject("scripts");
+    }
+    if (!fragment.capabilities.empty()) {
+      reject("capabilities");
+    }
+    if (!fragment.lock_overrides.empty()) {
+      reject("lock_overrides");
+    }
+
+    // ManifestConfig defaults (unmanifested_nodes=WARN, inherit_runtime_resources=true,
+    // allow_manifest_override=true) are indistinguishable from "not declared" on the
+    // parsed struct, so detect a `discovery:` top-level key by re-reading the raw YAML.
+    try {
+      YAML::Node raw = YAML::LoadFile(path.string());
+      if (raw && raw["discovery"]) {
+        reject("discovery");
+      }
+    } catch (const YAML::Exception & e) {
+      validation_result_.add_error("FRAGMENT_PARSE", e.what(), path.string());
+      log_error("Failed to re-parse fragment " + path.string() + " for discovery check: " + e.what());
+      ok = false;
+    }
 
     // Append allowed entity lists. Duplicate IDs are caught by the regular
     // validator run once all fragments have been merged.
