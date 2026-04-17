@@ -14,8 +14,7 @@
 
 #include "ros2_medkit_gateway/http/x_medkit.hpp"
 
-#include <algorithm>
-#include <utility>
+#include "ros2_medkit_gateway/discovery/models/common.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -111,19 +110,11 @@ XMedkit & XMedkit::contributors(const std::vector<std::string> & contributors) {
   if (contributors.empty()) {
     return *this;
   }
-  // Stable presentation order: "local" first (when present), then "peer:<name>"
-  // entries alphabetically. Lets UI badges and snapshot tests rely on a
-  // consistent order regardless of how peers were merged internally.
-  std::vector<std::string> sorted(contributors.begin(), contributors.end());
-  std::sort(sorted.begin(), sorted.end(), [](const std::string & a, const std::string & b) {
-    const bool a_local = (a == "local");
-    const bool b_local = (b == "local");
-    if (a_local != b_local) {
-      return a_local;
-    }
-    return a < b;
-  });
-  other_["contributors"] = std::move(sorted);
+  // Delegate to sorted_contributors() in common.hpp so list responses (which
+  // serialise entities directly) and detail responses (which route through
+  // XMedkit) share a single ordering implementation. Two copies silently drift
+  // apart; one helper cannot.
+  other_["contributors"] = sorted_contributors(contributors);
   return *this;
 }
 

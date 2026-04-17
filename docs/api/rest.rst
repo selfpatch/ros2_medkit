@@ -89,8 +89,8 @@ Server Capabilities
    Health check endpoint. Returns HTTP 200 if gateway is operational.
 
    When aggregation is enabled (``capabilities.aggregation == true`` in
-   the root response), the body includes two additional x-medkit
-   extension fields:
+   the root response), the body includes additional x-medkit extension
+   fields:
 
    - ``peers`` - array of peer status objects (URL, name, reachability,
      last-seen timestamp) for every configured or discovered peer.
@@ -99,6 +99,22 @@ Server Capabilities
      there are no active anomalies). Each warning carries ``code``,
      ``message``, ``entity_ids``, and ``peer_names``. See
      :doc:`warning_codes` for the stable list of codes.
+   - ``warning_schema_version`` - integer contract version for the
+     ``warnings`` array. Clients key on this instead of string-matching
+     codes. See :doc:`warning_codes` ``Schema versioning``.
+
+   .. note::
+
+      Security: ``/health`` is currently reachable without
+      authentication by default (``auth.enabled`` defaults to
+      ``false``), and even with auth enabled the endpoint is readable
+      by the ``viewer``, ``operator``, and ``configurator`` roles. The
+      ``peers`` array enumerates every configured peer's name and URL,
+      which reveals deployment topology. This is by design for
+      operator observability in trusted LANs, but on shared-infra or
+      multi-tenant installs you should front the endpoint with an
+      authenticating reverse proxy or restrict the peer-name field to
+      admin-gated callers at the ingress.
 
    **Example Response (aggregation enabled, one leaf collision):**
 
@@ -115,6 +131,7 @@ Server Capabilities
           {"name": "peer_b", "url": "http://peer-b:8080", "healthy": true},
           {"name": "peer_c", "url": "http://peer-c:8080", "healthy": true}
         ],
+        "warning_schema_version": 1,
         "warnings": [
           {
             "code": "leaf_id_collision",

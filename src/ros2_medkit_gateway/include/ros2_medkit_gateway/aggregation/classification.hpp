@@ -33,9 +33,17 @@ struct LeafCollisionWarning {
 
 /// Result of classifying a merged Component set into hierarchical parents
 /// (served locally) and leaves (routed to an owning peer).
+///
+/// ``malformed_parent_warnings`` surfaces diagnostic strings for invalid
+/// ``parent_component_id`` references detected during classification
+/// (self-parent, non-existent parent, or a parent cycle). Such references are
+/// ignored for hierarchical-parent detection, so the affected Components fall
+/// back to leaf routing. Caller is expected to log each string so operators
+/// can fix the underlying manifest or peer configuration.
 struct ClassifiedRouting {
   std::unordered_map<std::string, std::string> routing_table;
   std::vector<LeafCollisionWarning> leaf_warnings;
+  std::vector<std::string> malformed_parent_warnings;
 };
 
 /// Per-peer set of Component IDs that peer contributed to the routing table.

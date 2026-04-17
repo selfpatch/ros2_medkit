@@ -200,3 +200,102 @@ TEST(AggregationClassification, leaf_collision_across_multiple_peers_emits_warni
   EXPECT_EQ(claimants.count("peer_c"), 1u);
   EXPECT_EQ(claimants.size(), 2u);
 }
+
+// @verifies REQ_INTEROP_003
+TEST(AggregationClassification, leaf_collision_routing_respects_input_order) {
+  // Flipped input: peer_b last -> routing must resolve to peer_b. Guards
+  // against regressions that sort peer_claims before classification and thus
+  // break the documented last-writer-wins contract.
+  std::vector<Component> merged = {
+      make_comp("ecu-shared"),
+  };
+  std::vector<PeerClaim> claims = {
+      make_claim("peer_c", {"ecu-shared"}),
+      make_claim("peer_b", {"ecu-shared"}),
+  };
+
+  auto result = classify_component_routing(merged, claims);
+
+  ASSERT_EQ(result.routing_table.count("ecu-shared"), 1u);
+  EXPECT_EQ(result.routing_table.at("ecu-shared"), "peer_b");
+  ASSERT_EQ(result.leaf_warnings.size(), 1u);
+  EXPECT_EQ(result.leaf_warnings.front().entity_id, "ecu-shared");
+}
+
+// =============================================================================
+// Malformed parent_component_id: self, nonexistent, cycle
+// =============================================================================
+
+// @verifies REQ_INTEROP_003
+TEST(AggregationClassification, parent_references_nonexistent_component_falls_back_to_leaf) {
+  // Peer declares a Component whose parent_component_id points at an ID not
+  // present anywhere in the merged set. Prior behaviour silently excluded the
+  // ghost ID from routing while leaving the child as a routed leaf; that
+  // caused a dangling parent pointer in the serialised child response and no
+  // operator signal. The classifier now ignores the ghost edge and records a
+  // diagnostic so the misconfiguration surfaces via RCLCPP_WARN.
+  std::vector<Component> merged = {
+      make_comp("child", "ghost-parent"),
+  };
+  std::vector<PeerClaim> claims = {
+      make_claim("peer_b", {"child"}),
+  };
+
+  auto result = classify_component_routing(merged, claims);
+
+  ASSERT_EQ(result.routing_table.count("child"), 1u);
+  EXPECT_EQ(result.routing_table.at("child"), "peer_b");
+  EXPECT_EQ(result.routing_table.count("ghost-parent"), 0u);
+  ASSERT_EQ(result.malformed_parent_warnings.size(), 1u);
+  EXPECT_NE(result.malformed_parent_warnings.front().find("ghost-parent"), std::string::npos);
+  EXPECT_NE(result.malformed_parent_warnings.front().find("non-existent"), std::string::npos);
+}
+
+// @verifies REQ_INTEROP_003
+TEST(AggregationClassification, self_parent_is_ignored_and_warned) {
+  // A Component declaring itself as parent would otherwise be excluded from
+  // the routing table AND never render children (it has none), effectively
+  // disappearing into the local merged cache. Treat it as a leaf and warn.
+  std::vector<Component> merged = {
+      make_comp("orphan", "orphan"),
+  };
+  std::vector<PeerClaim> claims = {
+      make_claim("peer_b", {"orphan"}),
+  };
+
+  auto result = classify_component_routing(merged, claims);
+
+  ASSERT_EQ(result.routing_table.count("orphan"), 1u);
+  EXPECT_EQ(result.routing_table.at("orphan"), "peer_b");
+  ASSERT_EQ(result.malformed_parent_warnings.size(), 1u);
+  EXPECT_NE(result.malformed_parent_warnings.front().find("orphan"), std::string::npos);
+  EXPECT_NE(result.malformed_parent_warnings.front().find("itself"), std::string::npos);
+}
+
+// @verifies REQ_INTEROP_003
+TEST(AggregationClassification, two_way_parent_cycle_falls_back_to_leaves_with_warning) {
+  // A<->B cycle: prior behaviour marked both A and B as hierarchical parents
+  // of each other, excluded both from the routing table, then served empty
+  // local stubs instead of forwarding to the owning peer. The classifier now
+  // detects the cycle, drops both edges, and emits a single diagnostic
+  // listing the cycle members.
+  std::vector<Component> merged = {
+      make_comp("node-a", "node-b"),
+      make_comp("node-b", "node-a"),
+  };
+  std::vector<PeerClaim> claims = {
+      make_claim("peer_b", {"node-a", "node-b"}),
+  };
+
+  auto result = classify_component_routing(merged, claims);
+
+  ASSERT_EQ(result.routing_table.count("node-a"), 1u);
+  EXPECT_EQ(result.routing_table.at("node-a"), "peer_b");
+  ASSERT_EQ(result.routing_table.count("node-b"), 1u);
+  EXPECT_EQ(result.routing_table.at("node-b"), "peer_b");
+  ASSERT_EQ(result.malformed_parent_warnings.size(), 1u);
+  const auto & w = result.malformed_parent_warnings.front();
+  EXPECT_NE(w.find("cycle"), std::string::npos);
+  EXPECT_NE(w.find("node-a"), std::string::npos);
+  EXPECT_NE(w.find("node-b"), std::string::npos);
+}
