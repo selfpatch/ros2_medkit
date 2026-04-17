@@ -600,6 +600,69 @@ TEST(UpdateManagerFailureTest, ExecuteExceptionSetsFailedStatus) {
   backend.reset();
 }
 
+/// Mock backend whose register succeeds but delete_update fails. Lets us
+/// verify the rollback path updates status, phase, and error_message so the
+/// /updates/{id}/status payload stays internally consistent.
+class MockDeleteFailingBackend : public UpdateProvider {
+ public:
+  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
+  list_updates(const UpdateFilter & /*filter*/) override {
+    return std::vector<std::string>{};
+  }
+  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
+    return json{{"id", "pkg"}};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> register_update(const json & /*metadata*/) override {
+    return {};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string & /*id*/) override {
+    return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::Internal, "backend delete exploded"});
+  }
+  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string & /*id*/,
+                                                     UpdateProgressReporter & /*reporter*/) override {
+    return {};
+  }
+  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string & /*id*/,
+                                                     UpdateProgressReporter & /*reporter*/) override {
+    return {};
+  }
+  tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string & /*id*/) override {
+    return true;
+  }
+};
+
+TEST(UpdateManagerFailureTest, DeleteRollbackUpdatesStatusPhaseAndErrorMessage) {
+  // When delete_update fails for a known package, the rollback must leave
+  // status=Failed, phase=Failed, and error_message populated so the status
+  // endpoint does not emit an inconsistent payload like
+  // {status:pending, x-medkit-phase:failed} without any error details.
+  auto backend = std::make_unique<MockDeleteFailingBackend>();
+  auto manager = std::make_unique<UpdateManager>();
+  manager->set_backend(backend.get());
+
+  json pkg = {{"id", "test-pkg"}};
+  ASSERT_TRUE(manager->register_update(pkg).has_value());
+
+  auto del = manager->delete_update("test-pkg");
+  ASSERT_FALSE(del.has_value());
+
+  auto status = manager->get_status("test-pkg");
+  ASSERT_TRUE(status.has_value());
+  EXPECT_EQ(status->status, UpdateStatus::Failed);
+  EXPECT_EQ(status->phase, UpdatePhase::Failed);
+  ASSERT_TRUE(status->error_message.has_value());
+  EXPECT_NE(status->error_message->find("backend delete exploded"), std::string::npos);
+
+  // Serialized payload reflects the rollback end-to-end.
+  auto j = update_status_to_json(*status);
+  EXPECT_EQ(j["status"], "failed");
+  EXPECT_EQ(j["x-medkit-phase"], "failed");
+  EXPECT_EQ(j["error"], "backend delete exploded");
+
+  manager.reset();
+  backend.reset();
+}
+
 TEST(UpdateStatusToJson, SerializesPhaseAsVendorExtension) {
   UpdateStatusInfo status{UpdateStatus::Completed, UpdatePhase::Prepared, std::nullopt, std::nullopt, std::nullopt};
   auto j = update_status_to_json(status);

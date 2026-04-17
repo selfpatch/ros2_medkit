@@ -153,17 +153,24 @@ tl::expected<void, UpdateError> UpdateManager::delete_update(const std::string &
     states_.erase(id);
   } else {
     // Rollback sentinel on failure
+    const auto & err = result.error();
     std::lock_guard<std::mutex> lock(mutex_);
     if (had_state) {
       auto it = states_.find(id);
       if (it != states_.end() && it->second) {
+        // Mark the package as failed consistently across all surfaces
+        // exposed via GET /updates/{id}/status: the SOVD `status` field,
+        // the `x-medkit-phase` vendor extension, and `error_message`.
+        // Without updating all three, clients see payloads like
+        // {status:pending, x-medkit-phase:failed} with no error context.
+        it->second->status.status = UpdateStatus::Failed;
         it->second->status.phase = UpdatePhase::Failed;
+        it->second->status.error_message = err.message;
       }
     } else {
       // Remove the sentinel we created - package never had state before
       states_.erase(id);
     }
-    const auto & err = result.error();
     switch (err.code) {
       case UpdateBackendError::NotFound:
         return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, err.message});

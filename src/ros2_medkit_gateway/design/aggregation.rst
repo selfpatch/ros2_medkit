@@ -424,6 +424,33 @@ peers fail, the response body includes ``x-medkit.partial: true`` and
 ``X-Medkit-No-Fan-Out`` header to prevent recursive loops when peers have
 bidirectional aggregation.
 
+**Target-filtered fan-out.** For per-entity paths, ``merge_peer_items()``
+asks ``AggregationManager::get_peer_contributors(id)`` for the list of
+peers that host or contribute to the entity, and passes it as a filter to
+``fan_out_get()``. Requests reach only those peers; non-contributors are
+never queried so they cannot appear in ``failed_peers``. The set unions:
+
+- The routing table (remote leaves, collision-renamed peer-only entities).
+- A ``peer_contributors_by_entity_`` map maintained alongside the routing
+  table. ``gateway_node`` rebuilds both after every discovery cycle by
+  walking ``contributors`` on the merged Areas/Components/Apps/Functions,
+  stripping the ``"peer:"`` prefix and accumulating peer names per id.
+  Merged Areas/Functions with ID collisions and hierarchical parent
+  Components - both deliberately stripped from the routing table - still
+  reach their peers through this map.
+
+When the resolved list is empty (local-only entity), fan-out is skipped:
+no peer hosts the entity, so hitting peers would only produce spurious
+``partial: true`` / ``failed_peers``. Global endpoints (paths with no
+entity id, e.g. ``GET /api/v1/faults``) pass a ``nullptr`` filter and keep
+fan-out-to-all-healthy behavior.
+
+Entities freshly announced on a peer but not yet reflected in the local
+routing/contributor tables (a brief window between discovery cycles) are
+treated as local-only: their per-entity fan-out is deferred until the
+next cycle rebuilds the tables. This is a deliberate trade-off against
+re-enabling the spurious ``partial: true`` path.
+
 .. warning::
 
    Fan-out is synchronous on the httplib handler thread. Each request blocks

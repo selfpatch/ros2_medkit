@@ -14,7 +14,10 @@
 
 #pragma once
 
+#include <array>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -43,6 +46,43 @@ inline std::string url_encode_param(const std::string & value) {
     }
   }
   return result;
+}
+
+// Extract the entity id from a per-entity collection path like
+// `/api/v1/components/<id>/logs` or `/api/v1/apps/<id>/data/<sub>`.
+// Matching is intentionally permissive: any path containing
+// `/components|apps|areas|functions/<id>/<anything>` is treated as
+// per-entity, regardless of what the segment after `<id>` is. This keeps
+// future per-entity sub-endpoints eligible for target-filtered fan-out
+// without requiring a whitelist bump every time.
+//
+// Returns std::nullopt for:
+//   - global endpoints (`/api/v1/faults`, `/api/v1/health`, ...),
+//   - entity-detail endpoints (`/api/v1/components/<id>` with no trailing
+//     `/...` - these go through the forwarding path, not fan-out),
+//   - malformed paths with an empty entity segment (`/components//logs`).
+inline std::optional<std::string> extract_entity_id_for_fan_out(const std::string & path) {
+  static constexpr std::array<std::string_view, 4> kEntityCollections = {"/components/", "/apps/", "/areas/",
+                                                                         "/functions/"};
+  for (const auto & prefix : kEntityCollections) {
+    auto start = path.find(prefix);
+    if (start == std::string::npos) {
+      continue;
+    }
+    start += prefix.size();
+    auto end = path.find('/', start);
+    if (end == std::string::npos) {
+      // Entity detail endpoint like `/components/<id>` (no trailing collection).
+      // These are routed to peers via a different mechanism; not a fan-out case.
+      return std::nullopt;
+    }
+    std::string id = path.substr(start, end - start);
+    if (id.empty()) {
+      return std::nullopt;
+    }
+    return id;
+  }
+  return std::nullopt;
 }
 
 inline std::string build_fan_out_path(const httplib::Request & req) {
@@ -76,8 +116,23 @@ inline void merge_peer_items(AggregationManager * agg, const httplib::Request & 
   if (agg->healthy_peer_count() == 0) {
     return;
   }
+  // For per-entity collection paths, target only the peers that host or
+  // contribute to the entity (routed leaves and merged / hierarchical
+  // entities). Local-only entities produce an empty target list and skip
+  // fan-out entirely, avoiding spurious `partial: true` / `failed_peers`
+  // from peers that do not own the entity. Global collection endpoints
+  // (paths without an entity id) keep fan-out-to-all behavior.
+  std::optional<std::vector<std::string>> contributors_buffer;
+  const std::vector<std::string> * target_peers = nullptr;
+  if (auto entity_id = extract_entity_id_for_fan_out(req.path); entity_id.has_value()) {
+    contributors_buffer = agg->get_peer_contributors(*entity_id);
+    if (contributors_buffer->empty()) {
+      return;  // local-only: no peer hosts this entity
+    }
+    target_peers = &contributors_buffer.value();
+  }
   auto fan_path = build_fan_out_path(req);
-  auto fan_result = agg->fan_out_get(fan_path, req.get_header_value("Authorization"));
+  auto fan_result = agg->fan_out_get(fan_path, req.get_header_value("Authorization"), target_peers);
   if (fan_result.merged_items.is_array() && !fan_result.merged_items.empty()) {
     if (!result.contains("items") || !result["items"].is_array()) {
       result["items"] = nlohmann::json::array();

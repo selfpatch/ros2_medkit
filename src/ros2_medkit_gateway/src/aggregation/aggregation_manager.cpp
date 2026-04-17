@@ -547,6 +547,50 @@ std::optional<std::string> AggregationManager::find_peer_for_entity(const std::s
   return std::nullopt;
 }
 
+void AggregationManager::update_peer_contributors(
+    std::unordered_map<std::string, std::vector<std::string>> contributors) {
+  // Drop entries with empty contributor lists - they would be indistinguishable
+  // from "local-only" lookups and only waste space.
+  for (auto it = contributors.begin(); it != contributors.end();) {
+    if (it->second.empty()) {
+      it = contributors.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  std::unique_lock<std::shared_mutex> lock(mutex_);
+  peer_contributors_by_entity_ = std::move(contributors);
+}
+
+bool AggregationManager::has_peer_contributors(const std::string & entity_id) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  if (routing_table_.count(entity_id) > 0u) {
+    return true;
+  }
+  auto it = peer_contributors_by_entity_.find(entity_id);
+  return it != peer_contributors_by_entity_.end() && !it->second.empty();
+}
+
+std::vector<std::string> AggregationManager::get_peer_contributors(const std::string & entity_id) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  std::vector<std::string> result;
+  // Routed-leaf entry wins ordering: it always reflects the authoritative
+  // owner of the entity's runtime state.
+  auto rt_it = routing_table_.find(entity_id);
+  if (rt_it != routing_table_.end()) {
+    result.push_back(rt_it->second);
+  }
+  auto pc_it = peer_contributors_by_entity_.find(entity_id);
+  if (pc_it != peer_contributors_by_entity_.end()) {
+    for (const auto & name : pc_it->second) {
+      if (std::find(result.begin(), result.end(), name) == result.end()) {
+        result.push_back(name);
+      }
+    }
+  }
+  return result;
+}
+
 std::string AggregationManager::get_peer_url(const std::string & peer_name) const {
   std::shared_lock<std::shared_mutex> lock(mutex_);
 
@@ -609,7 +653,8 @@ void AggregationManager::forward_request(const std::string & peer_name, const ht
 }
 
 AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::string & path,
-                                                                 const std::string & auth_header) {
+                                                                 const std::string & auth_header,
+                                                                 const std::vector<std::string> * target_peers) {
   // Per-peer result collected by each async task
   struct PeerResult {
     std::string peer_name;
@@ -617,14 +662,30 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
     nlohmann::json items = nlohmann::json::array();
   };
 
+  // A non-null, empty target list means "no peers match" - skip fan-out
+  // entirely so callers don't see spurious partial flags. Keep the
+  // merged_items invariant (always a JSON array, never null) for downstream
+  // .is_array() checks.
+  if (target_peers != nullptr && target_peers->empty()) {
+    FanOutResult empty_result;
+    empty_result.merged_items = nlohmann::json::array();
+    return empty_result;
+  }
+
   // Snapshot healthy peers under lock, release before network I/O.
+  // When target_peers is non-null, restrict the snapshot to matching peers.
   std::vector<std::shared_ptr<PeerClient>> snapshot;
   {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     for (const auto & peer : peers_) {
-      if (peer->is_healthy()) {
-        snapshot.push_back(peer);
+      if (!peer->is_healthy()) {
+        continue;
       }
+      if (target_peers != nullptr &&
+          std::find(target_peers->begin(), target_peers->end(), peer->name()) == target_peers->end()) {
+        continue;
+      }
+      snapshot.push_back(peer);
     }
   }
 
