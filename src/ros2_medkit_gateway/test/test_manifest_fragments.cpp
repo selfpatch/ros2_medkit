@@ -176,6 +176,85 @@ apps:
   EXPECT_TRUE(found) << "expected FRAGMENT_FORBIDDEN_FIELD error for areas";
 }
 
+TEST_F(FragmentsFixture, FragmentMetadataDescriptionIsRejected) {
+  // metadata.{description,created_at} are base-manifest-owned just like
+  // metadata.{name,version} - a fragment that touches them must fail.
+  write_fragment("bad.yaml", R"(
+metadata:
+  description: rogue fragment description
+apps:
+  - id: helloApp
+    name: Hello
+    is_located_on: ecu-primary
+    ros_binding:
+      node_name: helloApp
+)");
+  ManifestManager mgr;
+  mgr.set_fragments_dir(fragments_dir.string());
+  EXPECT_FALSE(mgr.load_manifest(base_path.string(), /*strict=*/false));
+  auto vr = mgr.get_validation_result();
+  bool found = false;
+  for (const auto & err : vr.errors) {
+    if (err.rule_id == "FRAGMENT_FORBIDDEN_FIELD") {
+      found = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found) << "expected FRAGMENT_FORBIDDEN_FIELD error for metadata.description";
+}
+
+TEST_F(FragmentsFixture, FragmentMetadataCreatedAtIsRejected) {
+  write_fragment("bad.yaml", R"(
+metadata:
+  created_at: "2026-04-17T00:00:00Z"
+apps:
+  - id: helloApp
+    name: Hello
+    is_located_on: ecu-primary
+    ros_binding:
+      node_name: helloApp
+)");
+  ManifestManager mgr;
+  mgr.set_fragments_dir(fragments_dir.string());
+  EXPECT_FALSE(mgr.load_manifest(base_path.string(), /*strict=*/false));
+  auto vr = mgr.get_validation_result();
+  bool found = false;
+  for (const auto & err : vr.errors) {
+    if (err.rule_id == "FRAGMENT_FORBIDDEN_FIELD") {
+      found = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found) << "expected FRAGMENT_FORBIDDEN_FIELD error for metadata.created_at";
+}
+
+TEST_F(FragmentsFixture, FragmentDiscoveryConfigIsRejected) {
+  // The top-level `discovery:` key maps to ManifestConfig which has
+  // non-empty defaults, so the check relies on raw-YAML key detection.
+  write_fragment("bad.yaml", R"(
+discovery:
+  unmanifested_nodes: error
+apps:
+  - id: helloApp
+    name: Hello
+    is_located_on: ecu-primary
+    ros_binding:
+      node_name: helloApp
+)");
+  ManifestManager mgr;
+  mgr.set_fragments_dir(fragments_dir.string());
+  EXPECT_FALSE(mgr.load_manifest(base_path.string(), /*strict=*/false));
+  auto vr = mgr.get_validation_result();
+  bool found = false;
+  for (const auto & err : vr.errors) {
+    if (err.rule_id == "FRAGMENT_FORBIDDEN_FIELD" && err.message.find("discovery") != std::string::npos) {
+      found = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found) << "expected FRAGMENT_FORBIDDEN_FIELD error naming 'discovery'";
+}
+
 TEST_F(FragmentsFixture, DuplicateIdsAcrossFragmentsFailValidation) {
   write_fragment("a.yaml", R"(
 apps:

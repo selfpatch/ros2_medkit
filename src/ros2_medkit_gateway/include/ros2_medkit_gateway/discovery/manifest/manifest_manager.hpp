@@ -99,10 +99,11 @@ class ManifestManager {
    *   * apps / components / functions are appended; duplicate IDs across
    *     the merged manifest cause validation to fail the same way they
    *     would in a single file.
-   *   * fragments may not declare top-level `areas`, `metadata`, `config`,
-   *     `scripts`, `capabilities`, or `lock_overrides` - those must stay in
-   *     the base manifest. A fragment that declares any of them is skipped
-   *     with a warning.
+   *   * fragments may not declare top-level `areas`, `metadata`,
+   *     `discovery`, `scripts`, `capabilities`, or `lock_overrides` - those
+   *     must stay in the base manifest. Each forbidden field a fragment
+   *     declares is recorded as a `FRAGMENT_FORBIDDEN_FIELD` validation
+   *     error and causes manifest loading / reloading to fail.
    *
    * Call with an empty string to disable fragment scanning.
    *

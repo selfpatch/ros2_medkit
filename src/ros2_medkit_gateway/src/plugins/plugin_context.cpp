@@ -239,10 +239,11 @@ class GatewayPluginContext : public PluginContext {
   // ---- Entity surface notifications (plugin API v7) ----
 
   void notify_entities_changed(const EntityChangeScope & scope) override {
-    // Delegate to GatewayNode::handle_entity_change_notification which
-    // serializes concurrent plugin notifications onto the discovery thread.
-    // Pass the scope by value because the caller's copy may disappear
-    // before the worker thread dequeues the request.
+    // Forward the notification directly to GatewayNode for immediate
+    // handling. This call is synchronous at this layer - the caller's
+    // thread runs the full discovery refresh before returning. Any
+    // serialization across concurrent plugin notifications is performed by
+    // GatewayNode itself via its internal refresh mutex.
     node_->handle_entity_change_notification(scope);
   }
 

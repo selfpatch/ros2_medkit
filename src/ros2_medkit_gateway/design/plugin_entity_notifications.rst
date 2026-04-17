@@ -87,13 +87,19 @@ loaded base manifest before validation runs.
 *Forbidden* in a fragment (owned by the base manifest):
 
 * ``areas``
-* ``metadata``
+* ``metadata`` (any field - ``name``, ``description``, ``version``,
+  ``created_at``)
+* ``discovery``
 * ``scripts``
 * ``capabilities`` (vendor extensions)
 * ``lock_overrides``
 
 A fragment that declares any forbidden top-level field fails the load
-with a ``FRAGMENT_FORBIDDEN_FIELD`` validation error.
+with a ``FRAGMENT_FORBIDDEN_FIELD`` validation error. Each forbidden
+field in a fragment is reported separately so a single load reports
+every violation, not just the first. ``manifest_version`` is optional
+in fragments - when omitted a synthetic ``"1.0"`` is injected before
+parsing.
 
 File ordering is deterministic: fragment files in the directory are
 sorted by full path before being merged. Duplicate IDs across the
