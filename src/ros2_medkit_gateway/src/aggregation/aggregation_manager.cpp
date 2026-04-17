@@ -503,8 +503,11 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
   }
   merged.leaf_warnings = std::move(classified.leaf_warnings);
 
-  for (const auto & w : merged.leaf_warnings) {
-    if (logger) {
+  if (logger) {
+    for (const auto & msg : classified.malformed_parent_warnings) {
+      RCLCPP_WARN(*logger, "Aggregation: %s", msg.c_str());
+    }
+    for (const auto & w : merged.leaf_warnings) {
       std::string peers_str;
       for (size_t i = 0; i < w.peer_names.size(); ++i) {
         if (i > 0u) {

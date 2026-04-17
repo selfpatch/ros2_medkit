@@ -41,3 +41,27 @@ When aggregation is enabled (``GET /`` -> ``capabilities.aggregation``
 is ``true``), ``warnings`` is always an array on the ``/health`` response:
 empty when no anomalies are active, non-empty otherwise. When aggregation
 is disabled, the field is omitted entirely.
+
+Schema versioning
+-----------------
+
+Alongside ``warnings`` the ``/health`` response exposes an integer
+``warning_schema_version`` (present whenever aggregation is enabled,
+regardless of whether any warnings are active). Typed clients key on this
+field to decide which codes they can feature-detect without reverting to
+string-matching every time a new anomaly class is added.
+
+The contract is:
+
+- Current version: ``1``.
+- Bumped by one whenever a code is added, removed, or the shape of a
+  warning object changes.
+- Within a given version, every code listed on this page is guaranteed to
+  appear verbatim; clients seeing an unknown code at a known version
+  should log-and-ignore rather than fail.
+- Across versions, clients are expected to treat unknown codes as
+  future-compatible: log-and-ignore, do not crash.
+
+Clients that need strong typing (MCP tools, Web UI badges, Foxglove
+panels) should branch on ``warning_schema_version`` before mapping codes
+onto internal enums.

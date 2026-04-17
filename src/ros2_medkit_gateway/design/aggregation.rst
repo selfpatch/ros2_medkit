@@ -292,6 +292,36 @@ classification pass over the full Component set:
   rejection would not fix the deployment and would only take the gateway
   offline.
 
+  **Cross-snapshot instability under peer churn.** The "last writer" in
+  last-writer-wins is determined by the order of healthy peers in the
+  merge snapshot (``aggregation_manager.cpp`` iterates ``peers_`` and
+  filters via ``is_healthy()``). Two consequences operators should plan
+  around:
+
+  - If a colliding peer goes unhealthy between merges, it drops out of
+    the snapshot. The remaining peer becomes the new last-writer and
+    routing silently flips to it. The request itself cannot fail (the
+    dead peer cannot serve it), so this flip is required behaviour -
+    but the ``/health.warnings`` entry also disappears (only one
+    claimant is left), which hides the routing change from a snapshot
+    comparison. Alert on the transition from ``warnings`` non-empty to
+    empty, not just on the presence of warnings.
+  - Insertion order within ``peers_`` is stable across a merge but can
+    vary across gateway restarts, so two fresh primaries with the same
+    peer list may pick different last-writers. Sticky routing across
+    snapshots is intentionally not implemented - it would mask a
+    deployment anomaly rather than surface it. Resolve collisions at
+    the manifest level instead.
+
+  **Malformed parent_component_id.** ``classify_component_routing``
+  validates every ``parent_component_id`` edge before running
+  hierarchical-parent detection. Self-parent references, parent IDs not
+  present in the merged Component set, and cycles
+  (``A -> B -> ... -> A``) are dropped with a diagnostic on
+  ``malformed_parent_warnings`` (logged by the aggregation manager via
+  ``RCLCPP_WARN``). Affected Components fall back to leaf routing so a
+  misconfigured peer cannot mask itself behind a phantom parent.
+
 - **Apps**: Prefix on collision. If a remote App has the same ID as a local one,
   the remote entity's ID is prefixed with ``peername__`` (double underscore
   separator). Apps represent individual ROS 2 nodes with unique behavior - two

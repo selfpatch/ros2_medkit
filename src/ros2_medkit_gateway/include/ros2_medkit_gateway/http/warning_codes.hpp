@@ -34,4 +34,11 @@ namespace ros2_medkit_gateway {
 /// ``parentComponentId`` pointing at the colliding ID on the owning peer).
 inline constexpr const char * WARN_LEAF_ID_COLLISION = "leaf_id_collision";
 
+/// Schema version for the ``warnings`` array on ``GET /health``. Clients can
+/// key on this integer to detect supported warning codes without
+/// string-matching on individual codes. Increment whenever a code is added,
+/// removed, or the shape of an individual warning object changes. Keep in
+/// sync with docs/api/warning_codes.rst.
+inline constexpr int kWarningSchemaVersion = 1;
+
 }  // namespace ros2_medkit_gateway

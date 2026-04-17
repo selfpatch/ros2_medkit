@@ -300,3 +300,42 @@ TEST_F(XMedkitTest, HandlesNestedJsonObjects) {
   auto result = ext.build();
   EXPECT_EQ(result["nested"]["level1"]["level2"]["level3"], "deep_value");
 }
+
+// ==================== contributors() ordering tests ====================
+
+// @verifies REQ_INTEROP_003
+TEST_F(XMedkitTest, ContributorsOmitsFieldWhenInputEmpty) {
+  XMedkit ext;
+  ext.contributors({});
+  EXPECT_TRUE(ext.empty());
+}
+
+// @verifies REQ_INTEROP_003
+TEST_F(XMedkitTest, ContributorsPlacesLocalFirstThenPeersAlphabeticallyFromReverseInput) {
+  // Mirrors the user-visible path: detail handlers feed contributors into
+  // XMedkit which must normalise order regardless of how the aggregation
+  // layer appended peers. Reverse-order input guards against a regression
+  // that accidentally flipped the sort direction in sorted_contributors().
+  XMedkit ext;
+  ext.contributors({"peer:zulu", "peer:alpha", "local"});
+
+  auto result = ext.build();
+  ASSERT_TRUE(result.contains("contributors"));
+  ASSERT_TRUE(result["contributors"].is_array());
+  ASSERT_EQ(result["contributors"].size(), 3u);
+  EXPECT_EQ(result["contributors"][0], "local");
+  EXPECT_EQ(result["contributors"][1], "peer:alpha");
+  EXPECT_EQ(result["contributors"][2], "peer:zulu");
+}
+
+// @verifies REQ_INTEROP_003
+TEST_F(XMedkitTest, ContributorsWithoutLocalStaysAlphabetical) {
+  XMedkit ext;
+  ext.contributors({"peer:charlie", "peer:alpha", "peer:bravo"});
+
+  auto result = ext.build();
+  ASSERT_EQ(result["contributors"].size(), 3u);
+  EXPECT_EQ(result["contributors"][0], "peer:alpha");
+  EXPECT_EQ(result["contributors"][1], "peer:bravo");
+  EXPECT_EQ(result["contributors"][2], "peer:charlie");
+}

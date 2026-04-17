@@ -279,6 +279,9 @@ class TestDaisyChainAggregation(unittest.TestCase):
         self.assertIn('peers', body)
         self.assertIn('warnings', body)
         self.assertEqual(body['warnings'], [])
+        # Schema version must be present whenever aggregation is active so
+        # typed clients can feature-detect codes without string-matching.
+        self.assertEqual(body.get('warning_schema_version'), 1)
 
     # --- Root capability flag --------------------------------------------
 

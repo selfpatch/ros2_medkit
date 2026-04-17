@@ -143,6 +143,7 @@ if(BUILD_TESTING)
     test_peer_aggregation
     test_cross_ecu_fanout
     test_daisy_chain_aggregation
+    test_leaf_collision_aggregation
     PROPERTIES RESOURCE_LOCK medkit_secondary_dds_domains
   )
 endif()

@@ -14,7 +14,6 @@
 
 #include "ros2_medkit_gateway/http/handlers/health_handlers.hpp"
 
-#include <algorithm>
 #include <chrono>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
@@ -70,6 +69,13 @@ void HealthHandlers::handle_health(const httplib::Request & req, httplib::Respon
     // Add peer status when aggregation is active
     if (auto * agg = ctx_.aggregation_manager()) {
       response["peers"] = agg->get_peer_status();
+
+      // Contract version for the warnings array. Increment whenever a code
+      // is added or the shape of a warning object changes so typed clients
+      // (MCP, Web UI, Foxglove) can feature-detect instead of relying on
+      // capabilities.aggregation (a boolean, too coarse).
+      // Keep in sync with docs/api/warning_codes.rst "Schema versioning".
+      response["warning_schema_version"] = kWarningSchemaVersion;
 
       // Surface operator-actionable aggregation warnings (x-medkit extension).
       // Always an array when aggregation is active; empty means no active
