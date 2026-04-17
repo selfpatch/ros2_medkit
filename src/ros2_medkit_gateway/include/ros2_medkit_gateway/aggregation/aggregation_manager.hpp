@@ -204,6 +204,43 @@ class AggregationManager {
   std::optional<std::string> find_peer_for_entity(const std::string & entity_id) const;
 
   /**
+   * @brief Replace the map of per-entity peer contributors.
+   *
+   * Covers both routed leaf entities (entity fully hosted by a peer - also
+   * tracked via the routing table) and merged/hierarchical entities (served
+   * locally with contributions from one or more peers - e.g. a Component
+   * aggregating subcomponents from multiple gateways, or an Area/Function
+   * with an ID shared across peers).
+   *
+   * Fan-out helpers consult this map to target per-entity collection
+   * requests only at the peers that actually host / contribute to a given
+   * entity, avoiding spurious 404s from non-contributing peers.
+   *
+   * @param contributors New map: entity id -> list of peer names that
+   *        contribute to it. Entries with empty lists are discarded.
+   */
+  void update_peer_contributors(std::unordered_map<std::string, std::vector<std::string>> contributors);
+
+  /**
+   * @brief Check whether an entity id has at least one peer contributor.
+   *
+   * Returns true when the entity is either routed to a peer (remote leaf) or
+   * served locally but aggregated from peers (hierarchical / merged). Returns
+   * false for local-only entities and for unknown IDs. Thread-safe.
+   */
+  bool has_peer_contributors(const std::string & entity_id) const;
+
+  /**
+   * @brief List the peers that host / contribute to a given entity.
+   *
+   * Combines information from the routing table (routed leaves) and the
+   * per-entity contributors map (merged / hierarchical entities). Duplicates
+   * are removed while preserving first-seen order. Returns an empty vector
+   * for local-only entities and unknown IDs. Thread-safe.
+   */
+  std::vector<std::string> get_peer_contributors(const std::string & entity_id) const;
+
+  /**
    * @brief Get the URL for a known peer by name
    * @param peer_name Name of the peer
    * @return URL if found, empty string otherwise
@@ -223,17 +260,22 @@ class AggregationManager {
   void forward_request(const std::string & peer_name, const httplib::Request & req, httplib::Response & res);
 
   /**
-   * @brief Fan-out a GET request to all healthy peers in parallel
+   * @brief Fan-out a GET request to healthy peers in parallel.
    *
-   * Sends GET requests to all healthy peers concurrently via std::async,
-   * merges the "items" arrays from their responses. Returns partial results
-   * if some peers fail.
+   * Sends GET requests concurrently via std::async, merges the "items"
+   * arrays from their responses. Returns partial results if some peers fail.
    *
    * @param path Request path (e.g., "/api/v1/components")
    * @param auth_header Authorization header value (empty to omit)
-   * @return FanOutResult with merged items and failure info
+   * @param target_peers When non-null, only peers whose name is in this
+   *        list AND are currently healthy are queried. A non-null but empty
+   *        list means "no matching peers" and produces an empty result with
+   *        no fan-out. When null (default), all healthy peers are queried,
+   *        preserving the pre-filtering behavior for global endpoints.
+   * @return FanOutResult with merged items and failure info.
    */
-  FanOutResult fan_out_get(const std::string & path, const std::string & auth_header);
+  FanOutResult fan_out_get(const std::string & path, const std::string & auth_header,
+                           const std::vector<std::string> * target_peers = nullptr);
 
   /**
    * @brief Get peer status for /health endpoint
@@ -248,6 +290,7 @@ class AggregationManager {
   mutable std::shared_mutex mutex_;  // Declared before data it protects (destruction order)
   std::vector<std::shared_ptr<PeerClient>> peers_;
   std::unordered_map<std::string, std::string> routing_table_;
+  std::unordered_map<std::string, std::vector<std::string>> peer_contributors_by_entity_;
   std::vector<LeafCollisionWarning> leaf_warnings_;
 
   /**

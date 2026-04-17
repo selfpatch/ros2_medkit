@@ -17,8 +17,11 @@
 
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
 
@@ -213,6 +216,9 @@ TEST(FanOutHelpers, merge_peer_items_appends_peer_items_to_result) {
 
   AggregationManager agg(config);
   agg.check_all_health();
+  // Routing table maps the entity in the path to the peer; without this the
+  // fan-out helper treats the entity as local-only and skips fan-out.
+  agg.update_routing_table({{"f1", "test_peer"}});
 
   httplib::Request req;
   req.path = "/api/v1/functions/f1/logs";
@@ -248,6 +254,7 @@ TEST(FanOutHelpers, merge_peer_items_sets_partial_on_peer_failure) {
 
   AggregationManager agg(config);
   agg.check_all_health();
+  agg.update_routing_table({{"f1", "failing_peer"}});
 
   httplib::Request req;
   req.path = "/api/v1/functions/f1/logs";
@@ -287,6 +294,7 @@ TEST(FanOutHelpers, merge_peer_items_creates_items_when_missing_and_peer_has_dat
 
   AggregationManager agg(config);
   agg.check_all_health();
+  agg.update_routing_table({{"a", "peer"}});
 
   httplib::Request req;
   req.path = "/api/v1/apps/a/data";
@@ -299,4 +307,365 @@ TEST(FanOutHelpers, merge_peer_items_creates_items_when_missing_and_peer_has_dat
   ASSERT_TRUE(result.contains("items"));
   ASSERT_EQ(result["items"].size(), 1u);
   EXPECT_EQ(result["items"][0]["id"], "peer_item");
+}
+
+// =============================================================================
+// extract_entity_id_for_fan_out
+// =============================================================================
+
+TEST(FanOutHelpers, extract_entity_id_components_collection) {
+  EXPECT_EQ(extract_entity_id_for_fan_out("/api/v1/components/ecu-primary/logs"), "ecu-primary");
+}
+
+TEST(FanOutHelpers, extract_entity_id_apps_with_subpath) {
+  EXPECT_EQ(extract_entity_id_for_fan_out("/api/v1/apps/helloApp/data/%2Fhello%2Fheartbeat"), "helloApp");
+}
+
+TEST(FanOutHelpers, extract_entity_id_areas_and_functions) {
+  EXPECT_EQ(extract_entity_id_for_fan_out("/api/v1/areas/vehicle/faults"), "vehicle");
+  EXPECT_EQ(extract_entity_id_for_fan_out("/api/v1/functions/perception/logs"), "perception");
+}
+
+TEST(FanOutHelpers, extract_entity_id_global_endpoints_return_nullopt) {
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/faults").has_value());
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/health").has_value());
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/").has_value());
+}
+
+TEST(FanOutHelpers, extract_entity_id_detail_endpoint_returns_nullopt) {
+  // `/components/<id>` (no trailing collection suffix) is routed to the owning
+  // peer via the forwarding path, not fan-out. The helper returns nullopt so
+  // the caller falls through to the current global behavior.
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/components/ecu-primary").has_value());
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/apps/helloApp").has_value());
+}
+
+TEST(FanOutHelpers, extract_entity_id_trailing_slash_still_matches) {
+  // A trailing `/` right after the collection segment is a valid per-entity
+  // path (some clients or proxies append it). The next '/' after the id
+  // still terminates the id, so extraction succeeds.
+  EXPECT_EQ(extract_entity_id_for_fan_out("/api/v1/components/ecu-a/logs/"), "ecu-a");
+  EXPECT_EQ(extract_entity_id_for_fan_out("/api/v1/apps/sensor/data/"), "sensor");
+}
+
+TEST(FanOutHelpers, extract_entity_id_empty_segment_returns_nullopt) {
+  // Malformed path with an empty entity id (`//`) must not be treated as a
+  // per-entity request - otherwise the helper would return an empty string
+  // and the fan-out gate would look it up in the routing table.
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/components//logs").has_value());
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/apps//data").has_value());
+}
+
+TEST(FanOutHelpers, extract_entity_id_ignores_query_string_because_httplib_splits_it) {
+  // httplib splits `?...` off req.path before handlers see it, so the helper
+  // never needs to strip query strings itself. The synthetic test request
+  // (with query baked into req.path) also resolves correctly thanks to the
+  // `/` boundary between the entity id and the collection segment.
+  httplib::Request req;
+  req.path = "/api/v1/apps/helloApp/data";  // what httplib would present
+  EXPECT_EQ(extract_entity_id_for_fan_out(req.path), "helloApp");
+}
+
+// =============================================================================
+// merge_peer_items - skip fan-out for local-only entities
+// =============================================================================
+
+TEST(FanOutHelpers, merge_peer_items_skips_fanout_when_entity_is_local_only) {
+  // A local-only entity has no peer contributors: it is absent from both the
+  // routing table and the peer-contributed-id set. Peers do not host it so
+  // fan-out would always 404 and produce spurious `failed_peers`. Regression
+  // test for the component-logs bug.
+  MockServer mock;
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock.server().Get("/api/v1/components/local-only-comp/logs", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 500;
+  });
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 2000;
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "other_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager agg(config);
+  agg.check_all_health();
+  agg.update_routing_table({{"something-else", "other_peer"}});
+
+  httplib::Request req;
+  req.path = "/api/v1/components/local-only-comp/logs";
+  json result;
+  result["items"] = json::array({{{"id", "local_log"}}});
+  XMedkit ext;
+
+  merge_peer_items(&agg, req, result, ext);
+
+  EXPECT_EQ(result["items"].size(), 1u);
+  EXPECT_EQ(result["items"][0]["id"], "local_log");
+  EXPECT_TRUE(ext.empty());
+}
+
+TEST(FanOutHelpers, merge_peer_items_fans_out_for_merged_entity_without_routing_entry) {
+  // Merged/hierarchical entities (parent Components aggregated across peers,
+  // or Areas/Functions with IDs shared across gateways) are served locally
+  // and therefore have no routing-table entry, but peers still host runtime
+  // state backing them. The helper must fan out in this case; it identifies
+  // these entities via update_peer_contributors().
+  MockServer mock;
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock.server().Get("/api/v1/areas/root/logs", [](const httplib::Request &, httplib::Response & res) {
+    json body = {{"items", {{{"id", "peer_log"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "peer";
+  config.peers.push_back(peer);
+
+  AggregationManager agg(config);
+  agg.check_all_health();
+  // "root" is not routed (merged Area) but was contributed by a peer.
+  agg.update_peer_contributors({{"root", {"peer"}}});
+
+  httplib::Request req;
+  req.path = "/api/v1/areas/root/logs";
+  json result;
+  result["items"] = json::array({{{"id", "local_log"}}});
+  XMedkit ext;
+
+  merge_peer_items(&agg, req, result, ext);
+
+  ASSERT_EQ(result["items"].size(), 2u);
+  EXPECT_EQ(result["items"][0]["id"], "local_log");
+  EXPECT_EQ(result["items"][1]["id"], "peer_log");
+  EXPECT_TRUE(ext.empty());
+}
+
+TEST(FanOutHelpers, merge_peer_items_fans_out_only_to_routed_leaf_owner) {
+  // Routed leaf: three healthy peers configured, but only peer_owner hosts
+  // the entity. peer_a and peer_c have no handler for the collection path
+  // and would return 404 if asked. With target-filtered fan-out they are
+  // never queried - confirmed by the absence of partial/failed_peers.
+  MockServer owner;
+  owner.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 200;
+  });
+  owner.server().Get("/api/v1/apps/temp_sensor/logs", [](const httplib::Request &, httplib::Response & res) {
+    json body = {{"items", {{{"id", "owner_log"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int owner_port = owner.start();
+
+  MockServer other_a;
+  other_a.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 200;
+  });
+  int a_port = other_a.start();
+
+  MockServer other_c;
+  other_c.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 200;
+  });
+  int c_port = other_c.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+  for (const auto & [port, name] :
+       std::vector<std::pair<int, std::string>>{{a_port, "peer_a"}, {owner_port, "peer_owner"}, {c_port, "peer_c"}}) {
+    AggregationConfig::PeerConfig p;
+    p.url = "http://127.0.0.1:" + std::to_string(port);
+    p.name = name;
+    config.peers.push_back(p);
+  }
+
+  AggregationManager agg(config);
+  agg.check_all_health();
+  agg.update_routing_table({{"temp_sensor", "peer_owner"}});
+
+  httplib::Request req;
+  req.path = "/api/v1/apps/temp_sensor/logs";
+  json result;
+  result["items"] = json::array();
+  XMedkit ext;
+
+  merge_peer_items(&agg, req, result, ext);
+
+  ASSERT_EQ(result["items"].size(), 1u);
+  EXPECT_EQ(result["items"][0]["id"], "owner_log");
+  EXPECT_TRUE(ext.empty()) << "peer_a and peer_c must not be asked";
+}
+
+TEST(FanOutHelpers, merge_peer_items_fans_out_only_to_listed_contributors) {
+  // Merged Area with contributors peer_a and peer_c but NOT peer_b. peer_b
+  // has no handler and would return 404 if asked. Target-filter fan-out
+  // must skip peer_b entirely; the result must merge only peer_a + peer_c
+  // items with no partial flag.
+  MockServer peer_a;
+  peer_a.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 200;
+  });
+  peer_a.server().Get("/api/v1/areas/vehicle/faults", [](const httplib::Request &, httplib::Response & res) {
+    json body = {{"items", {{{"id", "a_fault"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int a_port = peer_a.start();
+
+  MockServer peer_b;  // NOT a contributor - must not be queried.
+  peer_b.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 200;
+  });
+  int b_port = peer_b.start();
+
+  MockServer peer_c;
+  peer_c.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 200;
+  });
+  peer_c.server().Get("/api/v1/areas/vehicle/faults", [](const httplib::Request &, httplib::Response & res) {
+    json body = {{"items", {{{"id", "c_fault"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int c_port = peer_c.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+  for (const auto & [port, name] :
+       std::vector<std::pair<int, std::string>>{{a_port, "peer_a"}, {b_port, "peer_b"}, {c_port, "peer_c"}}) {
+    AggregationConfig::PeerConfig p;
+    p.url = "http://127.0.0.1:" + std::to_string(port);
+    p.name = name;
+    config.peers.push_back(p);
+  }
+
+  AggregationManager agg(config);
+  agg.check_all_health();
+  agg.update_peer_contributors({{"vehicle", {"peer_a", "peer_c"}}});
+
+  httplib::Request req;
+  req.path = "/api/v1/areas/vehicle/faults";
+  json result;
+  result["items"] = json::array();
+  XMedkit ext;
+
+  merge_peer_items(&agg, req, result, ext);
+
+  ASSERT_EQ(result["items"].size(), 2u);
+  // Order is not guaranteed - std::async parallelism. Check presence.
+  std::set<std::string> ids;
+  for (const auto & item : result["items"]) {
+    ids.insert(item["id"].get<std::string>());
+  }
+  EXPECT_EQ(ids, (std::set<std::string>{"a_fault", "c_fault"}));
+  EXPECT_TRUE(ext.empty()) << "peer_b must not be asked, no partial should be set";
+}
+
+TEST(FanOutHelpers, merge_peer_items_partial_only_when_contributor_fails) {
+  // Two contributor peers; one responds successfully, the other returns 500.
+  // The result must be partial with failed_peers listing ONLY the failing
+  // contributor - peers that were not queried (non-contributors) must not
+  // appear in failed_peers.
+  MockServer ok_peer;
+  ok_peer.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 200;
+  });
+  ok_peer.server().Get("/api/v1/components/cluster/logs", [](const httplib::Request &, httplib::Response & res) {
+    json body = {{"items", {{{"id", "ok_log"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int ok_port = ok_peer.start();
+
+  MockServer broken_peer;
+  broken_peer.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 200;
+  });
+  broken_peer.server().Get("/api/v1/components/cluster/logs", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 500;
+  });
+  int broken_port = broken_peer.start();
+
+  MockServer bystander;  // Not a contributor - must not end up in failed_peers.
+  bystander.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.status = 200;
+  });
+  int bystander_port = bystander.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+  for (const auto & [port, name] : std::vector<std::pair<int, std::string>>{
+           {ok_port, "peer_ok"}, {broken_port, "peer_broken"}, {bystander_port, "peer_bystander"}}) {
+    AggregationConfig::PeerConfig p;
+    p.url = "http://127.0.0.1:" + std::to_string(port);
+    p.name = name;
+    config.peers.push_back(p);
+  }
+
+  AggregationManager agg(config);
+  agg.check_all_health();
+  agg.update_peer_contributors({{"cluster", {"peer_ok", "peer_broken"}}});
+
+  httplib::Request req;
+  req.path = "/api/v1/components/cluster/logs";
+  json result;
+  result["items"] = json::array();
+  XMedkit ext;
+
+  merge_peer_items(&agg, req, result, ext);
+
+  ASSERT_EQ(result["items"].size(), 1u);
+  EXPECT_EQ(result["items"][0]["id"], "ok_log");
+  ASSERT_FALSE(ext.empty());
+  auto built = ext.build();
+  EXPECT_TRUE(built.value("partial", false));
+  ASSERT_TRUE(built.contains("failed_peers"));
+  ASSERT_EQ(built["failed_peers"].size(), 1u);
+  EXPECT_EQ(built["failed_peers"][0], "peer_broken")
+      << "peer_bystander was not a contributor and must not appear in failed_peers";
+}
+
+TEST(FanOutHelpers, merge_peer_items_fans_out_for_global_endpoints_without_entity) {
+  // Paths with no entity id (like /faults, /health) keep fan-out-to-all.
+  MockServer mock;
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock.server().Get("/api/v1/faults", [](const httplib::Request &, httplib::Response & res) {
+    json body = {{"items", {{{"id", "peer_fault"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "peer";
+  config.peers.push_back(peer);
+
+  AggregationManager agg(config);
+  agg.check_all_health();
+
+  httplib::Request req;
+  req.path = "/api/v1/faults";
+  json result;
+  result["items"] = json::array();
+  XMedkit ext;
+
+  merge_peer_items(&agg, req, result, ext);
+
+  ASSERT_EQ(result["items"].size(), 1u);
+  EXPECT_EQ(result["items"][0]["id"], "peer_fault");
 }

@@ -20,7 +20,10 @@
 #include <cinttypes>
 #include <mutex>
 #include <set>
+#include <string_view>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "ros2_medkit_gateway/aggregation/network_utils.hpp"
 #include "ros2_medkit_gateway/entity_validation.hpp"
@@ -1682,6 +1685,41 @@ void GatewayNode::refresh_cache() {
       peer_routing_table = std::move(merged.routing_table);
       aggregation_mgr_->update_routing_table(peer_routing_table);
       aggregation_mgr_->set_leaf_warnings(std::move(merged.leaf_warnings));
+
+      // Track per-entity peer contributors: entity id -> list of peer
+      // names that host or contribute to it. Covers both routed leaves
+      // (also tracked via routing_table) and merged / hierarchical entities
+      // (Areas, Functions, parent Components). Fan-out helpers use this map
+      // to target per-entity collection requests at the peers that actually
+      // own the entity, avoiding spurious 404s from non-contributing peers.
+      //
+      // The "peer:" prefix is stripped from the contributors list produced
+      // by EntityMerger. Entries starting with anything else (including
+      // "local") are ignored.
+      std::unordered_map<std::string, std::vector<std::string>> peer_contributors;
+      static constexpr std::string_view kPeerPrefix = "peer:";
+      auto collect_contributors = [&peer_contributors](const auto & entities) {
+        for (const auto & e : entities) {
+          for (const auto & c : e.contributors) {
+            if (c.rfind(kPeerPrefix, 0) != 0) {
+              continue;
+            }
+            std::string peer_name = c.substr(kPeerPrefix.size());
+            if (peer_name.empty()) {
+              continue;
+            }
+            auto & list = peer_contributors[e.id];
+            if (std::find(list.begin(), list.end(), peer_name) == list.end()) {
+              list.push_back(std::move(peer_name));
+            }
+          }
+        }
+      };
+      collect_contributors(areas);
+      collect_contributors(all_components);
+      collect_contributors(apps);
+      collect_contributors(functions);
+      aggregation_mgr_->update_peer_contributors(std::move(peer_contributors));
     }
 
     // Inject plugin entities (non-hybrid) and refresh entity ownership (all modes).
