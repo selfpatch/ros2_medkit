@@ -213,6 +213,9 @@ TEST(FanOutHelpers, merge_peer_items_appends_peer_items_to_result) {
 
   AggregationManager agg(config);
   agg.check_all_health();
+  // Routing table maps the entity in the path to the peer; without this the
+  // fan-out helper treats the entity as local-only and skips fan-out.
+  agg.update_routing_table({{"f1", "test_peer"}});
 
   httplib::Request req;
   req.path = "/api/v1/functions/f1/logs";
@@ -248,6 +251,7 @@ TEST(FanOutHelpers, merge_peer_items_sets_partial_on_peer_failure) {
 
   AggregationManager agg(config);
   agg.check_all_health();
+  agg.update_routing_table({{"f1", "failing_peer"}});
 
   httplib::Request req;
   req.path = "/api/v1/functions/f1/logs";
@@ -287,6 +291,7 @@ TEST(FanOutHelpers, merge_peer_items_creates_items_when_missing_and_peer_has_dat
 
   AggregationManager agg(config);
   agg.check_all_health();
+  agg.update_routing_table({{"a", "peer"}});
 
   httplib::Request req;
   req.path = "/api/v1/apps/a/data";
@@ -299,4 +304,119 @@ TEST(FanOutHelpers, merge_peer_items_creates_items_when_missing_and_peer_has_dat
   ASSERT_TRUE(result.contains("items"));
   ASSERT_EQ(result["items"].size(), 1u);
   EXPECT_EQ(result["items"][0]["id"], "peer_item");
+}
+
+// =============================================================================
+// extract_entity_id_for_fan_out
+// =============================================================================
+
+TEST(FanOutHelpers, extract_entity_id_components_collection) {
+  EXPECT_EQ(extract_entity_id_for_fan_out("/api/v1/components/ecu-primary/logs"), "ecu-primary");
+}
+
+TEST(FanOutHelpers, extract_entity_id_apps_with_subpath) {
+  EXPECT_EQ(extract_entity_id_for_fan_out("/api/v1/apps/helloApp/data/%2Fhello%2Fheartbeat"), "helloApp");
+}
+
+TEST(FanOutHelpers, extract_entity_id_areas_and_functions) {
+  EXPECT_EQ(extract_entity_id_for_fan_out("/api/v1/areas/vehicle/faults"), "vehicle");
+  EXPECT_EQ(extract_entity_id_for_fan_out("/api/v1/functions/perception/logs"), "perception");
+}
+
+TEST(FanOutHelpers, extract_entity_id_global_endpoints_return_nullopt) {
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/faults").has_value());
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/health").has_value());
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/").has_value());
+}
+
+TEST(FanOutHelpers, extract_entity_id_detail_endpoint_returns_nullopt) {
+  // `/components/<id>` (no trailing collection suffix) is routed to the owning
+  // peer via the forwarding path, not fan-out. The helper returns nullopt so
+  // the caller falls through to the current global behavior.
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/components/ecu-primary").has_value());
+  EXPECT_FALSE(extract_entity_id_for_fan_out("/api/v1/apps/helloApp").has_value());
+}
+
+// =============================================================================
+// merge_peer_items - skip fan-out for local-only entities
+// =============================================================================
+
+TEST(FanOutHelpers, merge_peer_items_skips_fanout_when_entity_is_local_only) {
+  // A local entity is one not present in the AggregationManager's routing
+  // table. Peers do not host it so fan-out would always 404 and produce
+  // spurious `failed_peers`. Regression test for issue #381.
+  MockServer mock;
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  // If the helper wrongly fans out anyway, the mock has no handler for /logs
+  // and the peer would be marked failed. This handler would never be hit
+  // when the fix is active:
+  mock.server().Get("/api/v1/components/local-only-comp/logs",
+                    [](const httplib::Request &, httplib::Response & res) { res.status = 500; });
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 2000;
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "other_peer";
+  config.peers.push_back(peer);
+
+  AggregationManager agg(config);
+  agg.check_all_health();
+  // Routing table contains only entities hosted by other_peer. local-only-comp
+  // is not in the table, so find_peer_for_entity returns nullopt.
+  agg.update_routing_table({{"something-else", "other_peer"}});
+
+  httplib::Request req;
+  req.path = "/api/v1/components/local-only-comp/logs";
+  json result;
+  result["items"] = json::array({{{"id", "local_log"}}});
+  XMedkit ext;
+
+  merge_peer_items(&agg, req, result, ext);
+
+  // Local items preserved, no fan-out attempted, no partial marker.
+  EXPECT_EQ(result["items"].size(), 1u);
+  EXPECT_EQ(result["items"][0]["id"], "local_log");
+  EXPECT_TRUE(ext.empty());
+}
+
+TEST(FanOutHelpers, merge_peer_items_fans_out_for_global_endpoints_without_entity) {
+  // Paths with no entity id (like /faults, /health) keep fan-out-to-all.
+  MockServer mock;
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock.server().Get("/api/v1/faults", [](const httplib::Request &, httplib::Response & res) {
+    json body = {{"items", {{{"id", "peer_fault"}}}}};
+    res.set_content(body.dump(), "application/json");
+  });
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "peer";
+  config.peers.push_back(peer);
+
+  AggregationManager agg(config);
+  agg.check_all_health();
+  // Empty routing table - still fans out because global endpoints have no
+  // entity id to gate on.
+
+  httplib::Request req;
+  req.path = "/api/v1/faults";
+  json result;
+  result["items"] = json::array();
+  XMedkit ext;
+
+  merge_peer_items(&agg, req, result, ext);
+
+  ASSERT_EQ(result["items"].size(), 1u);
+  EXPECT_EQ(result["items"][0]["id"], "peer_fault");
 }

@@ -14,7 +14,10 @@
 
 #pragma once
 
+#include <array>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -43,6 +46,35 @@ inline std::string url_encode_param(const std::string & value) {
     }
   }
   return result;
+}
+
+// Extract the entity id from a per-entity collection path like
+// `/api/v1/components/<id>/logs` or `/api/v1/apps/<id>/data/<sub>`.
+// Returns the bare id when the path matches a known per-entity collection,
+// otherwise returns std::nullopt (global endpoints like `/faults`, `/health`,
+// or unknown shapes that should not short-circuit fan-out).
+inline std::optional<std::string> extract_entity_id_for_fan_out(const std::string & path) {
+  static constexpr std::array<std::string_view, 4> kEntityCollections = {"/components/", "/apps/", "/areas/",
+                                                                         "/functions/"};
+  for (const auto & prefix : kEntityCollections) {
+    auto start = path.find(prefix);
+    if (start == std::string::npos) {
+      continue;
+    }
+    start += prefix.size();
+    auto end = path.find('/', start);
+    if (end == std::string::npos) {
+      // Entity detail endpoint like `/components/<id>` (no trailing collection).
+      // These are routed to peers via a different mechanism; not a fan-out case.
+      return std::nullopt;
+    }
+    std::string id = path.substr(start, end - start);
+    if (id.empty()) {
+      return std::nullopt;
+    }
+    return id;
+  }
+  return std::nullopt;
 }
 
 inline std::string build_fan_out_path(const httplib::Request & req) {
@@ -74,6 +106,14 @@ inline void merge_peer_items(AggregationManager * agg, const httplib::Request & 
   // per-entity collection endpoints, concurrent requests during a peer outage
   // could exhaust httplib's thread pool if we don't bail out early here.
   if (agg->healthy_peer_count() == 0) {
+    return;
+  }
+  // For per-entity collection paths, skip fan-out when the entity is local-only
+  // (no peer hosts it). Otherwise every peer returns 404 and the response is
+  // falsely flagged as `partial` with spurious `failed_peers`. Global endpoints
+  // with no entity id in the path keep fan-out-to-all behavior.
+  if (auto entity_id = extract_entity_id_for_fan_out(req.path);
+      entity_id.has_value() && !agg->find_peer_for_entity(*entity_id).has_value()) {
     return;
   }
   auto fan_path = build_fan_out_path(req);
