@@ -52,17 +52,21 @@ Manifest ManifestParser::parse_fragment_file(const std::string & file_path) cons
   std::string contents = buffer.str();
 
   // Version prefix is appended-only when the source yaml does not set one.
-  // Looking for the bare word as the start of a line is sufficient for the
-  // yaml dialect we accept (no flow-style top-level document).
+  // Look for a TOP-LEVEL `manifest_version:` key - i.e., exactly at column 0
+  // (no leading whitespace). An earlier revision tolerated any indentation,
+  // which accidentally matched any nested sub-map key of the same name
+  // (e.g., `ros_binding: { manifest_version: ... }`) and disabled the
+  // synthetic injection, making otherwise-valid fragments fail to parse.
+  // Sufficient for the yaml dialect we accept (no flow-style top-level
+  // document, no document separators that would shift the top level).
   auto has_version_field = [](const std::string & s) {
-    // Scan line-by-line for a line beginning with "manifest_version:".
     size_t pos = 0;
     while (pos < s.size()) {
       size_t end = s.find('\n', pos);
       std::string line = s.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
-      size_t first = line.find_first_not_of(" \t");
-      if (first != std::string::npos &&
-          line.compare(first, sizeof("manifest_version:") - 1, "manifest_version:") == 0) {
+      // Require column 0: only an un-indented line with this exact key is
+      // treated as a manifest-level declaration.
+      if (line.compare(0, sizeof("manifest_version:") - 1, "manifest_version:") == 0) {
         return true;
       }
       if (end == std::string::npos) {

@@ -316,6 +316,48 @@ apps:
   EXPECT_EQ(mgr.get_apps().size(), 0u);
 }
 
+TEST_F(FragmentsFixture, NestedKeyNamedLikeManifestVersionDoesNotBlockInjection) {
+  // parse_fragment_file auto-injects `manifest_version: "1.0"` when the
+  // fragment omits it. The detector that decides whether to inject scans
+  // the raw YAML line-by-line; earlier revisions matched any line whose
+  // first non-whitespace token was `manifest_version:`, meaning an
+  // indented key of the same name anywhere in the fragment would disable
+  // injection and cause a "Missing required field: manifest_version"
+  // parse error - even though the fragment itself has no top-level
+  // version. Fragments written by plugins that happen to use the word
+  // in a nested position (e.g., inside custom metadata blocks) would
+  // silently fail to merge.
+  //
+  // Pin the rule: only a column-0 `manifest_version:` disables injection.
+  // Sub-map key `manifest_version:` inside `ros_binding:`. The schema
+  // ignores unknown keys on ros_binding so the fragment is otherwise valid,
+  // but the pre-fix line scanner matches the indented key and aborts the
+  // synthetic version injection.
+  write_fragment("nested.yaml", R"(
+apps:
+  - id: nestedApp
+    name: Nested Key Test
+    is_located_on: ecu-primary
+    ros_binding:
+      node_name: nestedApp
+      manifest_version: "ignored-by-schema"
+)");
+  ManifestManager mgr;
+  mgr.set_fragments_dir(fragments_dir.string());
+  ASSERT_TRUE(mgr.load_manifest(base_path.string(), /*strict=*/false))
+      << "injection should still happen when `manifest_version:` appears only as an indented value / list item";
+  auto apps = mgr.get_apps();
+  bool found = false;
+  for (const auto & a : apps) {
+    if (a.id == "nestedApp") {
+      found = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found) << "nestedApp fragment should merge even though a component depends_on list mentions "
+                        "'manifest_version'";
+}
+
 TEST_F(FragmentsFixture, SetFragmentsDirRoundTrip) {
   ManifestManager mgr;
   EXPECT_EQ(mgr.get_fragments_dir(), "");
