@@ -165,6 +165,10 @@ class RosbagCapture {
   /// Post-fault recording state
   std::string current_fault_code_;
   std::string current_bag_path_;
+  /// Protects post_fault_timer_ against concurrent assignment in
+  /// on_fault_confirmed() (service thread) and reset in
+  /// post_fault_timer_callback() / stop() (executor thread).
+  std::mutex post_fault_timer_mutex_;
   rclcpp::TimerBase::SharedPtr post_fault_timer_;
   std::atomic<bool> recording_post_fault_{false};
 

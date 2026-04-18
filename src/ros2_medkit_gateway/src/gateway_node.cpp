@@ -1827,12 +1827,6 @@ void GatewayNode::refresh_cache() {
 
 void GatewayNode::start_rest_server() {
   server_thread_ = std::make_unique<std::thread>([this]() {
-    {
-      std::lock_guard<std::mutex> lock(server_mutex_);
-      server_running_ = true;
-    }
-    server_cv_.notify_all();
-
     try {
       rest_server_->start();
     } catch (const std::exception & e) {
@@ -1840,33 +1834,29 @@ void GatewayNode::start_rest_server() {
     } catch (...) {
       RCLCPP_ERROR(get_logger(), "REST server failed to start: unknown exception");
     }
-
-    {
-      std::lock_guard<std::mutex> lock(server_mutex_);
-      server_running_ = false;
-    }
-    server_cv_.notify_all();
   });
 
-  // Wait for server to start
-  std::unique_lock<std::mutex> lock(server_mutex_);
-  server_cv_.wait(lock, [this] {
-    return server_running_.load();
-  });
+  // Wait for the server to actually reach cpp-httplib's accept loop before
+  // returning. is_running() becomes true only after listen() has passed
+  // bind and entered its select/poll loop; using a "thread started" flag
+  // here is not enough because stop() called before listen() entered its
+  // loop could be missed, leaving listen() blocking forever and the
+  // subsequent join() hanging indefinitely.
+  using namespace std::chrono_literals;
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (!rest_server_->is_running() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+  }
+  if (!rest_server_->is_running()) {
+    RCLCPP_ERROR(get_logger(), "REST server did not become ready within 5s");
+  }
 }
 
 void GatewayNode::stop_rest_server() {
   if (rest_server_) {
     rest_server_->stop();
   }
-
-  // Wait for server thread to finish
   if (server_thread_ && server_thread_->joinable()) {
-    std::unique_lock<std::mutex> lock(server_mutex_);
-    server_cv_.wait(lock, [this] {
-      return !server_running_.load();
-    });
-    lock.unlock();  // Release before join to avoid deadlock
     server_thread_->join();
   }
 }

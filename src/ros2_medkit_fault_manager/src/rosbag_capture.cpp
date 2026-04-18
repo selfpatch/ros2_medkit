@@ -135,9 +135,12 @@ void RosbagCapture::stop() {
   running_.store(false);
 
   // Cancel any pending post-fault timer
-  if (post_fault_timer_) {
-    post_fault_timer_->cancel();
-    post_fault_timer_.reset();
+  {
+    std::lock_guard<std::mutex> lock(post_fault_timer_mutex_);
+    if (post_fault_timer_) {
+      post_fault_timer_->cancel();
+      post_fault_timer_.reset();
+    }
   }
 
   if (discovery_retry_timer_) {
@@ -202,10 +205,13 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
 
     // Create timer for post-fault recording
     auto duration = std::chrono::duration<double>(config_.duration_after_sec);
-    post_fault_timer_ =
-        node_->create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(duration), [this]() {
-          post_fault_timer_callback();
-        });
+    {
+      std::lock_guard<std::mutex> lock(post_fault_timer_mutex_);
+      post_fault_timer_ =
+          node_->create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(duration), [this]() {
+            post_fault_timer_callback();
+          });
+    }
 
     RCLCPP_DEBUG(node_->get_logger(), "Recording %.1fs more after fault confirmation", config_.duration_after_sec);
   } else {
@@ -436,14 +442,19 @@ std::vector<std::string> RosbagCapture::resolve_topics() const {
       }
     }
   } else if (config_.topics == "all" || config_.topics == "auto") {
-    // Discover all available topics ("auto" is an alias for "all")
-    auto topic_names_and_types = node_->get_topic_names_and_types();
-    for (const auto & [topic, types] : topic_names_and_types) {
-      // Skip internal ROS topics
-      if (topic.find("/parameter_events") != std::string::npos || topic.find("/rosout") != std::string::npos) {
-        continue;
+    // Discover all available topics ("auto" is an alias for "all").
+    // Skip gracefully if the context is invalidated mid-call (shutdown race).
+    try {
+      auto topic_names_and_types = node_->get_topic_names_and_types();
+      for (const auto & [topic, types] : topic_names_and_types) {
+        // Skip internal ROS topics
+        if (topic.find("/parameter_events") != std::string::npos || topic.find("/rosout") != std::string::npos) {
+          continue;
+        }
+        topics_set.insert(topic);
       }
-      topics_set.insert(topic);
+    } catch (const std::runtime_error &) {
+      // context invalid during shutdown - no topics to add
     }
   } else if (config_.topics == "explicit") {
     // Explicit mode: use only include_topics, no topic derivation
@@ -476,10 +487,18 @@ std::vector<std::string> RosbagCapture::resolve_topics() const {
 }
 
 std::string RosbagCapture::get_topic_type(const std::string & topic) const {
-  auto topic_names_and_types = node_->get_topic_names_and_types();
-  auto it = topic_names_and_types.find(topic);
-  if (it != topic_names_and_types.end() && !it->second.empty()) {
-    return it->second[0];
+  // node_->get_topic_names_and_types() throws if the rcl context is
+  // invalidated mid-call (e.g. SIGINT fires between the check and the rcl
+  // call). During shutdown this is expected and not actionable - treat it
+  // as "no topic info available right now".
+  try {
+    auto topic_names_and_types = node_->get_topic_names_and_types();
+    auto it = topic_names_and_types.find(topic);
+    if (it != topic_names_and_types.end() && !it->second.empty()) {
+      return it->second[0];
+    }
+  } catch (const std::runtime_error &) {
+    // context invalid - caller handles empty return
   }
   return "";
 }
@@ -640,9 +659,12 @@ void RosbagCapture::post_fault_timer_callback() {
   }
 
   // Cancel timer (one-shot)
-  if (post_fault_timer_) {
-    post_fault_timer_->cancel();
-    post_fault_timer_.reset();
+  {
+    std::lock_guard<std::mutex> lock(post_fault_timer_mutex_);
+    if (post_fault_timer_) {
+      post_fault_timer_->cancel();
+      post_fault_timer_.reset();
+    }
   }
 
   // Stop post-fault recording (no more direct writes to bag)

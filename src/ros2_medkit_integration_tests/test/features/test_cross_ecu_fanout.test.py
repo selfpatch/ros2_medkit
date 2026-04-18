@@ -418,28 +418,46 @@ class TestCrossEcuFanout(unittest.TestCase):
         Peer hosts pressure_sensor (pressure topic) and lidar (scan topic).
         Fan-out merges peer data items into the response.
         """
+
+        def _extract_topic_paths(items):
+            paths = set()
+            for item in items:
+                topic = item.get('x-medkit', {}).get('ros2', {}).get('topic', '')
+                if topic:
+                    paths.add(topic)
+            return paths
+
+        def _ready(d):
+            # Wait for BOTH local (/powertrain/engine/) and peer
+            # (/chassis/brakes/ or /perception/lidar/) topics to be visible.
+            # An intermediate response can contain only /rosout (gateway's own
+            # log subscription) while demo-node discovery is still propagating;
+            # accepting `d.get('items')` would return too early and fail the
+            # has_local / has_peer assertions below.
+            topic_paths = _extract_topic_paths(d.get('items', []))
+            has_local = any('/powertrain/engine/' in t for t in topic_paths)
+            has_peer = any(
+                '/chassis/brakes/' in t or '/perception/lidar/' in t
+                for t in topic_paths
+            )
+            return d if has_local and has_peer else None
+
         data = _poll_until(
             f'{PRIMARY_URL}{FUNC_ENDPOINT}/data',
-            lambda d: d if d.get('items') else None,
+            _ready,
             timeout=30.0,
         )
-        self.assertIsNotNone(data, 'No data items for vehicle_health')
-        items = data['items']
+        self.assertIsNotNone(
+            data,
+            'Timed out waiting for local + peer data topics on vehicle_health',
+        )
 
-        topic_paths = set()
-        for item in items:
-            ext = item.get('x-medkit', {})
-            ros2 = ext.get('ros2', {})
-            topic = ros2.get('topic', '')
-            if topic:
-                topic_paths.add(topic)
-
+        topic_paths = _extract_topic_paths(data['items'])
         has_local = any('/powertrain/engine/' in t for t in topic_paths)
         has_peer = any(
             '/chassis/brakes/' in t or '/perception/lidar/' in t
             for t in topic_paths
         )
-
         self.assertTrue(
             has_local,
             f'Missing local data topics: {topic_paths}',

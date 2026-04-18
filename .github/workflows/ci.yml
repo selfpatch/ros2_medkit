@@ -54,6 +54,9 @@ jobs:
         run: |
           apt-get update
           apt-get install -y ros-${{ matrix.ros_distro }}-test-msgs
+          if [ "${{ matrix.ros_distro }}" = "humble" ]; then
+            apt-get install -y ros-humble-rmw-cyclonedds-cpp
+          fi
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           rosdep update
           rosdep install --from-paths src --ignore-src -y
@@ -73,6 +76,15 @@ jobs:
 
       - name: Run unit and integration tests
         timeout-minutes: 15
+        env:
+          # FastRTPS 2.6 on Humble has a known use-after-free in the
+          # discovery-teardown path (EDP::unpairWriterProxy) that segfaults
+          # peer nodes when the gateway shuts down, so we force CycloneDDS
+          # there. Rolling + Jazzy ship a newer FastRTPS without that bug
+          # and hit a separate iceoryx-shared-memory crash under CycloneDDS
+          # during shutdown ("string capacity was zero for allocated data"),
+          # so on those distros we keep the default FastRTPS.
+          RMW_IMPLEMENTATION: ${{ matrix.ros_distro == 'humble' && 'rmw_cyclonedds_cpp' || '' }}
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           colcon test --return-code-on-test-failure \
@@ -185,7 +197,9 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y ros-jazzy-test-msgs
+          apt-get install -y \
+            ros-jazzy-test-msgs \
+            ros-jazzy-rmw-cyclonedds-cpp
           source /opt/ros/jazzy/setup.bash
           rosdep update
           rosdep install --from-paths src --ignore-src -y
@@ -199,6 +213,11 @@ jobs:
         run: tar xf jazzy-build.tar && rm jazzy-build.tar
 
       - name: Run unit and integration tests
+        env:
+          # FastRTPS has a known use-after-free in discovery-teardown that
+          # can segfault peer nodes when another node (typically the gateway)
+          # shuts down. CycloneDDS avoids it.
+          RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
         run: |
           source /opt/ros/jazzy/setup.bash
           colcon test --return-code-on-test-failure \
