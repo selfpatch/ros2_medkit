@@ -348,10 +348,18 @@ std::vector<std::string> SnapshotCapture::collect_all_configured_topics() const 
 }
 
 std::string SnapshotCapture::get_topic_type(const std::string & topic) const {
-  auto topic_names_and_types = node_->get_topic_names_and_types();
-  auto it = topic_names_and_types.find(topic);
-  if (it != topic_names_and_types.end() && !it->second.empty()) {
-    return it->second[0];
+  // node_->get_topic_names_and_types() throws if the rcl context is
+  // invalidated mid-call (e.g. SIGINT fires between the check and the rcl
+  // call). During shutdown this is expected and not actionable - treat it
+  // as "no topic info available right now".
+  try {
+    auto topic_names_and_types = node_->get_topic_names_and_types();
+    auto it = topic_names_and_types.find(topic);
+    if (it != topic_names_and_types.end() && !it->second.empty()) {
+      return it->second[0];
+    }
+  } catch (const std::runtime_error &) {
+    // context invalid - caller handles empty return
   }
   return "";
 }

@@ -14,10 +14,7 @@
 
 #pragma once
 
-#include <atomic>
-#include <condition_variable>
 #include <memory>
-#include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <thread>
@@ -296,9 +293,6 @@ class GatewayNode : public rclcpp::Node {
 
   // REST server thread management
   std::unique_ptr<std::thread> server_thread_;
-  std::atomic<bool> server_running_{false};
-  std::mutex server_mutex_;
-  std::condition_variable server_cv_;
 };
 
 /**

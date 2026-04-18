@@ -81,6 +81,13 @@ class RESTServer {
     return http_server_ && http_server_->is_tls_enabled();
   }
 
+  /// True once cpp-httplib's listen() has reached its accept loop.
+  /// GatewayNode uses this as the start-up readiness signal so shutdown
+  /// cannot race a listen() that has not yet started.
+  bool is_running() const {
+    return http_server_ && http_server_->is_running();
+  }
+
  private:
   void setup_routes();
   void setup_pre_routing_handler();
