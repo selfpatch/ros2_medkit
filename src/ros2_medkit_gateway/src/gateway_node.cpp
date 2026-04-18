@@ -1504,7 +1504,52 @@ AggregationManager * GatewayNode::get_aggregation_manager() const {
   return aggregation_mgr_.get();
 }
 
+namespace {
+// Per-thread flag set while the refresh pipeline is running on this thread.
+// Used to short-circuit notify_entities_changed when a plugin calls it from
+// within its own IntrospectionProvider::introspect() callback, which
+// otherwise would recurse (notify -> reload_manifest -> refresh_cache ->
+// introspect -> notify -> ...) until stack exhaustion.
+thread_local bool s_in_entity_change_refresh_pass = false;
+
+struct InRefreshPassGuard {
+  bool owned{false};
+  InRefreshPassGuard() {
+    if (!s_in_entity_change_refresh_pass) {
+      s_in_entity_change_refresh_pass = true;
+      owned = true;
+    }
+  }
+  ~InRefreshPassGuard() {
+    if (owned) {
+      s_in_entity_change_refresh_pass = false;
+    }
+  }
+  InRefreshPassGuard(const InRefreshPassGuard &) = delete;
+  InRefreshPassGuard & operator=(const InRefreshPassGuard &) = delete;
+  InRefreshPassGuard(InRefreshPassGuard &&) = delete;
+  InRefreshPassGuard & operator=(InRefreshPassGuard &&) = delete;
+};
+}  // namespace
+
 void GatewayNode::handle_entity_change_notification(const EntityChangeScope & scope) {
+  // Reentrancy guard: a plugin may invoke notify_entities_changed from
+  // inside its own `IntrospectionProvider::introspect()` callback, which
+  // `refresh_cache()` runs for every registered plugin. Because
+  // `refresh_mutex_` is recursive, the lock itself would happily re-enter,
+  // leading to an unbounded notify/reload/refresh/introspect loop. Detect
+  // that we are already inside a refresh pass on the same thread and skip
+  // the nested request with a warning - the outer pass will cover the
+  // surface change anyway.
+  if (s_in_entity_change_refresh_pass) {
+    RCLCPP_WARN(get_logger(),
+                "Nested notify_entities_changed from within refresh pass - skipping to prevent recursion "
+                "(scope=%s). Do not call PluginContext::notify_entities_changed from "
+                "IntrospectionProvider::introspect() or other provider callbacks.",
+                scope.is_full_refresh() ? "full_refresh" : "scoped");
+    return;
+  }
+
   // Take the recursive refresh mutex for the whole notification so that
   // `reload_manifest()` and the subsequent `refresh_cache()` (which takes
   // the same mutex re-entrantly) see a consistent discovery state even when
@@ -1512,6 +1557,12 @@ void GatewayNode::handle_entity_change_notification(const EntityChangeScope & sc
   // periodic refresh timer. ThreadSafeEntityCache's own mutex is not
   // sufficient because the refresh pipeline reaches beyond the cache.
   std::lock_guard<std::recursive_mutex> refresh_lock(refresh_mutex_);
+
+  // Mark the thread as "inside a refresh pass" for the duration of the
+  // notification. refresh_cache() below will find the flag already set and
+  // leave it alone; plugin introspect callbacks invoked from refresh_cache
+  // see the flag and short-circuit any nested notify.
+  InRefreshPassGuard pass_guard;
 
   if (scope.is_full_refresh()) {
     RCLCPP_INFO(get_logger(), "Plugin entity-change notification: full refresh");
@@ -1538,6 +1589,26 @@ void GatewayNode::handle_entity_change_notification(const EntityChangeScope & sc
   refresh_cache();
 }
 
+void GatewayNode::trigger_reentrant_notification_for_testing(const EntityChangeScope & scope) {
+  // Simulate the "plugin calls notify from inside its introspect callback"
+  // scenario without needing a full plugin harness: force the thread-local
+  // in-refresh flag on, invoke the normal handler, and reset the flag when
+  // done. handle_entity_change_notification should observe the flag and
+  // short-circuit with a warning, without reloading the manifest.
+  s_in_entity_change_refresh_pass = true;
+  struct ResetGuard {
+    ResetGuard() = default;
+    ~ResetGuard() {
+      s_in_entity_change_refresh_pass = false;
+    }
+    ResetGuard(const ResetGuard &) = delete;
+    ResetGuard & operator=(const ResetGuard &) = delete;
+    ResetGuard(ResetGuard &&) = delete;
+    ResetGuard & operator=(ResetGuard &&) = delete;
+  } reset_guard;
+  handle_entity_change_notification(scope);
+}
+
 void GatewayNode::refresh_cache() {
   // Serialize refresh passes across the refresh timer, plugin
   // `notify_entities_changed` notifications, and any other caller. The
@@ -1545,6 +1616,14 @@ void GatewayNode::refresh_cache() {
   // thread-safe on its own - holding this lock for the full pass is cheap
   // compared with the network I/O the caller typically just performed.
   std::lock_guard<std::recursive_mutex> refresh_lock(refresh_mutex_);
+
+  // Mark the thread as "inside a refresh pass" so that a plugin calling
+  // PluginContext::notify_entities_changed from within its introspect
+  // callback is detected and skipped rather than recursing back into
+  // refresh_cache. If the flag is already set (we were invoked from
+  // handle_entity_change_notification) this is a no-op; the outer frame
+  // owns the lifetime.
+  InRefreshPassGuard pass_guard;
 
   RCLCPP_DEBUG(get_logger(), "Refreshing entity cache...");
 

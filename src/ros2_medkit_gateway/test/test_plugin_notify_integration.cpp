@@ -219,6 +219,33 @@ apps:
   EXPECT_FALSE(manifest_has_app("tempApp"));
 }
 
+TEST_F(NotifyIntegrationTest, NestedNotifyFromRefreshPassIsSkipped) {
+  // A plugin may call notify_entities_changed from inside its own
+  // IntrospectionProvider::introspect() callback. `refresh_cache()` runs
+  // introspect while it already holds the thread-local in-refresh flag, so
+  // a nested notify on the same thread would recurse into
+  // reload_manifest + refresh_cache + introspect indefinitely (stack
+  // overflow). The gateway must detect this pattern and short-circuit.
+  //
+  // Simulate the scenario without a full plugin harness via the dedicated
+  // test hook: the hook sets the same thread-local flag the real refresh
+  // path uses, then invokes the notification synchronously.
+  write_fragment("delta.yaml", R"(
+apps:
+  - id: nestedApp
+    name: Would be loaded if notify ran
+    is_located_on: ecu-primary
+    ros_binding:
+      node_name: nestedApp
+)");
+  ASSERT_FALSE(manifest_has_app("nestedApp")) << "precondition: fragment dropped but not yet loaded";
+
+  node->trigger_reentrant_notification_for_testing(ros2_medkit_gateway::EntityChangeScope::full_refresh());
+
+  EXPECT_FALSE(manifest_has_app("nestedApp"))
+      << "reentrant notify must be a no-op; reloading from within an introspect callback would recurse";
+}
+
 TEST_F(NotifyIntegrationTest, NotifyWithoutAnyFragmentIsANoOp) {
   // No fragments dropped. Notify must be safe and must not erase the
   // base-manifest entities.

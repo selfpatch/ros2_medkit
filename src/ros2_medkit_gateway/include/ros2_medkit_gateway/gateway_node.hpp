@@ -202,6 +202,21 @@ class GatewayNode : public rclcpp::Node {
    */
   void handle_entity_change_notification(const EntityChangeScope & scope);
 
+  /**
+   * @brief Test hook: simulate a plugin calling notify_entities_changed
+   *        from within its own IntrospectionProvider::introspect() callback.
+   *
+   * Sets the per-thread in-refresh flag (the same flag the real refresh
+   * path uses) and invokes `handle_entity_change_notification(scope)`.
+   * The gateway is expected to short-circuit the call with a warning log
+   * and return without reloading the manifest.
+   *
+   * Exists purely to let unit tests exercise the reentrancy guard without
+   * spinning up a full plugin with a real IntrospectionProvider. Do NOT
+   * call this from production code.
+   */
+  void trigger_reentrant_notification_for_testing(const EntityChangeScope & scope);
+
  private:
   void refresh_cache();
   void start_rest_server();
