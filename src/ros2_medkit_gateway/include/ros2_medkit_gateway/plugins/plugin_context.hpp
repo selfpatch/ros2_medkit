@@ -233,8 +233,19 @@ class PluginContext {
    *              `EntityChangeScope::full_refresh()` asks for a global pass.
    *
    * @par Thread safety
-   * Safe to call from any thread. Implementations must be non-blocking for
-   * the caller's critical section (they may post to an internal work queue).
+   * Safe to call from any thread. The v7 reference implementation is
+   * SYNCHRONOUS: the caller's thread drives the full manifest reload +
+   * discovery refresh before the call returns, under an internal refresh
+   * mutex that also serializes the periodic refresh timer. As a result:
+   *   * the call may block for seconds on large manifests / slow plugins;
+   *   * plugins MUST NOT hold their own mutexes across this call if any
+   *     of their own callbacks (introspect, data/operation/fault providers)
+   *     could try to reacquire that mutex - doing so deadlocks;
+   *   * calling this method from within your own `IntrospectionProvider::
+   *     introspect()` callback is detected and skipped with a warning log
+   *     (see `GatewayNode::handle_entity_change_notification`). The design
+   *     assumes introspect already runs inside a refresh pass, so a nested
+   *     notification would be redundant.
    *
    * @par Backwards compatibility
    * Default implementation is a no-op so plugins built against plugin API v6
