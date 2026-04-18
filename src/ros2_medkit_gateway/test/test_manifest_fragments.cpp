@@ -366,3 +366,154 @@ TEST_F(FragmentsFixture, SetFragmentsDirRoundTrip) {
   mgr.set_fragments_dir("");
   EXPECT_EQ(mgr.get_fragments_dir(), "");
 }
+
+TEST_F(FragmentsFixture, BaseAndFragmentDuplicateIdFailsValidation) {
+  // The base manifest already declares `ecu-primary` as a component; adding
+  // an app in a fragment that reuses the same id must be caught by the
+  // regular validator pass after the merge (not by apply_fragments itself).
+  write_fragment("clash.yaml", R"(
+apps:
+  - id: ecu-primary
+    name: Clash
+    is_located_on: ecu-primary
+    ros_binding:
+      node_name: clashApp
+)");
+  ManifestManager mgr;
+  mgr.set_fragments_dir(fragments_dir.string());
+  EXPECT_FALSE(mgr.load_manifest(base_path.string(), /*strict=*/false));
+  auto vr = mgr.get_validation_result();
+  EXPECT_TRUE(vr.has_errors()) << "expected validator to reject duplicate id across base+fragment";
+}
+
+TEST_F(FragmentsFixture, OneBrokenFragmentFailsEntireLoad) {
+  // All-or-nothing contract: even if one valid fragment would merge cleanly,
+  // a sibling that fails to parse must fail the whole load so clients never
+  // see a partially-applied manifest.
+  write_fragment("valid.yaml", R"(
+apps:
+  - id: goodApp
+    name: Good
+    is_located_on: ecu-primary
+    ros_binding:
+      node_name: goodApp
+)");
+  write_fragment("broken.yaml", "apps: [ this is not valid yaml :\n  stray colon");
+  ManifestManager mgr;
+  mgr.set_fragments_dir(fragments_dir.string());
+  EXPECT_FALSE(mgr.load_manifest(base_path.string(), /*strict=*/false));
+  auto vr = mgr.get_validation_result();
+  bool saw_parse_error = false;
+  for (const auto & err : vr.errors) {
+    if (err.rule_id == "FRAGMENT_PARSE") {
+      saw_parse_error = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(saw_parse_error);
+  // `goodApp` must not leak into the live manifest - load failed so state
+  // remains "no manifest loaded".
+  EXPECT_EQ(mgr.get_apps().size(), 0u);
+}
+
+TEST_F(FragmentsFixture, EmptyReservedKeysAreRejected) {
+  // Parsed-struct checks miss `areas: []` because the empty sequence parses
+  // into an empty vector that is indistinguishable from "not declared". The
+  // raw-YAML presence check must still catch it.
+  write_fragment("empty-reserved.yaml", R"(
+areas: []
+metadata: {}
+scripts: []
+capabilities: {}
+lock_overrides: {}
+)");
+  ManifestManager mgr;
+  mgr.set_fragments_dir(fragments_dir.string());
+  EXPECT_FALSE(mgr.load_manifest(base_path.string(), /*strict=*/false));
+  auto vr = mgr.get_validation_result();
+  auto has_error_for = [&](const std::string & field) {
+    for (const auto & err : vr.errors) {
+      if (err.rule_id == "FRAGMENT_FORBIDDEN_FIELD" && err.message.find("'" + field + "'") != std::string::npos) {
+        return true;
+      }
+    }
+    return false;
+  };
+  EXPECT_TRUE(has_error_for("areas"));
+  EXPECT_TRUE(has_error_for("metadata"));
+  EXPECT_TRUE(has_error_for("scripts"));
+  EXPECT_TRUE(has_error_for("capabilities"));
+  EXPECT_TRUE(has_error_for("lock_overrides"));
+}
+
+TEST_F(FragmentsFixture, UnknownTopLevelKeyIsIgnoredWithWarning) {
+  // A typo like `app:` (singular) must not silently produce an empty
+  // fragment - the manager logs a warning but still succeeds because no
+  // forbidden key was declared.
+  write_fragment("typo.yaml", R"(
+app:
+  - id: ignoredApp
+    name: Ignored
+    is_located_on: ecu-primary
+)");
+  ManifestManager mgr;
+  mgr.set_fragments_dir(fragments_dir.string());
+  EXPECT_TRUE(mgr.load_manifest(base_path.string(), /*strict=*/false));
+  EXPECT_EQ(mgr.get_apps().size(), 0u) << "typo'd top-level key contributes no entities";
+}
+
+TEST_F(FragmentsFixture, FragmentOverSizeLimitIsRejected) {
+  // Size cap is enforced in parse_fragment_file before the file is read.
+  // Build a yaml document comfortably larger than kMaxFragmentBytes (1 MiB).
+  std::string huge = "apps:\n";
+  huge.reserve((1U << 20U) + 4096);
+  while (huge.size() < (1U << 20U) + 2048) {
+    huge += "  - id: filler\n    name: Filler\n    is_located_on: ecu-primary\n";
+  }
+  write_fragment("huge.yaml", huge);
+  ManifestManager mgr;
+  mgr.set_fragments_dir(fragments_dir.string());
+  EXPECT_FALSE(mgr.load_manifest(base_path.string(), /*strict=*/false));
+  auto vr = mgr.get_validation_result();
+  bool saw_parse_error = false;
+  for (const auto & err : vr.errors) {
+    if (err.rule_id == "FRAGMENT_PARSE" && err.message.find("exceeds") != std::string::npos) {
+      saw_parse_error = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(saw_parse_error) << "expected a FRAGMENT_PARSE error mentioning the size limit";
+}
+
+TEST_F(FragmentsFixture, SymlinkEscapingFragmentsDirIsSkipped) {
+  // Simulate the scenario: attacker drops `evil.yaml` as a symlink pointing
+  // to a file outside fragments_dir. The gateway must skip it (with a warn)
+  // rather than parsing the target contents.
+  auto outside_dir = fragments_dir.parent_path() / (fragments_dir.filename().string() + "-outside");
+  std::filesystem::create_directories(outside_dir);
+  auto outside_path = outside_dir / "outside.yaml";
+  std::ofstream(outside_path) << R"(
+apps:
+  - id: escapedApp
+    name: Escaped
+    is_located_on: ecu-primary
+    ros_binding:
+      node_name: escapedApp
+)";
+  std::error_code link_ec;
+  std::filesystem::create_symlink(outside_path, fragments_dir / "evil.yaml", link_ec);
+  if (link_ec) {
+    GTEST_SKIP() << "symlink creation unsupported on this filesystem: " << link_ec.message();
+  }
+
+  ManifestManager mgr;
+  mgr.set_fragments_dir(fragments_dir.string());
+  ASSERT_TRUE(mgr.load_manifest(base_path.string(), /*strict=*/false));
+  // Symlink target was outside fragments_dir so the contribution must have
+  // been skipped.
+  for (const auto & app : mgr.get_apps()) {
+    EXPECT_NE(app.id, "escapedApp") << "symlink escape must not contribute entities";
+  }
+
+  std::filesystem::remove_all(outside_dir, link_ec);
+}
