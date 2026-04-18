@@ -16,6 +16,7 @@
 
 #include "ros2_medkit_gateway/discovery/manifest/manifest.hpp"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,13 @@ class ManifestParser {
    */
   Manifest parse_string(const std::string & yaml_content) const;
 
+  /// Maximum accepted size of a single fragment file in bytes. `fragments_dir`
+  /// is user-configurable, so a misconfigured path (or a symlink pointing at a
+  /// large log file) could otherwise feed an unbounded amount of data into
+  /// `YAML::Load`, which has no builtin cap. 1 MiB is well above any realistic
+  /// fragment (tens of entities) while keeping worst-case allocation bounded.
+  static constexpr std::uintmax_t kMaxFragmentBytes = 1U << 20U;
+
   /**
    * @brief Parse a manifest fragment from file.
    *
@@ -64,9 +72,13 @@ class ManifestParser {
    * `Manifest` so the caller (`ManifestManager::apply_fragments`) can
    * detect and reject them with a specific validation error.
    *
+   * Files larger than `kMaxFragmentBytes` are rejected up-front without being
+   * read into memory.
+   *
    * @param file_path Path to fragment YAML
    * @return Parsed manifest with only the fragment-allowed sections populated
-   * @throws std::runtime_error if file cannot be read or parsed
+   * @throws std::runtime_error if file cannot be read or parsed, or if it
+   *         exceeds `kMaxFragmentBytes`.
    */
   Manifest parse_fragment_file(const std::string & file_path) const;
 
