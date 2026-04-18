@@ -1582,7 +1582,18 @@ void GatewayNode::handle_entity_change_notification(const EntityChangeScope & sc
   if (discovery_mgr_) {
     if (auto * manifest = discovery_mgr_->get_manifest_manager()) {
       if (!manifest->get_manifest_path().empty()) {
-        manifest->reload_manifest();
+        // reload_manifest returns false and restores the previous in-memory
+        // manifest when the base file or a fragment fails validation. Log
+        // it at WARN so the operator sees "notify requested but my fragment
+        // was rejected" instead of a silent no-op. The plugin itself can
+        // also inspect `ManifestManager::get_validation_result()` for the
+        // specific error (covered by
+        // InvalidFragmentOnNotifyLeavesErrorVisibleToPlugin).
+        if (!manifest->reload_manifest()) {
+          RCLCPP_WARN(get_logger(),
+                      "notify_entities_changed: manifest reload failed (see validation errors); "
+                      "continuing refresh against the previously loaded manifest");
+        }
       }
     }
   }

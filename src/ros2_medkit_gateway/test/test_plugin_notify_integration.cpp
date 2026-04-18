@@ -246,6 +246,53 @@ apps:
       << "reentrant notify must be a no-op; reloading from within an introspect callback would recurse";
 }
 
+TEST_F(NotifyIntegrationTest, InvalidFragmentOnNotifyLeavesErrorVisibleToPlugin) {
+  // When a plugin drops a malformed fragment and then notifies, the gateway
+  // must (a) preserve the previous valid manifest (no data loss), and
+  // (b) surface the failure so the plugin can react - either through
+  // ManifestManager::get_validation_result() or via the RCLCPP_WARN log
+  // that handle_entity_change_notification emits when reload_manifest
+  // returns false. This test pins (a)+(b) so a future refactor that silently
+  // throws away the reload result gets caught.
+  write_fragment("bad.yaml", R"(
+areas:
+  - id: rogueArea
+    name: Forbidden area in fragment
+apps:
+  - id: wouldBeApp
+    name: Never reaches manifest
+    is_located_on: ecu-primary
+    ros_binding:
+      node_name: wouldBeApp
+)");
+
+  auto ctx = ros2_medkit_gateway::make_gateway_plugin_context(node.get(), node->get_fault_manager(), nullptr);
+  ctx->notify_entities_changed(ros2_medkit_gateway::EntityChangeScope::full_refresh());
+
+  // (a) base manifest entity still there.
+  auto * mm = node->get_discovery_manager()->get_manifest_manager();
+  ASSERT_NE(mm, nullptr);
+  auto comps = mm->get_components();
+  auto it = std::find_if(comps.begin(), comps.end(), [](const auto & c) {
+    return c.id == "ecu-primary";
+  });
+  EXPECT_NE(it, comps.end()) << "bad fragment notify must not wipe the base manifest";
+  EXPECT_FALSE(manifest_has_app("wouldBeApp")) << "bad fragment must not contribute entities";
+
+  // (b) the validation result carries a FRAGMENT_FORBIDDEN_FIELD error so
+  // the plugin (or operator) can diagnose the failure after notify.
+  auto vr = mm->get_validation_result();
+  bool found_forbidden = false;
+  for (const auto & err : vr.errors) {
+    if (err.rule_id == "FRAGMENT_FORBIDDEN_FIELD") {
+      found_forbidden = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found_forbidden) << "reload_manifest failure must leave a FRAGMENT_FORBIDDEN_FIELD error in "
+                                  "validation_result so the notify failure is diagnosable";
+}
+
 TEST_F(NotifyIntegrationTest, NotifyWithoutAnyFragmentIsANoOp) {
   // No fragments dropped. Notify must be safe and must not erase the
   // base-manifest entities.
