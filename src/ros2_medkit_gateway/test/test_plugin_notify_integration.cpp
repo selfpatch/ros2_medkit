@@ -25,10 +25,16 @@
 //   4. remove the fragment + notify again
 //   5. assert the app is gone
 
+#include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -44,6 +50,35 @@
 using namespace std::chrono_literals;
 
 namespace {
+
+// Reserve a free loopback TCP port for the test-local HTTP server so parallel
+// gtests do not collide on :8080 (GatewayNode unconditionally starts its REST
+// server on the configured port).
+int reserve_local_port() {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) {
+    ADD_FAILURE() << "Failed to create socket for test port reservation: " << std::strerror(errno);
+    return 0;
+  }
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+    ADD_FAILURE() << "Failed to bind socket for test port reservation: " << std::strerror(errno);
+    close(sock);
+    return 0;
+  }
+  socklen_t addr_len = sizeof(addr);
+  if (getsockname(sock, reinterpret_cast<sockaddr *>(&addr), &addr_len) != 0) {
+    ADD_FAILURE() << "Failed to inspect reserved test port: " << std::strerror(errno);
+    close(sock);
+    return 0;
+  }
+  int port = ntohs(addr.sin_port);
+  close(sock);
+  return port;
+}
 
 constexpr const char * kBaseManifest = R"(
 manifest_version: "1.0"
@@ -90,6 +125,13 @@ class NotifyIntegrationTest : public ::testing::Test {
     // Start the GatewayNode with the base manifest + fragments_dir wired up.
     // discovery.mode=hybrid to exercise the manifest-load path. runtime
     // discovery is disabled so the only source of apps is manifest + fragments.
+    // Reserve a free loopback port per test instance - GatewayNode starts its
+    // REST server unconditionally, so we cannot share :8080 with parallel
+    // gtest suites. `server.enabled` is not a real parameter; override
+    // `server.port` instead (matches the convention in test_discovery_handlers,
+    // test_handler_context, test_gateway_node).
+    const int server_port = reserve_local_port();
+    ASSERT_GT(server_port, 0);
     rclcpp::NodeOptions opts;
     opts.parameter_overrides({
         {"discovery.mode", "hybrid"},
@@ -99,7 +141,8 @@ class NotifyIntegrationTest : public ::testing::Test {
         {"discovery.manifest.fragments_dir", fragments_dir.string()},
         {"discovery.runtime.enabled", false},
         {"discovery.runtime.default_component.enabled", false},
-        {"server.enabled", false},  // skip HTTP server setup
+        {"server.host", std::string("127.0.0.1")},
+        {"server.port", server_port},
     });
     node = std::make_shared<ros2_medkit_gateway::GatewayNode>(opts);
   }
