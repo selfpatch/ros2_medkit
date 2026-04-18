@@ -34,7 +34,12 @@ namespace ros2_medkit_gateway {
 ///       fault listing, sampler registration).
 /// - v7: PluginContext::notify_entities_changed(EntityChangeScope) for plugins
 ///       that mutate the entity surface at runtime. Default implementation is
-///       a no-op so plugins built against v6 continue to load.
+///       a no-op so plugin SOURCE written against v6 compiles unchanged
+///       against v7 headers (source-compatible). Binary compatibility is not
+///       provided - `plugin_loader` uses strict equality against this value,
+///       so a pre-compiled v6 `.so` is rejected. Out-of-tree plugins must be
+///       recompiled against v7 headers; in-tree plugins that `return
+///       PLUGIN_API_VERSION` pick up the bump automatically.
 constexpr int PLUGIN_API_VERSION = 7;
 
 /// Log severity levels for plugin logging callback
