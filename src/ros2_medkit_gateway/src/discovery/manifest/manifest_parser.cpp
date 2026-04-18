@@ -61,11 +61,13 @@ Manifest ManifestParser::parse_fragment_file(const std::string & file_path) cons
       size_t end = s.find('\n', pos);
       std::string line = s.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
       size_t first = line.find_first_not_of(" \t");
-      if (first != std::string::npos && line.compare(first, sizeof("manifest_version:") - 1,
-                                                      "manifest_version:") == 0) {
+      if (first != std::string::npos &&
+          line.compare(first, sizeof("manifest_version:") - 1, "manifest_version:") == 0) {
         return true;
       }
-      if (end == std::string::npos) break;
+      if (end == std::string::npos) {
+        break;
+      }
       pos = end + 1;
     }
     return false;

@@ -116,11 +116,17 @@ class NotifyIntegrationTest : public ::testing::Test {
 
   bool manifest_has_app(const std::string & id) {
     auto * dm = node->get_discovery_manager();
-    if (!dm) return false;
+    if (!dm) {
+      return false;
+    }
     auto * mm = dm->get_manifest_manager();
-    if (!mm) return false;
+    if (!mm) {
+      return false;
+    }
     for (const auto & app : mm->get_apps()) {
-      if (app.id == id) return true;
+      if (app.id == id) {
+        return true;
+      }
     }
     return false;
   }
@@ -145,11 +151,8 @@ apps:
 
   // Any PluginContext method goes through the same make_gateway_plugin_context
   // that production plugins see.
-  auto ctx =
-      ros2_medkit_gateway::make_gateway_plugin_context(node.get(), node->get_fault_manager(),
-                                                        nullptr);
-  ctx->notify_entities_changed(
-      ros2_medkit_gateway::EntityChangeScope::for_component("ecu-primary"));
+  auto ctx = ros2_medkit_gateway::make_gateway_plugin_context(node.get(), node->get_fault_manager(), nullptr);
+  ctx->notify_entities_changed(ros2_medkit_gateway::EntityChangeScope::for_component("ecu-primary"));
 
   EXPECT_TRUE(manifest_has_app("lateApp"));
 }
@@ -164,9 +167,7 @@ apps:
       node_name: tempApp
 )");
 
-  auto ctx =
-      ros2_medkit_gateway::make_gateway_plugin_context(node.get(), node->get_fault_manager(),
-                                                        nullptr);
+  auto ctx = ros2_medkit_gateway::make_gateway_plugin_context(node.get(), node->get_fault_manager(), nullptr);
   ctx->notify_entities_changed(ros2_medkit_gateway::EntityChangeScope::full_refresh());
   ASSERT_TRUE(manifest_has_app("tempApp"));
 
@@ -178,16 +179,14 @@ apps:
 TEST_F(NotifyIntegrationTest, NotifyWithoutAnyFragmentIsANoOp) {
   // No fragments dropped. Notify must be safe and must not erase the
   // base-manifest entities.
-  auto ctx =
-      ros2_medkit_gateway::make_gateway_plugin_context(node.get(), node->get_fault_manager(),
-                                                        nullptr);
-  EXPECT_NO_THROW(ctx->notify_entities_changed(
-      ros2_medkit_gateway::EntityChangeScope::full_refresh()));
+  auto ctx = ros2_medkit_gateway::make_gateway_plugin_context(node.get(), node->get_fault_manager(), nullptr);
+  EXPECT_NO_THROW(ctx->notify_entities_changed(ros2_medkit_gateway::EntityChangeScope::full_refresh()));
 
   auto * mm = node->get_discovery_manager()->get_manifest_manager();
   ASSERT_NE(mm, nullptr);
   auto comps = mm->get_components();
-  auto it = std::find_if(comps.begin(), comps.end(),
-                         [](const auto & c) { return c.id == "ecu-primary"; });
+  auto it = std::find_if(comps.begin(), comps.end(), [](const auto & c) {
+    return c.id == "ecu-primary";
+  });
   EXPECT_NE(it, comps.end()) << "base manifest entity lost after notify";
 }

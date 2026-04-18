@@ -80,9 +80,9 @@ class BareContext : public ros2_medkit_gateway::PluginContext {
   nlohmann::json list_entity_faults(const std::string &) const override {
     return nlohmann::json::array();
   }
-  std::optional<ros2_medkit_gateway::PluginEntityInfo> validate_entity_for_route(
-      const ros2_medkit_gateway::PluginRequest &, ros2_medkit_gateway::PluginResponse &,
-      const std::string &) const override {
+  std::optional<ros2_medkit_gateway::PluginEntityInfo>
+  validate_entity_for_route(const ros2_medkit_gateway::PluginRequest &, ros2_medkit_gateway::PluginResponse &,
+                            const std::string &) const override {
     return std::nullopt;
   }
   void register_capability(ros2_medkit_gateway::SovdEntityType, const std::string &) override {
@@ -96,15 +96,14 @@ class BareContext : public ros2_medkit_gateway::PluginContext {
     return {};
   }
   ros2_medkit_gateway::LockAccessResult check_lock(const std::string &, const std::string &,
-                                                    const std::string &) const override {
+                                                   const std::string &) const override {
     return {};
   }
-  tl::expected<ros2_medkit_gateway::LockInfo, ros2_medkit_gateway::LockError> acquire_lock(
-      const std::string &, const std::string &, const std::vector<std::string> &, int) override {
+  tl::expected<ros2_medkit_gateway::LockInfo, ros2_medkit_gateway::LockError>
+  acquire_lock(const std::string &, const std::string &, const std::vector<std::string> &, int) override {
     return tl::make_unexpected(ros2_medkit_gateway::LockError{});
   }
-  tl::expected<void, ros2_medkit_gateway::LockError> release_lock(const std::string &,
-                                                                   const std::string &) override {
+  tl::expected<void, ros2_medkit_gateway::LockError> release_lock(const std::string &, const std::string &) override {
     return {};
   }
   ros2_medkit_gateway::ResourceChangeNotifier * get_resource_change_notifier() override {
