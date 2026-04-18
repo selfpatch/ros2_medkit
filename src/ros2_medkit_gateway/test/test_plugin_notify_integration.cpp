@@ -115,7 +115,15 @@ class NotifyIntegrationTest : public ::testing::Test {
 
   void SetUp() override {
     auto tmp = std::filesystem::temp_directory_path();
-    work_dir = tmp / ("medkit-notify-integ-" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+    // Name the work dir from test name + pid so concurrent test-binary
+    // invocations (ctest -jN, or reruns after an aborted run) cannot collide.
+    // gtest's random_seed() is fixed for the entire process, so it wouldn't
+    // disambiguate between test cases in this fixture.
+    const auto * info = ::testing::UnitTest::GetInstance()->current_test_info();
+    std::string name = info ? std::string(info->name()) : std::string("unknown");
+    work_dir = tmp / ("medkit-notify-integ-" + std::to_string(::getpid()) + "-" + name);
+    std::error_code rm_ec;
+    std::filesystem::remove_all(work_dir, rm_ec);
     std::filesystem::create_directories(work_dir);
     fragments_dir = work_dir / "fragments";
     std::filesystem::create_directories(fragments_dir);
