@@ -17,8 +17,10 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <system_error>
 
 #include "ros2_medkit_serialization/json_serializer.hpp"
 
@@ -43,6 +45,19 @@ Manifest ManifestParser::parse_fragment_file(const std::string & file_path) cons
   // exact same logic as a full manifest. Anything forbidden in fragments
   // (areas, metadata, scripts, ...) is still parsed, which lets the caller
   // detect and reject it with a specific error message.
+
+  // Cap file size before opening to avoid OOM on a misconfigured fragments_dir
+  // (e.g., a symlink to a log file). yaml-cpp has no builtin size limit.
+  std::error_code size_ec;
+  auto size = std::filesystem::file_size(file_path, size_ec);
+  if (size_ec) {
+    throw std::runtime_error("Cannot stat manifest fragment '" + file_path + "': " + size_ec.message());
+  }
+  if (size > kMaxFragmentBytes) {
+    throw std::runtime_error("Manifest fragment '" + file_path + "' exceeds " + std::to_string(kMaxFragmentBytes) +
+                             "-byte limit (size=" + std::to_string(size) + ")");
+  }
+
   std::ifstream file(file_path);
   if (!file.is_open()) {
     throw std::runtime_error("Cannot open manifest fragment: " + file_path);
