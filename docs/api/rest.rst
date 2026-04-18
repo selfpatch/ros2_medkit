@@ -1143,6 +1143,10 @@ Without such a plugin, all endpoints return ``501 Not Implemented``.
 
    **Status values:** ``pending``, ``inProgress``, ``completed``, ``failed``
 
+   A successful ``POST /api/v1/updates`` seeds a ``pending`` status for the package,
+   so this endpoint returns ``200`` with ``{"status": "pending"}`` immediately after
+   registration, before any ``prepare`` or ``execute`` call.
+
    When ``status`` is ``failed``, an ``error`` object is included:
 
    .. code-block:: json
@@ -1155,7 +1159,7 @@ Without such a plugin, all endpoints return ``501 Not Implemented``.
         }
       }
 
-   - **404 Not Found:** No status available (package not found or no operation started)
+   - **404 Not Found:** Package is not registered
 
 Cyclic Subscriptions
 --------------------
