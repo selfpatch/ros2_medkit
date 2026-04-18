@@ -353,6 +353,20 @@ class TestUpdatesPrepareExecute(_UpdatesTestMixin, GatewayTestCase):
     BASE_URL = f'http://127.0.0.1:{PORT_WITH_PLUGIN}{API_BASE_PATH}'
     MIN_EXPECTED_APPS = 0
 
+    # @verifies REQ_INTEROP_094
+    def test_00_status_pending_right_after_register(self):
+        """GET /status returns 200 pending immediately after POST /updates."""
+        self.register_package('test-pending-after-register')
+        r = requests.get(
+            f'{self.BASE_URL}/updates/test-pending-after-register/status',
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data.get('status'), 'pending')
+        self.assertNotIn('progress', data)
+        self.assertNotIn('error', data)
+
     # @verifies REQ_INTEROP_091
     def test_01_prepare_returns_202(self):
         """PUT /updates/{id}/prepare returns 202 Accepted."""
