@@ -248,10 +248,24 @@ class PluginContext {
    *     notification would be redundant.
    *
    * @par Backwards compatibility
-   * Default implementation is a no-op so plugins built against plugin API v6
-   * continue to load and run against a v7 gateway without code changes. A
-   * gateway built against v7 but loading a v6 plugin simply never receives a
-   * notification from that plugin.
+   * Default implementation is a no-op. Plugin source written against plugin
+   * API v6 compiles unchanged against v7 headers (source-compatible) - no
+   * code changes are required. The plugin loader compares the exported
+   * `plugin_api_version()` against the gateway's `PLUGIN_API_VERSION` with
+   * strict equality, so a plugin `.so` pre-compiled against v6 IS rejected;
+   * recompilation against v7 headers is required.
+   *
+   * @par Fragment file contract (when used with discovery.manifest.fragments_dir)
+   * Plugins that deploy / remove manifest fragments on disk before calling
+   * this method MUST publish the final content atomically. The gateway's
+   * fragment scanner reads each file on the caller's thread once the
+   * notification arrives; a partially-written fragment causes the reload
+   * to fail, which rolls back the entire manifest merge (see the design
+   * doc's "all-or-nothing fragment contract" section). The recommended
+   * pattern is: write to `fragments_dir/.tmp-<id>.yaml`, `fsync`, then
+   * `rename()` (POSIX atomic within the same filesystem) to
+   * `fragments_dir/<id>.yaml`. The rename is the commit point that makes
+   * the fragment visible to the next reload.
    */
   virtual void notify_entities_changed(const EntityChangeScope & /*scope*/) {
   }
