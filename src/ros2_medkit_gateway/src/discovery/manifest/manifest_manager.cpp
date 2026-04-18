@@ -489,6 +489,17 @@ bool ManifestManager::apply_fragments(Manifest & base) {
     return true;
   }
 
+  // Resolve the configured dir once so we can compare canonical paths below.
+  // Symlinks ARE followed (k8s ConfigMap mounts rely on that), but we refuse
+  // to read anything whose resolved location is not a descendant of the
+  // configured fragments directory. That blocks `evil.yaml -> /etc/shadow`
+  // while keeping the ConfigMap case working.
+  std::filesystem::path canonical_dir = std::filesystem::canonical(dir, ec);
+  if (ec) {
+    log_error("Failed to canonicalize fragments_dir '" + fragments_dir_ + "': " + ec.message());
+    return false;
+  }
+
   // Collect + sort file paths so the merge order is deterministic. Without
   // this the validator's "duplicate id" error could point at a different
   // fragment run to run, which is nightmarish to diagnose.
@@ -501,9 +512,24 @@ bool ManifestManager::apply_fragments(Manifest & base) {
       continue;
     }
     auto ext = entry.path().extension().string();
-    if (ext == ".yaml" || ext == ".yml") {
-      files.push_back(entry.path());
+    if (ext != ".yaml" && ext != ".yml") {
+      continue;
     }
+    std::error_code canon_ec;
+    std::filesystem::path resolved = std::filesystem::canonical(entry.path(), canon_ec);
+    if (canon_ec) {
+      log_warn("Skipping fragment with unresolvable path " + entry.path().string() + ": " + canon_ec.message());
+      continue;
+    }
+    // Reject any resolved path that escapes the configured directory. Compare
+    // via the generic string form so the check is path-component safe.
+    auto rel = std::filesystem::relative(resolved, canonical_dir, canon_ec);
+    if (canon_ec || rel.empty() || rel.native().rfind("..", 0) == 0) {
+      log_warn("Skipping fragment '" + entry.path().string() + "': resolves outside fragments_dir (" +
+               resolved.string() + ")");
+      continue;
+    }
+    files.push_back(entry.path());
   }
   std::sort(files.begin(), files.end());
 
@@ -528,37 +554,61 @@ bool ManifestManager::apply_fragments(Manifest & base) {
       log_error("Fragment " + path.string() + " declares forbidden field '" + field + "'");
       ok = false;
     };
-    if (!fragment.areas.empty()) {
-      reject("areas");
-    }
-    // manifest_version is auto-injected by parse_fragment_file when the
-    // fragment omits it, so we don't check that field here - fragments are
-    // free to declare or omit it without penalty.
-    if (!fragment.metadata.name.empty() || !fragment.metadata.version.empty() ||
-        !fragment.metadata.description.empty() || !fragment.metadata.created_at.empty()) {
-      reject("metadata");
-    }
-    if (!fragment.scripts.empty()) {
-      reject("scripts");
-    }
-    if (!fragment.capabilities.empty()) {
-      reject("capabilities");
-    }
-    if (!fragment.lock_overrides.empty()) {
-      reject("lock_overrides");
-    }
 
-    // ManifestConfig defaults (unmanifested_nodes=WARN, inherit_runtime_resources=true,
-    // allow_manifest_override=true) are indistinguishable from "not declared" on the
-    // parsed struct, so detect a `discovery:` top-level key by re-reading the raw YAML.
+    // Presence-based checks must inspect the raw YAML, not the parsed Manifest:
+    // empty arrays / maps (for example `areas: []` or `metadata: {}`) are still
+    // forbidden even though they parse to empty-default structs and would not
+    // be detected by the struct checks. manifest_version is auto-injected by
+    // parse_fragment_file when the fragment omits it, so we do not inspect it
+    // here - fragments are free to declare or omit it.
+    static constexpr const char * kForbiddenKeys[] = {
+        "areas", "metadata", "scripts", "capabilities", "lock_overrides", "discovery",
+    };
+    static constexpr const char * kAllowedKeys[] = {
+        "apps",
+        "components",
+        "functions",
+        "manifest_version",
+    };
     try {
       YAML::Node raw = YAML::LoadFile(path.string());
-      if (raw && raw["discovery"]) {
-        reject("discovery");
+      if (raw && raw.IsMap()) {
+        for (const char * key : kForbiddenKeys) {
+          if (raw[key]) {
+            reject(key);
+          }
+        }
+        // Warn on unknown top-level keys so typos like `app:` (singular)
+        // don't silently produce an empty fragment with no feedback.
+        for (const auto & it : raw) {
+          if (!it.first.IsScalar()) {
+            continue;
+          }
+          std::string key = it.first.as<std::string>();
+          bool known = false;
+          for (const char * k : kAllowedKeys) {
+            if (key == k) {
+              known = true;
+              break;
+            }
+          }
+          if (!known) {
+            for (const char * k : kForbiddenKeys) {
+              if (key == k) {
+                known = true;
+                break;
+              }
+            }
+          }
+          if (!known) {
+            log_warn("Fragment " + path.string() + " has unknown top-level key '" + key +
+                     "' - expected one of: apps, components, functions (ignored).");
+          }
+        }
       }
     } catch (const YAML::Exception & e) {
       validation_result_.add_error("FRAGMENT_PARSE", e.what(), path.string());
-      log_error("Failed to re-parse fragment " + path.string() + " for discovery check: " + e.what());
+      log_error("Failed to re-parse fragment " + path.string() + " for forbidden-field check: " + e.what());
       ok = false;
     }
 

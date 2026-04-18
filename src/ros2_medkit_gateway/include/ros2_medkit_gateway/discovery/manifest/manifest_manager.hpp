@@ -259,8 +259,10 @@ class ManifestManager {
 
   /// Merge the fragments found in `fragments_dir_` on top of `base`.
   /// Returns true on success (or no fragments); false if any fragment
-  /// rejected the merge (conflicting IDs, disallowed top-level fields).
-  /// Validation errors from individual fragments are appended to
+  /// failed to parse or declared disallowed top-level fields.
+  /// Duplicate / conflicting IDs are not detected here - they are surfaced
+  /// by the subsequent `ManifestValidator::validate()` pass over the merged
+  /// manifest. Validation errors from individual fragments are appended to
   /// `validation_result_` so callers see them in the normal error flow.
   bool apply_fragments(Manifest & base);
 
