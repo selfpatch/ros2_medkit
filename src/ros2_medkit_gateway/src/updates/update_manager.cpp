@@ -104,18 +104,17 @@ tl::expected<void, UpdateError> UpdateManager::register_update(const nlohmann::j
   // consumers (UpdatesDashboard) gate action buttons on the status field
   // and won't render "Prepare" when the status query fails, so a newly-
   // registered update would otherwise be stuck from the frontend's view.
-  // Preserve an already-seeded state if a concurrent caller raced us
-  // through the backend (shouldn't happen with current backends, but the
-  // defensive check keeps the method idempotent).
-  if (metadata.contains("id") && metadata["id"].is_string()) {
-    const auto id = metadata["id"].get<std::string>();
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto & state_ptr = states_[id];
-    if (!state_ptr) {
-      state_ptr = std::make_unique<PackageState>();
-      state_ptr->phase = UpdatePhase::None;
-      state_ptr->status = UpdateStatusInfo{UpdateStatus::Pending, std::nullopt, std::nullopt, std::nullopt};
-    }
+  // Callers (update_handlers.cpp) validate id presence + non-empty string
+  // before invoking register_update, so metadata.at("id") is guaranteed to
+  // hold a string at this point. The !state_ptr check matches the
+  // idempotent-seed pattern used in start_prepare / run_prepare.
+  const auto id = metadata.at("id").get<std::string>();
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto & state_ptr = states_[id];
+  if (!state_ptr) {
+    state_ptr = std::make_unique<PackageState>();
+    state_ptr->phase = UpdatePhase::None;
+    state_ptr->status = UpdateStatusInfo{UpdateStatus::Pending, std::nullopt, std::nullopt, std::nullopt};
   }
   return {};
 }

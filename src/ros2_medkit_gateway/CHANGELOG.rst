@@ -5,6 +5,10 @@ Changelog for package ros2_medkit_gateway
 Unreleased
 ----------
 
+**Fixes:**
+
+* ``GET /api/v1/updates/{id}/status`` no longer returns ``404`` for a registered-but-idle package; ``POST /api/v1/updates`` now seeds a ``pending`` status, so the endpoint returns ``200 {"status": "pending"}`` immediately after registration. ``404`` is reserved for packages that are not registered. Clients that used ``404`` as a signal for "registered but nothing started yet" must adapt (`#378 <https://github.com/selfpatch/ros2_medkit/issues/378>`_)
+
 **Features:**
 
 * Plugin API version bumped to v7. Adds ``PluginContext::notify_entities_changed(EntityChangeScope)`` lifecycle hook for plugins that mutate the entity surface at runtime; default no-op keeps v6 source code compiling unchanged against v7 headers. Binary compatibility is not provided: the plugin loader uses a strict equality check on ``plugin_api_version()``, so out-of-tree plugins must be recompiled (`#376 <https://github.com/selfpatch/ros2_medkit/issues/376>`_)
