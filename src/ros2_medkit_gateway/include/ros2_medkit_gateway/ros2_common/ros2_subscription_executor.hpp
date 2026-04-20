@@ -1,0 +1,264 @@
+// Copyright 2026 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <type_traits>
+#include <utility>
+
+#include <rclcpp/rclcpp.hpp>
+#include <tl/expected.hpp>
+
+namespace ros2_medkit_gateway::ros2_common {
+
+/**
+ * @brief Single-writer bridge that serializes all rcl-mutating calls on one worker thread.
+ *
+ * Owns a dedicated `subscription_node` (added to the main gateway executor) and a single
+ * worker thread that processes a bounded queue of tasks. All subscribe / unsubscribe /
+ * callback-group mutations must go through this executor to avoid the rcl hash-map race
+ * that occurs when multiple threads create subscriptions on the same node concurrently.
+ *
+ * @par Thread model
+ * - One worker thread, fed by a bounded task queue. Tasks run in FIFO order.
+ * - One wall timer on the subscription node for the watchdog (no extra thread).
+ * - One wall timer on the subscription node polls `rclcpp::Event::check_and_clear()`
+ *   for graph changes (no extra thread, no internal rclcpp APIs).
+ * - Graph-change callbacks are re-posted to the worker thread so they run outside the
+ *   main executor context.
+ *
+ * @par Bounded behavior
+ * - Queue depth capped at `Config::max_queue_depth`. Excess posts return `false`
+ *   (backpressure) and increment `queue_dropped`.
+ * - `run_sync` has a deadline; on timeout returns `tl::unexpected` instead of blocking
+ *   indefinitely.
+ * - Graph-listener slots pre-allocated at `kMaxGraphListeners` (no heap allocation).
+ *
+ * @par Shutdown
+ * Destruction drains the queue (all pending tasks run to completion so `run_sync` callers
+ * get their promises fulfilled), then joins the worker, cancels timers, and removes the
+ * subscription node from the main executor. Bounded by longest remaining task execution
+ * time. External deployment platform (systemd / k8s / Docker) should enforce hard timeout.
+ *
+ * @par Not for inheritance
+ * Marked `final`. The abstraction boundary for alternate transports is at the provider
+ * interface level (`DataProvider`, `OperationProvider`, etc.), not this class.
+ */
+class Ros2SubscriptionExecutor final {
+ public:
+  /// Pre-allocated graph listener slots. Size chosen to cover all domain providers plus headroom.
+  static constexpr std::size_t kMaxGraphListeners = 16;
+
+  struct Config {
+    std::size_t max_queue_depth;
+    std::chrono::milliseconds watchdog_threshold;
+    std::chrono::milliseconds watchdog_tick;
+    std::chrono::milliseconds graph_poll_tick;
+    std::string subscription_node_name_suffix;
+
+    // Explicit ctor needed because GCC does not allow default member initializers
+    // of a nested class to be used by the enclosing class's member declarations.
+    Config()
+      : max_queue_depth{256}
+      , watchdog_threshold{5000}
+      , watchdog_tick{1000}
+      , graph_poll_tick{100}
+      , subscription_node_name_suffix{"_sub"} {
+    }
+  };
+
+  struct Stats {
+    bool worker_alive{false};
+    bool degraded{false};
+    std::size_t queue_depth{0};
+    std::size_t queue_max_depth_observed{0};
+    std::size_t queue_dropped{0};
+    std::size_t tasks_completed{0};
+    std::size_t tasks_failed{0};
+    std::uint64_t last_task_latency_us{0};
+    std::uint64_t max_task_latency_us{0};
+    std::uint64_t current_task_age_ms{0};
+    std::size_t watchdog_trips{0};
+    std::size_t graph_events_received{0};
+  };
+
+  using GraphCallback = std::function<void()>;
+
+  /**
+   * @brief Construct and start the worker thread.
+   *
+   * @param gateway_node Owning gateway node. Used only to derive the subscription node
+   *                     name and namespace; no references retained after construction.
+   * @param main_executor Executor that will spin both the gateway node and the
+   *                      newly-created subscription node. Must outlive this executor.
+   * @param cfg           Bounded resource configuration.
+   */
+  Ros2SubscriptionExecutor(const std::shared_ptr<rclcpp::Node> & gateway_node, rclcpp::Executor & main_executor,
+                           Config cfg = Config());
+
+  /// Idempotent shutdown: drains queue, joins worker, cancels timers, removes sub node.
+  ~Ros2SubscriptionExecutor();
+
+  Ros2SubscriptionExecutor(const Ros2SubscriptionExecutor &) = delete;
+  Ros2SubscriptionExecutor & operator=(const Ros2SubscriptionExecutor &) = delete;
+  Ros2SubscriptionExecutor(Ros2SubscriptionExecutor &&) = delete;
+  Ros2SubscriptionExecutor & operator=(Ros2SubscriptionExecutor &&) = delete;
+
+  /**
+   * @brief Execute a task on the worker and wait for completion with a deadline.
+   *
+   * Serializes the task with all other rcl mutations. Exceptions thrown by the task
+   * are caught and returned as `tl::unexpected(what_string)`. Queue full / deadline
+   * exceeded / shutting down are also reported as `tl::unexpected`.
+   *
+   * @tparam R        Return type (may be `void`).
+   * @param task      Callable executed on the worker thread.
+   * @param deadline  Maximum wall time to wait for completion (default 5s).
+   * @return The task's return value, or an error string on failure.
+   */
+  template <typename R>
+  [[nodiscard]] tl::expected<R, std::string>
+  run_sync(std::function<R()> task, std::chrono::milliseconds deadline = std::chrono::milliseconds{5000});
+
+  /**
+   * @brief Enqueue a fire-and-forget task on the worker.
+   *
+   * Used for graph-change callbacks and other cases where synchronous completion
+   * is not required. Returns `false` if the executor is shutting down or the queue
+   * is at capacity.
+   */
+  bool post(std::function<void()> task);
+
+  /**
+   * @brief Accessor for the subscription node. Use only from within a task posted to
+   *        this executor; concurrent rcl mutations on other threads violate the
+   *        single-writer invariant.
+   */
+  rclcpp::Node * node() const noexcept;
+
+  /**
+   * @brief Register a graph-change callback.
+   *
+   * Called on the worker thread when the ROS 2 graph changes (publishers appearing /
+   * disappearing, types changing). Use to invalidate per-topic caches or evict stale
+   * pool entries.
+   *
+   * @return Opaque token in range [0, kMaxGraphListeners). `kMaxGraphListeners` if
+   *         all slots are taken.
+   */
+  [[nodiscard]] std::size_t on_graph_change(GraphCallback cb);
+
+  /// Remove a previously-registered graph callback. Idempotent.
+  void remove_graph_change(std::size_t token);
+
+  /// True after shutdown has started. Monotonic. Use to skip re-posting work on teardown.
+  [[nodiscard]] bool is_shutting_down() const noexcept {
+    return shutdown_requested_.load();
+  }
+
+  [[nodiscard]] Stats stats() const;
+
+ private:
+  void worker_loop();
+  void watchdog_tick();
+  void graph_poll_tick();
+  void fire_graph_callbacks();
+
+  Config cfg_;
+  std::shared_ptr<rclcpp::Node> subscription_node_;
+  rclcpp::Executor * main_executor_{nullptr};
+
+  // Task queue
+  mutable std::mutex queue_mtx_;
+  std::condition_variable queue_cv_;
+  std::deque<std::function<void()>> queue_;
+  std::atomic<bool> shutdown_requested_{false};
+  std::thread worker_;
+
+  // Stats
+  std::atomic<bool> worker_alive_{false};
+  std::atomic<bool> degraded_{false};
+  std::atomic<std::size_t> queue_max_depth_observed_{0};
+  std::atomic<std::size_t> queue_dropped_{0};
+  std::atomic<std::size_t> tasks_completed_{0};
+  std::atomic<std::size_t> tasks_failed_{0};
+  std::atomic<std::uint64_t> last_task_latency_us_{0};
+  std::atomic<std::uint64_t> max_task_latency_us_{0};
+  std::atomic<std::uint64_t> current_task_started_ns_{0};
+  std::atomic<std::size_t> watchdog_trips_{0};
+  std::atomic<std::size_t> graph_events_received_{0};
+
+  // Graph callbacks (pre-allocated, Tier 1)
+  mutable std::mutex graph_mtx_;
+  std::array<GraphCallback, kMaxGraphListeners> graph_callbacks_{};
+  std::array<bool, kMaxGraphListeners> graph_slot_used_{};
+
+  // Public rclcpp graph API - stable across Humble / Jazzy / Rolling
+  rclcpp::Event::SharedPtr graph_event_;
+
+  // Timers run on subscription_node_ (spun by main executor). No dedicated threads.
+  rclcpp::TimerBase::SharedPtr watchdog_timer_;
+  rclcpp::TimerBase::SharedPtr graph_poll_timer_;
+};
+
+// ---------------------------------------------------------------------------
+// Template implementation
+
+template <typename R>
+tl::expected<R, std::string> Ros2SubscriptionExecutor::run_sync(std::function<R()> task,
+                                                                std::chrono::milliseconds deadline) {
+  if (shutdown_requested_.load(std::memory_order_acquire)) {
+    return tl::unexpected(std::string{"executor shutting down"});
+  }
+  auto promise = std::make_shared<std::promise<tl::expected<R, std::string>>>();
+  auto future = promise->get_future();
+
+  auto wrapper = [task = std::move(task), promise]() mutable {
+    try {
+      if constexpr (std::is_void_v<R>) {
+        task();
+        promise->set_value(tl::expected<void, std::string>{});
+      } else {
+        promise->set_value(tl::expected<R, std::string>{task()});
+      }
+    } catch (const std::exception & ex) {
+      promise->set_value(tl::unexpected(std::string{ex.what()}));
+    } catch (...) {
+      promise->set_value(tl::unexpected(std::string{"unknown exception"}));
+    }
+  };
+
+  if (!post(std::move(wrapper))) {
+    return tl::unexpected(std::string{"queue full or shutting down"});
+  }
+  if (future.wait_for(deadline) != std::future_status::ready) {
+    return tl::unexpected(std::string{"run_sync deadline exceeded"});
+  }
+  return future.get();
+}
+
+}  // namespace ros2_medkit_gateway::ros2_common

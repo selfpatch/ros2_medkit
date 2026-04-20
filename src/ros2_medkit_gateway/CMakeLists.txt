@@ -86,6 +86,8 @@ include_directories(include)
 add_library(gateway_lib STATIC
   src/config.cpp
   src/entity_validation.cpp
+  # ROS 2 shared subscription infrastructure
+  src/ros2_common/ros2_subscription_executor.cpp
   src/gateway_node.cpp
   src/data_access_manager.cpp
   src/type_introspection.cpp
@@ -409,6 +411,12 @@ if(BUILD_TESTING)
   # Add error info tests
   ament_add_gtest(test_error_info test/test_error_info.cpp)
   target_link_libraries(test_error_info gateway_lib)
+
+  # Add ROS 2 subscription executor tests
+  ament_add_gtest(test_ros2_subscription_executor test/test_ros2_subscription_executor.cpp)
+  target_link_libraries(test_ros2_subscription_executor gateway_lib)
+  medkit_target_dependencies(test_ros2_subscription_executor rclcpp std_msgs)
+  medkit_set_test_domain(test_ros2_subscription_executor)
 
   # Add discovery models tests
   ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
@@ -738,6 +746,7 @@ if(BUILD_TESTING)
       test_tls_config
       test_fault_manager
       test_error_info
+      test_ros2_subscription_executor
       test_discovery_models
       test_host_info_provider
       test_discovery_handlers
