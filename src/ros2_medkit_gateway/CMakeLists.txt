@@ -406,6 +406,10 @@ if(BUILD_TESTING)
   medkit_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
   medkit_set_test_domain(test_fault_manager)
 
+  # Add error info tests
+  ament_add_gtest(test_error_info test/test_error_info.cpp)
+  target_link_libraries(test_error_info gateway_lib)
+
   # Add discovery models tests
   ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
   target_link_libraries(test_discovery_models gateway_lib)
@@ -733,6 +737,7 @@ if(BUILD_TESTING)
       test_runtime_discovery
       test_tls_config
       test_fault_manager
+      test_error_info
       test_discovery_models
       test_host_info_provider
       test_discovery_handlers
