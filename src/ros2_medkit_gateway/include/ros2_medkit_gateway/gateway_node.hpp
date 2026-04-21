@@ -27,6 +27,7 @@
 #include "ros2_medkit_gateway/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/config.hpp"
 #include "ros2_medkit_gateway/configuration_manager.hpp"
+#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/data_access_manager.hpp"
 #include "ros2_medkit_gateway/default_script_provider.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
@@ -75,6 +76,17 @@ class GatewayNode : public rclcpp::Node {
    *       REST server is stopped before GatewayNode destruction to ensure safe access.
    */
   DataAccessManager * get_data_access_manager() const;
+
+  /**
+   * @brief Attach a TopicDataProvider to route topic sampling through.
+   *
+   * Called by main() after the rclcpp::Executor is constructed and the gateway
+   * node added to it, so the provider can build its subscription node. Stores
+   * the shared_ptr to keep the provider alive for the gateway node's lifetime
+   * and forwards the raw pointer into DataAccessManager (where it is preferred
+   * over NativeTopicSampler in sample paths - issue #375 race fix).
+   */
+  void set_topic_data_provider(std::shared_ptr<TopicDataProvider> provider);
 
   /**
    * @brief Get the OperationManager instance
@@ -228,6 +240,11 @@ class GatewayNode : public rclcpp::Node {
   AuthConfig auth_config_;
   RateLimitConfig rate_limit_config_;
   TlsConfig tls_config_;
+
+  // ROS 2 subscription infrastructure (injected from main() after the executor
+  // is constructed). Owned via shared_ptr because the provider is handed out
+  // as a raw TopicDataProvider* to DataAccessManager.
+  std::shared_ptr<TopicDataProvider> topic_data_provider_;
 
   // Managers
   std::unique_ptr<DiscoveryManager> discovery_mgr_;

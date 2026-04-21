@@ -12,23 +12,44 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <memory>
+
 #include <rclcpp/rclcpp.hpp>
 
+#include "ros2_medkit_gateway/data/ros2_topic_data_provider.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
+#include "ros2_medkit_serialization/json_serializer.hpp"
 
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
 
   auto node = std::make_shared<ros2_medkit_gateway::GatewayNode>();
 
-  // MultiThreadedExecutor is required because cpp-httplib handler threads call
-  // Node::create_generic_subscription() for topic sampling. SingleThreadedExecutor
-  // does not synchronize external subscription creation with its internal iteration,
-  // causing non-deterministic SIGSEGV on rolling. All gateway callbacks are already
-  // protected by mutexes (EntityCache, LogManager, TriggerManager, etc.).
+  // MultiThreadedExecutor is required: the Ros2SubscriptionExecutor's
+  // subscription_node lives on the same executor as the gateway node, and
+  // parallel dispatch prevents the serial worker and the main executor from
+  // starving each other.
   rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
+
+  // Stand up the ROS 2 subscription executor + topic data provider.
+  // Issue #375: all subscription create/destroy calls are funneled through the
+  // serial worker owned by sub_exec, eliminating the rcl hash-map race that
+  // previously killed /data on Rolling when concurrent HTTP handler threads
+  // created subscriptions on the same node.
+  auto sub_exec = std::make_shared<ros2_medkit_gateway::ros2_common::Ros2SubscriptionExecutor>(node, executor);
+  auto serializer = std::make_shared<ros2_medkit_serialization::JsonSerializer>();
+  auto data_provider = std::make_shared<ros2_medkit_gateway::Ros2TopicDataProvider>(sub_exec, serializer);
+  node->set_topic_data_provider(data_provider);
+
   executor.spin();
+
+  // Teardown order: drop the provider first (clears pool entries via the
+  // executor), then reset sub_exec (joins worker, removes subscription node),
+  // then rclcpp::shutdown.
+  data_provider.reset();
+  sub_exec.reset();
 
   rclcpp::shutdown();
   return 0;
