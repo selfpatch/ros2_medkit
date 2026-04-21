@@ -16,14 +16,20 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
+#include <rclcpp/serialized_message.hpp>
+
 #include "ros2_medkit_gateway/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
+#include "ros2_medkit_gateway/ros2_common/ros2_subscription_slot.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 
 namespace ros2_medkit_gateway {
@@ -32,20 +38,25 @@ namespace ros2_medkit_gateway {
  * @brief ROS 2 default implementation of TopicDataProvider.
  *
  * Provides topic discovery (via direct graph queries on the subscription node)
- * and topic sampling (via subscriptions managed by Ros2SubscriptionExecutor).
+ * and topic sampling via a pool of long-lived subscriptions managed by
+ * Ros2SubscriptionExecutor. Each pool entry keeps the always-newest message,
+ * so concurrent samplers on the same topic share the latest without creating
+ * additional subscriptions.
  *
- * @par Current scope (this revision)
- * - All TopicDataProvider discovery methods are live (graph queries).
- * - `sample()` and `sample_parallel()` currently return metadata-only results
- *   with `has_data == false`. The subscription pool implementation lands in a
- *   follow-up commit. This lets the interface be wired up to the callers
- *   (DataAccessManager et al.) before the pool is ready, without regressing
- *   the legacy NativeTopicSampler path that still handles production sampling.
+ * @par Race fix (issue #375)
+ * Subscription creation / destruction is serialized by the executor. The pool
+ * amortizes cost across samples so hot topics reuse the same subscription.
  *
  * @par Thread safety
- * All methods may be called concurrently. Discovery methods call back into
- * rclcpp graph APIs which are documented thread-safe for reads. Future pool
- * state will be protected by an internal mutex.
+ * All methods may be called concurrently. Pool state is protected by
+ * `pool_mtx_`; per-entry buffers by `PoolEntry::buf_mtx`.
+ *
+ * @par Eviction
+ * - Graph change: registered callback walks the pool and drops entries whose
+ *   topic has disappeared from the graph.
+ * - Pool cap: on miss, if pool is at `max_pool_size`, sample() returns
+ *   metadata-only (no new slot). LRU eviction is a follow-up.
+ * - Shutdown: destructor signals every per-entry CV, resets all slots.
  */
 class Ros2TopicDataProvider final : public TopicDataProvider {
  public:
@@ -111,7 +122,22 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
   [[nodiscard]] static bool is_system_topic(const std::string & topic_name);
 
  private:
+  struct PoolEntry {
+    std::string topic;
+    std::string cached_type;
+    std::unique_ptr<ros2_common::Ros2SubscriptionSlot> slot;
+
+    mutable std::mutex buf_mtx;
+    std::condition_variable buf_cv;
+    std::optional<rclcpp::SerializedMessage> latest;
+    std::int64_t latest_ns{0};
+    std::chrono::steady_clock::time_point last_sample_time;
+    std::atomic<bool> shutdown{false};
+  };
+
   TopicSampleResult build_metadata_only_sample(const std::string & topic);
+  rclcpp::QoS qos_for(const TopicInfo & info) const;
+  void on_graph_change();
 
   Config cfg_;
   std::shared_ptr<ros2_common::Ros2SubscriptionExecutor> exec_;
@@ -119,9 +145,10 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
 
   std::atomic<bool> shutdown_{false};
 
-  // Counters surfaced through stats() (pool itself added in follow-up commit).
-  mutable std::mutex cache_mtx_;
-  std::unordered_map<std::string, TopicInfo> component_topic_map_cache_;  ///< Populated by build_component_topic_map
+  mutable std::mutex pool_mtx_;
+  std::unordered_map<std::string, std::shared_ptr<PoolEntry>> pool_;
+
+  std::size_t graph_listener_token_{ros2_common::Ros2SubscriptionExecutor::kMaxGraphListeners};
 
   std::atomic<std::size_t> pool_hits_{0};
   std::atomic<std::size_t> pool_misses_{0};
