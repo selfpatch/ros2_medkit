@@ -24,7 +24,9 @@
 #include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
 
 using namespace ros2_medkit_gateway;
-using json = nlohmann::json;
+// json alias is already imported by the `using namespace` above (defined in
+// discovery/models/common.hpp). A local `using json = nlohmann::json;` would
+// shadow it and trip clang-diagnostic-shadow under clang-tidy.
 
 /// Minimal mock plugin for compile-time testing (no .so needed)
 class MockPlugin : public GatewayPlugin, public UpdateProvider, public IntrospectionProvider {
