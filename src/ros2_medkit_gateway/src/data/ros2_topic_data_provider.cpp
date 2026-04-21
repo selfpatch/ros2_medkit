@@ -286,10 +286,20 @@ tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const s
   // Phase 5: wait for latest message on the per-entry CV.
   std::unique_lock<std::mutex> bl(entry->buf_mtx);
   entry->last_sample_time = std::chrono::steady_clock::now();
-  if (!entry->latest.has_value()) {
+  const bool cold = !entry->latest.has_value();
+  if (cold) {
+    // Cold-wait cap (httplib liveness): if too many HTTP handler threads are
+    // already blocked on cold topics, degrade the remaining callers to
+    // metadata-only so discovery / health endpoints keep responding.
+    if (cfg_.cold_wait_cap > 0 && concurrent_cold_waits_.load(std::memory_order_acquire) >= cfg_.cold_wait_cap) {
+      result.has_data = false;
+      return result;
+    }
+    concurrent_cold_waits_.fetch_add(1, std::memory_order_acq_rel);
     entry->buf_cv.wait_for(bl, timeout, [&] {
       return entry->latest.has_value() || entry->shutdown.load(std::memory_order_acquire);
     });
+    concurrent_cold_waits_.fetch_sub(1, std::memory_order_acq_rel);
   }
   if (!entry->latest.has_value() || entry->shutdown.load(std::memory_order_acquire)) {
     result.has_data = false;

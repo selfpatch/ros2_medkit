@@ -268,6 +268,58 @@ TEST_F(Ros2TopicDataProviderTest, DeletedCopyAndMove) {
   EXPECT_FALSE(std::is_move_constructible_v<Ros2TopicDataProvider>);
 }
 
+TEST_F(Ros2TopicDataProviderTest, ColdWaitCapShedsLoad) {
+  // cold_wait_cap = 2 means at most 2 sampler threads can block on cold topics
+  // simultaneously; further callers get metadata-only so /health stays live.
+  Ros2TopicDataProvider::Config cfg;
+  cfg.cold_wait_cap = 2;
+  cfg.max_pool_size = 16;
+  auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, cfg);
+
+  // Publisher with no actual data published -> cold topic.
+  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/cold_topic", rclcpp::SensorDataQoS());
+  auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (local->has_publishers("/cold_topic")) {
+      break;
+    }
+    std::this_thread::sleep_for(20ms);
+  }
+  // Prime pool entry so subsequent samples find it cold (has publishers, no data).
+  (void)local->sample("/cold_topic", 50ms);
+
+  // Four concurrent samplers, all with long timeouts. Two should be allowed to
+  // wait; two should bounce back immediately as metadata-only.
+  constexpr int kCallers = 4;
+  std::vector<std::future<bool>> results;  // true if sample call returned before deadline
+  results.reserve(kCallers);
+  auto t_start = std::chrono::steady_clock::now();
+  for (int i = 0; i < kCallers; ++i) {
+    results.push_back(std::async(std::launch::async, [&local] {
+      auto r = local->sample("/cold_topic", 1s);
+      return r.has_value();
+    }));
+  }
+
+  // All callers must return within the cold waiters' timeout. Without the cap,
+  // all 4 would block for 1s; with the cap, 2 block and 2 return immediately.
+  // We assert that at least one completes in <200ms (the fast path).
+  int fast = 0;
+  for (auto & f : results) {
+    if (f.wait_for(200ms) == std::future_status::ready) {
+      ++fast;
+    }
+  }
+  EXPECT_GE(fast, kCallers - static_cast<int>(cfg.cold_wait_cap));
+
+  // Join everyone before TearDown.
+  for (auto & f : results) {
+    (void)f.get();
+  }
+  auto elapsed = std::chrono::steady_clock::now() - t_start;
+  EXPECT_LT(elapsed, 2s);
+}
+
 TEST_F(Ros2TopicDataProviderTest, IdleSweepEvictsStaleEntries) {
   Ros2TopicDataProvider::Config cfg;
   cfg.max_pool_size = 8;
