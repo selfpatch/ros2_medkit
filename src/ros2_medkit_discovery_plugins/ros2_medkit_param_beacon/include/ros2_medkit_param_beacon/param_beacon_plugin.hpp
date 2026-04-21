@@ -35,10 +35,10 @@
 #include "ros2_medkit_beacon_common/beacon_hint_store.hpp"
 #include "ros2_medkit_beacon_common/beacon_types.hpp"
 #include "ros2_medkit_beacon_common/beacon_validator.hpp"
+#include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_param_beacon/parameter_client_interface.hpp"
 
 class ParameterBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin,

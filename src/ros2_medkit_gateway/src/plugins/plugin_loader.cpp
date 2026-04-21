@@ -14,13 +14,13 @@
 
 #include "ros2_medkit_gateway/plugins/plugin_loader.hpp"
 
+#include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/providers/fault_provider.hpp"
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/providers/operation_provider.hpp"
-#include "ros2_medkit_gateway/providers/script_provider.hpp"
-#include "ros2_medkit_gateway/providers/update_provider.hpp"
+#include "ros2_medkit_gateway/scripts/script_provider.hpp"
+#include "ros2_medkit_gateway/updates/update_provider.hpp"
 
 #include <dlfcn.h>
 #include <rclcpp/rclcpp.hpp>

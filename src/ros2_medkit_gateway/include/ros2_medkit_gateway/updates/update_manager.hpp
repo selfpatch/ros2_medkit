@@ -25,7 +25,7 @@
 #include <nlohmann/json.hpp>
 #include <tl/expected.hpp>
 
-#include "ros2_medkit_gateway/providers/update_provider.hpp"
+#include "ros2_medkit_gateway/updates/update_provider.hpp"
 
 namespace ros2_medkit_gateway {
 

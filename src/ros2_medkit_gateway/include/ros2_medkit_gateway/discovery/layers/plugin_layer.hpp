@@ -15,7 +15,7 @@
 #pragma once
 
 #include "ros2_medkit_gateway/discovery/discovery_layer.hpp"
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+#include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
 
 #include <nlohmann/json.hpp>
 #include <rclcpp/logging.hpp>

@@ -23,7 +23,7 @@
 
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
-#include "ros2_medkit_gateway/providers/update_provider.hpp"
+#include "ros2_medkit_gateway/updates/update_provider.hpp"
 
 using json = nlohmann::json;
 using namespace ros2_medkit_gateway;

@@ -22,8 +22,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ros2_medkit_gateway/providers/script_provider.hpp"
 #include "ros2_medkit_gateway/script_types.hpp"
+#include "ros2_medkit_gateway/scripts/script_provider.hpp"
 
 namespace ros2_medkit_gateway {
 

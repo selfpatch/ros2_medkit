@@ -14,12 +14,12 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/lock_manager.hpp"
 #include "ros2_medkit_gateway/models/entity_types.hpp"
 #include "ros2_medkit_gateway/plugins/entity_change_scope.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
 #include <functional>
 #include <memory>
