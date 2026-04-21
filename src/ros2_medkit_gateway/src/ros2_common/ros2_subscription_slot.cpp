@@ -25,7 +25,11 @@ namespace ros2_medkit_gateway::ros2_common {
 
 Ros2SubscriptionSlot::Ros2SubscriptionSlot(Ros2SubscriptionExecutor & exec, std::string topic, std::string type_name,
                                            rclcpp::SubscriptionBase::SharedPtr sub)
-  : exec_{exec}, topic_{std::move(topic)}, type_name_{std::move(type_name)}, sub_{std::move(sub)} {
+  : shutdown_flag_{exec.shutdown_flag_ptr()}
+  , exec_{&exec}
+  , topic_{std::move(topic)}
+  , type_name_{std::move(type_name)}
+  , sub_{std::move(sub)} {
 }
 
 Ros2SubscriptionSlot::~Ros2SubscriptionSlot() {
@@ -33,20 +37,25 @@ Ros2SubscriptionSlot::~Ros2SubscriptionSlot() {
     return;
   }
 
-  if (exec_.is_shutting_down()) {
-    // Fast path: executor teardown will call rcl_node_fini on the subscription
-    // node which cleans up the rcl handle atomically. Releasing the
-    // SharedPtr on the current thread is safe in this window.
+  // Read the shutdown flag through our shared_ptr copy, not through exec_.
+  // The executor may have been destroyed ahead of this slot (tests and
+  // process teardown both exercise that ordering); the shared flag stays
+  // readable because slot and executor co-own it.
+  if (shutdown_flag_ && shutdown_flag_->load(std::memory_order_acquire)) {
+    // Fast path: executor teardown (if still ongoing) will call rcl_node_fini
+    // on the subscription node which cleans up the rcl handle atomically;
+    // if the executor is already gone, the node died with it. Releasing the
+    // SharedPtr on the current thread is safe in both sub-cases.
     sub_.reset();
     return;
   }
 
   // Normal path: post destroy to the worker so we do not race with
   // concurrent rcl mutations. Bounded deadline to avoid hanging teardown.
-  auto result = exec_.run_sync<void>(std::function<void()>([this] {
-                                       sub_.reset();
-                                     }),
-                                     kDestroyDeadline);
+  auto result = exec_->run_sync<void>(std::function<void()>([this] {
+                                        sub_.reset();
+                                      }),
+                                      kDestroyDeadline);
   if (!result) {
     RCLCPP_ERROR(rclcpp::get_logger("ros2_subscription_slot"),
                  "Failed to destroy subscription for topic '%s' via worker (%s). "

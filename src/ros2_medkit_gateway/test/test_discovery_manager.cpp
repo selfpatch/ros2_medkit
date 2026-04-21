@@ -58,13 +58,17 @@ class DiscoveryManagerTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    discovery_manager_.reset();
-    topic_provider_.reset();
-    sub_exec_.reset();
+    // Cancel + join the main executor BEFORE dropping sub_exec / provider so
+    // ~Ros2SubscriptionExecutor does not race the spin thread on the
+    // subscription node's rcl internals (TSan flags rcutils_array_list_fini
+    // concurrently read from both threads otherwise).
     executor_->cancel();
     if (spin_thread_.joinable()) {
       spin_thread_.join();
     }
+    discovery_manager_.reset();
+    topic_provider_.reset();
+    sub_exec_.reset();
     executor_.reset();
     node_.reset();
   }

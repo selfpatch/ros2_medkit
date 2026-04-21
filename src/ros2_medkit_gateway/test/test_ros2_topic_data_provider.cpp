@@ -57,12 +57,15 @@ class Ros2TopicDataProviderTest : public ::testing::Test {
     provider_ = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_);
   }
   void TearDown() override {
-    provider_.reset();
-    sub_exec_.reset();
+    // Cancel the main executor and join the spin thread first so
+    // ~Ros2SubscriptionExecutor does not race the spin thread on the
+    // subscription node's rcl internals.
     executor_->cancel();
     if (spin_thread_.joinable()) {
       spin_thread_.join();
     }
+    provider_.reset();
+    sub_exec_.reset();
     executor_.reset();
     node_.reset();
   }

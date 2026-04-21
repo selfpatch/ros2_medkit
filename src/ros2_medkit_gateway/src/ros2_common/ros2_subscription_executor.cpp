@@ -68,7 +68,7 @@ Ros2SubscriptionExecutor::Ros2SubscriptionExecutor(const std::shared_ptr<rclcpp:
 
 Ros2SubscriptionExecutor::~Ros2SubscriptionExecutor() {
   // 1. Signal shutdown. Worker will drain remaining queued tasks then exit.
-  shutdown_requested_.store(true, std::memory_order_release);
+  shutdown_flag_->store(true, std::memory_order_release);
   queue_cv_.notify_all();
 
   // 2. Join worker - this waits for the drain to complete.
@@ -99,7 +99,7 @@ Ros2SubscriptionExecutor::~Ros2SubscriptionExecutor() {
 bool Ros2SubscriptionExecutor::post(std::function<void()> task) {
   {
     std::lock_guard<std::mutex> lk(queue_mtx_);
-    if (shutdown_requested_.load(std::memory_order_acquire)) {
+    if (shutdown_flag_->load(std::memory_order_acquire)) {
       return false;
     }
     if (queue_.size() >= cfg_.max_queue_depth) {
@@ -174,7 +174,7 @@ void Ros2SubscriptionExecutor::worker_loop() {
     {
       std::unique_lock<std::mutex> lk(queue_mtx_);
       queue_cv_.wait(lk, [this] {
-        return !queue_.empty() || shutdown_requested_.load();
+        return !queue_.empty() || shutdown_flag_->load();
       });
       if (queue_.empty()) {
         // Shutdown requested and nothing to drain.
