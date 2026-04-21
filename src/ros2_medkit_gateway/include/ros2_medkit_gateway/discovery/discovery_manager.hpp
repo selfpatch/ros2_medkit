@@ -37,7 +37,7 @@
 namespace ros2_medkit_gateway {
 
 // Forward declarations
-class NativeTopicSampler;
+class TopicDataProvider;
 class TypeIntrospection;
 class IntrospectionProvider;
 
@@ -294,9 +294,9 @@ class DiscoveryManager {
 
   /**
    * @brief Set the topic sampler for component-topic mapping
-   * @param sampler Pointer to NativeTopicSampler (must outlive DiscoveryManager)
+   * @param provider Pointer to TopicDataProvider (must outlive DiscoveryManager)
    */
-  void set_topic_sampler(NativeTopicSampler * sampler);
+  void set_topic_data_provider(TopicDataProvider * provider);
 
   /**
    * @brief Set the type introspection for operation schema enrichment

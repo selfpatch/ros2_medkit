@@ -17,12 +17,17 @@
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
+#include <thread>
 
+#include "ros2_medkit_serialization/json_serializer.hpp"
+
+#include "ros2_medkit_gateway/data/ros2_topic_data_provider.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
-#include "ros2_medkit_gateway/native_topic_sampler.hpp"
+#include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
 
 using ros2_medkit_gateway::DiscoveryManager;
-using ros2_medkit_gateway::NativeTopicSampler;
+using ros2_medkit_gateway::Ros2TopicDataProvider;
+using ros2_medkit_gateway::ros2_common::Ros2SubscriptionExecutor;
 
 // =============================================================================
 // DiscoveryManager tests
@@ -40,19 +45,36 @@ class DiscoveryManagerTest : public ::testing::Test {
 
   void SetUp() override {
     node_ = std::make_shared<rclcpp::Node>("test_discovery_node");
-    topic_sampler_ = std::make_shared<NativeTopicSampler>(node_.get());
+    executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
+    executor_->add_node(node_);
+    spin_thread_ = std::thread([this] {
+      executor_->spin();
+    });
+    sub_exec_ = std::make_shared<Ros2SubscriptionExecutor>(node_, *executor_);
+    serializer_ = std::make_shared<ros2_medkit_serialization::JsonSerializer>();
+    topic_provider_ = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_);
     discovery_manager_ = std::make_unique<DiscoveryManager>(node_.get());
-    discovery_manager_->set_topic_sampler(topic_sampler_.get());
+    discovery_manager_->set_topic_data_provider(topic_provider_.get());
   }
 
   void TearDown() override {
     discovery_manager_.reset();
-    topic_sampler_.reset();
+    topic_provider_.reset();
+    sub_exec_.reset();
+    executor_->cancel();
+    if (spin_thread_.joinable()) {
+      spin_thread_.join();
+    }
+    executor_.reset();
     node_.reset();
   }
 
   std::shared_ptr<rclcpp::Node> node_;
-  std::shared_ptr<NativeTopicSampler> topic_sampler_;
+  std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
+  std::thread spin_thread_;
+  std::shared_ptr<Ros2SubscriptionExecutor> sub_exec_;
+  std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
+  std::unique_ptr<Ros2TopicDataProvider> topic_provider_;
   std::unique_ptr<DiscoveryManager> discovery_manager_;
 };
 

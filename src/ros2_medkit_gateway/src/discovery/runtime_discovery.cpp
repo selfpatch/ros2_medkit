@@ -400,8 +400,8 @@ std::optional<ActionInfo> RuntimeDiscoveryStrategy::find_action(const std::strin
   return std::nullopt;
 }
 
-void RuntimeDiscoveryStrategy::set_topic_sampler(NativeTopicSampler * sampler) {
-  topic_sampler_ = sampler;
+void RuntimeDiscoveryStrategy::set_topic_data_provider(TopicDataProvider * provider) {
+  topic_sampler_ = provider;
 }
 
 void RuntimeDiscoveryStrategy::set_type_introspection(TypeIntrospection * introspection) {

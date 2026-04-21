@@ -361,8 +361,8 @@ std::optional<ActionInfo> DiscoveryManager::find_action(const std::string & comp
   return runtime_strategy_->find_action(component_ns, operation_name);
 }
 
-void DiscoveryManager::set_topic_sampler(NativeTopicSampler * sampler) {
-  runtime_strategy_->set_topic_sampler(sampler);
+void DiscoveryManager::set_topic_data_provider(TopicDataProvider * provider) {
+  runtime_strategy_->set_topic_data_provider(provider);
 }
 
 void DiscoveryManager::set_type_introspection(TypeIntrospection * introspection) {

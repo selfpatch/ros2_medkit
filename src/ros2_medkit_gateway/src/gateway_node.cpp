@@ -1343,7 +1343,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   });
 
   // Connect topic sampler to discovery manager for component-topic mapping
-  discovery_mgr_->set_topic_sampler(data_access_mgr_->get_native_sampler());
+  discovery_mgr_->set_topic_data_provider(data_access_mgr_->get_topic_data_provider());
 
   // Connect type introspection for operation schema enrichment
   discovery_mgr_->set_type_introspection(data_access_mgr_->get_type_introspection());
@@ -1451,6 +1451,9 @@ void GatewayNode::set_topic_data_provider(std::shared_ptr<TopicDataProvider> pro
   topic_data_provider_ = std::move(provider);
   if (data_access_mgr_) {
     data_access_mgr_->set_topic_data_provider(topic_data_provider_.get());
+  }
+  if (discovery_mgr_) {
+    discovery_mgr_->set_topic_data_provider(topic_data_provider_.get());
   }
   RCLCPP_INFO(get_logger(), "TopicDataProvider attached (race-free subscription pool active)");
 }
@@ -1862,8 +1865,12 @@ void GatewayNode::refresh_cache() {
 
     // Update topic type cache (avoids expensive ROS graph queries on /data requests)
     if (data_access_mgr_) {
-      auto native_sampler = data_access_mgr_->get_native_sampler();
-      auto all_topics = native_sampler->discover_all_topics();
+      std::vector<TopicInfo> all_topics;
+      if (auto * provider = data_access_mgr_->get_topic_data_provider()) {
+        all_topics = provider->discover_all();
+      } else if (auto * native_sampler = data_access_mgr_->get_native_sampler()) {
+        all_topics = native_sampler->discover_all_topics();
+      }
       std::unordered_map<std::string, std::string> topic_types;
       topic_types.reserve(all_topics.size());
       for (const auto & topic : all_topics) {

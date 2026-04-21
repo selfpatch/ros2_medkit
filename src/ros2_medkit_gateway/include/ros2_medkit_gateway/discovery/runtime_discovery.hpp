@@ -14,13 +14,13 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
 #include "ros2_medkit_gateway/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/discovery/models/common.hpp"
 #include "ros2_medkit_gateway/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/discovery/models/function.hpp"
-#include "ros2_medkit_gateway/native_topic_sampler.hpp"
 #include "ros2_medkit_gateway/type_introspection.hpp"
 
 #include <map>
@@ -138,10 +138,10 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
   std::optional<ActionInfo> find_action(const std::string & component_ns, const std::string & operation_name) const;
 
   /**
-   * @brief Set the topic sampler for component-topic mapping
-   * @param sampler Pointer to NativeTopicSampler (must outlive this strategy)
+   * @brief Set the topic data provider for component-topic mapping
+   * @param provider Pointer to TopicDataProvider (must outlive this strategy)
    */
-  void set_topic_sampler(NativeTopicSampler * sampler);
+  void set_topic_data_provider(TopicDataProvider * provider);
 
   /**
    * @brief Set the type introspection for operation schema enrichment
@@ -175,7 +175,7 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
 
   rclcpp::Node * node_;
   RuntimeConfig config_;
-  NativeTopicSampler * topic_sampler_{nullptr};
+  TopicDataProvider * topic_sampler_{nullptr};
   TypeIntrospection * type_introspection_{nullptr};
 
   // Cached services and actions for lookup
