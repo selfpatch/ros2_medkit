@@ -90,7 +90,7 @@ void TriggerTopicSubscriber::create_subscription_internal(const std::string & to
                                                           const std::string & resource_path,
                                                           const std::unordered_set<std::string> & entity_ids) {
   // Create a GenericSubscription that deserializes and forwards to notifier.
-  // Use SensorDataQoS (best effort) as default - matches NativeTopicSampler pattern.
+  // Use SensorDataQoS (best effort) as a default for sensor-style topics.
   rclcpp::QoS qos = rclcpp::SensorDataQoS();
 
   // Capture topic_name and msg_type by value for the callback.

@@ -14,7 +14,6 @@
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <chrono>
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
@@ -22,9 +21,12 @@
 #include <std_msgs/msg/string.hpp>
 #include <thread>
 
+#include "ros2_medkit_gateway/data/ros2_topic_data_provider.hpp"
 #include "ros2_medkit_gateway/data_access_manager.hpp"
 #include "ros2_medkit_gateway/exceptions.hpp"
+#include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
 #include "ros2_medkit_gateway/type_introspection.hpp"
+#include "ros2_medkit_serialization/json_serializer.hpp"
 
 using namespace ros2_medkit_gateway;
 using namespace std::chrono_literals;
@@ -130,10 +132,8 @@ class DataAccessManagerTest : public ::testing::Test {
   std::unique_ptr<DataAccessManager> data_manager_;
 };
 
-TEST_F(DataAccessManagerTest, get_native_sampler_returns_valid_ptr) {
-  auto sampler = data_manager_->get_native_sampler();
-
-  EXPECT_NE(sampler, nullptr);
+TEST_F(DataAccessManagerTest, topic_data_provider_is_null_until_attached) {
+  EXPECT_EQ(data_manager_->get_topic_data_provider(), nullptr);
 }
 
 TEST_F(DataAccessManagerTest, get_type_introspection_returns_valid_ptr) {
@@ -209,20 +209,25 @@ class DataAccessManagerWithPublisherTest : public ::testing::Test {
     options.parameter_overrides({rclcpp::Parameter("topic_sample_timeout_sec", 1.0)});
     node_ = std::make_shared<rclcpp::Node>("test_data_access_pub_node", options);
 
-    // Create executor for spinning
-    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    // MultiThreaded executor matches the production wiring needed by the
+    // pool-backed TopicDataProvider (executor adds both the gateway node and
+    // the subscription-worker node built inside Ros2SubscriptionExecutor).
+    executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
     executor_->add_node(node_);
 
     data_manager_ = std::make_unique<DataAccessManager>(node_.get());
+
+    sub_exec_ = std::make_shared<ros2_common::Ros2SubscriptionExecutor>(node_, *executor_);
+    serializer_ = std::make_shared<ros2_medkit_serialization::JsonSerializer>();
+    topic_data_provider_ = std::make_shared<Ros2TopicDataProvider>(sub_exec_, serializer_);
+    data_manager_->set_topic_data_provider(topic_data_provider_.get());
 
     // Create a publisher for test topic
     publisher_ = node_->create_publisher<std_msgs::msg::String>("/test_sample_topic", 10);
 
     // Start spinning in background
     spin_thread_ = std::thread([this]() {
-      while (rclcpp::ok() && !stop_spinning_) {
-        executor_->spin_some(10ms);
-      }
+      executor_->spin();
     });
 
     // Give time for discovery
@@ -230,22 +235,26 @@ class DataAccessManagerWithPublisherTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    stop_spinning_ = true;
+    executor_->cancel();
     if (spin_thread_.joinable()) {
       spin_thread_.join();
     }
     publisher_.reset();
+    topic_data_provider_.reset();
+    sub_exec_.reset();
     data_manager_.reset();
     executor_.reset();
     node_.reset();
   }
 
   std::shared_ptr<rclcpp::Node> node_;
-  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
+  std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
   std::unique_ptr<DataAccessManager> data_manager_;
+  std::shared_ptr<ros2_common::Ros2SubscriptionExecutor> sub_exec_;
+  std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
+  std::shared_ptr<Ros2TopicDataProvider> topic_data_provider_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
   std::thread spin_thread_;
-  std::atomic<bool> stop_spinning_{false};
 };
 
 TEST_F(DataAccessManagerWithPublisherTest, sample_topic_with_publisher_returns_metadata) {

@@ -199,20 +199,19 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
       full_topic_path = "/" + topic_name;
     }
 
-    // Get topic data from DataAccessManager. Prefer the pool-backed
-    // TopicDataProvider (issue #375 race fix) when wired up; fall back to
-    // NativeTopicSampler during the transition window.
+    // Sampling goes through the pool-backed TopicDataProvider (issue #375
+    // race fix). The provider is configured in main() before serving traffic.
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
     TopicSampleResult sample;
     const auto timeout_sec = data_access_mgr->get_topic_sample_timeout();
-    if (auto * provider = data_access_mgr->get_topic_data_provider()) {
-      const auto timeout_ms = std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout_sec, 0.0) * 1000.0)};
-      auto r = provider->sample(full_topic_path, timeout_ms);
-      if (r) {
-        sample = *r;
-      }
-    } else if (auto * native_sampler = data_access_mgr->get_native_sampler()) {
-      sample = native_sampler->sample_topic(full_topic_path, timeout_sec);
+    auto * provider = data_access_mgr->get_topic_data_provider();
+    if (!provider) {
+      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Topic sampling is not configured");
+      return;
+    }
+    const auto timeout_ms = std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout_sec, 0.0) * 1000.0)};
+    if (auto r = provider->sample(full_topic_path, timeout_ms)) {
+      sample = *r;
     }
 
     // Build SOVD ReadValue response (id must match what list returns for round-trip)

@@ -83,13 +83,13 @@ class GatewayNode : public rclcpp::Node {
    * Called by main() after the rclcpp::Executor is constructed and the gateway
    * node added to it, so the provider can build its subscription node. Stores
    * the shared_ptr to keep the provider alive for the gateway node's lifetime
-   * and forwards the raw pointer into DataAccessManager (where it is preferred
-   * over NativeTopicSampler in sample paths - issue #375 race fix).
+   * and forwards the raw pointer into DataAccessManager. The pool-backed
+   * provider is the single sampling path (issue #375 race fix).
    */
   void set_topic_data_provider(std::shared_ptr<TopicDataProvider> provider);
 
   /// @return Non-owning pointer to the currently attached TopicDataProvider,
-  ///         or nullptr when running without one (tests in isolation).
+  ///         or nullptr when no provider has been wired up yet.
   TopicDataProvider * get_topic_data_provider() const {
     return topic_data_provider_.get();
   }

@@ -467,6 +467,46 @@ TEST_F(Ros2TopicDataProviderTest, ConcurrentSampleFromMultipleThreadsDoesNotCras
   EXPECT_GE(s.pool_size, 1u);
 }
 
+TEST_F(Ros2TopicDataProviderTest, TimeoutWithoutPublisherDoesNotCrash) {
+  // Repeated short-timeout samples on a non-existent topic must not crash. With
+  // NativeTopicSampler the shared_ptr SampleState bug could let a subscription
+  // callback fire after stack locals were destroyed; the pool-backed path must
+  // likewise survive this pattern.
+  for (int i = 0; i < 20; ++i) {
+    auto r = provider_->sample("/no_such_topic_xyz", 50ms);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(r->has_data);
+  }
+}
+
+TEST_F(Ros2TopicDataProviderTest, RapidTimeoutWithActivePublisher) {
+  // Rapid sample() calls with a very short timeout while a publisher is active
+  // stress the callback-vs-wait race: a message may arrive exactly as wait_for
+  // returns timeout. The pool entry keeps the subscription alive across calls,
+  // so this exercises concurrent buf_mtx / buf_cv rather than subscription
+  // lifetime, but we still require no crashes or hangs.
+  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/rapid_timeout_topic", rclcpp::SensorDataQoS());
+  std::atomic<bool> stop{false};
+  std::thread pub_thread([&stop, &pub] {
+    std_msgs::msg::Int32 msg;
+    int counter = 0;
+    while (!stop.load(std::memory_order_acquire)) {
+      msg.data = counter++;
+      pub->publish(msg);
+      std::this_thread::sleep_for(5ms);
+    }
+  });
+
+  for (int i = 0; i < 30; ++i) {
+    auto r = provider_->sample("/rapid_timeout_topic", 20ms);
+    ASSERT_TRUE(r.has_value());
+    // has_data is timing-dependent; we only require the call to return.
+  }
+
+  stop.store(true, std::memory_order_release);
+  pub_thread.join();
+}
+
 TEST_F(Ros2TopicDataProviderTest, InterfacePolymorphismWorks) {
   TopicDataProvider & iface = *provider_;
   auto r = iface.sample("/via_interface", 100ms);

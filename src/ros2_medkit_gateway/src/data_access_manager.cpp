@@ -33,7 +33,6 @@ DataAccessManager::DataAccessManager(rclcpp::Node * node)
         std::make_unique<TypeIntrospection>(ament_index_cpp::get_package_share_directory("ros2_medkit_gateway") + "/scr"
                                                                                                                   "ipt"
                                                                                                                   "s"))
-  , native_sampler_(std::make_unique<NativeTopicSampler>(node))
   , max_parallel_samples_(static_cast<int>(node->declare_parameter<int64_t>("max_parallel_topic_samples", 10)))
   , topic_sample_timeout_sec_(node->declare_parameter<double>("topic_sample_timeout_sec", 1.0)) {
   // Validate max_parallel_samples_ against allowed range [1, 50]
@@ -180,24 +179,19 @@ json DataAccessManager::get_topic_sample_native(const std::string & topic_name, 
   RCLCPP_DEBUG(node_->get_logger(), "get_topic_sample_native: topic='%s', timeout=%.2f", topic_name.c_str(),
                timeout_sec);
 
-  // Prefer the pool-backed TopicDataProvider when wired up (issue #375 race fix);
-  // fall back to NativeTopicSampler during the transition window before the
-  // provider has been injected (e.g. unit tests that exercise DataAccessManager
-  // in isolation).
-  const auto timeout_ms = std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout_sec, 0.0) * 1000.0)};
-
-  TopicSampleResult sample;
-  if (topic_data_provider_) {
-    auto r = topic_data_provider_->sample(topic_name, timeout_ms);
-    if (!r) {
-      RCLCPP_WARN(node_->get_logger(), "TopicDataProvider::sample('%s') failed: %s [%d]", topic_name.c_str(),
-                  r.error().message.c_str(), r.error().http_status);
-      throw TopicNotAvailableException(topic_name);
-    }
-    sample = *r;
-  } else {
-    sample = native_sampler_->sample_topic(topic_name, timeout_sec);
+  if (!topic_data_provider_) {
+    RCLCPP_ERROR(node_->get_logger(), "TopicDataProvider not configured - sampling '%s' is unavailable",
+                 topic_name.c_str());
+    throw TopicNotAvailableException(topic_name);
   }
+  const auto timeout_ms = std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout_sec, 0.0) * 1000.0)};
+  auto r = topic_data_provider_->sample(topic_name, timeout_ms);
+  if (!r) {
+    RCLCPP_WARN(node_->get_logger(), "TopicDataProvider::sample('%s') failed: %s [%d]", topic_name.c_str(),
+                r.error().message.c_str(), r.error().http_status);
+    throw TopicNotAvailableException(topic_name);
+  }
+  TopicSampleResult sample = *r;
 
   RCLCPP_DEBUG(node_->get_logger(), "get_topic_sample_native: sample returned, has_data=%d, type='%s'", sample.has_data,
                sample.message_type.c_str());

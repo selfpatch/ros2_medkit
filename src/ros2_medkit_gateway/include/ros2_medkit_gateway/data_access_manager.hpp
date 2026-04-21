@@ -23,7 +23,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "ros2_medkit_gateway/native_topic_sampler.hpp"
+#include "ros2_medkit_gateway/data/data_types.hpp"
 #include "ros2_medkit_gateway/type_introspection.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 
@@ -71,25 +71,9 @@ class DataAccessManager {
   }
 
   /**
-   * @brief Get the native topic sampler instance
-   *
-   * Used by DiscoveryManager to build component-topic mappings.
-   * Remains live during the provider transition; sampling is routed through
-   * the TopicDataProvider when it has been set (see set_topic_data_provider).
-   */
-  NativeTopicSampler * get_native_sampler() const {
-    return native_sampler_.get();
-  }
-
-  /**
    * @brief Attach a TopicDataProvider for sampling.
    *
-   * When set, sampling calls (get_topic_sample_native, get_topic_sample_with_fallback)
-   * are routed through the provider's pool-based path and no longer hit
-   * NativeTopicSampler::sample_topic. Discovery / graph query paths are
-   * unchanged - they still use NativeTopicSampler because those APIs are
-   * thread-safe graph queries unrelated to the rcl subscription race.
-   *
+   * The provider owns the pool-backed subscription path (issue #375 race fix).
    * Non-owning pointer; caller retains ownership. Safe to call once at wiring
    * time; no concurrent access to the setter.
    */
@@ -147,7 +131,6 @@ class DataAccessManager {
   mutable std::shared_mutex publishers_mutex_;
 
   std::unique_ptr<TypeIntrospection> type_introspection_;
-  std::unique_ptr<NativeTopicSampler> native_sampler_;
   TopicDataProvider * topic_data_provider_{nullptr};  ///< Non-owning; set at wiring time.
   int max_parallel_samples_;
   double topic_sample_timeout_sec_;

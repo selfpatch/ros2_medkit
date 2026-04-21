@@ -39,11 +39,24 @@ package "ros2_medkit_gateway" {
         - find_component_topics_native(): vector<string>
     }
 
-    class NativeTopicSampler {
-        + discover_all_topics(): vector<TopicInfo>
-        + discover_topics(): vector<TopicInfo>
-        + sample_topic(): TopicSampleResult
-        + sample_topics_parallel(): vector<TopicSampleResult>
+    interface TopicDataProvider <<interface>> {
+        + sample(): expected<TopicSampleResult, ErrorInfo>
+        + sample_parallel(): expected<vector<TopicSampleResult>, ErrorInfo>
+        + discover_all(): vector<TopicInfo>
+        + has_publishers(): bool
+    }
+
+    class Ros2TopicDataProvider {
+        + sample(): expected<TopicSampleResult, ErrorInfo>
+        + sample_parallel(): expected<vector<TopicSampleResult>, ErrorInfo>
+        + discover_all(): vector<TopicInfo>
+        + x_medkit_stats(): json
+    }
+
+    class Ros2SubscriptionExecutor {
+        + run_sync(): expected<R, string>
+        + post(): bool
+        + on_graph_change(): void
     }
 
     class JsonSerializer {
@@ -123,10 +136,12 @@ RESTServer --> DataAccessManager : uses
 
 ' DataAccessManager owns utility classes (native implementation)
 DataAccessManager *--> JsonSerializer : owns (serialization)
-DataAccessManager *--> NativeTopicSampler : owns
+DataAccessManager ..> TopicDataProvider : uses (non-owning)
 
-' NativeTopicSampler uses Node interface
-NativeTopicSampler --> "rclcpp::Node" : uses
+' Ros2TopicDataProvider is the default implementation of TopicDataProvider
+Ros2TopicDataProvider ..|> TopicDataProvider
+Ros2TopicDataProvider *--> Ros2SubscriptionExecutor : uses
+Ros2SubscriptionExecutor --> "rclcpp::Node" : uses (subscription node)
 
 ' Entity Cache aggregates entities
 EntityCache o-right-> Area : contains many
