@@ -478,19 +478,12 @@ Main Components
    - Returns topic data as JSON with metadata (topic name, timestamp, type info)
    - Parallel topic sampling with configurable concurrency limit (``max_parallel_topic_samples``, default: 10)
 
-7. **TopicDataProvider** / **Ros2TopicDataProvider** - Transport-neutral SOVD data interface
-   and its pool-backed ROS 2 default implementation
-   - ``TopicDataProvider`` is a pure C++ interface consumed by HTTP handlers and managers
-     (no rclcpp headers required on the consumer side)
-   - ``Ros2TopicDataProvider`` keeps one shared subscription per topic and serves many
-     sample calls from the cached latest message, avoiding the rcl hash-map race that
-     short-lived per-sample subscriptions used to trigger
-   - All subscription / callback-group creation and destruction runs on
-     ``Ros2SubscriptionExecutor``'s single worker thread
-   - LRU cap, idle safety-net sweep, graph-change eviction, cold-wait cap for
-     cpp-httplib liveness, and publisher-matching QoS (reliable / transient_local)
-   - Exposes pool + executor stats on ``GET /health`` (``x-medkit-*``) and a
-     drill-in snapshot on ``GET /health/subscription-pool``
+7. **TopicDataProvider** / **Ros2TopicDataProvider** - Transport-neutral SOVD data interface and its pool-backed ROS 2 default implementation
+   - ``TopicDataProvider`` is a pure C++ interface consumed by HTTP handlers and managers, with no rclcpp headers required on the consumer side
+   - ``Ros2TopicDataProvider`` keeps one shared subscription per topic and serves many sample calls from the cached latest message, avoiding the rcl hash-map race that short-lived per-sample subscriptions used to trigger
+   - All subscription / callback-group creation and destruction runs on ``Ros2SubscriptionExecutor``'s single worker thread
+   - LRU cap, idle safety-net sweep, graph-change eviction, cold-wait cap for cpp-httplib liveness, and publisher-matching QoS (reliable / transient_local)
+   - Exposes pool + executor stats on ``GET /health`` (``x-medkit-*``) and a drill-in snapshot on ``GET /health/subscription-pool``
    - See :doc:`ros2_subscription_architecture` for the full design
 
 8. **JsonSerializer** (ros2_medkit_serialization) - Converts between JSON and ROS 2 messages

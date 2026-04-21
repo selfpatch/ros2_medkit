@@ -45,11 +45,23 @@ int main(int argc, char ** argv) {
 
   executor.spin();
 
-  // Teardown order: drop the provider first (clears pool entries via the
-  // executor), then reset sub_exec (joins worker, removes subscription node),
-  // then rclcpp::shutdown.
+  // Teardown order matters: main-scope variables destruct in reverse
+  // declaration order (executor first, then node), so by the time ~GatewayNode
+  // ran during stack unwind, the main executor was already gone. Rolling
+  // rclcpp validates that service clients / subscriptions touch a node
+  // associated with a live executor and aborts otherwise (exit code -6 in
+  // integration tests). Explicitly tear things down while the executor is
+  // still alive:
+  //   1. drop the provider (clears pool entries via the subscription worker)
+  //   2. reset sub_exec (joins worker, removes subscription_node from executor)
+  //   3. remove the gateway node from the executor and drop our ref so
+  //      ~GatewayNode runs with the executor still alive - its managers
+  //      (OperationManager, ConfigurationManager, ...) use service clients
+  //      that need the association during their own shutdown() methods.
   data_provider.reset();
   sub_exec.reset();
+  executor.remove_node(node);
+  node.reset();
 
   rclcpp::shutdown();
   return 0;
