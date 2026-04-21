@@ -72,6 +72,9 @@ jobs:
             --ctest-args -L linter -E clang_tidy \
             --event-handlers console_direct+
 
+      - name: No naked rclcpp subscription APIs (issue #375 regression gate)
+        run: ./scripts/check_no_naked_subscriptions.sh
+
       - name: Show results
         if: always()
         run: colcon test-result --verbose
