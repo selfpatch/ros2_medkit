@@ -88,6 +88,12 @@ class GatewayNode : public rclcpp::Node {
    */
   void set_topic_data_provider(std::shared_ptr<TopicDataProvider> provider);
 
+  /// @return Non-owning pointer to the currently attached TopicDataProvider,
+  ///         or nullptr when running without one (tests in isolation).
+  TopicDataProvider * get_topic_data_provider() const {
+    return topic_data_provider_.get();
+  }
+
   /**
    * @brief Get the OperationManager instance
    * @return Raw pointer to OperationManager (valid for lifetime of GatewayNode)

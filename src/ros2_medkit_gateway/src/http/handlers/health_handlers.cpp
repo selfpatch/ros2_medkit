@@ -18,6 +18,7 @@
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/auth/auth_models.hpp"
+#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_enums.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -64,6 +65,19 @@ void HealthHandlers::handle_health(const httplib::Request & req, httplib::Respon
       }
 
       response["discovery"] = std::move(discovery_info);
+    }
+
+    // Surface subscription-executor and data-provider stats via x-medkit-*
+    // vendor extensions. Atomic reads only; safe to serve from /health even
+    // under load. External monitors (k8s liveness, systemd watchdog, Docker
+    // HEALTHCHECK) can trigger on `x-medkit-subscription-executor.degraded`.
+    if (ctx_.node()) {
+      if (auto * tdp = ctx_.node()->get_topic_data_provider()) {
+        auto x = tdp->x_medkit_stats();
+        for (auto it = x.begin(); it != x.end(); ++it) {
+          response[it.key()] = it.value();
+        }
+      }
     }
 
     // Add peer status when aggregation is active

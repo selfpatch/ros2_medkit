@@ -117,6 +117,7 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
   // ---- Observability ----
 
   [[nodiscard]] PoolStats stats() const;
+  [[nodiscard]] nlohmann::json x_medkit_stats() const override;
 
   /// Identify whether a topic is a ROS 2 system/infrastructure topic (filter target).
   [[nodiscard]] static bool is_system_topic(const std::string & topic_name);
