@@ -63,13 +63,19 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
  public:
   struct Config {
     std::size_t max_pool_size;
-    std::chrono::minutes idle_safety_net;
+    std::chrono::milliseconds idle_safety_net;
+    std::chrono::milliseconds idle_sweep_tick;
     std::size_t metadata_cache_cap;
     std::size_t cold_wait_cap;
 
     // Explicit ctor: GCC nested-default-member-init limitation (same as
     // Ros2SubscriptionExecutor::Config).
-    Config() : max_pool_size{256}, idle_safety_net{15}, metadata_cache_cap{512}, cold_wait_cap{4} {
+    Config()
+      : max_pool_size{256}
+      , idle_safety_net{std::chrono::minutes{15}}
+      , idle_sweep_tick{std::chrono::minutes{1}}
+      , metadata_cache_cap{512}
+      , cold_wait_cap{4} {
     }
   };
 
@@ -120,6 +126,15 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
   [[nodiscard]] PoolStats stats() const;
   [[nodiscard]] nlohmann::json x_medkit_stats() const override;
 
+  /**
+   * @brief Walk the pool and evict entries idle longer than cfg.idle_safety_net.
+   *
+   * Normally driven by an internal wall timer on the subscription node. Exposed
+   * publicly so tests can trigger a deterministic sweep without relying on
+   * timer cadence.
+   */
+  void sweep_idle_entries();
+
   /// Identify whether a topic is a ROS 2 system/infrastructure topic (filter target).
   [[nodiscard]] static bool is_system_topic(const std::string & topic_name);
 
@@ -154,6 +169,7 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
   std::unordered_map<std::string, std::list<std::string>::iterator> lru_pos_;
 
   std::size_t graph_listener_token_{ros2_common::Ros2SubscriptionExecutor::kMaxGraphListeners};
+  rclcpp::TimerBase::SharedPtr idle_sweep_timer_;
 
   std::atomic<std::size_t> pool_hits_{0};
   std::atomic<std::size_t> pool_misses_{0};
