@@ -16,6 +16,7 @@
 
 #include <algorithm>
 
+#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/exceptions.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
@@ -198,10 +199,21 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
       full_topic_path = "/" + topic_name;
     }
 
-    // Get topic data from DataAccessManager
+    // Get topic data from DataAccessManager. Prefer the pool-backed
+    // TopicDataProvider (issue #375 race fix) when wired up; fall back to
+    // NativeTopicSampler during the transition window.
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
-    auto native_sampler = data_access_mgr->get_native_sampler();
-    auto sample = native_sampler->sample_topic(full_topic_path, data_access_mgr->get_topic_sample_timeout());
+    TopicSampleResult sample;
+    const auto timeout_sec = data_access_mgr->get_topic_sample_timeout();
+    if (auto * provider = data_access_mgr->get_topic_data_provider()) {
+      const auto timeout_ms = std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout_sec, 0.0) * 1000.0)};
+      auto r = provider->sample(full_topic_path, timeout_ms);
+      if (r) {
+        sample = *r;
+      }
+    } else if (auto * native_sampler = data_access_mgr->get_native_sampler()) {
+      sample = native_sampler->sample_topic(full_topic_path, timeout_sec);
+    }
 
     // Build SOVD ReadValue response (id must match what list returns for round-trip)
     json response;
