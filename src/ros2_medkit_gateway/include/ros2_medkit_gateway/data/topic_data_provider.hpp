@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
 #include <string>
@@ -97,6 +98,19 @@ class TopicDataProvider {
   [[nodiscard]] virtual std::vector<TopicEndpoint> get_topic_publishers(const std::string & topic) = 0;
   [[nodiscard]] virtual std::vector<TopicEndpoint> get_topic_subscribers(const std::string & topic) = 0;
   [[nodiscard]] virtual TopicConnection get_topic_connection(const std::string & topic) = 0;
+
+  // ---- Observability ----
+
+  /**
+   * @brief Serialize implementation-specific stats for /health exposure.
+   *
+   * Default: empty object. Subclasses that carry runtime state (pool, queue,
+   * watchdog) populate this with vendor-extension keys prefixed `x-medkit-*`.
+   * Values must be atomic reads only; /health must not block on this call.
+   */
+  [[nodiscard]] virtual nlohmann::json x_medkit_stats() const {
+    return nlohmann::json::object();
+  }
 };
 
 }  // namespace ros2_medkit_gateway

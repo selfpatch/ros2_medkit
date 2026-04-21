@@ -559,6 +559,42 @@ ComponentTopics Ros2TopicDataProvider::get_topics_for_namespace(const std::strin
 
 // ---- Observability ----------------------------------------------------------
 
+nlohmann::json Ros2TopicDataProvider::x_medkit_stats() const {
+  const auto p = stats();
+  nlohmann::json out;
+  out["x-medkit-data-provider"] = {
+      {"pool_size", p.pool_size},
+      {"pool_cap", p.pool_cap},
+      {"pool_hits", p.pool_hits},
+      {"pool_misses", p.pool_misses},
+      {"metadata_cache_size", p.metadata_cache_size},
+      {"metadata_cache_cap", p.metadata_cache_cap},
+      {"evictions_total", p.evictions_total},
+      {"type_change_events", p.type_change_events},
+      {"graph_events_received", p.graph_events_received},
+      {"concurrent_cold_waits", p.concurrent_cold_waits},
+      {"cold_wait_cap", p.cold_wait_cap},
+  };
+  if (exec_) {
+    const auto e = exec_->stats();
+    out["x-medkit-subscription-executor"] = {
+        {"worker_alive", e.worker_alive},
+        {"degraded", e.degraded},
+        {"queue_depth", e.queue_depth},
+        {"queue_max_depth_observed", e.queue_max_depth_observed},
+        {"queue_dropped", e.queue_dropped},
+        {"tasks_completed", e.tasks_completed},
+        {"tasks_failed", e.tasks_failed},
+        {"last_task_latency_us", e.last_task_latency_us},
+        {"max_task_latency_us", e.max_task_latency_us},
+        {"current_task_age_ms", e.current_task_age_ms},
+        {"watchdog_trips", e.watchdog_trips},
+        {"graph_events_received", e.graph_events_received},
+    };
+  }
+  return out;
+}
+
 Ros2TopicDataProvider::PoolStats Ros2TopicDataProvider::stats() const {
   PoolStats s{};
   {
