@@ -554,7 +554,7 @@ bool NativeTopicSampler::is_system_topic(const std::string & topic_name) {
   return std::find(system_topics.begin(), system_topics.end(), topic_name) != system_topics.end();
 }
 
-NativeTopicSampler::TopicDiscoveryResult NativeTopicSampler::discover_topics_by_namespace() {
+TopicDiscoveryResult NativeTopicSampler::discover_topics_by_namespace() {
   TopicDiscoveryResult result;
 
   // Single graph query - avoids N+1 problem
