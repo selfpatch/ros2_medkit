@@ -135,6 +135,46 @@ TEST_F(Ros2TopicDataProviderTest, SampleWithoutPublishersReturnsMetadataOnly) {
   EXPECT_EQ(r->publisher_count, 0u);
 }
 
+TEST_F(Ros2TopicDataProviderTest, SampleMatchesReliablePublisherQoS) {
+  // Reliable publisher with depth 10 + latched (transient_local). Without
+  // QoS matching, a best-effort subscriber would connect but could miss
+  // the latched message; a TransientLocal publisher specifically relies on
+  // matching subscriber durability for the last-message replay.
+  rclcpp::QoS reliable_latched(10);
+  reliable_latched.reliable();
+  reliable_latched.transient_local();
+  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/reliable_latched_topic", reliable_latched);
+
+  // Pre-publish one message so the latched durability can replay it on
+  // subscriber connection.
+  std_msgs::msg::Int32 msg;
+  msg.data = 123;
+  pub->publish(msg);
+
+  auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (provider_->has_publishers("/reliable_latched_topic")) {
+      break;
+    }
+    std::this_thread::sleep_for(50ms);
+  }
+
+  // First sample creates the subscriber with matching QoS; the latched
+  // message should be delivered to it promptly.
+  auto data_deadline = std::chrono::steady_clock::now() + 3s;
+  bool got = false;
+  while (std::chrono::steady_clock::now() < data_deadline) {
+    auto r = provider_->sample("/reliable_latched_topic", 500ms);
+    ASSERT_TRUE(r.has_value());
+    if (r->has_data) {
+      got = true;
+      break;
+    }
+    std::this_thread::sleep_for(50ms);
+  }
+  EXPECT_TRUE(got);
+}
+
 TEST_F(Ros2TopicDataProviderTest, SampleHitReturnsDataAfterPublish) {
   auto pub = node_->create_publisher<std_msgs::msg::Int32>("/pool_data_topic", rclcpp::SensorDataQoS());
 
