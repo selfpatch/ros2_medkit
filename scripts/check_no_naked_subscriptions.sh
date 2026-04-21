@@ -11,7 +11,7 @@
 #   ros2_medkit_gateway::ros2_common::Ros2SubscriptionExecutor::run_sync
 #
 # Known-legacy call sites that still use naked APIs are listed in
-# ALLOWED_LEGACY_FILES below and are tracked for migration under Phase C
+# ALLOWED_LEGACY_FILES below and are tracked for follow-up migration
 # (operations / faults / data_stream / logs providers). Migrating a file
 # means removing it from ALLOWED_LEGACY_FILES and routing through
 # Ros2SubscriptionSlot instead.
@@ -32,13 +32,11 @@ ALLOWED_DIRS_PATTERN="(${GATEWAY_ROOT}/src/ros2_common/|${GATEWAY_ROOT}/include/
 # Explicit files that still use the naked APIs pending provider migration.
 # Keep this list SHORT and add a TODO in the file referencing the follow-up.
 ALLOWED_LEGACY_FILES=(
-  "${GATEWAY_ROOT}/src/http/handlers/sse_fault_handler.cpp"      # Phase C faults provider
-  "${GATEWAY_ROOT}/src/trigger_fault_subscriber.cpp"             # Phase C faults provider
-  "${GATEWAY_ROOT}/src/trigger_topic_subscriber.cpp"             # Phase C data_stream provider
-  "${GATEWAY_ROOT}/src/operation_manager.cpp"                    # Phase C operations provider
-  "${GATEWAY_ROOT}/src/log_manager.cpp"                          # Phase C logs provider
-  "${GATEWAY_ROOT}/src/native_topic_sampler.cpp"                 # B9 cleanup (removal pending)
-  "${GATEWAY_ROOT}/include/ros2_medkit_gateway/native_topic_sampler.hpp"  # B9 cleanup
+  "${GATEWAY_ROOT}/src/http/handlers/sse_fault_handler.cpp"      # faults provider follow-up
+  "${GATEWAY_ROOT}/src/trigger_fault_subscriber.cpp"             # faults provider follow-up
+  "${GATEWAY_ROOT}/src/trigger_topic_subscriber.cpp"             # data_stream provider follow-up
+  "${GATEWAY_ROOT}/src/operation_manager.cpp"                    # operations provider follow-up
+  "${GATEWAY_ROOT}/src/log_manager.cpp"                          # logs provider follow-up
 )
 
 LEGACY_PATTERN=""
@@ -66,7 +64,7 @@ if [[ -n "${violations}" ]]; then
   echo
   echo "Route these through ros2_medkit_gateway::ros2_common::Ros2SubscriptionSlot"
   echo "so the rcl hash-map race fixed in issue #375 does not come back."
-  echo "See docs/design/ros2_subscription_architecture.rst once Phase D lands."
+  echo "See docs/design/ros2_subscription_architecture.rst for the allowed pattern."
   exit 1
 fi
 

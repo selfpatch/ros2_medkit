@@ -161,11 +161,24 @@ The following diagram shows the relationships between the main components of the
            + delete_execution(): expected<void, Error>
        }
 
-       class NativeTopicSampler {
-           + discover_all_topics(): vector<TopicInfo>
-           + discover_topics(): vector<TopicInfo>
-           + sample_topic(): TopicSampleResult
-           + sample_topics_parallel(): vector<TopicSampleResult>
+       interface TopicDataProvider <<interface>> {
+           + sample(): expected<TopicSampleResult, ErrorInfo>
+           + sample_parallel(): expected<vector<TopicSampleResult>, ErrorInfo>
+           + discover_all(): vector<TopicInfo>
+           + has_publishers(): bool
+       }
+
+       class Ros2TopicDataProvider {
+           + sample(): expected<TopicSampleResult, ErrorInfo>
+           + sample_parallel(): expected<vector<TopicSampleResult>, ErrorInfo>
+           + discover_all(): vector<TopicInfo>
+           + x_medkit_stats(): json
+       }
+
+       class Ros2SubscriptionExecutor {
+           + run_sync(): expected<R, string>
+           + post(): bool
+           + on_graph_change(): void
        }
 
        class JsonSerializer {
@@ -306,10 +319,12 @@ The following diagram shows the relationships between the main components of the
 
    ' DataAccessManager owns utility classes and uses native publishing
    DataAccessManager *--> JsonSerializer : owns (serialization)
-   DataAccessManager *--> NativeTopicSampler : owns
+   DataAccessManager ..> TopicDataProvider : uses (non-owning)
 
-   ' NativeTopicSampler uses Node interface
-   NativeTopicSampler --> "rclcpp::Node" : uses
+   ' Ros2TopicDataProvider is the default implementation of TopicDataProvider
+   Ros2TopicDataProvider ..|> TopicDataProvider
+   Ros2TopicDataProvider *--> Ros2SubscriptionExecutor : uses
+   Ros2SubscriptionExecutor --> "rclcpp::Node" : uses (subscription node)
 
    ' ConfigurationManager uses Node interface for parameter clients
    ConfigurationManager --> "rclcpp::Node" : uses
@@ -456,19 +471,27 @@ Main Components
    - Converts between JSON and ROS 2 parameter types automatically
 
 6. **DataAccessManager** - Reads and writes runtime data from/to ROS 2 topics
-   - Uses native rclcpp APIs for fast topic discovery and sampling
+   - Delegates topic sampling to the attached ``TopicDataProvider`` (pool-backed, race-free)
    - Checks publisher counts before sampling to skip idle topics instantly
    - Returns metadata (type, schema) for topics without publishers
    - Uses native ``rclcpp::GenericPublisher`` for topic publishing with CDR serialization
    - Returns topic data as JSON with metadata (topic name, timestamp, type info)
    - Parallel topic sampling with configurable concurrency limit (``max_parallel_topic_samples``, default: 10)
 
-7. **NativeTopicSampler** - Fast topic sampling using native rclcpp APIs
-   - Discovers topics via ``node->get_topic_names_and_types()``
-   - Uses ``rclcpp::GenericSubscription`` for type-agnostic message sampling
-   - Checks ``count_publishers()`` before sampling to skip idle topics
-   - Returns metadata instantly for topics without publishers (no timeout)
-   - Significantly improves UX when robot has many idle topics
+7. **TopicDataProvider** / **Ros2TopicDataProvider** - Transport-neutral SOVD data interface
+   and its pool-backed ROS 2 default implementation
+   - ``TopicDataProvider`` is a pure C++ interface consumed by HTTP handlers and managers
+     (no rclcpp headers required on the consumer side)
+   - ``Ros2TopicDataProvider`` keeps one shared subscription per topic and serves many
+     sample calls from the cached latest message, avoiding the rcl hash-map race that
+     short-lived per-sample subscriptions used to trigger
+   - All subscription / callback-group creation and destruction runs on
+     ``Ros2SubscriptionExecutor``'s single worker thread
+   - LRU cap, idle safety-net sweep, graph-change eviction, cold-wait cap for
+     cpp-httplib liveness, and publisher-matching QoS (reliable / transient_local)
+   - Exposes pool + executor stats on ``GET /health`` (``x-medkit-*``) and a
+     drill-in snapshot on ``GET /health/subscription-pool``
+   - See :doc:`ros2_subscription_architecture` for the full design
 
 8. **JsonSerializer** (ros2_medkit_serialization) - Converts between JSON and ROS 2 messages
    - Uses ``dynmsg`` library for dynamic type introspection

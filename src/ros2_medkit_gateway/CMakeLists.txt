@@ -94,7 +94,6 @@ add_library(gateway_lib STATIC
   src/gateway_node.cpp
   src/data_access_manager.cpp
   src/type_introspection.cpp
-  src/native_topic_sampler.cpp
   src/operation_manager.cpp
   src/configuration_manager.cpp
   src/fault_manager.cpp
@@ -383,12 +382,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_configuration_manager gateway_lib)
   medkit_set_test_domain(test_configuration_manager)
 
-  # Add NativeTopicSampler tests
   find_package(std_msgs REQUIRED)
-  ament_add_gtest(test_native_topic_sampler test/test_native_topic_sampler.cpp)
-  target_link_libraries(test_native_topic_sampler gateway_lib)
-  medkit_target_dependencies(test_native_topic_sampler std_msgs)
-  medkit_set_test_domain(test_native_topic_sampler)
 
   # Add DiscoveryManager tests
   ament_add_gtest(test_discovery_manager test/test_discovery_manager.cpp)
@@ -759,7 +753,6 @@ if(BUILD_TESTING)
       test_generic_client_compat
       test_operation_manager
       test_configuration_manager
-      test_native_topic_sampler
       test_discovery_manager
       test_runtime_discovery
       test_tls_config

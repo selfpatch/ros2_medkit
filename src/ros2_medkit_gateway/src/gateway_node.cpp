@@ -1082,22 +1082,17 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
         if (!dam) {
           return tl::make_unexpected(std::string("DataAccessManager not available"));
         }
-        // Prefer TopicDataProvider (pool-backed, race-free) when wired up; fall
-        // back to NativeTopicSampler during transition.
+        auto * provider = dam->get_topic_data_provider();
+        if (!provider) {
+          return tl::make_unexpected(std::string("TopicDataProvider not configured"));
+        }
         const auto timeout_ms = std::chrono::milliseconds{
             static_cast<std::int64_t>(std::max(dam->get_topic_sample_timeout(), 0.0) * 1000.0)};
-        TopicSampleResult sample;
-        if (auto * provider = dam->get_topic_data_provider()) {
-          auto r = provider->sample(resource_path, timeout_ms);
-          if (!r) {
-            return tl::make_unexpected(std::string{"Topic sample failed: "} + r.error().message);
-          }
-          sample = *r;
-        } else if (auto * native_sampler = dam->get_native_sampler()) {
-          sample = native_sampler->sample_topic(resource_path, dam->get_topic_sample_timeout());
-        } else {
-          return tl::make_unexpected(std::string("No topic sampler available"));
+        auto r = provider->sample(resource_path, timeout_ms);
+        if (!r) {
+          return tl::make_unexpected(std::string{"Topic sample failed: "} + r.error().message);
         }
+        TopicSampleResult sample = *r;
         if (sample.has_data && sample.data.has_value()) {
           nlohmann::json payload;
           payload["id"] = resource_path;
@@ -1868,8 +1863,6 @@ void GatewayNode::refresh_cache() {
       std::vector<TopicInfo> all_topics;
       if (auto * provider = data_access_mgr_->get_topic_data_provider()) {
         all_topics = provider->discover_all();
-      } else if (auto * native_sampler = data_access_mgr_->get_native_sampler()) {
-        all_topics = native_sampler->discover_all_topics();
       }
       std::unordered_map<std::string, std::string> topic_types;
       topic_types.reserve(all_topics.size());
