@@ -94,6 +94,19 @@ class SSEFaultHandler {
    */
   size_t connected_clients() const;
 
+  /**
+   * @brief Signal shutdown so in-flight chunked-content-provider loops exit.
+   *
+   * Call this BEFORE stopping the HTTP server. The server thread's join
+   * waits for active request lambdas to return; the SSE lambda sleeps on
+   * queue_cv_ until keepalive (30s) so without an early signal the join
+   * can exceed the launch_testing shutdown budget (5s SIGINT + 10s SIGTERM)
+   * and the process ends up SIGKILLed (exit -9). Setting the flag and
+   * notifying wakes the lambda, it returns false, and the http thread exits
+   * promptly. Safe to call more than once.
+   */
+  void request_shutdown();
+
  private:
   /// Callback for fault events from ROS 2 topic
   void on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg);

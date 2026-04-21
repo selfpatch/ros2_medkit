@@ -332,7 +332,7 @@ void RESTServer::setup_routes() {
       .description(
           "Per-topic snapshot of the ROS 2 subscription pool. x-medkit vendor extension; "
           "intended for diagnostics, not for tight polling.")
-      .response(200, "Pool snapshot")
+      .response(200, "Pool snapshot", SB::generic_object_schema())
       .operation_id("getSubscriptionPool");
 
   reg.get("/",
@@ -1401,6 +1401,14 @@ void RESTServer::start() {
 }
 
 void RESTServer::stop() {
+  // Wake any blocked SSE chunked-content-provider loops first. The server
+  // thread's join (in GatewayNode::stop_rest_server) waits for active request
+  // lambdas to return; without this signal the SSE lambda sleeps on its
+  // keepalive CV (30 s) and the join can outlast launch_testing's shutdown
+  // budget, ending up as SIGKILL.
+  if (sse_fault_handler_) {
+    sse_fault_handler_->request_shutdown();
+  }
   if (http_server_) {
     http_server_->stop();
   }
