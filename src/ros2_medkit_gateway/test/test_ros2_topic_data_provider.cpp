@@ -135,24 +135,70 @@ TEST_F(Ros2TopicDataProviderTest, SampleWithoutPublishersReturnsMetadataOnly) {
   EXPECT_EQ(r->publisher_count, 0u);
 }
 
-TEST_F(Ros2TopicDataProviderTest, SampleCurrentlyReturnsMetadataOnlyEvenWithPublisher) {
-  // B2-scope contract: sample() is metadata-only until the pool implementation
-  // lands. When a publisher exists, metadata fields are populated but has_data
-  // remains false. This test will be updated once the pool ships.
-  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/provider_sample_pending_topic", 10);
-  auto deadline = std::chrono::steady_clock::now() + 2s;
-  while (std::chrono::steady_clock::now() < deadline) {
-    auto info = provider_->get_topic_info("/provider_sample_pending_topic");
+TEST_F(Ros2TopicDataProviderTest, SampleHitReturnsDataAfterPublish) {
+  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/pool_data_topic", rclcpp::SensorDataQoS());
+
+  // Wait for discovery, then publish repeatedly to ensure subscription catches.
+  auto discovery_deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < discovery_deadline) {
+    auto info = provider_->get_topic_info("/pool_data_topic");
     if (info.has_value() && info->publisher_count > 0) {
       break;
     }
     std::this_thread::sleep_for(50ms);
   }
-  auto r = provider_->sample("/provider_sample_pending_topic", 100ms);
-  ASSERT_TRUE(r.has_value());
-  EXPECT_EQ(r->topic_name, "/provider_sample_pending_topic");
-  EXPECT_GE(r->publisher_count, 1u);
-  EXPECT_FALSE(r->has_data);  // placeholder behavior
+
+  // Priming call: creates pool entry + slot (miss).
+  (void)provider_->sample("/pool_data_topic", 100ms);
+
+  std_msgs::msg::Int32 msg;
+  msg.data = 42;
+  auto deadline = std::chrono::steady_clock::now() + 3s;
+  bool got_data = false;
+  while (std::chrono::steady_clock::now() < deadline) {
+    pub->publish(msg);
+    auto r = provider_->sample("/pool_data_topic", 200ms);
+    ASSERT_TRUE(r.has_value());
+    if (r->has_data) {
+      got_data = true;
+      EXPECT_EQ(r->topic_name, "/pool_data_topic");
+      EXPECT_GE(r->publisher_count, 1u);
+      break;
+    }
+    std::this_thread::sleep_for(50ms);
+  }
+  EXPECT_TRUE(got_data);
+
+  auto s = provider_->stats();
+  EXPECT_GE(s.pool_size, 1u);
+  EXPECT_GE(s.pool_misses, 1u);
+  EXPECT_GE(s.pool_hits, 1u);
+}
+
+TEST_F(Ros2TopicDataProviderTest, PoolCapRejectsNewEntriesWhenFull) {
+  Ros2TopicDataProvider::Config tight;
+  tight.max_pool_size = 1;
+  auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, tight);
+
+  auto pub1 = node_->create_publisher<std_msgs::msg::Int32>("/cap_topic_1", rclcpp::SensorDataQoS());
+  auto pub2 = node_->create_publisher<std_msgs::msg::Int32>("/cap_topic_2", rclcpp::SensorDataQoS());
+
+  // Wait for graph visibility of both topics.
+  auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (local->has_publishers("/cap_topic_1") && local->has_publishers("/cap_topic_2")) {
+      break;
+    }
+    std::this_thread::sleep_for(50ms);
+  }
+
+  (void)local->sample("/cap_topic_1", 50ms);  // fills the pool
+  auto stats1 = local->stats();
+  EXPECT_EQ(stats1.pool_size, 1u);
+
+  (void)local->sample("/cap_topic_2", 50ms);  // refused: pool at cap
+  auto stats2 = local->stats();
+  EXPECT_EQ(stats2.pool_size, 1u);  // still 1
 }
 
 TEST_F(Ros2TopicDataProviderTest, SampleParallelReturnsOneResultPerTopic) {

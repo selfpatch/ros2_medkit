@@ -17,12 +17,16 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <future>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include <rclcpp/logging.hpp>
+#include <rclcpp/qos.hpp>
 #include <rclcpp/version.h>
+
+#include "ros2_medkit_serialization/serialization_error.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -125,35 +129,234 @@ Ros2TopicDataProvider::Ros2TopicDataProvider(std::shared_ptr<ros2_common::Ros2Su
     throw std::invalid_argument{"Ros2SubscriptionExecutor has no subscription node"};
   }
   // Serializer is optional for discovery-only use; sampling path will check.
+
+  graph_listener_token_ = exec_->on_graph_change([this] {
+    on_graph_change();
+  });
 }
 
 Ros2TopicDataProvider::~Ros2TopicDataProvider() {
   shutdown_.store(true, std::memory_order_release);
+  if (exec_ && graph_listener_token_ < ros2_common::Ros2SubscriptionExecutor::kMaxGraphListeners) {
+    exec_->remove_graph_change(graph_listener_token_);
+  }
+  // Drain pool: wake every waiter, then drop each entry (slot dtor posts or releases).
+  std::unordered_map<std::string, std::shared_ptr<PoolEntry>> taken;
+  {
+    std::lock_guard<std::mutex> lk(pool_mtx_);
+    taken.swap(pool_);
+  }
+  for (auto & [topic, entry] : taken) {
+    (void)topic;
+    entry->shutdown.store(true, std::memory_order_release);
+    {
+      std::lock_guard<std::mutex> bl(entry->buf_mtx);
+      entry->buf_cv.notify_all();
+    }
+    entry->slot.reset();
+  }
 }
 
-// ---- Sampling (metadata-only placeholder) -----------------------------------
+// ---- Sampling ---------------------------------------------------------------
+
+rclcpp::QoS Ros2TopicDataProvider::qos_for(const TopicInfo & /*info*/) const {
+  // Best-effort default that matches typical sensor streams. Reliable publishers
+  // are also compatible via best-effort subscribers.
+  return rclcpp::SensorDataQoS();
+}
 
 tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const std::string & topic,
-                                                                         std::chrono::milliseconds /*timeout*/) {
+                                                                         std::chrono::milliseconds timeout) {
   if (shutdown_.load(std::memory_order_acquire)) {
     return tl::unexpected(ErrorInfo{"ERR_GATEWAY_SHUTDOWN", "gateway shutting down", 503, nlohmann::json::object()});
   }
-  // Pool-based sampling lands in a follow-up commit. For now, return
-  // metadata-only so callers can be wired up without behavioral regression.
-  return build_metadata_only_sample(topic);
+
+  auto info = get_topic_info(topic);
+  TopicSampleResult result;
+  result.topic_name = topic;
+  result.timestamp_ns = now_ns_epoch();
+  if (!info) {
+    result.has_data = false;
+    return result;
+  }
+  result.message_type = info->type;
+  result.publisher_count = info->publisher_count;
+  result.subscriber_count = info->subscriber_count;
+  result.publishers = get_topic_publishers(topic);
+  result.subscribers = get_topic_subscribers(topic);
+
+  if (info->publisher_count == 0) {
+    result.has_data = false;
+    return result;
+  }
+
+  // Phase 1: look up existing pool entry
+  std::shared_ptr<PoolEntry> entry;
+  {
+    std::lock_guard<std::mutex> lk(pool_mtx_);
+    auto it = pool_.find(topic);
+    if (it != pool_.end()) {
+      entry = it->second;
+    }
+  }
+
+  if (entry) {
+    pool_hits_.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    // Phase 2: bounded pool - refuse new entry at cap, degrade to metadata-only.
+    {
+      std::lock_guard<std::mutex> lk(pool_mtx_);
+      if (pool_.size() >= cfg_.max_pool_size) {
+        result.has_data = false;
+        return result;
+      }
+    }
+
+    // Phase 3: build entry + callback, create slot outside pool_mtx_.
+    auto new_entry = std::make_shared<PoolEntry>();
+    new_entry->topic = topic;
+    new_entry->cached_type = info->type;
+    new_entry->last_sample_time = std::chrono::steady_clock::now();
+
+    std::weak_ptr<PoolEntry> entry_weak = new_entry;
+    auto cb = [entry_weak](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+      auto e = entry_weak.lock();
+      if (!e || e->shutdown.load(std::memory_order_acquire)) {
+        return;
+      }
+      std::lock_guard<std::mutex> bl(e->buf_mtx);
+      e->latest = *msg;
+      e->latest_ns = now_ns_epoch();
+      e->buf_cv.notify_all();
+    };
+
+    auto slot_or_err = ros2_common::Ros2SubscriptionSlot::create_generic(*exec_, topic, info->type, qos_for(*info), cb);
+    if (!slot_or_err) {
+      return tl::unexpected(ErrorInfo{"ERR_SUBSCRIBE_FAILED", slot_or_err.error(), 500, nlohmann::json::object()});
+    }
+    new_entry->slot = std::move(*slot_or_err);
+
+    // Phase 4: insert. Drop ours if another thread raced us.
+    {
+      std::lock_guard<std::mutex> lk(pool_mtx_);
+      auto it = pool_.find(topic);
+      if (it != pool_.end()) {
+        entry = it->second;
+      } else {
+        pool_[topic] = new_entry;
+        entry = new_entry;
+      }
+    }
+    pool_misses_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  // Phase 5: wait for latest message on the per-entry CV.
+  std::unique_lock<std::mutex> bl(entry->buf_mtx);
+  entry->last_sample_time = std::chrono::steady_clock::now();
+  if (!entry->latest.has_value()) {
+    entry->buf_cv.wait_for(bl, timeout, [&] {
+      return entry->latest.has_value() || entry->shutdown.load(std::memory_order_acquire);
+    });
+  }
+  if (!entry->latest.has_value() || entry->shutdown.load(std::memory_order_acquire)) {
+    result.has_data = false;
+    return result;
+  }
+
+  rclcpp::SerializedMessage serialized_copy = *entry->latest;
+  const std::int64_t msg_ns = entry->latest_ns;
+  const std::string type_name = entry->cached_type.empty() ? info->type : entry->cached_type;
+  bl.unlock();
+
+  if (!serializer_) {
+    result.has_data = false;
+    return result;
+  }
+  try {
+    result.data = serializer_->deserialize(type_name, serialized_copy);
+    result.has_data = true;
+    if (msg_ns != 0) {
+      result.timestamp_ns = msg_ns;
+    }
+  } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
+    RCLCPP_WARN(exec_->node()->get_logger(), "Unknown type '%s' for topic '%s': %s", type_name.c_str(), topic.c_str(),
+                e.what());
+    result.has_data = false;
+  } catch (const ros2_medkit_serialization::SerializationError & e) {
+    RCLCPP_WARN(exec_->node()->get_logger(), "Deserialize failed on '%s': %s", topic.c_str(), e.what());
+    result.has_data = false;
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(exec_->node()->get_logger(), "Exception processing '%s': %s", topic.c_str(), e.what());
+    result.has_data = false;
+  }
+  return result;
 }
 
 tl::expected<std::vector<TopicSampleResult>, ErrorInfo>
-Ros2TopicDataProvider::sample_parallel(const std::vector<std::string> & topics, std::chrono::milliseconds /*timeout*/) {
+Ros2TopicDataProvider::sample_parallel(const std::vector<std::string> & topics, std::chrono::milliseconds timeout) {
   if (shutdown_.load(std::memory_order_acquire)) {
     return tl::unexpected(ErrorInfo{"ERR_GATEWAY_SHUTDOWN", "gateway shutting down", 503, nlohmann::json::object()});
   }
+
+  std::vector<std::future<TopicSampleResult>> futures;
+  futures.reserve(topics.size());
+  for (const auto & t : topics) {
+    futures.push_back(std::async(std::launch::async, [this, t, timeout] {
+      auto r = sample(t, timeout);
+      if (r) {
+        return *r;
+      }
+      TopicSampleResult fallback;
+      fallback.topic_name = t;
+      fallback.has_data = false;
+      fallback.timestamp_ns = now_ns_epoch();
+      return fallback;
+    }));
+  }
   std::vector<TopicSampleResult> results;
   results.reserve(topics.size());
-  for (const auto & t : topics) {
-    results.push_back(build_metadata_only_sample(t));
+  for (auto & f : futures) {
+    results.push_back(f.get());
   }
   return results;
+}
+
+void Ros2TopicDataProvider::on_graph_change() {
+  graph_events_received_.fetch_add(1, std::memory_order_relaxed);
+  if (shutdown_.load(std::memory_order_acquire)) {
+    return;
+  }
+  // Query current graph once, then evict entries no longer present.
+  auto current = exec_->node()->get_topic_names_and_types();
+
+  std::vector<std::shared_ptr<PoolEntry>> to_drop;
+  {
+    std::lock_guard<std::mutex> lk(pool_mtx_);
+    for (auto it = pool_.begin(); it != pool_.end();) {
+      const auto & topic = it->first;
+      auto graph_it = current.find(topic);
+      const bool gone = (graph_it == current.end());
+      const bool type_changed = (!gone && !graph_it->second.empty() && graph_it->second[0] != it->second->cached_type);
+      if (gone || type_changed) {
+        if (type_changed) {
+          type_change_events_.fetch_add(1, std::memory_order_relaxed);
+        }
+        to_drop.push_back(it->second);
+        it = pool_.erase(it);
+        evictions_total_.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        ++it;
+      }
+    }
+  }
+  // Release slots outside pool_mtx_ so the slot destructor's run_sync does not
+  // deadlock against any sample() thread waiting on pool_mtx_.
+  for (auto & entry : to_drop) {
+    entry->shutdown.store(true, std::memory_order_release);
+    std::lock_guard<std::mutex> bl(entry->buf_mtx);
+    entry->buf_cv.notify_all();
+  }
+  // shared_ptrs go out of scope here, triggering slot destruction.
 }
 
 TopicSampleResult Ros2TopicDataProvider::build_metadata_only_sample(const std::string & topic) {
@@ -358,7 +561,10 @@ ComponentTopics Ros2TopicDataProvider::get_topics_for_namespace(const std::strin
 
 Ros2TopicDataProvider::PoolStats Ros2TopicDataProvider::stats() const {
   PoolStats s{};
-  s.pool_size = 0;  // pool not yet implemented
+  {
+    std::lock_guard<std::mutex> lk(pool_mtx_);
+    s.pool_size = pool_.size();
+  }
   s.pool_cap = cfg_.max_pool_size;
   s.pool_hits = pool_hits_.load();
   s.pool_misses = pool_misses_.load();
