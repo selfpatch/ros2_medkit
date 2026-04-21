@@ -175,7 +175,7 @@ TEST_F(Ros2TopicDataProviderTest, SampleHitReturnsDataAfterPublish) {
   EXPECT_GE(s.pool_hits, 1u);
 }
 
-TEST_F(Ros2TopicDataProviderTest, PoolCapRejectsNewEntriesWhenFull) {
+TEST_F(Ros2TopicDataProviderTest, PoolCapEvictsLruWhenFull) {
   Ros2TopicDataProvider::Config tight;
   tight.max_pool_size = 1;
   auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, tight);
@@ -183,7 +183,6 @@ TEST_F(Ros2TopicDataProviderTest, PoolCapRejectsNewEntriesWhenFull) {
   auto pub1 = node_->create_publisher<std_msgs::msg::Int32>("/cap_topic_1", rclcpp::SensorDataQoS());
   auto pub2 = node_->create_publisher<std_msgs::msg::Int32>("/cap_topic_2", rclcpp::SensorDataQoS());
 
-  // Wait for graph visibility of both topics.
   auto deadline = std::chrono::steady_clock::now() + 2s;
   while (std::chrono::steady_clock::now() < deadline) {
     if (local->has_publishers("/cap_topic_1") && local->has_publishers("/cap_topic_2")) {
@@ -192,13 +191,58 @@ TEST_F(Ros2TopicDataProviderTest, PoolCapRejectsNewEntriesWhenFull) {
     std::this_thread::sleep_for(50ms);
   }
 
-  (void)local->sample("/cap_topic_1", 50ms);  // fills the pool
+  // First miss: pool grows to 1.
+  (void)local->sample("/cap_topic_1", 50ms);
   auto stats1 = local->stats();
   EXPECT_EQ(stats1.pool_size, 1u);
+  EXPECT_EQ(stats1.evictions_total, 0u);
 
-  (void)local->sample("/cap_topic_2", 50ms);  // refused: pool at cap
+  // Second miss on a different topic: LRU eviction replaces topic_1 with topic_2.
+  (void)local->sample("/cap_topic_2", 50ms);
   auto stats2 = local->stats();
-  EXPECT_EQ(stats2.pool_size, 1u);  // still 1
+  EXPECT_EQ(stats2.pool_size, 1u);
+  EXPECT_GE(stats2.evictions_total, 1u);
+}
+
+TEST_F(Ros2TopicDataProviderTest, HitPromotesTopicToMru) {
+  Ros2TopicDataProvider::Config tight;
+  tight.max_pool_size = 2;
+  auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, tight);
+
+  auto pub1 = node_->create_publisher<std_msgs::msg::Int32>("/lru_a", rclcpp::SensorDataQoS());
+  auto pub2 = node_->create_publisher<std_msgs::msg::Int32>("/lru_b", rclcpp::SensorDataQoS());
+  auto pub3 = node_->create_publisher<std_msgs::msg::Int32>("/lru_c", rclcpp::SensorDataQoS());
+
+  auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (local->has_publishers("/lru_a") && local->has_publishers("/lru_b") && local->has_publishers("/lru_c")) {
+      break;
+    }
+    std::this_thread::sleep_for(50ms);
+  }
+
+  (void)local->sample("/lru_a", 50ms);  // pool = [a]          lru = [a]
+  (void)local->sample("/lru_b", 50ms);  // pool = [a, b]       lru = [b, a]
+  (void)local->sample("/lru_a", 50ms);  // hit on a, promote.  lru = [a, b]
+
+  const auto prev_evictions = local->stats().evictions_total;
+  (void)local->sample("/lru_c", 50ms);  // miss, evict LRU=b.  lru = [c, a]
+
+  auto s = local->stats();
+  EXPECT_EQ(s.pool_size, 2u);
+  EXPECT_GE(s.evictions_total, prev_evictions + 1);
+
+  // a was promoted by the hit in step 3, so it survived the eviction and the
+  // next sample on /lru_a is another hit. b was LRU and should now be a miss.
+  const auto prev_hits = s.pool_hits;
+  const auto prev_misses = s.pool_misses;
+  (void)local->sample("/lru_a", 50ms);
+  auto s2 = local->stats();
+  EXPECT_GT(s2.pool_hits, prev_hits);
+
+  (void)local->sample("/lru_b", 50ms);  // b was evicted: this is a miss
+  auto s3 = local->stats();
+  EXPECT_GT(s3.pool_misses, prev_misses);
 }
 
 TEST_F(Ros2TopicDataProviderTest, SampleParallelReturnsOneResultPerTopic) {

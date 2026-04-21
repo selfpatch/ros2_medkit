@@ -145,6 +145,8 @@ Ros2TopicDataProvider::~Ros2TopicDataProvider() {
   {
     std::lock_guard<std::mutex> lk(pool_mtx_);
     taken.swap(pool_);
+    lru_order_.clear();
+    lru_pos_.clear();
   }
   for (auto & [topic, entry] : taken) {
     (void)topic;
@@ -190,29 +192,24 @@ tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const s
     return result;
   }
 
-  // Phase 1: look up existing pool entry
+  // Phase 1: look up existing pool entry; on hit, promote to MRU.
   std::shared_ptr<PoolEntry> entry;
   {
     std::lock_guard<std::mutex> lk(pool_mtx_);
     auto it = pool_.find(topic);
     if (it != pool_.end()) {
       entry = it->second;
+      auto pos_it = lru_pos_.find(topic);
+      if (pos_it != lru_pos_.end()) {
+        lru_order_.splice(lru_order_.begin(), lru_order_, pos_it->second);
+      }
     }
   }
 
   if (entry) {
     pool_hits_.fetch_add(1, std::memory_order_relaxed);
   } else {
-    // Phase 2: bounded pool - refuse new entry at cap, degrade to metadata-only.
-    {
-      std::lock_guard<std::mutex> lk(pool_mtx_);
-      if (pool_.size() >= cfg_.max_pool_size) {
-        result.has_data = false;
-        return result;
-      }
-    }
-
-    // Phase 3: build entry + callback, create slot outside pool_mtx_.
+    // Phase 2: build entry + callback, create slot outside pool_mtx_.
     auto new_entry = std::make_shared<PoolEntry>();
     new_entry->topic = topic;
     new_entry->cached_type = info->type;
@@ -236,18 +233,44 @@ tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const s
     }
     new_entry->slot = std::move(*slot_or_err);
 
-    // Phase 4: insert. Drop ours if another thread raced us.
+    // Phase 3: insert. Drop ours if another thread raced us; otherwise evict
+    // the LRU entry when the pool is already at cap.
+    std::shared_ptr<PoolEntry> evicted;
     {
       std::lock_guard<std::mutex> lk(pool_mtx_);
       auto it = pool_.find(topic);
       if (it != pool_.end()) {
         entry = it->second;
+        auto pos_it = lru_pos_.find(topic);
+        if (pos_it != lru_pos_.end()) {
+          lru_order_.splice(lru_order_.begin(), lru_order_, pos_it->second);
+        }
       } else {
+        if (pool_.size() >= cfg_.max_pool_size && !lru_order_.empty()) {
+          const std::string lru_topic = lru_order_.back();
+          lru_order_.pop_back();
+          auto lru_it = pool_.find(lru_topic);
+          if (lru_it != pool_.end()) {
+            evicted = lru_it->second;
+            pool_.erase(lru_it);
+          }
+          lru_pos_.erase(lru_topic);
+          evictions_total_.fetch_add(1, std::memory_order_relaxed);
+        }
         pool_[topic] = new_entry;
+        lru_order_.push_front(topic);
+        lru_pos_[topic] = lru_order_.begin();
         entry = new_entry;
       }
     }
     pool_misses_.fetch_add(1, std::memory_order_relaxed);
+    if (evicted) {
+      // Drop the evicted entry outside the lock; its slot destructor posts to
+      // the worker (or takes the shutdown fast path).
+      evicted->shutdown.store(true, std::memory_order_release);
+      std::lock_guard<std::mutex> bl(evicted->buf_mtx);
+      evicted->buf_cv.notify_all();
+    }
   }
 
   // Phase 5: wait for latest message on the per-entry CV.
@@ -333,7 +356,7 @@ void Ros2TopicDataProvider::on_graph_change() {
   {
     std::lock_guard<std::mutex> lk(pool_mtx_);
     for (auto it = pool_.begin(); it != pool_.end();) {
-      const auto & topic = it->first;
+      const std::string topic = it->first;
       auto graph_it = current.find(topic);
       const bool gone = (graph_it == current.end());
       const bool type_changed = (!gone && !graph_it->second.empty() && graph_it->second[0] != it->second->cached_type);
@@ -343,6 +366,11 @@ void Ros2TopicDataProvider::on_graph_change() {
         }
         to_drop.push_back(it->second);
         it = pool_.erase(it);
+        auto pos_it = lru_pos_.find(topic);
+        if (pos_it != lru_pos_.end()) {
+          lru_order_.erase(pos_it->second);
+          lru_pos_.erase(pos_it);
+        }
         evictions_total_.fetch_add(1, std::memory_order_relaxed);
       } else {
         ++it;

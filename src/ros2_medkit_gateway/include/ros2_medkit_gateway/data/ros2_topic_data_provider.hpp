@@ -19,6 +19,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -54,8 +55,8 @@ namespace ros2_medkit_gateway {
  * @par Eviction
  * - Graph change: registered callback walks the pool and drops entries whose
  *   topic has disappeared from the graph.
- * - Pool cap: on miss, if pool is at `max_pool_size`, sample() returns
- *   metadata-only (no new slot). LRU eviction is a follow-up.
+ * - Pool cap: on miss, if pool is at `max_pool_size`, evicts the
+ *   least-recently-sampled entry and installs the new one (LRU).
  * - Shutdown: destructor signals every per-entry CV, resets all slots.
  */
 class Ros2TopicDataProvider final : public TopicDataProvider {
@@ -148,6 +149,9 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
 
   mutable std::mutex pool_mtx_;
   std::unordered_map<std::string, std::shared_ptr<PoolEntry>> pool_;
+  /// MRU at front, LRU at back. Only touched under pool_mtx_.
+  std::list<std::string> lru_order_;
+  std::unordered_map<std::string, std::list<std::string>::iterator> lru_pos_;
 
   std::size_t graph_listener_token_{ros2_common::Ros2SubscriptionExecutor::kMaxGraphListeners};
 
