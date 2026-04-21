@@ -14,7 +14,7 @@
 
 #include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
 
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+#include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
 
 #include <algorithm>
 #include <array>

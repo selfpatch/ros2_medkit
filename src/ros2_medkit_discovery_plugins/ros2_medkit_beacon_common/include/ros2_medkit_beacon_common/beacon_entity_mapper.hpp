@@ -22,7 +22,7 @@
 
 #include "ros2_medkit_beacon_common/beacon_hint_store.hpp"
 #include "ros2_medkit_beacon_common/beacon_types.hpp"
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+#include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
 
 namespace ros2_medkit_beacon {
 

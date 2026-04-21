@@ -24,8 +24,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 
 namespace ros2_medkit_gateway {
 

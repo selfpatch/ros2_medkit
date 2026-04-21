@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
 #include "ros2_medkit_linux_introspection/plugin_config.hpp"
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
 #include "ros2_medkit_linux_introspection/procfs_utils.hpp"

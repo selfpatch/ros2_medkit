@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
+#include "ros2_medkit_gateway/logs/log_provider.hpp"
 #include "ros2_medkit_gateway/openapi/route_descriptions.hpp"
 #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/plugins/plugin_context.hpp"
@@ -21,13 +23,11 @@
 #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/providers/fault_provider.hpp"
-#include "ros2_medkit_gateway/providers/introspection_provider.hpp"
-#include "ros2_medkit_gateway/providers/log_provider.hpp"
 #include "ros2_medkit_gateway/providers/operation_provider.hpp"
-#include "ros2_medkit_gateway/providers/script_provider.hpp"
-#include "ros2_medkit_gateway/providers/update_provider.hpp"
 #include "ros2_medkit_gateway/resource_sampler.hpp"
+#include "ros2_medkit_gateway/scripts/script_provider.hpp"
 #include "ros2_medkit_gateway/subscription_transport.hpp"
+#include "ros2_medkit_gateway/updates/update_provider.hpp"
 
 #include <memory>
 #include <nlohmann/json.hpp>

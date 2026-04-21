@@ -28,7 +28,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/log_types.hpp"
-#include "ros2_medkit_gateway/providers/log_provider.hpp"
+#include "ros2_medkit_gateway/logs/log_provider.hpp"
 
 namespace ros2_medkit_gateway {
 

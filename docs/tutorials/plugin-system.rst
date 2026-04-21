@@ -77,7 +77,7 @@ Writing a Plugin
 
    #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
    #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
-   #include "ros2_medkit_gateway/providers/update_provider.hpp"
+   #include "ros2_medkit_gateway/updates/update_provider.hpp"
 
    using namespace ros2_medkit_gateway;
 
@@ -162,7 +162,7 @@ A self-contained plugin implementing UpdateProvider (copy-paste starting point):
    // my_ota_plugin.cpp
    #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
    #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
-   #include "ros2_medkit_gateway/providers/update_provider.hpp"
+   #include "ros2_medkit_gateway/updates/update_provider.hpp"
 
    #include <nlohmann/json.hpp>
 
@@ -478,7 +478,7 @@ subscribes to ``/ros2_medkit/discovery``, stores incoming
 .. code-block:: cpp
 
    #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-   #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+   #include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
 
    using namespace ros2_medkit_gateway;
 
@@ -550,7 +550,7 @@ execute, and control executions:
 .. code-block:: cpp
 
    #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-   #include "ros2_medkit_gateway/providers/script_provider.hpp"
+   #include "ros2_medkit_gateway/scripts/script_provider.hpp"
 
    using namespace ros2_medkit_gateway;
 
@@ -668,7 +668,7 @@ via ``DataProvider``. OperationProvider and FaultProvider follow the same patter
 
    #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
    #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
-   #include "ros2_medkit_gateway/providers/introspection_provider.hpp"
+   #include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
    #include "ros2_medkit_gateway/providers/data_provider.hpp"
 
    using namespace ros2_medkit_gateway;
