@@ -268,6 +268,55 @@ TEST_F(Ros2TopicDataProviderTest, DeletedCopyAndMove) {
   EXPECT_FALSE(std::is_move_constructible_v<Ros2TopicDataProvider>);
 }
 
+TEST_F(Ros2TopicDataProviderTest, IdleSweepEvictsStaleEntries) {
+  Ros2TopicDataProvider::Config cfg;
+  cfg.max_pool_size = 8;
+  cfg.idle_safety_net = 100ms;  // anything older than 100ms is stale
+  cfg.idle_sweep_tick = 10s;    // long - we trigger sweep manually
+  auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, cfg);
+
+  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/idle_topic", rclcpp::SensorDataQoS());
+  auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (local->has_publishers("/idle_topic")) {
+      break;
+    }
+    std::this_thread::sleep_for(20ms);
+  }
+  (void)local->sample("/idle_topic", 50ms);
+  EXPECT_EQ(local->stats().pool_size, 1u);
+
+  // Simulate the entry becoming stale.
+  std::this_thread::sleep_for(150ms);
+  const auto prev_evictions = local->stats().evictions_total;
+
+  local->sweep_idle_entries();
+  auto s = local->stats();
+  EXPECT_EQ(s.pool_size, 0u);
+  EXPECT_GE(s.evictions_total, prev_evictions + 1);
+}
+
+TEST_F(Ros2TopicDataProviderTest, IdleSweepKeepsActiveEntries) {
+  Ros2TopicDataProvider::Config cfg;
+  cfg.max_pool_size = 8;
+  cfg.idle_safety_net = 1s;
+  cfg.idle_sweep_tick = 10s;
+  auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, cfg);
+
+  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/active_topic", rclcpp::SensorDataQoS());
+  auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (local->has_publishers("/active_topic")) {
+      break;
+    }
+    std::this_thread::sleep_for(20ms);
+  }
+
+  (void)local->sample("/active_topic", 50ms);
+  local->sweep_idle_entries();  // entry just sampled, not stale yet
+  EXPECT_EQ(local->stats().pool_size, 1u);
+}
+
 TEST_F(Ros2TopicDataProviderTest, ConcurrentSampleFromMultipleThreadsDoesNotCrash) {
   // Issue #375 race-fix regression test: multiple httplib-like threads hammering
   // sample() on the same topic must not crash or deadlock. With

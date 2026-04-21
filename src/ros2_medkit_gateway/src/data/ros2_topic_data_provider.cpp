@@ -133,10 +133,20 @@ Ros2TopicDataProvider::Ros2TopicDataProvider(std::shared_ptr<ros2_common::Ros2Su
   graph_listener_token_ = exec_->on_graph_change([this] {
     on_graph_change();
   });
+
+  if (cfg_.idle_sweep_tick.count() > 0 && cfg_.idle_safety_net.count() > 0) {
+    idle_sweep_timer_ = exec_->node()->create_wall_timer(cfg_.idle_sweep_tick, [this] {
+      sweep_idle_entries();
+    });
+  }
 }
 
 Ros2TopicDataProvider::~Ros2TopicDataProvider() {
   shutdown_.store(true, std::memory_order_release);
+  if (idle_sweep_timer_) {
+    idle_sweep_timer_->cancel();
+    idle_sweep_timer_.reset();
+  }
   if (exec_ && graph_listener_token_ < ros2_common::Ros2SubscriptionExecutor::kMaxGraphListeners) {
     exec_->remove_graph_change(graph_listener_token_);
   }
@@ -385,6 +395,47 @@ void Ros2TopicDataProvider::on_graph_change() {
     entry->buf_cv.notify_all();
   }
   // shared_ptrs go out of scope here, triggering slot destruction.
+}
+
+void Ros2TopicDataProvider::sweep_idle_entries() {
+  if (shutdown_.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (cfg_.idle_safety_net.count() <= 0) {
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  const auto threshold = cfg_.idle_safety_net;
+
+  std::vector<std::shared_ptr<PoolEntry>> to_drop;
+  {
+    std::lock_guard<std::mutex> lk(pool_mtx_);
+    for (auto it = pool_.begin(); it != pool_.end();) {
+      const std::string topic = it->first;
+      std::chrono::steady_clock::time_point last_sample;
+      {
+        std::lock_guard<std::mutex> bl(it->second->buf_mtx);
+        last_sample = it->second->last_sample_time;
+      }
+      if (now - last_sample >= threshold) {
+        to_drop.push_back(it->second);
+        it = pool_.erase(it);
+        auto pos_it = lru_pos_.find(topic);
+        if (pos_it != lru_pos_.end()) {
+          lru_order_.erase(pos_it->second);
+          lru_pos_.erase(pos_it);
+        }
+        evictions_total_.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (auto & entry : to_drop) {
+    entry->shutdown.store(true, std::memory_order_release);
+    std::lock_guard<std::mutex> bl(entry->buf_mtx);
+    entry->buf_cv.notify_all();
+  }
 }
 
 TopicSampleResult Ros2TopicDataProvider::build_metadata_only_sample(const std::string & topic) {
