@@ -26,37 +26,13 @@
 #include <utility>
 #include <vector>
 
+#include "ros2_medkit_gateway/data/data_types.hpp"
 #include "ros2_medkit_gateway/discovery/models/common.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 
 namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
-
-/**
- * @brief Result of a topic discovery operation
- */
-struct TopicInfo {
-  std::string name;            ///< Full topic path (e.g., "/powertrain/engine/temperature")
-  std::string type;            ///< Message type (e.g., "sensor_msgs/msg/Temperature")
-  size_t publisher_count{0};   ///< Number of publishers on this topic
-  size_t subscriber_count{0};  ///< Number of subscribers on this topic
-};
-
-/**
- * @brief Result of a topic sample operation
- */
-struct TopicSampleResult {
-  std::string topic_name;
-  std::string message_type;
-  std::optional<json> data;  ///< Message data as JSON (nullopt if unavailable)
-  bool has_data{false};      ///< Whether actual data was received
-  size_t publisher_count{0};
-  size_t subscriber_count{0};
-  int64_t timestamp_ns{0};                 ///< Sample timestamp in nanoseconds since epoch
-  std::vector<TopicEndpoint> publishers;   ///< List of publisher endpoints with QoS
-  std::vector<TopicEndpoint> subscribers;  ///< List of subscriber endpoints with QoS
-};
 
 /**
  * @brief Native rclcpp-based topic sampler that avoids CLI overhead
@@ -201,17 +177,6 @@ class NativeTopicSampler {
    * @return ComponentTopics with publishes/subscribes lists
    */
   ComponentTopics get_component_topics(const std::string & component_fqn);
-
-  /**
-   * @brief Result of topic-based discovery containing namespaces and their topics
-   *
-   * This struct aggregates all topic-based discovery results to avoid
-   * multiple ROS 2 graph queries (N+1 query problem).
-   */
-  struct TopicDiscoveryResult {
-    std::set<std::string> namespaces;                     ///< Unique namespace prefixes
-    std::map<std::string, ComponentTopics> topics_by_ns;  ///< Topics grouped by namespace
-  };
 
   /**
    * @brief Discover namespaces and their topics in a single graph query

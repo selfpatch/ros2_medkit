@@ -425,6 +425,10 @@ if(BUILD_TESTING)
   medkit_target_dependencies(test_ros2_subscription_slot rclcpp std_msgs)
   medkit_set_test_domain(test_ros2_subscription_slot)
 
+  # Add TopicDataProvider interface tests (pure C++, no rclcpp init required)
+  ament_add_gtest(test_topic_data_provider_interface test/test_topic_data_provider_interface.cpp)
+  target_link_libraries(test_topic_data_provider_interface gateway_lib)
+
   # Add discovery models tests
   ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
   target_link_libraries(test_discovery_models gateway_lib)
@@ -755,6 +759,7 @@ if(BUILD_TESTING)
       test_error_info
       test_ros2_subscription_executor
       test_ros2_subscription_slot
+      test_topic_data_provider_interface
       test_discovery_models
       test_host_info_provider
       test_discovery_handlers
