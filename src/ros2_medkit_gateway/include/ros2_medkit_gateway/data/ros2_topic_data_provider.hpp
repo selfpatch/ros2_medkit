@@ -153,7 +153,7 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
   };
 
   TopicSampleResult build_metadata_only_sample(const std::string & topic);
-  rclcpp::QoS qos_for(const TopicInfo & info) const;
+  rclcpp::QoS qos_for(const std::string & topic) const;
   void on_graph_change();
 
   Config cfg_;

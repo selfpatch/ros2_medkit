@@ -171,10 +171,39 @@ Ros2TopicDataProvider::~Ros2TopicDataProvider() {
 
 // ---- Sampling ---------------------------------------------------------------
 
-rclcpp::QoS Ros2TopicDataProvider::qos_for(const TopicInfo & /*info*/) const {
-  // Best-effort default that matches typical sensor streams. Reliable publishers
-  // are also compatible via best-effort subscribers.
-  return rclcpp::SensorDataQoS();
+rclcpp::QoS Ros2TopicDataProvider::qos_for(const std::string & topic) const {
+  // Derive a subscriber QoS that is compatible with the topic's publishers.
+  // - If any publisher is Reliable, use Reliable (best-effort would still
+  //   connect but is narrower on delivery semantics).
+  // - If any publisher is TransientLocal, use TransientLocal so we receive
+  //   the latched last-message on subscribe (typical for "status" topics).
+  // - History: always keep_last depth 1. The pool only keeps the newest
+  //   serialized message; a deeper queue would just allocate and discard.
+  //
+  // Graph query is thread-safe (read-only) and runs on the caller thread
+  // rather than the worker since it is purely informational.
+  bool any_reliable = false;
+  bool any_transient_local = false;
+  auto pubs = exec_->node()->get_publishers_info_by_topic(topic);
+  for (const auto & pub : pubs) {
+    const auto & q = pub.qos_profile();
+    if (q.reliability() == rclcpp::ReliabilityPolicy::Reliable) {
+      any_reliable = true;
+    }
+    if (q.durability() == rclcpp::DurabilityPolicy::TransientLocal) {
+      any_transient_local = true;
+    }
+  }
+  rclcpp::QoS qos(1);  // keep_last depth 1 - we only need the newest
+  if (any_reliable) {
+    qos.reliable();
+  } else {
+    qos.best_effort();
+  }
+  if (any_transient_local) {
+    qos.transient_local();
+  }
+  return qos;
 }
 
 tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const std::string & topic,
@@ -237,7 +266,7 @@ tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const s
       e->buf_cv.notify_all();
     };
 
-    auto slot_or_err = ros2_common::Ros2SubscriptionSlot::create_generic(*exec_, topic, info->type, qos_for(*info), cb);
+    auto slot_or_err = ros2_common::Ros2SubscriptionSlot::create_generic(*exec_, topic, info->type, qos_for(topic), cb);
     if (!slot_or_err) {
       return tl::unexpected(ErrorInfo{"ERR_SUBSCRIBE_FAILED", slot_or_err.error(), 500, nlohmann::json::object()});
     }
