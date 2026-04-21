@@ -62,6 +62,16 @@ repos:
         types_or: [c, c++, python, cmake]
         exclude: (/vendored/|/third_party/)
 
+  # ── Issue #375 race regression gate ────────────────────────────────
+  - repo: local
+    hooks:
+      - id: no-naked-ros2-subscriptions
+        name: No naked rclcpp subscription / callback-group creation
+        entry: ./scripts/check_no_naked_subscriptions.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+
   # ── Incremental clang-tidy (pre-push only) ────────────────────────
   # Requires: pre-commit install --hook-type pre-push
   - repo: local
