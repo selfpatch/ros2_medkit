@@ -111,6 +111,18 @@ class TopicDataProvider {
   [[nodiscard]] virtual nlohmann::json x_medkit_stats() const {
     return nlohmann::json::object();
   }
+
+  /**
+   * @brief Per-topic pool detail for a drill-in health endpoint.
+   *
+   * Default: empty array. Subclasses that maintain a per-topic subscription
+   * pool return one JSON object per entry with fields like `topic`,
+   * `message_type`, `last_sample_age_ms`, `has_latest`. Bounded output -
+   * callers of the drill-in endpoint get the full pool snapshot, not a stream.
+   */
+  [[nodiscard]] virtual nlohmann::json x_medkit_pool_snapshot() const {
+    return nlohmann::json::array();
+  }
 };
 
 }  // namespace ros2_medkit_gateway

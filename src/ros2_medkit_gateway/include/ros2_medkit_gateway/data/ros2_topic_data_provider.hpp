@@ -125,6 +125,7 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
 
   [[nodiscard]] PoolStats stats() const;
   [[nodiscard]] nlohmann::json x_medkit_stats() const override;
+  [[nodiscard]] nlohmann::json x_medkit_pool_snapshot() const override;
 
   /**
    * @brief Walk the pool and evict entries idle longer than cfg.idle_safety_net.

@@ -48,6 +48,15 @@ class HealthHandlers {
   /// GET /version-info - Version information
   void handle_version_info(const httplib::Request & req, httplib::Response & res);
 
+  /**
+   * @brief GET /health/subscription-pool - per-topic pool drill-in.
+   *
+   * Returns an array of pool entry snapshots (topic, type, LRU rank,
+   * has_latest, latest_ns, last_sample_age_ms) from the attached
+   * TopicDataProvider. Intended for diagnostics - do not poll in tight loops.
+   */
+  void handle_subscription_pool(const httplib::Request & req, httplib::Response & res);
+
  private:
   HandlerContext & ctx_;
   const openapi::RouteRegistry * route_registry_{nullptr};
