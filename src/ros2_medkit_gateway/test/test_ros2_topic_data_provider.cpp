@@ -224,6 +224,64 @@ TEST_F(Ros2TopicDataProviderTest, DeletedCopyAndMove) {
   EXPECT_FALSE(std::is_move_constructible_v<Ros2TopicDataProvider>);
 }
 
+TEST_F(Ros2TopicDataProviderTest, ConcurrentSampleFromMultipleThreadsDoesNotCrash) {
+  // Issue #375 race-fix regression test: multiple httplib-like threads hammering
+  // sample() on the same topic must not crash or deadlock. With
+  // NativeTopicSampler this would race inside rcl's hash map during
+  // create_generic_subscription / destroy. With Ros2TopicDataProvider the
+  // subscription lifecycle runs on the single worker, and the pool entry is
+  // shared across concurrent samplers.
+  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/concurrent_test_topic", rclcpp::SensorDataQoS());
+
+  // Wait for publisher to appear in graph.
+  auto discovery_deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < discovery_deadline) {
+    if (provider_->has_publishers("/concurrent_test_topic")) {
+      break;
+    }
+    std::this_thread::sleep_for(20ms);
+  }
+
+  // Drive publisher in the background so active samples see data.
+  std::atomic<bool> stop{false};
+  std::thread pub_thread([&stop, &pub] {
+    std_msgs::msg::Int32 msg;
+    int counter = 0;
+    while (!stop.load(std::memory_order_acquire)) {
+      msg.data = counter++;
+      pub->publish(msg);
+      std::this_thread::sleep_for(5ms);
+    }
+  });
+
+  constexpr int kThreads = 4;
+  constexpr int kIterations = 10;
+  std::atomic<int> completions{0};
+  std::vector<std::thread> workers;
+  workers.reserve(kThreads);
+  for (int t = 0; t < kThreads; ++t) {
+    workers.emplace_back([this, &completions] {
+      for (int i = 0; i < kIterations; ++i) {
+        auto r = provider_->sample("/concurrent_test_topic", 200ms);
+        if (r.has_value()) {
+          completions.fetch_add(1);
+        }
+      }
+    });
+  }
+  for (auto & w : workers) {
+    w.join();
+  }
+  stop.store(true, std::memory_order_release);
+  pub_thread.join();
+
+  EXPECT_EQ(completions.load(), kThreads * kIterations);
+
+  // Pool should have exactly one entry for this topic despite concurrent misses.
+  auto s = provider_->stats();
+  EXPECT_GE(s.pool_size, 1u);
+}
+
 TEST_F(Ros2TopicDataProviderTest, InterfacePolymorphismWorks) {
   TopicDataProvider & iface = *provider_;
   auto r = iface.sample("/via_interface", 100ms);
