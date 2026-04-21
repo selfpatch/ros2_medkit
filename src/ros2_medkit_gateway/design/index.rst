@@ -555,3 +555,4 @@ Additional Design Documents
 
    aggregation
    plugin_entity_notifications
+   ros2_subscription_architecture
