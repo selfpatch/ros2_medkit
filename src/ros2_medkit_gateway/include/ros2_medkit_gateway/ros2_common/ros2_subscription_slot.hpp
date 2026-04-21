@@ -85,7 +85,12 @@ class Ros2SubscriptionSlot final {
   Ros2SubscriptionSlot(Ros2SubscriptionExecutor & exec, std::string topic, std::string type_name,
                        rclcpp::SubscriptionBase::SharedPtr sub);
 
-  Ros2SubscriptionExecutor & exec_;
+  // Shared ownership of the shutdown flag keeps it readable even if the
+  // executor has already been destroyed (fast-path scenario in tests and
+  // at process teardown). See Ros2SubscriptionExecutor::shutdown_flag_ptr().
+  std::shared_ptr<std::atomic<bool>> shutdown_flag_;
+  // Non-owning pointer used only when shutdown_flag_ is false (executor alive).
+  Ros2SubscriptionExecutor * exec_;
   std::string topic_;
   std::string type_name_;
   rclcpp::SubscriptionBase::SharedPtr sub_;

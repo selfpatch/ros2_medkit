@@ -57,11 +57,13 @@ class Ros2SubscriptionSlotTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    sub_exec_.reset();
-    executor_->cancel();
+    if (executor_) {
+      executor_->cancel();
+    }
     if (spin_thread_.joinable()) {
       spin_thread_.join();
     }
+    sub_exec_.reset();
     executor_.reset();
     node_.reset();
   }

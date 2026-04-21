@@ -61,13 +61,13 @@ class Ros2SubscriptionExecutorTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    sub_exec_.reset();
     if (executor_) {
       executor_->cancel();
     }
     if (spin_thread_.joinable()) {
       spin_thread_.join();
     }
+    sub_exec_.reset();
     executor_.reset();
     node_.reset();
   }

@@ -177,7 +177,18 @@ class Ros2SubscriptionExecutor final {
 
   /// True after shutdown has started. Monotonic. Use to skip re-posting work on teardown.
   [[nodiscard]] bool is_shutting_down() const noexcept {
-    return shutdown_requested_.load();
+    return shutdown_flag_->load();
+  }
+
+  /**
+   * @brief Shared pointer to the shutdown flag.
+   *
+   * Slots copy this shared_ptr at construction so their destructor can read
+   * the flag even if the executor has already been destroyed (shutdown fast
+   * path). Without shared ownership the slot would dereference freed memory.
+   */
+  [[nodiscard]] std::shared_ptr<std::atomic<bool>> shutdown_flag_ptr() const noexcept {
+    return shutdown_flag_;
   }
 
   [[nodiscard]] Stats stats() const;
@@ -196,7 +207,7 @@ class Ros2SubscriptionExecutor final {
   mutable std::mutex queue_mtx_;
   std::condition_variable queue_cv_;
   std::deque<std::function<void()>> queue_;
-  std::atomic<bool> shutdown_requested_{false};
+  std::shared_ptr<std::atomic<bool>> shutdown_flag_ = std::make_shared<std::atomic<bool>>(false);
   std::thread worker_;
 
   // Stats
@@ -231,7 +242,7 @@ class Ros2SubscriptionExecutor final {
 template <typename R>
 tl::expected<R, std::string> Ros2SubscriptionExecutor::run_sync(std::function<R()> task,
                                                                 std::chrono::milliseconds deadline) {
-  if (shutdown_requested_.load(std::memory_order_acquire)) {
+  if (shutdown_flag_->load(std::memory_order_acquire)) {
     return tl::unexpected(std::string{"executor shutting down"});
   }
   auto promise = std::make_shared<std::promise<tl::expected<R, std::string>>>();
