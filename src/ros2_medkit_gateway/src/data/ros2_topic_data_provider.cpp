@@ -677,6 +677,40 @@ ComponentTopics Ros2TopicDataProvider::get_topics_for_namespace(const std::strin
 
 // ---- Observability ----------------------------------------------------------
 
+nlohmann::json Ros2TopicDataProvider::x_medkit_pool_snapshot() const {
+  auto out = nlohmann::json::array();
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard<std::mutex> lk(pool_mtx_);
+  std::size_t lru_rank = 0;
+  for (const auto & topic : lru_order_) {
+    auto it = pool_.find(topic);
+    if (it == pool_.end()) {
+      continue;
+    }
+    const auto & entry = *it->second;
+    std::chrono::steady_clock::time_point last_sample;
+    bool has_latest = false;
+    std::int64_t latest_ns = 0;
+    {
+      std::lock_guard<std::mutex> bl(entry.buf_mtx);
+      last_sample = entry.last_sample_time;
+      has_latest = entry.latest.has_value();
+      latest_ns = entry.latest_ns;
+    }
+    const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_sample).count();
+    out.push_back({
+        {"topic", topic},
+        {"message_type", entry.cached_type},
+        {"lru_rank", lru_rank},
+        {"has_latest", has_latest},
+        {"latest_ns", latest_ns},
+        {"last_sample_age_ms", age_ms},
+    });
+    ++lru_rank;
+  }
+  return out;
+}
+
 nlohmann::json Ros2TopicDataProvider::x_medkit_stats() const {
   const auto p = stats();
   nlohmann::json out;

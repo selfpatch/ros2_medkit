@@ -126,6 +126,27 @@ void HealthHandlers::handle_health(const httplib::Request & req, httplib::Respon
   }
 }
 
+void HealthHandlers::handle_subscription_pool(const httplib::Request & req, httplib::Response & res) {
+  (void)req;
+  try {
+    json response;
+    if (ctx_.node()) {
+      if (auto * tdp = ctx_.node()->get_topic_data_provider()) {
+        response["x-medkit-subscription-pool"] = tdp->x_medkit_pool_snapshot();
+        response["x-medkit-data-provider"] = tdp->x_medkit_stats().value("x-medkit-data-provider", json::object());
+        response["x-medkit-subscription-executor"] =
+            tdp->x_medkit_stats().value("x-medkit-subscription-executor", json::object());
+      } else {
+        response["x-medkit-subscription-pool"] = json::array();
+      }
+    }
+    HandlerContext::send_json(res, response);
+  } catch (const std::exception & e) {
+    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error");
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_subscription_pool: %s", e.what());
+  }
+}
+
 void HealthHandlers::handle_root(const httplib::Request & req, httplib::Response & res) {
   (void)req;  // Unused parameter
 

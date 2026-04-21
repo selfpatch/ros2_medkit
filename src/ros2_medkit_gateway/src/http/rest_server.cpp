@@ -323,6 +323,18 @@ void RESTServer::setup_routes() {
       .response(200, "Gateway is healthy", SB::ref("HealthStatus"))
       .operation_id("getHealth");
 
+  reg.get("/health/subscription-pool",
+          [this](auto & req, auto & res) {
+            health_handlers_->handle_subscription_pool(req, res);
+          })
+      .tag("Server")
+      .summary("Subscription pool drill-in")
+      .description(
+          "Per-topic snapshot of the ROS 2 subscription pool. x-medkit vendor extension; "
+          "intended for diagnostics, not for tight polling.")
+      .response(200, "Pool snapshot")
+      .operation_id("getSubscriptionPool");
+
   reg.get("/",
           [this](auto & req, auto & res) {
             health_handlers_->handle_root(req, res);
