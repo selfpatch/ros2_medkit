@@ -20,6 +20,7 @@
 #include <rclcpp/generic_publisher.hpp>
 #include <sstream>
 
+#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/exceptions.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"
 
@@ -178,7 +179,26 @@ json DataAccessManager::sample_result_to_json(const TopicSampleResult & sample) 
 json DataAccessManager::get_topic_sample_native(const std::string & topic_name, double timeout_sec) {
   RCLCPP_DEBUG(node_->get_logger(), "get_topic_sample_native: topic='%s', timeout=%.2f", topic_name.c_str(),
                timeout_sec);
-  auto sample = native_sampler_->sample_topic(topic_name, timeout_sec);
+
+  // Prefer the pool-backed TopicDataProvider when wired up (issue #375 race fix);
+  // fall back to NativeTopicSampler during the transition window before the
+  // provider has been injected (e.g. unit tests that exercise DataAccessManager
+  // in isolation).
+  const auto timeout_ms = std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout_sec, 0.0) * 1000.0)};
+
+  TopicSampleResult sample;
+  if (topic_data_provider_) {
+    auto r = topic_data_provider_->sample(topic_name, timeout_ms);
+    if (!r) {
+      RCLCPP_WARN(node_->get_logger(), "TopicDataProvider::sample('%s') failed: %s [%d]", topic_name.c_str(),
+                  r.error().message.c_str(), r.error().http_status);
+      throw TopicNotAvailableException(topic_name);
+    }
+    sample = *r;
+  } else {
+    sample = native_sampler_->sample_topic(topic_name, timeout_sec);
+  }
+
   RCLCPP_DEBUG(node_->get_logger(), "get_topic_sample_native: sample returned, has_data=%d, type='%s'", sample.has_data,
                sample.message_type.c_str());
 

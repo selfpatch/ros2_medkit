@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/network_utils.hpp"
+#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/entity_validation.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
 
@@ -1081,11 +1082,22 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
         if (!dam) {
           return tl::make_unexpected(std::string("DataAccessManager not available"));
         }
-        auto * native_sampler = dam->get_native_sampler();
-        if (!native_sampler) {
-          return tl::make_unexpected(std::string("Native topic sampler unavailable"));
+        // Prefer TopicDataProvider (pool-backed, race-free) when wired up; fall
+        // back to NativeTopicSampler during transition.
+        const auto timeout_ms = std::chrono::milliseconds{
+            static_cast<std::int64_t>(std::max(dam->get_topic_sample_timeout(), 0.0) * 1000.0)};
+        TopicSampleResult sample;
+        if (auto * provider = dam->get_topic_data_provider()) {
+          auto r = provider->sample(resource_path, timeout_ms);
+          if (!r) {
+            return tl::make_unexpected(std::string{"Topic sample failed: "} + r.error().message);
+          }
+          sample = *r;
+        } else if (auto * native_sampler = dam->get_native_sampler()) {
+          sample = native_sampler->sample_topic(resource_path, dam->get_topic_sample_timeout());
+        } else {
+          return tl::make_unexpected(std::string("No topic sampler available"));
         }
-        auto sample = native_sampler->sample_topic(resource_path, dam->get_topic_sample_timeout());
         if (sample.has_data && sample.data.has_value()) {
           nlohmann::json payload;
           payload["id"] = resource_path;
@@ -1433,6 +1445,14 @@ const ThreadSafeEntityCache & GatewayNode::get_thread_safe_cache() const {
 
 DataAccessManager * GatewayNode::get_data_access_manager() const {
   return data_access_mgr_.get();
+}
+
+void GatewayNode::set_topic_data_provider(std::shared_ptr<TopicDataProvider> provider) {
+  topic_data_provider_ = std::move(provider);
+  if (data_access_mgr_) {
+    data_access_mgr_->set_topic_data_provider(topic_data_provider_.get());
+  }
+  RCLCPP_INFO(get_logger(), "TopicDataProvider attached (race-free subscription pool active)");
 }
 
 OperationManager * GatewayNode::get_operation_manager() const {
