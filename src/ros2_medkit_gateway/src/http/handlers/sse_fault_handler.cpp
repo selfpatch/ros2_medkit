@@ -71,9 +71,16 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
 
 SSEFaultHandler::~SSEFaultHandler() {
   // Signal shutdown and wake up any waiting clients
-  shutdown_flag_.store(true);
-  queue_cv_.notify_all();
+  request_shutdown();
   subscription_.reset();
+}
+
+void SSEFaultHandler::request_shutdown() {
+  if (shutdown_flag_.exchange(true)) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+  queue_cv_.notify_all();
 }
 
 void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
