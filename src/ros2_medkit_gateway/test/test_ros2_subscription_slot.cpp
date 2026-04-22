@@ -48,6 +48,10 @@ class Ros2SubscriptionSlotTest : public ::testing::Test {
 
   void SetUp() override {
     node_ = std::make_shared<rclcpp::Node>("slot_test_gateway");
+    // See Ros2TopicDataProviderTest: publishers mutate their owning node's
+    // rcutils_hash_map under the hood, so we keep them on a node that the
+    // main executor never spins to avoid TSan flagging every test.
+    publisher_node_ = std::make_shared<rclcpp::Node>("slot_test_publisher");
     executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
     executor_->add_node(node_);
     spin_thread_ = std::thread([this] {
@@ -65,10 +69,12 @@ class Ros2SubscriptionSlotTest : public ::testing::Test {
     }
     sub_exec_.reset();
     executor_.reset();
+    publisher_node_.reset();
     node_.reset();
   }
 
   std::shared_ptr<rclcpp::Node> node_;
+  std::shared_ptr<rclcpp::Node> publisher_node_;
   std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
   std::thread spin_thread_;
   std::unique_ptr<Ros2SubscriptionExecutor> sub_exec_;
@@ -84,7 +90,7 @@ TEST_F(Ros2SubscriptionSlotTest, CreateTypedSucceedsAndCallbackFires) {
   ASSERT_NE(*slot, nullptr);
   EXPECT_EQ((*slot)->topic(), "/slot_typed");
 
-  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/slot_typed", rclcpp::QoS(10));
+  auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/slot_typed", rclcpp::QoS(10));
   auto deadline = std::chrono::steady_clock::now() + 2s;
   std_msgs::msg::Int32 msg;
   msg.data = 42;
@@ -105,7 +111,7 @@ TEST_F(Ros2SubscriptionSlotTest, CreateGenericSucceedsAndCallbackFires) {
   ASSERT_TRUE(slot.has_value()) << slot.error();
   EXPECT_EQ((*slot)->type_name(), "std_msgs/msg/String");
 
-  auto pub = node_->create_publisher<std_msgs::msg::String>("/slot_generic", rclcpp::QoS(10));
+  auto pub = publisher_node_->create_publisher<std_msgs::msg::String>("/slot_generic", rclcpp::QoS(10));
   auto deadline = std::chrono::steady_clock::now() + 2s;
   std_msgs::msg::String msg;
   msg.data = "hello";
@@ -164,7 +170,7 @@ TEST_F(Ros2SubscriptionSlotTest, MultipleSlotsOnSameTopicBothReceive) {
   ASSERT_TRUE(s1.has_value());
   ASSERT_TRUE(s2.has_value());
 
-  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/slot_shared", rclcpp::QoS(10));
+  auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/slot_shared", rclcpp::QoS(10));
   auto deadline = std::chrono::steady_clock::now() + 2s;
   std_msgs::msg::Int32 msg;
   msg.data = 7;

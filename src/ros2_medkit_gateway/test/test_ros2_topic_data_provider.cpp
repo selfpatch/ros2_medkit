@@ -47,6 +47,14 @@ class Ros2TopicDataProviderTest : public ::testing::Test {
 
   void SetUp() override {
     node_ = std::make_shared<rclcpp::Node>("provider_test_gateway");
+    // Publishers live on a dedicated node that is NOT added to the main
+    // executor. Creating / destroying publishers mutates the owning node's
+    // internal hash map; if that node is concurrently iterated by a
+    // MultiThreadedExecutor spin thread, TSan flags rcutils_hash_map_*
+    // races on every test that exercises a publisher. Keeping the publisher
+    // node off the executor removes the reader side entirely - publishers
+    // do not need spinning.
+    publisher_node_ = std::make_shared<rclcpp::Node>("provider_test_publisher");
     executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
     executor_->add_node(node_);
     spin_thread_ = std::thread([this] {
@@ -67,10 +75,12 @@ class Ros2TopicDataProviderTest : public ::testing::Test {
     provider_.reset();
     sub_exec_.reset();
     executor_.reset();
+    publisher_node_.reset();
     node_.reset();
   }
 
   std::shared_ptr<rclcpp::Node> node_;
+  std::shared_ptr<rclcpp::Node> publisher_node_;
   std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
   std::thread spin_thread_;
   std::shared_ptr<Ros2SubscriptionExecutor> sub_exec_;
@@ -91,7 +101,7 @@ TEST_F(Ros2TopicDataProviderTest, ConstructedProviderHasEmptyStats) {
 }
 
 TEST_F(Ros2TopicDataProviderTest, DiscoverFindsPublisher) {
-  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/provider_test_topic", 10);
+  auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/provider_test_topic", 10);
 
   auto deadline = std::chrono::steady_clock::now() + 2s;
   bool found = false;
@@ -111,8 +121,8 @@ TEST_F(Ros2TopicDataProviderTest, DiscoverFindsPublisher) {
 }
 
 TEST_F(Ros2TopicDataProviderTest, DiscoverByNamespaceGroupsTopics) {
-  auto pub_a = node_->create_publisher<std_msgs::msg::Int32>("/ns_test/topic_a", 10);
-  auto pub_b = node_->create_publisher<std_msgs::msg::Int32>("/ns_test/topic_b", 10);
+  auto pub_a = publisher_node_->create_publisher<std_msgs::msg::Int32>("/ns_test/topic_a", 10);
+  auto pub_b = publisher_node_->create_publisher<std_msgs::msg::Int32>("/ns_test/topic_b", 10);
 
   auto deadline = std::chrono::steady_clock::now() + 2s;
   bool found_both = false;
@@ -146,7 +156,7 @@ TEST_F(Ros2TopicDataProviderTest, SampleMatchesReliablePublisherQoS) {
   rclcpp::QoS reliable_latched(10);
   reliable_latched.reliable();
   reliable_latched.transient_local();
-  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/reliable_latched_topic", reliable_latched);
+  auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/reliable_latched_topic", reliable_latched);
 
   // Pre-publish one message so the latched durability can replay it on
   // subscriber connection.
@@ -179,7 +189,7 @@ TEST_F(Ros2TopicDataProviderTest, SampleMatchesReliablePublisherQoS) {
 }
 
 TEST_F(Ros2TopicDataProviderTest, SampleHitReturnsDataAfterPublish) {
-  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/pool_data_topic", rclcpp::SensorDataQoS());
+  auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/pool_data_topic", rclcpp::SensorDataQoS());
 
   // Wait for discovery, then publish repeatedly to ensure subscription catches.
   auto discovery_deadline = std::chrono::steady_clock::now() + 2s;
@@ -223,8 +233,8 @@ TEST_F(Ros2TopicDataProviderTest, PoolCapEvictsLruWhenFull) {
   tight.max_pool_size = 1;
   auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, tight);
 
-  auto pub1 = node_->create_publisher<std_msgs::msg::Int32>("/cap_topic_1", rclcpp::SensorDataQoS());
-  auto pub2 = node_->create_publisher<std_msgs::msg::Int32>("/cap_topic_2", rclcpp::SensorDataQoS());
+  auto pub1 = publisher_node_->create_publisher<std_msgs::msg::Int32>("/cap_topic_1", rclcpp::SensorDataQoS());
+  auto pub2 = publisher_node_->create_publisher<std_msgs::msg::Int32>("/cap_topic_2", rclcpp::SensorDataQoS());
 
   auto deadline = std::chrono::steady_clock::now() + 2s;
   while (std::chrono::steady_clock::now() < deadline) {
@@ -252,9 +262,9 @@ TEST_F(Ros2TopicDataProviderTest, HitPromotesTopicToMru) {
   tight.max_pool_size = 2;
   auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, tight);
 
-  auto pub1 = node_->create_publisher<std_msgs::msg::Int32>("/lru_a", rclcpp::SensorDataQoS());
-  auto pub2 = node_->create_publisher<std_msgs::msg::Int32>("/lru_b", rclcpp::SensorDataQoS());
-  auto pub3 = node_->create_publisher<std_msgs::msg::Int32>("/lru_c", rclcpp::SensorDataQoS());
+  auto pub1 = publisher_node_->create_publisher<std_msgs::msg::Int32>("/lru_a", rclcpp::SensorDataQoS());
+  auto pub2 = publisher_node_->create_publisher<std_msgs::msg::Int32>("/lru_b", rclcpp::SensorDataQoS());
+  auto pub3 = publisher_node_->create_publisher<std_msgs::msg::Int32>("/lru_c", rclcpp::SensorDataQoS());
 
   auto deadline = std::chrono::steady_clock::now() + 2s;
   while (std::chrono::steady_clock::now() < deadline) {
@@ -320,7 +330,7 @@ TEST_F(Ros2TopicDataProviderTest, ColdWaitCapShedsLoad) {
   auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, cfg);
 
   // Publisher with no actual data published -> cold topic.
-  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/cold_topic", rclcpp::SensorDataQoS());
+  auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/cold_topic", rclcpp::SensorDataQoS());
   auto deadline = std::chrono::steady_clock::now() + 2s;
   while (std::chrono::steady_clock::now() < deadline) {
     if (local->has_publishers("/cold_topic")) {
@@ -370,7 +380,7 @@ TEST_F(Ros2TopicDataProviderTest, IdleSweepEvictsStaleEntries) {
   cfg.idle_sweep_tick = 10s;    // long - we trigger sweep manually
   auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, cfg);
 
-  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/idle_topic", rclcpp::SensorDataQoS());
+  auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/idle_topic", rclcpp::SensorDataQoS());
   auto deadline = std::chrono::steady_clock::now() + 2s;
   while (std::chrono::steady_clock::now() < deadline) {
     if (local->has_publishers("/idle_topic")) {
@@ -398,7 +408,7 @@ TEST_F(Ros2TopicDataProviderTest, IdleSweepKeepsActiveEntries) {
   cfg.idle_sweep_tick = 10s;
   auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, cfg);
 
-  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/active_topic", rclcpp::SensorDataQoS());
+  auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/active_topic", rclcpp::SensorDataQoS());
   auto deadline = std::chrono::steady_clock::now() + 2s;
   while (std::chrono::steady_clock::now() < deadline) {
     if (local->has_publishers("/active_topic")) {
@@ -419,7 +429,7 @@ TEST_F(Ros2TopicDataProviderTest, ConcurrentSampleFromMultipleThreadsDoesNotCras
   // create_generic_subscription / destroy. With Ros2TopicDataProvider the
   // subscription lifecycle runs on the single worker, and the pool entry is
   // shared across concurrent samplers.
-  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/concurrent_test_topic", rclcpp::SensorDataQoS());
+  auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/concurrent_test_topic", rclcpp::SensorDataQoS());
 
   // Wait for publisher to appear in graph.
   auto discovery_deadline = std::chrono::steady_clock::now() + 2s;
@@ -488,7 +498,7 @@ TEST_F(Ros2TopicDataProviderTest, RapidTimeoutWithActivePublisher) {
   // returns timeout. The pool entry keeps the subscription alive across calls,
   // so this exercises concurrent buf_mtx / buf_cv rather than subscription
   // lifetime, but we still require no crashes or hangs.
-  auto pub = node_->create_publisher<std_msgs::msg::Int32>("/rapid_timeout_topic", rclcpp::SensorDataQoS());
+  auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/rapid_timeout_topic", rclcpp::SensorDataQoS());
   std::atomic<bool> stop{false};
   std::thread pub_thread([&stop, &pub] {
     std_msgs::msg::Int32 msg;

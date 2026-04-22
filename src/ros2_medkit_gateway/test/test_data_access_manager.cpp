@@ -208,6 +208,10 @@ class DataAccessManagerWithPublisherTest : public ::testing::Test {
     rclcpp::NodeOptions options;
     options.parameter_overrides({rclcpp::Parameter("topic_sample_timeout_sec", 1.0)});
     node_ = std::make_shared<rclcpp::Node>("test_data_access_pub_node", options);
+    // Publisher lives on a node that the main executor does not spin so
+    // its create / destroy does not race rcutils_hash_map_* iterations
+    // from the spin thread (TSan).
+    publisher_node_ = std::make_shared<rclcpp::Node>("test_data_access_publisher_node");
 
     // MultiThreaded executor matches the production wiring needed by the
     // pool-backed TopicDataProvider (executor adds both the gateway node and
@@ -223,7 +227,7 @@ class DataAccessManagerWithPublisherTest : public ::testing::Test {
     data_manager_->set_topic_data_provider(topic_data_provider_.get());
 
     // Create a publisher for test topic
-    publisher_ = node_->create_publisher<std_msgs::msg::String>("/test_sample_topic", 10);
+    publisher_ = publisher_node_->create_publisher<std_msgs::msg::String>("/test_sample_topic", 10);
 
     // Start spinning in background
     spin_thread_ = std::thread([this]() {
@@ -244,10 +248,12 @@ class DataAccessManagerWithPublisherTest : public ::testing::Test {
     sub_exec_.reset();
     data_manager_.reset();
     executor_.reset();
+    publisher_node_.reset();
     node_.reset();
   }
 
   std::shared_ptr<rclcpp::Node> node_;
+  std::shared_ptr<rclcpp::Node> publisher_node_;
   std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
   std::unique_ptr<DataAccessManager> data_manager_;
   std::shared_ptr<ros2_common::Ros2SubscriptionExecutor> sub_exec_;
