@@ -24,37 +24,52 @@ find_package(diagnostic_msgs REQUIRED)
 
 # === Demo node executables ===
 
+# Shared include directory for the demo_node_main.hpp helper. Keeps the
+# graceful-shutdown boilerplate out of every demo binary.
+set(_demo_include_dir ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 add_executable(demo_engine_temp_sensor demo_nodes/engine_temp_sensor.cpp)
+target_include_directories(demo_engine_temp_sensor PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_engine_temp_sensor rclcpp rcl_interfaces sensor_msgs)
 
 add_executable(demo_rpm_sensor demo_nodes/rpm_sensor.cpp)
+target_include_directories(demo_rpm_sensor PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_rpm_sensor rclcpp std_msgs)
 
 add_executable(demo_brake_pressure_sensor demo_nodes/brake_pressure_sensor.cpp)
+target_include_directories(demo_brake_pressure_sensor PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_brake_pressure_sensor rclcpp std_msgs)
 
 add_executable(demo_door_status_sensor demo_nodes/door_status_sensor.cpp)
+target_include_directories(demo_door_status_sensor PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_door_status_sensor rclcpp std_msgs)
 
 add_executable(demo_brake_actuator demo_nodes/brake_actuator.cpp)
+target_include_directories(demo_brake_actuator PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_brake_actuator rclcpp std_msgs)
 
 add_executable(demo_light_controller demo_nodes/light_controller.cpp)
+target_include_directories(demo_light_controller PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_light_controller rclcpp std_msgs)
 
 add_executable(demo_calibration_service demo_nodes/calibration_service.cpp)
+target_include_directories(demo_calibration_service PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_calibration_service rclcpp std_srvs)
 
 add_executable(demo_long_calibration_action demo_nodes/long_calibration_action.cpp)
+target_include_directories(demo_long_calibration_action PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_long_calibration_action rclcpp rclcpp_action example_interfaces)
 
 add_executable(demo_lidar_sensor demo_nodes/lidar_sensor.cpp)
+target_include_directories(demo_lidar_sensor PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_lidar_sensor rclcpp rcl_interfaces sensor_msgs std_srvs ros2_medkit_msgs)
 
 add_executable(demo_beacon_publisher demo_nodes/beacon_publisher.cpp)
+target_include_directories(demo_beacon_publisher PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_beacon_publisher rclcpp ros2_medkit_msgs diagnostic_msgs)
 
 add_executable(demo_param_beacon_node demo_nodes/param_beacon_node.cpp)
+target_include_directories(demo_param_beacon_node PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_param_beacon_node rclcpp)
 
 install(TARGETS
