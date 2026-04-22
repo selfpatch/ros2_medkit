@@ -201,7 +201,12 @@ class Ros2SubscriptionExecutor final {
 
   Config cfg_;
   std::shared_ptr<rclcpp::Node> subscription_node_;
-  rclcpp::Executor * main_executor_{nullptr};
+  // Dedicated executor owned by this Ros2SubscriptionExecutor. The subscription
+  // node lives here, NOT on the gateway's main executor, so that callbacks and
+  // subscription create/destroy all run on the same worker thread. Sharing the
+  // node with the main MultiThreadedExecutor would race on the node's internal
+  // hash map (rcutils_hash_map_set/get) under TSan.
+  std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> sub_executor_;
 
   // Task queue
   mutable std::mutex queue_mtx_;
@@ -231,9 +236,14 @@ class Ros2SubscriptionExecutor final {
   // Public rclcpp graph API - stable across Humble / Jazzy / Rolling
   rclcpp::Event::SharedPtr graph_event_;
 
-  // Timers run on subscription_node_ (spun by main executor). No dedicated threads.
-  rclcpp::TimerBase::SharedPtr watchdog_timer_;
-  rclcpp::TimerBase::SharedPtr graph_poll_timer_;
+  // Dedicated auxiliary thread driving the watchdog and graph-event polling.
+  // These cannot ride the worker thread because the worker may be blocked
+  // inside a long-running run_sync task; nor can they ride sub_executor_
+  // because spin_some only runs when the worker is idle. They do not touch
+  // subscription_node_ internals so running on a separate thread is safe.
+  std::thread aux_thread_;
+
+  void aux_loop();
 };
 
 // ---------------------------------------------------------------------------

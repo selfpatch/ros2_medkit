@@ -36,8 +36,8 @@ std::uint64_t steady_now_ns() noexcept {
 }  // namespace
 
 Ros2SubscriptionExecutor::Ros2SubscriptionExecutor(const std::shared_ptr<rclcpp::Node> & gateway_node,
-                                                   rclcpp::Executor & main_executor, Config cfg)
-  : cfg_(std::move(cfg)), main_executor_(&main_executor) {
+                                                   rclcpp::Executor & /*main_executor*/, Config cfg)
+  : cfg_(std::move(cfg)) {
   if (!gateway_node) {
     throw std::invalid_argument{"Ros2SubscriptionExecutor: gateway_node is null"};
   }
@@ -47,22 +47,24 @@ Ros2SubscriptionExecutor::Ros2SubscriptionExecutor(const std::shared_ptr<rclcpp:
   opts.start_parameter_services(false);
   opts.start_parameter_event_publisher(false);
   subscription_node_ = std::make_shared<rclcpp::Node>(suffixed_name, gateway_node->get_namespace(), opts);
-  main_executor_->add_node(subscription_node_);
+
+  // Own executor owns the subscription node so subscription create/destroy
+  // and callback dispatch all run on the same worker thread (this executor is
+  // spun via spin_some() from worker_loop). Sharing the node with the gateway's
+  // main MultiThreadedExecutor raced on the node's internal rcutils_hash_map
+  // under TSan.
+  sub_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+  sub_executor_->add_node(subscription_node_);
 
   // Graph event - public rclcpp API, stable across distros.
   graph_event_ = subscription_node_->get_graph_event();
 
-  // Watchdog and graph-poll timers run on the subscription node via the main executor.
-  watchdog_timer_ = subscription_node_->create_wall_timer(cfg_.watchdog_tick, [this] {
-    watchdog_tick();
-  });
-  graph_poll_timer_ = subscription_node_->create_wall_timer(cfg_.graph_poll_tick, [this] {
-    graph_poll_tick();
-  });
-
   worker_alive_.store(true);
   worker_ = std::thread([this] {
     worker_loop();
+  });
+  aux_thread_ = std::thread([this] {
+    aux_loop();
   });
 }
 
@@ -71,27 +73,20 @@ Ros2SubscriptionExecutor::~Ros2SubscriptionExecutor() {
   shutdown_flag_->store(true, std::memory_order_release);
   queue_cv_.notify_all();
 
-  // 2. Join worker - this waits for the drain to complete.
+  // 2. Join worker and aux - both loops check shutdown_flag_ and exit.
   if (worker_.joinable()) {
     worker_.join();
   }
+  if (aux_thread_.joinable()) {
+    aux_thread_.join();
+  }
   worker_alive_.store(false);
 
-  // 3. Cancel timers before releasing the node. Timer callbacks capture `this`;
-  //    after timer cancel + node removal from executor, no more callbacks fire.
-  if (watchdog_timer_) {
-    watchdog_timer_->cancel();
-    watchdog_timer_.reset();
+  // 3. Detach subscription node from our own executor and destroy both.
+  if (sub_executor_ && subscription_node_) {
+    sub_executor_->remove_node(subscription_node_);
   }
-  if (graph_poll_timer_) {
-    graph_poll_timer_->cancel();
-    graph_poll_timer_.reset();
-  }
-
-  // 4. Detach subscription node from main executor.
-  if (main_executor_ && subscription_node_) {
-    main_executor_->remove_node(subscription_node_);
-  }
+  sub_executor_.reset();
   subscription_node_.reset();
   graph_event_.reset();
 }
@@ -169,16 +164,32 @@ Ros2SubscriptionExecutor::Stats Ros2SubscriptionExecutor::stats() const {
 }
 
 void Ros2SubscriptionExecutor::worker_loop() {
+  constexpr std::chrono::milliseconds kSpinSlice{10};
   while (true) {
     std::function<void()> task;
     {
       std::unique_lock<std::mutex> lk(queue_mtx_);
-      queue_cv_.wait(lk, [this] {
+      // Short wait so we can interleave subscription-node callback dispatch.
+      // Without spin_some() here, callbacks on the subscription node (real
+      // topic data plus watchdog / graph-poll timers) would never fire.
+      queue_cv_.wait_for(lk, kSpinSlice, [this] {
         return !queue_.empty() || shutdown_flag_->load();
       });
       if (queue_.empty()) {
-        // Shutdown requested and nothing to drain.
-        break;
+        if (shutdown_flag_->load()) {
+          break;
+        }
+        // No queued work and not shutting down: drive subscription callbacks.
+        lk.unlock();
+        if (sub_executor_) {
+          try {
+            sub_executor_->spin_some(kSpinSlice);
+          } catch (const std::exception & ex) {
+            RCLCPP_DEBUG(rclcpp::get_logger("ros2_subscription_executor"), "sub_executor.spin_some threw: %s",
+                         ex.what());
+          }
+        }
+        continue;
       }
       task = std::move(queue_.front());
       queue_.pop_front();
@@ -204,6 +215,29 @@ void Ros2SubscriptionExecutor::worker_loop() {
     std::uint64_t prev_max = max_task_latency_us_.load(std::memory_order_relaxed);
     while (latency_us > prev_max &&
            !max_task_latency_us_.compare_exchange_weak(prev_max, latency_us, std::memory_order_relaxed)) {
+    }
+  }
+}
+
+void Ros2SubscriptionExecutor::aux_loop() {
+  // Independent thread driving watchdog + graph-event polling so they keep
+  // running even when the worker thread is blocked inside a long-running
+  // run_sync task. Both tick functions only touch this object's atomics and
+  // the shared graph_event_; neither creates, destroys, or dispatches
+  // callbacks on subscription_node_, so concurrency with the worker is safe.
+  const auto tick = std::min(cfg_.watchdog_tick, cfg_.graph_poll_tick);
+  auto next_watchdog = std::chrono::steady_clock::now() + cfg_.watchdog_tick;
+  auto next_graph = std::chrono::steady_clock::now() + cfg_.graph_poll_tick;
+  while (!shutdown_flag_->load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(tick);
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_watchdog) {
+      watchdog_tick();
+      next_watchdog = now + cfg_.watchdog_tick;
+    }
+    if (now >= next_graph) {
+      graph_poll_tick();
+      next_graph = now + cfg_.graph_poll_tick;
     }
   }
 }
