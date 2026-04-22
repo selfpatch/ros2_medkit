@@ -161,7 +161,19 @@ TEST_F(Ros2SubscriptionExecutorTest, StatsTrackCompletedTasks) {
     });
     ASSERT_TRUE(r.has_value());
   }
-  auto s = sub_exec_->stats();
+  // tasks_completed_ is incremented in worker_loop AFTER run_sync's wrapper
+  // fulfills its promise, so the counter can briefly lag the caller's view.
+  // Poll with a short deadline to cover the eventual-consistency window
+  // (slower CI environments such as Pixi surface this reliably).
+  Ros2SubscriptionExecutor::Stats s;
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    s = sub_exec_->stats();
+    if (s.tasks_completed >= 10u) {
+      break;
+    }
+    std::this_thread::sleep_for(1ms);
+  }
   EXPECT_TRUE(s.worker_alive);
   EXPECT_GE(s.tasks_completed, 10u);
   EXPECT_EQ(s.tasks_failed, 0u);
