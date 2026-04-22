@@ -238,8 +238,17 @@ void ParameterBeaconPlugin::poll_cycle() {
 
   if (targets.empty() && param_node_) {
     // No introspection targets available (e.g., not in hybrid mode).
-    // Discover nodes directly from the ROS 2 graph.
-    auto names_and_ns = param_node_->get_node_graph_interface()->get_node_names_and_namespaces();
+    // Discover nodes directly from the ROS 2 graph. rclcpp throws
+    // "rcl node's context is invalid" if the poll timer fires between
+    // SIGINT handling and the executor stopping; swallow it so the
+    // shutdown path isn't aborted by std::terminate.
+    std::vector<std::pair<std::string, std::string>> names_and_ns;
+    try {
+      names_and_ns = param_node_->get_node_graph_interface()->get_node_names_and_namespaces();
+    } catch (const std::runtime_error & ex) {
+      RCLCPP_DEBUG(param_node_->get_logger(), "get_node_names_and_namespaces threw during shutdown: %s", ex.what());
+      return;
+    }
     for (const auto & [name, ns] : names_and_ns) {
       // Skip internal nodes (leading underscore) and the gateway
       if (name.empty() || name[0] == '_' || name == "ros2_medkit_gateway") {
