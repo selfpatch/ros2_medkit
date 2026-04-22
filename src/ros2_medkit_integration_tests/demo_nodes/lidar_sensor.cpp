@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <csignal>
 #include <mutex>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -21,6 +20,8 @@
 
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
+
+#include "ros2_medkit_integration_tests/demo_node_main.hpp"
 
 /// Demo LIDAR sensor node that reports faults based on parameter validation.
 /// Used to demonstrate the fault management workflow:
@@ -277,26 +278,7 @@ class LidarSensor : public rclcpp::Node {
 };
 
 int main(int argc, char ** argv) {
-  // Block SIGINT/SIGTERM until the executor has allocated its guard
-  // condition; a signal arriving mid-init invalidates the rcl context and
-  // causes rcl_* calls to throw RCLError. Unblocking after add_node() lets
-  // any queued signal be handled as a normal shutdown.
-  sigset_t mask, old;
-  sigemptyset(&mask);
-  sigaddset(&mask, SIGINT);
-  sigaddset(&mask, SIGTERM);
-  pthread_sigmask(SIG_BLOCK, &mask, &old);
-
-  rclcpp::init(argc, argv);
-  auto node = std::make_shared<LidarSensor>();
-  rclcpp::executors::SingleThreadedExecutor executor;
-  executor.add_node(node);
-
-  pthread_sigmask(SIG_SETMASK, &old, nullptr);
-
-  executor.spin();
-  executor.remove_node(node);
-  node.reset();
-  rclcpp::shutdown();
-  return 0;
+  return ros2_medkit_integration_tests::run_demo_node(argc, argv, []() -> std::shared_ptr<rclcpp::Node> {
+    return std::make_shared<LidarSensor>();
+  });
 }

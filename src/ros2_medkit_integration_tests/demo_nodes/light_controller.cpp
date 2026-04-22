@@ -23,10 +23,11 @@
  */
 
 #include <chrono>
-#include <csignal>
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
+
+#include "ros2_medkit_integration_tests/demo_node_main.hpp"
 
 using namespace std::chrono_literals;
 
@@ -83,26 +84,7 @@ class LightController : public rclcpp::Node {
 };
 
 int main(int argc, char * argv[]) {
-  // Block SIGINT/SIGTERM until the executor has allocated its guard
-  // condition; a signal arriving mid-init invalidates the rcl context and
-  // causes rcl_* calls to throw RCLError. Unblocking after add_node() lets
-  // any queued signal be handled as a normal shutdown.
-  sigset_t mask, old;
-  sigemptyset(&mask);
-  sigaddset(&mask, SIGINT);
-  sigaddset(&mask, SIGTERM);
-  pthread_sigmask(SIG_BLOCK, &mask, &old);
-
-  rclcpp::init(argc, argv);
-  auto node = std::make_shared<LightController>();
-  rclcpp::executors::SingleThreadedExecutor executor;
-  executor.add_node(node);
-
-  pthread_sigmask(SIG_SETMASK, &old, nullptr);
-
-  executor.spin();
-  executor.remove_node(node);
-  node.reset();
-  rclcpp::shutdown();
-  return 0;
+  return ros2_medkit_integration_tests::run_demo_node(argc, argv, []() -> std::shared_ptr<rclcpp::Node> {
+    return std::make_shared<LightController>();
+  });
 }

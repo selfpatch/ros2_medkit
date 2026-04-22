@@ -22,10 +22,10 @@
  * - Used to test POST /services/{service} endpoint
  */
 
-#include <csignal>
-
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/trigger.hpp>
+
+#include "ros2_medkit_integration_tests/demo_node_main.hpp"
 
 class CalibrationService : public rclcpp::Node {
  public:
@@ -61,28 +61,7 @@ class CalibrationService : public rclcpp::Node {
 };
 
 int main(int argc, char * argv[]) {
-  // Block SIGINT/SIGTERM until all rcl resources (node, executor guard
-  // condition) are allocated. A signal arriving during init / executor setup
-  // invalidates the context mid-call, causing rcl_* to throw RCLError. By
-  // holding the block through executor->add_node() the guard condition is
-  // created while the context is still valid; unblock fires any queued
-  // signal which rclcpp then handles as a normal shutdown.
-  sigset_t mask, old;
-  sigemptyset(&mask);
-  sigaddset(&mask, SIGINT);
-  sigaddset(&mask, SIGTERM);
-  pthread_sigmask(SIG_BLOCK, &mask, &old);
-
-  rclcpp::init(argc, argv);
-  auto node = std::make_shared<CalibrationService>();
-  rclcpp::executors::SingleThreadedExecutor executor;
-  executor.add_node(node);
-
-  pthread_sigmask(SIG_SETMASK, &old, nullptr);
-
-  executor.spin();
-  executor.remove_node(node);
-  node.reset();
-  rclcpp::shutdown();
-  return 0;
+  return ros2_medkit_integration_tests::run_demo_node(argc, argv, []() -> std::shared_ptr<rclcpp::Node> {
+    return std::make_shared<CalibrationService>();
+  });
 }
