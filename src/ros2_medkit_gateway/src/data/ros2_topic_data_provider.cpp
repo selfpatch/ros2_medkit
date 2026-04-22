@@ -399,7 +399,14 @@ void Ros2TopicDataProvider::on_graph_change() {
     return;
   }
   // Query current graph once, then evict entries no longer present.
-  auto current = exec_->node()->get_topic_names_and_types();
+  // Swallow "rcl context invalid" throws that race rclcpp::shutdown during
+  // SIGINT - we either evict later or get picked up by idle sweep.
+  std::map<std::string, std::vector<std::string>> current;
+  try {
+    current = exec_->node()->get_topic_names_and_types();
+  } catch (const std::runtime_error &) {
+    return;
+  }
 
   std::vector<std::shared_ptr<PoolEntry>> to_drop;
   {

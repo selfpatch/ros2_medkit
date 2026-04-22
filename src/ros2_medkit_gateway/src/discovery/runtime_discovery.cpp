@@ -89,7 +89,18 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
   }
 
   auto node_graph = node_->get_node_graph_interface();
-  auto names_and_namespaces = node_graph->get_node_names_and_namespaces();
+  std::vector<std::pair<std::string, std::string>> names_and_namespaces;
+  try {
+    names_and_namespaces = node_graph->get_node_names_and_namespaces();
+  } catch (const std::runtime_error & ex) {
+    // rclcpp throws "rcl node's context is invalid" when get_node_names_*
+    // is called after rclcpp::shutdown (e.g. refresh timer fires once
+    // between SIGINT handling and the executor stopping). Swallow and
+    // return empty so ~GatewayNode's shutdown path isn't aborted mid-run
+    // by std::terminate; callers handle empty gracefully.
+    RCLCPP_DEBUG(node_->get_logger(), "get_node_names_and_namespaces threw during shutdown: %s", ex.what());
+    return {};
+  }
 
   // Build topic map if not yet ready (first call or after manual refresh)
   if (topic_sampler_ && !topic_map_ready_) {
@@ -251,8 +262,16 @@ std::vector<Function> RuntimeDiscoveryStrategy::discover_functions(const std::ve
 std::vector<ServiceInfo> RuntimeDiscoveryStrategy::discover_services() {
   std::vector<ServiceInfo> services;
 
-  // Use native rclcpp API to get service names and types
-  auto service_names_and_types = node_->get_service_names_and_types();
+  // Use native rclcpp API to get service names and types. Swallow the
+  // "context invalid" throw that fires when the refresh timer races
+  // rclcpp::shutdown during SIGINT; callers already handle an empty list.
+  std::map<std::string, std::vector<std::string>> service_names_and_types;
+  try {
+    service_names_and_types = node_->get_service_names_and_types();
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(node_->get_logger(), "get_service_names_and_types threw during shutdown: %s", ex.what());
+    return services;
+  }
 
   for (const auto & [service_path, types] : service_names_and_types) {
     // Skip internal ROS2 services (parameter services, action internals, etc.)
@@ -294,7 +313,13 @@ std::vector<ActionInfo> RuntimeDiscoveryStrategy::discover_actions() {
 
   // Use native rclcpp API to get action names and types
   // Note: This requires checking service endpoints for action patterns
-  auto service_names_and_types = node_->get_service_names_and_types();
+  std::map<std::string, std::vector<std::string>> service_names_and_types;
+  try {
+    service_names_and_types = node_->get_service_names_and_types();
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(node_->get_logger(), "get_service_names_and_types threw during shutdown: %s", ex.what());
+    return actions;
+  }
 
   // Actions expose services with /_action/send_goal, /_action/cancel_goal, /_action/get_result
   // We detect actions by looking for /_action/send_goal services
