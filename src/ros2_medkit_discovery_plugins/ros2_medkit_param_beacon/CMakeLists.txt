@@ -78,10 +78,15 @@ if(BUILD_TESTING)
   medkit_init_test_domains(START 100 END 109)
 
   # Include plugin source in test (plugin is MODULE/dlopen, test instantiates directly)
+  # TIMEOUT 180: the 12 test cases each spin a node for ~200-400 ms. Under
+  # plain gcc that's ~4 s total, well under the 30 s ctest default, but TSan
+  # instrumentation inflates that 5-10x and occasionally trips the 30 s cap
+  # (CI saw timeouts at test 4/12 around 27 s). 180 s covers the worst-case
+  # sanitizer slowdown without masking real hangs.
   ament_add_gmock(test_param_beacon_plugin
     test/test_param_beacon_plugin.cpp
     src/param_beacon_plugin.cpp
-    TIMEOUT 30)
+    TIMEOUT 180)
   target_include_directories(test_param_beacon_plugin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   medkit_target_dependencies(test_param_beacon_plugin
