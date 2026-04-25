@@ -122,14 +122,28 @@ class OpcuaClient {
   /// Browse path for an event field, e.g. ``{{0, "EnabledState"}, {0, "Id"}}``.
   using EventBrowsePath = std::vector<EventField>;
 
+  /// Full SimpleAttributeOperand spec - every clause in an EventFilter must
+  /// have ``typeDefinitionId`` set to the type that *directly* defines the
+  /// browse path's first segment (open62541 servers reject inherited
+  /// lookups with BadNodeIdUnknown). ConditionId is the documented edge
+  /// case (Part 9 §5.5.2.13): empty browse path + AttributeId=NodeId.
+  struct EventFieldSpec {
+    opcua::NodeId type_definition_id;
+    EventBrowsePath browse_path;
+    uint32_t attribute_id{13};  // UA_ATTRIBUTEID_VALUE
+  };
+
   /// Callback invoked when an OPC-UA event arrives on a monitored item.
   /// @param select_values Values for caller-requested fields, in the order of
-  ///        ``select_browse_paths`` passed to ``add_event_monitored_item``.
+  ///        ``select_specs`` passed to ``add_event_monitored_item``.
   /// @param source_node Always-included SourceNode (extracted from the event
   ///        payload; null NodeId if the server omitted it).
   /// @param event_type Always-included EventType (null NodeId if absent).
-  using EventCallback = std::function<void(const std::vector<opcua::Variant> & select_values,
-                                           const opcua::NodeId & source_node, const opcua::NodeId & event_type)>;
+  /// @param condition_id NodeId of the condition instance that emitted the
+  ///        event (Part 9 §5.5.2.13). Null NodeId for non-condition events.
+  using EventCallback =
+      std::function<void(const std::vector<opcua::Variant> & select_values, const opcua::NodeId & source_node,
+                         const opcua::NodeId & event_type, const opcua::NodeId & condition_id)>;
 
   /// Get the current subscription generation. Increments on every detected
   /// disconnect (clean ``disconnect()`` or transport-level drop). Used by the
@@ -137,18 +151,24 @@ class OpcuaClient {
   /// subscriptions.
   uint64_t current_generation() const;
 
+  /// Run a single iteration of the open62541 client main loop. Required to
+  /// dispatch incoming subscription notifications (events, data changes)
+  /// to their callbacks. The poller calls this every iteration to keep
+  /// AlarmCondition events flowing.
+  void run_iterate(uint16_t timeout_ms = 100);
+
   /// Add an event-based monitored item to an existing subscription.
   ///
   /// Wraps ``UA_Client_MonitoredItems_createEvent`` from the open62541 C API
   /// because ``open62541pp`` v0.16 has no native EventFilter / event
-  /// subscription support. ``EventType`` and ``SourceNode`` are always
-  /// prepended to the EventFilter select clauses; they are extracted from the
-  /// payload and delivered as separate callback parameters, not in
-  /// ``select_values``.
+  /// subscription support. ``EventType``, ``SourceNode`` and a ConditionId
+  /// SAO (empty BrowsePath, AttributeId=NodeId) are always prepended; they
+  /// are extracted from the event payload and delivered as separate callback
+  /// parameters, not in ``select_values``.
   ///
   /// @return Server-assigned monitored item ID, or 0 on failure.
   uint32_t add_event_monitored_item(uint32_t subscription_id, const opcua::NodeId & source_node,
-                                    const std::vector<EventBrowsePath> & select_browse_paths, EventCallback callback);
+                                    const std::vector<EventFieldSpec> & select_specs, EventCallback callback);
 
   /// Remove a previously-added event monitored item. The server is asked to
   /// delete the item synchronously; the callback context is freed only after

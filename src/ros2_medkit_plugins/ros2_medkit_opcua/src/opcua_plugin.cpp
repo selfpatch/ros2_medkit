@@ -25,7 +25,9 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <iostream>
 
 namespace ros2_medkit_gateway {
 
@@ -889,6 +891,18 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
     std::vector<opcua::Variant> args;
     args.push_back(opcua::Variant::fromScalar(runtime->latest_event_id));
     args.push_back(opcua::Variant::fromScalar(opcua::LocalizedText("", comment)));
+
+    {
+      const auto * bytes = runtime->latest_event_id.data();
+      std::cerr << "[opcua_plugin] " << operation_name << " EventId len="
+                << runtime->latest_event_id.length() << " hex=";
+      for (size_t i = 0; i < std::min<size_t>(runtime->latest_event_id.length(), 16); ++i) {
+        char buf[3];
+        std::snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned>(bytes[i]) & 0xffu);
+        std::cerr << buf;
+      }
+      std::cerr << " conditionId=" << runtime->condition_id.toString() << std::endl;
+    }
 
     auto result = client_->call_method(runtime->condition_id, method_id, args);
     if (!result.has_value()) {

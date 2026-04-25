@@ -140,7 +140,8 @@ class OpcuaPoller {
   // Issue #386 helpers.
   void setup_event_subscriptions();
   void on_event(const AlarmEventConfig & cfg, const std::vector<opcua::Variant> & values,
-                const opcua::NodeId & source_node, const opcua::NodeId & event_type);
+                const opcua::NodeId & source_node, const opcua::NodeId & event_type,
+                const opcua::NodeId & condition_id);
   void condition_refresh();
 
   OpcuaClient & client_;
