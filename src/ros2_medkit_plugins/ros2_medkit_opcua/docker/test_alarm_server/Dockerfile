@@ -1,11 +1,12 @@
 # Copyright 2026 mfaferek93
 #
 # Standalone OPC-UA test fixture image for AlarmConditionType integration
-# tests. The fixture exposes 3 conditions on tcp port 4842 and reads CLI
-# commands from stdin; see ../../test/fixtures/test_alarm_server/.
+# tests (issue #386). The fixture exposes 3 conditions on tcp port 4842 and
+# reads CLI commands from stdin; see ../../test/fixtures/test_alarm_server/.
 #
-# Build context: ros2_medkit repo root (the directory containing `src/`)
-#   docker build -f src/ros2_medkit_plugins/ros2_medkit_opcua/docker/test_alarm_server/Dockerfile \
+# Build context: ros2_medkit repo root.
+#   docker build --network=host \
+#                -f src/ros2_medkit_plugins/ros2_medkit_opcua/docker/test_alarm_server/Dockerfile \
 #                -t ros2_medkit_alarm_test_server:dev .
 
 FROM ubuntu:24.04 AS builder
@@ -15,11 +16,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake git python3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Pin matches the SHA used by the plugin's open62541pp dependency
+# (122ea4c842 == open62541pp v0.16.0). open62541 itself is a submodule of
+# open62541pp; we only need the inner repo for the standalone server build.
+ARG OPEN62541_REF=v1.4.6
 WORKDIR /src
-# Copy only the open62541 source we need plus the fixture source. The plugin's
-# FetchContent has already populated build/ros2_medkit_opcua/_deps/... in the
-# host repo, so we depend on that being present on the host before docker build.
-COPY build/ros2_medkit_opcua/_deps/open62541pp-src/3rdparty/open62541 /src/open62541
+RUN git clone --depth=1 --branch=${OPEN62541_REF} \
+        https://github.com/open62541/open62541.git /src/open62541 \
+    && cd /src/open62541 && git submodule update --init --recursive --depth=1
+
 COPY src/ros2_medkit_plugins/ros2_medkit_opcua/test/fixtures/test_alarm_server \
      /src/test_alarm_server
 
