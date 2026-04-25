@@ -894,8 +894,8 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
 
     {
       const auto * bytes = runtime->latest_event_id.data();
-      std::cerr << "[opcua_plugin] " << operation_name << " EventId len="
-                << runtime->latest_event_id.length() << " hex=";
+      std::cerr << "[opcua_plugin] " << operation_name << " EventId len=" << runtime->latest_event_id.length()
+                << " hex=";
       for (size_t i = 0; i < std::min<size_t>(runtime->latest_event_id.length(), 16); ++i) {
         char buf[3];
         std::snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned>(bytes[i]) & 0xffu);
