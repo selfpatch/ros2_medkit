@@ -288,7 +288,7 @@ curl http://localhost:8080/api/v1/components/nonexistent/data
 
 **Performance Considerations:**
 - Topic sampling uses **parallel execution** with configurable concurrency
-- Default: up to 10 topics sampled in parallel (configurable via `max_parallel_topic_samples`)
+- Default: up to 8 topics sampled in parallel (configurable via `data_provider.max_parallel_samples`)
 - Response time scales with batch count: `ceil(topics / batch_size) × timeout`
 - 3-second timeout per topic to accommodate slow-publishing topics
 
@@ -1157,14 +1157,15 @@ The gateway can be configured via parameters in `config/gateway_params.yaml` or 
 | `server.host`                | string | `127.0.0.1` | Host to bind the REST server (`127.0.0.1` for localhost, `0.0.0.0` for all interfaces) |
 | `server.port`                | int    | `8080`      | Port for the REST API (range: 1024-65535)                                              |
 | `refresh_interval_ms`        | int    | `10000`     | Cache refresh interval in milliseconds (range: 100-60000)                              |
-| `max_parallel_topic_samples` | int    | `20`        | Max concurrent topic samples when fetching data (range: 1-50)                          |
+| `data_provider.max_parallel_samples` | int | `8` | Max concurrent topic samples when fetching data (range: 1-256)                                |
 | `topic_sample_timeout_sec`   | float  | `2.0`       | Timeout for sampling topics with active publishers (range: 0.1-30.0)                   |
 | `fault_manager.namespace`    | string | `""`        | Optional namespace prefix for fault manager services and events (for example `robot1`)  |
 | `fault_manager.service_timeout_sec`  | float  | `5.0`       | Timeout for fault manager service calls such as `list_faults` and `get_snapshots`      |
 
 These defaults reflect the recommended values from `config/gateway_params.yaml`.
 If the gateway is run without those parameters, the `DataAccessManager` fallback
-defaults are `max_parallel_topic_samples=10` and `topic_sample_timeout_sec=1.0`.
+default is `topic_sample_timeout_sec=1.0`; the parallel-sample concurrency
+falls back to the `Ros2TopicDataProvider` default of 8.
 
 #### SSE (Server-Sent Events) Configuration
 
@@ -1569,6 +1570,27 @@ colcon test --packages-select ros2_medkit_gateway --event-handlers console_direc
 # View test results
 colcon test-result --verbose
 ```
+
+### Subscription Architecture Regression Gate
+
+All rcl subscription create/destroy calls must go through
+`Ros2SubscriptionSlot::create_typed` / `create_generic` (defined in
+`ros2_common/`). Calling `node->create_subscription<T>()`,
+`create_generic_subscription()`, or `create_callback_group()` anywhere
+else triggers the race from issue #375 and SIGSEGVs on Rolling under
+concurrent HTTP load.
+
+The regression gate is `scripts/check_no_naked_subscriptions.sh`. It
+runs in CI (`quality.yml`) and as a pre-commit hook. If your PR
+adds a naked subscription call the gate fails with the file:line,
+the class to use instead, and a pointer to
+[ros2_subscription_architecture.rst](design/ros2_subscription_architecture.rst)
+for the full rationale and example.
+
+Five legacy call sites are currently on the allowlist
+(`sse_fault_handler.cpp`, `trigger_fault_subscriber.cpp`,
+`trigger_topic_subscriber.cpp`, `operation_manager.cpp`,
+`log_manager.cpp`) pending migration to the slot pattern.
 
 ## License
 

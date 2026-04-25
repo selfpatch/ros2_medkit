@@ -244,7 +244,23 @@ PluginContext
 After ``configure()``, the gateway calls ``set_context()`` with a ``PluginContext`` reference
 providing access to gateway data and utilities:
 
-- ``node()`` - ROS 2 node pointer for subscriptions, service clients, timers, etc.
+- ``node()`` - ROS 2 node pointer for service clients, timers, and parameter access.
+
+  .. warning::
+
+     Do **not** call ``node()->create_subscription<T>()``,
+     ``create_generic_subscription()``, or ``create_callback_group()``
+     directly on this node. Issue #375 showed that concurrent rcl
+     mutations on the gateway node race its internal hash map and
+     SIGSEGV under load on Rolling. The regression gate in
+     ``scripts/check_no_naked_subscriptions.sh`` is run in CI and will
+     fail PRs that add such calls outside the allowlist. Use
+     ``ros2_medkit_gateway::ros2_common::Ros2SubscriptionSlot::create_typed``
+     or ``create_generic`` via the executor that already serializes all
+     subscription lifecycle calls. See
+     :doc:`/design/ros2_medkit_gateway/ros2_subscription_architecture`
+     for the allowed pattern and the rationale.
+
 - ``get_entity(id)`` - look up any entity (area, component, app, function) from the discovery cache
 - ``list_entity_faults(entity_id)`` - query faults for an entity
 - ``validate_entity_for_route(req, res, entity_id)`` - validate entity exists and matches the route type, auto-sending SOVD errors on failure

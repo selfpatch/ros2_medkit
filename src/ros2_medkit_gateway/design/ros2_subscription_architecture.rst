@@ -67,11 +67,16 @@ Ros2SubscriptionExecutor
 Owns:
 
 - One dedicated ``std::thread`` (the worker).
-- One ``rclcpp::Node`` (the subscription node, suffixed ``_sub``). Added to the
-  gateway's ``MultiThreadedExecutor``.
+- One ``rclcpp::Node`` (the subscription node, suffixed ``_sub``) exclusively
+  owned by this executor's internal ``SingleThreadedExecutor``. The gateway's
+  main ``MultiThreadedExecutor`` never sees this node; creation, destruction
+  and callback dispatch of every subscription on it run on the single worker
+  thread, preserving the single-writer invariant against rcl's hash-map.
 - A bounded task queue guarded by ``queue_mtx_`` + ``queue_cv_``.
-- Two wall timers on the subscription node: one for the watchdog, one for
-  graph-event polling. No extra threads.
+- One ``aux`` thread driving the watchdog and graph-event polling ticks on
+  their own cadence. The aux thread only touches atomics and the
+  subscription node's graph event; it never mutates the node's subscription
+  list so it cannot race the worker's create / destroy path.
 
 Public API (summary):
 
@@ -141,8 +146,9 @@ Per-entry structure::
    ``run_sync``), then insert under ``pool_mtx_``. If the pool is at cap,
    evict the LRU entry first.
 4. Lock ``entry->buf_mtx``. If ``latest`` present, deserialize and return. If
-   cold and ``concurrent_cold_waits_ >= cold_wait_cap``, return metadata-only
-   immediately. Otherwise wait on ``buf_cv`` up to ``timeout``.
+   cold and ``concurrent_cold_waits_ >= cold_wait_cap``, return ``tl::unexpected``
+   with ``ERR_X_MEDKIT_COLD_WAIT_CAP_EXCEEDED`` (HTTP 503, retryable with
+   backoff). Otherwise wait on ``buf_cv`` up to ``timeout``.
 5. Deserialize the latest message via ``JsonSerializer`` and return.
 
 The callback registered with the slot captures a
@@ -177,8 +183,11 @@ starve ``/health``, ``/components``, and other endpoints.
 
 ``concurrent_cold_waits_`` tracks how many sample calls are currently blocked
 on a cold entry's CV. When the count reaches ``cold_wait_cap`` (default 4),
-further cold callers bounce back metadata-only immediately. Existing waiters
-complete normally; warm topics are unaffected.
+further cold callers fail fast with ``ERR_X_MEDKIT_COLD_WAIT_CAP_EXCEEDED``
+(HTTP 503, ``params.cold_wait_cap`` set, retry with backoff). Existing waiters
+complete normally; warm topics are unaffected. Returning a structured error
+instead of a metadata-only success lets clients distinguish back-pressure
+("retry me") from "no publishers yet" ("nothing to wait for").
 
 QoS matching
 ^^^^^^^^^^^^
@@ -204,16 +213,23 @@ executor::
     rclcpp::executors::MultiThreadedExecutor executor;
     executor.add_node(node);
 
-    auto sub_exec     = std::make_shared<Ros2SubscriptionExecutor>(node, executor);
+    auto sub_exec     = std::make_shared<Ros2SubscriptionExecutor>(node);
     auto serializer   = std::make_shared<JsonSerializer>();
     auto data_provider = std::make_shared<Ros2TopicDataProvider>(sub_exec, serializer);
     node->set_topic_data_provider(data_provider);
 
     executor.spin();
 
-    data_provider.reset();  // drops pool entries through sub_exec
-    sub_exec.reset();        // joins worker, removes subscription node
+    data_provider.reset();       // drops pool entries through sub_exec
+    sub_exec.reset();            // joins worker + aux, destroys subscription node
+    executor.remove_node(node);  // detach before ~GatewayNode runs
+    node.reset();                // ~GatewayNode with executor still alive
     rclcpp::shutdown();
+
+``remove_node`` + explicit ``node.reset()`` are required on rolling / newer
+jazzy: rclcpp aborts with ``Node ... needs to be associated with an executor``
+if ``~GatewayNode`` touches a service client while stack-unwind has already
+destroyed the executor.
 
 Regression gate
 ---------------
@@ -242,7 +258,3 @@ reads only (never blocks):
 External monitors (k8s liveness probe, Docker HEALTHCHECK, systemd watchdog)
 trigger on ``x-medkit-subscription-executor.degraded`` without deployment-
 specific assumptions.
-
-``GET /health/subscription-pool`` is a drill-in endpoint returning per-entry
-details (topic, type, LRU rank, has_latest, latest_ns, last_sample_age_ms).
-Intended for diagnostics, not for tight polling.

@@ -80,10 +80,10 @@ ros2_medkit_gateway:
       max_age_seconds: 86400
 
     # Data Access Configuration
-    # Maximum number of concurrent topic samples when fetching component data
-    # Higher values improve response time but use more system resources
-    # Valid range: 1-50
-    max_parallel_topic_samples: 20
+    # Note: parallel-sample concurrency for /components/{id}/data is tuned
+    # via data_provider.max_parallel_samples on the TopicDataProvider (see
+    # the data_provider section further down). The legacy DataAccessManager
+    # parameter that used to live here was unused and has been removed.
 
     # Timeout (in seconds) for sampling topic data via native GenericSubscription
     # Topics without publishers return immediately with metadata (no timeout wait)
@@ -528,3 +528,76 @@ ros2_medkit_gateway:
       # Parallel arrays: peer_urls[i] pairs with peer_names[i]
       # peer_urls: ["http://localhost:8081"]
       # peer_names: ["subsystem_b"]
+
+    # Ros2SubscriptionExecutor (issue #375) - serial worker that owns all rcl
+    # subscription create/destroy calls. Hard to observe from outside so the
+    # defaults are tuned for typical fleet gateway loads; reduce for small
+    # robots, raise for high-cardinality topic sets.
+    subscription_executor:
+      # Maximum number of tasks queued on the serial worker before the
+      # executor rejects new posts with backpressure. Bounds peak memory
+      # when HTTP handler threads create subscriptions faster than the
+      # worker can service them.
+      # Valid range: 16-4096
+      # Default: 256
+      max_queue_depth: 256
+
+      # If a single worker task runs longer than this threshold, the
+      # executor marks itself degraded (x-medkit-subscription-executor.
+      # degraded == true on /health). External monitors should page on
+      # this. The flag clears when the task completes.
+      # Valid range: 100-60000 (0.1s - 60s)
+      # Default: 5000 (5s)
+      watchdog_threshold_ms: 5000
+
+      # Cadence of the watchdog check. Finer tick = faster degradation
+      # detection at the cost of more wakeups.
+      # Valid range: 10-10000
+      # Default: 1000
+      watchdog_tick_ms: 1000
+
+      # Cadence of the graph event poll that drives graph-change callbacks
+      # (publisher appear/disappear, type changes).
+      # Valid range: 10-10000
+      # Default: 100
+      graph_poll_tick_ms: 100
+
+    # Ros2TopicDataProvider - pool-backed sampling (issue #375).
+    data_provider:
+      # Maximum number of per-topic subscriptions the pool keeps alive.
+      # Once the pool reaches this cap, sampling a new topic evicts the
+      # LRU entry. Set lower for memory-constrained robots.
+      # Valid range: 1-4096
+      # Default: 256
+      max_pool_size: 256
+
+      # Maximum number of concurrent HTTP handler threads allowed to
+      # block on the cold-wait path (first-message wait on a freshly
+      # subscribed topic). Additional callers get 503 with
+      # ERR_X_MEDKIT_COLD_WAIT_CAP_EXCEEDED so they apply backoff
+      # instead of saturating the httplib thread pool.
+      # Set to 0 to disable the cap (not recommended).
+      # Valid range: 0-1024
+      # Default: 4
+      cold_wait_cap: 4
+
+      # Upper bound on concurrent sampler threads launched by
+      # sample_parallel(). Prevents the provider from becoming a
+      # self-DoS vector under large topic lists; excess topics are
+      # processed in follow-up chunks.
+      # Valid range: 1-256
+      # Default: 8
+      max_parallel_samples: 8
+
+      # A pool entry that has gone this long without being sampled is
+      # evicted by the idle sweep, releasing its rcl subscription. Guard
+      # against long-term pool bloat for one-off sampling workloads.
+      # Valid range: 0-86400 (0 disables idle eviction)
+      # Default: 900 (15 minutes)
+      idle_safety_net_sec: 900
+
+      # Cadence at which the idle sweep runs. Larger tick = lower CPU
+      # overhead at the cost of slower eviction response.
+      # Valid range: 0-3600 (0 disables idle eviction)
+      # Default: 60
+      idle_sweep_tick_sec: 60

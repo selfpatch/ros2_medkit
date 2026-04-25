@@ -103,6 +103,26 @@ Server Capabilities
      ``warnings`` array. Clients key on this instead of string-matching
      codes. See :doc:`warning_codes` ``Schema versioning``.
 
+   The body also always includes two subscription-pool vendor-extension
+   sections, populated from atomic reads so ``/health`` never blocks even
+   when the sampling pool is under load:
+
+   - ``x-medkit-subscription-executor`` - state of the single-writer
+     worker that owns the pool's subscription node. Fields:
+     ``worker_alive``, ``degraded``, ``queue_depth``,
+     ``queue_max_depth_observed``, ``queue_dropped``, ``tasks_completed``,
+     ``tasks_failed``, ``last_task_latency_us``, ``max_task_latency_us``,
+     ``current_task_age_ms``, ``watchdog_trips``, ``graph_events_received``.
+     External monitors (k8s liveness, Docker HEALTHCHECK, systemd watchdog)
+     should page on ``degraded == true``.
+   - ``x-medkit-data-provider`` - pool-level counters: ``pool_size``,
+     ``pool_cap``, ``pool_hits``, ``pool_misses``, ``evictions_total``,
+     ``type_change_events``, ``graph_events_received``,
+     ``concurrent_cold_waits``.
+
+   See :doc:`/design/ros2_medkit_gateway/ros2_subscription_architecture`
+   for the underlying pool design that produces these counters.
+
    .. note::
 
       Security: ``/health`` is currently reachable without
@@ -2158,6 +2178,22 @@ Common Error Codes
    * - ``x-medkit-plugin-error``
      - 400-599
      - Plugin provider returned an error. Status varies by plugin. Message truncated to 512 chars.
+   * - ``x-medkit-gateway-shutdown``
+     - 503
+     - Gateway is in the process of shutting down. **Do not retry against the same
+       gateway instance** - the process is going away. Clients should fail over to
+       another gateway or surface the outage to the operator.
+   * - ``x-medkit-subscribe-failed``
+     - 500
+     - Could not create the underlying ROS 2 subscription (rcl error during slot
+       creation). Transient: retry once after a short backoff. Persistent failure
+       usually indicates a publisher type mismatch or a missing IDL package.
+   * - ``x-medkit-cold-wait-cap-exceeded``
+     - 503
+     - Too many concurrent /data callers are waiting on cold (publisher-but-no-data)
+       topics. Retry with exponential backoff. ``params.cold_wait_cap`` carries the
+       configured cap. Tune via ``data_provider.cold_wait_cap`` and
+       ``data_provider.max_parallel_samples`` if this fires under normal load.
 
 Plugin Entity Delegation
 ~~~~~~~~~~~~~~~~~~~~~~~~
