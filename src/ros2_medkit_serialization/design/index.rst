@@ -207,7 +207,7 @@ The serialization package is used by:
 
 1. **DataAccessManager** - Publishing to topics via ``GenericPublisher``
 2. **OperationManager** - Calling services/actions via ``GenericClient``
-3. **NativeTopicSampler** - Deserializing messages from ``GenericSubscription``
+3. **Ros2TopicDataProvider** - Deserializing messages from per-topic subscription pool entries
 
 Example: Publishing to a Topic
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -245,4 +245,3 @@ Example: Deserializing from Subscription
 
    auto subscription = node->create_generic_subscription(
        "/scan", "sensor_msgs/msg/LaserScan", qos, callback);
-
