@@ -175,7 +175,27 @@ nodes:
       message: Tank level below minimum
       threshold: 100.0
       above_threshold: false      # Alarm when value < threshold
+
+# Native OPC-UA AlarmConditionType events (issue #386). Subscribes to alarms
+# defined inside the PLC (Siemens Program_Alarm / ProDiag, Beckhoff TF6100,
+# CodeSys 3.5+, Rockwell via FactoryTalk Linx). Mutually exclusive per entry
+# with the threshold-based alarm form above.
+event_alarms:
+  - alarm_source: "ns=4;s=Alarms.Overpressure"
+    entity_id: tank_process
+    fault_code: PLC_OVERPRESSURE
 ```
+
+The plugin auto-registers `acknowledge_fault` and `confirm_fault` operations
+on every entity that has at least one `event_alarms` entry. Invoke them with:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/apps/tank_process/operations/acknowledge_fault/executions \
+     -H 'Content-Type: application/json' \
+     -d '{"fault_code":"PLC_OVERPRESSURE","comment":"operator on radio"}'
+```
+
+See `design/index.rst` for the full state machine table and vendor matrix.
 
 ### Gateway Parameters
 

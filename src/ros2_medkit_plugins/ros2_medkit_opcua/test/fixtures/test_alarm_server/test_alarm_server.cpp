@@ -94,9 +94,8 @@ UA_StatusCode add_condition(UA_Server * server, const std::string & name, UA_UIn
   // tests assert it is present, so we add it explicitly. Failure here is
   // non-fatal - some tests skip the shelve transition path entirely.
   UA_NodeId shelving;
-  UA_Server_addConditionOptionalField(
-      server, out.node, UA_NODEID_NUMERIC(0, UA_NS0ID_ALARMCONDITIONTYPE),
-      UA_QUALIFIEDNAME(0, const_cast<char *>("ShelvingState")), &shelving);
+  UA_Server_addConditionOptionalField(server, out.node, UA_NODEID_NUMERIC(0, UA_NS0ID_ALARMCONDITIONTYPE),
+                                      UA_QUALIFIEDNAME(0, const_cast<char *>("ShelvingState")), &shelving);
 
   // Enable the condition so events are emitted (Part 9: EnabledState=true is
   // a precondition for Retain/Active/Acked transitions to fire events).

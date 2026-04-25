@@ -223,3 +223,29 @@ jobs:
         run: |
           docker rm -f gateway openplc 2>/dev/null || true
           docker network rm plc-demo 2>/dev/null || true
+
+  integration-alarms:
+    name: Integration (AlarmConditionType)
+    # Issue #386: tests the native OPC-UA AlarmCondition subscription bridge
+    # against the test_alarm_server fixture (open62541 with FULL ns0 + alarms
+    # ON). Independent of the OpenPLC threshold-mode integration above; runs
+    # in parallel.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run alarm integration suite
+        run: bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_alarm_tests.sh
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          for c in alarm-test-server alarm-test-gateway; do
+            echo "=== ${c} logs ==="
+            docker logs "${c}" 2>&1 | tail -80 || true
+          done

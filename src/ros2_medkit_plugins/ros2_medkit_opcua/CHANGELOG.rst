@@ -2,6 +2,15 @@
 Changelog for package ros2_medkit_opcua
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* Native OPC-UA Part 9 ``AlarmConditionType`` event subscription. The plugin now subscribes to vendor-defined alarms (Siemens S7-1500 ``Program_Alarm`` / ProDiag, Beckhoff TF6100, CodeSys 3.5+, Rockwell via FactoryTalk Linx) and bridges each event into the SOVD fault lifecycle. Configured via a new top-level ``event_alarms:`` block in the node map YAML; mutually exclusive per entry with the existing threshold-based ``alarm`` form. (issue #386)
+* New SOVD operations on entities that host alarm sources: ``acknowledge_fault`` invokes the inherited ``Acknowledge`` method on the live ``ConditionId`` (i=9111, EventId tracked per Part 9 §5.7.3); ``confirm_fault`` invokes ``Confirm`` (i=9113). Both accept an optional ``comment`` rendered as ``LocalizedText`` on the server.
+* ``OpcuaClient`` gains ``add_event_monitored_item`` / ``remove_event_monitored_item`` / ``call_method`` and a generation counter that filters callbacks fired from defunct subscriptions after a reconnect. Heap-owned ``EventCallbackContext`` resolves the open62541pp / raw-C lifetime hazard.
+* Header-only ``AlarmStateMachine`` mapping ``EnabledState x ShelvingState x ActiveState x AckedState x ConfirmedState x BranchId`` to SOVD ``CONFIRMED / HEALED / CLEARED / Suppressed``. Full transition table documented in ``design/index.rst``.
+* ``ConditionRefresh`` (Server method i=3875) is invoked on subscribe and on every reconnect, with ``RefreshStartEvent`` / ``RefreshEndEvent`` bracketing tracked for diagnostics.
+* New ``test_alarm_server`` fixture (open62541-based, full namespace 0 + alarms enabled) emits AlarmConditionType events on stdin commands; integration test ``run_alarm_tests.sh`` runs in CI alongside the existing OpenPLC threshold suite.
+
 0.4.0 (2026-04-11)
 ------------------
 * Initial release

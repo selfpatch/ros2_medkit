@@ -175,6 +175,168 @@ Untracked (open the issue if you hit the pain):
 
 - Hot-reload of the node map without restarting the plugin
 - Complex OPC-UA type support (structures, arrays, enums)
-- Native ``AlarmCondition`` event subscription as a complement to
-  threshold polling
 - Vendor information model bindings (Euromap 77, Siemens DI, PA-DIM)
+
+
+Native ``AlarmConditionType`` event subscription (issue #386)
+=============================================================
+
+The plugin subscribes to native OPC-UA Part 9 ``AlarmConditionType`` events
+emitted by vendor PLCs, in addition to the threshold-based polling path. Both
+modes coexist in a single ``node_map.yaml`` (different YAML keys) and feed the
+same ``fault_manager`` service.
+
+Configuration
+-------------
+
+Two YAML forms describe alarms; an entry can use one but never both:
+
+.. code-block:: yaml
+
+   nodes:
+     # Threshold-based (existing): polls the scalar value and raises a fault
+     # when it crosses the configured threshold.
+     - node_id: 'ns=2;i=2'
+       entity_id: tank_process
+       data_name: tank_temperature
+       data_type: float
+       alarm:
+         fault_code: TANK_OVERHEAT
+         severity: ERROR
+         threshold: 80.0
+         above_threshold: true
+
+   event_alarms:
+     # Native AlarmConditionType (new): subscribes to events emitted from
+     # the source NodeId and bridges them through the state machine below.
+     - alarm_source: 'ns=4;s=Alarms.Overpressure'
+       entity_id: tank_process
+       fault_code: PLC_OVERPRESSURE
+       severity_override: ERROR        # optional - else derived from event Severity
+       message: 'Tank overpressure'    # optional - else event Message field
+
+State machine
+-------------
+
+Inputs from each event payload (positional ``EventFilter`` select clauses):
+
+- ``EnabledState.Id`` - bool
+- ``ShelvingState.CurrentState.Id`` - NodeId; non-Unshelved => suppressed
+- ``ActiveState.Id`` - bool
+- ``AckedState.Id`` - bool
+- ``ConfirmedState.Id`` - bool
+- ``BranchId`` - NodeId; non-null means historical branch (Part 9 §5.5.2.12)
+
+Decision order, first match wins:
+
++-----+--------------------------------------+---------------------------------------+
+| #   | Condition                            | Outcome                               |
++=====+======================================+=======================================+
+| 1   | ``BranchId != null``                 | history-only (no SOVD update)         |
++-----+--------------------------------------+---------------------------------------+
+| 2   | ``EnabledState == false``            | clear if was active, else no-op       |
++-----+--------------------------------------+---------------------------------------+
+| 3   | ``ShelvingState != Unshelved``       | clear if was active, else no-op       |
++-----+--------------------------------------+---------------------------------------+
+| 4   | ``ActiveState == true``              | ``CONFIRMED`` (idempotent)            |
++-----+--------------------------------------+---------------------------------------+
+| 5a  | ``ActiveState == false`` and         | ``HEALED`` (latched, awaiting ack)    |
+|     | not (``Acked`` and ``Confirmed``)    |                                       |
++-----+--------------------------------------+---------------------------------------+
+| 5b  | ``ActiveState == false``,            | ``CLEARED``                           |
+|     | ``Acked == true``,                   |                                       |
+|     | ``Confirmed == true``                |                                       |
++-----+--------------------------------------+---------------------------------------+
+
+``Retain`` is intentionally NOT used for state determination. Per Part 9
+§5.5.2.10 it controls visibility during ``ConditionRefresh`` bursts only;
+lifecycle is driven entirely by Active / Acked / Confirmed. The SOVD
+``PREFAILED`` state has no native equivalent and is reserved for the
+threshold-polling pre-trigger path.
+
+Severity mapping
+----------------
+
+OPC-UA severity is a 1-1000 scalar. The plugin maps it to selfpatch's SOVD
+severity buckets:
+
+- 1-200    -> ``INFO``
+- 201-500  -> ``WARNING``
+- 501-800  -> ``ERROR``
+- 801-1000 -> ``CRITICAL``
+
+This is the selfpatch convention, **not** IEC 62682 - that spec defines a
+1-1000 priority scale but no normative band names. ``severity_override`` on
+an ``event_alarms`` entry takes precedence when set.
+
+ConditionRefresh
+----------------
+
+After creating event monitored items the plugin invokes ``ConditionRefresh``
+(Server object ``i=2253``, method ``i=3875``) so the server pushes any
+condition that fired before the subscription started. The same call fires
+on every successful reconnect.
+
+The bracketing ``RefreshStartEventType`` (i=2787) and ``RefreshEndEventType``
+(i=2788) are recognized and used to set a diagnostic flag; live notifications
+arriving during the burst are applied normally because the state machine is
+driven by per-condition ``ConditionId`` and runs idempotently.
+
+Acknowledge / Confirm round-trip
+--------------------------------
+
+Two SOVD operations appear on every entity that has at least one event-mode
+alarm declared:
+
+- ``POST /apps/{entity}/operations/acknowledge_fault/executions``
+- ``POST /apps/{entity}/operations/confirm_fault/executions``
+
+Body:
+
+.. code-block:: json
+
+   { "fault_code": "PLC_OVERPRESSURE", "comment": "operator on radio" }
+
+The plugin resolves ``(entity_id, fault_code)`` to the live ``ConditionId``
+maintained by the poller, then calls the inherited
+``AcknowledgeableConditionType`` method (``Acknowledge`` ``i=9111`` or
+``Confirm`` ``i=9113``) on that NodeId. The latest ``EventId`` ``ByteString``
+captured from the most recent notification is passed as the first argument;
+without it servers return ``BadEventIdUnknown`` (Part 9 §5.7.3).
+
+Vendor matrix
+-------------
+
++----------------------+---------------------+-------------------------------+
+| Vendor / runtime     | AlarmConditionType  | Notes                         |
++======================+=====================+===============================+
+| Siemens S7-1500      | yes (FW V2.9+)      | ProDiag, Program_Alarm,       |
+|                      |                     | system diagnostics            |
++----------------------+---------------------+-------------------------------+
+| Beckhoff TwinCAT 3   | yes (TF6100)        | ``Confirm`` propagates to     |
+|                      |                     | PLC code; ``Ack`` does not    |
++----------------------+---------------------+-------------------------------+
+| Rockwell ControlLogix| yes (via FactoryTalk| Tag-based alarms bridged by   |
+|                      | Linx FW 16.20+)     | the gateway                   |
++----------------------+---------------------+-------------------------------+
+| CodeSys 3.5+         | yes (alarm manager  | Custom severity mapping       |
+|                      | provider library)   |                               |
++----------------------+---------------------+-------------------------------+
+| OpenPLC v3           | no                  | Scalar variables only;        |
+|                      |                     | use threshold mode            |
++----------------------+---------------------+-------------------------------+
+
+Out of scope
+------------
+
+- ``ShelvingState`` write operations (``TimedShelve`` / ``OneShotShelve`` /
+  ``Unshelve``). The plugin reads the state to suppress active alarms but
+  does not yet expose operator UI to set it.
+- OPC-UA branch reasoning beyond ``BranchId``-based suppression.
+  Re-fires are tracked via ``fault_manager`` ``occurrence_count`` plus the
+  ``/faults/stream`` SSE history.
+- Auto-discovery of alarm sources via ``Server.GeneratedEvents`` browse
+  (tracked in #368 alongside scalar auto-discovery).
+- ``Quality`` (StatusCode) propagation to a SOVD ``status_quality`` field.
+  Requires an additive field on the ``ReportFault.srv`` schema; tracked
+  separately.

@@ -227,11 +227,11 @@ if(BUILD_TESTING)
   # Instead we build a second open62541 statically via ExternalProject_Add
   # using the source already on disk from FetchContent, pinned to FULL ns0
   # and alarms ON. The fixture binary links only against this private copy.
-  # NOTE: defaults OFF until the ExternalProject linker issue with
-  # ``namespace0_generated`` is resolved. Tests that use this fixture set
-  # the flag to ON in their docker integration script.
+  # Defaults ON because the fixture is part of the standard test suite for
+  # issue #386. The earlier `-j` race on open62541 namespace0_generated.c is
+  # fixed by forcing a serial sub-build (BUILD_COMMAND below).
   option(MEDKIT_OPCUA_BUILD_ALARM_SERVER
-    "Build the OPC-UA AlarmCondition test fixture server (issue #386)" OFF)
+    "Build the OPC-UA AlarmCondition test fixture server (issue #386)" ON)
   if(MEDKIT_OPCUA_BUILD_ALARM_SERVER)
     find_package(Threads REQUIRED)
     include(ExternalProject)
