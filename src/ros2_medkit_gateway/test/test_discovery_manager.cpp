@@ -50,7 +50,7 @@ class DiscoveryManagerTest : public ::testing::Test {
     spin_thread_ = std::thread([this] {
       executor_->spin();
     });
-    sub_exec_ = std::make_shared<Ros2SubscriptionExecutor>(node_, *executor_);
+    sub_exec_ = std::make_shared<Ros2SubscriptionExecutor>(node_);
     serializer_ = std::make_shared<ros2_medkit_serialization::JsonSerializer>();
     topic_provider_ = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_);
     discovery_manager_ = std::make_unique<DiscoveryManager>(node_.get());
@@ -81,6 +81,27 @@ class DiscoveryManagerTest : public ::testing::Test {
   std::unique_ptr<Ros2TopicDataProvider> topic_provider_;
   std::unique_ptr<DiscoveryManager> discovery_manager_;
 };
+
+// @verifies REQ_INTEROP_018
+TEST_F(DiscoveryManagerTest, SetTopicDataProviderNullptrIsAcceptedAfterAttach) {
+  // The discovery manager has a provider attached in SetUp (line 57). The
+  // teardown sequence in main() (commit ab558e0d) calls
+  // GatewayNode::set_topic_data_provider(nullptr), which propagates through
+  // the discovery manager. Confirm that path does not throw and that
+  // subsequent discovery calls still work (no provider just means topic-map
+  // enrichment is skipped).
+  discovery_manager_->set_topic_data_provider(nullptr);
+  EXPECT_NO_THROW({
+    auto components = discovery_manager_->discover_components();
+    (void)components;
+  });
+  // Re-attach must work too.
+  discovery_manager_->set_topic_data_provider(topic_provider_.get());
+  EXPECT_NO_THROW({
+    auto components = discovery_manager_->discover_components();
+    (void)components;
+  });
+}
 
 TEST_F(DiscoveryManagerTest, DiscoverComponents_RuntimeOnlyReturnsHostComponent) {
   // With default config (host info provider enabled), should return single host component

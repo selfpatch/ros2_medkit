@@ -57,7 +57,7 @@ class Ros2SubscriptionExecutorTest : public ::testing::Test {
     cfg.watchdog_threshold = 200ms;
     cfg.watchdog_tick = 50ms;
     cfg.graph_poll_tick = 50ms;
-    sub_exec_ = std::make_unique<Ros2SubscriptionExecutor>(node_, *executor_, cfg);
+    sub_exec_ = std::make_unique<Ros2SubscriptionExecutor>(node_, cfg);
   }
 
   void TearDown() override {

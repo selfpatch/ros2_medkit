@@ -16,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/models/error_info.hpp"
 
 using ros2_medkit_gateway::ErrorInfo;
@@ -30,24 +31,25 @@ TEST(ErrorInfoTest, DefaultConstructs) {
 }
 
 TEST(ErrorInfoTest, BracedInitSetsFields) {
-  ErrorInfo err{"ERR_TOPIC_NOT_FOUND", "topic /foo not found", 404, nlohmann::json{{"topic", "/foo"}}};
-  EXPECT_EQ(err.code, "ERR_TOPIC_NOT_FOUND");
+  ErrorInfo err{ros2_medkit_gateway::ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE, "topic /foo not found", 404,
+                nlohmann::json{{"topic", "/foo"}}};
+  EXPECT_EQ(err.code, ros2_medkit_gateway::ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE);
   EXPECT_EQ(err.message, "topic /foo not found");
   EXPECT_EQ(err.http_status, 404);
   EXPECT_EQ(err.params["topic"], "/foo");
 }
 
 TEST(ErrorInfoTest, CopyableAndMovable) {
-  ErrorInfo a{"ERR_INTERNAL", "boom", 500, nlohmann::json::object()};
+  ErrorInfo a{ros2_medkit_gateway::ERR_INTERNAL_ERROR, "boom", 500, nlohmann::json::object()};
   ErrorInfo b = a;
-  EXPECT_EQ(b.code, "ERR_INTERNAL");
+  EXPECT_EQ(b.code, ros2_medkit_gateway::ERR_INTERNAL_ERROR);
   ErrorInfo c = std::move(a);
   EXPECT_EQ(c.message, "boom");
 }
 
 TEST(ErrorInfoTest, HttpStatusIsInSovdRange) {
   // Not a runtime check - documents the contract. SOVD spec requires 4xx/5xx.
-  ErrorInfo err{"ERR_BAD_REQUEST", "malformed", 400, nlohmann::json::object()};
+  ErrorInfo err{ros2_medkit_gateway::ERR_INVALID_REQUEST, "malformed", 400, nlohmann::json::object()};
   EXPECT_GE(err.http_status, 400);
   EXPECT_LT(err.http_status, 600);
 }
