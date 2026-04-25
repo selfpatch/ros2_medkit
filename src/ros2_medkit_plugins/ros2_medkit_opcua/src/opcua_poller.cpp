@@ -74,7 +74,8 @@ std::vector<OpcuaClient::EventFieldSpec> build_alarm_event_select_specs() {
       {opcua::NodeId(0, kAlarmConditionType), {{0, "ActiveState"}, {0, "Id"}}, UA_ATTRIBUTEID_VALUE},
       {opcua::NodeId(0, kAcknowledgeableConditionType), {{0, "AckedState"}, {0, "Id"}}, UA_ATTRIBUTEID_VALUE},
       {opcua::NodeId(0, kAcknowledgeableConditionType), {{0, "ConfirmedState"}, {0, "Id"}}, UA_ATTRIBUTEID_VALUE},
-      {opcua::NodeId(0, kAlarmConditionType), {{0, "ShelvingState"}, {0, "CurrentState"}, {0, "Id"}},
+      {opcua::NodeId(0, kAlarmConditionType),
+       {{0, "ShelvingState"}, {0, "CurrentState"}, {0, "Id"}},
        UA_ATTRIBUTEID_VALUE},
       {opcua::NodeId(0, kConditionType), {{0, "BranchId"}}, UA_ATTRIBUTEID_VALUE},
   };
@@ -317,10 +318,9 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     // unset / unknown Id is interpreted as Unshelved - some servers do not
     // initialize the Id property when the optional ShelvingState field is
     // attached, and we should not treat that as suppression.
-    bool is_known_shelved = (shelv_state.getNamespaceIndex() == 0 &&
-                             shelv_state.getIdentifierType() == opcua::NodeIdType::Numeric) &&
-                            (shelv_state.getIdentifierAs<uint32_t>() == 2930u ||
-                             shelv_state.getIdentifierAs<uint32_t>() == 2932u);
+    bool is_known_shelved =
+        (shelv_state.getNamespaceIndex() == 0 && shelv_state.getIdentifierType() == opcua::NodeIdType::Numeric) &&
+        (shelv_state.getIdentifierAs<uint32_t>() == 2930u || shelv_state.getIdentifierAs<uint32_t>() == 2932u);
     input.shelved = is_known_shelved;
   } else {
     input.shelved = false;
@@ -363,8 +363,7 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     // Track the latest EventId for spec-compliant Acknowledge calls.
     if (values[kFieldEventId].isType<opcua::ByteString>()) {
       it->second.latest_event_id = values[kFieldEventId].getScalarCopy<opcua::ByteString>();
-      std::cerr << "[opcua_poller] captured EventId len="
-                << it->second.latest_event_id.length() << " hex=";
+      std::cerr << "[opcua_poller] captured EventId len=" << it->second.latest_event_id.length() << " hex=";
       const auto * bytes = it->second.latest_event_id.data();
       for (size_t i = 0; i < std::min<size_t>(it->second.latest_event_id.length(), 16); ++i) {
         char buf[3];
@@ -378,9 +377,10 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
 
     auto outcome = AlarmStateMachine::compute(prev_status, input);
     std::cerr << "[opcua_poller] state machine: enabled=" << input.enabled_state << " active=" << input.active_state
-              << " acked=" << input.acked_state << " confirmed=" << input.confirmed_state << " shelved=" << input.shelved
-              << " branch=" << input.branch_id_present << " prev=" << static_cast<int>(prev_status)
-              << " action=" << static_cast<int>(outcome.action) << std::endl;
+              << " acked=" << input.acked_state << " confirmed=" << input.confirmed_state
+              << " shelved=" << input.shelved << " branch=" << input.branch_id_present
+              << " prev=" << static_cast<int>(prev_status) << " action=" << static_cast<int>(outcome.action)
+              << std::endl;
     it->second.last_status = outcome.next_status;
     runtime_snapshot = it->second;
 

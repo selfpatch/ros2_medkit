@@ -693,8 +693,7 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
   // hand to the server. Trace-level diagnostic; can be tightened to a
   // ROS RCLCPP_DEBUG once the issue #386 server interop is stable.
   std::cerr << "[opcua_client] add_event_monitored_item: subId=" << subscription_id
-            << " nodeId=" << source_node.toString() << " selectClauses=" << (select_specs.size() + 3)
-            << std::endl;
+            << " nodeId=" << source_node.toString() << " selectClauses=" << (select_specs.size() + 3) << std::endl;
 
   UA_MonitoredItemCreateResult result =
       UA_Client_MonitoredItems_createEvent(impl_->client.handle(), subscription_id, UA_TIMESTAMPSTORETURN_BOTH, item,
