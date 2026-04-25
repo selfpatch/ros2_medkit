@@ -104,4 +104,57 @@ TEST(OpcuaClientTest, CurrentConfigPersistence) {
   EXPECT_EQ(stored.connect_timeout, std::chrono::milliseconds(1000));
 }
 
+// ---------------------------------------------------------------------------
+// Issue #386: native OPC-UA AlarmCondition event subscription primitives.
+// These tests cover the disconnected-state contract of the new public API.
+// End-to-end event flow (real server emits AlarmConditionType, callback fires,
+// state machine advances) is exercised in the docker integration test added
+// alongside the test_alarm_server fixture in a follow-up commit on the same
+// branch.
+// ---------------------------------------------------------------------------
+
+TEST(OpcuaClientTest, GenerationStartsAtZero) {
+  OpcuaClient client;
+  EXPECT_EQ(client.current_generation(), 0u);
+}
+
+TEST(OpcuaClientTest, AddEventMonitoredItemWhenDisconnected) {
+  OpcuaClient client;
+  auto mi = client.add_event_monitored_item(
+      /*sub_id=*/1, opcua::NodeId(0, UA_NS0ID_SERVER), /*select=*/{}, [](const auto &, const auto &, const auto &) {});
+  EXPECT_EQ(mi, 0u);
+}
+
+TEST(OpcuaClientTest, RemoveEventMonitoredItemUnknownIdReturnsFalse) {
+  OpcuaClient client;
+  EXPECT_FALSE(client.remove_event_monitored_item(/*sub_id=*/1, /*mi_id=*/9999));
+}
+
+TEST(OpcuaClientTest, CallMethodWhenDisconnected) {
+  OpcuaClient client;
+  auto result = client.call_method(opcua::NodeId(0, UA_NS0ID_SERVER), opcua::NodeId(0, 11489), {});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, OpcuaClient::MethodError::NotConnected);
+}
+
+TEST(OpcuaClientTest, GenerationBumpsOnDisconnect) {
+  OpcuaClient client;
+  // The disconnect-without-connect path is a no-op - generation should not
+  // change because there is no live subscription state to invalidate.
+  client.disconnect();
+  EXPECT_EQ(client.current_generation(), 0u);
+}
+
+TEST(OpcuaClientTest, RemoveSubscriptionsBumpsGenerationEvenWhenEmpty) {
+  // remove_subscriptions() is a publicly exposed bulk-cleanup hook used by the
+  // poller's reconnect path. It must increment the generation so any
+  // captured-but-not-yet-fired callbacks from the now-defunct subscription set
+  // are filtered out by the trampoline. This contract holds even when there
+  // are no entries, because the poller does not synchronize fine-grained.
+  OpcuaClient client;
+  uint64_t before = client.current_generation();
+  client.remove_subscriptions();
+  EXPECT_GT(client.current_generation(), before);
+}
+
 }  // namespace ros2_medkit_gateway

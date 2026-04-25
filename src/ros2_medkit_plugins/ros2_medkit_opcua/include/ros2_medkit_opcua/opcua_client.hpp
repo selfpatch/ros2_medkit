@@ -113,6 +113,66 @@ class OpcuaClient {
   /// Remove all subscriptions
   void remove_subscriptions();
 
+  /// One element of an OPC-UA SimpleAttributeOperand browse path.
+  struct EventField {
+    uint16_t namespace_index{0};
+    std::string name;
+  };
+
+  /// Browse path for an event field, e.g. ``{{0, "EnabledState"}, {0, "Id"}}``.
+  using EventBrowsePath = std::vector<EventField>;
+
+  /// Callback invoked when an OPC-UA event arrives on a monitored item.
+  /// @param select_values Values for caller-requested fields, in the order of
+  ///        ``select_browse_paths`` passed to ``add_event_monitored_item``.
+  /// @param source_node Always-included SourceNode (extracted from the event
+  ///        payload; null NodeId if the server omitted it).
+  /// @param event_type Always-included EventType (null NodeId if absent).
+  using EventCallback = std::function<void(const std::vector<opcua::Variant> & select_values,
+                                           const opcua::NodeId & source_node, const opcua::NodeId & event_type)>;
+
+  /// Get the current subscription generation. Increments on every detected
+  /// disconnect (clean ``disconnect()`` or transport-level drop). Used by the
+  /// internal event trampoline to drop callbacks fired from defunct
+  /// subscriptions.
+  uint64_t current_generation() const;
+
+  /// Add an event-based monitored item to an existing subscription.
+  ///
+  /// Wraps ``UA_Client_MonitoredItems_createEvent`` from the open62541 C API
+  /// because ``open62541pp`` v0.16 has no native EventFilter / event
+  /// subscription support. ``EventType`` and ``SourceNode`` are always
+  /// prepended to the EventFilter select clauses; they are extracted from the
+  /// payload and delivered as separate callback parameters, not in
+  /// ``select_values``.
+  ///
+  /// @return Server-assigned monitored item ID, or 0 on failure.
+  uint32_t add_event_monitored_item(uint32_t subscription_id, const opcua::NodeId & source_node,
+                                    const std::vector<EventBrowsePath> & select_browse_paths, EventCallback callback);
+
+  /// Remove a previously-added event monitored item. The server is asked to
+  /// delete the item synchronously; the callback context is freed only after
+  /// the server ACK so in-flight C callbacks cannot dangle.
+  /// @return true if the item was found and removed cleanly.
+  bool remove_event_monitored_item(uint32_t subscription_id, uint32_t mi_id);
+
+  /// OPC-UA Method call error classification.
+  enum class MethodError { NotConnected, MethodNotFound, InvalidArgument, MethodTimeout, TransportError };
+
+  /// Detailed Method call error info.
+  struct MethodErrorInfo {
+    MethodError code;
+    std::string message;
+  };
+
+  /// Synchronously call an OPC-UA Method on a target object.
+  /// Used by ConditionRefresh, Acknowledge, and Confirm operations on
+  /// AlarmConditionType nodes (issue #386).
+  /// @return Output arguments on success, MethodErrorInfo on failure.
+  tl::expected<std::vector<opcua::Variant>, MethodErrorInfo>
+  call_method(const opcua::NodeId & object_id, const opcua::NodeId & method_id,
+              const std::vector<opcua::Variant> & input_args);
+
   /// Get server description string (for status endpoint)
   std::string server_description() const;
 
