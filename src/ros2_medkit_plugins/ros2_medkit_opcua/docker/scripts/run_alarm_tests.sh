@@ -4,11 +4,13 @@
 # Integration test for the native OPC-UA AlarmConditionType subscription
 # bridge (issue #386). Boots test_alarm_server, points the gateway at it,
 # fires alarms via the server's stdin CLI, and asserts that the gateway's
-# SOVD /faults endpoint reflects the expected lifecycle.
+# SOVD ``/faults`` endpoint reflects the expected lifecycle.
 #
-# Designed to run from CI alongside the existing OpenPLC threshold-mode
-# integration. Both suites can run in parallel because each owns its own
-# docker network and ports.
+# Acknowledge / Confirm round-trips go through the SOVD HTTP path
+# (POST /apps/{entity}/operations/{op}/executions) so that the medkit
+# implementation - lookup_condition + EventId tracking + call_method on the
+# inherited AcknowledgeableConditionType methods - is exercised end-to-end,
+# not bypassed via the server stdin shortcuts.
 
 set -euo pipefail
 
@@ -40,6 +42,29 @@ wait_for() {
   return 1
 }
 
+# Poll the gateway until the named fault disappears (404) or its status moves
+# out of CONFIRMED/HEALED into something quiescent.
+wait_no_fault() {
+  local fault_code="$1" deadline="${2:-30}"
+  local url="http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/${fault_code}"
+  for i in $(seq 1 "${deadline}"); do
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' "${url}" || echo '000')
+    if [[ "${code}" == "404" ]]; then
+      return 0
+    fi
+    local status
+    status=$(curl -sf "${url}" 2>/dev/null | jq -r '.status // empty')
+    if [[ "${status}" == "CLEARED" || -z "${status}" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "wait_no_fault timed out: ${fault_code} still present" >&2
+  curl -sf "${url}" 2>/dev/null | jq . >&2 || true
+  return 1
+}
+
 assert_status() {
   local fault_code="$1" expected="$2"
   local actual
@@ -50,6 +75,40 @@ assert_status() {
     return 1
   fi
   echo "  OK ${fault_code}: ${actual}"
+}
+
+# Poll the test_alarm_server's stdout (via docker logs) for the latest
+# ``STATE <name>`` line and assert that <key>=<expected_value> appears in it.
+# Used to verify medkit's SOVD ack / confirm POSTs actually flipped the
+# corresponding state on the OPC-UA server.
+assert_server_state() {
+  local condition="$1" key="$2" expected="$3" deadline="${4:-30}"
+  for i in $(seq 1 "${deadline}"); do
+    local line
+    line=$(docker logs "${SERVER_NAME}" 2>&1 | grep -E "^STATE ${condition} " | tail -1 || true)
+    if [[ "${line}" == *"${key}=${expected}"* ]]; then
+      echo "  OK server ${condition} ${key}=${expected}"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "ASSERT FAILED: server ${condition} ${key} != ${expected}" >&2
+  docker logs "${SERVER_NAME}" 2>&1 | grep -E "^STATE ${condition} " | tail -3 >&2 || true
+  return 1
+}
+
+sovd_post_op() {
+  local op="$1" body="$2"
+  local url="http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/operations/${op}/executions"
+  local code
+  code=$(curl -s -o /tmp/alarm_test_resp.json -w '%{http_code}' \
+              -X POST -H 'Content-Type: application/json' -d "${body}" "${url}")
+  if [[ "${code}" != "200" && "${code}" != "201" ]]; then
+    echo "SOVD POST ${op} failed: HTTP ${code}" >&2
+    cat /tmp/alarm_test_resp.json >&2 || true
+    return 1
+  fi
+  echo "  OK POST ${op} -> ${code}"
 }
 
 cd "${REPO_ROOT}"
@@ -70,7 +129,7 @@ echo "[3/5] Start test_alarm_server (with stdin pipe for CLI commands)"
 SERVER_CTRL=$(mktemp -d)
 mkfifo "${SERVER_CTRL}/stdin"
 # shellcheck disable=SC2094
-docker run -d --rm --name "${SERVER_NAME}" --network "${NET_NAME}" \
+docker run -d --name "${SERVER_NAME}" --network "${NET_NAME}" \
   -i ros2_medkit_alarm_test_server:dev --port "${SERVER_PORT}" \
   < "${SERVER_CTRL}/stdin" >/dev/null
 exec 3>"${SERVER_CTRL}/stdin"
@@ -82,7 +141,7 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-echo "[4/5] Start gateway with alarm-mode node_map"
+echo "[4/5] Start gateway with alarm-mode node_map (3 conditions)"
 mkdir -p /tmp/alarm_test_config
 cat >/tmp/alarm_test_config/alarm_nodes.yaml <<EOF
 area_id: plc_systems
@@ -92,6 +151,12 @@ event_alarms:
   - alarm_source: "ns=2;s=Alarms.Overpressure"
     entity_id: tank_process
     fault_code: PLC_OVERPRESSURE
+  - alarm_source: "ns=2;s=Alarms.Overheat"
+    entity_id: tank_process
+    fault_code: PLC_OVERHEAT
+  - alarm_source: "ns=2;s=Alarms.SensorLost"
+    entity_id: tank_process
+    fault_code: PLC_SENSOR_LOST
 EOF
 
 docker run -d --name "${GATEWAY_NAME}" --network "${NET_NAME}" \
@@ -124,26 +189,93 @@ wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps" \
 
 echo "[5/5] Run alarm scenarios"
 
-echo "  - fire Overpressure (severity=750)"
+echo "  [scenario] fire / SOVD ack / latch / SOVD confirm / clear lifecycle"
 echo "fire Overpressure 750" >&3
 wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults" \
          '.items | map(.code) | contains(["PLC_OVERPRESSURE"])' 30
 assert_status PLC_OVERPRESSURE CONFIRMED
 
-echo "  - ack Overpressure"
-echo "ack Overpressure" >&3
-sleep 1  # allow event to propagate; non-flaky because we re-poll status next
+# Real SOVD ack - exercises lookup_condition + call_method(i=9111) + EventId.
+sovd_post_op acknowledge_fault \
+  '{"fault_code":"PLC_OVERPRESSURE","comment":"e2e ack via SOVD"}'
+assert_server_state Overpressure acked true 30
 
-echo "  - clear Overpressure (latch via Retain=true via 'latch')"
 echo "latch Overpressure" >&3
 wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_OVERPRESSURE" \
          '.status == "HEALED"' 20
 assert_status PLC_OVERPRESSURE HEALED
 
-echo "  - confirm Overpressure"
-echo "confirm Overpressure" >&3
+# Real SOVD confirm - exercises call_method(i=9113) + EventId.
+sovd_post_op confirm_fault \
+  '{"fault_code":"PLC_OVERPRESSURE","comment":"e2e confirm via SOVD"}'
+assert_server_state Overpressure confirmed true 30
+wait_no_fault PLC_OVERPRESSURE 30
+
+echo "  [scenario] shelving suppression"
+echo "fire Overheat 600" >&3
+wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_OVERHEAT" \
+         '.status == "CONFIRMED"' 30
+echo "shelve Overheat" >&3
+wait_no_fault PLC_OVERHEAT 30
+echo "  OK PLC_OVERHEAT suppressed by Shelving"
+echo "unshelve Overheat" >&3
+echo "fire Overheat 700" >&3
+wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_OVERHEAT" \
+         '.status == "CONFIRMED"' 30
+echo "  OK PLC_OVERHEAT re-armed after Unshelve"
+
+echo "  [scenario] disabled alarm suppression"
+echo "fire SensorLost 800" >&3
+wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_SENSOR_LOST" \
+         '.status == "CONFIRMED"' 30
+echo "disable SensorLost" >&3
+wait_no_fault PLC_SENSOR_LOST 30
+echo "  OK PLC_SENSOR_LOST suppressed by EnabledState=false"
+echo "enable SensorLost" >&3
+echo "fire SensorLost 900" >&3
+wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_SENSOR_LOST" \
+         '.status == "CONFIRMED"' 30
+echo "  OK PLC_SENSOR_LOST re-armed after Enable"
+
+echo "  [scenario] reconnect preserves CONFIRMED via ConditionRefresh"
+# Pre-clear Overpressure so the next fire is a fresh CONFIRMED event.
+echo "clear Overpressure" >&3
+wait_no_fault PLC_OVERPRESSURE 30
+echo "fire Overpressure 750" >&3
 wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_OVERPRESSURE" \
-         '.status == "CLEARED" or (.status == "absent")' 20
+         '.status == "CONFIRMED"' 30
+
+# Drop the stdin pipe and stop the server. The gateway should detect the
+# disconnect and back off until the server returns.
+exec 3>&-
+docker stop "${SERVER_NAME}" >/dev/null
+
+# Restart the same server image with the SAME network alias so the gateway's
+# OPC-UA endpoint URL still resolves. The fixture starts with the previous
+# Overpressure condition still ACTIVE in its in-memory state, but the new
+# server process resets its node tree. We instead re-fire the condition
+# immediately after RESTART so the test verifies the gateway's reconnect +
+# subscribe behavior rather than open62541's lack of persistence.
+docker rm -f "${SERVER_NAME}" >/dev/null 2>&1 || true
+mkfifo "${SERVER_CTRL}/stdin2"
+docker run -d --name "${SERVER_NAME}" --network "${NET_NAME}" \
+  -i ros2_medkit_alarm_test_server:dev --port "${SERVER_PORT}" \
+  < "${SERVER_CTRL}/stdin2" >/dev/null
+exec 3>"${SERVER_CTRL}/stdin2"
+for i in $(seq 1 30); do
+  if docker logs "${SERVER_NAME}" 2>&1 | grep -q '^READY '; then
+    break
+  fi
+  sleep 1
+done
+
+# After the server returns the gateway re-runs ``setup_event_subscriptions``
+# (triggered by the OpcuaPoller reconnect path); a fresh fire should make
+# its way through the ConditionRefresh-aware bridge into /faults.
+echo "fire Overpressure 750" >&3
+wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_OVERPRESSURE" \
+         '.status == "CONFIRMED"' 60
+echo "  OK PLC_OVERPRESSURE re-armed after gateway reconnect"
 
 echo "All alarm scenarios passed."
 exec 3>&-

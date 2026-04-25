@@ -47,7 +47,23 @@ struct Condition {
   std::string name;
   UA_NodeId node{};
   UA_NodeId source{};
+  // Local mirror of the OPC-UA state we expose. Kept in lockstep with the
+  // condition node by every handler so the test harness can grep one line
+  // for the truth instead of running a separate OPC-UA browse round-trip.
+  bool active{false};
+  bool acked{true};
+  bool confirmed{true};
+  bool enabled{true};
+  bool shelved{false};
+  bool retain{false};
 };
+
+void log_state(const Condition & c) {
+  std::cout << "STATE " << c.name << " active=" << (c.active ? "true" : "false")
+            << " acked=" << (c.acked ? "true" : "false") << " confirmed=" << (c.confirmed ? "true" : "false")
+            << " enabled=" << (c.enabled ? "true" : "false") << " shelved=" << (c.shelved ? "true" : "false")
+            << " retain=" << (c.retain ? "true" : "false") << std::endl;
+}
 
 std::map<std::string, Condition> g_conditions;
 std::mutex g_mutex;
@@ -57,28 +73,40 @@ void stop_handler(int) {
   g_running = false;
 }
 
-UA_StatusCode add_source(UA_Server * server, const std::string & name, UA_NodeId * out) {
+UA_StatusCode add_source(UA_Server * server, const std::string & name, UA_UInt16 ns, UA_NodeId * out) {
   UA_ObjectAttributes attr = UA_ObjectAttributes_default;
   attr.eventNotifier = 1;
   std::string display = name + "Source";
   attr.displayName = UA_LOCALIZEDTEXT(const_cast<char *>("en"), const_cast<char *>(display.c_str()));
-  UA_QualifiedName qname = UA_QUALIFIEDNAME(0, const_cast<char *>(display.c_str()));
-  UA_StatusCode rc = UA_Server_addObjectNode(server, UA_NODEID_NULL, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+  UA_QualifiedName qname = UA_QUALIFIEDNAME(ns, const_cast<char *>(display.c_str()));
+  // Use a predictable string NodeId ``Alarms.<name>`` in the user namespace so
+  // the gateway's ``alarm_source: "ns=2;s=Alarms.Overpressure"`` config can
+  // address this exact node. Auto-assigned numeric IDs (the previous form)
+  // would not be reproducible across server restarts and would force the test
+  // harness to browse-resolve at runtime.
+  std::string source_id = "Alarms." + name;
+  UA_NodeId requested = UA_NODEID_STRING_ALLOC(ns, source_id.c_str());
+  UA_StatusCode rc = UA_Server_addObjectNode(server, requested, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
                                              UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), qname,
                                              UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE), attr, nullptr, out);
+  UA_NodeId_clear(&requested);
   if (rc != UA_STATUSCODE_GOOD) {
     return rc;
   }
   // The condition source must be a notifier of the Server object so that the
   // A&C subsystem can route events through the standard notification path.
-  return UA_Server_addReference(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER),
-                                UA_NODEID_NUMERIC(0, UA_NS0ID_HASNOTIFIER),
-                                UA_EXPANDEDNODEID_NUMERIC(out->namespaceIndex, out->identifier.numeric), UA_TRUE);
+  UA_ExpandedNodeId target;
+  UA_ExpandedNodeId_init(&target);
+  UA_NodeId_copy(out, &target.nodeId);
+  rc = UA_Server_addReference(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER), UA_NODEID_NUMERIC(0, UA_NS0ID_HASNOTIFIER),
+                              target, UA_TRUE);
+  UA_ExpandedNodeId_clear(&target);
+  return rc;
 }
 
 UA_StatusCode add_condition(UA_Server * server, const std::string & name, UA_UInt16 ns, Condition & out) {
   out.name = name;
-  UA_StatusCode rc = add_source(server, name, &out.source);
+  UA_StatusCode rc = add_source(server, name, ns, &out.source);
   if (rc != UA_STATUSCODE_GOOD) {
     return rc;
   }
@@ -259,33 +287,68 @@ void cli_loop(UA_Server * server) {
       std::cout << "ERR unknown_condition:" << name << std::endl;
       continue;
     }
+    Condition & cref = it->second;
     UA_StatusCode rc = UA_STATUSCODE_BADNOTSUPPORTED;
     if (cmd == "fire") {
       UA_UInt16 sev = 500;
       iss >> sev;
-      rc = handle_fire(server, it->second, sev);
+      rc = handle_fire(server, cref, sev);
+      if (rc == UA_STATUSCODE_GOOD) {
+        cref.active = true;
+        cref.acked = false;
+        cref.confirmed = false;
+        cref.retain = true;
+      }
     } else if (cmd == "clear") {
-      rc = handle_clear(server, it->second);
+      rc = handle_clear(server, cref);
+      if (rc == UA_STATUSCODE_GOOD) {
+        cref.active = false;
+        cref.retain = false;
+      }
     } else if (cmd == "latch") {
-      rc = handle_latch(server, it->second);
+      rc = handle_latch(server, cref);
+      if (rc == UA_STATUSCODE_GOOD) {
+        cref.active = false;
+        cref.retain = true;
+      }
     } else if (cmd == "ack") {
-      rc = handle_ack(server, it->second);
+      rc = handle_ack(server, cref);
+      if (rc == UA_STATUSCODE_GOOD) {
+        cref.acked = true;
+      }
     } else if (cmd == "confirm") {
-      rc = handle_confirm(server, it->second);
+      rc = handle_confirm(server, cref);
+      if (rc == UA_STATUSCODE_GOOD) {
+        cref.confirmed = true;
+        cref.retain = false;
+      }
     } else if (cmd == "shelve") {
-      rc = set_shelving(server, it->second, true);
+      rc = set_shelving(server, cref, true);
+      if (rc == UA_STATUSCODE_GOOD) {
+        cref.shelved = true;
+      }
     } else if (cmd == "unshelve") {
-      rc = set_shelving(server, it->second, false);
+      rc = set_shelving(server, cref, false);
+      if (rc == UA_STATUSCODE_GOOD) {
+        cref.shelved = false;
+      }
     } else if (cmd == "disable") {
-      rc = handle_enable(server, it->second, false);
+      rc = handle_enable(server, cref, false);
+      if (rc == UA_STATUSCODE_GOOD) {
+        cref.enabled = false;
+      }
     } else if (cmd == "enable") {
-      rc = handle_enable(server, it->second, true);
+      rc = handle_enable(server, cref, true);
+      if (rc == UA_STATUSCODE_GOOD) {
+        cref.enabled = true;
+      }
     } else {
       std::cout << "ERR unknown_cmd:" << cmd << std::endl;
       continue;
     }
     if (rc == UA_STATUSCODE_GOOD) {
       std::cout << "OK " << name << std::endl;
+      log_state(cref);
     } else {
       std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << std::endl;
     }
