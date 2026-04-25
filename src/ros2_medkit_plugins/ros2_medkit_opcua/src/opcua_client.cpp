@@ -655,12 +655,22 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
   item.requestedParameters.queueSize = 100;
   UA_ExtensionObject_setValueNoDelete(&item.requestedParameters.filter, &filter, &UA_TYPES[UA_TYPES_EVENTFILTER]);
 
+  // Debug log so integration-test failures surface the exact NodeId we
+  // hand to the server. Trace-level diagnostic; can be tightened to a
+  // ROS RCLCPP_DEBUG once the issue #386 server interop is stable.
+  std::cerr << "[opcua_client] add_event_monitored_item: subId=" << subscription_id
+            << " nodeId=" << source_node.toString() << " selectClauses=" << (select_browse_paths.size() + 2)
+            << std::endl;
+
   UA_MonitoredItemCreateResult result =
       UA_Client_MonitoredItems_createEvent(impl_->client.handle(), subscription_id, UA_TIMESTAMPSTORETURN_BOTH, item,
                                            raw_ctx, on_event_trampoline_c, /*deleteCallback=*/nullptr);
 
   // Filter members were copied by createEvent; release ours.
   UA_EventFilter_clear(&filter);
+
+  std::cerr << "[opcua_client] createEvent result: status=" << UA_StatusCode_name(result.statusCode)
+            << " miId=" << result.monitoredItemId << std::endl;
 
   if (result.statusCode != UA_STATUSCODE_GOOD) {
     UA_MonitoredItemCreateResult_clear(&result);
