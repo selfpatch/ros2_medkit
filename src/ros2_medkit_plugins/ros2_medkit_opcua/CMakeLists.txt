@@ -203,6 +203,86 @@ if(BUILD_TESTING)
   )
   medkit_set_test_domain(test_opcua_client)
 
+  # Issue #386: pure-function state machine tests. Header-only target -
+  # no opcua dependency at link time so it runs fast and is sanitizer
+  # clean independent of the open62541pp build flavour.
+  ament_add_gtest(test_alarm_state_machine
+    test/test_alarm_state_machine.cpp
+  )
+  target_include_directories(test_alarm_state_machine PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_set_test_domain(test_alarm_state_machine)
+
+  # ---- test_alarm_server fixture ------------------------------------------
+  # Standalone OPC-UA server emitting AlarmConditionType events for
+  # integration testing of native alarm subscriptions (issue #386).
+  #
+  # The plugin's main open62541pp build is configured with
+  # UA_NAMESPACE_ZERO=REDUCED and UA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS=OFF
+  # because the runtime client path uses neither. Re-enabling alarms there
+  # would force every consumer of open62541pp to pull in the full namespace 0
+  # (~5MB of generated source) and the EXPERIMENTAL A&C subsystem.
+  #
+  # Instead we build a second open62541 statically via ExternalProject_Add
+  # using the source already on disk from FetchContent, pinned to FULL ns0
+  # and alarms ON. The fixture binary links only against this private copy.
+  # NOTE: defaults OFF until the ExternalProject linker issue with
+  # ``namespace0_generated`` is resolved. Tests that use this fixture set
+  # the flag to ON in their docker integration script.
+  option(MEDKIT_OPCUA_BUILD_ALARM_SERVER
+    "Build the OPC-UA AlarmCondition test fixture server (issue #386)" OFF)
+  if(MEDKIT_OPCUA_BUILD_ALARM_SERVER)
+    find_package(Threads REQUIRED)
+    include(ExternalProject)
+    set(_alarm_o62_src "${open62541pp_SOURCE_DIR}/3rdparty/open62541")
+    set(_alarm_o62_install "${CMAKE_BINARY_DIR}/_alarm_open62541")
+    externalproject_add(alarm_open62541_ep
+      SOURCE_DIR "${_alarm_o62_src}"
+      PREFIX "${CMAKE_BINARY_DIR}/_alarm_open62541_ep"
+      INSTALL_DIR "${_alarm_o62_install}"
+      CMAKE_ARGS
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_INSTALL_PREFIX=${_alarm_o62_install}
+        -DBUILD_SHARED_LIBS=OFF
+        -DUA_ENABLE_SUBSCRIPTIONS_EVENTS=ON
+        -DUA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS=ON
+        -DUA_NAMESPACE_ZERO=FULL
+        -DUA_BUILD_EXAMPLES=OFF
+        -DUA_BUILD_TOOLS=OFF
+        -DUA_FORCE_WERROR=OFF
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_C_FLAGS=-w
+      # Serial build avoids a -j race in open62541's Ninja-style codegen
+      # where a parallel writer can clobber namespace0_generated.c.o.d
+      # before the .d file is materialized. The build is one-shot, the
+      # 30-60s overhead is well worth predictability.
+      BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR>
+      BUILD_BYPRODUCTS "${_alarm_o62_install}/lib/libopen62541.a"
+      UPDATE_DISCONNECTED 1
+    )
+    set(_alarm_o62_lib "${_alarm_o62_install}/lib/libopen62541.a")
+    set(_alarm_o62_include "${_alarm_o62_install}/include")
+    file(MAKE_DIRECTORY "${_alarm_o62_include}")
+
+    add_executable(test_alarm_server
+      test/fixtures/test_alarm_server/test_alarm_server.cpp)
+    add_dependencies(test_alarm_server alarm_open62541_ep)
+    target_include_directories(test_alarm_server SYSTEM PRIVATE
+      "${_alarm_o62_include}")
+    target_link_libraries(test_alarm_server PRIVATE
+      "${_alarm_o62_lib}" Threads::Threads)
+    set_target_properties(test_alarm_server PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    target_compile_options(test_alarm_server PRIVATE -w)
+
+    install(TARGETS test_alarm_server
+      RUNTIME DESTINATION lib/${PROJECT_NAME})
+    install(PROGRAMS
+      test/fixtures/test_alarm_server/smoke_test.py
+      DESTINATION lib/${PROJECT_NAME})
+  endif()
+
   ros2_medkit_relax_vendor_warnings()
 endif()
 

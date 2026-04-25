@@ -33,6 +33,34 @@ struct AlarmConfig {
   bool above_threshold{true};  // true = alarm when value > threshold
 };
 
+/// Configuration for a native OPC-UA AlarmConditionType event subscription
+/// (issue #386). The plugin subscribes to events emitted from
+/// ``alarm_source`` and bridges them through ``AlarmStateMachine`` into
+/// SOVD faults. Mutually exclusive with the threshold-based ``AlarmConfig``
+/// on a single ``NodeMapEntry``.
+struct AlarmEventConfig {
+  /// OPC-UA NodeId of the source node emitting the AlarmConditionType
+  /// events (typically the parent Object that owns the condition, e.g.
+  /// "ns=2;s=Tank.Pressure" or the Server object for system-wide alarms).
+  std::string source_node_id_str;
+  opcua::NodeId source_node_id;
+
+  /// SOVD entity that should host the resulting fault.
+  std::string entity_id;
+
+  /// SOVD fault code (e.g. ``PLC_OVERPRESSURE``).
+  std::string fault_code;
+
+  /// Optional severity override. When empty, ``AlarmStateMachine`` derives
+  /// the SOVD severity bucket from the event's ``Severity`` (1-1000) per
+  /// the convention documented in design/index.rst.
+  std::string severity_override;
+
+  /// Optional friendly message override; falls back to the event's
+  /// ``Message`` field when empty.
+  std::string message_override;
+};
+
 /// Mapping entry: OPC-UA NodeId -> SOVD entity data point
 struct NodeMapEntry {
   std::string node_id_str;          // OPC-UA node ID string (e.g., "ns=1;s=TankLevel")
@@ -90,8 +118,17 @@ class NodeMap {
   /// Find entry by OPC-UA node ID string
   const NodeMapEntry * find_by_node_id(const std::string & node_id_str) const;
 
-  /// Get all entries that have alarm configuration
+  /// Get all entries that have threshold-based alarm configuration
   std::vector<const NodeMapEntry *> alarm_entries() const;
+
+  /// Get all native OPC-UA AlarmConditionType event-mode entries (issue #386).
+  const std::vector<AlarmEventConfig> & event_alarms() const {
+    return event_alarms_;
+  }
+
+  /// Find an event-mode alarm by ``(entity_id, fault_code)`` (used by the
+  /// SOVD ``acknowledge_fault`` / ``confirm_fault`` operations).
+  const AlarmEventConfig * find_event_alarm(const std::string & entity_id, const std::string & fault_code) const;
 
   /// Get derived SOVD entity definitions
   const std::vector<PlcEntityDef> & entity_defs() const {
@@ -143,6 +180,13 @@ class NodeMap {
   std::vector<PlcEntityDef> entity_defs_;
   std::unordered_map<std::string, std::vector<size_t>> entity_index_;  // entity_id -> entry indices
   std::unordered_map<std::string, size_t> node_id_index_;              // node_id_str -> entry index
+
+  // Issue #386: native OPC-UA AlarmConditionType subscriptions, loaded from
+  // top-level ``event_alarms:`` in the YAML. Stored separately from
+  // ``entries_`` because event-mode alarms do not have a scalar node to
+  // poll; their entity definitions are merged into ``entity_defs_`` via
+  // build_entity_defs() so SOVD discovery is unaffected.
+  std::vector<AlarmEventConfig> event_alarms_;
 
   std::string area_id_ = "plc_systems";
   std::string area_name_ = "PLC Systems";

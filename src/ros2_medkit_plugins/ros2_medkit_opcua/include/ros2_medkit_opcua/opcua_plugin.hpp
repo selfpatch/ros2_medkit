@@ -113,6 +113,9 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // Alarm -> Fault bridge
   void on_alarm_change(const std::string & fault_code, const AlarmConfig & config, bool active);
 
+  // Issue #386: native AlarmConditionType event lifecycle bridge.
+  void on_event_alarm(const AlarmEventDelivery & delivery);
+
   // Report/clear fault via ROS 2 service (private helpers, not the FaultProvider overrides)
   void send_report_fault(const std::string & entity_id, const std::string & fault_code,
                          const std::string & severity_str, const std::string & message);

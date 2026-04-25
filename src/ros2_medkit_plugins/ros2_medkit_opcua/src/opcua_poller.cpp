@@ -16,9 +16,79 @@
 
 #include <cmath>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
+#include <utility>
+
+#include <open62541/types.h>
 
 namespace ros2_medkit_gateway {
+
+namespace {
+
+// EventType NodeIds for ConditionRefresh bracketing per OPC-UA Part 9 §5.5.7
+// (RefreshStartEventType i=2787, RefreshEndEventType i=2788).
+constexpr uint32_t kRefreshStartEventTypeId = 2787;
+constexpr uint32_t kRefreshEndEventTypeId = 2788;
+
+// ShelvingState.CurrentState.Id NodeId for "Unshelved" state per §5.8.16.
+// Anything other than this (TimedShelved=2930, OneShotShelved=2932) means
+// the alarm is operator-suppressed.
+constexpr uint32_t kShelvedStateUnshelved = 2929;
+
+// EventFilter select-clause indices used by the AlarmCondition trampoline.
+// Order MUST match build_alarm_event_select_paths() below; the trampoline
+// reads positionally because OPC-UA does not return field names with the
+// notification.
+constexpr size_t kFieldConditionId = 0;
+constexpr size_t kFieldEventId = 1;
+constexpr size_t kFieldSeverity = 2;
+constexpr size_t kFieldMessage = 3;
+constexpr size_t kFieldEnabledState = 4;
+constexpr size_t kFieldActiveState = 5;
+constexpr size_t kFieldAckedState = 6;
+constexpr size_t kFieldConfirmedState = 7;
+constexpr size_t kFieldShelvingState = 8;
+constexpr size_t kFieldBranchId = 9;
+constexpr size_t kAlarmFieldCount = 10;
+
+std::vector<OpcuaClient::EventBrowsePath> build_alarm_event_select_paths() {
+  return {
+      {{0, "ConditionId"}},
+      {{0, "EventId"}},
+      {{0, "Severity"}},
+      {{0, "Message"}},
+      {{0, "EnabledState"}, {0, "Id"}},
+      {{0, "ActiveState"}, {0, "Id"}},
+      {{0, "AckedState"}, {0, "Id"}},
+      {{0, "ConfirmedState"}, {0, "Id"}},
+      {{0, "ShelvingState"}, {0, "CurrentState"}, {0, "Id"}},
+      {{0, "BranchId"}},
+  };
+}
+
+// Extract a scalar of type T from a Variant, returning the default if absent.
+template <class T>
+T variant_or(const opcua::Variant & v, T fallback) {
+  if (v.isType<T>()) {
+    return v.getScalarCopy<T>();
+  }
+  return fallback;
+}
+
+// Decode a LocalizedText event field to plain UTF-8 (Message uses LT).
+std::string variant_to_localized_text(const opcua::Variant & v) {
+  if (v.isType<opcua::LocalizedText>()) {
+    auto lt = v.getScalarCopy<opcua::LocalizedText>();
+    return std::string(lt.getText());
+  }
+  if (v.isType<opcua::String>()) {
+    return std::string(v.getScalarCopy<opcua::String>());
+  }
+  return "";
+}
+
+}  // namespace
 
 OpcuaPoller::OpcuaPoller(OpcuaClient & client, const NodeMap & node_map) : client_(client), node_map_(node_map) {
 }
@@ -38,6 +108,12 @@ void OpcuaPoller::start(const PollerConfig & config) {
   // Try subscription mode first
   if (config_.prefer_subscriptions) {
     setup_subscriptions();
+  }
+
+  // Issue #386: subscribe to native AlarmConditionType events. Independent
+  // of data-change subscriptions; runs whenever event_alarms are configured.
+  if (!node_map_.event_alarms().empty()) {
+    setup_event_subscriptions();
   }
 
   // Start poll/reconnect thread regardless (handles reconnection and poll fallback)
@@ -70,6 +146,25 @@ std::optional<OpcuaValue> OpcuaPoller::get_value(const std::string & node_id_str
 void OpcuaPoller::set_alarm_callback(AlarmChangeCallback callback) {
   std::lock_guard<std::mutex> lock(alarm_mutex_);
   alarm_callback_ = std::move(callback);
+}
+
+void OpcuaPoller::set_event_alarm_callback(EventAlarmCallback callback) {
+  if (running_.load()) {
+    throw std::logic_error("set_event_alarm_callback must be called before start()");
+  }
+  std::lock_guard<std::mutex> lock(event_alarm_callback_mutex_);
+  event_alarm_callback_ = std::move(callback);
+}
+
+std::optional<ConditionRuntime> OpcuaPoller::lookup_condition(const std::string & entity_id,
+                                                              const std::string & fault_code) const {
+  std::shared_lock lock(conditions_mutex_);
+  for (const auto & [cid_str, runtime] : conditions_) {
+    if (runtime.entity_id == entity_id && runtime.fault_code == fault_code) {
+      return runtime;
+    }
+  }
+  return std::nullopt;
 }
 
 void OpcuaPoller::set_poll_callback(PollCallback callback) {
@@ -106,6 +201,189 @@ void OpcuaPoller::setup_subscriptions() {
   }
 }
 
+void OpcuaPoller::setup_event_subscriptions() {
+  // Issue #386: one dedicated subscription for AlarmCondition events; uses
+  // a default no-op data callback because we wire MIs of EVENTNOTIFIER
+  // attribute, not data-change MIs. The EventCallback bound below is what
+  // actually receives notifications.
+  if (event_subscription_id_ != 0) {
+    // Already configured (reconnect path will re-create after disconnect
+    // bumps the generation counter, so we should not get here twice on the
+    // same logical session). Defensive: skip silently.
+    return;
+  }
+
+  event_subscription_id_ = client_.create_subscription(config_.subscription_interval_ms,
+                                                       [](const std::string &, const OpcuaValue &) { /* no-op */ });
+  if (event_subscription_id_ == 0) {
+    return;
+  }
+
+  const auto select_paths = build_alarm_event_select_paths();
+  event_monitored_item_ids_.clear();
+
+  for (const auto & cfg : node_map_.event_alarms()) {
+    auto callback = [this, &cfg](const std::vector<opcua::Variant> & values, const opcua::NodeId & source_node,
+                                 const opcua::NodeId & event_type) {
+      on_event(cfg, values, source_node, event_type);
+    };
+    uint32_t mi_id =
+        client_.add_event_monitored_item(event_subscription_id_, cfg.source_node_id, select_paths, std::move(callback));
+    if (mi_id != 0) {
+      event_monitored_item_ids_.push_back(mi_id);
+    }
+  }
+
+  // Fire ConditionRefresh so the server pushes any conditions that fired
+  // before our subscription started (Part 9 §5.5.7 mandates the bracketing
+  // RefreshStartEvent / RefreshEndEvent which we treat as ordinary events
+  // tagged by EventType).
+  if (!event_monitored_item_ids_.empty()) {
+    condition_refresh();
+  }
+}
+
+void OpcuaPoller::condition_refresh() {
+  // Server object NodeId (i=2253) hosts the ConditionRefresh method
+  // (i=3875 - per Part 9 §5.5.7). We use the standard NodeId; servers that
+  // diverge from the spec (rare) will return BadMethodInvalid which is
+  // logged but does not abort subscribing.
+  static constexpr uint32_t kServerObjectId = 2253;
+  static constexpr uint32_t kConditionRefreshMethodId = 3875;
+  std::vector<opcua::Variant> args;
+  args.push_back(opcua::Variant::fromScalar(static_cast<uint32_t>(event_subscription_id_)));
+  auto result =
+      client_.call_method(opcua::NodeId(0, kServerObjectId), opcua::NodeId(0, kConditionRefreshMethodId), args);
+  if (!result.has_value()) {
+    // Not fatal - many test servers do not implement ConditionRefresh.
+    // Live notifications will still flow once conditions transition.
+  }
+}
+
+void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua::Variant> & values,
+                           const opcua::NodeId & /*source_node*/, const opcua::NodeId & event_type) {
+  // Detect ConditionRefresh bracketing per Part 9 §5.5.7. The flag is for
+  // diagnostics only; the state machine itself does not need to know
+  // because RefreshStart / RefreshEnd notifications carry no condition
+  // payload, so positional-empty values trip the early-return below.
+  if (event_type.getNamespaceIndex() == 0 && event_type.getIdentifierType() == opcua::NodeIdType::Numeric) {
+    auto numeric = event_type.getIdentifierAs<uint32_t>();
+    if (numeric == kRefreshStartEventTypeId) {
+      condition_refresh_in_progress_.store(true, std::memory_order_release);
+      return;
+    }
+    if (numeric == kRefreshEndEventTypeId) {
+      condition_refresh_in_progress_.store(false, std::memory_order_release);
+      return;
+    }
+  }
+
+  if (values.size() < kAlarmFieldCount) {
+    // Server returned fewer fields than our filter requested - typical when
+    // BadAttributeIdInvalid was returned for one or more select clauses.
+    // We need at minimum the state fields to make a decision; bail to
+    // avoid garbage transitions.
+    return;
+  }
+
+  AlarmEventInput input;
+  input.enabled_state = variant_or<bool>(values[kFieldEnabledState], true);
+  input.active_state = variant_or<bool>(values[kFieldActiveState], false);
+  input.acked_state = variant_or<bool>(values[kFieldAckedState], false);
+  input.confirmed_state = variant_or<bool>(values[kFieldConfirmedState], false);
+
+  // ShelvingState.CurrentState.Id is itself a NodeId (one of i=2929/2930/
+  // 2932). Anything other than Unshelved => alarm is operator-suppressed.
+  if (values[kFieldShelvingState].isType<opcua::NodeId>()) {
+    auto shelv_state = values[kFieldShelvingState].getScalarCopy<opcua::NodeId>();
+    input.shelved =
+        !(shelv_state.getNamespaceIndex() == 0 && shelv_state.getIdentifierType() == opcua::NodeIdType::Numeric &&
+          shelv_state.getIdentifierAs<uint32_t>() == kShelvedStateUnshelved);
+  } else {
+    input.shelved = false;
+  }
+
+  // BranchId is a NodeId; null branch maps to identifier i=0 in namespace
+  // 0. Either an empty NodeId (server omitted) or the canonical null
+  // counts as "live state" for the bridge.
+  if (values[kFieldBranchId].isType<opcua::NodeId>()) {
+    auto branch = values[kFieldBranchId].getScalarCopy<opcua::NodeId>();
+    bool is_null = branch.getNamespaceIndex() == 0 && branch.getIdentifierType() == opcua::NodeIdType::Numeric &&
+                   branch.getIdentifierAs<uint32_t>() == 0u;
+    input.branch_id_present = !is_null;
+  } else {
+    input.branch_id_present = false;
+  }
+
+  // Resolve / create the per-condition runtime entry. We key on the
+  // ConditionId stringForm so distinct condition instances within the same
+  // event source remain separate.
+  opcua::NodeId condition_id;
+  if (values[kFieldConditionId].isType<opcua::NodeId>()) {
+    condition_id = values[kFieldConditionId].getScalarCopy<opcua::NodeId>();
+  }
+  std::string condition_id_str = condition_id.toString();
+
+  ConditionRuntime runtime_snapshot;
+  SovdAlarmStatus prev_status;
+  {
+    std::unique_lock lock(conditions_mutex_);
+    auto it = conditions_.find(condition_id_str);
+    if (it == conditions_.end()) {
+      ConditionRuntime fresh;
+      fresh.condition_id = condition_id;
+      fresh.entity_id = cfg.entity_id;
+      fresh.fault_code = cfg.fault_code;
+      fresh.last_status = SovdAlarmStatus::Suppressed;
+      auto inserted = conditions_.emplace(condition_id_str, std::move(fresh));
+      it = inserted.first;
+    }
+    prev_status = it->second.last_status;
+
+    // Track the latest EventId for spec-compliant Acknowledge calls.
+    if (values[kFieldEventId].isType<opcua::ByteString>()) {
+      it->second.latest_event_id = values[kFieldEventId].getScalarCopy<opcua::ByteString>();
+    }
+
+    auto outcome = AlarmStateMachine::compute(prev_status, input);
+    it->second.last_status = outcome.next_status;
+    runtime_snapshot = it->second;
+
+    if (outcome.action == AlarmAction::NoOp) {
+      // No downstream notification - drop while still holding the lock to
+      // avoid a callback round-trip for redundant events.
+      return;
+    }
+
+    AlarmEventDelivery delivery;
+    delivery.fault_code = cfg.fault_code;
+    delivery.entity_id = cfg.entity_id;
+    delivery.next_status = outcome.next_status;
+    delivery.action = outcome.action;
+    delivery.severity = variant_or<uint16_t>(values[kFieldSeverity], 0);
+    if (!cfg.message_override.empty()) {
+      delivery.message = cfg.message_override;
+    } else {
+      delivery.message = variant_to_localized_text(values[kFieldMessage]);
+    }
+    delivery.condition_id = condition_id_str;
+
+    // Release lock BEFORE invoking user callback (which may take its own
+    // locks or block on a ROS service - we must not hold conditions_mutex_
+    // across that).
+    lock.unlock();
+
+    EventAlarmCallback cb_copy;
+    {
+      std::lock_guard cb_lock(event_alarm_callback_mutex_);
+      cb_copy = event_alarm_callback_;
+    }
+    if (cb_copy) {
+      cb_copy(delivery);
+    }
+  }
+}
+
 void OpcuaPoller::on_data_change(const std::string & node_id, const OpcuaValue & value) {
   {
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
@@ -134,6 +412,19 @@ void OpcuaPoller::poll_loop() {
         reconnect_wait = config_.reconnect_interval;  // reset on success
         if (config_.prefer_subscriptions) {
           setup_subscriptions();
+        }
+        // Issue #386: re-subscribe to AlarmCondition events after reconnect
+        // and re-fire ConditionRefresh so we recover any conditions that
+        // changed state while we were offline. The OpcuaClient's
+        // generation counter has already advanced (incremented in
+        // disconnect()/maybe_mark_disconnected), so any stale event
+        // callbacks captured from the previous subscription are filtered
+        // out by the trampoline before re-subscription registers fresh
+        // contexts.
+        event_subscription_id_ = 0;
+        event_monitored_item_ids_.clear();
+        if (!node_map_.event_alarms().empty()) {
+          setup_event_subscriptions();
         }
       } else {
         // Exponential backoff capped at 60s. condition_variable so stop() wakes immediately.
