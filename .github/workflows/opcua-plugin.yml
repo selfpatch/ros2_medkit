@@ -236,8 +236,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install jq + asyncua (smoke test prerequisite)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq python3-pip
+          pip3 install --break-system-packages asyncua
 
       - name: Run alarm integration suite
         run: bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_alarm_tests.sh
