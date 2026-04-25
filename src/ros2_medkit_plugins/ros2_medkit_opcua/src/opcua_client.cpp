@@ -553,8 +553,16 @@ UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventBrowsePath>
   for (size_t i = 0; i < all_paths.size(); ++i) {
     UA_SimpleAttributeOperand & sao = filter.selectClauses[i];
     UA_SimpleAttributeOperand_init(&sao);
-    // typeDefinitionId = BaseEventType (i=2041)
-    sao.typeDefinitionId = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEEVENTTYPE);
+    // typeDefinitionId per Part 4 §7.22.3 must be the type on which the
+    // BrowsePath resolves. ``ConditionId``, ``AckedState``, ``ShelvingState``
+    // etc. are NOT on ``BaseEventType``; they appear on
+    // ``ConditionType`` / ``AcknowledgeableConditionType`` / ``AlarmConditionType``.
+    // Set it to ``AlarmConditionType`` (i=2915) which inherits all of the
+    // standard BaseEventType + ConditionType + Acknowledgeable + Alarm fields,
+    // so every BrowsePath we use resolves. Servers will still deliver
+    // events of subtypes; selectClauses returning Null Variant for fields
+    // missing on the actual event instance is per-spec.
+    sao.typeDefinitionId = UA_NODEID_NUMERIC(0, UA_NS0ID_ALARMCONDITIONTYPE);
     sao.attributeId = UA_ATTRIBUTEID_VALUE;
     const auto & path = all_paths[i];
     sao.browsePathSize = path.size();
@@ -645,13 +653,14 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
 
   UA_EventFilter filter = make_event_filter(select_browse_paths);
 
-  UA_MonitoredItemCreateRequest item;
-  UA_MonitoredItemCreateRequest_init(&item);
-  item.itemToMonitor.nodeId = *source_node.handle();  // shallow copy; valid for the call duration
+  // Use UA_MonitoredItemCreateRequest_default so the request mirrors what
+  // open62541's own examples send; only patch what we need.
+  UA_NodeId nid_copy;
+  UA_NodeId_copy(source_node.handle(), &nid_copy);
+  UA_MonitoredItemCreateRequest item = UA_MonitoredItemCreateRequest_default(nid_copy);
+  UA_NodeId_clear(&nid_copy);
   item.itemToMonitor.attributeId = UA_ATTRIBUTEID_EVENTNOTIFIER;
-  item.monitoringMode = UA_MONITORINGMODE_REPORTING;
-  item.requestedParameters.samplingInterval = 0.0;  // event MIs ignore sampling interval
-  item.requestedParameters.discardOldest = true;
+  item.requestedParameters.samplingInterval = 0.0;
   item.requestedParameters.queueSize = 100;
   UA_ExtensionObject_setValueNoDelete(&item.requestedParameters.filter, &filter, &UA_TYPES[UA_TYPES_EVENTFILTER]);
 
@@ -666,7 +675,15 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
       UA_Client_MonitoredItems_createEvent(impl_->client.handle(), subscription_id, UA_TIMESTAMPSTORETURN_BOTH, item,
                                            raw_ctx, on_event_trampoline_c, /*deleteCallback=*/nullptr);
 
-  // Filter members were copied by createEvent; release ours.
+  // Free the locally-allocated request members (the ExtensionObject does
+  // NOT own the filter because we used setValueNoDelete; clear it
+  // separately below). UA_MonitoredItemCreateRequest_clear walks the
+  // struct including itemToMonitor.nodeId.
+  // Detach the filter from item.requestedParameters before clearing the
+  // request, otherwise UA_*_clear would try to free our stack filter.
+  // Re-init the ExtensionObject to a valid empty state.
+  UA_ExtensionObject_init(&item.requestedParameters.filter);
+  UA_MonitoredItemCreateRequest_clear(&item);
   UA_EventFilter_clear(&filter);
 
   std::cerr << "[opcua_client] createEvent result: status=" << UA_StatusCode_name(result.statusCode)
