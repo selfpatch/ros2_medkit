@@ -14,7 +14,9 @@
 
 #include "ros2_medkit_opcua/opcua_poller.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -37,33 +39,44 @@ constexpr uint32_t kRefreshEndEventTypeId = 2788;
 constexpr uint32_t kShelvedStateUnshelved = 2929;
 
 // EventFilter select-clause indices used by the AlarmCondition trampoline.
-// Order MUST match build_alarm_event_select_paths() below; the trampoline
+// Order MUST match build_alarm_event_select_specs() below; the trampoline
 // reads positionally because OPC-UA does not return field names with the
-// notification.
-constexpr size_t kFieldConditionId = 0;
-constexpr size_t kFieldEventId = 1;
-constexpr size_t kFieldSeverity = 2;
-constexpr size_t kFieldMessage = 3;
-constexpr size_t kFieldEnabledState = 4;
-constexpr size_t kFieldActiveState = 5;
-constexpr size_t kFieldAckedState = 6;
-constexpr size_t kFieldConfirmedState = 7;
-constexpr size_t kFieldShelvingState = 8;
-constexpr size_t kFieldBranchId = 9;
-constexpr size_t kAlarmFieldCount = 10;
+// notification. ``ConditionId`` is delivered to the EventCallback as a
+// separate parameter (auto-prepended by add_event_monitored_item per
+// Part 9 §5.5.2.13), so it is not in the user_values vector.
+constexpr size_t kFieldEventId = 0;
+constexpr size_t kFieldSeverity = 1;
+constexpr size_t kFieldMessage = 2;
+constexpr size_t kFieldEnabledState = 3;
+constexpr size_t kFieldActiveState = 4;
+constexpr size_t kFieldAckedState = 5;
+constexpr size_t kFieldConfirmedState = 6;
+constexpr size_t kFieldShelvingState = 7;
+constexpr size_t kFieldBranchId = 8;
+constexpr size_t kAlarmFieldCount = 9;
 
-std::vector<OpcuaClient::EventBrowsePath> build_alarm_event_select_paths() {
+// Standard NodeIds for the types that *directly* define each field (open62541
+// servers reject SAOs whose BrowsePath is inherited rather than direct).
+constexpr uint32_t kBaseEventType = 2041;
+constexpr uint32_t kConditionType = 2782;
+constexpr uint32_t kAcknowledgeableConditionType = 2881;
+constexpr uint32_t kAlarmConditionType = 2915;
+
+std::vector<OpcuaClient::EventFieldSpec> build_alarm_event_select_specs() {
+  // Each clause carries the type that *directly* defines its first browse
+  // segment - inheritance traversal is not honored by the open62541 server
+  // validator (verified against 1.4.6 with FULL ns0).
   return {
-      {{0, "ConditionId"}},
-      {{0, "EventId"}},
-      {{0, "Severity"}},
-      {{0, "Message"}},
-      {{0, "EnabledState"}, {0, "Id"}},
-      {{0, "ActiveState"}, {0, "Id"}},
-      {{0, "AckedState"}, {0, "Id"}},
-      {{0, "ConfirmedState"}, {0, "Id"}},
-      {{0, "ShelvingState"}, {0, "CurrentState"}, {0, "Id"}},
-      {{0, "BranchId"}},
+      {opcua::NodeId(0, kBaseEventType), {{0, "EventId"}}, UA_ATTRIBUTEID_VALUE},
+      {opcua::NodeId(0, kBaseEventType), {{0, "Severity"}}, UA_ATTRIBUTEID_VALUE},
+      {opcua::NodeId(0, kBaseEventType), {{0, "Message"}}, UA_ATTRIBUTEID_VALUE},
+      {opcua::NodeId(0, kConditionType), {{0, "EnabledState"}, {0, "Id"}}, UA_ATTRIBUTEID_VALUE},
+      {opcua::NodeId(0, kAlarmConditionType), {{0, "ActiveState"}, {0, "Id"}}, UA_ATTRIBUTEID_VALUE},
+      {opcua::NodeId(0, kAcknowledgeableConditionType), {{0, "AckedState"}, {0, "Id"}}, UA_ATTRIBUTEID_VALUE},
+      {opcua::NodeId(0, kAcknowledgeableConditionType), {{0, "ConfirmedState"}, {0, "Id"}}, UA_ATTRIBUTEID_VALUE},
+      {opcua::NodeId(0, kAlarmConditionType), {{0, "ShelvingState"}, {0, "CurrentState"}, {0, "Id"}},
+       UA_ATTRIBUTEID_VALUE},
+      {opcua::NodeId(0, kConditionType), {{0, "BranchId"}}, UA_ATTRIBUTEID_VALUE},
   };
 }
 
@@ -219,16 +232,16 @@ void OpcuaPoller::setup_event_subscriptions() {
     return;
   }
 
-  const auto select_paths = build_alarm_event_select_paths();
+  const auto select_specs = build_alarm_event_select_specs();
   event_monitored_item_ids_.clear();
 
   for (const auto & cfg : node_map_.event_alarms()) {
     auto callback = [this, &cfg](const std::vector<opcua::Variant> & values, const opcua::NodeId & source_node,
-                                 const opcua::NodeId & event_type) {
-      on_event(cfg, values, source_node, event_type);
+                                 const opcua::NodeId & event_type, const opcua::NodeId & condition_id) {
+      on_event(cfg, values, source_node, event_type, condition_id);
     };
     uint32_t mi_id =
-        client_.add_event_monitored_item(event_subscription_id_, cfg.source_node_id, select_paths, std::move(callback));
+        client_.add_event_monitored_item(event_subscription_id_, cfg.source_node_id, select_specs, std::move(callback));
     if (mi_id != 0) {
       event_monitored_item_ids_.push_back(mi_id);
     }
@@ -261,7 +274,10 @@ void OpcuaPoller::condition_refresh() {
 }
 
 void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua::Variant> & values,
-                           const opcua::NodeId & /*source_node*/, const opcua::NodeId & event_type) {
+                           const opcua::NodeId & /*source_node*/, const opcua::NodeId & event_type,
+                           const opcua::NodeId & condition_id) {
+  std::cerr << "[opcua_poller] on_event fault=" << cfg.fault_code << " event_type=" << event_type.toString()
+            << " condition=" << condition_id.toString() << " values=" << values.size() << std::endl;
   // Detect ConditionRefresh bracketing per Part 9 §5.5.7. The flag is for
   // diagnostics only; the state machine itself does not need to know
   // because RefreshStart / RefreshEnd notifications carry no condition
@@ -296,9 +312,16 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   // 2932). Anything other than Unshelved => alarm is operator-suppressed.
   if (values[kFieldShelvingState].isType<opcua::NodeId>()) {
     auto shelv_state = values[kFieldShelvingState].getScalarCopy<opcua::NodeId>();
-    input.shelved =
-        !(shelv_state.getNamespaceIndex() == 0 && shelv_state.getIdentifierType() == opcua::NodeIdType::Numeric &&
-          shelv_state.getIdentifierAs<uint32_t>() == kShelvedStateUnshelved);
+    // Treat as shelved only when ShelvingState/CurrentState/Id explicitly
+    // points at TimedShelved (i=2930) or OneShotShelved (i=2932). A null /
+    // unset / unknown Id is interpreted as Unshelved - some servers do not
+    // initialize the Id property when the optional ShelvingState field is
+    // attached, and we should not treat that as suppression.
+    bool is_known_shelved = (shelv_state.getNamespaceIndex() == 0 &&
+                             shelv_state.getIdentifierType() == opcua::NodeIdType::Numeric) &&
+                            (shelv_state.getIdentifierAs<uint32_t>() == 2930u ||
+                             shelv_state.getIdentifierAs<uint32_t>() == 2932u);
+    input.shelved = is_known_shelved;
   } else {
     input.shelved = false;
   }
@@ -315,13 +338,10 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     input.branch_id_present = false;
   }
 
-  // Resolve / create the per-condition runtime entry. We key on the
-  // ConditionId stringForm so distinct condition instances within the same
-  // event source remain separate.
-  opcua::NodeId condition_id;
-  if (values[kFieldConditionId].isType<opcua::NodeId>()) {
-    condition_id = values[kFieldConditionId].getScalarCopy<opcua::NodeId>();
-  }
+  // ``condition_id`` is supplied by add_event_monitored_item via the
+  // auto-prepended SAO with empty BrowsePath + AttributeId=NodeId
+  // (Part 9 §5.5.2.13). Key the runtime map on its stringForm so distinct
+  // condition instances within the same event source remain separate.
   std::string condition_id_str = condition_id.toString();
 
   ConditionRuntime runtime_snapshot;
@@ -343,9 +363,24 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     // Track the latest EventId for spec-compliant Acknowledge calls.
     if (values[kFieldEventId].isType<opcua::ByteString>()) {
       it->second.latest_event_id = values[kFieldEventId].getScalarCopy<opcua::ByteString>();
+      std::cerr << "[opcua_poller] captured EventId len="
+                << it->second.latest_event_id.length() << " hex=";
+      const auto * bytes = it->second.latest_event_id.data();
+      for (size_t i = 0; i < std::min<size_t>(it->second.latest_event_id.length(), 16); ++i) {
+        char buf[3];
+        std::snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned>(bytes[i]) & 0xffu);
+        std::cerr << buf;
+      }
+      std::cerr << std::endl;
+    } else {
+      std::cerr << "[opcua_poller] EventId field not a ByteString" << std::endl;
     }
 
     auto outcome = AlarmStateMachine::compute(prev_status, input);
+    std::cerr << "[opcua_poller] state machine: enabled=" << input.enabled_state << " active=" << input.active_state
+              << " acked=" << input.acked_state << " confirmed=" << input.confirmed_state << " shelved=" << input.shelved
+              << " branch=" << input.branch_id_present << " prev=" << static_cast<int>(prev_status)
+              << " action=" << static_cast<int>(outcome.action) << std::endl;
     it->second.last_status = outcome.next_status;
     runtime_snapshot = it->second;
 
@@ -378,6 +413,8 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
       std::lock_guard cb_lock(event_alarm_callback_mutex_);
       cb_copy = event_alarm_callback_;
     }
+    std::cerr << "[opcua_poller] dispatching action=" << static_cast<int>(delivery.action)
+              << " cb_set=" << (cb_copy ? 1 : 0) << std::endl;
     if (cb_copy) {
       cb_copy(delivery);
     }
@@ -442,6 +479,16 @@ void OpcuaPoller::poll_loop() {
     // Poll if not using subscriptions, or as a health check
     if (!using_subscriptions_.load() || !client_.is_connected()) {
       do_poll();
+    }
+
+    // Issue #386: dispatch incoming AlarmCondition notifications. open62541's
+    // client only delivers subscription callbacks during a runIterate (or
+    // any sync API call). When the YAML has only event_alarms (no scalar
+    // ``nodes:``) do_poll() does nothing, so we explicitly pump iterate
+    // here to keep events flowing. Cheap when there are no pending
+    // notifications; bounded by the timeout.
+    if (event_subscription_id_ != 0) {
+      client_.run_iterate(50);
     }
 
     // Fire poll callback for value bridging.

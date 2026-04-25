@@ -121,7 +121,8 @@ TEST(OpcuaClientTest, GenerationStartsAtZero) {
 TEST(OpcuaClientTest, AddEventMonitoredItemWhenDisconnected) {
   OpcuaClient client;
   auto mi = client.add_event_monitored_item(
-      /*sub_id=*/1, opcua::NodeId(0, UA_NS0ID_SERVER), /*select=*/{}, [](const auto &, const auto &, const auto &) {});
+      /*sub_id=*/1, opcua::NodeId(0, UA_NS0ID_SERVER), /*select=*/{},
+      [](const auto &, const auto &, const auto &, const auto &) {});
   EXPECT_EQ(mi, 0u);
 }
 

@@ -232,10 +232,12 @@ UA_StatusCode set_shelving(UA_Server * server, const Condition & c, bool shelved
   // ShelvingState is a ShelvedStateMachineType sub-object on the condition
   // (Part 9). open62541's experimental A&C does not implement the TimedShelve
   // / Unshelve methods, so for the test fixture we resolve the path
-  // ShelvingState/CurrentState via translateBrowsePath and write the target
-  // LocalizedText directly. This is enough for tests that only assert on
-  // current ShelvingState - they do not verify the state machine transition
-  // semantics, which open62541 does not implement anyway.
+  // ShelvingState/CurrentState via translateBrowsePath and write both the
+  // LocalizedText and the Id (NodeId) properties directly. The medkit
+  // EventFilter reads ``ShelvingState/CurrentState/Id`` (a NodeId pointing
+  // at one of i=2929 Unshelved / i=2930 TimedShelved / i=2932 OneShotShelved)
+  // because the LocalizedText is locale-dependent. Writing only the text
+  // leaves Id at its default and the bridge sees shelved=false.
   UA_RelativePathElement elems[2];
   UA_RelativePathElement_init(&elems[0]);
   UA_RelativePathElement_init(&elems[1]);
@@ -259,10 +261,38 @@ UA_StatusCode set_shelving(UA_Server * server, const Condition & c, bool shelved
   UA_Variant v;
   UA_Variant_setScalar(&v, &state, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
   UA_StatusCode rc = UA_Server_writeValue(server, currentState, v);
-  UA_BrowsePathResult_clear(&result);
   if (rc != UA_STATUSCODE_GOOD) {
+    UA_BrowsePathResult_clear(&result);
     return rc;
   }
+
+  // Write the Id property of CurrentState. The medkit alarm bridge keys
+  // suppression off ``ShelvingState/CurrentState/Id`` (one of i=2929 /
+  // i=2930 / i=2932) - text is informational only.
+  UA_RelativePathElement idElems[3];
+  UA_RelativePathElement_init(&idElems[0]);
+  UA_RelativePathElement_init(&idElems[1]);
+  UA_RelativePathElement_init(&idElems[2]);
+  idElems[0].targetName = UA_QUALIFIEDNAME(0, const_cast<char *>("ShelvingState"));
+  idElems[0].referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT);
+  idElems[1].targetName = UA_QUALIFIEDNAME(0, const_cast<char *>("CurrentState"));
+  idElems[1].referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT);
+  idElems[2].targetName = UA_QUALIFIEDNAME(0, const_cast<char *>("Id"));
+  idElems[2].referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY);
+  UA_BrowsePath idPath;
+  UA_BrowsePath_init(&idPath);
+  idPath.startingNode = c.node;
+  idPath.relativePath.elementsSize = 3;
+  idPath.relativePath.elements = idElems;
+  UA_BrowsePathResult idResult = UA_Server_translateBrowsePathToNodeIds(server, &idPath);
+  if (idResult.statusCode == UA_STATUSCODE_GOOD && idResult.targetsSize > 0) {
+    UA_NodeId stateIdNode = UA_NODEID_NUMERIC(0, shelved ? 2930u /* TimedShelved */ : 2929u /* Unshelved */);
+    UA_Variant idVar;
+    UA_Variant_setScalar(&idVar, &stateIdNode, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Server_writeValue(server, idResult.targets[0].targetId.nodeId, idVar);
+  }
+  UA_BrowsePathResult_clear(&idResult);
+  UA_BrowsePathResult_clear(&result);
   return UA_Server_triggerConditionEvent(server, c.node, c.source, nullptr);
 }
 

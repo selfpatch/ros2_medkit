@@ -530,41 +530,43 @@ std::string OpcuaClient::server_description() const {
 
 namespace {
 
-/// Build an OPC-UA EventFilter (heap-allocated members, owned by the returned
-/// struct). EventType and SourceNode are always prepended to the user's
-/// browse paths; the caller must invoke ``UA_EventFilter_clear`` when done.
-UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventBrowsePath> & user_paths) {
-  // Always include EventType (position 0) and SourceNode (position 1).
-  std::vector<OpcuaClient::EventBrowsePath> all_paths;
-  all_paths.reserve(user_paths.size() + 2);
-  all_paths.push_back({{0, "EventType"}});
-  all_paths.push_back({{0, "SourceNode"}});
-  for (const auto & p : user_paths) {
-    all_paths.push_back(p);
+/// Build an OPC-UA EventFilter from per-field SimpleAttributeOperand specs.
+/// open62541 servers reject SAOs whose BrowsePath does not resolve directly
+/// from the supplied ``typeDefinitionId`` (verified against open62541 1.4.6
+/// with FULL ns0). Inheritance traversal is NOT performed during
+/// validation, so ``AlarmConditionType+EventType`` returns
+/// ``BadNodeIdUnknown`` even though EventType is inherited. The caller must
+/// pass each field with the type that *directly* defines its first browse
+/// segment.
+///
+/// Auto-prepends 3 fixed clauses so the trampoline can extract them
+/// positionally:
+///   [0] EventType  - BaseEventType property
+///   [1] SourceNode - BaseEventType property
+///   [2] ConditionId - ConditionType, empty BrowsePath, AttributeId=NodeId
+///                    (Part 9 §5.5.2.13 special case)
+UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventFieldSpec> & user_specs) {
+  std::vector<OpcuaClient::EventFieldSpec> all_specs;
+  all_specs.reserve(user_specs.size() + 3);
+  all_specs.push_back({opcua::NodeId(0, UA_NS0ID_BASEEVENTTYPE), {{0, "EventType"}}, UA_ATTRIBUTEID_VALUE});
+  all_specs.push_back({opcua::NodeId(0, UA_NS0ID_BASEEVENTTYPE), {{0, "SourceNode"}}, UA_ATTRIBUTEID_VALUE});
+  all_specs.push_back({opcua::NodeId(0, UA_NS0ID_CONDITIONTYPE), {}, UA_ATTRIBUTEID_NODEID});
+  for (const auto & s : user_specs) {
+    all_specs.push_back(s);
   }
 
   UA_EventFilter filter;
   UA_EventFilter_init(&filter);
-
-  filter.selectClausesSize = all_paths.size();
+  filter.selectClausesSize = all_specs.size();
   filter.selectClauses = static_cast<UA_SimpleAttributeOperand *>(
       UA_Array_new(filter.selectClausesSize, &UA_TYPES[UA_TYPES_SIMPLEATTRIBUTEOPERAND]));
 
-  for (size_t i = 0; i < all_paths.size(); ++i) {
+  for (size_t i = 0; i < all_specs.size(); ++i) {
     UA_SimpleAttributeOperand & sao = filter.selectClauses[i];
     UA_SimpleAttributeOperand_init(&sao);
-    // typeDefinitionId per Part 4 §7.22.3 must be the type on which the
-    // BrowsePath resolves. ``ConditionId``, ``AckedState``, ``ShelvingState``
-    // etc. are NOT on ``BaseEventType``; they appear on
-    // ``ConditionType`` / ``AcknowledgeableConditionType`` / ``AlarmConditionType``.
-    // Set it to ``AlarmConditionType`` (i=2915) which inherits all of the
-    // standard BaseEventType + ConditionType + Acknowledgeable + Alarm fields,
-    // so every BrowsePath we use resolves. Servers will still deliver
-    // events of subtypes; selectClauses returning Null Variant for fields
-    // missing on the actual event instance is per-spec.
-    sao.typeDefinitionId = UA_NODEID_NUMERIC(0, UA_NS0ID_ALARMCONDITIONTYPE);
-    sao.attributeId = UA_ATTRIBUTEID_VALUE;
-    const auto & path = all_paths[i];
+    UA_NodeId_copy(all_specs[i].type_definition_id.handle(), &sao.typeDefinitionId);
+    sao.attributeId = all_specs[i].attribute_id;
+    const auto & path = all_specs[i].browse_path;
     sao.browsePathSize = path.size();
     if (sao.browsePathSize > 0) {
       sao.browsePath =
@@ -581,10 +583,13 @@ UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventBrowsePath>
 
 // C-linkage trampoline matching ``UA_Client_EventNotificationCallback``.
 // Defined at namespace scope so its address is a stable function pointer.
-static void on_event_trampoline_c(UA_Client * /*client*/, UA_UInt32 /*sub_id*/, void * /*sub_ctx*/,
-                                  UA_UInt32 /*mon_id*/, void * mon_ctx, size_t n_fields, UA_Variant * fields) {
+static void on_event_trampoline_c(UA_Client * /*client*/, UA_UInt32 sub_id, void * /*sub_ctx*/, UA_UInt32 mon_id,
+                                  void * mon_ctx, size_t n_fields, UA_Variant * fields) {
+  std::cerr << "[opcua_client] TRAMPOLINE FIRED sub=" << sub_id << " mon=" << mon_id << " n_fields=" << n_fields
+            << std::endl;
   auto * ctx = static_cast<EventCallbackContext *>(mon_ctx);
   if (ctx == nullptr || ctx->owner == nullptr) {
+    std::cerr << "[opcua_client] TRAMPOLINE: ctx null" << std::endl;
     return;
   }
   // Stale callback from a defunct subscription - ctx is still valid (we only
@@ -606,25 +611,31 @@ static void on_event_trampoline_c(UA_Client * /*client*/, UA_UInt32 /*sub_id*/, 
     values.emplace_back(opcua::Variant{std::move(copy)});
   }
 
+  // Auto-prepended positions (matching make_event_filter):
+  //   [0] EventType, [1] SourceNode, [2] ConditionId
   opcua::NodeId event_type;
   opcua::NodeId source_node;
+  opcua::NodeId condition_id;
   if (n_fields >= 1 && values[0].isType<opcua::NodeId>()) {
     event_type = values[0].getScalarCopy<opcua::NodeId>();
   }
   if (n_fields >= 2 && values[1].isType<opcua::NodeId>()) {
     source_node = values[1].getScalarCopy<opcua::NodeId>();
   }
+  if (n_fields >= 3 && values[2].isType<opcua::NodeId>()) {
+    condition_id = values[2].getScalarCopy<opcua::NodeId>();
+  }
 
   std::vector<opcua::Variant> user_values;
-  if (n_fields > 2) {
-    user_values.reserve(n_fields - 2);
-    for (size_t i = 2; i < n_fields; ++i) {
+  if (n_fields > 3) {
+    user_values.reserve(n_fields - 3);
+    for (size_t i = 3; i < n_fields; ++i) {
       user_values.push_back(std::move(values[i]));
     }
   }
 
   if (ctx->callback) {
-    ctx->callback(user_values, source_node, event_type);
+    ctx->callback(user_values, source_node, event_type, condition_id);
   }
 }
 
@@ -632,8 +643,20 @@ uint64_t OpcuaClient::current_generation() const {
   return impl_->generation.load(std::memory_order_acquire);
 }
 
+void OpcuaClient::run_iterate(uint16_t timeout_ms) {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+  if (!impl_->connected) {
+    return;
+  }
+  try {
+    impl_->client.runIterate(timeout_ms);
+  } catch (const opcua::BadStatus & e) {
+    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+  }
+}
+
 uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const opcua::NodeId & source_node,
-                                               const std::vector<EventBrowsePath> & select_browse_paths,
+                                               const std::vector<EventFieldSpec> & select_specs,
                                                EventCallback callback) {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
 
@@ -651,16 +674,18 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
   ctx->callback = std::move(callback);
   EventCallbackContext * raw_ctx = ctx.get();
 
-  UA_EventFilter filter = make_event_filter(select_browse_paths);
+  UA_EventFilter filter = make_event_filter(select_specs);
 
-  // Use UA_MonitoredItemCreateRequest_default so the request mirrors what
-  // open62541's own examples send; only patch what we need.
-  UA_NodeId nid_copy;
-  UA_NodeId_copy(source_node.handle(), &nid_copy);
-  UA_MonitoredItemCreateRequest item = UA_MonitoredItemCreateRequest_default(nid_copy);
-  UA_NodeId_clear(&nid_copy);
+  UA_MonitoredItemCreateRequest item;
+  UA_MonitoredItemCreateRequest_init(&item);
+  // Deep-copy the source NodeId so the request struct owns its string
+  // buffer (if any). Cleared by UA_MonitoredItemCreateRequest_clear after
+  // the call.
+  UA_NodeId_copy(source_node.handle(), &item.itemToMonitor.nodeId);
   item.itemToMonitor.attributeId = UA_ATTRIBUTEID_EVENTNOTIFIER;
+  item.monitoringMode = UA_MONITORINGMODE_REPORTING;
   item.requestedParameters.samplingInterval = 0.0;
+  item.requestedParameters.discardOldest = true;
   item.requestedParameters.queueSize = 100;
   UA_ExtensionObject_setValueNoDelete(&item.requestedParameters.filter, &filter, &UA_TYPES[UA_TYPES_EVENTFILTER]);
 
@@ -668,7 +693,7 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
   // hand to the server. Trace-level diagnostic; can be tightened to a
   // ROS RCLCPP_DEBUG once the issue #386 server interop is stable.
   std::cerr << "[opcua_client] add_event_monitored_item: subId=" << subscription_id
-            << " nodeId=" << source_node.toString() << " selectClauses=" << (select_browse_paths.size() + 2)
+            << " nodeId=" << source_node.toString() << " selectClauses=" << (select_specs.size() + 3)
             << std::endl;
 
   UA_MonitoredItemCreateResult result =
@@ -760,8 +785,29 @@ OpcuaClient::call_method(const opcua::NodeId & object_id, const opcua::NodeId & 
     opcua::CallMethodResult result =
         opcua::services::call(impl_->client, object_id, method_id, opcua::Span<const opcua::Variant>(input_args));
     UA_StatusCode code = result.getStatusCode().get();
+    std::cerr << "[opcua_client] call_method object=" << object_id.toString() << " method=" << method_id.toString()
+              << " statusCode=" << UA_StatusCode_name(code);
+    auto arg_results = result.getInputArgumentResults();
+    for (size_t i = 0; i < arg_results.size(); ++i) {
+      std::cerr << " arg" << i << "=" << UA_StatusCode_name(arg_results[i].get());
+    }
+    std::cerr << std::endl;
     if (code != UA_STATUSCODE_GOOD) {
       return tl::make_unexpected(status_to_error(code, UA_StatusCode_name(code)));
+    }
+    // Per OPC-UA Part 4 §5.11.2, even when the overall call statusCode is
+    // Good the server may report per-argument validation failures via
+    // inputArgumentResults. AlarmConditionType.Acknowledge surfaces
+    // BadEventIdUnknown here when the EventId we tracked has been
+    // superseded by a newer event from the server. Treat any non-Good
+    // per-arg result as a transport error so the SOVD layer returns 502
+    // instead of falsely reporting success.
+    for (size_t i = 0; i < arg_results.size(); ++i) {
+      UA_StatusCode arg_code = arg_results[i].get();
+      if (arg_code != UA_STATUSCODE_GOOD) {
+        std::string msg = std::string(UA_StatusCode_name(arg_code)) + " on input arg " + std::to_string(i);
+        return tl::make_unexpected(status_to_error(arg_code, msg));
+      }
     }
     auto outputs_span = result.getOutputArguments();
     std::vector<opcua::Variant> outputs;

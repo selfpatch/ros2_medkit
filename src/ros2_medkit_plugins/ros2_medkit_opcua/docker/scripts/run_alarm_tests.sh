@@ -27,10 +27,13 @@ cleanup() {
     # Dump container logs to stderr BEFORE removing them so the CI workflow's
     # "Dump container logs on failure" step (which runs after this trap fires
     # and the script exits) is not the only place to look. Without this, an
-    # aggressive cleanup hides whatever made gateway / server crash.
+    # aggressive cleanup hides whatever made gateway / server crash. Use the
+    # full log (no tail) so the OPC-UA event subscription / on_event traces -
+    # which fire before the diagnostic intropect() polling that floods the
+    # last 120 lines - are visible.
     for c in "${SERVER_NAME}" "${GATEWAY_NAME}"; do
       echo "=== ${c} logs (cleanup trap) ===" >&2
-      docker logs "${c}" 2>&1 | tail -120 >&2 || true
+      docker logs "${c}" 2>&1 >&2 || true
     done
   fi
   docker rm -f "${SERVER_NAME}" "${GATEWAY_NAME}" 2>/dev/null || true
@@ -60,20 +63,21 @@ wait_for() {
   return 1
 }
 
-# Poll the gateway until the named fault disappears (404) or its status moves
-# out of CONFIRMED/HEALED into something quiescent.
+# Poll the gateway until the named fault disappears or transitions to a
+# quiescent status. Uses the global ``/api/v1/faults`` list (filtered by
+# ``fault_code``) because the per-entity endpoint only mirrors faults stored
+# directly on the entity, while AlarmCondition events flow through the
+# ROS-level fault_manager and surface there.
 wait_no_fault() {
   local fault_code="$1" deadline="${2:-30}"
-  local url="http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/${fault_code}"
+  local url="http://localhost:${GATEWAY_PORT}/api/v1/faults"
   for i in $(seq 1 "${deadline}"); do
-    local code
-    code=$(curl -s -o /dev/null -w '%{http_code}' "${url}" || echo '000')
-    if [[ "${code}" == "404" ]]; then
-      return 0
-    fi
     local status
-    status=$(curl -sf "${url}" 2>/dev/null | jq -r '.status // empty')
-    if [[ "${status}" == "CLEARED" || -z "${status}" ]]; then
+    status=$(curl -sf "${url}" 2>/dev/null \
+             | jq -r --arg code "${fault_code}" \
+               '.items[] | select(.fault_code == $code) | .status' \
+             | head -1)
+    if [[ -z "${status}" || "${status}" == "CLEARED" ]]; then
       return 0
     fi
     sleep 2
@@ -86,13 +90,37 @@ wait_no_fault() {
 assert_status() {
   local fault_code="$1" expected="$2"
   local actual
-  actual=$(curl -sf "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/${fault_code}" \
-             | jq -r '.status')
+  actual=$(curl -sf "http://localhost:${GATEWAY_PORT}/api/v1/faults" \
+             | jq -r --arg code "${fault_code}" \
+               '.items[] | select(.fault_code == $code) | .status' \
+             | head -1)
   if [[ "${actual}" != "${expected}" ]]; then
     echo "ASSERT FAILED: ${fault_code} status=${actual}, expected=${expected}" >&2
     return 1
   fi
   echo "  OK ${fault_code}: ${actual}"
+}
+
+# Poll the global ``/api/v1/faults`` list until the named fault has the
+# expected status. Mirrors ``wait_for`` but specialized for the fault list
+# shape so callers do not need to construct jq filters per scenario.
+wait_until_status() {
+  local fault_code="$1" expected="$2" deadline="${3:-30}"
+  for i in $(seq 1 "${deadline}"); do
+    local actual
+    actual=$(curl -sf "http://localhost:${GATEWAY_PORT}/api/v1/faults" 2>/dev/null \
+             | jq -r --arg code "${fault_code}" \
+               '.items[] | select(.fault_code == $code) | .status' \
+             | head -1)
+    if [[ "${actual}" == "${expected}" ]]; then
+      echo "  OK ${fault_code}: ${actual}"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "wait_until_status timed out: ${fault_code} expected=${expected} actual=${actual:-<absent>}" >&2
+  curl -sf "http://localhost:${GATEWAY_PORT}/api/v1/faults" 2>/dev/null | jq . >&2 || true
+  return 1
 }
 
 # Poll the test_alarm_server's stdout (via docker logs) for the latest
@@ -127,6 +155,25 @@ sovd_post_op() {
     return 1
   fi
   echo "  OK POST ${op} -> ${code}"
+}
+
+# Poll the gateway's docker logs until <pattern> appears. Required because the
+# AlarmConditionType subscription has a 500 ms server-side publishing interval -
+# new events from method calls or stdin commands take up to that long to arrive
+# at the gateway, and the SOVD ack/confirm path needs the gateway to have
+# captured the freshest EventId before it issues the next call_method (server
+# rejects stale IDs with BadEventIdUnknown).
+wait_gateway_log() {
+  local pattern="$1" deadline="${2:-30}"
+  for i in $(seq 1 "${deadline}"); do
+    if docker logs "${GATEWAY_NAME}" 2>&1 | grep -q -- "${pattern}"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "wait_gateway_log timed out: ${pattern}" >&2
+  docker logs "${GATEWAY_NAME}" 2>&1 | tail -40 >&2 || true
+  return 1
 }
 
 cd "${REPO_ROOT}"
@@ -209,6 +256,11 @@ docker run -d --name "${GATEWAY_NAME}" --network "${NET_NAME}" \
     mkdir -p /var/lib/ros2_medkit/rosbags
     source /opt/ros/jazzy/setup.bash
     source /root/ws/install/setup.bash
+    # Start fault_manager_node first so its services are advertised before
+    # the gateway opcua plugin tries to call /fault_manager/report_fault.
+    ros2 run ros2_medkit_fault_manager fault_manager_node \
+      > /var/lib/ros2_medkit/fault_manager.log 2>&1 &
+    sleep 3
     PLUGIN_PATH=$(find /root/ws/install -name "libros2_medkit_opcua_plugin.so" | head -1)
     exec ros2 run ros2_medkit_gateway gateway_node \
       --ros-args --params-file /config/gateway_params.yaml \
@@ -226,50 +278,62 @@ echo "[5/5] Run alarm scenarios"
 
 echo "  [scenario] fire / SOVD ack / latch / SOVD confirm / clear lifecycle"
 echo "fire Overpressure 750" >&3
-wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults" \
-         '.items | map(.code) | contains(["PLC_OVERPRESSURE"])' 30
-assert_status PLC_OVERPRESSURE CONFIRMED
+wait_until_status PLC_OVERPRESSURE CONFIRMED 30
 
 # Real SOVD ack - exercises lookup_condition + call_method(i=9111) + EventId.
+# Returns HTTP 200 once the gateway has dispatched the OPC-UA Acknowledge call.
+# Note: the SOVD bridge keeps the fault at status=CONFIRMED until ClearFault
+# fires (alarm_state_machine.hpp: Healed -> ReportHealed action is a no-op in
+# OpcuaPlugin::on_alarm_change because ros2_medkit_msgs/ReportFault has no
+# HEALED verb - we deliberately do not flip fault_manager into PASSED-debounce
+# territory). The lifecycle proof is therefore ``wait_no_fault`` after the
+# follow-up SOVD confirm + the OPC-UA event with all three states cleared.
 sovd_post_op acknowledge_fault \
   '{"fault_code":"PLC_OVERPRESSURE","comment":"e2e ack via SOVD"}'
-assert_server_state Overpressure acked true 30
 
+# Latch flips ActiveState=false on the server. Combined with the AckedState=
+# true set by the SOVD ack above, the next AlarmCondition event payload has
+# active=false, acked=true, confirmed=false -> SovdAlarmStatus::Healed
+# (state machine internal), action=ReportHealed (no-op for fault_manager).
+# /faults still shows CONFIRMED here, by design.
 echo "latch Overpressure" >&3
-wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_OVERPRESSURE" \
-         '.status == "HEALED"' 20
-assert_status PLC_OVERPRESSURE HEALED
 
-# Real SOVD confirm - exercises call_method(i=9113) + EventId.
+# Wait for the gateway to actually receive and process the latch event before
+# issuing SOVD confirm. Without this, the gateway still has the EventId from
+# the original fire payload and the OPC-UA Confirm method on the server
+# returns BadEventIdUnknown (the server's branch->lastEventId has been
+# superseded by the Acknowledge auto-emit and the latch trigger).
+wait_gateway_log "AlarmCondition HEALED.*PLC_OVERPRESSURE" 20
+
+# Real SOVD confirm - exercises call_method(i=9113) + EventId. After this
+# ConfirmedState=true on the server; the resulting event has all three of
+# Active=false, Acked=true, Confirmed=true and the state machine emits
+# ClearFault, removing the entry from /faults.
 sovd_post_op confirm_fault \
   '{"fault_code":"PLC_OVERPRESSURE","comment":"e2e confirm via SOVD"}'
-assert_server_state Overpressure confirmed true 30
 wait_no_fault PLC_OVERPRESSURE 30
+echo "  OK PLC_OVERPRESSURE cleared after SOVD ack + latch + SOVD confirm"
 
 echo "  [scenario] shelving suppression"
 echo "fire Overheat 600" >&3
-wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_OVERHEAT" \
-         '.status == "CONFIRMED"' 30
+wait_until_status PLC_OVERHEAT CONFIRMED 30
 echo "shelve Overheat" >&3
 wait_no_fault PLC_OVERHEAT 30
 echo "  OK PLC_OVERHEAT suppressed by Shelving"
 echo "unshelve Overheat" >&3
 echo "fire Overheat 700" >&3
-wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_OVERHEAT" \
-         '.status == "CONFIRMED"' 30
+wait_until_status PLC_OVERHEAT CONFIRMED 30
 echo "  OK PLC_OVERHEAT re-armed after Unshelve"
 
 echo "  [scenario] disabled alarm suppression"
 echo "fire SensorLost 800" >&3
-wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_SENSOR_LOST" \
-         '.status == "CONFIRMED"' 30
+wait_until_status PLC_SENSOR_LOST CONFIRMED 30
 echo "disable SensorLost" >&3
 wait_no_fault PLC_SENSOR_LOST 30
 echo "  OK PLC_SENSOR_LOST suppressed by EnabledState=false"
 echo "enable SensorLost" >&3
 echo "fire SensorLost 900" >&3
-wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_SENSOR_LOST" \
-         '.status == "CONFIRMED"' 30
+wait_until_status PLC_SENSOR_LOST CONFIRMED 30
 echo "  OK PLC_SENSOR_LOST re-armed after Enable"
 
 echo "  [scenario] reconnect preserves CONFIRMED via ConditionRefresh"
@@ -277,8 +341,7 @@ echo "  [scenario] reconnect preserves CONFIRMED via ConditionRefresh"
 echo "clear Overpressure" >&3
 wait_no_fault PLC_OVERPRESSURE 30
 echo "fire Overpressure 750" >&3
-wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_OVERPRESSURE" \
-         '.status == "CONFIRMED"' 30
+wait_until_status PLC_OVERPRESSURE CONFIRMED 30
 
 # Drop the stdin pipe and stop the server. The gateway should detect the
 # disconnect and back off until the server returns.
@@ -309,8 +372,7 @@ done
 # (triggered by the OpcuaPoller reconnect path); a fresh fire should make
 # its way through the ConditionRefresh-aware bridge into /faults.
 echo "fire Overpressure 750" >&3
-wait_for "http://localhost:${GATEWAY_PORT}/api/v1/apps/tank_process/faults/PLC_OVERPRESSURE" \
-         '.status == "CONFIRMED"' 60
+wait_until_status PLC_OVERPRESSURE CONFIRMED 60
 echo "  OK PLC_OVERPRESSURE re-armed after gateway reconnect"
 
 echo "All alarm scenarios passed."
