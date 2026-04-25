@@ -174,6 +174,9 @@ void OpcuaPlugin::set_context(PluginContext & context) {
   poller_->set_alarm_callback([this](const std::string & code, const AlarmConfig & cfg, bool active) {
     on_alarm_change(code, cfg, active);
   });
+  poller_->set_event_alarm_callback([this](const AlarmEventDelivery & delivery) {
+    on_event_alarm(delivery);
+  });
   poller_->set_poll_callback([this](const PollSnapshot & snap) {
     publish_values(snap);
   });
@@ -491,6 +494,56 @@ void OpcuaPlugin::on_alarm_change(const std::string & fault_code, const AlarmCon
   }
 }
 
+void OpcuaPlugin::on_event_alarm(const AlarmEventDelivery & delivery) {
+  if (shutdown_requested_.load()) {
+    return;
+  }
+
+  // Map raw OPC-UA Severity (1-1000) to SOVD severity bucket.
+  // Selfpatch convention documented in design/index.rst; not from IEC 62682.
+  // Severity_override on the AlarmEventConfig wins when set.
+  auto severity_str = [&]() {
+    auto * cfg = node_map_.find_event_alarm(delivery.entity_id, delivery.fault_code);
+    if (cfg && !cfg->severity_override.empty()) {
+      return cfg->severity_override;
+    }
+    if (delivery.severity >= 801) {
+      return std::string("CRITICAL");
+    }
+    if (delivery.severity >= 501) {
+      return std::string("ERROR");
+    }
+    if (delivery.severity >= 201) {
+      return std::string("WARNING");
+    }
+    return std::string("INFO");
+  }();
+
+  switch (delivery.action) {
+    case AlarmAction::ReportConfirmed:
+      log_info("AlarmCondition CONFIRMED: " + delivery.fault_code + " on " + delivery.entity_id +
+               " (severity=" + std::to_string(delivery.severity) + ")");
+      send_report_fault(delivery.entity_id, delivery.fault_code, severity_str, delivery.message);
+      break;
+    case AlarmAction::ReportHealed:
+      // Fault is latched: condition is no longer active but not yet
+      // confirmed. We don't have a dedicated HEALED reporting verb in
+      // ReportFault.srv (only FAILED/PASSED), so we mark this as a PASSED
+      // event - fault_manager keeps the entry in HEALED state until
+      // confirmed, mirroring the lifecycle.
+      log_info("AlarmCondition HEALED (latched, awaiting ack/confirm): " + delivery.fault_code);
+      // No-op for now; fault_manager will keep the fault HEALED until
+      // CLEARED. The state transition is observable via /faults/stream.
+      break;
+    case AlarmAction::ClearFault:
+      log_info("AlarmCondition CLEARED: " + delivery.fault_code);
+      send_clear_fault(delivery.fault_code);
+      break;
+    case AlarmAction::NoOp:
+      break;
+  }
+}
+
 void OpcuaPlugin::send_report_fault(const std::string & entity_id, const std::string & fault_code,
                                     const std::string & severity_str, const std::string & message) {
   if (!fault_clients_->report) {
@@ -770,6 +823,31 @@ tl::expected<nlohmann::json, OperationProviderErrorInfo> OpcuaPlugin::list_opera
       item["asynchronous_execution"] = false;
       items.push_back(std::move(item));
     }
+
+    // Issue #386: emit acknowledge_fault / confirm_fault when the entity
+    // has at least one native AlarmConditionType event subscription. The
+    // fault_code parameter (passed in operation execution body) discriminates
+    // which condition the operator is acting on.
+    bool has_event_alarms = std::any_of(node_map_.event_alarms().begin(), node_map_.event_alarms().end(),
+                                        [&entity_id](const AlarmEventConfig & cfg) {
+                                          return cfg.entity_id == entity_id;
+                                        });
+    if (has_event_alarms) {
+      nlohmann::json ack;
+      ack["id"] = "acknowledge_fault";
+      ack["name"] = "Acknowledge an alarm";
+      ack["proximity_proof_required"] = false;
+      ack["asynchronous_execution"] = false;
+      items.push_back(std::move(ack));
+
+      nlohmann::json confirm;
+      confirm["id"] = "confirm_fault";
+      confirm["name"] = "Confirm an alarm condition is addressed";
+      confirm["proximity_proof_required"] = false;
+      confirm["asynchronous_execution"] = false;
+      items.push_back(std::move(confirm));
+    }
+
     return tl::expected<nlohmann::json, OperationProviderErrorInfo>{nlohmann::json{{"items", items}}};
   }
 
@@ -783,6 +861,63 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
   if (!ctx_ || !poller_) {
     return tl::make_unexpected(
         OperationProviderErrorInfo{OperationProviderError::Internal, "plugin not initialized", 503});
+  }
+
+  // Issue #386: acknowledge_fault and confirm_fault dispatch to OPC-UA
+  // Method calls on the live ConditionId. AcknowledgeableConditionType
+  // declares Acknowledge as method i=9111 and Confirm as method i=9113;
+  // the objectId argument is the ConditionId NodeId of the live instance.
+  if (operation_name == "acknowledge_fault" || operation_name == "confirm_fault") {
+    if (!parameters.contains("fault_code") || !parameters["fault_code"].is_string()) {
+      return tl::make_unexpected(OperationProviderErrorInfo{OperationProviderError::InvalidParameters,
+                                                            "Missing required string parameter: fault_code", 400});
+    }
+    std::string fault_code = parameters["fault_code"].get<std::string>();
+    std::string comment = parameters.value("comment", std::string{});
+
+    auto runtime = poller_->lookup_condition(entity_id, fault_code);
+    if (!runtime) {
+      return tl::make_unexpected(OperationProviderErrorInfo{
+          OperationProviderError::OperationNotFound,
+          "No live condition for fault_code=" + fault_code + " on entity=" + entity_id, 404});
+    }
+
+    constexpr uint32_t kAcknowledgeMethodId = 9111;
+    constexpr uint32_t kConfirmMethodId = 9113;
+    opcua::NodeId method_id(0, operation_name == "acknowledge_fault" ? kAcknowledgeMethodId : kConfirmMethodId);
+
+    std::vector<opcua::Variant> args;
+    args.push_back(opcua::Variant::fromScalar(runtime->latest_event_id));
+    args.push_back(opcua::Variant::fromScalar(opcua::LocalizedText("", comment)));
+
+    auto result = client_->call_method(runtime->condition_id, method_id, args);
+    if (!result.has_value()) {
+      auto code = result.error().code;
+      int http = 502;
+      auto err = OperationProviderError::TransportError;
+      if (code == OpcuaClient::MethodError::NotConnected) {
+        http = 503;
+        err = OperationProviderError::Internal;
+      } else if (code == OpcuaClient::MethodError::MethodNotFound) {
+        http = 404;
+        err = OperationProviderError::OperationNotFound;
+      } else if (code == OpcuaClient::MethodError::InvalidArgument) {
+        http = 400;
+        err = OperationProviderError::InvalidParameters;
+      } else if (code == OpcuaClient::MethodError::MethodTimeout) {
+        http = 504;
+        err = OperationProviderError::TransportError;
+      }
+      return tl::make_unexpected(OperationProviderErrorInfo{err, result.error().message, http});
+    }
+
+    nlohmann::json out;
+    out["status"] = "ok";
+    out["operation"] = operation_name;
+    out["fault_code"] = fault_code;
+    out["entity_id"] = entity_id;
+    out["condition_id"] = runtime->condition_id.toString();
+    return tl::expected<nlohmann::json, OperationProviderErrorInfo>{out};
   }
 
   std::string data_name;

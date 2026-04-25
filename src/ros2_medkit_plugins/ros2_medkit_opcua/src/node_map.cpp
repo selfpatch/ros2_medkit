@@ -304,6 +304,49 @@ bool NodeMap::load(const std::string & yaml_path) {
       entries_.push_back(std::move(entry));
     }
 
+    // Issue #386: native AlarmConditionType event subscriptions. Loaded from
+    // top-level ``event_alarms:`` (sibling of ``nodes:``). Each entry must
+    // declare its own entity_id; the entity will be merged into entity_defs_
+    // alongside any threshold-mode entries pointing at the same id.
+    event_alarms_.clear();
+    auto event_alarms_node = root["event_alarms"];
+    if (event_alarms_node && event_alarms_node.IsSequence()) {
+      if (event_alarms_node.size() > 10000) {
+        RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
+                     "event_alarms has %zu entries (max 10000) - refusing to load", event_alarms_node.size());
+        return false;
+      }
+      for (size_t i = 0; i < event_alarms_node.size(); ++i) {
+        const auto & a = event_alarms_node[i];
+        if (!a["alarm_source"] || !a["entity_id"] || !a["fault_code"]) {
+          RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
+                      "event_alarms[%zu] missing alarm_source/entity_id/fault_code - skipping", i);
+          continue;
+        }
+        AlarmEventConfig cfg;
+        cfg.source_node_id_str = a["alarm_source"].as<std::string>();
+        cfg.source_node_id = parse_node_id(cfg.source_node_id_str);
+        cfg.entity_id = a["entity_id"].as<std::string>();
+        cfg.fault_code = a["fault_code"].as<std::string>();
+        cfg.severity_override = a["severity_override"].as<std::string>("");
+        cfg.message_override = a["message"].as<std::string>("");
+        event_alarms_.push_back(std::move(cfg));
+      }
+    }
+
+    // Mutual-exclusion check: an entry under ``nodes:`` carrying both a
+    // ``threshold`` alarm and an ``alarm_source`` is a configuration error
+    // (the threshold path polls scalar values; the alarm_source path
+    // subscribes to native events). Reject the whole file rather than guess.
+    for (const auto & node : (nodes ? nodes : YAML::Node{})) {
+      if (node["alarm_source"] && node["alarm"] && node["alarm"]["threshold"]) {
+        RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
+                     "Entry node_id=%s declares both threshold alarm and alarm_source - mutually exclusive",
+                     node["node_id"] ? node["node_id"].as<std::string>().c_str() : "<unknown>");
+        return false;
+      }
+    }
+
     build_entity_defs();
     return true;
 
@@ -311,6 +354,16 @@ bool NodeMap::load(const std::string & yaml_path) {
     RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"), "NodeMap::load failed: %s", e.what());
     return false;
   }
+}
+
+const AlarmEventConfig * NodeMap::find_event_alarm(const std::string & entity_id,
+                                                   const std::string & fault_code) const {
+  for (const auto & cfg : event_alarms_) {
+    if (cfg.entity_id == entity_id && cfg.fault_code == fault_code) {
+      return &cfg;
+    }
+  }
+  return nullptr;
 }
 
 std::vector<const NodeMapEntry *> NodeMap::entries_for_entity(const std::string & entity_id) const {
@@ -386,6 +439,19 @@ void NodeMap::build_entity_defs() {
     if (entry.alarm.has_value()) {
       def.has_faults = true;
     }
+  }
+
+  // Issue #386: event-mode entities show up as fault-bearing too, even when
+  // they have no scalar data points of their own. Without this, the SOVD
+  // discovery layer would not surface an entity that exists purely to host
+  // alarm events (e.g. a system-wide ``ServerDiagnostics`` source).
+  for (const auto & cfg : event_alarms_) {
+    auto & def = defs[cfg.entity_id];
+    if (def.id.empty()) {
+      def.id = cfg.entity_id;
+      def.component_id = component_id_;
+    }
+    def.has_faults = true;
   }
 
   // Build human-readable names from IDs
