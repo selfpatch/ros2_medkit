@@ -35,8 +35,7 @@ std::uint64_t steady_now_ns() noexcept {
 
 }  // namespace
 
-Ros2SubscriptionExecutor::Ros2SubscriptionExecutor(const std::shared_ptr<rclcpp::Node> & gateway_node,
-                                                   rclcpp::Executor & /*main_executor*/, Config cfg)
+Ros2SubscriptionExecutor::Ros2SubscriptionExecutor(const std::shared_ptr<rclcpp::Node> & gateway_node, Config cfg)
   : cfg_(std::move(cfg)) {
   if (!gateway_node) {
     throw std::invalid_argument{"Ros2SubscriptionExecutor: gateway_node is null"};
@@ -63,6 +62,7 @@ Ros2SubscriptionExecutor::Ros2SubscriptionExecutor(const std::shared_ptr<rclcpp:
   worker_ = std::thread([this] {
     worker_loop();
   });
+  worker_thread_id_ = worker_.get_id();
   aux_thread_ = std::thread([this] {
     aux_loop();
   });
@@ -72,6 +72,10 @@ Ros2SubscriptionExecutor::~Ros2SubscriptionExecutor() {
   // 1. Signal shutdown. Worker will drain remaining queued tasks then exit.
   shutdown_flag_->store(true, std::memory_order_release);
   queue_cv_.notify_all();
+  // aux_loop waits on its own condition variable; notifying here wakes it
+  // immediately so destruction does not wait for the next graph-poll tick.
+  { std::lock_guard<std::mutex> lk(aux_mtx_); }
+  aux_cv_.notify_all();
 
   // 2. Join worker and aux - both loops check shutdown_flag_ and exit.
   if (worker_.joinable()) {
@@ -225,11 +229,23 @@ void Ros2SubscriptionExecutor::aux_loop() {
   // run_sync task. Both tick functions only touch this object's atomics and
   // the shared graph_event_; neither creates, destroys, or dispatches
   // callbacks on subscription_node_, so concurrency with the worker is safe.
-  const auto tick = std::min(cfg_.watchdog_tick, cfg_.graph_poll_tick);
+  //
+  // Sleep via condition_variable::wait_until(min(next_watchdog, next_graph))
+  // with shutdown predicate so the destructor's notify wakes us within
+  // microseconds rather than the next tick boundary.
   auto next_watchdog = std::chrono::steady_clock::now() + cfg_.watchdog_tick;
   auto next_graph = std::chrono::steady_clock::now() + cfg_.graph_poll_tick;
   while (!shutdown_flag_->load(std::memory_order_acquire)) {
-    std::this_thread::sleep_for(tick);
+    const auto deadline = std::min(next_watchdog, next_graph);
+    {
+      std::unique_lock<std::mutex> lk(aux_mtx_);
+      aux_cv_.wait_until(lk, deadline, [this] {
+        return shutdown_flag_->load(std::memory_order_acquire);
+      });
+    }
+    if (shutdown_flag_->load(std::memory_order_acquire)) {
+      break;
+    }
     const auto now = std::chrono::steady_clock::now();
     if (now >= next_watchdog) {
       watchdog_tick();
@@ -243,8 +259,17 @@ void Ros2SubscriptionExecutor::aux_loop() {
 }
 
 void Ros2SubscriptionExecutor::watchdog_tick() {
+  // Observational only: this detector flips `degraded_` when the in-flight
+  // task on the worker has been running longer than `watchdog_threshold`. It
+  // does not interrupt the worker, force-kill the task, or recreate the
+  // executor; recovery is up to the operator (via /health visibility). Sticky
+  // state: the flag stays true while a single task remains over threshold,
+  // and only clears once the worker is observed idle (no in-flight task) so
+  // a long-running task with brief sub-threshold dips does not cause flapping
+  // between trips.
   const std::uint64_t started_ns = current_task_started_ns_.load(std::memory_order_acquire);
   if (started_ns == 0) {
+    // Worker is idle - the previous task finished. Safe to clear.
     degraded_.store(false, std::memory_order_release);
     return;
   }
@@ -254,12 +279,15 @@ void Ros2SubscriptionExecutor::watchdog_tick() {
     if (!degraded_.exchange(true, std::memory_order_acq_rel)) {
       watchdog_trips_.fetch_add(1, std::memory_order_relaxed);
       RCLCPP_ERROR(rclcpp::get_logger("ros2_subscription_executor"),
-                   "Watchdog tripped: task age=%lums threshold=%lldms", static_cast<unsigned long>(age_ms),
-                   static_cast<long long>(cfg_.watchdog_threshold.count()));
+                   "Watchdog tripped: task age=%lums threshold=%lldms (observational only)",
+                   static_cast<unsigned long>(age_ms), static_cast<long long>(cfg_.watchdog_threshold.count()));
     }
-  } else {
-    degraded_.store(false, std::memory_order_release);
   }
+  // Do NOT clear degraded_ while the SAME task is still in flight: the
+  // previous implementation cleared on every tick where age < threshold, but
+  // if the task takes 1500ms with threshold 1000ms, age oscillates around
+  // the line and the flag flapped on/off between consecutive ticks. The
+  // started_ns==0 branch above is the canonical recovery point.
 }
 
 void Ros2SubscriptionExecutor::graph_poll_tick() {
@@ -274,21 +302,28 @@ void Ros2SubscriptionExecutor::graph_poll_tick() {
 }
 
 void Ros2SubscriptionExecutor::fire_graph_callbacks() {
-  // Snapshot under the lock, fire outside, post onto worker.
-  std::array<GraphCallback, kMaxGraphListeners> snapshot;
-  std::size_t count = 0;
+  // Snapshot under the lock, then post a SINGLE wrapper that fires the entire
+  // snapshot. Posting one task per callback meant that a queue overflow mid
+  // fan-out delivered the event to some listeners and silently dropped it for
+  // others - the recovery path was the upstream provider's idle-safety-net
+  // sweep, which can take 15 minutes by default. All-or-nothing delivery
+  // means a single dropped post at most loses one whole graph event, which
+  // graph_poll_tick() will refire on the next change.
+  std::vector<GraphCallback> snapshot;
+  snapshot.reserve(kMaxGraphListeners);
   {
     std::lock_guard<std::mutex> lk(graph_mtx_);
     for (std::size_t i = 0; i < kMaxGraphListeners; ++i) {
       if (graph_slot_used_[i] && graph_callbacks_[i]) {
-        snapshot[count++] = graph_callbacks_[i];
+        snapshot.push_back(graph_callbacks_[i]);
       }
     }
   }
-  for (std::size_t i = 0; i < count; ++i) {
-    // If the queue is full we accept losing this graph fan-out for some
-    // listeners; the idle-safety-net eviction in upstream providers compensates.
-    (void)post([cb = std::move(snapshot[i])] {
+  if (snapshot.empty()) {
+    return;
+  }
+  (void)post([cbs = std::move(snapshot)] {
+    for (const auto & cb : cbs) {
       try {
         cb();
       } catch (const std::exception & ex) {
@@ -296,8 +331,8 @@ void Ros2SubscriptionExecutor::fire_graph_callbacks() {
       } catch (...) {
         RCLCPP_ERROR(rclcpp::get_logger("ros2_subscription_executor"), "Graph callback threw unknown exception");
       }
-    });
-  }
+    }
+  });
 }
 
 }  // namespace ros2_medkit_gateway::ros2_common

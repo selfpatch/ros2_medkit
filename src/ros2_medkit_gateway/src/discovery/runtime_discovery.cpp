@@ -103,7 +103,7 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
   }
 
   // Build topic map if not yet ready (first call or after manual refresh)
-  if (topic_sampler_ && !topic_map_ready_) {
+  if (topic_data_provider_ && !topic_map_ready_) {
     refresh_topic_map();
   }
 
@@ -197,7 +197,7 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
     }
 
     // Populate topics from cached map
-    if (topic_sampler_) {
+    if (topic_data_provider_) {
       auto it = cached_topic_map_.find(fqn);
       if (it != cached_topic_map_.end()) {
         app.topics = it->second;
@@ -426,7 +426,7 @@ std::optional<ActionInfo> RuntimeDiscoveryStrategy::find_action(const std::strin
 }
 
 void RuntimeDiscoveryStrategy::set_topic_data_provider(TopicDataProvider * provider) {
-  topic_sampler_ = provider;
+  topic_data_provider_ = provider;
 }
 
 void RuntimeDiscoveryStrategy::set_type_introspection(TypeIntrospection * introspection) {
@@ -434,10 +434,10 @@ void RuntimeDiscoveryStrategy::set_type_introspection(TypeIntrospection * intros
 }
 
 void RuntimeDiscoveryStrategy::refresh_topic_map() {
-  if (!topic_sampler_) {
+  if (!topic_data_provider_) {
     return;
   }
-  cached_topic_map_ = topic_sampler_->build_component_topic_map();
+  cached_topic_map_ = topic_data_provider_->build_component_topic_map();
   topic_map_ready_ = true;
   RCLCPP_DEBUG(node_->get_logger(), "Topic map refreshed: %zu components", cached_topic_map_.size());
 }

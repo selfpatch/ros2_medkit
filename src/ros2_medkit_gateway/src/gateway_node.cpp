@@ -1450,7 +1450,11 @@ void GatewayNode::set_topic_data_provider(std::shared_ptr<TopicDataProvider> pro
   if (discovery_mgr_) {
     discovery_mgr_->set_topic_data_provider(topic_data_provider_.get());
   }
-  RCLCPP_INFO(get_logger(), "TopicDataProvider attached (race-free subscription pool active)");
+  if (topic_data_provider_) {
+    RCLCPP_INFO(get_logger(), "TopicDataProvider attached (race-free subscription pool active)");
+  } else {
+    RCLCPP_INFO(get_logger(), "TopicDataProvider detached");
+  }
 }
 
 OperationManager * GatewayNode::get_operation_manager() const {

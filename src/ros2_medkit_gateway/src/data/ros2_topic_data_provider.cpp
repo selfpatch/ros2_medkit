@@ -26,8 +26,19 @@
 #include <rclcpp/qos.hpp>
 #include <rclcpp/version.h>
 
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"
 
+// Lock order (must be observed by every member function and helper):
+//   1. pool_mtx_
+//   2. entry->buf_mtx
+// Acquire pool_mtx_ first, drop it before touching buf_mtx_; never reverse the
+// pair. sample() and on_graph_change() pre-collect shared_ptrs to PoolEntry
+// under pool_mtx_, release pool_mtx_, then take buf_mtx_ to operate on the
+// entry. sweep_idle_entries() takes both together to evict stale entries; this
+// is the only nested-lock site, so any future edit that introduces buf_mtx_
+// before pool_mtx_ deadlocks against the sweep. sweep_mutex_ is independent
+// and only serialises the sweep with the destructor.
 namespace ros2_medkit_gateway {
 
 namespace {
@@ -130,12 +141,29 @@ Ros2TopicDataProvider::Ros2TopicDataProvider(std::shared_ptr<ros2_common::Ros2Su
   }
   // Serializer is optional for discovery-only use; sampling path will check.
 
-  graph_listener_token_ = exec_->on_graph_change([this] {
+  // Capture a copy of the shared alive flag so this callback stays safe to
+  // read even after ~Ros2TopicDataProvider has run. Without the shared flag,
+  // a callback snapshotted by fire_graph_callbacks() and posted to the worker
+  // queue before remove_graph_change() would dereference dangling `this`.
+  graph_listener_token_ = exec_->on_graph_change([this, alive = alive_] {
+    if (!alive->load(std::memory_order_acquire)) {
+      return;
+    }
     on_graph_change();
   });
 
   if (cfg_.idle_sweep_tick.count() > 0 && cfg_.idle_safety_net.count() > 0) {
-    idle_sweep_timer_ = exec_->node()->create_wall_timer(cfg_.idle_sweep_tick, [this] {
+    // Capture `alive_` alongside `this` for the same reason the graph callback
+    // does: timer->cancel() does not wait for in-flight callbacks, so a
+    // callback already dispatched to the executor's queue (or already running
+    // but not yet inside sweep_idle_entries' sweep_mutex_ acquire) can
+    // dereference `this` after ~Ros2TopicDataProvider. The shared flag is
+    // cleared first in the destructor, giving the timer callback a stable
+    // liveness check.
+    idle_sweep_timer_ = exec_->node()->create_wall_timer(cfg_.idle_sweep_tick, [this, alive = alive_] {
+      if (!alive->load(std::memory_order_acquire)) {
+        return;
+      }
       sweep_idle_entries();
     });
   }
@@ -143,10 +171,20 @@ Ros2TopicDataProvider::Ros2TopicDataProvider(std::shared_ptr<ros2_common::Ros2Su
 
 Ros2TopicDataProvider::~Ros2TopicDataProvider() {
   shutdown_.store(true, std::memory_order_release);
+  // Mark the graph callback as dead before anything else: any already-posted
+  // callback tasks sitting on the worker queue will observe this and no-op
+  // instead of dereferencing `this` through the shared alive flag.
+  alive_->store(false, std::memory_order_release);
   if (idle_sweep_timer_) {
     idle_sweep_timer_->cancel();
     idle_sweep_timer_.reset();
   }
+  // Wait for any in-flight sweep_idle_entries to finish on the worker thread.
+  // Between `shutdown_.store(true)` above and the worker actually observing
+  // it, a sweep callback may be mid-execution; grabbing sweep_mutex_ here
+  // serialises with it so pool_/lru_* are not torn down underneath the
+  // callback.
+  { std::lock_guard<std::mutex> sweep_lk(sweep_mutex_); }
   if (exec_ && graph_listener_token_ < ros2_common::Ros2SubscriptionExecutor::kMaxGraphListeners) {
     exec_->remove_graph_change(graph_listener_token_);
   }
@@ -179,12 +217,31 @@ rclcpp::QoS Ros2TopicDataProvider::qos_for(const std::string & topic) const {
   //   the latched last-message on subscribe (typical for "status" topics).
   // - History: always keep_last depth 1. The pool only keeps the newest
   //   serialized message; a deeper queue would just allocate and discard.
+  // - Deadline / Lifespan / Liveliness: copy from the FIRST publisher that
+  //   declares non-default values. DDS enforces deadline contracts on Cyclone
+  //   (incompatible-qos rejects the connection) and silently drops on FastDDS
+  //   if the subscriber leaves them at defaults; matching them keeps both
+  //   paths working. WARN on mixed publisher contracts so operators can spot
+  //   the topic that needs harmonising.
   //
   // Graph query is thread-safe (read-only) and runs on the caller thread
   // rather than the worker since it is purely informational.
   bool any_reliable = false;
   bool any_transient_local = false;
-  auto pubs = exec_->node()->get_publishers_info_by_topic(topic);
+  std::vector<rclcpp::TopicEndpointInfo> pubs;
+  try {
+    pubs = exec_->node()->get_publishers_info_by_topic(topic);
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(exec_->node()->get_logger(), "get_publishers_info_by_topic threw during shutdown: %s", ex.what());
+    // Fall through with empty pubs: subscriber inherits the configured defaults.
+  }
+  std::optional<rclcpp::Duration> deadline;
+  std::optional<rclcpp::Duration> lifespan;
+  std::optional<rclcpp::LivelinessPolicy> liveliness_policy;
+  std::optional<rclcpp::Duration> liveliness_lease;
+  bool mixed_deadline = false;
+  bool mixed_lifespan = false;
+  bool mixed_liveliness = false;
   for (const auto & pub : pubs) {
     const auto & q = pub.qos_profile();
     if (q.reliability() == rclcpp::ReliabilityPolicy::Reliable) {
@@ -193,6 +250,46 @@ rclcpp::QoS Ros2TopicDataProvider::qos_for(const std::string & topic) const {
     if (q.durability() == rclcpp::DurabilityPolicy::TransientLocal) {
       any_transient_local = true;
     }
+    const rclcpp::Duration pub_deadline = q.deadline();
+    if (pub_deadline != rclcpp::Duration{std::chrono::nanoseconds::max()} && pub_deadline != rclcpp::Duration{0, 0}) {
+      if (!deadline) {
+        deadline = pub_deadline;
+      } else if (*deadline != pub_deadline) {
+        mixed_deadline = true;
+      }
+    }
+    const rclcpp::Duration pub_lifespan = q.lifespan();
+    if (pub_lifespan != rclcpp::Duration{std::chrono::nanoseconds::max()} && pub_lifespan != rclcpp::Duration{0, 0}) {
+      if (!lifespan) {
+        lifespan = pub_lifespan;
+      } else if (*lifespan != pub_lifespan) {
+        mixed_lifespan = true;
+      }
+    }
+    if (q.liveliness() != rclcpp::LivelinessPolicy::Automatic &&
+        q.liveliness() != rclcpp::LivelinessPolicy::SystemDefault) {
+      if (!liveliness_policy) {
+        liveliness_policy = q.liveliness();
+        liveliness_lease = q.liveliness_lease_duration();
+      } else if (*liveliness_policy != q.liveliness()) {
+        mixed_liveliness = true;
+      }
+    }
+  }
+  if (mixed_deadline) {
+    RCLCPP_WARN(exec_->node()->get_logger(),
+                "Publishers on '%s' declare conflicting Deadline contracts; subscriber QoS uses the first observed.",
+                topic.c_str());
+  }
+  if (mixed_lifespan) {
+    RCLCPP_WARN(exec_->node()->get_logger(),
+                "Publishers on '%s' declare conflicting Lifespan; subscriber QoS uses the first observed.",
+                topic.c_str());
+  }
+  if (mixed_liveliness) {
+    RCLCPP_WARN(exec_->node()->get_logger(),
+                "Publishers on '%s' declare conflicting Liveliness; subscriber QoS uses the first observed.",
+                topic.c_str());
   }
   rclcpp::QoS qos(1);  // keep_last depth 1 - we only need the newest
   if (any_reliable) {
@@ -203,13 +300,26 @@ rclcpp::QoS Ros2TopicDataProvider::qos_for(const std::string & topic) const {
   if (any_transient_local) {
     qos.transient_local();
   }
+  if (deadline) {
+    qos.deadline(*deadline);
+  }
+  if (lifespan) {
+    qos.lifespan(*lifespan);
+  }
+  if (liveliness_policy) {
+    qos.liveliness(*liveliness_policy);
+    if (liveliness_lease) {
+      qos.liveliness_lease_duration(*liveliness_lease);
+    }
+  }
   return qos;
 }
 
 tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const std::string & topic,
                                                                          std::chrono::milliseconds timeout) {
   if (shutdown_.load(std::memory_order_acquire)) {
-    return tl::unexpected(ErrorInfo{"ERR_GATEWAY_SHUTDOWN", "gateway shutting down", 503, nlohmann::json::object()});
+    return tl::unexpected(
+        ErrorInfo{ERR_X_MEDKIT_GATEWAY_SHUTDOWN, "gateway shutting down", 503, nlohmann::json::object()});
   }
 
   auto info = get_topic_info(topic);
@@ -268,7 +378,8 @@ tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const s
 
     auto slot_or_err = ros2_common::Ros2SubscriptionSlot::create_generic(*exec_, topic, info->type, qos_for(topic), cb);
     if (!slot_or_err) {
-      return tl::unexpected(ErrorInfo{"ERR_SUBSCRIBE_FAILED", slot_or_err.error(), 500, nlohmann::json::object()});
+      return tl::unexpected(
+          ErrorInfo{ERR_X_MEDKIT_SUBSCRIBE_FAILED, slot_or_err.error(), 500, nlohmann::json::object()});
     }
     new_entry->slot = std::move(*slot_or_err);
 
@@ -320,15 +431,46 @@ tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const s
     // Cold-wait cap (httplib liveness): if too many HTTP handler threads are
     // already blocked on cold topics, degrade the remaining callers to
     // metadata-only so discovery / health endpoints keep responding.
-    if (cfg_.cold_wait_cap > 0 && concurrent_cold_waits_.load(std::memory_order_acquire) >= cfg_.cold_wait_cap) {
-      result.has_data = false;
-      return result;
+    //
+    // Reservation is a single CAS loop: plain load+increment would let two
+    // callers on different entries both pass the check and both increment,
+    // overshooting the cap. Different entries hold different buf_mtx, so
+    // the per-entry mutex does not serialise this shared counter.
+    bool reserved = false;
+    if (cfg_.cold_wait_cap > 0) {
+      std::size_t current = concurrent_cold_waits_.load(std::memory_order_acquire);
+      while (true) {
+        if (current >= cfg_.cold_wait_cap) {
+          // Return 503 so retry-on-5xx clients apply backoff instead of
+          // treating this as a normal "no publishers yet" result. The
+          // original metadata-only response was indistinguishable from a
+          // genuinely empty topic, which suppressed retry logic and made
+          // saturation invisible to callers. Fast return keeps the httplib
+          // thread pool healthy (same liveness benefit as the old path).
+          nlohmann::json params = {
+              {"topic", topic},
+              {"cold_wait_cap", cfg_.cold_wait_cap},
+          };
+          return tl::unexpected(ErrorInfo{ERR_X_MEDKIT_COLD_WAIT_CAP_EXCEEDED,
+                                          "concurrent cold-wait cap exceeded; retry with backoff", 503,
+                                          std::move(params)});
+        }
+        if (concurrent_cold_waits_.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel,
+                                                         std::memory_order_acquire)) {
+          reserved = true;
+          break;
+        }
+      }
+    } else {
+      concurrent_cold_waits_.fetch_add(1, std::memory_order_acq_rel);
+      reserved = true;
     }
-    concurrent_cold_waits_.fetch_add(1, std::memory_order_acq_rel);
     entry->buf_cv.wait_for(bl, timeout, [&] {
       return entry->latest.has_value() || entry->shutdown.load(std::memory_order_acquire);
     });
-    concurrent_cold_waits_.fetch_sub(1, std::memory_order_acq_rel);
+    if (reserved) {
+      concurrent_cold_waits_.fetch_sub(1, std::memory_order_acq_rel);
+    }
   }
   if (!entry->latest.has_value() || entry->shutdown.load(std::memory_order_acquire)) {
     result.has_data = false;
@@ -367,28 +509,59 @@ tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const s
 tl::expected<std::vector<TopicSampleResult>, ErrorInfo>
 Ros2TopicDataProvider::sample_parallel(const std::vector<std::string> & topics, std::chrono::milliseconds timeout) {
   if (shutdown_.load(std::memory_order_acquire)) {
-    return tl::unexpected(ErrorInfo{"ERR_GATEWAY_SHUTDOWN", "gateway shutting down", 503, nlohmann::json::object()});
+    return tl::unexpected(
+        ErrorInfo{ERR_X_MEDKIT_GATEWAY_SHUTDOWN, "gateway shutting down", 503, nlohmann::json::object()});
   }
 
-  std::vector<std::future<TopicSampleResult>> futures;
-  futures.reserve(topics.size());
-  for (const auto & t : topics) {
-    futures.push_back(std::async(std::launch::async, [this, t, timeout] {
-      auto r = sample(t, timeout);
-      if (r) {
-        return *r;
-      }
-      TopicSampleResult fallback;
-      fallback.topic_name = t;
-      fallback.has_data = false;
-      fallback.timestamp_ns = now_ns_epoch();
-      return fallback;
-    }));
-  }
   std::vector<TopicSampleResult> results;
   results.reserve(topics.size());
-  for (auto & f : futures) {
-    results.push_back(f.get());
+
+  // Chunked parallel dispatch: an unbounded std::async fan-out on large topic
+  // lists starves DDS/rcl graph queries and turns the provider into a self-DoS
+  // vector. Cap concurrent samplers at `max_parallel_samples`; chunks run
+  // back-to-back so order and one-result-per-topic are preserved.
+  //
+  // Per-topic errors (cold-wait cap, subscribe-failed) are NOT batch-fatal:
+  // they get embedded into the corresponding TopicSampleResult so the rest
+  // of /components/{id}/data still serves successfully. Only batch-fatal
+  // errors (gateway shutdown) surface as tl::unexpected and abort the call.
+  const std::size_t chunk_size = std::max<std::size_t>(1, cfg_.max_parallel_samples);
+  for (std::size_t base = 0; base < topics.size(); base += chunk_size) {
+    if (shutdown_.load(std::memory_order_acquire)) {
+      return tl::unexpected(
+          ErrorInfo{ERR_X_MEDKIT_GATEWAY_SHUTDOWN, "gateway shutting down", 503, nlohmann::json::object()});
+    }
+    const std::size_t end = std::min(base + chunk_size, topics.size());
+    std::vector<std::future<tl::expected<TopicSampleResult, ErrorInfo>>> futures;
+    futures.reserve(end - base);
+    for (std::size_t i = base; i < end; ++i) {
+      const auto & t = topics[i];
+      futures.push_back(std::async(std::launch::async, [this, t, timeout] {
+        return sample(t, timeout);
+      }));
+    }
+    for (std::size_t i = 0; i < futures.size(); ++i) {
+      auto r = futures[i].get();
+      if (r) {
+        results.push_back(std::move(*r));
+        continue;
+      }
+      // Batch-fatal: shutdown invalidates further work, fail the whole call.
+      if (r.error().code == ERR_X_MEDKIT_GATEWAY_SHUTDOWN) {
+        return tl::unexpected(r.error());
+      }
+      // Per-topic error: embed in the result so the caller can distinguish
+      // "no publishers yet" (has_data=false, no error_code) from "503, retry me"
+      // (has_data=false, error_code set).
+      TopicSampleResult per_topic;
+      per_topic.topic_name = topics[base + i];
+      per_topic.timestamp_ns = now_ns_epoch();
+      per_topic.has_data = false;
+      per_topic.error_code = r.error().code;
+      per_topic.error_message = r.error().message;
+      per_topic.error_http_status = r.error().http_status;
+      results.push_back(std::move(per_topic));
+    }
   }
   return results;
 }
@@ -444,6 +617,11 @@ void Ros2TopicDataProvider::on_graph_change() {
 }
 
 void Ros2TopicDataProvider::sweep_idle_entries() {
+  // Hold sweep_mutex_ for the entire call so ~Ros2TopicDataProvider blocks
+  // on it until any in-flight sweep finishes. rclcpp timer->cancel() does
+  // not wait for callbacks, so this is the only barrier preventing
+  // pool_mtx_ / pool_ from being destroyed while we iterate them.
+  std::lock_guard<std::mutex> sweep_lk(sweep_mutex_);
   if (shutdown_.load(std::memory_order_acquire)) {
     return;
   }
@@ -484,25 +662,20 @@ void Ros2TopicDataProvider::sweep_idle_entries() {
   }
 }
 
-TopicSampleResult Ros2TopicDataProvider::build_metadata_only_sample(const std::string & topic) {
-  TopicSampleResult r;
-  r.topic_name = topic;
-  r.timestamp_ns = now_ns_epoch();
-  r.has_data = false;
-  if (auto info = get_topic_info(topic)) {
-    r.message_type = info->type;
-    r.publisher_count = info->publisher_count;
-    r.subscriber_count = info->subscriber_count;
-    r.publishers = get_topic_publishers(topic);
-    r.subscribers = get_topic_subscribers(topic);
-  }
-  return r;
-}
-
 // ---- Discovery --------------------------------------------------------------
 
+// Graph introspection APIs throw std::runtime_error ("rcl node's context is invalid")
+// when called between rclcpp::shutdown() and ~GatewayNode - e.g. idle sweep timers or
+// late HTTP discovery calls that race SIGINT. Callers already tolerate empty
+// results, so swallow the throw rather than aborting the teardown path.
 std::optional<TopicInfo> Ros2TopicDataProvider::get_topic_info(const std::string & topic) {
-  auto topic_names_and_types = exec_->node()->get_topic_names_and_types();
+  std::map<std::string, std::vector<std::string>> topic_names_and_types;
+  try {
+    topic_names_and_types = exec_->node()->get_topic_names_and_types();
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(exec_->node()->get_logger(), "get_topic_names_and_types threw during shutdown: %s", ex.what());
+    return std::nullopt;
+  }
   auto it = topic_names_and_types.find(topic);
   if (it == topic_names_and_types.end()) {
     return std::nullopt;
@@ -512,18 +685,33 @@ std::optional<TopicInfo> Ros2TopicDataProvider::get_topic_info(const std::string
   if (!it->second.empty()) {
     info.type = it->second[0];
   }
-  info.publisher_count = exec_->node()->count_publishers(topic);
-  info.subscriber_count = exec_->node()->count_subscribers(topic);
+  try {
+    info.publisher_count = exec_->node()->count_publishers(topic);
+    info.subscriber_count = exec_->node()->count_subscribers(topic);
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(exec_->node()->get_logger(), "count_{publishers,subscribers} threw during shutdown: %s", ex.what());
+  }
   return info;
 }
 
 bool Ros2TopicDataProvider::has_publishers(const std::string & topic) {
-  return exec_->node()->count_publishers(topic) > 0;
+  try {
+    return exec_->node()->count_publishers(topic) > 0;
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(exec_->node()->get_logger(), "count_publishers threw during shutdown: %s", ex.what());
+    return false;
+  }
 }
 
 std::vector<TopicInfo> Ros2TopicDataProvider::discover_all() {
   std::vector<TopicInfo> result;
-  auto topic_names_and_types = exec_->node()->get_topic_names_and_types();
+  std::map<std::string, std::vector<std::string>> topic_names_and_types;
+  try {
+    topic_names_and_types = exec_->node()->get_topic_names_and_types();
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(exec_->node()->get_logger(), "get_topic_names_and_types threw during shutdown: %s", ex.what());
+    return result;
+  }
   result.reserve(topic_names_and_types.size());
   for (const auto & [topic_name, types] : topic_names_and_types) {
     TopicInfo info;
@@ -531,8 +719,16 @@ std::vector<TopicInfo> Ros2TopicDataProvider::discover_all() {
     if (!types.empty()) {
       info.type = types[0];
     }
-    info.publisher_count = exec_->node()->count_publishers(topic_name);
-    info.subscriber_count = exec_->node()->count_subscribers(topic_name);
+    try {
+      info.publisher_count = exec_->node()->count_publishers(topic_name);
+      info.subscriber_count = exec_->node()->count_subscribers(topic_name);
+    } catch (const std::runtime_error & ex) {
+      RCLCPP_DEBUG(exec_->node()->get_logger(), "count_{publishers,subscribers} threw on '%s': %s", topic_name.c_str(),
+                   ex.what());
+      // Skip just this topic instead of truncating the rest of the enumeration: a
+      // transient rmw fault on one topic should not hide the rest of the graph.
+      continue;
+    }
     result.push_back(info);
   }
   return result;
@@ -552,7 +748,13 @@ std::vector<TopicInfo> Ros2TopicDataProvider::discover(const std::string & names
 
 std::vector<TopicEndpoint> Ros2TopicDataProvider::get_topic_publishers(const std::string & topic) {
   std::vector<TopicEndpoint> endpoints;
-  auto publishers_info = exec_->node()->get_publishers_info_by_topic(topic);
+  std::vector<rclcpp::TopicEndpointInfo> publishers_info;
+  try {
+    publishers_info = exec_->node()->get_publishers_info_by_topic(topic);
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(exec_->node()->get_logger(), "get_publishers_info_by_topic threw during shutdown: %s", ex.what());
+    return endpoints;
+  }
   endpoints.reserve(publishers_info.size());
   for (const auto & pub_info : publishers_info) {
     TopicEndpoint endpoint;
@@ -567,7 +769,13 @@ std::vector<TopicEndpoint> Ros2TopicDataProvider::get_topic_publishers(const std
 
 std::vector<TopicEndpoint> Ros2TopicDataProvider::get_topic_subscribers(const std::string & topic) {
   std::vector<TopicEndpoint> endpoints;
-  auto subscribers_info = exec_->node()->get_subscriptions_info_by_topic(topic);
+  std::vector<rclcpp::TopicEndpointInfo> subscribers_info;
+  try {
+    subscribers_info = exec_->node()->get_subscriptions_info_by_topic(topic);
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(exec_->node()->get_logger(), "get_subscriptions_info_by_topic threw during shutdown: %s", ex.what());
+    return endpoints;
+  }
   endpoints.reserve(subscribers_info.size());
   for (const auto & sub_info : subscribers_info) {
     TopicEndpoint endpoint;
@@ -583,10 +791,14 @@ std::vector<TopicEndpoint> Ros2TopicDataProvider::get_topic_subscribers(const st
 TopicConnection Ros2TopicDataProvider::get_topic_connection(const std::string & topic) {
   TopicConnection conn;
   conn.topic_name = topic;
-  auto topic_names_and_types = exec_->node()->get_topic_names_and_types();
-  auto it = topic_names_and_types.find(topic);
-  if (it != topic_names_and_types.end() && !it->second.empty()) {
-    conn.topic_type = it->second[0];
+  try {
+    auto topic_names_and_types = exec_->node()->get_topic_names_and_types();
+    auto it = topic_names_and_types.find(topic);
+    if (it != topic_names_and_types.end() && !it->second.empty()) {
+      conn.topic_type = it->second[0];
+    }
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(exec_->node()->get_logger(), "get_topic_names_and_types threw during shutdown: %s", ex.what());
   }
   conn.publishers = get_topic_publishers(topic);
   conn.subscribers = get_topic_subscribers(topic);
@@ -595,7 +807,13 @@ TopicConnection Ros2TopicDataProvider::get_topic_connection(const std::string & 
 
 std::map<std::string, ComponentTopics> Ros2TopicDataProvider::build_component_topic_map() {
   std::map<std::string, ComponentTopics> component_map;
-  auto all_topics = exec_->node()->get_topic_names_and_types();
+  std::map<std::string, std::vector<std::string>> all_topics;
+  try {
+    all_topics = exec_->node()->get_topic_names_and_types();
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(exec_->node()->get_logger(), "get_topic_names_and_types threw during shutdown: %s", ex.what());
+    return component_map;
+  }
   for (const auto & [topic_name, types] : all_topics) {
     (void)types;
     const auto build_fqn = [](const std::string & ns, const std::string & name) {
@@ -612,11 +830,19 @@ std::map<std::string, ComponentTopics> Ros2TopicDataProvider::build_component_to
       }
       return fqn;
     };
-    for (const auto & pub_info : exec_->node()->get_publishers_info_by_topic(topic_name)) {
-      component_map[build_fqn(pub_info.node_namespace(), pub_info.node_name())].publishes.push_back(topic_name);
-    }
-    for (const auto & sub_info : exec_->node()->get_subscriptions_info_by_topic(topic_name)) {
-      component_map[build_fqn(sub_info.node_namespace(), sub_info.node_name())].subscribes.push_back(topic_name);
+    try {
+      for (const auto & pub_info : exec_->node()->get_publishers_info_by_topic(topic_name)) {
+        component_map[build_fqn(pub_info.node_namespace(), pub_info.node_name())].publishes.push_back(topic_name);
+      }
+      for (const auto & sub_info : exec_->node()->get_subscriptions_info_by_topic(topic_name)) {
+        component_map[build_fqn(sub_info.node_namespace(), sub_info.node_name())].subscribes.push_back(topic_name);
+      }
+    } catch (const std::runtime_error & ex) {
+      RCLCPP_DEBUG(exec_->node()->get_logger(), "get_{publishers,subscriptions}_info_by_topic threw on '%s': %s",
+                   topic_name.c_str(), ex.what());
+      // Skip just this topic; do not truncate the component map on a per-topic
+      // transient fault.
+      continue;
     }
   }
   return component_map;
@@ -638,7 +864,13 @@ bool Ros2TopicDataProvider::is_system_topic(const std::string & topic_name) {
 
 TopicDiscoveryResult Ros2TopicDataProvider::discover_topics_by_namespace() {
   TopicDiscoveryResult result;
-  auto all_topics = exec_->node()->get_topic_names_and_types();
+  std::map<std::string, std::vector<std::string>> all_topics;
+  try {
+    all_topics = exec_->node()->get_topic_names_and_types();
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(exec_->node()->get_logger(), "get_topic_names_and_types threw during shutdown: %s", ex.what());
+    return result;
+  }
   for (const auto & [topic_name, types] : all_topics) {
     (void)types;
     if (is_system_topic(topic_name)) {
@@ -668,7 +900,13 @@ std::set<std::string> Ros2TopicDataProvider::discover_topic_namespaces() {
 
 ComponentTopics Ros2TopicDataProvider::get_topics_for_namespace(const std::string & ns_prefix) {
   ComponentTopics topics;
-  auto all_topics = exec_->node()->get_topic_names_and_types();
+  std::map<std::string, std::vector<std::string>> all_topics;
+  try {
+    all_topics = exec_->node()->get_topic_names_and_types();
+  } catch (const std::runtime_error & ex) {
+    RCLCPP_DEBUG(exec_->node()->get_logger(), "get_topic_names_and_types threw during shutdown: %s", ex.what());
+    return topics;
+  }
   for (const auto & [topic_name, types] : all_topics) {
     (void)types;
     if (is_system_topic(topic_name)) {
@@ -682,42 +920,6 @@ ComponentTopics Ros2TopicDataProvider::get_topics_for_namespace(const std::strin
   return topics;
 }
 
-// ---- Observability ----------------------------------------------------------
-
-nlohmann::json Ros2TopicDataProvider::x_medkit_pool_snapshot() const {
-  auto out = nlohmann::json::array();
-  const auto now = std::chrono::steady_clock::now();
-  std::lock_guard<std::mutex> lk(pool_mtx_);
-  std::size_t lru_rank = 0;
-  for (const auto & topic : lru_order_) {
-    auto it = pool_.find(topic);
-    if (it == pool_.end()) {
-      continue;
-    }
-    const auto & entry = *it->second;
-    std::chrono::steady_clock::time_point last_sample;
-    bool has_latest = false;
-    std::int64_t latest_ns = 0;
-    {
-      std::lock_guard<std::mutex> bl(entry.buf_mtx);
-      last_sample = entry.last_sample_time;
-      has_latest = entry.latest.has_value();
-      latest_ns = entry.latest_ns;
-    }
-    const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_sample).count();
-    out.push_back({
-        {"topic", topic},
-        {"message_type", entry.cached_type},
-        {"lru_rank", lru_rank},
-        {"has_latest", has_latest},
-        {"latest_ns", latest_ns},
-        {"last_sample_age_ms", age_ms},
-    });
-    ++lru_rank;
-  }
-  return out;
-}
-
 nlohmann::json Ros2TopicDataProvider::x_medkit_stats() const {
   const auto p = stats();
   nlohmann::json out;
@@ -726,8 +928,6 @@ nlohmann::json Ros2TopicDataProvider::x_medkit_stats() const {
       {"pool_cap", p.pool_cap},
       {"pool_hits", p.pool_hits},
       {"pool_misses", p.pool_misses},
-      {"metadata_cache_size", p.metadata_cache_size},
-      {"metadata_cache_cap", p.metadata_cache_cap},
       {"evictions_total", p.evictions_total},
       {"type_change_events", p.type_change_events},
       {"graph_events_received", p.graph_events_received},
@@ -763,8 +963,6 @@ Ros2TopicDataProvider::PoolStats Ros2TopicDataProvider::stats() const {
   s.pool_cap = cfg_.max_pool_size;
   s.pool_hits = pool_hits_.load();
   s.pool_misses = pool_misses_.load();
-  s.metadata_cache_size = 0;
-  s.metadata_cache_cap = cfg_.metadata_cache_cap;
   s.evictions_total = evictions_total_.load();
   s.type_change_events = type_change_events_.load();
   s.graph_events_received = graph_events_received_.load();

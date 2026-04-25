@@ -132,7 +132,6 @@ class DataAccessManager {
 
   std::unique_ptr<TypeIntrospection> type_introspection_;
   TopicDataProvider * topic_data_provider_{nullptr};  ///< Non-owning; set at wiring time.
-  int max_parallel_samples_;
   double topic_sample_timeout_sec_;
 
   /**

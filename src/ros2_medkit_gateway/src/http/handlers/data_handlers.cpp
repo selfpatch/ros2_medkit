@@ -210,9 +210,23 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
       return;
     }
     const auto timeout_ms = std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout_sec, 0.0) * 1000.0)};
-    if (auto r = provider->sample(full_topic_path, timeout_ms)) {
-      sample = *r;
+    auto r = provider->sample(full_topic_path, timeout_ms);
+    if (!r) {
+      // Propagate the provider's ErrorInfo verbatim: http_status, code (SOVD
+      // constant or x-medkit-*), message, and structured params. Collapsing
+      // all errors to metadata-only (previous behaviour) would mask 503s
+      // (gateway shutdown, cold-wait cap) and 500s (subscribe failed) as
+      // successful metadata-only responses, which breaks retry-on-5xx clients.
+      const auto & err = r.error();
+      nlohmann::json params = err.params;
+      params["entity_id"] = entity_id;
+      params["topic_name"] = topic_name;
+      const std::string code = err.code.empty() ? std::string{ERR_INTERNAL_ERROR} : err.code;
+      const int status = (err.http_status >= 400 && err.http_status < 600) ? err.http_status : 500;
+      HandlerContext::send_error(res, status, code, err.message, params);
+      return;
     }
+    sample = *r;
 
     // Build SOVD ReadValue response (id must match what list returns for round-trip)
     json response;
@@ -256,6 +270,19 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
                                {{"entity_id", entity_id}, {"topic_name", topic_name}});
     RCLCPP_DEBUG(HandlerContext::logger(), "Topic not available for entity '%s', topic '%s': %s", entity_id.c_str(),
                  topic_name.c_str(), e.what());
+  } catch (const ProviderErrorException & e) {
+    // Provider returned a non-404 ErrorInfo via DAM (shutdown, subscribe
+    // failed, pool saturation). Preserve the original http_status / code
+    // so 5xx surfaces to retry-on-5xx clients instead of looking like 404.
+    const auto & info = e.info();
+    nlohmann::json params = info.params;
+    params["entity_id"] = entity_id;
+    params["topic_name"] = topic_name;
+    const std::string code = info.code.empty() ? std::string{ERR_INTERNAL_ERROR} : info.code;
+    const int status = (info.http_status >= 400 && info.http_status < 600) ? info.http_status : 500;
+    HandlerContext::send_error(res, status, code, info.message, params);
+    RCLCPP_WARN(HandlerContext::logger(), "Provider error for entity '%s', topic '%s': %s [%d]", entity_id.c_str(),
+                topic_name.c_str(), info.message.c_str(), info.http_status);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to retrieve topic data",
                                {{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}});

@@ -46,6 +46,12 @@ struct TopicInfo {
  * otherwise the result is metadata-only. Metadata fields (topic_name,
  * message_type, publisher_count, subscriber_count, publishers, subscribers)
  * are populated on a best-effort basis even when no data arrived.
+ *
+ * `error_code` is populated when the per-topic sample failed with a recoverable
+ * provider error (cold-wait cap exhausted, subscribe failed, etc) inside a
+ * batch call (`sample_parallel`). Single-topic `sample()` surfaces these via
+ * `tl::expected<..., ErrorInfo>` instead. When `error_code` is set, `has_data`
+ * is always false and metadata may be partial.
  */
 struct TopicSampleResult {
   std::string topic_name;
@@ -54,9 +60,12 @@ struct TopicSampleResult {
   bool has_data{false};                ///< Whether actual data was received
   std::size_t publisher_count{0};
   std::size_t subscriber_count{0};
-  std::int64_t timestamp_ns{0};            ///< Sample timestamp in ns since epoch
-  std::vector<TopicEndpoint> publishers;   ///< Publisher endpoints with QoS
-  std::vector<TopicEndpoint> subscribers;  ///< Subscriber endpoints with QoS
+  std::int64_t timestamp_ns{0};              ///< Sample timestamp in ns since epoch
+  std::vector<TopicEndpoint> publishers;     ///< Publisher endpoints with QoS
+  std::vector<TopicEndpoint> subscribers;    ///< Subscriber endpoints with QoS
+  std::optional<std::string> error_code;     ///< Per-topic SOVD error code (set on partial-batch failure)
+  std::optional<std::string> error_message;  ///< Per-topic error message paired with error_code
+  int error_http_status{0};                  ///< Per-topic HTTP status (0 when error_code is empty)
 };
 
 /**

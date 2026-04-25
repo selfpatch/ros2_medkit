@@ -44,12 +44,17 @@ namespace ros2_medkit_gateway::ros2_common {
  * that occurs when multiple threads create subscriptions on the same node concurrently.
  *
  * @par Thread model
- * - One worker thread, fed by a bounded task queue. Tasks run in FIFO order.
- * - One wall timer on the subscription node for the watchdog (no extra thread).
- * - One wall timer on the subscription node polls `rclcpp::Event::check_and_clear()`
- *   for graph changes (no extra thread, no internal rclcpp APIs).
- * - Graph-change callbacks are re-posted to the worker thread so they run outside the
- *   main executor context.
+ * - One worker thread, fed by a bounded task queue. Tasks run in FIFO order and
+ *   interleave with `sub_executor_.spin_some()` so callback dispatch on the
+ *   subscription node happens on the same thread as subscription creation /
+ *   destruction.
+ * - The subscription node is exclusively owned by an internal
+ *   `SingleThreadedExecutor`; the gateway's main executor never sees it.
+ * - One auxiliary thread drives the watchdog and graph-event polling ticks on
+ *   their own cadence. They only touch atomics / the graph event, not the
+ *   node's subscription list, so they cannot race the worker.
+ * - Graph-change callbacks are posted onto the worker task queue so they run
+ *   outside the main executor context.
  *
  * @par Bounded behavior
  * - Queue depth capped at `Config::max_queue_depth`. Excess posts return `false`
@@ -60,9 +65,9 @@ namespace ros2_medkit_gateway::ros2_common {
  *
  * @par Shutdown
  * Destruction drains the queue (all pending tasks run to completion so `run_sync` callers
- * get their promises fulfilled), then joins the worker, cancels timers, and removes the
- * subscription node from the main executor. Bounded by longest remaining task execution
- * time. External deployment platform (systemd / k8s / Docker) should enforce hard timeout.
+ * get their promises fulfilled), then joins the worker, cancels timers, and tears down the
+ * internal subscription executor. Bounded by longest remaining task execution time.
+ * External deployment platform (systemd / k8s / Docker) should enforce hard timeout.
  *
  * @par Not for inheritance
  * Marked `final`. The abstraction boundary for alternate transports is at the provider
@@ -111,14 +116,17 @@ class Ros2SubscriptionExecutor final {
   /**
    * @brief Construct and start the worker thread.
    *
-   * @param gateway_node Owning gateway node. Used only to derive the subscription node
-   *                     name and namespace; no references retained after construction.
-   * @param main_executor Executor that will spin both the gateway node and the
-   *                      newly-created subscription node. Must outlive this executor.
-   * @param cfg           Bounded resource configuration.
+   * The subscription node is owned by an internal `SingleThreadedExecutor` that is
+   * pumped via `spin_some()` from the worker thread. The main gateway executor is
+   * deliberately not wired up - sharing the subscription node with a multi-threaded
+   * executor reintroduces the rcutils_hash_map race this class exists to eliminate.
+   *
+   * @param gateway_node Owning gateway node. Used only to derive the subscription
+   *                     node name and namespace; no references retained after
+   *                     construction.
+   * @param cfg          Bounded resource configuration.
    */
-  Ros2SubscriptionExecutor(const std::shared_ptr<rclcpp::Node> & gateway_node, rclcpp::Executor & main_executor,
-                           Config cfg = Config());
+  Ros2SubscriptionExecutor(const std::shared_ptr<rclcpp::Node> & gateway_node, Config cfg = Config());
 
   /// Idempotent shutdown: drains queue, joins worker, cancels timers, removes sub node.
   ~Ros2SubscriptionExecutor();
@@ -154,9 +162,23 @@ class Ros2SubscriptionExecutor final {
   bool post(std::function<void()> task);
 
   /**
-   * @brief Accessor for the subscription node. Use only from within a task posted to
-   *        this executor; concurrent rcl mutations on other threads violate the
-   *        single-writer invariant.
+   * @brief Accessor for the subscription node.
+   *
+   * @par Allowed (any thread)
+   * Read-only graph queries: `get_topic_names_and_types`, `count_publishers`,
+   * `get_publishers_info_by_topic`, `get_node_names_*`, `get_logger`. These
+   * acquire internal rmw locks but do not mutate the node's hash maps.
+   *
+   * @par Forbidden (any thread except the worker)
+   * Anything that mutates the node: `create_subscription`, `create_publisher`,
+   * `create_service`, `create_client`, timers, parameter set/declare. Use
+   * `Ros2SubscriptionSlot::create_*` or post a task via `run_sync` instead.
+   * The CI regression gate `scripts/check_no_naked_subscriptions.sh` rejects
+   * direct `create_*` calls on the subscription node outside ros2_common/.
+   *
+   * Concurrent rcl mutations on other threads were the root cause of issue
+   * #375 (rcutils_hash_map_set/get race) and are NOT prevented by this getter
+   * - callers are expected to follow the rules above.
    */
   rclcpp::Node * node() const noexcept;
 
@@ -167,17 +189,35 @@ class Ros2SubscriptionExecutor final {
    * disappearing, types changing). Use to invalidate per-topic caches or evict stale
    * pool entries.
    *
+   * @warning A registered callback must NOT call remove_graph_change() on its own
+   *          token from inside the callback - graph_mtx_ is non-recursive and a
+   *          self-removal attempt deadlocks. Drop the token through a separate task
+   *          posted to the worker if dynamic deregistration is needed.
+   *
    * @return Opaque token in range [0, kMaxGraphListeners). `kMaxGraphListeners` if
    *         all slots are taken.
    */
   [[nodiscard]] std::size_t on_graph_change(GraphCallback cb);
 
-  /// Remove a previously-registered graph callback. Idempotent.
+  /// Remove a previously-registered graph callback. Idempotent. See warning on on_graph_change.
   void remove_graph_change(std::size_t token);
 
   /// True after shutdown has started. Monotonic. Use to skip re-posting work on teardown.
   [[nodiscard]] bool is_shutting_down() const noexcept {
     return shutdown_flag_->load();
+  }
+
+  /**
+   * @brief id of the worker thread that runs this executor's tasks.
+   *
+   * Use to detect "is the calling thread already the worker?" in destructors that
+   * would otherwise post a task and wait via run_sync - posting from the worker
+   * thread itself recursively deadlocks because the worker is the one that has
+   * to drain the queue. Slot destructor uses this to drop subscriptions inline
+   * when called from a graph callback running on the worker.
+   */
+  [[nodiscard]] std::thread::id worker_thread_id() const noexcept {
+    return worker_thread_id_;
   }
 
   /**
@@ -214,6 +254,7 @@ class Ros2SubscriptionExecutor final {
   std::deque<std::function<void()>> queue_;
   std::shared_ptr<std::atomic<bool>> shutdown_flag_ = std::make_shared<std::atomic<bool>>(false);
   std::thread worker_;
+  std::thread::id worker_thread_id_{};
 
   // Stats
   std::atomic<bool> worker_alive_{false};
@@ -242,6 +283,11 @@ class Ros2SubscriptionExecutor final {
   // because spin_some only runs when the worker is idle. They do not touch
   // subscription_node_ internals so running on a separate thread is safe.
   std::thread aux_thread_;
+  // Shutdown-aware sleep for aux_loop: condition variable predicate-waits
+  // on shutdown_flag_ instead of polling sleep_for(tick), so destruction
+  // returns within microseconds rather than the next 100ms tick boundary.
+  mutable std::mutex aux_mtx_;
+  std::condition_variable aux_cv_;
 
   void aux_loop();
 };

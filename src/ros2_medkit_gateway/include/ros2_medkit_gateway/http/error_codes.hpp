@@ -99,6 +99,15 @@ constexpr const char * ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE = "x-medkit-ros2-topi
 /// ROS 2 action server not available
 constexpr const char * ERR_X_MEDKIT_ROS2_ACTION_UNAVAILABLE = "x-medkit-ros2-action-unavailable";
 
+/// Gateway is shutting down; request cannot be served
+constexpr const char * ERR_X_MEDKIT_GATEWAY_SHUTDOWN = "x-medkit-gateway-shutdown";
+
+/// Subscription creation in Ros2SubscriptionExecutor failed (rcl-level error)
+constexpr const char * ERR_X_MEDKIT_SUBSCRIBE_FAILED = "x-medkit-subscribe-failed";
+
+/// Concurrent cold-wait pool saturation; retry with backoff
+constexpr const char * ERR_X_MEDKIT_COLD_WAIT_CAP_EXCEEDED = "x-medkit-cold-wait-cap-exceeded";
+
 /// Software update package not found
 constexpr const char * ERR_X_MEDKIT_UPDATE_NOT_FOUND = "x-medkit-update-not-found";
 
