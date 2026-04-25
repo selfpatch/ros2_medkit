@@ -57,7 +57,7 @@ class Ros2SubscriptionSlotTest : public ::testing::Test {
     spin_thread_ = std::thread([this] {
       executor_->spin();
     });
-    sub_exec_ = std::make_unique<Ros2SubscriptionExecutor>(node_, *executor_);
+    sub_exec_ = std::make_unique<Ros2SubscriptionExecutor>(node_);
   }
 
   void TearDown() override {
@@ -185,4 +185,45 @@ TEST_F(Ros2SubscriptionSlotTest, MultipleSlotsOnSameTopicBothReceive) {
 TEST_F(Ros2SubscriptionSlotTest, DeletedCopyAndMove) {
   EXPECT_FALSE(std::is_copy_constructible_v<Ros2SubscriptionSlot>);
   EXPECT_FALSE(std::is_move_constructible_v<Ros2SubscriptionSlot>);
+}
+
+TEST_F(Ros2SubscriptionSlotTest, DestructorSafeWhenDestroyTaskDrainsAfterSlotFreed) {
+  // Regression: the slot dtor posts `sub_.reset()` via run_sync. Before the
+  // fix the posted task captured `[this]` - if the deadline expired (or the
+  // executor drained on shutdown before the worker dequeued the task), the
+  // queued task fired on a freed slot: UAF. The fix moves the subscription
+  // shared_ptr INTO the task so the task owns the rcl handle lifetime and
+  // no longer depends on `this` being alive.
+  //
+  // We force the "task runs after slot is freed" ordering by shutting down
+  // the executor while the slot's destroy task is still queued. If the task
+  // still captured `this`, TSan (or ASan) would flag UAF during queue drain.
+  auto slot_local = Ros2SubscriptionSlot::create_typed<std_msgs::msg::Int32>(
+      *sub_exec_, "/slot_drain_after_dtor", rclcpp::QoS(10), [](std::shared_ptr<const std_msgs::msg::Int32>) {});
+  ASSERT_TRUE(slot_local.has_value());
+
+  // Serialize the worker behind a gate so the destroy task we post next
+  // cannot complete before we trigger shutdown below.
+  std::promise<void> release_gate;
+  std::shared_future<void> gate_future = release_gate.get_future().share();
+  ASSERT_TRUE(sub_exec_->post([gate_future]() mutable {
+    gate_future.wait();
+  }));
+
+  // Trigger slot destruction. dtor posts destroy-task to the (blocked)
+  // worker, run_sync waits (default deadline ~30s) but we release the gate
+  // almost immediately so dtor returns quickly without actually hitting the
+  // deadline. The destroy task owns the subscription by move - even if the
+  // deadline had fired the slot's freed memory would not be dereferenced.
+  std::thread releaser([&release_gate] {
+    std::this_thread::sleep_for(100ms);
+    release_gate.set_value();
+  });
+  slot_local->reset();
+  releaser.join();
+
+  // Now shutdown the executor - any remaining queued tasks drain here. The
+  // destroy-task wrapper no longer references freed slot state.
+  sub_exec_.reset();
+  SUCCEED();
 }

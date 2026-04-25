@@ -23,6 +23,7 @@
 #include <std_msgs/msg/int32.hpp>
 
 #include "ros2_medkit_gateway/data/ros2_topic_data_provider.hpp"
+#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 
@@ -60,7 +61,7 @@ class Ros2TopicDataProviderTest : public ::testing::Test {
     spin_thread_ = std::thread([this] {
       executor_->spin();
     });
-    sub_exec_ = std::make_shared<Ros2SubscriptionExecutor>(node_, *executor_);
+    sub_exec_ = std::make_shared<Ros2SubscriptionExecutor>(node_);
     serializer_ = std::make_shared<ros2_medkit_serialization::JsonSerializer>();
     provider_ = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_);
   }
@@ -100,6 +101,7 @@ TEST_F(Ros2TopicDataProviderTest, ConstructedProviderHasEmptyStats) {
   EXPECT_GT(s.pool_cap, 0u);
 }
 
+// @verifies REQ_INTEROP_018
 TEST_F(Ros2TopicDataProviderTest, DiscoverFindsPublisher) {
   auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/provider_test_topic", 10);
 
@@ -120,6 +122,7 @@ TEST_F(Ros2TopicDataProviderTest, DiscoverFindsPublisher) {
   EXPECT_FALSE(provider_->has_publishers("/nonexistent_topic_xxx"));
 }
 
+// @verifies REQ_INTEROP_018
 TEST_F(Ros2TopicDataProviderTest, DiscoverByNamespaceGroupsTopics) {
   auto pub_a = publisher_node_->create_publisher<std_msgs::msg::Int32>("/ns_test/topic_a", 10);
   auto pub_b = publisher_node_->create_publisher<std_msgs::msg::Int32>("/ns_test/topic_b", 10);
@@ -140,6 +143,7 @@ TEST_F(Ros2TopicDataProviderTest, DiscoverByNamespaceGroupsTopics) {
   EXPECT_TRUE(found_both);
 }
 
+// @verifies REQ_INTEROP_019
 TEST_F(Ros2TopicDataProviderTest, SampleWithoutPublishersReturnsMetadataOnly) {
   auto r = provider_->sample("/nonexistent_sample_topic", 100ms);
   ASSERT_TRUE(r.has_value());
@@ -148,6 +152,7 @@ TEST_F(Ros2TopicDataProviderTest, SampleWithoutPublishersReturnsMetadataOnly) {
   EXPECT_EQ(r->publisher_count, 0u);
 }
 
+// @verifies REQ_INTEROP_019
 TEST_F(Ros2TopicDataProviderTest, SampleMatchesReliablePublisherQoS) {
   // Reliable publisher with depth 10 + latched (transient_local). Without
   // QoS matching, a best-effort subscriber would connect but could miss
@@ -188,6 +193,7 @@ TEST_F(Ros2TopicDataProviderTest, SampleMatchesReliablePublisherQoS) {
   EXPECT_TRUE(got);
 }
 
+// @verifies REQ_INTEROP_019
 TEST_F(Ros2TopicDataProviderTest, SampleHitReturnsDataAfterPublish) {
   auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/pool_data_topic", rclcpp::SensorDataQoS());
 
@@ -298,6 +304,7 @@ TEST_F(Ros2TopicDataProviderTest, HitPromotesTopicToMru) {
   EXPECT_GT(s3.pool_misses, prev_misses);
 }
 
+// @verifies REQ_INTEROP_018
 TEST_F(Ros2TopicDataProviderTest, SampleParallelReturnsOneResultPerTopic) {
   auto r = provider_->sample_parallel({"/topic_a_notexist", "/topic_b_notexist"}, 100ms);
   ASSERT_TRUE(r.has_value());
@@ -306,6 +313,65 @@ TEST_F(Ros2TopicDataProviderTest, SampleParallelReturnsOneResultPerTopic) {
   EXPECT_EQ((*r)[1].topic_name, "/topic_b_notexist");
   EXPECT_FALSE((*r)[0].has_data);
   EXPECT_FALSE((*r)[1].has_data);
+}
+
+// @verifies REQ_INTEROP_019
+TEST_F(Ros2TopicDataProviderTest, SampleParallelHonorsMaxParallelSamplesAndPreservesOrder) {
+  // With max_parallel_samples=2 and 5 input topics the chunk loop must run 3
+  // times. Regression that drops chunking entirely (or computes the wrong
+  // chunk_size) is what this test pins.
+  Ros2TopicDataProvider::Config cfg;
+  cfg.max_parallel_samples = 2;
+  auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, cfg);
+
+  const std::vector<std::string> topics{"/c_a_unknown", "/c_b_unknown", "/c_c_unknown", "/c_d_unknown", "/c_e_unknown"};
+  auto r = local->sample_parallel(topics, 50ms);
+  ASSERT_TRUE(r.has_value());
+  ASSERT_EQ(r->size(), topics.size());
+  for (std::size_t i = 0; i < topics.size(); ++i) {
+    EXPECT_EQ((*r)[i].topic_name, topics[i]) << "Order must survive chunk boundaries";
+    EXPECT_FALSE((*r)[i].has_data) << "No publishers means metadata-only";
+  }
+}
+
+// @verifies REQ_INTEROP_019
+TEST_F(Ros2TopicDataProviderTest, SampleParallelEmbedsPerTopicErrorInsteadOfFailingBatch) {
+  // Cold-wait cap saturates at 1; holder thread keeps the slot reserved.
+  // sample_parallel embeds the per-topic 503 in the corresponding result so
+  // the rest of the batch still serves successfully (one bad topic should
+  // not kill the whole /components/{id}/data response under load).
+  Ros2TopicDataProvider::Config cfg;
+  cfg.cold_wait_cap = 1;
+  auto capped = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, cfg);
+
+  auto pub_holder = publisher_node_->create_publisher<std_msgs::msg::Int32>("/sp_cold_holder", rclcpp::QoS(10));
+  auto pub_second = publisher_node_->create_publisher<std_msgs::msg::Int32>("/sp_cold_second", rclcpp::QoS(10));
+
+  auto deadline = std::chrono::steady_clock::now() + 2s;
+  while ((!capped->has_publishers("/sp_cold_holder") || !capped->has_publishers("/sp_cold_second")) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+  }
+  ASSERT_TRUE(capped->has_publishers("/sp_cold_holder"));
+  ASSERT_TRUE(capped->has_publishers("/sp_cold_second"));
+
+  std::thread holder([&capped] {
+    auto r = capped->sample("/sp_cold_holder", 500ms);
+    (void)r;
+  });
+  std::this_thread::sleep_for(150ms);
+
+  auto r = capped->sample_parallel({"/sp_cold_second"}, 200ms);
+  ASSERT_TRUE(r.has_value()) << "Per-topic errors must be embedded, not surfaced as batch failure";
+  ASSERT_EQ(r->size(), 1u);
+  const auto & res = (*r)[0];
+  EXPECT_EQ(res.topic_name, "/sp_cold_second");
+  EXPECT_FALSE(res.has_data);
+  ASSERT_TRUE(res.error_code.has_value());
+  EXPECT_EQ(*res.error_code, ros2_medkit_gateway::ERR_X_MEDKIT_COLD_WAIT_CAP_EXCEEDED);
+  EXPECT_EQ(res.error_http_status, 503);
+
+  holder.join();
 }
 
 TEST_F(Ros2TopicDataProviderTest, IsSystemTopicMatchesExpectedSet) {
@@ -422,6 +488,17 @@ TEST_F(Ros2TopicDataProviderTest, IdleSweepKeepsActiveEntries) {
   EXPECT_EQ(local->stats().pool_size, 1u);
 }
 
+// @verifies REQ_INTEROP_019
+//
+// IMPORTANT: This test is designed to be run under TSan or ASan to actually
+// catch the issue #375 regression. Without sanitizers it passes ~99% of the
+// time even if the fix is reverted, because the race window is narrow and
+// only the FIRST cold-create per topic exercises it - subsequent samples hit
+// the warm pool. See ConcurrentSampleStressColdCreatePath below for the
+// variant that forces every iteration through the cold path.
+//
+// CI sanitizer-asan and sanitizer-tsan jobs run all gateway unit tests, so
+// this test gets full TSan/ASan coverage on every push.
 TEST_F(Ros2TopicDataProviderTest, ConcurrentSampleFromMultipleThreadsDoesNotCrash) {
   // Issue #375 race-fix regression test: multiple httplib-like threads hammering
   // sample() on the same topic must not crash or deadlock. With
@@ -429,12 +506,18 @@ TEST_F(Ros2TopicDataProviderTest, ConcurrentSampleFromMultipleThreadsDoesNotCras
   // create_generic_subscription / destroy. With Ros2TopicDataProvider the
   // subscription lifecycle runs on the single worker, and the pool entry is
   // shared across concurrent samplers.
+  //
+  // Use a high cold_wait_cap so the test exercises the create-race window
+  // without being limited by back-pressure shedding (which is its own test).
+  Ros2TopicDataProvider::Config cfg;
+  cfg.cold_wait_cap = 64;
+  auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, cfg);
   auto pub = publisher_node_->create_publisher<std_msgs::msg::Int32>("/concurrent_test_topic", rclcpp::SensorDataQoS());
 
   // Wait for publisher to appear in graph.
   auto discovery_deadline = std::chrono::steady_clock::now() + 2s;
   while (std::chrono::steady_clock::now() < discovery_deadline) {
-    if (provider_->has_publishers("/concurrent_test_topic")) {
+    if (local->has_publishers("/concurrent_test_topic")) {
       break;
     }
     std::this_thread::sleep_for(20ms);
@@ -452,15 +535,15 @@ TEST_F(Ros2TopicDataProviderTest, ConcurrentSampleFromMultipleThreadsDoesNotCras
     }
   });
 
-  constexpr int kThreads = 4;
-  constexpr int kIterations = 10;
+  constexpr int kThreads = 16;
+  constexpr int kIterations = 50;
   std::atomic<int> completions{0};
   std::vector<std::thread> workers;
   workers.reserve(kThreads);
   for (int t = 0; t < kThreads; ++t) {
-    workers.emplace_back([this, &completions] {
+    workers.emplace_back([&local, &completions] {
       for (int i = 0; i < kIterations; ++i) {
-        auto r = provider_->sample("/concurrent_test_topic", 200ms);
+        auto r = local->sample("/concurrent_test_topic", 200ms);
         if (r.has_value()) {
           completions.fetch_add(1);
         }
@@ -475,9 +558,91 @@ TEST_F(Ros2TopicDataProviderTest, ConcurrentSampleFromMultipleThreadsDoesNotCras
 
   EXPECT_EQ(completions.load(), kThreads * kIterations);
 
-  // Pool should have exactly one entry for this topic despite concurrent misses.
-  auto s = provider_->stats();
-  EXPECT_GE(s.pool_size, 1u);
+  // Pool should have EXACTLY one entry for this topic despite concurrent
+  // misses. The original NativeTopicSampler bug leaked one subscription per
+  // concurrent caller (each caller created its own SampleState + handler
+  // subscription). EXPECT_GE would accept a regression where the pool grew
+  // one entry per thread; assert equality to prove the deduplication invariant.
+  auto s = local->stats();
+  EXPECT_EQ(s.pool_size, 1u) << "expected exactly one pool entry, got " << s.pool_size
+                             << " - concurrent callers leaking subscriptions?";
+}
+
+// @verifies REQ_INTEROP_019
+//
+// Sibling stress test that forces every iteration through the cold-create
+// path - this is the actual race window from issue #375 (concurrent calls to
+// rcl_subscription_init from multiple threads). Rotating topic names each
+// iteration prevents the warm-pool fast-path that the previous test mostly
+// hits. Run under TSan/ASan to catch reintroduced races.
+TEST_F(Ros2TopicDataProviderTest, ConcurrentSampleStressColdCreatePath) {
+  constexpr int kThreads = 8;
+  constexpr int kTopicsPerThread = 12;
+
+  // High cold_wait_cap so every cold sample reaches the create path rather
+  // than being shed by back-pressure (cap behavior has its own dedicated
+  // tests; this test exists to stress the slot-create race on cold misses).
+  Ros2TopicDataProvider::Config cfg;
+  cfg.cold_wait_cap = 256;
+  auto local = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, cfg);
+
+  // Pre-create publishers for every {thread, iteration} cell so each cold
+  // sample sees publisher_count > 0 and goes through Ros2SubscriptionSlot
+  // creation (the rcl_subscription_init race site). Drive each publisher
+  // briefly so the cold-wait path can resolve within the test timeout.
+  std::vector<rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr> pubs;
+  pubs.reserve(static_cast<std::size_t>(kThreads) * kTopicsPerThread);
+  for (int t = 0; t < kThreads; ++t) {
+    for (int i = 0; i < kTopicsPerThread; ++i) {
+      const std::string topic = "/cold_stress_t" + std::to_string(t) + "_i" + std::to_string(i);
+      pubs.push_back(publisher_node_->create_publisher<std_msgs::msg::Int32>(topic, rclcpp::SensorDataQoS()));
+    }
+  }
+
+  // Wait for the last publisher to be visible to the subscription node so the
+  // cold-create path actually attempts a real subscribe.
+  const std::string last_topic =
+      "/cold_stress_t" + std::to_string(kThreads - 1) + "_i" + std::to_string(kTopicsPerThread - 1);
+  auto deadline = std::chrono::steady_clock::now() + 3s;
+  while (!local->has_publishers(last_topic) && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+  }
+
+  // Background driver: publish to every topic at 5ms cadence so cold-wait
+  // returns data instead of timing out on this test's 200ms budget.
+  std::atomic<bool> stop{false};
+  std::thread pub_thread([&pubs, &stop] {
+    std_msgs::msg::Int32 msg;
+    int counter = 0;
+    while (!stop.load(std::memory_order_acquire)) {
+      msg.data = counter++;
+      for (auto & p : pubs) {
+        p->publish(msg);
+      }
+      std::this_thread::sleep_for(5ms);
+    }
+  });
+
+  std::atomic<int> issued{0};
+  std::vector<std::thread> workers;
+  workers.reserve(kThreads);
+  for (int t = 0; t < kThreads; ++t) {
+    workers.emplace_back([&local, t, &issued] {
+      for (int i = 0; i < kTopicsPerThread; ++i) {
+        const std::string topic = "/cold_stress_t" + std::to_string(t) + "_i" + std::to_string(i);
+        auto r = local->sample(topic, 200ms);
+        if (r.has_value()) {
+          issued.fetch_add(1);
+        }
+      }
+    });
+  }
+  for (auto & w : workers) {
+    w.join();
+  }
+  stop.store(true, std::memory_order_release);
+  pub_thread.join();
+  EXPECT_EQ(issued.load(), kThreads * kTopicsPerThread);
 }
 
 TEST_F(Ros2TopicDataProviderTest, TimeoutWithoutPublisherDoesNotCrash) {
@@ -520,9 +685,57 @@ TEST_F(Ros2TopicDataProviderTest, RapidTimeoutWithActivePublisher) {
   pub_thread.join();
 }
 
+// @verifies REQ_INTEROP_019
 TEST_F(Ros2TopicDataProviderTest, InterfacePolymorphismWorks) {
   TopicDataProvider & iface = *provider_;
   auto r = iface.sample("/via_interface", 100ms);
   ASSERT_TRUE(r.has_value());
   EXPECT_EQ(r->topic_name, "/via_interface");
+}
+
+// @verifies REQ_INTEROP_019
+TEST_F(Ros2TopicDataProviderTest, ColdWaitCapExceededReturns503) {
+  // Use a dedicated provider with cold-wait-cap 1 so one holder caller in
+  // flight triggers the cap on the second caller. The fixture provider
+  // uses cap 4 which is hard to saturate deterministically.
+  Ros2TopicDataProvider::Config cfg;
+  cfg.cold_wait_cap = 1;
+  auto capped = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_, cfg);
+
+  // Publishers exist but never publish - sample() enters the cold-wait path
+  // instead of bailing early on publisher_count==0.
+  auto pub_holder = publisher_node_->create_publisher<std_msgs::msg::Int32>("/cold_wait_cap_holder", rclcpp::QoS(10));
+  auto pub_second = publisher_node_->create_publisher<std_msgs::msg::Int32>("/cold_wait_cap_second", rclcpp::QoS(10));
+
+  // Wait for the provider's subscription node to observe the publishers.
+  auto deadline = std::chrono::steady_clock::now() + 2s;
+  while ((!capped->has_publishers("/cold_wait_cap_holder") || !capped->has_publishers("/cold_wait_cap_second")) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+  }
+  ASSERT_TRUE(capped->has_publishers("/cold_wait_cap_holder"));
+  ASSERT_TRUE(capped->has_publishers("/cold_wait_cap_second"));
+
+  // Holder blocks inside sample() on buf_cv.wait_for until its 500ms
+  // timeout. During that window it owns the single cold-wait slot.
+  std::thread holder([&capped] {
+    auto r = capped->sample("/cold_wait_cap_holder", 500ms);
+    (void)r;
+  });
+
+  // Give the holder enough time to reach buf_cv.wait_for and reserve the
+  // cold-wait slot (subscription creation via executor run_sync takes
+  // multiple milliseconds).
+  std::this_thread::sleep_for(150ms);
+
+  // Second caller should get a 503 with the cold-wait cap code rather than
+  // a metadata-only "success" response. Before the fix this returned
+  // has_data=false which is indistinguishable from "no publishers yet".
+  auto r2 = capped->sample("/cold_wait_cap_second", 200ms);
+  ASSERT_FALSE(r2.has_value()) << "expected 503, got metadata-only success";
+  EXPECT_EQ(r2.error().http_status, 503);
+  EXPECT_EQ(r2.error().code, ros2_medkit_gateway::ERR_X_MEDKIT_COLD_WAIT_CAP_EXCEEDED);
+  EXPECT_EQ(r2.error().params["cold_wait_cap"], 1u);
+
+  holder.join();
 }

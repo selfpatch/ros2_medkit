@@ -1,4 +1,4 @@
-// Copyright 2025 bburda
+// Copyright 2025-2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -117,8 +117,7 @@ class DataAccessManagerTest : public ::testing::Test {
   void SetUp() override {
     rclcpp::NodeOptions options;
     // Use short timeout for faster tests
-    options.parameter_overrides(
-        {rclcpp::Parameter("topic_sample_timeout_sec", 0.5), rclcpp::Parameter("max_parallel_topic_samples", 5)});
+    options.parameter_overrides({rclcpp::Parameter("topic_sample_timeout_sec", 0.5)});
     node_ = std::make_shared<rclcpp::Node>("test_data_access_node", options);
     data_manager_ = std::make_unique<DataAccessManager>(node_.get());
   }
@@ -221,7 +220,7 @@ class DataAccessManagerWithPublisherTest : public ::testing::Test {
 
     data_manager_ = std::make_unique<DataAccessManager>(node_.get());
 
-    sub_exec_ = std::make_shared<ros2_common::Ros2SubscriptionExecutor>(node_, *executor_);
+    sub_exec_ = std::make_shared<ros2_common::Ros2SubscriptionExecutor>(node_);
     serializer_ = std::make_shared<ros2_medkit_serialization::JsonSerializer>();
     topic_data_provider_ = std::make_shared<Ros2TopicDataProvider>(sub_exec_, serializer_);
     data_manager_->set_topic_data_provider(topic_data_provider_.get());
@@ -299,6 +298,21 @@ TEST_F(DataAccessManagerWithPublisherTest, get_topic_sample_native_returns_metad
   EXPECT_TRUE(result.contains("status"));
 }
 
+// @verifies REQ_INTEROP_019
+TEST_F(DataAccessManagerWithPublisherTest, set_topic_data_provider_nullptr_detaches_provider) {
+  // Sanity: provider is attached after SetUp.
+  ASSERT_NE(data_manager_->get_topic_data_provider(), nullptr);
+
+  // Detach (mirrors the teardown step in main() that drops the provider before
+  // the local shared_ptr resets).
+  data_manager_->set_topic_data_provider(nullptr);
+  EXPECT_EQ(data_manager_->get_topic_data_provider(), nullptr);
+
+  // Re-attach must succeed without crashing.
+  data_manager_->set_topic_data_provider(topic_data_provider_.get());
+  EXPECT_EQ(data_manager_->get_topic_data_provider(), topic_data_provider_.get());
+}
+
 // =============================================================================
 // Parameter Validation Tests
 // =============================================================================
@@ -313,15 +327,6 @@ class DataAccessManagerParameterTest : public ::testing::Test {
     rclcpp::shutdown();
   }
 };
-
-TEST_F(DataAccessManagerParameterTest, invalid_max_parallel_samples_uses_default) {
-  rclcpp::NodeOptions options;
-  options.parameter_overrides({rclcpp::Parameter("max_parallel_topic_samples", 100)});  // Out of range
-  auto node = std::make_shared<rclcpp::Node>("test_param_node", options);
-
-  // Should not throw, will use default value of 10
-  EXPECT_NO_THROW({ auto manager = std::make_unique<DataAccessManager>(node.get()); });
-}
 
 TEST_F(DataAccessManagerParameterTest, invalid_timeout_uses_default) {
   rclcpp::NodeOptions options;
