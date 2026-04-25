@@ -22,6 +22,17 @@ SERVER_PORT=4842
 GATEWAY_PORT=8088
 
 cleanup() {
+  local rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    # Dump container logs to stderr BEFORE removing them so the CI workflow's
+    # "Dump container logs on failure" step (which runs after this trap fires
+    # and the script exits) is not the only place to look. Without this, an
+    # aggressive cleanup hides whatever made gateway / server crash.
+    for c in "${SERVER_NAME}" "${GATEWAY_NAME}"; do
+      echo "=== ${c} logs (cleanup trap) ===" >&2
+      docker logs "${c}" 2>&1 | tail -120 >&2 || true
+    done
+  fi
   docker rm -f "${SERVER_NAME}" "${GATEWAY_NAME}" 2>/dev/null || true
   docker network rm "${NET_NAME}" 2>/dev/null || true
 }
