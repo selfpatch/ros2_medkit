@@ -77,6 +77,13 @@ class TopicDataProvider {
    *
    * Order of the returned vector matches the input order. Idle topics return
    * immediately with metadata only; active topics wait up to `timeout`.
+   *
+   * @par Error semantics (partial-success)
+   * Per-topic recoverable errors (cold-wait cap, subscribe-failed, ...) are
+   * embedded into the corresponding `TopicSampleResult` (`error_code`,
+   * `error_message`, `error_http_status`) so that one bad topic does not fail
+   * an entire bulk read. The top-level `tl::unexpected` is reserved for
+   * batch-fatal conditions only, currently `ERR_X_MEDKIT_GATEWAY_SHUTDOWN`.
    */
   [[nodiscard]] virtual tl::expected<std::vector<TopicSampleResult>, ErrorInfo>
   sample_parallel(const std::vector<std::string> & topics, std::chrono::milliseconds timeout) = 0;
@@ -110,18 +117,6 @@ class TopicDataProvider {
    */
   [[nodiscard]] virtual nlohmann::json x_medkit_stats() const {
     return nlohmann::json::object();
-  }
-
-  /**
-   * @brief Per-topic pool detail for a drill-in health endpoint.
-   *
-   * Default: empty array. Subclasses that maintain a per-topic subscription
-   * pool return one JSON object per entry with fields like `topic`,
-   * `message_type`, `last_sample_age_ms`, `has_latest`. Bounded output -
-   * callers of the drill-in endpoint get the full pool snapshot, not a stream.
-   */
-  [[nodiscard]] virtual nlohmann::json x_medkit_pool_snapshot() const {
-    return nlohmann::json::array();
   }
 };
 

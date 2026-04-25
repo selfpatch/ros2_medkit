@@ -175,7 +175,7 @@ class RuntimeDiscoveryStrategy : public DiscoveryStrategy {
 
   rclcpp::Node * node_;
   RuntimeConfig config_;
-  TopicDataProvider * topic_sampler_{nullptr};
+  TopicDataProvider * topic_data_provider_{nullptr};
   TypeIntrospection * type_introspection_{nullptr};
 
   // Cached services and actions for lookup

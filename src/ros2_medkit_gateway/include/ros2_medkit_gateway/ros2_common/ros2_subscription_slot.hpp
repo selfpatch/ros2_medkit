@@ -45,8 +45,9 @@ namespace ros2_medkit_gateway::ros2_common {
  *
  * @par Thread safety
  * Factories and destructor are safe to call from any thread. Callbacks run on the
- * main executor (not the worker), so user-provided callback functions must be
- * reentrant with respect to any pool state they touch.
+ * Ros2SubscriptionExecutor worker thread - the same thread that creates and destroys
+ * subscriptions - so user-provided callbacks must keep work brief and must not call
+ * back into Ros2SubscriptionSlot::create_typed/create_generic synchronously.
  *
  * @par No public escape hatch
  * The "release without executor" behavior is not exposed as a public method - the
@@ -67,7 +68,7 @@ class Ros2SubscriptionSlot final {
   create_generic(Ros2SubscriptionExecutor & exec, const std::string & topic, const std::string & type_name,
                  const rclcpp::QoS & qos, std::function<void(std::shared_ptr<const rclcpp::SerializedMessage>)> cb);
 
-  ~Ros2SubscriptionSlot();
+  ~Ros2SubscriptionSlot() noexcept;
 
   Ros2SubscriptionSlot(const Ros2SubscriptionSlot &) = delete;
   Ros2SubscriptionSlot & operator=(const Ros2SubscriptionSlot &) = delete;

@@ -38,9 +38,9 @@ namespace ros2_medkit_gateway {
  * Plain value type; safe to copy and move across threads without synchronization.
  */
 struct ErrorInfo {
-  std::string code;                                  ///< SOVD error code (e.g. ERR_TOPIC_NOT_FOUND)
-  std::string message;                               ///< Human-readable message (truncated to 512 chars by handlers)
-  int http_status{500};                              ///< HTTP status in SOVD range 400-599
+  std::string code;      ///< SOVD error code (e.g. ERR_RESOURCE_NOT_FOUND, ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE)
+  std::string message;   ///< Human-readable message (truncated to 512 chars by handlers)
+  int http_status{500};  ///< HTTP status in SOVD range 400-599
   nlohmann::json params = nlohmann::json::object();  ///< Optional structured parameters
 };
 

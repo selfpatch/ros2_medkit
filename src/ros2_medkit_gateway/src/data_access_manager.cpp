@@ -1,4 +1,4 @@
-// Copyright 2025 mfaferek93
+// Copyright 2025-2026 mfaferek93, bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,15 +33,7 @@ DataAccessManager::DataAccessManager(rclcpp::Node * node)
         std::make_unique<TypeIntrospection>(ament_index_cpp::get_package_share_directory("ros2_medkit_gateway") + "/scr"
                                                                                                                   "ipt"
                                                                                                                   "s"))
-  , max_parallel_samples_(static_cast<int>(node->declare_parameter<int64_t>("max_parallel_topic_samples", 10)))
   , topic_sample_timeout_sec_(node->declare_parameter<double>("topic_sample_timeout_sec", 1.0)) {
-  // Validate max_parallel_samples_ against allowed range [1, 50]
-  if (max_parallel_samples_ < 1 || max_parallel_samples_ > 50) {
-    RCLCPP_WARN(node_->get_logger(), "max_parallel_topic_samples (%d) out of valid range (1-50), using default: 10",
-                max_parallel_samples_);
-    max_parallel_samples_ = 10;
-  }
-
   // Validate topic_sample_timeout_sec_ against allowed range [0.1, 30.0]
   if (topic_sample_timeout_sec_ < 0.1 || topic_sample_timeout_sec_ > 30.0) {
     RCLCPP_WARN(node_->get_logger(),
@@ -52,8 +44,9 @@ DataAccessManager::DataAccessManager(rclcpp::Node * node)
 
   RCLCPP_INFO(node_->get_logger(),
               "DataAccessManager initialized (native_sampling=enabled, native_publishing=enabled, "
-              "max_parallel_samples=%d, topic_sample_timeout=%.2fs)",
-              max_parallel_samples_, topic_sample_timeout_sec_);
+              "topic_sample_timeout=%.2fs). Parallel-sample concurrency tuned via "
+              "data_provider.max_parallel_samples on the TopicDataProvider.",
+              topic_sample_timeout_sec_);
 }
 
 rclcpp::GenericPublisher::SharedPtr DataAccessManager::get_or_create_publisher(const std::string & topic_path,
@@ -187,9 +180,18 @@ json DataAccessManager::get_topic_sample_native(const std::string & topic_name, 
   const auto timeout_ms = std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout_sec, 0.0) * 1000.0)};
   auto r = topic_data_provider_->sample(topic_name, timeout_ms);
   if (!r) {
+    const auto & err = r.error();
     RCLCPP_WARN(node_->get_logger(), "TopicDataProvider::sample('%s') failed: %s [%d]", topic_name.c_str(),
-                r.error().message.c_str(), r.error().http_status);
-    throw TopicNotAvailableException(topic_name);
+                err.message.c_str(), err.http_status);
+    // Preserve http_status: only 404-class errors collapse to "topic not
+    // available"; every other status (503 shutdown, 500 subscribe-failed,
+    // 503 cold-wait-cap-exceeded) propagates through ProviderErrorException
+    // so the handler can emit the original status code. Collapsing to 404
+    // silently masks server-side failures from clients with retry logic.
+    if (err.http_status == 404) {
+      throw TopicNotAvailableException(topic_name);
+    }
+    throw ProviderErrorException(err);
   }
   TopicSampleResult sample = *r;
 
