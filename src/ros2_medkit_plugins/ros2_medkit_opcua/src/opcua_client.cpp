@@ -16,12 +16,37 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <deque>
 #include <iostream>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
+#include <utility>
+
+#include <open62541/client_subscriptions.h>
+#include <open62541/types.h>
 
 namespace ros2_medkit_gateway {
+
+// Forward declaration - defined after Impl so the trampoline can call back into
+// the client. Static linkage keeps the symbol private to this translation unit.
+struct EventCallbackContext;
+static void on_event_trampoline_c(UA_Client * client, UA_UInt32 sub_id, void * sub_ctx, UA_UInt32 mon_id,
+                                  void * mon_ctx, size_t n_fields, UA_Variant * fields);
+
+/// Heap-owned context passed to the open62541 C event callback. Lifetime is
+/// owned by ``Impl::event_callbacks`` (unique_ptr); the raw pointer handed to C
+/// is valid until ``remove_event_monitored_item`` or ``remove_subscriptions``
+/// erases the entry. The ``generation_snapshot`` lets the trampoline drop
+/// callbacks that fire from a defunct subscription after a reconnect.
+struct EventCallbackContext {
+  OpcuaClient * owner{nullptr};
+  uint64_t generation_snapshot{0};
+  uint32_t subscription_id{0};
+  uint32_t monitored_item_id{0};  // populated after createEvent returns
+  OpcuaClient::EventCallback callback;
+};
 
 namespace {
 
@@ -29,12 +54,17 @@ namespace {
 /// terminal connection loss (as opposed to e.g. BadNodeIdUnknown which is a
 /// per-node issue). Called from read_value, read_values and write_value so
 /// that OpcuaPoller's reconnect logic (which keys off is_connected()) fires
-/// regardless of which operation detected the drop first.
-void maybe_mark_disconnected(std::atomic<bool> & connected_flag, const opcua::BadStatus & e) {
+/// regardless of which operation detected the drop first. Also bumps the
+/// subscription generation so any in-flight event callbacks from the dying
+/// subscription are filtered out by the trampoline.
+void maybe_mark_disconnected(std::atomic<bool> & connected_flag, std::atomic<uint64_t> & generation,
+                             const opcua::BadStatus & e) {
   const auto code = e.code();
   if (code == UA_STATUSCODE_BADCONNECTIONCLOSED || code == UA_STATUSCODE_BADSECURECHANNELCLOSED ||
       code == UA_STATUSCODE_BADNOTCONNECTED) {
-    connected_flag = false;
+    if (connected_flag.exchange(false)) {
+      generation.fetch_add(1, std::memory_order_release);
+    }
   }
 }
 
@@ -111,6 +141,23 @@ struct OpcuaClient::Impl {
   };
   std::deque<SubInfo> subscriptions;  // deque for stable references (callbacks capture &cb)
   std::mutex sub_mutex;
+
+  // Issue #386: native OPC-UA AlarmCondition event subscription support.
+  //
+  // generation increments whenever the connection drops or is closed. The
+  // event trampoline captures a snapshot at createEvent time and drops
+  // notifications when the snapshot diverges from the live counter, so
+  // late-arriving events from a defunct subscription cannot reach user code.
+  std::atomic<uint64_t> generation{0};
+
+  // Heap-owned contexts for raw-C event monitored items. unique_ptr keeps
+  // the ctx alive exactly as long as the entry sits in the map; we release
+  // entries only after the server ACKs DeleteMonitoredItem (or when we tear
+  // down the entire client in disconnect()). Keyed by monitored_item_id; we
+  // store sub_id alongside in the ctx so cleanup can address the right
+  // subscription.
+  std::unordered_map<uint32_t, std::unique_ptr<EventCallbackContext>> event_callbacks;
+  std::mutex event_callbacks_mutex;
 };
 
 OpcuaClient::OpcuaClient() : impl_(std::make_unique<Impl>()) {
@@ -153,8 +200,24 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
 void OpcuaClient::disconnect() {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
   if (impl_->connected) {
+    // Bump generation FIRST so any in-flight event callbacks fired from the
+    // dying subscription drop their work in the trampoline (they read
+    // generation atomically) before we touch the storage they reference.
+    impl_->generation.fetch_add(1, std::memory_order_release);
     try {
-      // Delete subscriptions first
+      // Issue #386: clear event monitored items BEFORE deleting subscriptions.
+      // open62541's deleteSubscription cleans up server-side, but our
+      // EventCallbackContext objects (held in unique_ptr) must outlive any
+      // pending C callbacks; the generation bump above already filters them
+      // out, so it is safe to drop the contexts here.
+      {
+        std::lock_guard<std::mutex> ev_lock(impl_->event_callbacks_mutex);
+        for (auto & [mi_id, ctx] : impl_->event_callbacks) {
+          UA_Client_MonitoredItems_deleteSingle(impl_->client.handle(), ctx->subscription_id, mi_id);
+        }
+        impl_->event_callbacks.clear();
+      }
+      // Delete subscriptions
       {
         std::lock_guard<std::mutex> sub_lock(impl_->sub_mutex);
         for (auto & info : impl_->subscriptions) {
@@ -224,7 +287,7 @@ ReadResult OpcuaClient::read_value(const opcua::NodeId & node_id) {
     result.good = true;
   } catch (const opcua::BadStatus & e) {
     result.good = false;
-    maybe_mark_disconnected(impl_->connected, e);
+    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
   }
 
   return result;
@@ -253,7 +316,7 @@ std::vector<ReadResult> OpcuaClient::read_values(const std::vector<opcua::NodeId
       r.good = true;
     } catch (const opcua::BadStatus & e) {
       r.good = false;
-      maybe_mark_disconnected(impl_->connected, e);
+      maybe_mark_disconnected(impl_->connected, impl_->generation, e);
     }
     results.push_back(std::move(r));
   }
@@ -355,7 +418,7 @@ OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value
     }
     return {};
   } catch (const opcua::BadStatus & e) {
-    maybe_mark_disconnected(impl_->connected, e);
+    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
     auto code = e.code();
     if (code == UA_STATUSCODE_BADTYPEMISMATCH) {
       return tl::make_unexpected(WriteErrorInfo{WriteError::TypeMismatch, e.what()});
@@ -427,8 +490,22 @@ bool OpcuaClient::add_monitored_item(uint32_t subscription_id, const opcua::Node
 
 void OpcuaClient::remove_subscriptions() {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
-  std::lock_guard<std::mutex> sub_lock(impl_->sub_mutex);
+  // Issue #386: bump generation so the trampoline drops any callback fired
+  // from the now-defunct subscription before we erase its EventCallbackContext.
+  impl_->generation.fetch_add(1, std::memory_order_release);
 
+  // Clear event monitored items BEFORE the open62541pp Subscription destructor
+  // runs (subscription deletion cascades server-side, but the C callback's
+  // userdata must remain valid until its last possible invocation).
+  {
+    std::lock_guard<std::mutex> ev_lock(impl_->event_callbacks_mutex);
+    for (auto & [mi_id, ctx] : impl_->event_callbacks) {
+      UA_Client_MonitoredItems_deleteSingle(impl_->client.handle(), ctx->subscription_id, mi_id);
+    }
+    impl_->event_callbacks.clear();
+  }
+
+  std::lock_guard<std::mutex> sub_lock(impl_->sub_mutex);
   for (auto & info : impl_->subscriptions) {
     try {
       info.sub.deleteSubscription();
@@ -441,6 +518,235 @@ void OpcuaClient::remove_subscriptions() {
 std::string OpcuaClient::server_description() const {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
   return impl_->server_desc;
+}
+
+// ----------------------------------------------------------------------------
+// Issue #386: native OPC-UA AlarmCondition event subscription primitives.
+// open62541pp v0.16 has no native EventFilter / event subscription API, so the
+// raw open62541 C API is used here. The free functions below build the
+// EventFilter and trampoline; OpcuaClient owns the per-monitored-item context
+// in unique_ptr storage so lifetime is explicit.
+// ----------------------------------------------------------------------------
+
+namespace {
+
+/// Build an OPC-UA EventFilter (heap-allocated members, owned by the returned
+/// struct). EventType and SourceNode are always prepended to the user's
+/// browse paths; the caller must invoke ``UA_EventFilter_clear`` when done.
+UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventBrowsePath> & user_paths) {
+  // Always include EventType (position 0) and SourceNode (position 1).
+  std::vector<OpcuaClient::EventBrowsePath> all_paths;
+  all_paths.reserve(user_paths.size() + 2);
+  all_paths.push_back({{0, "EventType"}});
+  all_paths.push_back({{0, "SourceNode"}});
+  for (const auto & p : user_paths) {
+    all_paths.push_back(p);
+  }
+
+  UA_EventFilter filter;
+  UA_EventFilter_init(&filter);
+
+  filter.selectClausesSize = all_paths.size();
+  filter.selectClauses = static_cast<UA_SimpleAttributeOperand *>(
+      UA_Array_new(filter.selectClausesSize, &UA_TYPES[UA_TYPES_SIMPLEATTRIBUTEOPERAND]));
+
+  for (size_t i = 0; i < all_paths.size(); ++i) {
+    UA_SimpleAttributeOperand & sao = filter.selectClauses[i];
+    UA_SimpleAttributeOperand_init(&sao);
+    // typeDefinitionId = BaseEventType (i=2041)
+    sao.typeDefinitionId = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEEVENTTYPE);
+    sao.attributeId = UA_ATTRIBUTEID_VALUE;
+    const auto & path = all_paths[i];
+    sao.browsePathSize = path.size();
+    if (sao.browsePathSize > 0) {
+      sao.browsePath =
+          static_cast<UA_QualifiedName *>(UA_Array_new(sao.browsePathSize, &UA_TYPES[UA_TYPES_QUALIFIEDNAME]));
+      for (size_t j = 0; j < path.size(); ++j) {
+        sao.browsePath[j] = UA_QUALIFIEDNAME_ALLOC(path[j].namespace_index, path[j].name.c_str());
+      }
+    }
+  }
+  return filter;
+}
+
+}  // namespace
+
+// C-linkage trampoline matching ``UA_Client_EventNotificationCallback``.
+// Defined at namespace scope so its address is a stable function pointer.
+static void on_event_trampoline_c(UA_Client * /*client*/, UA_UInt32 /*sub_id*/, void * /*sub_ctx*/,
+                                  UA_UInt32 /*mon_id*/, void * mon_ctx, size_t n_fields, UA_Variant * fields) {
+  auto * ctx = static_cast<EventCallbackContext *>(mon_ctx);
+  if (ctx == nullptr || ctx->owner == nullptr) {
+    return;
+  }
+  // Stale callback from a defunct subscription - ctx is still valid (we only
+  // free contexts after the generation has already moved past), but the
+  // payload no longer reflects live state. Drop silently.
+  if (ctx->generation_snapshot != ctx->owner->current_generation()) {
+    return;
+  }
+
+  // Copy the UA_Variant fields into open62541pp wrappers. UA_Variant_copy
+  // duplicates the underlying buffer, which the opcua::Variant destructor
+  // will free.
+  std::vector<opcua::Variant> values;
+  values.reserve(n_fields);
+  for (size_t i = 0; i < n_fields; ++i) {
+    UA_Variant copy;
+    UA_Variant_init(&copy);
+    UA_Variant_copy(&fields[i], &copy);
+    values.emplace_back(opcua::Variant{std::move(copy)});
+  }
+
+  opcua::NodeId event_type;
+  opcua::NodeId source_node;
+  if (n_fields >= 1 && values[0].isType<opcua::NodeId>()) {
+    event_type = values[0].getScalarCopy<opcua::NodeId>();
+  }
+  if (n_fields >= 2 && values[1].isType<opcua::NodeId>()) {
+    source_node = values[1].getScalarCopy<opcua::NodeId>();
+  }
+
+  std::vector<opcua::Variant> user_values;
+  if (n_fields > 2) {
+    user_values.reserve(n_fields - 2);
+    for (size_t i = 2; i < n_fields; ++i) {
+      user_values.push_back(std::move(values[i]));
+    }
+  }
+
+  if (ctx->callback) {
+    ctx->callback(user_values, source_node, event_type);
+  }
+}
+
+uint64_t OpcuaClient::current_generation() const {
+  return impl_->generation.load(std::memory_order_acquire);
+}
+
+uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const opcua::NodeId & source_node,
+                                               const std::vector<EventBrowsePath> & select_browse_paths,
+                                               EventCallback callback) {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+
+  if (!impl_->connected) {
+    return 0;
+  }
+
+  // Heap-allocate context. Ownership stays in event_callbacks; the C API gets
+  // a non-owning raw pointer until remove_event_monitored_item or cleanup
+  // erases the entry.
+  auto ctx = std::make_unique<EventCallbackContext>();
+  ctx->owner = this;
+  ctx->generation_snapshot = impl_->generation.load(std::memory_order_acquire);
+  ctx->subscription_id = subscription_id;
+  ctx->callback = std::move(callback);
+  EventCallbackContext * raw_ctx = ctx.get();
+
+  UA_EventFilter filter = make_event_filter(select_browse_paths);
+
+  UA_MonitoredItemCreateRequest item;
+  UA_MonitoredItemCreateRequest_init(&item);
+  item.itemToMonitor.nodeId = *source_node.handle();  // shallow copy; valid for the call duration
+  item.itemToMonitor.attributeId = UA_ATTRIBUTEID_EVENTNOTIFIER;
+  item.monitoringMode = UA_MONITORINGMODE_REPORTING;
+  item.requestedParameters.samplingInterval = 0.0;  // event MIs ignore sampling interval
+  item.requestedParameters.discardOldest = true;
+  item.requestedParameters.queueSize = 100;
+  UA_ExtensionObject_setValueNoDelete(&item.requestedParameters.filter, &filter, &UA_TYPES[UA_TYPES_EVENTFILTER]);
+
+  UA_MonitoredItemCreateResult result =
+      UA_Client_MonitoredItems_createEvent(impl_->client.handle(), subscription_id, UA_TIMESTAMPSTORETURN_BOTH, item,
+                                           raw_ctx, on_event_trampoline_c, /*deleteCallback=*/nullptr);
+
+  // Filter members were copied by createEvent; release ours.
+  UA_EventFilter_clear(&filter);
+
+  if (result.statusCode != UA_STATUSCODE_GOOD) {
+    UA_MonitoredItemCreateResult_clear(&result);
+    return 0;
+  }
+
+  uint32_t mi_id = result.monitoredItemId;
+  ctx->monitored_item_id = mi_id;
+  UA_MonitoredItemCreateResult_clear(&result);
+
+  {
+    std::lock_guard<std::mutex> ev_lock(impl_->event_callbacks_mutex);
+    impl_->event_callbacks.emplace(mi_id, std::move(ctx));
+  }
+  return mi_id;
+}
+
+bool OpcuaClient::remove_event_monitored_item(uint32_t subscription_id, uint32_t mi_id) {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+
+  std::unique_ptr<EventCallbackContext> retired;
+  {
+    std::lock_guard<std::mutex> ev_lock(impl_->event_callbacks_mutex);
+    auto it = impl_->event_callbacks.find(mi_id);
+    if (it == impl_->event_callbacks.end() || it->second->subscription_id != subscription_id) {
+      return false;
+    }
+    retired = std::move(it->second);
+    impl_->event_callbacks.erase(it);
+  }
+
+  // Bump generation BEFORE freeing the ctx so any in-flight trampoline call
+  // captured the old generation and will drop its work.
+  impl_->generation.fetch_add(1, std::memory_order_release);
+
+  if (impl_->connected) {
+    UA_StatusCode status = UA_Client_MonitoredItems_deleteSingle(impl_->client.handle(), subscription_id, mi_id);
+    (void)status;  // best effort; on failure the server may already have dropped it
+  }
+  // ``retired`` falls out of scope here, freeing the EventCallbackContext.
+  return true;
+}
+
+tl::expected<std::vector<opcua::Variant>, OpcuaClient::MethodErrorInfo>
+OpcuaClient::call_method(const opcua::NodeId & object_id, const opcua::NodeId & method_id,
+                         const std::vector<opcua::Variant> & input_args) {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+
+  if (!impl_->connected) {
+    return tl::make_unexpected(MethodErrorInfo{MethodError::NotConnected, "Not connected to OPC-UA server"});
+  }
+
+  // Helper: map an OPC-UA status code to a MethodError category.
+  auto status_to_error = [](UA_StatusCode code, const std::string & msg) -> MethodErrorInfo {
+    if (code == UA_STATUSCODE_BADMETHODINVALID || code == UA_STATUSCODE_BADNODEIDUNKNOWN ||
+        code == UA_STATUSCODE_BADNOTSUPPORTED) {
+      return {MethodError::MethodNotFound, msg};
+    }
+    if (code == UA_STATUSCODE_BADARGUMENTSMISSING || code == UA_STATUSCODE_BADINVALIDARGUMENT ||
+        code == UA_STATUSCODE_BADTYPEMISMATCH || code == UA_STATUSCODE_BADTOOMANYARGUMENTS) {
+      return {MethodError::InvalidArgument, msg};
+    }
+    if (code == UA_STATUSCODE_BADTIMEOUT) {
+      return {MethodError::MethodTimeout, msg};
+    }
+    return {MethodError::TransportError, msg};
+  };
+
+  try {
+    opcua::CallMethodResult result =
+        opcua::services::call(impl_->client, object_id, method_id, opcua::Span<const opcua::Variant>(input_args));
+    UA_StatusCode code = result.getStatusCode().get();
+    if (code != UA_STATUSCODE_GOOD) {
+      return tl::make_unexpected(status_to_error(code, UA_StatusCode_name(code)));
+    }
+    auto outputs_span = result.getOutputArguments();
+    std::vector<opcua::Variant> outputs;
+    outputs.reserve(outputs_span.size());
+    for (const auto & v : outputs_span) {
+      outputs.push_back(v);  // Variant is copyable
+    }
+    return outputs;
+  } catch (const opcua::BadStatus & e) {
+    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+    return tl::make_unexpected(status_to_error(e.code(), e.what()));
+  }
 }
 
 }  // namespace ros2_medkit_gateway
