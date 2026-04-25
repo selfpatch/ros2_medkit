@@ -280,7 +280,24 @@ if(BUILD_TESTING)
       RUNTIME DESTINATION lib/${PROJECT_NAME})
     install(PROGRAMS
       test/fixtures/test_alarm_server/smoke_test.py
+      test/fixtures/test_alarm_server/run_ctest.py
       DESTINATION lib/${PROJECT_NAME})
+
+    # CTest wrapper that boots test_alarm_server on an ephemeral port and runs
+    # the asyncua-based smoke test against it. Skips with CTest exit 77 when
+    # asyncua is not installed, so iterating on plugin code without the python
+    # dep does not fail the suite. CI installs asyncua and observes a real
+    # pass / fail.
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME test_alarm_server_smoke
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/test_alarm_server/run_ctest.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/test_alarm_server/smoke_test.py")
+    set_tests_properties(test_alarm_server_smoke PROPERTIES
+      LABELS "integration"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 60)
   endif()
 
   ros2_medkit_relax_vendor_warnings()
