@@ -128,11 +128,14 @@ docker network create "${NET_NAME}" >/dev/null
 echo "[3/5] Start test_alarm_server (with stdin pipe for CLI commands)"
 SERVER_CTRL=$(mktemp -d)
 mkfifo "${SERVER_CTRL}/stdin"
+# Open FIFO read+write on FD 3 first so neither side blocks when docker run
+# attaches to it via stdin. Using ``< fifo`` alone would deadlock - the shell
+# opens fifo for read before exec'ing docker, blocking on the missing writer.
+exec 3<>"${SERVER_CTRL}/stdin"
 # shellcheck disable=SC2094
 docker run -d --name "${SERVER_NAME}" --network "${NET_NAME}" \
   -i ros2_medkit_alarm_test_server:dev --port "${SERVER_PORT}" \
-  < "${SERVER_CTRL}/stdin" >/dev/null
-exec 3>"${SERVER_CTRL}/stdin"
+  <&3 >/dev/null
 # Wait for server to bind; the binary prints "READY ..." after listen.
 for i in $(seq 1 30); do
   if docker logs "${SERVER_NAME}" 2>&1 | grep -q '^READY '; then
@@ -158,6 +161,11 @@ event_alarms:
     entity_id: tank_process
     fault_code: PLC_SENSOR_LOST
 EOF
+# Pre-write the discovery manifest on the host so the gateway entrypoint
+# does not need a writable /config mount inside the container.
+cat >/tmp/alarm_test_config/manifest.yaml <<EOF
+manifest_version: "1.0"
+EOF
 
 docker run -d --name "${GATEWAY_NAME}" --network "${NET_NAME}" \
   -p "${GATEWAY_PORT}:8080" \
@@ -169,9 +177,6 @@ docker run -d --name "${GATEWAY_NAME}" --network "${NET_NAME}" \
   bash -c '
     set -e
     mkdir -p /var/lib/ros2_medkit/rosbags
-    cat >/config/manifest.yaml <<MAN
-manifest_version: "1.0"
-MAN
     source /opt/ros/jazzy/setup.bash
     source /root/ws/install/setup.bash
     PLUGIN_PATH=$(find /root/ws/install -name "libros2_medkit_opcua_plugin.so" | head -1)
@@ -258,10 +263,10 @@ docker stop "${SERVER_NAME}" >/dev/null
 # subscribe behavior rather than open62541's lack of persistence.
 docker rm -f "${SERVER_NAME}" >/dev/null 2>&1 || true
 mkfifo "${SERVER_CTRL}/stdin2"
+exec 3<>"${SERVER_CTRL}/stdin2"
 docker run -d --name "${SERVER_NAME}" --network "${NET_NAME}" \
   -i ros2_medkit_alarm_test_server:dev --port "${SERVER_PORT}" \
-  < "${SERVER_CTRL}/stdin2" >/dev/null
-exec 3>"${SERVER_CTRL}/stdin2"
+  <&3 >/dev/null
 for i in $(seq 1 30); do
   if docker logs "${SERVER_NAME}" 2>&1 | grep -q '^READY '; then
     break
