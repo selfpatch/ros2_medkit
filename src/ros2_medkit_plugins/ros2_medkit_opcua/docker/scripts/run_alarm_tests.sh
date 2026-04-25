@@ -35,6 +35,13 @@ cleanup() {
   fi
   docker rm -f "${SERVER_NAME}" "${GATEWAY_NAME}" 2>/dev/null || true
   docker network rm "${NET_NAME}" 2>/dev/null || true
+  # Reap the foreground docker run process for the test_alarm_server (kept
+  # alive as a shell background job so the FIFO stays connected). Sending
+  # SIGTERM is enough; the container is already removed via ``docker rm -f``.
+  if [[ -n "${SERVER_DOCKER_PID:-}" ]]; then
+    kill "${SERVER_DOCKER_PID}" 2>/dev/null || true
+    wait "${SERVER_DOCKER_PID}" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -143,10 +150,16 @@ mkfifo "${SERVER_CTRL}/stdin"
 # attaches to it via stdin. Using ``< fifo`` alone would deadlock - the shell
 # opens fifo for read before exec'ing docker, blocking on the missing writer.
 exec 3<>"${SERVER_CTRL}/stdin"
+# Run docker without -d in a background shell job. ``-d -i <&3`` daemonizes
+# the docker client which closes its inherited FD before the daemon can wire
+# the FIFO into the container's stdin, so commands written to FD 3 never
+# reach the binary. Keeping the foreground docker run process alive in the
+# script's job table preserves the FIFO open for the container's lifetime.
 # shellcheck disable=SC2094
-docker run -d --name "${SERVER_NAME}" --network "${NET_NAME}" \
+docker run --rm --name "${SERVER_NAME}" --network "${NET_NAME}" \
   -i ros2_medkit_alarm_test_server:dev --port "${SERVER_PORT}" \
-  <&3 >/dev/null
+  <&3 >/dev/null 2>&1 &
+SERVER_DOCKER_PID=$!
 # Wait for server to bind; the binary prints "READY ..." after listen.
 for i in $(seq 1 30); do
   if docker logs "${SERVER_NAME}" 2>&1 | grep -q '^READY '; then
@@ -177,6 +190,12 @@ EOF
 cat >/tmp/alarm_test_config/manifest.yaml <<EOF
 manifest_version: "1.0"
 EOF
+# Stage gateway_params.yaml into the bind mount. The gateway image bakes
+# it at /config/gateway_params.yaml at build time, but our :ro bind mount
+# at /config shadows that file - we must include every file the gateway
+# needs in the bind mount instead.
+cp src/ros2_medkit_plugins/ros2_medkit_opcua/docker/gateway_params.yaml \
+   /tmp/alarm_test_config/gateway_params.yaml
 
 docker run -d --name "${GATEWAY_NAME}" --network "${NET_NAME}" \
   -p "${GATEWAY_PORT}:8080" \
@@ -275,9 +294,10 @@ docker stop "${SERVER_NAME}" >/dev/null
 docker rm -f "${SERVER_NAME}" >/dev/null 2>&1 || true
 mkfifo "${SERVER_CTRL}/stdin2"
 exec 3<>"${SERVER_CTRL}/stdin2"
-docker run -d --name "${SERVER_NAME}" --network "${NET_NAME}" \
+docker run --rm --name "${SERVER_NAME}" --network "${NET_NAME}" \
   -i ros2_medkit_alarm_test_server:dev --port "${SERVER_PORT}" \
-  <&3 >/dev/null
+  <&3 >/dev/null 2>&1 &
+SERVER_DOCKER_PID=$!
 for i in $(seq 1 30); do
   if docker logs "${SERVER_NAME}" 2>&1 | grep -q '^READY '; then
     break
