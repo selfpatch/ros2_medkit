@@ -31,3 +31,5 @@ This page aggregates changelogs from all ros2_medkit packages.
 .. include:: ../src/ros2_medkit_discovery_plugins/ros2_medkit_topic_beacon/CHANGELOG.rst
 
 .. include:: ../src/ros2_medkit_plugins/ros2_medkit_graph_provider/CHANGELOG.rst
+
+.. include:: ../src/ros2_medkit_plugins/ros2_medkit_opcua/CHANGELOG.rst

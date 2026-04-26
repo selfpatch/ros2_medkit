@@ -19,7 +19,23 @@
 
 namespace ros2_medkit_gateway {
 
-/// SOVD fault statuses surfaced by the OPC-UA AlarmCondition bridge.
+/// Internal lifecycle states the AlarmCondition bridge tracks per condition.
+///
+/// **Public-facing vs internal**: not every value here surfaces in the SOVD
+/// ``/faults`` payload (bburda review on PR #387):
+/// - ``Suppressed``: condition exists but is administratively masked
+///   (``EnabledState=false`` or shelved); no entry in ``/faults``.
+/// - ``Confirmed``: visible as ``status=CONFIRMED`` in ``/faults``.
+/// - ``Cleared``: removed from ``/faults`` via ``clear_fault``.
+/// - ``Healed``: **internal-only**. Means "ActiveState=false but operator
+///   workflow incomplete (ack and/or confirm pending)". This is NOT exposed
+///   as a separate ``/faults`` status - the bridge keeps the entry at
+///   ``CONFIRMED`` until ``Cleared`` fires (see ``ReportHealed`` below).
+///   ``ros2_medkit_msgs/srv/ReportFault`` has no HEALED verb today; routing
+///   ``EVENT_PASSED`` here would let ``fault_manager``'s debounce engine
+///   auto-clear the fault, defeating Part 9's mandatory ack/confirm
+///   contract. A future ``STATUS_LATCHED`` extension to the message would
+///   make this state externally visible; until then it stays internal.
 ///
 /// PREFAILED is reserved for the threshold-polling pre-trigger path and is
 /// never produced by ``AlarmStateMachine::compute`` from native event input -
@@ -28,11 +44,13 @@ enum class SovdAlarmStatus { Suppressed, Confirmed, Healed, Cleared };
 
 /// Action the poller should take after running the state machine on one event.
 ///
-/// ``ReportConfirmed`` / ``ReportHealed`` correspond to ``send_report_fault``
-/// (FAILED event_type for Confirmed; PASSED-but-still-tracked for Healed).
-/// ``ClearFault`` issues ``clear_fault`` against fault_manager. ``NoOp`` means
-/// the event was redundant (same as last_known_status) and we suppress
-/// downstream noise.
+/// ``ReportConfirmed`` triggers ``send_report_fault`` (FAILED event_type).
+/// ``ClearFault`` issues ``clear_fault`` against fault_manager.
+/// ``ReportHealed`` is currently a no-op in ``OpcuaPlugin::on_event_alarm`` -
+/// see ``SovdAlarmStatus::Healed`` above for the rationale and the future
+/// ``STATUS_LATCHED`` extension that would make this surface externally.
+/// ``NoOp`` means the event was redundant (same as last_known_status) and we
+/// suppress downstream noise.
 enum class AlarmAction { NoOp, ReportConfirmed, ReportHealed, ClearFault };
 
 /// Inputs from a single AlarmConditionType event payload.
