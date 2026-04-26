@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <iostream>
@@ -28,6 +29,20 @@
 #include <open62541/types.h>
 
 namespace ros2_medkit_gateway {
+
+// Env-var gate for verbose per-event / per-method-call diagnostics.
+// Set ``ROS2_MEDKIT_OPCUA_TRACE=1`` to enable trampoline / EventId /
+// call_method stderr logging. Off by default to keep production logs sane
+// (Copilot review on PR #387: per-event std::cerr would flood under high
+// alarm rates and bypass the gateway's normal logging path). Resolved once
+// at process start so toggling requires a restart.
+inline bool opcua_trace_enabled() {
+  static const bool enabled = []() {
+    const char * v = std::getenv("ROS2_MEDKIT_OPCUA_TRACE");
+    return v != nullptr && v[0] != '\0' && std::string(v) != "0";
+  }();
+  return enabled;
+}
 
 // Forward declaration - defined after Impl so the trampoline can call back into
 // the client. Static linkage keeps the symbol private to this translation unit.
@@ -599,11 +614,15 @@ UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventFieldSpec> 
 // Defined at namespace scope so its address is a stable function pointer.
 static void on_event_trampoline_c(UA_Client * /*client*/, UA_UInt32 sub_id, void * /*sub_ctx*/, UA_UInt32 mon_id,
                                   void * mon_ctx, size_t n_fields, UA_Variant * fields) {
-  std::cerr << "[opcua_client] TRAMPOLINE FIRED sub=" << sub_id << " mon=" << mon_id << " n_fields=" << n_fields
-            << std::endl;
+  if (opcua_trace_enabled()) {
+    std::cerr << "[opcua_client] TRAMPOLINE FIRED sub=" << sub_id << " mon=" << mon_id << " n_fields=" << n_fields
+              << std::endl;
+  }
   auto * ctx = static_cast<EventCallbackContext *>(mon_ctx);
   if (ctx == nullptr || ctx->owner == nullptr) {
-    std::cerr << "[opcua_client] TRAMPOLINE: ctx null" << std::endl;
+    if (opcua_trace_enabled()) {
+      std::cerr << "[opcua_client] TRAMPOLINE: ctx null" << std::endl;
+    }
     return;
   }
   // Stale callback from a defunct subscription - ctx is still valid (we only
@@ -710,11 +729,13 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
   item.requestedParameters.queueSize = 100;
   UA_ExtensionObject_setValueNoDelete(&item.requestedParameters.filter, &filter, &UA_TYPES[UA_TYPES_EVENTFILTER]);
 
-  // Debug log so integration-test failures surface the exact NodeId we
-  // hand to the server. Trace-level diagnostic; can be tightened to a
-  // ROS RCLCPP_DEBUG once the issue #386 server interop is stable.
-  std::cerr << "[opcua_client] add_event_monitored_item: subId=" << subscription_id
-            << " nodeId=" << source_node.toString() << " selectClauses=" << (select_specs.size() + 3) << std::endl;
+  // Trace-level diagnostic gated by ROS2_MEDKIT_OPCUA_TRACE so integration
+  // test failures can surface the exact NodeId / select-clause count we
+  // hand to the server, without flooding production stderr.
+  if (opcua_trace_enabled()) {
+    std::cerr << "[opcua_client] add_event_monitored_item: subId=" << subscription_id
+              << " nodeId=" << source_node.toString() << " selectClauses=" << (select_specs.size() + 3) << std::endl;
+  }
 
   UA_MonitoredItemCreateResult result =
       UA_Client_MonitoredItems_createEvent(impl_->client.handle(), subscription_id, UA_TIMESTAMPSTORETURN_BOTH, item,
@@ -731,8 +752,10 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
   UA_MonitoredItemCreateRequest_clear(&item);
   UA_EventFilter_clear(&filter);
 
-  std::cerr << "[opcua_client] createEvent result: status=" << UA_StatusCode_name(result.statusCode)
-            << " miId=" << result.monitoredItemId << std::endl;
+  if (opcua_trace_enabled()) {
+    std::cerr << "[opcua_client] createEvent result: status=" << UA_StatusCode_name(result.statusCode)
+              << " miId=" << result.monitoredItemId << std::endl;
+  }
 
   if (result.statusCode != UA_STATUSCODE_GOOD) {
     UA_MonitoredItemCreateResult_clear(&result);
@@ -836,16 +859,19 @@ OpcuaClient::call_method(const opcua::NodeId & object_id, const opcua::NodeId & 
         opcua::services::call(impl_->client, object_id, method_id, opcua::Span<const opcua::Variant>(input_args));
     UA_StatusCode code = result.getStatusCode().get();
     auto arg_results = result.getInputArgumentResults();
-    std::cerr << "[opcua_client] call_method object=" << object_id.toString() << " method=" << method_id.toString()
-              << " statusCode=" << UA_StatusCode_name(code);
     std::vector<uint32_t> arg_codes;
     arg_codes.reserve(arg_results.size());
     for (size_t i = 0; i < arg_results.size(); ++i) {
-      uint32_t arg_code = arg_results[i].get();
-      arg_codes.push_back(arg_code);
-      std::cerr << " arg" << i << "=" << UA_StatusCode_name(arg_code);
+      arg_codes.push_back(arg_results[i].get());
     }
-    std::cerr << std::endl;
+    if (opcua_trace_enabled()) {
+      std::cerr << "[opcua_client] call_method object=" << object_id.toString() << " method=" << method_id.toString()
+                << " statusCode=" << UA_StatusCode_name(code);
+      for (size_t i = 0; i < arg_codes.size(); ++i) {
+        std::cerr << " arg" << i << "=" << UA_StatusCode_name(arg_codes[i]);
+      }
+      std::cerr << std::endl;
+    }
 
     auto classified = classify_call_result(code, arg_codes);
     if (!classified.has_value()) {

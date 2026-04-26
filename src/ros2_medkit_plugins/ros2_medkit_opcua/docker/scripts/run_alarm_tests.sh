@@ -267,7 +267,17 @@ docker run -d --name "${GATEWAY_NAME}" --network "${NET_NAME}" \
     # the gateway opcua plugin tries to call /fault_manager/report_fault.
     ros2 run ros2_medkit_fault_manager fault_manager_node \
       > /var/lib/ros2_medkit/fault_manager.log 2>&1 &
-    sleep 3
+    # Poll for service advertisement instead of a fixed sleep (Copilot
+    # review on PR #387). On slow CI runners the previous ``sleep 3`` was
+    # sometimes too short, leaving the gateway to come up before the
+    # service was discoverable. ``ros2 service list`` is the cheapest
+    # ROS-native availability signal.
+    for i in $(seq 1 30); do
+      if ros2 service list 2>/dev/null | grep -q "/fault_manager/report_fault"; then
+        break
+      fi
+      sleep 0.2
+    done
     PLUGIN_PATH=$(find /root/ws/install -name "libros2_medkit_opcua_plugin.so" | head -1)
     exec ros2 run ros2_medkit_gateway gateway_node \
       --ros-args --params-file /config/gateway_params.yaml \

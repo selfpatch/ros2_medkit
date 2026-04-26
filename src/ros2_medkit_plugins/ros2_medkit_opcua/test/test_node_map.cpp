@@ -521,4 +521,28 @@ nodes:
   EXPECT_TRUE(map.entries()[0].alarm->above_threshold);
 }
 
+TEST_F(NodeMapTest, RejectsAlarmSourceUnderNodes) {
+  // Schema validation: ``alarm_source`` is only valid in the top-level
+  // ``event_alarms:`` section. Used to be silently ignored when not paired
+  // with ``alarm.threshold``, which let a config typo land an alarm that
+  // never fires. Loader must now reject the whole file with an error so
+  // the typo is visible in the manifest-load log line. (Copilot review on
+  // PR #387.)
+  std::string path = "/tmp/test_node_map_misplaced_alarm_source.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: ent1
+    data_name: val1
+    alarm_source: "ns=2;s=Alarms.Misplaced"
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
 }  // namespace ros2_medkit_gateway

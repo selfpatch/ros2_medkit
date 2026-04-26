@@ -223,7 +223,10 @@ TEST(AlarmStateMachineTest, DisabledClearsHealedAlarm) {
   EXPECT_EQ(out.action, AlarmAction::ClearFault);
 }
 
-TEST(AlarmStateMachineTest, DisabledNoOpWhenAlreadyCleared) {
+TEST(AlarmStateMachineTest, DisabledTransitionsClearedToSuppressedNoOp) {
+  // Disabled-while-Cleared: status DOES change (Cleared -> Suppressed) but
+  // no callback fires (NoOp action). Naming reflects both halves so a
+  // future reader does not misread "NoOp" as "no transition".
   AlarmEventInput in;
   in.enabled_state = false;
   auto out = AlarmStateMachine::compute(SovdAlarmStatus::Cleared, in);

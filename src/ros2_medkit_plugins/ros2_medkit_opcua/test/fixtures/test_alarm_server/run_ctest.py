@@ -21,9 +21,13 @@ waits for the ``READY`` line, runs the AlarmConditionType smoke test
 against it via ``asyncua``, then terminates the binary cleanly.
 
 Skips (exits 77 - the CTest convention for a skipped test) when
-``asyncua`` is not importable, so contributors who only iterate on the
-plugin sources do not need a Python pip install. CI installs ``asyncua``
-in the integration job and observes the test as a real pass / fail.
+``asyncua`` is not importable AND the env var
+``ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE`` is unset / 0. Contributors iterating
+on the plugin sources can keep the skip; CI sets the env var so a
+missing ``asyncua`` becomes a hard failure (exit 1) instead of a silent
+skip. Closes the regression gap Copilot flagged on PR #387 where a CI
+step that drops the ``asyncua`` install would silently mask smoke
+regressions.
 """
 
 import os
@@ -94,6 +98,16 @@ def main():
     try:
         import asyncua  # noqa: F401  pylint: disable=unused-import,import-outside-toplevel
     except ImportError:
+        # Default: skip with CTest convention (77) so local dev iteration
+        # without pip install just passes the build.
+        # CI sets ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE=1 to turn the skip into
+        # a hard failure - so a CI job that loses its asyncua install
+        # cannot silently bypass the smoke check.
+        require = os.environ.get('ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE', '0')
+        if require not in ('', '0'):
+            print('asyncua not installed and ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE set - failing',
+                  file=sys.stderr)
+            return 1
         print('asyncua not installed - skipping smoke test (CTest skip code)')
         return CTEST_SKIP
 

@@ -68,10 +68,13 @@ struct AlarmEventInput {
 ///   5. ActiveState == false          -> Healed or Cleared based on
 ///                                       Acked + Confirmed
 ///
-/// Retain is intentionally NOT used here. Per Part 9 §5.5.2.10 it controls
-/// visibility during ConditionRefresh bursts, not lifecycle - the poller
-/// strips Retain=false events delivered between RefreshStartEvent and
-/// RefreshEndEvent before invoking compute().
+/// Retain is intentionally not modeled by this state machine and does not
+/// affect ``compute()``. Per Part 9 §5.5.2.10 it controls visibility during
+/// ConditionRefresh bursts rather than the lifecycle mapping implemented
+/// here. The current EventFilter does not include Retain in its select
+/// clauses; if/when ConditionRefresh-with-Retain filtering is added (issue
+/// #389), it will live in the poller's pre-compute path, not in this
+/// pure-function table. (Copilot review on PR #387.)
 class AlarmStateMachine {
  public:
   struct Outcome {

@@ -334,14 +334,18 @@ bool NodeMap::load(const std::string & yaml_path) {
       }
     }
 
-    // Mutual-exclusion check: an entry under ``nodes:`` carrying both a
-    // ``threshold`` alarm and an ``alarm_source`` is a configuration error
-    // (the threshold path polls scalar values; the alarm_source path
-    // subscribes to native events). Reject the whole file rather than guess.
+    // Schema validation under ``nodes:``: ``alarm_source`` belongs in the
+    // top-level ``event_alarms:`` section, never under ``nodes:``. Silently
+    // ignoring a misplaced ``alarm_source`` (the previous behavior unless
+    // also paired with ``alarm.threshold``) lets a configuration typo land
+    // a "subscribed alarm that never fires", which is impossible to
+    // diagnose from runtime logs. Reject the whole file with an actionable
+    // error pointing at the right place. (Copilot review on PR #387.)
     for (const auto & node : (nodes ? nodes : YAML::Node{})) {
-      if (node["alarm_source"] && node["alarm"] && node["alarm"]["threshold"]) {
+      if (node["alarm_source"]) {
         RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
-                     "Entry node_id=%s declares both threshold alarm and alarm_source - mutually exclusive",
+                     "Entry node_id=%s uses ``alarm_source`` under ``nodes:``, which is invalid; "
+                     "move this configuration to top-level ``event_alarms:`` (see README §event_alarms)",
                      node["node_id"] ? node["node_id"].as<std::string>().c_str() : "<unknown>");
         return false;
       }

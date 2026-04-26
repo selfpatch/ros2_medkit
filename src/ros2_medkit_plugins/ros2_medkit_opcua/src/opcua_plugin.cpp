@@ -33,6 +33,18 @@ namespace ros2_medkit_gateway {
 
 namespace {
 
+// Env-var gate for verbose per-event / per-method-call diagnostics.
+// See opcua_client.cpp for rationale (Copilot review on PR #387). Duplicated
+// to keep traces local to their dispatch sites; promoting to a public header
+// would expose an internal trace knob.
+inline bool opcua_trace_enabled() {
+  static const bool enabled = []() {
+    const char * v = std::getenv("ROS2_MEDKIT_OPCUA_TRACE");
+    return v != nullptr && v[0] != '\0' && std::string(v) != "0";
+  }();
+  return enabled;
+}
+
 /// Parse a JSON "value" field, coerce to the node's declared data_type, and
 /// validate against the optional min/max range. Shared by handle_plc_operations,
 /// DataProvider::write_data, and OperationProvider::execute_operation to keep
@@ -534,14 +546,27 @@ void OpcuaPlugin::on_event_alarm(const AlarmEventDelivery & delivery) {
       send_report_fault(delivery.entity_id, delivery.fault_code, severity_str, delivery.message);
       break;
     case AlarmAction::ReportHealed:
-      // Fault is latched: condition is no longer active but not yet
-      // confirmed. We don't have a dedicated HEALED reporting verb in
-      // ReportFault.srv (only FAILED/PASSED), so we mark this as a PASSED
-      // event - fault_manager keeps the entry in HEALED state until
-      // confirmed, mirroring the lifecycle.
+      // Intentional no-op (Copilot review on PR #387).
+      //
+      // OPC-UA AlarmConditionType HEALED means "alarm physically cleared
+      // (ActiveState=false) but operator workflow incomplete (ack and/or
+      // confirm pending)". Per Part 9 §5.7 the Cleared transition is
+      // operator-driven, not statistical.
+      //
+      // ros2_medkit_msgs/srv/ReportFault has only FAILED/PASSED verbs and
+      // fault_manager treats PASSED through a debounce engine. Sending
+      // EVENT_PASSED on every latch would let fault_manager auto-clear
+      // the fault via healing_threshold debounce, defeating the spec
+      // contract that requires explicit operator Acknowledge + Confirm.
+      // Conversely, healing_enabled=false would silently lose the HEALED
+      // signal entirely.
+      //
+      // Until we add STATUS_LATCHED (or a similar lifecycle-distinguishing
+      // status) to ros2_medkit_msgs/msg/Fault we keep status=CONFIRMED
+      // until the next ClearFault fires. The operator-side gap (cannot
+      // see "physically cleared, awaiting confirm" in the UI) is tracked
+      // separately; see PR #387 review thread.
       log_info("AlarmCondition HEALED (latched, awaiting ack/confirm): " + delivery.fault_code);
-      // No-op for now; fault_manager will keep the fault HEALED until
-      // CLEARED. The state transition is observable via /faults/stream.
       break;
     case AlarmAction::ClearFault:
       log_info("AlarmCondition CLEARED: " + delivery.fault_code);
@@ -898,7 +923,7 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
     args.push_back(opcua::Variant::fromScalar(runtime->latest_event_id));
     args.push_back(opcua::Variant::fromScalar(opcua::LocalizedText("", comment)));
 
-    {
+    if (opcua_trace_enabled()) {
       const auto * bytes = runtime->latest_event_id.data();
       std::cerr << "[opcua_plugin] " << operation_name << " EventId len=" << runtime->latest_event_id.length()
                 << " hex=";
