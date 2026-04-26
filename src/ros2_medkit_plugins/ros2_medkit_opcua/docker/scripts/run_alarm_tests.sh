@@ -178,6 +178,13 @@ wait_gateway_log() {
 
 cd "${REPO_ROOT}"
 
+# Idempotent teardown of any leftover state from a previous interrupted run.
+# The cleanup trap fires on EXIT but not on a hard kill that bypasses bash
+# signal handling - in that case ``docker network create`` below would fail
+# with "network already exists" under set -e.
+docker rm -f "${SERVER_NAME}" "${GATEWAY_NAME}" 2>/dev/null || true
+docker network rm "${NET_NAME}" 2>/dev/null || true
+
 echo "[1/5] Build test_alarm_server image"
 docker build --network=host \
   -f src/ros2_medkit_plugins/ros2_medkit_opcua/docker/test_alarm_server/Dockerfile \
@@ -336,7 +343,14 @@ echo "fire SensorLost 900" >&3
 wait_until_status PLC_SENSOR_LOST CONFIRMED 30
 echo "  OK PLC_SENSOR_LOST re-armed after Enable"
 
-echo "  [scenario] reconnect preserves CONFIRMED via ConditionRefresh"
+echo "  [scenario] reconnect re-subscribes after server restart"
+# This scenario does NOT verify ConditionRefresh re-emit - the test_alarm_server
+# is in-memory and loses condition state on restart, so the natural
+# Part 9 §5.5.7 contract (server replays retained conditions on RefreshStartEvent)
+# cannot fire here. Issue #389 tracks adding a fixture that supports it.
+# What this scenario DOES verify: gateway detects disconnect, retries until the
+# server returns, re-runs setup_event_subscriptions(), and a freshly fired
+# alarm flows through the bridge end-to-end after the reconnect.
 # Pre-clear Overpressure so the next fire is a fresh CONFIRMED event.
 echo "clear Overpressure" >&3
 wait_no_fault PLC_OVERPRESSURE 30

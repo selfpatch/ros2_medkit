@@ -203,6 +203,10 @@ void OpcuaClient::disconnect() {
     // Bump generation FIRST so any in-flight event callbacks fired from the
     // dying subscription drop their work in the trampoline (they read
     // generation atomically) before we touch the storage they reference.
+    // The ``if (impl_->connected)`` guard ensures we bump exactly once even
+    // when ``maybe_mark_disconnected`` already fired earlier on a transport
+    // error path - that helper uses ``exchange(false)`` and would have
+    // already bumped, leaving impl_->connected = false here.
     impl_->generation.fetch_add(1, std::memory_order_release);
     try {
       // Issue #386: clear event monitored items BEFORE deleting subscriptions.
