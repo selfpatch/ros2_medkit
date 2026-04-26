@@ -21,9 +21,11 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -348,6 +350,30 @@ bool NodeMap::load(const std::string & yaml_path) {
                      "move this configuration to top-level ``event_alarms:`` (see README §event_alarms)",
                      node["node_id"] ? node["node_id"].as<std::string>().c_str() : "<unknown>");
         return false;
+      }
+    }
+
+    // Cross-section collision check (bburda review on PR #387). The two
+    // alarm pipelines - threshold polling under ``nodes[*].alarm`` and
+    // native event subscription under ``event_alarms`` - must not address
+    // the same ``(entity_id, fault_code)``: fault_manager would receive
+    // both ``report_fault`` calls and the resulting status flapping is
+    // impossible to debug at runtime. The two paths produce different
+    // semantics (debounced vs state-machine driven) so the merge is not
+    // even well-defined.
+    {
+      std::set<std::pair<std::string, std::string>> event_keys;
+      for (const auto & cfg : event_alarms_) {
+        event_keys.emplace(cfg.entity_id, cfg.fault_code);
+      }
+      for (const auto & entry : entries_) {
+        if (entry.alarm.has_value() && event_keys.count({entry.entity_id, entry.alarm->fault_code}) > 0) {
+          RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
+                       "Duplicate (entity_id=%s, fault_code=%s) declared by both nodes[*].alarm "
+                       "(threshold mode) and event_alarms[*] (subscription mode) - mutually exclusive",
+                       entry.entity_id.c_str(), entry.alarm->fault_code.c_str());
+          return false;
+        }
       }
     }
 

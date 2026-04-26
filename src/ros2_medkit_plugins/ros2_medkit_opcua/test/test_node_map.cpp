@@ -521,6 +521,66 @@ nodes:
   EXPECT_TRUE(map.entries()[0].alarm->above_threshold);
 }
 
+TEST_F(NodeMapTest, RejectsThresholdEventAlarmCollision) {
+  // bburda review on PR #387: the genuine schema collision worth checking
+  // is not "alarm_source under nodes" (covered separately) but the same
+  // ``(entity_id, fault_code)`` declared by both a threshold alarm under
+  // ``nodes[*].alarm`` and a subscription entry under ``event_alarms``.
+  // fault_manager would receive both pipelines' calls and the resulting
+  // status flapping is impossible to debug at runtime; the two paths have
+  // different semantics (debounced vs state-machine) so a merge is not
+  // even well-defined. Loader rejects the whole file.
+  std::string path = "/tmp/test_node_map_alarm_collision.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: tank_process
+    data_name: pressure
+    alarm:
+      fault_code: PLC_OVERPRESSURE
+      threshold: 90.0
+event_alarms:
+  - alarm_source: "ns=2;s=Alarms.Overpressure"
+    entity_id: tank_process
+    fault_code: PLC_OVERPRESSURE
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
+TEST_F(NodeMapTest, AcceptsDifferentFaultCodesAcrossPipelines) {
+  // Same entity, *different* fault_codes across pipelines is fine - each
+  // fault_manager entry is keyed on fault_code, so no collision. Locks
+  // the contract that the rejection above is precise (won't false-positive
+  // when only entity overlaps).
+  std::string path = "/tmp/test_node_map_alarm_no_collision.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: tank_process
+    data_name: pressure
+    alarm:
+      fault_code: PLC_PRESSURE_HIGH
+      threshold: 90.0
+event_alarms:
+  - alarm_source: "ns=2;s=Alarms.Overheat"
+    entity_id: tank_process
+    fault_code: PLC_OVERHEAT
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_TRUE(map.load(path));
+}
+
 TEST_F(NodeMapTest, RejectsAlarmSourceUnderNodes) {
   // Schema validation: ``alarm_source`` is only valid in the top-level
   // ``event_alarms:`` section. Used to be silently ignored when not paired

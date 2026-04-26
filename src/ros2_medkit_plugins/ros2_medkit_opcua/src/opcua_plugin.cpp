@@ -909,6 +909,27 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
     std::string fault_code = parameters["fault_code"].get<std::string>();
     std::string comment = parameters.value("comment", std::string{});
 
+    // Input validation (bburda review on PR #387). ``fault_code`` lands in
+    // log lines and HTTP error bodies via string concatenation; without
+    // length / charset bounds an authenticated operator can inject
+    // newlines, control chars, or multi-MB blobs into gateway logs.
+    // ``comment`` is forwarded verbatim to the PLC as ``LocalizedText`` -
+    // unbounded length lets the same role spam the PLC's condition log.
+    // 256 chars matches the existing entity-id bound (``is_valid_path_segment``)
+    // and is generous enough for typical ``PLC_OVERPRESSURE_SENSOR_3`` style
+    // identifiers + a one-sentence operator comment.
+    if (!is_valid_path_segment(fault_code)) {
+      return tl::make_unexpected(OperationProviderErrorInfo{OperationProviderError::InvalidParameters,
+                                                            "fault_code must be alphanumeric+_- and 1-256 chars (got " +
+                                                                std::to_string(fault_code.size()) + " chars)",
+                                                            400});
+    }
+    if (comment.size() > 256) {
+      return tl::make_unexpected(
+          OperationProviderErrorInfo{OperationProviderError::InvalidParameters,
+                                     "comment exceeds 256 chars (got " + std::to_string(comment.size()) + ")", 400});
+    }
+
     auto runtime = poller_->lookup_condition(entity_id, fault_code);
     if (!runtime) {
       return tl::make_unexpected(OperationProviderErrorInfo{
