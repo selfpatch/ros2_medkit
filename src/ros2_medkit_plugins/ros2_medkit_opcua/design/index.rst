@@ -236,12 +236,17 @@ Decision order, first match wins:
 +-----+--------------------------------------+---------------------------------------+
 | 2   | ``EnabledState == false``            | clear if was active, else no-op       |
 +-----+--------------------------------------+---------------------------------------+
-| 3   | ``ShelvingState != Unshelved``       | clear if was active, else no-op       |
+| 3   | ``ShelvingState/CurrentState/Id``    | clear if was active, else no-op.      |
+|     | in {``TimedShelved`` (i=2930),       | A null/unset/unknown ``Id`` is        |
+|     | ``OneShotShelved`` (i=2932)}         | treated as ``Unshelved`` (some        |
+|     |                                      | servers leave the optional field      |
+|     |                                      | uninitialized).                       |
 +-----+--------------------------------------+---------------------------------------+
 | 4   | ``ActiveState == true``              | ``CONFIRMED`` (idempotent)            |
 +-----+--------------------------------------+---------------------------------------+
-| 5a  | ``ActiveState == false`` and         | ``HEALED`` (latched, awaiting ack)    |
-|     | not (``Acked`` and ``Confirmed``)    |                                       |
+| 5a  | ``ActiveState == false`` and         | internal ``HEALED`` state; ``/faults``|
+|     | not (``Acked`` and ``Confirmed``)    | still shows ``CONFIRMED`` (see note   |
+|     |                                      | below)                                |
 +-----+--------------------------------------+---------------------------------------+
 | 5b  | ``ActiveState == false``,            | ``CLEARED``                           |
 |     | ``Acked == true``,                   |                                       |
@@ -253,6 +258,26 @@ Decision order, first match wins:
 lifecycle is driven entirely by Active / Acked / Confirmed. The SOVD
 ``PREFAILED`` state has no native equivalent and is reserved for the
 threshold-polling pre-trigger path.
+
+.. note::
+
+   **HEALED is internal-only.** Rule 5a transitions the bridge's internal
+   ``SovdAlarmStatus`` to ``Healed`` and emits the ``ReportHealed`` action,
+   but ``OpcuaPlugin::on_event_alarm`` deliberately treats that action as a
+   no-op. The reason: ``ros2_medkit_msgs/srv/ReportFault`` has only
+   ``EVENT_FAILED`` / ``EVENT_PASSED`` verbs, and routing ``EVENT_PASSED``
+   on every latch would feed the fault_manager debounce engine - which has
+   its own statistical ``HEALED`` semantics (``healing_threshold`` cycles
+   of PASSED events) and may auto-clear the fault, defeating Part 9's
+   mandatory ack/confirm contract. Until ``ros2_medkit_msgs/msg/Fault``
+   gains a ``STATUS_LATCHED`` (or equivalent) value, ``/faults`` keeps
+   ``status=CONFIRMED`` for a latched alarm; the next ``Cleared`` (rule 5b)
+   removes the entry.
+
+   This is a known UX gap: an operator looking at ``/faults`` cannot
+   distinguish "alarm physically active" from "alarm physically cleared,
+   awaiting confirm". The ack/confirm SOVD operations work end-to-end; the
+   visibility limitation is tracked as a follow-up.
 
 Severity mapping
 ----------------
