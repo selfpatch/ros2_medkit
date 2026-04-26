@@ -27,6 +27,7 @@
 #include <open62541/client_subscriptions.h>
 #include <open62541/types.h>
 #include <rclcpp/logging.hpp>
+#include <rcutils/logging.h>
 
 namespace ros2_medkit_gateway {
 
@@ -43,10 +44,10 @@ inline rclcpp::Logger opcua_client_logger() {
 // Pre-gate for traces whose stream-build cost is non-trivial (e.g. per-arg
 // loops). RCLCPP_DEBUG_STREAM constructs the std::stringstream
 // unconditionally, so for hot paths we check the effective level first.
-// ``Level`` is an enum class - cast to int for the ordered comparison.
+// Uses the rcutils-level API (available in Humble through Rolling) instead
+// of rclcpp::Logger::get_effective_level (Jazzy+ only).
 inline bool client_debug_enabled() {
-  return static_cast<int>(opcua_client_logger().get_effective_level()) <=
-         static_cast<int>(rclcpp::Logger::Level::Debug);
+  return rcutils_logging_logger_is_enabled_for("opcua.client", RCUTILS_LOG_SEVERITY_DEBUG);
 }
 }  // namespace
 
