@@ -24,6 +24,7 @@
 
 #include <open62541/types.h>
 #include <rclcpp/logging.hpp>
+#include <rcutils/logging.h>
 
 namespace ros2_medkit_gateway {
 
@@ -34,8 +35,9 @@ inline rclcpp::Logger opcua_poller_logger() {
 }
 
 inline bool poller_debug_enabled() {
-  return static_cast<int>(opcua_poller_logger().get_effective_level()) <=
-         static_cast<int>(rclcpp::Logger::Level::Debug);
+  // rcutils API for Humble compatibility; Jazzy+ adds rclcpp::Logger::
+  // get_effective_level but Humble does not.
+  return rcutils_logging_logger_is_enabled_for("opcua.poller", RCUTILS_LOG_SEVERITY_DEBUG);
 }
 }  // namespace
 

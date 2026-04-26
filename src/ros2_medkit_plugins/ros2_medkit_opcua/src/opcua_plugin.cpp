@@ -15,6 +15,7 @@
 #include "ros2_medkit_opcua/opcua_plugin.hpp"
 
 #include <rclcpp/rclcpp.hpp>
+#include <rcutils/logging.h>
 #include <ros2_medkit_msgs/msg/fault.hpp>
 #include <ros2_medkit_msgs/srv/clear_fault.hpp>
 #include <ros2_medkit_msgs/srv/report_fault.hpp>
@@ -42,8 +43,9 @@ inline rclcpp::Logger opcua_plugin_logger() {
 }
 
 inline bool plugin_debug_enabled() {
-  return static_cast<int>(opcua_plugin_logger().get_effective_level()) <=
-         static_cast<int>(rclcpp::Logger::Level::Debug);
+  // rcutils API for Humble compatibility; Jazzy+ adds rclcpp::Logger::
+  // get_effective_level but Humble does not.
+  return rcutils_logging_logger_is_enabled_for("opcua.plugin", RCUTILS_LOG_SEVERITY_DEBUG);
 }
 
 /// Parse a JSON "value" field, coerce to the node's declared data_type, and
