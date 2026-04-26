@@ -635,7 +635,7 @@ TEST(UpdateManagerFailureTest, DeleteRollbackUpdatesStatusPhaseAndErrorMessage) 
   // When delete_update fails for a known package, the rollback must leave
   // status=Failed, phase=Failed, and error_message populated so the status
   // endpoint does not emit an inconsistent payload like
-  // {status:pending, x-medkit-phase:failed} without any error details.
+  // {status:pending, "x-medkit":{phase:failed}} without any error details.
   auto backend = std::make_unique<MockDeleteFailingBackend>();
   auto manager = std::make_unique<UpdateManager>();
   manager->set_backend(backend.get());
@@ -656,7 +656,7 @@ TEST(UpdateManagerFailureTest, DeleteRollbackUpdatesStatusPhaseAndErrorMessage) 
   // Serialized payload reflects the rollback end-to-end.
   auto j = update_status_to_json(*status);
   EXPECT_EQ(j["status"], "failed");
-  EXPECT_EQ(j["x-medkit-phase"], "failed");
+  EXPECT_EQ(j["x-medkit"]["phase"], "failed");
   EXPECT_EQ(j["error"], "backend delete exploded");
 
   manager.reset();
@@ -667,14 +667,14 @@ TEST(UpdateStatusToJson, SerializesPhaseAsVendorExtension) {
   UpdateStatusInfo status{UpdateStatus::Completed, UpdatePhase::Prepared, std::nullopt, std::nullopt, std::nullopt};
   auto j = update_status_to_json(status);
   EXPECT_EQ(j["status"], "completed");
-  EXPECT_EQ(j["x-medkit-phase"], "prepared");
+  EXPECT_EQ(j["x-medkit"]["phase"], "prepared");
 }
 
 TEST(UpdateStatusToJson, ExposesExecutedPhaseForTerminalCompletion) {
   UpdateStatusInfo status{UpdateStatus::Completed, UpdatePhase::Executed, 100, std::nullopt, std::nullopt};
   auto j = update_status_to_json(status);
   EXPECT_EQ(j["status"], "completed");
-  EXPECT_EQ(j["x-medkit-phase"], "executed");
+  EXPECT_EQ(j["x-medkit"]["phase"], "executed");
   EXPECT_EQ(j["progress"], 100);
 }
 
@@ -682,5 +682,5 @@ TEST(UpdateStatusToJson, EmitsNonePhaseForFreshlyRegistered) {
   UpdateStatusInfo status;
   auto j = update_status_to_json(status);
   EXPECT_EQ(j["status"], "pending");
-  EXPECT_EQ(j["x-medkit-phase"], "none");
+  EXPECT_EQ(j["x-medkit"]["phase"], "none");
 }

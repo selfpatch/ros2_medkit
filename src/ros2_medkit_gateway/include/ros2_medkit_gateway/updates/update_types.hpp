@@ -33,7 +33,7 @@ struct UpdateFilter {
 /// Status of an update operation (SOVD-compliant enum values)
 enum class UpdateStatus { Pending, InProgress, Completed, Failed };
 
-/// Lifecycle phase - exposed as SOVD vendor extension `x-medkit-phase`.
+/// Lifecycle phase - exposed as SOVD vendor extension `x-medkit.phase`.
 /// Differentiates "prepare completed" from "execute completed" which share
 /// status=completed in the SOVD standard enum.
 enum class UpdatePhase { None, Preparing, Prepared, Executing, Executed, Failed, Deleting };
@@ -94,7 +94,7 @@ class UpdateProgressReporter {
   std::mutex & mutex_;
 };
 
-/// Serialize UpdatePhase to its `x-medkit-phase` string value.
+/// Serialize UpdatePhase to its `x-medkit.phase` string value.
 inline const char * update_phase_to_string(UpdatePhase phase) {
   switch (phase) {
     case UpdatePhase::None:
@@ -116,7 +116,7 @@ inline const char * update_phase_to_string(UpdatePhase phase) {
 }
 
 /// Serialize UpdateStatusInfo to SOVD-compliant JSON.
-/// Adds vendor extension `x-medkit-phase` to distinguish prepare-completed from
+/// Adds vendor extension `x-medkit.phase` to distinguish prepare-completed from
 /// execute-completed (both report SOVD status=completed).
 inline nlohmann::json update_status_to_json(const UpdateStatusInfo & status) {
   nlohmann::json j;
@@ -134,7 +134,7 @@ inline nlohmann::json update_status_to_json(const UpdateStatusInfo & status) {
       j["status"] = "failed";
       break;
   }
-  j["x-medkit-phase"] = update_phase_to_string(status.phase);
+  j["x-medkit"] = {{"phase", update_phase_to_string(status.phase)}};
   if (status.progress.has_value()) {
     j["progress"] = *status.progress;
   }
