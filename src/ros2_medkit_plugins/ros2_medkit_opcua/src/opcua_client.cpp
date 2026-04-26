@@ -38,11 +38,21 @@ static void on_event_trampoline_c(UA_Client * client, UA_UInt32 sub_id, void * s
 /// Heap-owned context passed to the open62541 C event callback. Lifetime is
 /// owned by ``Impl::event_callbacks`` (unique_ptr); the raw pointer handed to C
 /// is valid until ``remove_event_monitored_item`` or ``remove_subscriptions``
-/// erases the entry. The ``generation_snapshot`` lets the trampoline drop
-/// callbacks that fire from a defunct subscription after a reconnect.
+/// erases the entry.
+///
+/// Two staleness guards layered together:
+/// - ``generation_snapshot`` filters callbacks fired from a defunct
+///   subscription after the whole client reconnected (bumped on disconnect
+///   and on ``remove_subscriptions``).
+/// - ``active`` filters callbacks fired from a single monitored item that has
+///   been individually removed via ``remove_event_monitored_item`` while
+///   other items in the same subscription are still live. Per-MI flag,
+///   not the global generation, so a single removal does not invalidate
+///   peer callbacks.
 struct EventCallbackContext {
   OpcuaClient * owner{nullptr};
   uint64_t generation_snapshot{0};
+  std::atomic<bool> active{true};
   uint32_t subscription_id{0};
   uint32_t monitored_item_id{0};  // populated after createEvent returns
   OpcuaClient::EventCallback callback;
@@ -602,6 +612,13 @@ static void on_event_trampoline_c(UA_Client * /*client*/, UA_UInt32 sub_id, void
   if (ctx->generation_snapshot != ctx->owner->current_generation()) {
     return;
   }
+  // Single MI removed via remove_event_monitored_item while peers remain
+  // live - the global generation has not changed, so the peer trampolines
+  // (in the same subscription) must keep firing. Drop only this MI's late
+  // notifications via the per-context flag.
+  if (!ctx->active.load(std::memory_order_acquire)) {
+    return;
+  }
 
   // Copy the UA_Variant fields into open62541pp wrappers. UA_Variant_copy
   // duplicates the underlying buffer, which the opcua::Variant destructor
@@ -743,13 +760,25 @@ bool OpcuaClient::remove_event_monitored_item(uint32_t subscription_id, uint32_t
     if (it == impl_->event_callbacks.end() || it->second->subscription_id != subscription_id) {
       return false;
     }
+    // Flip the per-MI active flag BEFORE moving the unique_ptr so any
+    // in-flight trampoline call observes the cleared flag and bails out
+    // before touching the about-to-be-freed callback. Order:
+    //   1. set active=false (release): trampoline reads it (acquire) and
+    //      returns without invoking ``callback``.
+    //   2. move unique_ptr out of map and erase: ctx still alive in
+    //      ``retired`` until end of function.
+    //   3. delete server-side MI synchronously (mutex serializes against
+    //      the client's notification dispatch).
+    //   4. ``retired`` falls out of scope -> ctx freed.
+    // We deliberately do NOT bump the global ``generation`` counter here:
+    // it would invalidate every peer monitored item registered against the
+    // same subscription, silently dropping their callbacks even though
+    // their MIs are still live on the server. Generation is reserved for
+    // full disconnect / remove_subscriptions.
+    it->second->active.store(false, std::memory_order_release);
     retired = std::move(it->second);
     impl_->event_callbacks.erase(it);
   }
-
-  // Bump generation BEFORE freeing the ctx so any in-flight trampoline call
-  // captured the old generation and will drop its work.
-  impl_->generation.fetch_add(1, std::memory_order_release);
 
   if (impl_->connected) {
     UA_StatusCode status = UA_Client_MonitoredItems_deleteSingle(impl_->client.handle(), subscription_id, mi_id);

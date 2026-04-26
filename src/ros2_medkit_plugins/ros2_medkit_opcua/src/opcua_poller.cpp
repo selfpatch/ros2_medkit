@@ -232,8 +232,16 @@ void OpcuaPoller::setup_event_subscriptions() {
   event_monitored_item_ids_.clear();
 
   for (const auto & cfg : node_map_.event_alarms()) {
-    auto callback = [this, &cfg](const std::vector<opcua::Variant> & values, const opcua::NodeId & source_node,
-                                 const opcua::NodeId & event_type, const opcua::NodeId & condition_id) {
+    // Capture cfg BY VALUE: even though range-for ``const auto & cfg`` binds
+    // to a vector element that outlives the loop, an `&cfg`-by-reference
+    // capture would chain through a local reference variable whose name
+    // goes out of scope after each iteration. Defensible per current C++
+    // semantics (the captured reference resolves to the underlying vector
+    // element), but value capture is unambiguous and matches Copilot's
+    // review feedback. AlarmEventConfig is a small struct of strings, so
+    // copying is cheap.
+    auto callback = [this, cfg](const std::vector<opcua::Variant> & values, const opcua::NodeId & source_node,
+                                const opcua::NodeId & event_type, const opcua::NodeId & condition_id) {
       on_event(cfg, values, source_node, event_type, condition_id);
     };
     uint32_t mi_id =

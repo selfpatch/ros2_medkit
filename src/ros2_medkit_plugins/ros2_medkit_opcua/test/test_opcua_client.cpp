@@ -131,6 +131,19 @@ TEST(OpcuaClientTest, RemoveEventMonitoredItemUnknownIdReturnsFalse) {
   EXPECT_FALSE(client.remove_event_monitored_item(/*sub_id=*/1, /*mi_id=*/9999));
 }
 
+TEST(OpcuaClientTest, RemoveEventMonitoredItemUnknownIdDoesNotBumpGeneration) {
+  // remove_event_monitored_item is per-MI cleanup. It must NOT touch the
+  // global generation counter - that would silently invalidate every peer
+  // monitored item's trampoline check and drop their callbacks even though
+  // the underlying server-side MIs are still live. Per-MI staleness is
+  // tracked by EventCallbackContext::active instead. (Copilot review on
+  // PR #387.)
+  OpcuaClient client;
+  uint64_t before = client.current_generation();
+  client.remove_event_monitored_item(/*sub_id=*/1, /*mi_id=*/9999);
+  EXPECT_EQ(client.current_generation(), before);
+}
+
 TEST(OpcuaClientTest, CallMethodWhenDisconnected) {
   OpcuaClient client;
   auto result = client.call_method(opcua::NodeId(0, UA_NS0ID_SERVER), opcua::NodeId(0, 11489), {});
