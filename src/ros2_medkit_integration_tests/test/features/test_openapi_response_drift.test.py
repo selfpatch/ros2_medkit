@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+# Copyright 2026 bburda
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""OpenAPI response-schema drift test.
+
+For every GET endpoint declared in the runtime OpenAPI spec served at
+GET /docs, this test fetches a real response from the live gateway and
+validates it against the response schema declared in the same spec for the
+returned status code. A mismatch means handler output and declared schema
+have drifted apart - either the handler emits a field the schema does not
+declare (the failure mode that caused issue #385's `x-medkit-phase` to
+silently slip past every typed client), or the schema declares a required
+field the handler does not emit.
+
+The test is intentionally narrow: only response *bodies* are validated,
+only against the 200 schema, and only on endpoints that return JSON. It
+does not check error envelope shapes, status code coverage, or request
+schemas - those are covered by other tests.
+
+The full structural contract (compile-time link from emitter to schema)
+will be solved by issue #338. This test is the runtime stop-gap until
+that lands - if it fails, fix the schema or the handler; do not silence
+the test.
+"""
+
+import os
+import re
+import unittest
+
+from ament_index_python.packages import get_package_prefix
+from jsonschema.validators import Draft202012Validator
+import launch_testing
+import requests
+
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
+from ros2_medkit_test_utils.launch_helpers import create_test_launch
+
+
+def _test_update_backend_path():
+    pkg_prefix = get_package_prefix('ros2_medkit_gateway')
+    return os.path.join(
+        pkg_prefix, 'lib', 'ros2_medkit_gateway', 'libtest_update_backend.so'
+    )
+
+
+def generate_test_description():
+    return create_test_launch(
+        demo_nodes=['temp_sensor', 'calibration'],
+        gateway_params={
+            'updates.enabled': True,
+            'plugins': ['test_update_backend'],
+            'plugins.test_update_backend.path': _test_update_backend_path(),
+        },
+        fault_manager=True,
+    )
+
+
+# Path placeholders -> entity collection used for substitution.
+_ENTITY_PARAM_MAP = {
+    'area_id': 'areas',
+    'component_id': 'components',
+    'app_id': 'apps',
+    'function_id': 'functions',
+}
+
+
+def _inline_refs(schema, schemas, seen=None):
+    """Recursively inline $refs into a schema so jsonschema can validate it.
+
+    The runtime spec uses $refs that point at #/components/schemas/, but
+    Draft202012Validator constructed without a registry will not follow them.
+    Recursive types are guarded via ``seen`` to break cycles.
+    """
+    if seen is None:
+        seen = set()
+    if isinstance(schema, dict):
+        if '$ref' in schema:
+            ref = schema['$ref']
+            if ref in seen:
+                return {}
+            if ref.startswith('#/components/schemas/'):
+                name = ref.rsplit('/', 1)[-1]
+                target = schemas.get(name)
+                if target is None:
+                    return {}
+                return _inline_refs(target, schemas, seen | {ref})
+        return {k: _inline_refs(v, schemas, seen) for k, v in schema.items()}
+    if isinstance(schema, list):
+        return [_inline_refs(item, schemas, seen) for item in schema]
+    return schema
+
+
+def _is_sse_endpoint(operation):
+    """Detect SSE streaming endpoints that would hang on a plain GET."""
+    summary = (operation.get('summary') or '') + (operation.get('description') or '')
+    return 'SSE' in summary or 'stream' in summary.lower()
+
+
+def _substitute_path_params(path, entity_map, resource_id='test_id'):
+    def replacer(match):
+        param = match.group(1)
+        if param in _ENTITY_PARAM_MAP:
+            return entity_map.get(_ENTITY_PARAM_MAP[param], 'test_entity')
+        return resource_id
+
+    return re.sub(r'\{([^}]+)\}', replacer, path)
+
+
+class TestOpenApiResponseDrift(GatewayTestCase):
+    """Catches handler-vs-spec drift on GET response bodies."""
+
+    MIN_EXPECTED_APPS = 1
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+
+        # Discover real entity IDs to use in path substitution.
+        cls._entity_map = {}
+        for etype in ('areas', 'components', 'apps', 'functions'):
+            resp = requests.get(f'{cls.BASE_URL}/{etype}', timeout=5)
+            resp.raise_for_status()
+            items = resp.json().get('items', [])
+            if items:
+                cls._entity_map[etype] = items[0].get('id')
+
+        # Register and prepare a test update package so /updates/{id}/status
+        # returns an interesting payload (status + x-medkit.phase).
+        cls._update_pkg_id = 'drift-test-pkg'
+        # Best-effort cleanup of any leftover from a previous interrupted run.
+        requests.delete(
+            f'{cls.BASE_URL}/updates/{cls._update_pkg_id}', timeout=5
+        )
+        post = requests.post(
+            f'{cls.BASE_URL}/updates',
+            json={
+                'id': cls._update_pkg_id,
+                'update_name': 'Drift test package',
+                'automated': False,
+                'origins': ['proximity'],
+            },
+            timeout=5,
+        )
+        post.raise_for_status()
+        prepare = requests.put(
+            f'{cls.BASE_URL}/updates/{cls._update_pkg_id}/prepare', timeout=5
+        )
+        prepare.raise_for_status()
+
+    @classmethod
+    def tearDownClass(cls):
+        requests.delete(
+            f'{cls.BASE_URL}/updates/{cls._update_pkg_id}', timeout=5
+        )
+        super().tearDownClass()
+
+    def _fetch_spec(self):
+        return self.poll_endpoint_until(
+            '/docs', lambda d: d if d.get('paths') else None
+        )
+
+    def _validate_response(self, schema, body, schemas):
+        """Validate body against schema with $refs inlined."""
+        inlined = _inline_refs(schema, schemas)
+        validator = Draft202012Validator(inlined)
+        return sorted(validator.iter_errors(body), key=lambda e: e.path)
+
+    def _resource_for_path(self, path):
+        """Pick a resource_id that makes a given path return 200 when possible.
+
+        Used for paths like /updates/{id}/status where 'test_id' would 404.
+        """
+        if path.startswith('/updates/{'):
+            return self._update_pkg_id
+        return 'test_id'
+
+    def test_get_responses_match_declared_schema(self):
+        """Every 200 response must validate against its declared schema.
+
+        Iterates GET endpoints from /docs, fetches each, and validates
+        bodies against the response schema declared for status 200. Schema
+        drift (handler emits a field schema does not declare as required,
+        or vice versa) raises an error.
+
+        @verifies REQ_INTEROP_002
+        """
+        spec = self._fetch_spec()
+        schemas = spec.get('components', {}).get('schemas', {})
+        violations = []
+        validated = 0
+
+        for path, path_item in spec.get('paths', {}).items():
+            operation = path_item.get('get')
+            if not operation or _is_sse_endpoint(operation):
+                continue
+
+            response_def = operation.get('responses', {}).get('200')
+            if not response_def:
+                continue
+            schema = (
+                response_def.get('content', {})
+                .get('application/json', {})
+                .get('schema')
+            )
+            if not schema:
+                continue
+
+            uri = _substitute_path_params(
+                path, self._entity_map, self._resource_for_path(path)
+            )
+            resp = requests.get(f'{self.BASE_URL}{uri}', timeout=10)
+
+            # Non-200 responses fall outside this drift check (handler may
+            # legitimately return 404/501 for the chosen path params); the
+            # callability test covers status code shape separately.
+            if resp.status_code != 200:
+                continue
+            if 'application/json' not in resp.headers.get('content-type', ''):
+                continue
+
+            body = resp.json()
+            errors = self._validate_response(schema, body, schemas)
+            if errors:
+                detail = '; '.join(
+                    f'{".".join(str(p) for p in e.absolute_path) or "<root>"}: {e.message}'
+                    for e in errors[:5]
+                )
+                violations.append(f'GET {uri}: schema drift: {detail}')
+            else:
+                validated += 1
+
+        self.assertGreater(
+            validated, 0, 'No endpoints validated - test fixture broken?'
+        )
+        self.assertFalse(
+            violations,
+            f'{len(violations)} drift violation(s); validated {validated}:\n'
+            + '\n'.join(violations),
+        )
+
+    def test_update_status_payload_uses_nested_x_medkit(self):
+        """Specific guard for issue #385: /updates/{id}/status payload.
+
+        The handler must emit ``x-medkit: {phase: ...}`` (nested object), not
+        the legacy flat ``x-medkit-phase`` key. The drift test above already
+        catches this via the schema declared in update_status_schema(); this
+        explicit assertion makes the regression intent obvious.
+
+        @verifies REQ_INTEROP_002
+        """
+        resp = requests.get(
+            f'{self.BASE_URL}/updates/{self._update_pkg_id}/status', timeout=5
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertNotIn('x-medkit-phase', body, 'Legacy flat key still emitted')
+        self.assertIn('x-medkit', body)
+        self.assertIn('phase', body['x-medkit'])
+
+
+@launch_testing.post_shutdown_test()
+class TestExitCodes(unittest.TestCase):
+
+    def test_exit_codes(self, proc_info):
+        for proc in proc_info:
+            self.assertIn(proc_info[proc].returncode, ALLOWED_EXIT_CODES)

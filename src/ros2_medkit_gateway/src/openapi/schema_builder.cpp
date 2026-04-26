@@ -160,12 +160,20 @@ nlohmann::json SchemaBuilder::items_wrapper(const nlohmann::json & item_schema) 
 }
 
 nlohmann::json SchemaBuilder::configuration_metadata_schema() {
-  return {{"type", "object"},
+  return {
+      {"type", "object"},
+      {"properties",
+       {{"id", {{"type", "string"}, {"description", "Configuration parameter ID"}}},
+        {"name", {{"type", "string"}, {"description", "Parameter name"}}},
+        {"type", {{"type", "string"}, {"description", "Parameter type (e.g. 'parameter')"}}},
+        {"x-medkit",
+         {{"type", "object"},
+          {"description", "Vendor extensions (medkit)"},
           {"properties",
-           {{"id", {{"type", "string"}, {"description", "Configuration parameter ID"}}},
-            {"name", {{"type", "string"}, {"description", "Parameter name"}}},
-            {"type", {{"type", "string"}, {"description", "Parameter type (e.g. 'parameter')"}}}}},
-          {"required", {"id", "name", "type"}}};
+           {{"source",
+             {{"type", "string"},
+              {"description", "App ID that owns this parameter (only present in aggregated configurations)"}}}}}}}}},
+      {"required", {"id", "name", "type"}}};
 }
 
 nlohmann::json SchemaBuilder::configuration_read_value_schema() {
@@ -538,13 +546,24 @@ nlohmann::json SchemaBuilder::update_status_schema() {
       {"properties", {{"name", {{"type", "string"}}}, {"progress", {{"type", "number"}}}}},
       {"required", {"name", "progress"}}};
 
+  nlohmann::json x_medkit_schema = {
+      {"type", "object"},
+      {"description", "Vendor extensions (medkit)"},
+      {"properties",
+       {{"phase",
+         {{"type", "string"},
+          {"enum", {"none", "preparing", "prepared", "executing", "executed", "failed", "deleting"}},
+          {"description", "Internal lifecycle phase, distinguishes prepare-completed from execute-completed"}}}}},
+      {"required", {"phase"}}};
+
   return {{"type", "object"},
           {"properties",
            {{"status", {{"type", "string"}, {"enum", {"pending", "inProgress", "completed", "failed"}}}},
             {"progress", {{"type", "number"}}},
             {"sub_progress", {{"type", "array"}, {"items", sub_progress_schema}}},
-            {"error", {{"type", "string"}}}}},
-          {"required", {"status"}}};
+            {"error", {{"type", "string"}}},
+            {"x-medkit", x_medkit_schema}}},
+          {"required", {"status", "x-medkit"}}};
 }
 
 nlohmann::json SchemaBuilder::log_configuration_schema() {

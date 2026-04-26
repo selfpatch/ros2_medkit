@@ -160,9 +160,9 @@ tl::expected<void, UpdateError> UpdateManager::delete_update(const std::string &
       if (it != states_.end() && it->second) {
         // Mark the package as failed consistently across all surfaces
         // exposed via GET /updates/{id}/status: the SOVD `status` field,
-        // the `x-medkit-phase` vendor extension, and `error_message`.
+        // the `x-medkit.phase` vendor extension, and `error_message`.
         // Without updating all three, clients see payloads like
-        // {status:pending, x-medkit-phase:failed} with no error context.
+        // {status:pending, "x-medkit":{phase:failed}} with no error context.
         it->second->status.status = UpdateStatus::Failed;
         it->second->status.phase = UpdatePhase::Failed;
         it->second->status.error_message = err.message;

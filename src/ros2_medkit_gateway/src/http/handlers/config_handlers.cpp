@@ -311,15 +311,14 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
 
             // Add source info for aggregated configurations
             if (agg_configs.is_aggregated) {
-              config_meta["x-medkit-source"] = node_info.app_id;
+              config_meta["x-medkit"] = {{"source", node_info.app_id}};
             }
 
             items.push_back(config_meta);
 
             // Also track full parameter info
             json param_with_source = param;
-            param_with_source["x-medkit-source"] = node_info.app_id;
-            param_with_source["x-medkit-node"] = node_info.node_fqn;
+            param_with_source["x-medkit"] = {{"source", node_info.app_id}, {"node", node_info.node_fqn}};
             all_parameters.push_back(param_with_source);
           }
         }
