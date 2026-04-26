@@ -194,8 +194,13 @@ if(BUILD_TESTING)
   target_include_directories(test_opcua_client PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
+  # rclcpp needed because opcua_client.cpp uses RCLCPP_DEBUG_STREAM for the
+  # per-event diagnostics (bburda review on PR #387). The unit tests only
+  # call public methods that never touch the trace path under test, so the
+  # dep is link-only - no rclcpp::init / Node spin-up in the suite.
   medkit_target_dependencies(test_opcua_client
     ros2_medkit_gateway
+    rclcpp
   )
   target_link_libraries(test_opcua_client
     open62541pp::open62541pp

@@ -16,10 +16,9 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdlib>
 #include <cstring>
 #include <deque>
-#include <iostream>
+#include <sstream>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -27,22 +26,29 @@
 
 #include <open62541/client_subscriptions.h>
 #include <open62541/types.h>
+#include <rclcpp/logging.hpp>
 
 namespace ros2_medkit_gateway {
 
-// Env-var gate for verbose per-event / per-method-call diagnostics.
-// Set ``ROS2_MEDKIT_OPCUA_TRACE=1`` to enable trampoline / EventId /
-// call_method stderr logging. Off by default to keep production logs sane
-// (Copilot review on PR #387: per-event std::cerr would flood under high
-// alarm rates and bypass the gateway's normal logging path). Resolved once
-// at process start so toggling requires a restart.
-inline bool opcua_trace_enabled() {
-  static const bool enabled = []() {
-    const char * v = std::getenv("ROS2_MEDKIT_OPCUA_TRACE");
-    return v != nullptr && v[0] != '\0' && std::string(v) != "0";
-  }();
-  return enabled;
+// Per-event / per-method-call traces use a named logger so they integrate
+// with the gateway's normal log level controls (e.g. RCUTILS_LOGGING_USE_STDOUT,
+// ros2 launch --log-level opcua.client:=debug). Off at INFO by default; an
+// operator turns them on without rebuilding (bburda review on PR #387).
+namespace {
+inline rclcpp::Logger opcua_client_logger() {
+  static auto logger = rclcpp::get_logger("opcua.client");
+  return logger;
 }
+
+// Pre-gate for traces whose stream-build cost is non-trivial (e.g. per-arg
+// loops). RCLCPP_DEBUG_STREAM constructs the std::stringstream
+// unconditionally, so for hot paths we check the effective level first.
+// ``Level`` is an enum class - cast to int for the ordered comparison.
+inline bool client_debug_enabled() {
+  return static_cast<int>(opcua_client_logger().get_effective_level()) <=
+         static_cast<int>(rclcpp::Logger::Level::Debug);
+}
+}  // namespace
 
 // Forward declaration - defined after Impl so the trampoline can call back into
 // the client. Static linkage keeps the symbol private to this translation unit.
@@ -614,15 +620,11 @@ UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventFieldSpec> 
 // Defined at namespace scope so its address is a stable function pointer.
 static void on_event_trampoline_c(UA_Client * /*client*/, UA_UInt32 sub_id, void * /*sub_ctx*/, UA_UInt32 mon_id,
                                   void * mon_ctx, size_t n_fields, UA_Variant * fields) {
-  if (opcua_trace_enabled()) {
-    std::cerr << "[opcua_client] TRAMPOLINE FIRED sub=" << sub_id << " mon=" << mon_id << " n_fields=" << n_fields
-              << std::endl;
-  }
+  RCLCPP_DEBUG_STREAM(opcua_client_logger(),
+                      "TRAMPOLINE FIRED sub=" << sub_id << " mon=" << mon_id << " n_fields=" << n_fields);
   auto * ctx = static_cast<EventCallbackContext *>(mon_ctx);
   if (ctx == nullptr || ctx->owner == nullptr) {
-    if (opcua_trace_enabled()) {
-      std::cerr << "[opcua_client] TRAMPOLINE: ctx null" << std::endl;
-    }
+    RCLCPP_DEBUG(opcua_client_logger(), "TRAMPOLINE: ctx null");
     return;
   }
   // Stale callback from a defunct subscription - ctx is still valid (we only
@@ -729,13 +731,13 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
   item.requestedParameters.queueSize = 100;
   UA_ExtensionObject_setValueNoDelete(&item.requestedParameters.filter, &filter, &UA_TYPES[UA_TYPES_EVENTFILTER]);
 
-  // Trace-level diagnostic gated by ROS2_MEDKIT_OPCUA_TRACE so integration
-  // test failures can surface the exact NodeId / select-clause count we
-  // hand to the server, without flooding production stderr.
-  if (opcua_trace_enabled()) {
-    std::cerr << "[opcua_client] add_event_monitored_item: subId=" << subscription_id
-              << " nodeId=" << source_node.toString() << " selectClauses=" << (select_specs.size() + 3) << std::endl;
-  }
+  // Debug-level diagnostic so integration-test failures can surface the
+  // exact NodeId / select-clause count we hand to the server. Quiet at
+  // INFO; ``ros2 launch --log-level opcua.client:=debug`` (or env var
+  // RCUTILS_CONSOLE_OUTPUT_FORMAT) re-enables it.
+  RCLCPP_DEBUG_STREAM(opcua_client_logger(),
+                      "add_event_monitored_item: subId=" << subscription_id << " nodeId=" << source_node.toString()
+                                                         << " selectClauses=" << (select_specs.size() + 3));
 
   UA_MonitoredItemCreateResult result =
       UA_Client_MonitoredItems_createEvent(impl_->client.handle(), subscription_id, UA_TIMESTAMPSTORETURN_BOTH, item,
@@ -752,10 +754,8 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
   UA_MonitoredItemCreateRequest_clear(&item);
   UA_EventFilter_clear(&filter);
 
-  if (opcua_trace_enabled()) {
-    std::cerr << "[opcua_client] createEvent result: status=" << UA_StatusCode_name(result.statusCode)
-              << " miId=" << result.monitoredItemId << std::endl;
-  }
+  RCLCPP_DEBUG_STREAM(opcua_client_logger(), "createEvent result: status=" << UA_StatusCode_name(result.statusCode)
+                                                                           << " miId=" << result.monitoredItemId);
 
   if (result.statusCode != UA_STATUSCODE_GOOD) {
     UA_MonitoredItemCreateResult_clear(&result);
@@ -864,13 +864,16 @@ OpcuaClient::call_method(const opcua::NodeId & object_id, const opcua::NodeId & 
     for (size_t i = 0; i < arg_results.size(); ++i) {
       arg_codes.push_back(arg_results[i].get());
     }
-    if (opcua_trace_enabled()) {
-      std::cerr << "[opcua_client] call_method object=" << object_id.toString() << " method=" << method_id.toString()
-                << " statusCode=" << UA_StatusCode_name(code);
+    if (client_debug_enabled()) {
+      // RCLCPP_DEBUG_STREAM constructs its std::stringstream unconditionally,
+      // so build the per-arg suffix only when DEBUG is actually active.
+      std::ostringstream args_oss;
       for (size_t i = 0; i < arg_codes.size(); ++i) {
-        std::cerr << " arg" << i << "=" << UA_StatusCode_name(arg_codes[i]);
+        args_oss << " arg" << i << "=" << UA_StatusCode_name(arg_codes[i]);
       }
-      std::cerr << std::endl;
+      RCLCPP_DEBUG_STREAM(opcua_client_logger(),
+                          "call_method object=" << object_id.toString() << " method=" << method_id.toString()
+                                                << " statusCode=" << UA_StatusCode_name(code) << args_oss.str());
     }
 
     auto classified = classify_call_result(code, arg_codes);
