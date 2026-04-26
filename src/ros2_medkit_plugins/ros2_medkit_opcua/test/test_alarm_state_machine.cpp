@@ -208,4 +208,107 @@ TEST(AlarmStateMachineTest, ShelvedTakesPrecedenceOverActive) {
   EXPECT_EQ(out.action, AlarmAction::NoOp);
 }
 
+// -- Coverage of remaining transition matrix cells (issue #389 follow-up).
+// The above tests exercise the obvious paths; these cover the corners where
+// prev_status is Healed or Suppressed and an exit / re-entry rule fires.
+
+TEST(AlarmStateMachineTest, DisabledClearsHealedAlarm) {
+  // Operator disables an already-latched (Healed) alarm: must transition to
+  // Cleared with a ClearFault action so the latched fault disappears from
+  // /faults instead of orphaning between HEALED and Cleared forever.
+  AlarmEventInput in;
+  in.enabled_state = false;
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Healed, in);
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Cleared);
+  EXPECT_EQ(out.action, AlarmAction::ClearFault);
+}
+
+TEST(AlarmStateMachineTest, DisabledNoOpWhenAlreadyCleared) {
+  AlarmEventInput in;
+  in.enabled_state = false;
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Cleared, in);
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Suppressed);
+  EXPECT_EQ(out.action, AlarmAction::NoOp);
+}
+
+TEST(AlarmStateMachineTest, ShelvedClearsHealedAlarm) {
+  // Same exit shape as Disabled, via the shelving rule.
+  AlarmEventInput in;
+  in.enabled_state = true;
+  in.active_state = false;
+  in.shelved = true;
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Healed, in);
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Cleared);
+  EXPECT_EQ(out.action, AlarmAction::ClearFault);
+}
+
+TEST(AlarmStateMachineTest, ShelvedNoOpWhenAlreadyCleared) {
+  AlarmEventInput in;
+  in.enabled_state = true;
+  in.active_state = false;
+  in.shelved = true;
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Cleared, in);
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Suppressed);
+  EXPECT_EQ(out.action, AlarmAction::NoOp);
+}
+
+TEST(AlarmStateMachineTest, ActiveAlarmReportsConfirmedFromSuppressed) {
+  // Operator unshelves / re-enables an alarm whose underlying source is
+  // still active: the next event has active=true and the state machine
+  // must promote Suppressed -> Confirmed with a ReportConfirmed action.
+  AlarmEventInput in = live_event(true);
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Suppressed, in);
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Confirmed);
+  EXPECT_EQ(out.action, AlarmAction::ReportConfirmed);
+}
+
+TEST(AlarmStateMachineTest, BranchEventFromHealedNoOp) {
+  AlarmEventInput in;
+  in.enabled_state = true;
+  in.branch_id_present = true;
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Healed, in);
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Healed);
+  EXPECT_EQ(out.action, AlarmAction::NoOp);
+}
+
+TEST(AlarmStateMachineTest, BranchEventFromSuppressedNoOp) {
+  AlarmEventInput in;
+  in.enabled_state = true;
+  in.branch_id_present = true;
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Suppressed, in);
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Suppressed);
+  EXPECT_EQ(out.action, AlarmAction::NoOp);
+}
+
+TEST(AlarmStateMachineTest, AckedAndConfirmedNoOpFromSuppressed) {
+  // Suppressed alarm receives a fully-cleared event (active=false,
+  // acked=true, confirmed=true). Was already not-active per the
+  // suppression; no ClearFault to issue, but next_status should track
+  // to Cleared so a later re-fire re-promotes correctly. This is the
+  // ``was_active=false`` branch of rule 5.
+  AlarmEventInput in;
+  in.enabled_state = true;
+  in.active_state = false;
+  in.acked_state = true;
+  in.confirmed_state = true;
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Suppressed, in);
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Cleared);
+  EXPECT_EQ(out.action, AlarmAction::NoOp);
+}
+
+TEST(AlarmStateMachineTest, InactiveUnackedFromSuppressedReportsHealed) {
+  // Suppressed alarm sees an inactive+unacked event (operator unshelved
+  // while the source had already self-cleared but wasn't acked). The
+  // state machine must surface this as Healed so the operator sees the
+  // pending ack/confirm workflow item rather than silently forgetting it.
+  AlarmEventInput in;
+  in.enabled_state = true;
+  in.active_state = false;
+  in.acked_state = false;
+  in.confirmed_state = false;
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Suppressed, in);
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Healed);
+  EXPECT_EQ(out.action, AlarmAction::ReportHealed);
+}
+
 }  // namespace ros2_medkit_gateway
