@@ -182,6 +182,12 @@ void OpcuaPlugin::set_context(PluginContext & context) {
   poller_->set_poll_callback([this](const PollSnapshot & snap) {
     publish_values(snap);
   });
+  // Plumb operator-visible warnings out of the poll thread into the ROS log.
+  // Without this, ``ConditionRefresh rejected`` etc. only land in the
+  // container's stderr, invisible to anyone watching /rosout or rclpp logs.
+  poller_config_.log_warn = [this](const std::string & msg) {
+    log_warn(msg);
+  };
   poller_->start(poller_config_);
   log_info("OPC-UA poller started (mode: " + std::string(poller_->using_subscriptions() ? "subscription" : "poll") +
            ")");

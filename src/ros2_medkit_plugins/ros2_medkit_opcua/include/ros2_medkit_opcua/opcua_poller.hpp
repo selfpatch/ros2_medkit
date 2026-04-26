@@ -82,6 +82,12 @@ struct PollerConfig {
   double subscription_interval_ms{500.0};
   std::chrono::milliseconds poll_interval{1000};
   std::chrono::milliseconds reconnect_interval{5000};
+  /// Optional warn-level log sink for operator-visible failures inside the
+  /// poll thread. Set by the plugin owning the poller to its log_warn
+  /// helper so events like ``ConditionRefresh failed`` reach the ROS 2 log
+  /// instead of stderr only. Empty by default - the poller falls back to
+  /// stderr in that case.
+  std::function<void(const std::string &)> log_warn;
 };
 
 /// Manages OPC-UA data collection via subscriptions (preferred) or polling
@@ -182,6 +188,12 @@ class OpcuaPoller {
   // cannot distinguish refresh-burst events from live events without
   // tracking the EventType, which we do explicitly below.
   std::atomic<bool> condition_refresh_in_progress_{false};
+
+  // Throttle the warn-level log emitted from condition_refresh() failures.
+  // Reset to false on each fresh subscribe in setup_event_subscriptions()
+  // so a transient server error (BadMethodInvalid on cold-start, recovers
+  // later) gets one log per connect, not one per re-subscribe attempt.
+  bool condition_refresh_warned_{false};
 
   // Thread safety: must be set via set_poll_callback() before start().
   // Not modified after start(), so safe to read from the poll thread without a mutex.

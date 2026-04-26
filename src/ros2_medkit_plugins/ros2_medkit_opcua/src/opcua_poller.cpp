@@ -264,8 +264,28 @@ void OpcuaPoller::condition_refresh() {
   auto result =
       client_.call_method(opcua::NodeId(0, kServerObjectId), opcua::NodeId(0, kConditionRefreshMethodId), args);
   if (!result.has_value()) {
-    // Not fatal - many test servers do not implement ConditionRefresh.
-    // Live notifications will still flow once conditions transition.
+    // Not fatal but operator-visible: when ConditionRefresh is rejected by
+    // the server (BadMethodInvalid in open62541 v1.4.x, BadNotImplemented
+    // on Siemens S7-1500, etc.) the gateway will not re-receive any active
+    // conditions on reconnect; only live transitions surface in /faults.
+    // Worth a single warn per connect so the operator knows their
+    // alarm-replay-on-reconnect contract is broken with this PLC.
+    if (!condition_refresh_warned_) {
+      const std::string msg = "OPC-UA ConditionRefresh rejected (" + result.error().message +
+                              "); active conditions will NOT be replayed on reconnect with this server. "
+                              "Live transitions still flow. See issue #389.";
+      if (config_.log_warn) {
+        config_.log_warn(msg);
+      } else {
+        std::cerr << "[opcua_poller WARN] " << msg << std::endl;
+      }
+      condition_refresh_warned_ = true;
+    }
+  } else {
+    // Reset the throttle: a successful refresh means the server is
+    // cooperating again, so the next failure (e.g., after a restart of a
+    // server with a different config) earns a fresh warn.
+    condition_refresh_warned_ = false;
   }
 }
 
