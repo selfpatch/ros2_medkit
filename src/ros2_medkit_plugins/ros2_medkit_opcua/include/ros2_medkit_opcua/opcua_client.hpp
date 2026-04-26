@@ -193,6 +193,23 @@ class OpcuaClient {
   call_method(const opcua::NodeId & object_id, const opcua::NodeId & method_id,
               const std::vector<opcua::Variant> & input_args);
 
+  /// Map an OPC-UA StatusCode (from an attempted method call or a
+  /// per-argument validation result) to a ``MethodError`` category.
+  /// Exposed as a public static helper so the classification table is
+  /// covered by unit tests without needing a live OPC-UA connection.
+  static MethodErrorInfo status_to_method_error(uint32_t code, const std::string & message);
+
+  /// Classify the full result of a Call service exchange per OPC-UA
+  /// Part 4 §5.11.2: overall ``statusCode`` covers transport / method
+  /// resolution; ``inputArgumentResults`` covers per-argument validation.
+  /// Returns success when both are Good. The first non-Good code wins:
+  /// overall statusCode takes precedence, then arg_results in order.
+  /// AlarmConditionType.Acknowledge surfaces ``BadEventIdUnknown`` in
+  /// ``arg_results[0]`` when the EventId we cached has been superseded.
+  /// Exposed as a static for unit-test coverage of the per-arg branch.
+  static tl::expected<void, MethodErrorInfo> classify_call_result(uint32_t overall_status_code,
+                                                                  const std::vector<uint32_t> & arg_results);
+
   /// Get server description string (for status endpoint)
   std::string server_description() const;
 

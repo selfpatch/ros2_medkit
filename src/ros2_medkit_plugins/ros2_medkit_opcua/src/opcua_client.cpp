@@ -759,6 +759,40 @@ bool OpcuaClient::remove_event_monitored_item(uint32_t subscription_id, uint32_t
   return true;
 }
 
+OpcuaClient::MethodErrorInfo OpcuaClient::status_to_method_error(uint32_t code, const std::string & message) {
+  if (code == UA_STATUSCODE_BADMETHODINVALID || code == UA_STATUSCODE_BADNODEIDUNKNOWN ||
+      code == UA_STATUSCODE_BADNOTSUPPORTED) {
+    return {MethodError::MethodNotFound, message};
+  }
+  if (code == UA_STATUSCODE_BADARGUMENTSMISSING || code == UA_STATUSCODE_BADINVALIDARGUMENT ||
+      code == UA_STATUSCODE_BADTYPEMISMATCH || code == UA_STATUSCODE_BADTOOMANYARGUMENTS) {
+    return {MethodError::InvalidArgument, message};
+  }
+  if (code == UA_STATUSCODE_BADTIMEOUT) {
+    return {MethodError::MethodTimeout, message};
+  }
+  return {MethodError::TransportError, message};
+}
+
+tl::expected<void, OpcuaClient::MethodErrorInfo>
+OpcuaClient::classify_call_result(uint32_t overall_status_code, const std::vector<uint32_t> & arg_results) {
+  if (overall_status_code != UA_STATUSCODE_GOOD) {
+    return tl::make_unexpected(status_to_method_error(overall_status_code, UA_StatusCode_name(overall_status_code)));
+  }
+  // Per OPC-UA Part 4 §5.11.2, even when overall statusCode is Good the
+  // server may flag per-argument validation failures via inputArgumentResults.
+  // AlarmConditionType.Acknowledge surfaces BadEventIdUnknown here when our
+  // cached EventId has been superseded - the call did NOT take effect.
+  // Returning an error keeps the SOVD layer from falsely reporting success.
+  for (size_t i = 0; i < arg_results.size(); ++i) {
+    if (arg_results[i] != UA_STATUSCODE_GOOD) {
+      std::string msg = std::string(UA_StatusCode_name(arg_results[i])) + " on input arg " + std::to_string(i);
+      return tl::make_unexpected(status_to_method_error(arg_results[i], msg));
+    }
+  }
+  return {};
+}
+
 tl::expected<std::vector<opcua::Variant>, OpcuaClient::MethodErrorInfo>
 OpcuaClient::call_method(const opcua::NodeId & object_id, const opcua::NodeId & method_id,
                          const std::vector<opcua::Variant> & input_args) {
@@ -768,49 +802,25 @@ OpcuaClient::call_method(const opcua::NodeId & object_id, const opcua::NodeId & 
     return tl::make_unexpected(MethodErrorInfo{MethodError::NotConnected, "Not connected to OPC-UA server"});
   }
 
-  // Helper: map an OPC-UA status code to a MethodError category.
-  auto status_to_error = [](UA_StatusCode code, const std::string & msg) -> MethodErrorInfo {
-    if (code == UA_STATUSCODE_BADMETHODINVALID || code == UA_STATUSCODE_BADNODEIDUNKNOWN ||
-        code == UA_STATUSCODE_BADNOTSUPPORTED) {
-      return {MethodError::MethodNotFound, msg};
-    }
-    if (code == UA_STATUSCODE_BADARGUMENTSMISSING || code == UA_STATUSCODE_BADINVALIDARGUMENT ||
-        code == UA_STATUSCODE_BADTYPEMISMATCH || code == UA_STATUSCODE_BADTOOMANYARGUMENTS) {
-      return {MethodError::InvalidArgument, msg};
-    }
-    if (code == UA_STATUSCODE_BADTIMEOUT) {
-      return {MethodError::MethodTimeout, msg};
-    }
-    return {MethodError::TransportError, msg};
-  };
-
   try {
     opcua::CallMethodResult result =
         opcua::services::call(impl_->client, object_id, method_id, opcua::Span<const opcua::Variant>(input_args));
     UA_StatusCode code = result.getStatusCode().get();
+    auto arg_results = result.getInputArgumentResults();
     std::cerr << "[opcua_client] call_method object=" << object_id.toString() << " method=" << method_id.toString()
               << " statusCode=" << UA_StatusCode_name(code);
-    auto arg_results = result.getInputArgumentResults();
+    std::vector<uint32_t> arg_codes;
+    arg_codes.reserve(arg_results.size());
     for (size_t i = 0; i < arg_results.size(); ++i) {
-      std::cerr << " arg" << i << "=" << UA_StatusCode_name(arg_results[i].get());
+      uint32_t arg_code = arg_results[i].get();
+      arg_codes.push_back(arg_code);
+      std::cerr << " arg" << i << "=" << UA_StatusCode_name(arg_code);
     }
     std::cerr << std::endl;
-    if (code != UA_STATUSCODE_GOOD) {
-      return tl::make_unexpected(status_to_error(code, UA_StatusCode_name(code)));
-    }
-    // Per OPC-UA Part 4 §5.11.2, even when the overall call statusCode is
-    // Good the server may report per-argument validation failures via
-    // inputArgumentResults. AlarmConditionType.Acknowledge surfaces
-    // BadEventIdUnknown here when the EventId we tracked has been
-    // superseded by a newer event from the server. Treat any non-Good
-    // per-arg result as a transport error so the SOVD layer returns 502
-    // instead of falsely reporting success.
-    for (size_t i = 0; i < arg_results.size(); ++i) {
-      UA_StatusCode arg_code = arg_results[i].get();
-      if (arg_code != UA_STATUSCODE_GOOD) {
-        std::string msg = std::string(UA_StatusCode_name(arg_code)) + " on input arg " + std::to_string(i);
-        return tl::make_unexpected(status_to_error(arg_code, msg));
-      }
+
+    auto classified = classify_call_result(code, arg_codes);
+    if (!classified.has_value()) {
+      return tl::make_unexpected(classified.error());
     }
     auto outputs_span = result.getOutputArguments();
     std::vector<opcua::Variant> outputs;
@@ -821,7 +831,7 @@ OpcuaClient::call_method(const opcua::NodeId & object_id, const opcua::NodeId & 
     return outputs;
   } catch (const opcua::BadStatus & e) {
     maybe_mark_disconnected(impl_->connected, impl_->generation, e);
-    return tl::make_unexpected(status_to_error(e.code(), e.what()));
+    return tl::make_unexpected(status_to_method_error(e.code(), e.what()));
   }
 }
 
