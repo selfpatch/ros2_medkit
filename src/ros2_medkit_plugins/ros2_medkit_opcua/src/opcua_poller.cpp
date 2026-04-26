@@ -219,14 +219,9 @@ void OpcuaPoller::setup_event_subscriptions() {
   // Issue #386: one dedicated subscription for AlarmCondition events; uses
   // a default no-op data callback because we wire MIs of EVENTNOTIFIER
   // attribute, not data-change MIs. The EventCallback bound below is what
-  // actually receives notifications.
-  if (event_subscription_id_ != 0) {
-    // Already configured (reconnect path will re-create after disconnect
-    // bumps the generation counter, so we should not get here twice on the
-    // same logical session). Defensive: skip silently.
-    return;
-  }
-
+  // actually receives notifications. Caller (start() and the poll_loop
+  // reconnect arm) is responsible for zeroing event_subscription_id_ before
+  // calling - both currently do.
   event_subscription_id_ = client_.create_subscription(config_.subscription_interval_ms,
                                                        [](const std::string &, const OpcuaValue &) { /* no-op */ });
   if (event_subscription_id_ == 0) {
