@@ -158,4 +158,92 @@ TEST(OpcuaClientTest, RemoveSubscriptionsBumpsGenerationEvenWhenEmpty) {
   EXPECT_GT(client.current_generation(), before);
 }
 
+// ---------------------------------------------------------------------------
+// Issue #386 follow-up: cover the OPC-UA Part 4 §5.11.2 Call result
+// classification paths (overall statusCode + per-argument inputArgumentResults)
+// directly. The integration test in docker/scripts/run_alarm_tests.sh
+// triggers the per-arg ``BadEventIdUnknown`` flow during real ack/confirm,
+// but a unit-test anchor catches future regressions in seconds rather than
+// the ~15 minutes a docker run takes.
+// ---------------------------------------------------------------------------
+
+TEST(OpcuaClientStatusToMethodError, MethodNotFoundFamily) {
+  EXPECT_EQ(OpcuaClient::status_to_method_error(UA_STATUSCODE_BADMETHODINVALID, "x").code,
+            OpcuaClient::MethodError::MethodNotFound);
+  EXPECT_EQ(OpcuaClient::status_to_method_error(UA_STATUSCODE_BADNODEIDUNKNOWN, "x").code,
+            OpcuaClient::MethodError::MethodNotFound);
+  EXPECT_EQ(OpcuaClient::status_to_method_error(UA_STATUSCODE_BADNOTSUPPORTED, "x").code,
+            OpcuaClient::MethodError::MethodNotFound);
+}
+
+TEST(OpcuaClientStatusToMethodError, InvalidArgumentFamily) {
+  EXPECT_EQ(OpcuaClient::status_to_method_error(UA_STATUSCODE_BADARGUMENTSMISSING, "x").code,
+            OpcuaClient::MethodError::InvalidArgument);
+  EXPECT_EQ(OpcuaClient::status_to_method_error(UA_STATUSCODE_BADINVALIDARGUMENT, "x").code,
+            OpcuaClient::MethodError::InvalidArgument);
+  EXPECT_EQ(OpcuaClient::status_to_method_error(UA_STATUSCODE_BADTYPEMISMATCH, "x").code,
+            OpcuaClient::MethodError::InvalidArgument);
+  EXPECT_EQ(OpcuaClient::status_to_method_error(UA_STATUSCODE_BADTOOMANYARGUMENTS, "x").code,
+            OpcuaClient::MethodError::InvalidArgument);
+}
+
+TEST(OpcuaClientStatusToMethodError, TimeoutAndDefault) {
+  EXPECT_EQ(OpcuaClient::status_to_method_error(UA_STATUSCODE_BADTIMEOUT, "x").code,
+            OpcuaClient::MethodError::MethodTimeout);
+  // BadEventIdUnknown is not in any explicit case - falls through to
+  // TransportError. The SOVD layer maps that to HTTP 502, prompting the
+  // caller to retry rather than treat the request as fatally invalid.
+  EXPECT_EQ(OpcuaClient::status_to_method_error(UA_STATUSCODE_BADEVENTIDUNKNOWN, "x").code,
+            OpcuaClient::MethodError::TransportError);
+  // Generic transport error.
+  EXPECT_EQ(OpcuaClient::status_to_method_error(UA_STATUSCODE_BADCONNECTIONCLOSED, "x").code,
+            OpcuaClient::MethodError::TransportError);
+}
+
+TEST(OpcuaClientClassifyCallResult, GoodOverallNoArgsSucceeds) {
+  auto result = OpcuaClient::classify_call_result(UA_STATUSCODE_GOOD, {});
+  EXPECT_TRUE(result.has_value());
+}
+
+TEST(OpcuaClientClassifyCallResult, GoodOverallAllArgsGoodSucceeds) {
+  auto result = OpcuaClient::classify_call_result(UA_STATUSCODE_GOOD, {UA_STATUSCODE_GOOD, UA_STATUSCODE_GOOD});
+  EXPECT_TRUE(result.has_value());
+}
+
+TEST(OpcuaClientClassifyCallResult, BadOverallStatusReturnsError) {
+  auto result = OpcuaClient::classify_call_result(UA_STATUSCODE_BADMETHODINVALID, {UA_STATUSCODE_GOOD});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, OpcuaClient::MethodError::MethodNotFound);
+}
+
+TEST(OpcuaClientClassifyCallResult, GoodOverallBadInputArgReturnsError) {
+  // The exact AlarmConditionType.Acknowledge case: server validates the
+  // EventId argument, finds it's been superseded, sets statusCode=Good
+  // (the call itself was well-formed) but inputArgumentResults[0]=
+  // BadEventIdUnknown to signal the ack did NOT take effect.
+  auto result = OpcuaClient::classify_call_result(UA_STATUSCODE_GOOD, {UA_STATUSCODE_BADEVENTIDUNKNOWN});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, OpcuaClient::MethodError::TransportError);
+  EXPECT_NE(result.error().message.find("input arg 0"), std::string::npos);
+}
+
+TEST(OpcuaClientClassifyCallResult, FirstBadArgWinsOverLaterBadArgs) {
+  // Multiple per-arg failures: classifier reports the earliest one so the
+  // diagnostic message points at the first thing that broke (consistent
+  // with how the spec lists arguments left-to-right).
+  auto result = OpcuaClient::classify_call_result(UA_STATUSCODE_GOOD,
+                                                  {UA_STATUSCODE_BADTYPEMISMATCH, UA_STATUSCODE_BADEVENTIDUNKNOWN});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, OpcuaClient::MethodError::InvalidArgument);
+  EXPECT_NE(result.error().message.find("input arg 0"), std::string::npos);
+}
+
+TEST(OpcuaClientClassifyCallResult, OverallStatusBeatsArgResults) {
+  // When both overall statusCode and arg results are bad, overall wins:
+  // a transport-level rejection means the server never even validated args.
+  auto result = OpcuaClient::classify_call_result(UA_STATUSCODE_BADTIMEOUT, {UA_STATUSCODE_BADEVENTIDUNKNOWN});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, OpcuaClient::MethodError::MethodTimeout);
+}
+
 }  // namespace ros2_medkit_gateway
