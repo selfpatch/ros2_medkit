@@ -27,22 +27,23 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <sstream>
 
 namespace ros2_medkit_gateway {
 
 namespace {
 
-// Env-var gate for verbose per-event / per-method-call diagnostics.
-// See opcua_client.cpp for rationale (Copilot review on PR #387). Duplicated
-// to keep traces local to their dispatch sites; promoting to a public header
-// would expose an internal trace knob.
-inline bool opcua_trace_enabled() {
-  static const bool enabled = []() {
-    const char * v = std::getenv("ROS2_MEDKIT_OPCUA_TRACE");
-    return v != nullptr && v[0] != '\0' && std::string(v) != "0";
-  }();
-  return enabled;
+// Named logger so per-operation traces respect ROS log level filtering
+// (bburda review on PR #387). Quiet at INFO; ``--log-level
+// opcua.plugin:=debug`` re-enables for diagnostics.
+inline rclcpp::Logger opcua_plugin_logger() {
+  static auto logger = rclcpp::get_logger("opcua.plugin");
+  return logger;
+}
+
+inline bool plugin_debug_enabled() {
+  return static_cast<int>(opcua_plugin_logger().get_effective_level()) <=
+         static_cast<int>(rclcpp::Logger::Level::Debug);
 }
 
 /// Parse a JSON "value" field, coerce to the node's declared data_type, and
@@ -923,16 +924,17 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
     args.push_back(opcua::Variant::fromScalar(runtime->latest_event_id));
     args.push_back(opcua::Variant::fromScalar(opcua::LocalizedText("", comment)));
 
-    if (opcua_trace_enabled()) {
+    if (plugin_debug_enabled()) {
+      std::ostringstream hex_oss;
       const auto * bytes = runtime->latest_event_id.data();
-      std::cerr << "[opcua_plugin] " << operation_name << " EventId len=" << runtime->latest_event_id.length()
-                << " hex=";
       for (size_t i = 0; i < std::min<size_t>(runtime->latest_event_id.length(), 16); ++i) {
         char buf[3];
         std::snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned>(bytes[i]) & 0xffu);
-        std::cerr << buf;
+        hex_oss << buf;
       }
-      std::cerr << " conditionId=" << runtime->condition_id.toString() << std::endl;
+      RCLCPP_DEBUG_STREAM(opcua_plugin_logger(), operation_name << " EventId len=" << runtime->latest_event_id.length()
+                                                                << " hex=" << hex_oss.str()
+                                                                << " conditionId=" << runtime->condition_id.toString());
     }
 
     auto result = client_->call_method(runtime->condition_id, method_id, args);

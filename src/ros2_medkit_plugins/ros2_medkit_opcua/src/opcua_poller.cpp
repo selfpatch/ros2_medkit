@@ -17,26 +17,25 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
-#include <iostream>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
 #include <open62541/types.h>
+#include <rclcpp/logging.hpp>
 
 namespace ros2_medkit_gateway {
 
 namespace {
-// See opcua_client.cpp for the canonical helper. Duplicated here so the
-// poller's per-event traces stay together with the dispatch they describe;
-// promoting to a public header would expose an internal trace knob.
-inline bool opcua_trace_enabled() {
-  static const bool enabled = []() {
-    const char * v = std::getenv("ROS2_MEDKIT_OPCUA_TRACE");
-    return v != nullptr && v[0] != '\0' && std::string(v) != "0";
-  }();
-  return enabled;
+inline rclcpp::Logger opcua_poller_logger() {
+  static auto logger = rclcpp::get_logger("opcua.poller");
+  return logger;
+}
+
+inline bool poller_debug_enabled() {
+  return static_cast<int>(opcua_poller_logger().get_effective_level()) <=
+         static_cast<int>(rclcpp::Logger::Level::Debug);
 }
 }  // namespace
 
@@ -299,7 +298,10 @@ void OpcuaPoller::condition_refresh() {
       if (config_.log_warn) {
         config_.log_warn(msg);
       } else {
-        std::cerr << "[opcua_poller WARN] " << msg << std::endl;
+        // Fallback when the plugin did not wire log_warn through PollerConfig
+        // (e.g., direct unit tests). RCLCPP_WARN goes to /rosout instead of
+        // raw stderr so the warn integrates with normal log filtering.
+        RCLCPP_WARN(opcua_poller_logger(), "%s", msg.c_str());
       }
       condition_refresh_warned_ = true;
     }
@@ -314,10 +316,9 @@ void OpcuaPoller::condition_refresh() {
 void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua::Variant> & values,
                            const opcua::NodeId & /*source_node*/, const opcua::NodeId & event_type,
                            const opcua::NodeId & condition_id) {
-  if (opcua_trace_enabled()) {
-    std::cerr << "[opcua_poller] on_event fault=" << cfg.fault_code << " event_type=" << event_type.toString()
-              << " condition=" << condition_id.toString() << " values=" << values.size() << std::endl;
-  }
+  RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
+                      "on_event fault=" << cfg.fault_code << " event_type=" << event_type.toString()
+                                        << " condition=" << condition_id.toString() << " values=" << values.size());
   // Detect ConditionRefresh bracketing per Part 9 §5.5.7. The flag is for
   // diagnostics only; the state machine itself does not need to know
   // because RefreshStart / RefreshEnd notifications carry no condition
@@ -402,28 +403,28 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     // Track the latest EventId for spec-compliant Acknowledge calls.
     if (values[kFieldEventId].isType<opcua::ByteString>()) {
       it->second.latest_event_id = values[kFieldEventId].getScalarCopy<opcua::ByteString>();
-      if (opcua_trace_enabled()) {
-        std::cerr << "[opcua_poller] captured EventId len=" << it->second.latest_event_id.length() << " hex=";
+      if (poller_debug_enabled()) {
+        std::ostringstream hex_oss;
         const auto * bytes = it->second.latest_event_id.data();
         for (size_t i = 0; i < std::min<size_t>(it->second.latest_event_id.length(), 16); ++i) {
           char buf[3];
           std::snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned>(bytes[i]) & 0xffu);
-          std::cerr << buf;
+          hex_oss << buf;
         }
-        std::cerr << std::endl;
+        RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
+                            "captured EventId len=" << it->second.latest_event_id.length() << " hex=" << hex_oss.str());
       }
-    } else if (opcua_trace_enabled()) {
-      std::cerr << "[opcua_poller] EventId field not a ByteString" << std::endl;
+    } else {
+      RCLCPP_DEBUG(opcua_poller_logger(), "EventId field not a ByteString");
     }
 
     auto outcome = AlarmStateMachine::compute(prev_status, input);
-    if (opcua_trace_enabled()) {
-      std::cerr << "[opcua_poller] state machine: enabled=" << input.enabled_state << " active=" << input.active_state
-                << " acked=" << input.acked_state << " confirmed=" << input.confirmed_state
-                << " shelved=" << input.shelved << " branch=" << input.branch_id_present
-                << " prev=" << static_cast<int>(prev_status) << " action=" << static_cast<int>(outcome.action)
-                << std::endl;
-    }
+    RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
+                        "state machine: enabled="
+                            << input.enabled_state << " active=" << input.active_state << " acked=" << input.acked_state
+                            << " confirmed=" << input.confirmed_state << " shelved=" << input.shelved
+                            << " branch=" << input.branch_id_present << " prev=" << static_cast<int>(prev_status)
+                            << " action=" << static_cast<int>(outcome.action));
     it->second.last_status = outcome.next_status;
     runtime_snapshot = it->second;
 
@@ -456,10 +457,8 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
       std::lock_guard cb_lock(event_alarm_callback_mutex_);
       cb_copy = event_alarm_callback_;
     }
-    if (opcua_trace_enabled()) {
-      std::cerr << "[opcua_poller] dispatching action=" << static_cast<int>(delivery.action)
-                << " cb_set=" << (cb_copy ? 1 : 0) << std::endl;
-    }
+    RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
+                        "dispatching action=" << static_cast<int>(delivery.action) << " cb_set=" << (cb_copy ? 1 : 0));
     if (cb_copy) {
       cb_copy(delivery);
     }
