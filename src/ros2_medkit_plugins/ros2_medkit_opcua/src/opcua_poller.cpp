@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -25,6 +26,19 @@
 #include <open62541/types.h>
 
 namespace ros2_medkit_gateway {
+
+namespace {
+// See opcua_client.cpp for the canonical helper. Duplicated here so the
+// poller's per-event traces stay together with the dispatch they describe;
+// promoting to a public header would expose an internal trace knob.
+inline bool opcua_trace_enabled() {
+  static const bool enabled = []() {
+    const char * v = std::getenv("ROS2_MEDKIT_OPCUA_TRACE");
+    return v != nullptr && v[0] != '\0' && std::string(v) != "0";
+  }();
+  return enabled;
+}
+}  // namespace
 
 namespace {
 
@@ -300,8 +314,10 @@ void OpcuaPoller::condition_refresh() {
 void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua::Variant> & values,
                            const opcua::NodeId & /*source_node*/, const opcua::NodeId & event_type,
                            const opcua::NodeId & condition_id) {
-  std::cerr << "[opcua_poller] on_event fault=" << cfg.fault_code << " event_type=" << event_type.toString()
-            << " condition=" << condition_id.toString() << " values=" << values.size() << std::endl;
+  if (opcua_trace_enabled()) {
+    std::cerr << "[opcua_poller] on_event fault=" << cfg.fault_code << " event_type=" << event_type.toString()
+              << " condition=" << condition_id.toString() << " values=" << values.size() << std::endl;
+  }
   // Detect ConditionRefresh bracketing per Part 9 §5.5.7. The flag is for
   // diagnostics only; the state machine itself does not need to know
   // because RefreshStart / RefreshEnd notifications carry no condition
@@ -386,24 +402,28 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     // Track the latest EventId for spec-compliant Acknowledge calls.
     if (values[kFieldEventId].isType<opcua::ByteString>()) {
       it->second.latest_event_id = values[kFieldEventId].getScalarCopy<opcua::ByteString>();
-      std::cerr << "[opcua_poller] captured EventId len=" << it->second.latest_event_id.length() << " hex=";
-      const auto * bytes = it->second.latest_event_id.data();
-      for (size_t i = 0; i < std::min<size_t>(it->second.latest_event_id.length(), 16); ++i) {
-        char buf[3];
-        std::snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned>(bytes[i]) & 0xffu);
-        std::cerr << buf;
+      if (opcua_trace_enabled()) {
+        std::cerr << "[opcua_poller] captured EventId len=" << it->second.latest_event_id.length() << " hex=";
+        const auto * bytes = it->second.latest_event_id.data();
+        for (size_t i = 0; i < std::min<size_t>(it->second.latest_event_id.length(), 16); ++i) {
+          char buf[3];
+          std::snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned>(bytes[i]) & 0xffu);
+          std::cerr << buf;
+        }
+        std::cerr << std::endl;
       }
-      std::cerr << std::endl;
-    } else {
+    } else if (opcua_trace_enabled()) {
       std::cerr << "[opcua_poller] EventId field not a ByteString" << std::endl;
     }
 
     auto outcome = AlarmStateMachine::compute(prev_status, input);
-    std::cerr << "[opcua_poller] state machine: enabled=" << input.enabled_state << " active=" << input.active_state
-              << " acked=" << input.acked_state << " confirmed=" << input.confirmed_state
-              << " shelved=" << input.shelved << " branch=" << input.branch_id_present
-              << " prev=" << static_cast<int>(prev_status) << " action=" << static_cast<int>(outcome.action)
-              << std::endl;
+    if (opcua_trace_enabled()) {
+      std::cerr << "[opcua_poller] state machine: enabled=" << input.enabled_state << " active=" << input.active_state
+                << " acked=" << input.acked_state << " confirmed=" << input.confirmed_state
+                << " shelved=" << input.shelved << " branch=" << input.branch_id_present
+                << " prev=" << static_cast<int>(prev_status) << " action=" << static_cast<int>(outcome.action)
+                << std::endl;
+    }
     it->second.last_status = outcome.next_status;
     runtime_snapshot = it->second;
 
@@ -436,8 +456,10 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
       std::lock_guard cb_lock(event_alarm_callback_mutex_);
       cb_copy = event_alarm_callback_;
     }
-    std::cerr << "[opcua_poller] dispatching action=" << static_cast<int>(delivery.action)
-              << " cb_set=" << (cb_copy ? 1 : 0) << std::endl;
+    if (opcua_trace_enabled()) {
+      std::cerr << "[opcua_poller] dispatching action=" << static_cast<int>(delivery.action)
+                << " cb_set=" << (cb_copy ? 1 : 0) << std::endl;
+    }
     if (cb_copy) {
       cb_copy(delivery);
     }
