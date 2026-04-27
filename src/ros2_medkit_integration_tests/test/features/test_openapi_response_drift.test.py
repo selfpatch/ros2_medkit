@@ -275,5 +275,9 @@ class TestOpenApiResponseDrift(GatewayTestCase):
 class TestExitCodes(unittest.TestCase):
 
     def test_exit_codes(self, proc_info):
-        for proc in proc_info:
-            self.assertIn(proc_info[proc].returncode, ALLOWED_EXIT_CODES)
+        for info in proc_info:
+            self.assertIn(
+                info.returncode,
+                ALLOWED_EXIT_CODES,
+                f'Process {info.process_name} exited with code {info.returncode}',
+            )
