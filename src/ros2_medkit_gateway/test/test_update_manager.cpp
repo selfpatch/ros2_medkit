@@ -653,11 +653,14 @@ TEST(UpdateManagerFailureTest, DeleteRollbackUpdatesStatusPhaseAndErrorMessage) 
   ASSERT_TRUE(status->error_message.has_value());
   EXPECT_NE(status->error_message->find("backend delete exploded"), std::string::npos);
 
-  // Serialized payload reflects the rollback end-to-end.
+  // Serialized payload reflects the rollback end-to-end. Use at() so a
+  // missing x-medkit/phase fails the test deterministically instead of being
+  // inserted as null by operator[].
   auto j = update_status_to_json(*status);
-  EXPECT_EQ(j["status"], "failed");
-  EXPECT_EQ(j["x-medkit"]["phase"], "failed");
-  EXPECT_EQ(j["error"], "backend delete exploded");
+  EXPECT_EQ(j.at("status"), "failed");
+  ASSERT_TRUE(j.contains("x-medkit"));
+  EXPECT_EQ(j.at("x-medkit").at("phase"), "failed");
+  EXPECT_EQ(j.at("error"), "backend delete exploded");
 
   manager.reset();
   backend.reset();
@@ -666,21 +669,24 @@ TEST(UpdateManagerFailureTest, DeleteRollbackUpdatesStatusPhaseAndErrorMessage) 
 TEST(UpdateStatusToJson, SerializesPhaseAsVendorExtension) {
   UpdateStatusInfo status{UpdateStatus::Completed, UpdatePhase::Prepared, std::nullopt, std::nullopt, std::nullopt};
   auto j = update_status_to_json(status);
-  EXPECT_EQ(j["status"], "completed");
-  EXPECT_EQ(j["x-medkit"]["phase"], "prepared");
+  EXPECT_EQ(j.at("status"), "completed");
+  ASSERT_TRUE(j.contains("x-medkit"));
+  EXPECT_EQ(j.at("x-medkit").at("phase"), "prepared");
 }
 
 TEST(UpdateStatusToJson, ExposesExecutedPhaseForTerminalCompletion) {
   UpdateStatusInfo status{UpdateStatus::Completed, UpdatePhase::Executed, 100, std::nullopt, std::nullopt};
   auto j = update_status_to_json(status);
-  EXPECT_EQ(j["status"], "completed");
-  EXPECT_EQ(j["x-medkit"]["phase"], "executed");
-  EXPECT_EQ(j["progress"], 100);
+  EXPECT_EQ(j.at("status"), "completed");
+  ASSERT_TRUE(j.contains("x-medkit"));
+  EXPECT_EQ(j.at("x-medkit").at("phase"), "executed");
+  EXPECT_EQ(j.at("progress"), 100);
 }
 
 TEST(UpdateStatusToJson, EmitsNonePhaseForFreshlyRegistered) {
   UpdateStatusInfo status;
   auto j = update_status_to_json(status);
-  EXPECT_EQ(j["status"], "pending");
-  EXPECT_EQ(j["x-medkit"]["phase"], "none");
+  EXPECT_EQ(j.at("status"), "pending");
+  ASSERT_TRUE(j.contains("x-medkit"));
+  EXPECT_EQ(j.at("x-medkit").at("phase"), "none");
 }

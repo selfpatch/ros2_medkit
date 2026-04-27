@@ -17,22 +17,30 @@
 
 For every GET endpoint declared in the runtime OpenAPI spec served at
 GET /docs, this test fetches a real response from the live gateway and
-validates it against the response schema declared in the same spec for the
-returned status code. A mismatch means handler output and declared schema
-have drifted apart - either the handler emits a field the schema does not
-declare (the failure mode that caused issue #385's `x-medkit-phase` to
-silently slip past every typed client), or the schema declares a required
-field the handler does not emit.
+validates it against the response schema declared in the same spec for
+status 200. The validator runs jsonschema in its default mode, so what
+this catches is the *subset* of drift that breaks the schema's positive
+constraints:
 
-The test is intentionally narrow: only response *bodies* are validated,
-only against the 200 schema, and only on endpoints that return JSON. It
-does not check error envelope shapes, status code coverage, or request
-schemas - those are covered by other tests.
+- ``required`` fields the handler does not emit
+- type mismatches (string vs number, etc.)
+- ``enum`` values the handler emits but the schema does not list
+- malformed nested objects against declared sub-schemas
 
-The full structural contract (compile-time link from emitter to schema)
-will be solved by issue #338. This test is the runtime stop-gap until
-that lands - if it fails, fix the schema or the handler; do not silence
-the test.
+What this does **not** catch (because most schemas in
+``schema_builder.cpp`` do not set ``additionalProperties: false``):
+
+- handler emits an extra top-level field the schema never declares
+  (this was exactly the failure mode that allowed flat
+  ``x-medkit-phase`` to slip through before issue #385 was filed)
+
+A closed-object check would surface dozens of pre-existing schema gaps
+that are out of scope for #385; the structural fix (compile-time link
+from each emitter to its schema) lives under issue #338. Until then,
+the explicit ``test_update_status_payload_uses_nested_x_medkit`` guards
+the specific regression #385 closes.
+
+If this test fails, fix the schema or the handler; do not silence it.
 """
 
 import os
@@ -85,12 +93,21 @@ _ENTITY_PARAM_MAP = {
 }
 
 
+class _RefResolutionError(Exception):
+    """Raised when a $ref in the spec cannot be resolved or forms a cycle.
+
+    Returning an empty schema on these conditions would let jsonschema
+    validate any payload, masking the drift the test is meant to detect.
+    """
+
+
 def _inline_refs(schema, schemas, seen=None):
     """Recursively inline $refs into a schema so jsonschema can validate it.
 
     The runtime spec uses $refs that point at #/components/schemas/, but
-    Draft202012Validator constructed without a registry will not follow them.
-    Recursive types are guarded via ``seen`` to break cycles.
+    Draft202012Validator constructed without a registry will not follow
+    them. Cycles and unresolved refs raise ``_RefResolutionError`` rather
+    than silently degrading the validator to "anything goes".
     """
     if seen is None:
         seen = set()
@@ -98,13 +115,16 @@ def _inline_refs(schema, schemas, seen=None):
         if '$ref' in schema:
             ref = schema['$ref']
             if ref in seen:
-                return {}
-            if ref.startswith('#/components/schemas/'):
-                name = ref.rsplit('/', 1)[-1]
-                target = schemas.get(name)
-                if target is None:
-                    return {}
-                return _inline_refs(target, schemas, seen | {ref})
+                raise _RefResolutionError(
+                    f'Cycle in $ref chain: {" -> ".join(sorted(seen))} -> {ref}'
+                )
+            if not ref.startswith('#/components/schemas/'):
+                raise _RefResolutionError(f'Unsupported $ref form: {ref}')
+            name = ref.rsplit('/', 1)[-1]
+            target = schemas.get(name)
+            if target is None:
+                raise _RefResolutionError(f'Unknown $ref target: {ref}')
+            return _inline_refs(target, schemas, seen | {ref})
         return {k: _inline_refs(v, schemas, seen) for k, v in schema.items()}
     if isinstance(schema, list):
         return [_inline_refs(item, schemas, seen) for item in schema]
@@ -130,7 +150,8 @@ def _substitute_path_params(path, entity_map, resource_id='test_id'):
 class TestOpenApiResponseDrift(GatewayTestCase):
     """Catches handler-vs-spec drift on GET response bodies."""
 
-    MIN_EXPECTED_APPS = 1
+    MIN_EXPECTED_APPS = 2
+    REQUIRED_APPS = {'temp_sensor', 'calibration'}
 
     @classmethod
     def setUpClass(cls):
@@ -240,7 +261,11 @@ class TestOpenApiResponseDrift(GatewayTestCase):
                 continue
 
             body = resp.json()
-            errors = self._validate_response(schema, body, schemas)
+            try:
+                errors = self._validate_response(schema, body, schemas)
+            except _RefResolutionError as exc:
+                violations.append(f'GET {uri}: spec error: {exc}')
+                continue
             if errors:
                 detail = '; '.join(
                     f'{".".join(str(p) for p in e.absolute_path) or "<root>"}: {e.message}'
