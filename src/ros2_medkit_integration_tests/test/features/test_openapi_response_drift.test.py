@@ -40,9 +40,17 @@ import re
 import unittest
 
 from ament_index_python.packages import get_package_prefix
-from jsonschema.validators import Draft202012Validator
 import launch_testing
 import requests
+
+# Humble (Ubuntu 22.04) ships python3-jsonschema 3.2 which only has draft-7;
+# Jazzy/Rolling (Ubuntu 24.04) ship 4.10+ with Draft202012. Prefer the newest
+# draft for OpenAPI 3.1 alignment, fall back to Draft7 on Humble. The properties
+# we validate (required, type, properties) behave identically across drafts.
+try:
+    from jsonschema.validators import Draft202012Validator as _Validator
+except ImportError:
+    from jsonschema.validators import Draft7Validator as _Validator
 
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
@@ -175,7 +183,7 @@ class TestOpenApiResponseDrift(GatewayTestCase):
     def _validate_response(self, schema, body, schemas):
         """Validate body against schema with $refs inlined."""
         inlined = _inline_refs(schema, schemas)
-        validator = Draft202012Validator(inlined)
+        validator = _Validator(inlined)
         return sorted(validator.iter_errors(body), key=lambda e: e.path)
 
     def _resource_for_path(self, path):
