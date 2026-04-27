@@ -303,6 +303,53 @@ class TestOpenApiResponseDrift(GatewayTestCase):
         self.assertIn('x-medkit', body)
         self.assertIn('phase', body['x-medkit'])
 
+    def test_configurations_payload_uses_nested_x_medkit(self):
+        """Specific guard for issue #385: configurations vendor fields nested.
+
+        Items at the top level (only in aggregated mode) and parameters
+        inside ``x-medkit.parameters[]`` (always emitted) must carry vendor
+        source attribution under a nested ``x-medkit`` object, never as flat
+        ``x-medkit-source`` / ``x-medkit-node`` keys. The drift test cannot
+        catch reintroduction of the legacy flat keys because
+        ``ConfigurationMetaData`` does not set ``additionalProperties: false``.
+
+        ``temp_sensor`` declares four ROS 2 parameters in the test fixture,
+        which exercises the per-parameter emit path that #385 migrated.
+
+        @verifies REQ_INTEROP_002
+        """
+        resp = requests.get(
+            f'{self.BASE_URL}/apps/temp_sensor/configurations', timeout=10
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+
+        items = body.get('items', [])
+        self.assertGreater(
+            len(items), 0,
+            'Fixture broken: temp_sensor should declare ROS 2 parameters'
+        )
+        for item in items:
+            self.assertNotIn(
+                'x-medkit-source', item, f'Legacy flat key on item: {item}'
+            )
+            self.assertNotIn(
+                'x-medkit-node', item, f'Legacy flat key on item: {item}'
+            )
+
+        parameters = body.get('x-medkit', {}).get('parameters', [])
+        self.assertGreater(len(parameters), 0)
+        for param in parameters:
+            self.assertNotIn(
+                'x-medkit-source', param, f'Legacy flat key on parameter: {param}'
+            )
+            self.assertNotIn(
+                'x-medkit-node', param, f'Legacy flat key on parameter: {param}'
+            )
+            self.assertIn('x-medkit', param)
+            self.assertEqual(param['x-medkit'].get('source'), 'temp_sensor')
+            self.assertIn('node', param['x-medkit'])
+
 
 @launch_testing.post_shutdown_test()
 class TestExitCodes(unittest.TestCase):
