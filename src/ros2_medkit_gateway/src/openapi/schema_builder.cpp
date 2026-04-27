@@ -556,6 +556,11 @@ nlohmann::json SchemaBuilder::update_status_schema() {
           {"description", "Internal lifecycle phase, distinguishes prepare-completed from execute-completed"}}}}},
       {"required", {"phase"}}};
 
+  // x-medkit is optional in the schema (matches the convention used by
+  // fault_detail_schema and entity_detail_schema): SOVD does not require
+  // vendor extensions, so a SOVD-compliant client must be able to ignore
+  // it. The gateway always emits it; the explicit handler guard in
+  // test_openapi_response_drift covers regression risk.
   return {{"type", "object"},
           {"properties",
            {{"status", {{"type", "string"}, {"enum", {"pending", "inProgress", "completed", "failed"}}}},
@@ -563,7 +568,7 @@ nlohmann::json SchemaBuilder::update_status_schema() {
             {"sub_progress", {{"type", "array"}, {"items", sub_progress_schema}}},
             {"error", {{"type", "string"}}},
             {"x-medkit", x_medkit_schema}}},
-          {"required", {"status", "x-medkit"}}};
+          {"required", {"status"}}};
 }
 
 nlohmann::json SchemaBuilder::log_configuration_schema() {
