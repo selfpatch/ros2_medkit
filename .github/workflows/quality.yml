@@ -217,7 +217,11 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ubuntu:noble
-    timeout-minutes: 45
+    # Cold-cache ASan builds are ~33 min; with the 12-min test budget this
+    # left ~0 headroom and was already cancelling at thermal_protection on
+    # PR branches that miss the ccache restore key. 60 min covers a full
+    # cold-cache cycle so the cache always gets saved on the post step.
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
