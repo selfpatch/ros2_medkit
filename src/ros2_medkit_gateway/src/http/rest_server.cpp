@@ -1127,8 +1127,8 @@ void RESTServer::setup_routes() {
               })
           .tag("Discovery")
           .summary("Get app host component")
-          .description("Returns the component hosting this app.")
-          .response(200, "Host component", SB::ref("EntityDetail"))
+          .description("Returns the component hosting this app as a single-element collection.")
+          .response(200, "Host component(s)", SB::ref("EntityList"))
           .operation_id("getAppHost");
 
       reg.get(entity_path + "/depends-on",
