@@ -158,6 +158,41 @@ class TestBulkDataApi(GatewayTestCase):
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list)
 
+    def test_bulk_data_component_aggregates_child_apps(self):
+        """GET /components/{id}/bulk-data/rosbags aggregates from hosted apps.
+
+        Synthetic / runtime-discovered components have an empty fqn /
+        namespace_path, so the legacy fall-through path returned zero source
+        filters and produced empty descriptor lists. The handler now resolves
+        hosted apps via the entity cache (mirrors the FUNCTION branch).
+
+        @verifies REQ_INTEROP_072
+        """
+        comp_data = self.get_json('/components')
+        components = comp_data.get('items', [])
+        # Find the component that hosts lidar_sensor (the only demo app here).
+        comp_id = None
+        for c in components:
+            hosts = self.get_json(
+                f"/components/{c['id']}/hosts").get('items', [])
+            if any(h.get('id') == 'lidar_sensor' for h in hosts):
+                comp_id = c['id']
+                break
+        self.assertIsNotNone(
+            comp_id, 'No component hosts lidar_sensor')
+
+        # Poll - rosbag capture is fault-triggered and runs after launch.
+        data = self.poll_endpoint_until(
+            f'/components/{comp_id}/bulk-data/rosbags',
+            lambda d: d if d.get('items') else None,
+            timeout=15.0,
+            interval=1.0,
+        )
+        self.assertGreater(
+            len(data['items']), 0,
+            'Component bulk-data aggregation returned zero descriptors',
+        )
+
     def test_bulk_data_unknown_category_returns_404(self):
         """Bulk-data returns 404 for unknown category.
 

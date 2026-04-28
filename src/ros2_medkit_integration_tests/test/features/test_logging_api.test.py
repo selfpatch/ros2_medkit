@@ -252,11 +252,19 @@ class TestLoggingApi(GatewayTestCase):
 
         data = self.get_json(f'/components/{comp_id}/logs?severity=debug')
         self.assertIn('items', data)
+        # Items must be non-empty - the original bug was a silent empty list
+        # for synthetic components, so app_count alone is not sufficient.
+        self.assertGreater(len(data['items']), 0,
+                           'Component logs aggregation returned zero items')
         ext = data.get('x-medkit', {})
         self.assertEqual(ext.get('aggregation_level'), 'component')
         self.assertEqual(ext.get('aggregated'), True)
         self.assertGreaterEqual(ext.get('app_count', 0), 1)
-        self.assertIn('temp_sensor', ext.get('aggregation_sources', []))
+        sources = ext.get('aggregation_sources', [])
+        self.assertTrue(
+            any('temp_sensor' in src for src in sources),
+            f"Expected aggregation_sources to contain a temp_sensor fqn, got: {sources}",
+        )
 
     def test_component_get_logs_configuration_returns_200(self):
         """GET /components/{id}/logs/configuration returns 200 with config.
