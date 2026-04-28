@@ -23,7 +23,9 @@
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::handlers;
-using json = nlohmann::json;
+// json alias already imported via the `using namespace` above (defined in
+// core/auth/auth_models.hpp). A local `using json = nlohmann::json;` would
+// shadow it and trip clang-diagnostic-shadow under clang-tidy.
 
 // --- parse_resource_uri tests ---
 
@@ -195,7 +197,7 @@ TEST(CyclicSubscriptionJsonTest, AllIntervalValuesSerialize) {
   info.entity_type = "apps";
   info.entity_id = "e";
 
-  for (auto [interval, expected] : std::vector<std::pair<CyclicInterval, std::string>>{
+  for (const auto & [interval, expected] : std::vector<std::pair<CyclicInterval, std::string>>{
            {CyclicInterval::FAST, "fast"}, {CyclicInterval::NORMAL, "normal"}, {CyclicInterval::SLOW, "slow"}}) {
     info.interval = interval;
     auto j = CyclicSubscriptionHandlers::subscription_to_json(info, "/events");
