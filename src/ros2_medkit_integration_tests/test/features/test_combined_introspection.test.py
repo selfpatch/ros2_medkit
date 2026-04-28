@@ -74,9 +74,16 @@ class TestCombinedIntrospection(GatewayTestCase):
         return items[0]['id']
 
     def _poll_procfs_app(self, app_id, timeout=20.0):
-        """Poll procfs endpoint until it returns valid data."""
+        """Poll procfs endpoint until rss_bytes is populated.
+
+        A freshly forked process can show RssAnon=0 in /proc/<pid>/status
+        before any memory is touched, so a 200 response alone is not
+        sufficient — wait until rss_bytes > 0 to avoid a timing race
+        between process spawn and the first procfs sample.
+        """
         start = time.monotonic()
         last_status = None
+        last_rss = None
         while time.monotonic() - start < timeout:
             try:
                 r = requests.get(
@@ -85,13 +92,16 @@ class TestCombinedIntrospection(GatewayTestCase):
                 )
                 last_status = r.status_code
                 if r.status_code == 200:
-                    return r.json()
+                    data = r.json()
+                    last_rss = data.get('rss_bytes')
+                    if last_rss and last_rss > 0:
+                        return data
             except requests.exceptions.RequestException:
                 pass
             time.sleep(1.0)
         self.fail(
             f'Procfs data not available for app {app_id} after {timeout}s '
-            f'(last status: {last_status})'
+            f'(last status: {last_status}, last rss_bytes: {last_rss})'
         )
 
     def _poll_container_app(self, app_id, timeout=20.0):
