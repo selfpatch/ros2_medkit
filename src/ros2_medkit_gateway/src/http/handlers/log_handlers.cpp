@@ -12,17 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/http/handlers/log_handlers.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/log_handlers.hpp"
 
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
+#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
-#include "ros2_medkit_gateway/http/x_medkit.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {

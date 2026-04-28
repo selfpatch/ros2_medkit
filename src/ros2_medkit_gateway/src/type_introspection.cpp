@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/type_introspection.hpp"
+#include "ros2_medkit_gateway/core/type_introspection.hpp"
 
 #include <sstream>
 #include <stdexcept>

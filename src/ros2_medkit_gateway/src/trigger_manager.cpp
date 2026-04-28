@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/trigger_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/trigger_manager.hpp"
 
 #include <algorithm>
 #include <ctime>

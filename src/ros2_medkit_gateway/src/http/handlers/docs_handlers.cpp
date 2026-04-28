@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/http/handlers/docs_handlers.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/docs_handlers.hpp"
 
 #include <string>
 
 #include "../../openapi/capability_generator.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
 
 #ifdef ENABLE_SWAGGER_UI
 #include "swagger_ui_assets.hpp"

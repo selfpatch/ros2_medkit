@@ -17,7 +17,7 @@
 #include <thread>
 #include <vector>
 
-#include "ros2_medkit_gateway/resource_sampler.hpp"
+#include "ros2_medkit_gateway/core/resource_sampler.hpp"
 
 using namespace ros2_medkit_gateway;
 

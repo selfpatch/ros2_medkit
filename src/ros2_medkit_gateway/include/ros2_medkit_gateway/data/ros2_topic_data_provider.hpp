@@ -28,7 +28,7 @@
 
 #include <rclcpp/serialized_message.hpp>
 
-#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
+#include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_slot.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
@@ -98,6 +98,11 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
   Ros2TopicDataProvider(std::shared_ptr<ros2_common::Ros2SubscriptionExecutor> exec,
                         std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer, Config cfg = Config());
   ~Ros2TopicDataProvider() override;
+
+  Ros2TopicDataProvider(const Ros2TopicDataProvider &) = delete;
+  Ros2TopicDataProvider & operator=(const Ros2TopicDataProvider &) = delete;
+  Ros2TopicDataProvider(Ros2TopicDataProvider &&) = delete;
+  Ros2TopicDataProvider & operator=(Ros2TopicDataProvider &&) = delete;
 
   // ---- TopicDataProvider overrides ----
 

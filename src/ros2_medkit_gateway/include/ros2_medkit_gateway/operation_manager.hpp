@@ -29,8 +29,8 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/compat/generic_client_compat.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/common.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
-#include "ros2_medkit_gateway/discovery/models/common.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/service_action_types.hpp"
 
@@ -103,6 +103,11 @@ class OperationManager {
   explicit OperationManager(rclcpp::Node * node, DiscoveryManager * discovery_manager);
 
   ~OperationManager();
+
+  OperationManager(const OperationManager &) = delete;
+  OperationManager & operator=(const OperationManager &) = delete;
+  OperationManager(OperationManager &&) = delete;
+  OperationManager & operator=(OperationManager &&) = delete;
 
   /// Explicitly release subscriptions, clients, and tracked goals.
   /// Call while executor is still running to allow safe callback cleanup.

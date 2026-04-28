@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/http/handlers/script_handlers.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/script_handlers.hpp"
 
 #include <algorithm>
 #include <cctype>
 
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
 
 using json = nlohmann::json;
 

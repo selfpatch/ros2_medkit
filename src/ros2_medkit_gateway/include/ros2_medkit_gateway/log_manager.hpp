@@ -27,8 +27,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "ros2_medkit_gateway/log_types.hpp"
-#include "ros2_medkit_gateway/logs/log_provider.hpp"
+#include "ros2_medkit_gateway/core/log_types.hpp"
+#include "ros2_medkit_gateway/core/providers/log_provider.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -77,6 +77,11 @@ class LogManager {
                       size_t max_buffer_size = kDefaultBufferSize);
 
   ~LogManager();
+
+  LogManager(const LogManager &) = delete;
+  LogManager & operator=(const LogManager &) = delete;
+  LogManager(LogManager &&) = delete;
+  LogManager & operator=(LogManager &&) = delete;
 
   /**
    * @brief Query log entries for a set of node FQNs

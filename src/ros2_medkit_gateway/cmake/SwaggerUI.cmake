@@ -16,7 +16,8 @@
 #
 # When ENABLE_SWAGGER_UI=ON, downloads swagger-ui-dist files from unpkg.com
 # and generates a C++ source file with embedded byte arrays.
-# The generated file is added to the gateway_lib target.
+# The generated file is added to the gateway_ros2 target (the ROS adapter
+# layer that owns the HTTP server and Swagger UI integration).
 
 set(SWAGGER_UI_VERSION "5.17.14")
 set(SWAGGER_UI_URL "https://unpkg.com/swagger-ui-dist@${SWAGGER_UI_VERSION}")
@@ -139,8 +140,8 @@ else()
     "or ensure network access to unpkg.com during CMake configure.")
 endif()
 
-# Add generated source to gateway_lib and make the header findable
-target_sources(gateway_lib PRIVATE "${SWAGGER_UI_ASSETS_CPP}")
-target_include_directories(gateway_lib PRIVATE
+# Add generated source to gateway_ros2 and make the header findable
+target_sources(gateway_ros2 PRIVATE "${SWAGGER_UI_ASSETS_CPP}")
+target_include_directories(gateway_ros2 PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src/http"
 )

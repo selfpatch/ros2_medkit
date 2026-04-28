@@ -22,8 +22,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/int32.hpp>
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/data/ros2_topic_data_provider.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 

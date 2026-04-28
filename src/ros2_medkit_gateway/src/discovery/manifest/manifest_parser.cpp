@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/discovery/manifest/manifest_parser.hpp"
+#include "ros2_medkit_gateway/core/discovery/manifest/manifest_parser.hpp"
 
 #include <yaml-cpp/yaml.h>
 

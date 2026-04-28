@@ -23,8 +23,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "ros2_medkit_gateway/data/data_types.hpp"
-#include "ros2_medkit_gateway/type_introspection.hpp"
+#include "ros2_medkit_gateway/core/data/data_types.hpp"
+#include "ros2_medkit_gateway/core/type_introspection.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 
 namespace ros2_medkit_gateway {

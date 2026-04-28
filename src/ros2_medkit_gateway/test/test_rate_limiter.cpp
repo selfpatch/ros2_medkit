@@ -17,7 +17,7 @@
 #include <chrono>
 #include <thread>
 
-#include "ros2_medkit_gateway/http/rate_limiter.hpp"
+#include "ros2_medkit_gateway/core/http/rate_limiter.hpp"
 
 using namespace ros2_medkit_gateway;
 

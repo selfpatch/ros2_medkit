@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/http/handlers/bulkdata_handlers.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/bulkdata_handlers.hpp"
 
 #include <algorithm>
 #include <filesystem>
 #include <unordered_map>
 #include <vector>
 
-#include "ros2_medkit_gateway/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/core/http/entity_path_utils.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/entity_path_utils.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {

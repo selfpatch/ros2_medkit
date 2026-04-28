@@ -14,10 +14,10 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/discovery/discovery_layer.hpp"
-#include "ros2_medkit_gateway/discovery/manifest/manifest.hpp"
+#include "ros2_medkit_gateway/core/discovery/discovery_layer.hpp"
+#include "ros2_medkit_gateway/core/discovery/manifest/manifest.hpp"
+#include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
-#include "ros2_medkit_gateway/discovery/merge_types.hpp"
 
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>

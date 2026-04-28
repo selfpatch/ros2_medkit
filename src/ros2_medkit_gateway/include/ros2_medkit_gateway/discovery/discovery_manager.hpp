@@ -14,17 +14,17 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/discovery/discovery_enums.hpp"
-#include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
-#include "ros2_medkit_gateway/discovery/host_info_provider.hpp"
+#include "ros2_medkit_gateway/core/discovery/discovery_enums.hpp"
+#include "ros2_medkit_gateway/core/discovery/discovery_strategy.hpp"
+#include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/area.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/common.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/providers/host_info_provider.hpp"
 #include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
-#include "ros2_medkit_gateway/discovery/merge_types.hpp"
-#include "ros2_medkit_gateway/discovery/models/app.hpp"
-#include "ros2_medkit_gateway/discovery/models/area.hpp"
-#include "ros2_medkit_gateway/discovery/models/common.hpp"
-#include "ros2_medkit_gateway/discovery/models/component.hpp"
-#include "ros2_medkit_gateway/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/discovery/runtime_discovery.hpp"
 
 #include <map>

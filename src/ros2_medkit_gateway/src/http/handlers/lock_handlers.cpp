@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/http/handlers/lock_handlers.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/lock_handlers.hpp"
 
 #include <chrono>
 #include <ctime>
 #include <iomanip>
 #include <sstream>
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
 
 using json = nlohmann::json;
 

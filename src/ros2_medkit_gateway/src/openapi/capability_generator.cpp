@@ -21,13 +21,13 @@
 #include "openapi_spec_builder.hpp"
 #include "path_builder.hpp"
 
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/models/entity_capabilities.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/version.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
-#include "ros2_medkit_gateway/models/entity_capabilities.hpp"
-#include "ros2_medkit_gateway/models/entity_types.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
-#include "ros2_medkit_gateway/version.hpp"
 
 namespace ros2_medkit_gateway {
 namespace openapi {

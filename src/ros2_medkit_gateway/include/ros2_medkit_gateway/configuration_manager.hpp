@@ -61,6 +61,11 @@ class ConfigurationManager {
   explicit ConfigurationManager(rclcpp::Node * node);
   ~ConfigurationManager();
 
+  ConfigurationManager(const ConfigurationManager &) = delete;
+  ConfigurationManager & operator=(const ConfigurationManager &) = delete;
+  ConfigurationManager(ConfigurationManager &&) = delete;
+  ConfigurationManager & operator=(ConfigurationManager &&) = delete;
+
   /// Clean up shared param node and cached clients before ROS 2 context shutdown.
   /// Must be called before rclcpp::shutdown() to prevent use-after-free.
   /// Idempotent - safe to call multiple times.

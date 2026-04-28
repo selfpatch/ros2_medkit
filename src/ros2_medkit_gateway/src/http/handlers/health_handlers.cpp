@@ -12,22 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/http/handlers/health_handlers.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/health_handlers.hpp"
 
 #include <chrono>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
-#include "ros2_medkit_gateway/auth/auth_models.hpp"
-#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
-#include "ros2_medkit_gateway/discovery/discovery_enums.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_models.hpp"
+#include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
+#include "ros2_medkit_gateway/core/discovery/discovery_enums.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/http/warning_codes.hpp"
+#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
+#include "ros2_medkit_gateway/core/version.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
-#include "ros2_medkit_gateway/http/warning_codes.hpp"
-#include "ros2_medkit_gateway/http/x_medkit.hpp"
-#include "ros2_medkit_gateway/version.hpp"
 
 #include "../../openapi/route_registry.hpp"
 

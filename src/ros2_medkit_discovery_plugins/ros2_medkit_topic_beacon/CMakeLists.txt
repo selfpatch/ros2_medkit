@@ -34,7 +34,8 @@ find_package(diagnostic_msgs REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 # MODULE target: loaded via dlopen at runtime by PluginManager.
-# Symbols from gateway_lib are resolved from the host process at runtime.
+# Symbols from gateway_ros2 (and gateway_core transitively) are resolved
+# from the host process at runtime.
 # We only need headers at compile time (via medkit_target_dependencies).
 add_library(topic_beacon_plugin MODULE
   src/topic_beacon_plugin.cpp

@@ -12,22 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
 
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <vector>
 
-#include "ros2_medkit_gateway/entity_validation.hpp"
+#include "ros2_medkit_gateway/core/entity_validation.hpp"
 
-#include "ros2_medkit_gateway/condition_evaluator.hpp"
+#include "ros2_medkit_gateway/core/condition_evaluator.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/core/resource_sampler.hpp"
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
-#include "ros2_medkit_gateway/lock_manager.hpp"
-#include "ros2_medkit_gateway/resource_change_notifier.hpp"
-#include "ros2_medkit_gateway/resource_sampler.hpp"
 
 namespace ros2_medkit_gateway {
 

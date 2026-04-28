@@ -14,7 +14,7 @@
 
 #include <gtest/gtest.h>
 
-#include "ros2_medkit_gateway/openapi/route_descriptions.hpp"
+#include "ros2_medkit_gateway/core/openapi/route_descriptions.hpp"
 
 using namespace ros2_medkit_gateway::openapi;
 

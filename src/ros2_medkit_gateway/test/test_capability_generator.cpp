@@ -22,10 +22,10 @@
 
 #include "../src/openapi/capability_generator.hpp"
 #include "../src/openapi/route_registry.hpp"
-#include "ros2_medkit_gateway/config.hpp"
+#include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/version.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
-#include "ros2_medkit_gateway/version.hpp"
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::openapi;

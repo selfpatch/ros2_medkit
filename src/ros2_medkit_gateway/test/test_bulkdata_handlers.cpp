@@ -16,10 +16,10 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ros2_medkit_gateway/bulk_data_store.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/handlers/bulkdata_handlers.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/bulkdata_handlers.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
 
 using ros2_medkit_gateway::handlers::BulkDataHandlers;
 
