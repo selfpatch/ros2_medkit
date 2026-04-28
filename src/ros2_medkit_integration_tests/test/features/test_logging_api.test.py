@@ -229,6 +229,35 @@ class TestLoggingApi(GatewayTestCase):
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list)
 
+    def test_component_get_logs_aggregates_child_apps(self):
+        """GET /components/{id}/logs aggregates from hosted apps.
+
+        Synthetic / runtime-discovered components have an empty fqn, so
+        the legacy prefix-match path silently returned zero items. The
+        handler now mirrors the AREA / FUNCTION pattern: look up child
+        apps via the entity cache, build their host fqns, and merge.
+
+        # @verifies REQ_INTEROP_061
+        """
+        components = self.get_json('/components')['items']
+        self.assertGreater(len(components), 0, 'At least one component required')
+        # Pick the component that hosts temp_sensor (the only demo node).
+        comp_id = None
+        for c in components:
+            hosts = self.get_json(f"/components/{c['id']}/hosts").get('items', [])
+            if any(h.get('id') == 'temp_sensor' for h in hosts):
+                comp_id = c['id']
+                break
+        self.assertIsNotNone(comp_id, 'No component hosts temp_sensor')
+
+        data = self.get_json(f'/components/{comp_id}/logs?severity=debug')
+        self.assertIn('items', data)
+        ext = data.get('x-medkit', {})
+        self.assertEqual(ext.get('aggregation_level'), 'component')
+        self.assertEqual(ext.get('aggregated'), True)
+        self.assertGreaterEqual(ext.get('app_count', 0), 1)
+        self.assertIn('temp_sensor', ext.get('aggregation_sources', []))
+
     def test_component_get_logs_configuration_returns_200(self):
         """GET /components/{id}/logs/configuration returns 200 with config.
 
