@@ -190,16 +190,29 @@ class Ros2SubscriptionExecutor final {
    * pool entries.
    *
    * @warning A registered callback must NOT call remove_graph_change() on its own
-   *          token from inside the callback - graph_mtx_ is non-recursive and a
-   *          self-removal attempt deadlocks. Drop the token through a separate task
-   *          posted to the worker if dynamic deregistration is needed.
+   *          token from inside the callback - graph_mtx_ is non-recursive and the
+   *          synchronous in-flight drain in remove_graph_change() would wait
+   *          indefinitely on the very call holding the slot's in_flight counter.
+   *          Drop the token through a separate task posted to the worker if
+   *          dynamic deregistration is needed.
    *
    * @return Opaque token in range [0, kMaxGraphListeners). `kMaxGraphListeners` if
    *         all slots are taken.
    */
   [[nodiscard]] std::size_t on_graph_change(GraphCallback cb);
 
-  /// Remove a previously-registered graph callback. Idempotent. See warning on on_graph_change.
+  /**
+   * @brief Remove a previously-registered graph callback. Idempotent.
+   *
+   * Synchronously drains in-flight execution: returns only after any worker
+   * thread that already entered this slot's callback has exited it. After
+   * remove_graph_change() returns, the caller can safely tear down state that
+   * the callback's captured `this` pointer references; the executor guarantees
+   * no further dispatch and no in-flight call.
+   *
+   * See warning on on_graph_change(): self-removal from inside the callback
+   * deadlocks.
+   */
   void remove_graph_change(std::size_t token);
 
   /// True after shutdown has started. Monotonic. Use to skip re-posting work on teardown.
@@ -269,10 +282,19 @@ class Ros2SubscriptionExecutor final {
   std::atomic<std::size_t> watchdog_trips_{0};
   std::atomic<std::size_t> graph_events_received_{0};
 
-  // Graph callbacks (pre-allocated, Tier 1)
+  // Graph callbacks (pre-allocated, Tier 1).
+  // graph_in_flight_[i] tracks how many worker invocations of slot i's
+  // callback are currently mid-execution. fire_graph_callbacks() increments
+  // it when snapshotting under graph_mtx_, the snapshot wrapper decrements
+  // it after the callback returns and notifies graph_in_flight_cv_. This
+  // lets remove_graph_change() block until in-flight execution drains, so a
+  // consumer's destructor can safely tear down state that the callback's
+  // captured `this` references.
   mutable std::mutex graph_mtx_;
   std::array<GraphCallback, kMaxGraphListeners> graph_callbacks_{};
   std::array<bool, kMaxGraphListeners> graph_slot_used_{};
+  std::array<int, kMaxGraphListeners> graph_in_flight_{};
+  std::condition_variable graph_in_flight_cv_;
 
   // Public rclcpp graph API - stable across Humble / Jazzy / Rolling
   rclcpp::Event::SharedPtr graph_event_;

@@ -135,9 +135,17 @@ void Ros2SubscriptionExecutor::remove_graph_change(std::size_t token) {
   if (token >= kMaxGraphListeners) {
     return;
   }
-  std::lock_guard<std::mutex> lk(graph_mtx_);
+  std::unique_lock<std::mutex> lk(graph_mtx_);
   graph_slot_used_[token] = false;
   graph_callbacks_[token] = nullptr;
+  // Wait for any worker-thread invocation that already snapshotted this
+  // slot to finish executing the callback. Without this drain, a wrapper
+  // task posted by fire_graph_callbacks() could call cb() against a
+  // captured `this` after the consumer's destructor has freed members,
+  // producing the heap-use-after-free in the snapshotted callback body.
+  graph_in_flight_cv_.wait(lk, [this, token] {
+    return graph_in_flight_[token] == 0;
+  });
 }
 
 Ros2SubscriptionExecutor::Stats Ros2SubscriptionExecutor::stats() const {
@@ -309,30 +317,64 @@ void Ros2SubscriptionExecutor::fire_graph_callbacks() {
   // sweep, which can take 15 minutes by default. All-or-nothing delivery
   // means a single dropped post at most loses one whole graph event, which
   // graph_poll_tick() will refire on the next change.
-  std::vector<GraphCallback> snapshot;
+  //
+  // Each entry pairs the callback with its slot token: when the wrapper
+  // finishes invoking the callback, it decrements graph_in_flight_[token]
+  // so remove_graph_change() can synchronously wait for in-flight execution
+  // to drain.
+  struct PendingCb {
+    std::size_t token;
+    GraphCallback cb;
+  };
+  std::vector<PendingCb> snapshot;
   snapshot.reserve(kMaxGraphListeners);
   {
     std::lock_guard<std::mutex> lk(graph_mtx_);
     for (std::size_t i = 0; i < kMaxGraphListeners; ++i) {
       if (graph_slot_used_[i] && graph_callbacks_[i]) {
-        snapshot.push_back(graph_callbacks_[i]);
+        snapshot.push_back({i, graph_callbacks_[i]});
+        ++graph_in_flight_[i];
       }
     }
   }
   if (snapshot.empty()) {
     return;
   }
-  (void)post([cbs = std::move(snapshot)] {
-    for (const auto & cb : cbs) {
+  // Capture tokens before moving the snapshot into the wrapper so we can
+  // roll back graph_in_flight_ if post() rejects the wrapper (queue full
+  // or shutting down).
+  std::vector<std::size_t> reserved_tokens;
+  reserved_tokens.reserve(snapshot.size());
+  for (const auto & p : snapshot) {
+    reserved_tokens.push_back(p.token);
+  }
+  const bool posted = post([this, cbs = std::move(snapshot)] {
+    for (const auto & p : cbs) {
       try {
-        cb();
+        p.cb();
       } catch (const std::exception & ex) {
         RCLCPP_ERROR(rclcpp::get_logger("ros2_subscription_executor"), "Graph callback threw exception: %s", ex.what());
       } catch (...) {
         RCLCPP_ERROR(rclcpp::get_logger("ros2_subscription_executor"), "Graph callback threw unknown exception");
       }
+      {
+        std::lock_guard<std::mutex> lk(graph_mtx_);
+        --graph_in_flight_[p.token];
+      }
+      graph_in_flight_cv_.notify_all();
     }
   });
+  if (!posted) {
+    // Queue full or shutting down: the wrapper will not run, so we must
+    // decrement the counters we incremented to keep remove_graph_change()
+    // from waiting forever. snapshot is in moved-from state here; use
+    // reserved_tokens captured above the post() call.
+    std::lock_guard<std::mutex> lk(graph_mtx_);
+    for (auto t : reserved_tokens) {
+      --graph_in_flight_[t];
+    }
+    graph_in_flight_cv_.notify_all();
+  }
 }
 
 }  // namespace ros2_medkit_gateway::ros2_common
