@@ -175,6 +175,28 @@ TEST(SchemaBuilderStaticTest, ConfigurationMetaDataSchema) {
 }
 
 // @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, ConfigurationMetaDataXMedkitDeclaresAllEmittedFields) {
+  // Regression: the x-medkit object emitted by config_handlers.cpp on every
+  // per-parameter entry contains both `source` (app_id) and `node` (FQN).
+  // The schema must declare both, otherwise generated typed clients drop
+  // or fail-type the undeclared field - exactly the drift this PR fixes
+  // for x-medkit.phase. additionalProperties is intentionally left open
+  // (other endpoints use the same convention), so the drift integration
+  // test cannot detect missing properties here; this static check does.
+  auto schema = SchemaBuilder::configuration_metadata_schema();
+  ASSERT_TRUE(schema.contains("properties"));
+  ASSERT_TRUE(schema.at("properties").contains("x-medkit"));
+  const auto & x_medkit = schema.at("properties").at("x-medkit");
+  EXPECT_EQ(x_medkit.at("type"), "object");
+  ASSERT_TRUE(x_medkit.contains("properties"));
+  const auto & x_props = x_medkit.at("properties");
+  ASSERT_TRUE(x_props.contains("source"));
+  EXPECT_EQ(x_props.at("source").at("type"), "string");
+  ASSERT_TRUE(x_props.contains("node"));
+  EXPECT_EQ(x_props.at("node").at("type"), "string");
+}
+
+// @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, ConfigurationReadValueSchema) {
   auto schema = SchemaBuilder::configuration_read_value_schema();
   EXPECT_EQ(schema["type"], "object");

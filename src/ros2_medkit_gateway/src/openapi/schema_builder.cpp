@@ -172,7 +172,10 @@ nlohmann::json SchemaBuilder::configuration_metadata_schema() {
           {"properties",
            {{"source",
              {{"type", "string"},
-              {"description", "App ID that owns this parameter (only present in aggregated configurations)"}}}}}}}}},
+              {"description", "App ID that owns this parameter (only present in aggregated configurations)"}}},
+            {"node",
+             {{"type", "string"},
+              {"description", "Node FQN providing this parameter (only present in aggregated configurations)"}}}}}}}}},
       {"required", {"id", "name", "type"}}};
 }
 
@@ -556,11 +559,14 @@ nlohmann::json SchemaBuilder::update_status_schema() {
           {"description", "Internal lifecycle phase, distinguishes prepare-completed from execute-completed"}}}}},
       {"required", {"phase"}}};
 
-  // x-medkit is optional in the schema (matches the convention used by
-  // fault_detail_schema and entity_detail_schema): SOVD does not require
-  // vendor extensions, so a SOVD-compliant client must be able to ignore
-  // it. The gateway always emits it; the explicit handler guard in
-  // test_openapi_response_drift covers regression risk.
+  // x-medkit is optional in the SOVD payload (clients may ignore vendor
+  // extensions; matches the convention in fault_detail_schema and
+  // entity_detail_schema). When the gateway DOES emit the x-medkit object,
+  // however, ``phase`` is mandatory inside it - that scope is enforced by
+  // the inner ``required: {phase}`` above, NOT by listing x-medkit in the
+  // parent's required list. The drift test in test_openapi_response_drift
+  // covers regression on the emit side. If x-medkit is ever dropped from
+  // the parent properties, the inner required must be revisited too.
   return {{"type", "object"},
           {"properties",
            {{"status", {{"type", "string"}, {"enum", {"pending", "inProgress", "completed", "failed"}}}},
