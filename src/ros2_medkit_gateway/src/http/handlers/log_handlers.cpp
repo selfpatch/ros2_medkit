@@ -85,17 +85,7 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
     ext.add("aggregated", true);
 
     if (func && !func->hosts.empty()) {
-      std::vector<std::string> host_fqns;
-      for (const auto & app_id : func->hosts) {
-        auto app = cache.get_app(app_id);
-        if (!app) {
-          continue;
-        }
-        auto fqn = app->effective_fqn();
-        if (!fqn.empty()) {
-          host_fqns.push_back(std::move(fqn));
-        }
-      }
+      auto host_fqns = HandlerContext::resolve_app_host_fqns(cache, func->hosts);
 
       if (!host_fqns.empty()) {
         auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
@@ -128,17 +118,9 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
 
     std::vector<std::string> host_fqns;
     for (const auto & comp_id : comp_ids) {
-      auto app_ids = cache.get_apps_for_component(comp_id);
-      for (const auto & app_id : app_ids) {
-        auto app = cache.get_app(app_id);
-        if (!app) {
-          continue;
-        }
-        auto fqn = app->effective_fqn();
-        if (!fqn.empty()) {
-          host_fqns.push_back(std::move(fqn));
-        }
-      }
+      auto comp_fqns = HandlerContext::resolve_app_host_fqns(cache, cache.get_apps_for_component(comp_id));
+      host_fqns.insert(host_fqns.end(), std::make_move_iterator(comp_fqns.begin()),
+                       std::make_move_iterator(comp_fqns.end()));
     }
 
     json result;
@@ -186,20 +168,7 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
   // -----------------------------------------------------------------------
   if (entity.type == EntityType::COMPONENT) {
     const auto & cache = ctx_.node()->get_thread_safe_cache();
-    const auto app_ids = cache.get_apps_for_component(entity_id);
-
-    std::vector<std::string> host_fqns;
-    host_fqns.reserve(app_ids.size());
-    for (const auto & app_id : app_ids) {
-      auto app = cache.get_app(app_id);
-      if (!app) {
-        continue;
-      }
-      auto fqn = app->effective_fqn();
-      if (!fqn.empty()) {
-        host_fqns.push_back(std::move(fqn));
-      }
-    }
+    auto host_fqns = HandlerContext::resolve_app_host_fqns(cache, cache.get_apps_for_component(entity_id));
 
     json result;
     result["items"] = json::array();
