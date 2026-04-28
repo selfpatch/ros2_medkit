@@ -42,6 +42,8 @@ class SqliteStatement {
 
   SqliteStatement(const SqliteStatement &) = delete;
   SqliteStatement & operator=(const SqliteStatement &) = delete;
+  SqliteStatement(SqliteStatement &&) = delete;
+  SqliteStatement & operator=(SqliteStatement &&) = delete;
 
   sqlite3_stmt * get() const {
     return stmt_;

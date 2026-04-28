@@ -65,6 +65,11 @@ class RESTServer {
              const TlsConfig & tls_config = TlsConfig{});
   ~RESTServer();
 
+  RESTServer(const RESTServer &) = delete;
+  RESTServer & operator=(const RESTServer &) = delete;
+  RESTServer(RESTServer &&) = delete;
+  RESTServer & operator=(RESTServer &&) = delete;
+
   void start();
   void stop();
 

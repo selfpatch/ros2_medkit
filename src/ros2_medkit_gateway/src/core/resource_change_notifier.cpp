@@ -48,12 +48,18 @@ void ResourceChangeNotifier::notify(const std::string & collection, const std::s
   active_notify_count_.fetch_add(1);
   struct NotifyGuard {
     ResourceChangeNotifier & self;
+    explicit NotifyGuard(ResourceChangeNotifier & s) : self(s) {
+    }
     ~NotifyGuard() {
       if (self.active_notify_count_.fetch_sub(1) == 1) {
         std::lock_guard<std::mutex> lk(self.drain_mutex_);
         self.drain_cv_.notify_one();
       }
     }
+    NotifyGuard(const NotifyGuard &) = delete;
+    NotifyGuard & operator=(const NotifyGuard &) = delete;
+    NotifyGuard(NotifyGuard &&) = delete;
+    NotifyGuard & operator=(NotifyGuard &&) = delete;
   } guard{*this};
 
   if (shutdown_flag_.load()) {

@@ -71,6 +71,11 @@ class DefaultScriptProvider : public ScriptProvider {
   explicit DefaultScriptProvider(const ScriptsConfig & config);
   ~DefaultScriptProvider() override;
 
+  DefaultScriptProvider(const DefaultScriptProvider &) = delete;
+  DefaultScriptProvider & operator=(const DefaultScriptProvider &) = delete;
+  DefaultScriptProvider(DefaultScriptProvider &&) = delete;
+  DefaultScriptProvider & operator=(DefaultScriptProvider &&) = delete;
+
   tl::expected<std::vector<ScriptInfo>, ScriptBackendErrorInfo> list_scripts(const std::string & entity_id) override;
 
   tl::expected<ScriptInfo, ScriptBackendErrorInfo> get_script(const std::string & entity_id,

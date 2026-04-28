@@ -365,7 +365,7 @@ tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const s
     new_entry->last_sample_time = std::chrono::steady_clock::now();
 
     std::weak_ptr<PoolEntry> entry_weak = new_entry;
-    auto cb = [entry_weak](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+    auto cb = [entry_weak](const std::shared_ptr<const rclcpp::SerializedMessage> & msg) {
       auto e = entry_weak.lock();
       if (!e || e->shutdown.load(std::memory_order_acquire)) {
         return;

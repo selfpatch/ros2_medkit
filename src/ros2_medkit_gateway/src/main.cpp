@@ -62,61 +62,69 @@ ros2_medkit_gateway::Ros2TopicDataProvider::Config declare_data_provider_config(
 }  // namespace
 
 int main(int argc, char ** argv) {
-  rclcpp::init(argc, argv);
-
-  auto node = std::make_shared<ros2_medkit_gateway::GatewayNode>();
-
-  // MultiThreadedExecutor for the gateway node - HTTP handlers run on several
-  // threads, so the main executor must dispatch callbacks in parallel to avoid
-  // starving slow handlers. The Ros2SubscriptionExecutor built below owns its
-  // own internal single-threaded executor (spun from its worker thread); the
-  // subscription node is intentionally not added here.
-  rclcpp::executors::MultiThreadedExecutor executor;
-  executor.add_node(node);
-
-  // Stand up the ROS 2 subscription executor + topic data provider.
-  // Issue #375: all subscription create/destroy calls are funneled through the
-  // serial worker owned by sub_exec, eliminating the rcl hash-map race that
-  // previously killed /data on Rolling when concurrent HTTP handler threads
-  // created subscriptions on the same node.
-  const auto exec_cfg = declare_executor_config(*node);
-  const auto dp_cfg = declare_data_provider_config(*node);
-  auto sub_exec = std::make_shared<ros2_medkit_gateway::ros2_common::Ros2SubscriptionExecutor>(node, exec_cfg);
-  auto serializer = std::make_shared<ros2_medkit_serialization::JsonSerializer>();
-  auto data_provider = std::make_shared<ros2_medkit_gateway::Ros2TopicDataProvider>(sub_exec, serializer, dp_cfg);
-  node->set_topic_data_provider(data_provider);
-
-  // Spin in a try/catch so an uncaught handler exception falls through to the
-  // explicit teardown block below. Without this, an escaping throw bypasses
-  // the teardown ordering and triggers exactly the rclcpp abort described
-  // there (~GatewayNode running against a dead executor, exit -6).
   try {
-    executor.spin();
+    rclcpp::init(argc, argv);
+
+    auto node = std::make_shared<ros2_medkit_gateway::GatewayNode>();
+
+    // MultiThreadedExecutor for the gateway node - HTTP handlers run on several
+    // threads, so the main executor must dispatch callbacks in parallel to avoid
+    // starving slow handlers. The Ros2SubscriptionExecutor built below owns its
+    // own internal single-threaded executor (spun from its worker thread); the
+    // subscription node is intentionally not added here.
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+
+    // Stand up the ROS 2 subscription executor + topic data provider.
+    // Issue #375: all subscription create/destroy calls are funneled through the
+    // serial worker owned by sub_exec, eliminating the rcl hash-map race that
+    // previously killed /data on Rolling when concurrent HTTP handler threads
+    // created subscriptions on the same node.
+    const auto exec_cfg = declare_executor_config(*node);
+    const auto dp_cfg = declare_data_provider_config(*node);
+    auto sub_exec = std::make_shared<ros2_medkit_gateway::ros2_common::Ros2SubscriptionExecutor>(node, exec_cfg);
+    auto serializer = std::make_shared<ros2_medkit_serialization::JsonSerializer>();
+    auto data_provider = std::make_shared<ros2_medkit_gateway::Ros2TopicDataProvider>(sub_exec, serializer, dp_cfg);
+    node->set_topic_data_provider(data_provider);
+
+    // Spin in a try/catch so an uncaught handler exception falls through to the
+    // explicit teardown block below. Without this, an escaping throw bypasses
+    // the teardown ordering and triggers exactly the rclcpp abort described
+    // there (~GatewayNode running against a dead executor, exit -6).
+    try {
+      executor.spin();
+    } catch (const std::exception & ex) {
+      RCLCPP_ERROR(node->get_logger(), "Executor.spin() threw an unhandled exception: %s. Falling through to teardown.",
+                   ex.what());
+    } catch (...) {
+      RCLCPP_ERROR(node->get_logger(), "Executor.spin() threw an unknown exception. Falling through to teardown.");
+    }
+
+    // Teardown order (issue #375): stack-unwind destructs executor before node
+    // which leaves ~GatewayNode running against a dead executor. Newer rclcpp
+    // (rolling; recent jazzy patch releases) asserts 'node needs to be
+    // associated with an executor' and aborts with exit -6 when the managers'
+    // shutdown paths touch service clients. Explicit teardown avoids that:
+    //   1. detach the provider from GatewayNode so the managers stop using it
+    //      before we drop it (GatewayNode otherwise holds a shared_ptr that
+    //      would keep the provider alive past data_provider.reset()).
+    //   2. drop the provider (clears pool entries via the subscription worker)
+    //   3. reset sub_exec (joins worker, tears down internal subscription executor)
+    //   4. remove the gateway node from the executor and drop our ref so
+    //      ~GatewayNode runs with the executor still alive.
+    node->set_topic_data_provider(nullptr);
+    data_provider.reset();
+    sub_exec.reset();
+    executor.remove_node(node);
+    node.reset();
+
+    rclcpp::shutdown();
   } catch (const std::exception & ex) {
-    RCLCPP_ERROR(node->get_logger(), "Executor.spin() threw an unhandled exception: %s. Falling through to teardown.",
-                 ex.what());
+    fprintf(stderr, "[ros2_medkit_gateway] Fatal exception in main: %s\n", ex.what());
+    return 1;
   } catch (...) {
-    RCLCPP_ERROR(node->get_logger(), "Executor.spin() threw an unknown exception. Falling through to teardown.");
+    fprintf(stderr, "[ros2_medkit_gateway] Fatal unknown exception in main\n");
+    return 1;
   }
-
-  // Teardown order (issue #375): stack-unwind destructs executor before node
-  // which leaves ~GatewayNode running against a dead executor. Newer rclcpp
-  // (rolling; recent jazzy patch releases) asserts 'node needs to be
-  // associated with an executor' and aborts with exit -6 when the managers'
-  // shutdown paths touch service clients. Explicit teardown avoids that:
-  //   1. detach the provider from GatewayNode so the managers stop using it
-  //      before we drop it (GatewayNode otherwise holds a shared_ptr that
-  //      would keep the provider alive past data_provider.reset()).
-  //   2. drop the provider (clears pool entries via the subscription worker)
-  //   3. reset sub_exec (joins worker, tears down internal subscription executor)
-  //   4. remove the gateway node from the executor and drop our ref so
-  //      ~GatewayNode runs with the executor still alive.
-  node->set_topic_data_provider(nullptr);
-  data_provider.reset();
-  sub_exec.reset();
-  executor.remove_node(node);
-  node.reset();
-
-  rclcpp::shutdown();
   return 0;
 }

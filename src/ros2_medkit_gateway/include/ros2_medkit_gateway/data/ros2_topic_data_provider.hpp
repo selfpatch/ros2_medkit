@@ -99,6 +99,11 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
                         std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer, Config cfg = Config());
   ~Ros2TopicDataProvider() override;
 
+  Ros2TopicDataProvider(const Ros2TopicDataProvider &) = delete;
+  Ros2TopicDataProvider & operator=(const Ros2TopicDataProvider &) = delete;
+  Ros2TopicDataProvider(Ros2TopicDataProvider &&) = delete;
+  Ros2TopicDataProvider & operator=(Ros2TopicDataProvider &&) = delete;
+
   // ---- TopicDataProvider overrides ----
 
   tl::expected<TopicSampleResult, ErrorInfo> sample(const std::string & topic,
