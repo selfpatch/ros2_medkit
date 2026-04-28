@@ -346,5 +346,22 @@ void HandlerContext::send_json(httplib::Response & res, const json & data) {
   res.set_content(data.dump(2), "application/json");
 }
 
+std::vector<std::string> HandlerContext::resolve_app_host_fqns(const ThreadSafeEntityCache & cache,
+                                                               const std::vector<std::string> & app_ids) {
+  std::vector<std::string> fqns;
+  fqns.reserve(app_ids.size());
+  for (const auto & app_id : app_ids) {
+    auto app = cache.get_app(app_id);
+    if (!app) {
+      continue;
+    }
+    auto fqn = app->effective_fqn();
+    if (!fqn.empty()) {
+      fqns.push_back(std::move(fqn));
+    }
+  }
+  return fqns;
+}
+
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway

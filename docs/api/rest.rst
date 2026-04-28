@@ -752,8 +752,10 @@ and **functions** (aggregated from hosted apps).
    Query log entries aggregated from the component's hosted apps. Resolves child apps via
    the entity cache and queries each by exact FQN. Falls back to namespace prefix match only
    when the component has no hosted apps but declares a non-empty namespace (manifest-only
-   deployments where the component groups topics rather than nodes). The response carries
-   ``x-medkit.aggregation_level=component``, ``app_count``, and ``aggregation_sources``.
+   deployments where the component groups topics rather than nodes). The response always
+   carries ``x-medkit.aggregation_level=component`` and ``aggregated=true``; the
+   ``app_count`` and ``aggregation_sources`` fields are populated only when hosted-app
+   aggregation is active and are omitted under the namespace-prefix fallback.
 
 ``GET /api/v1/apps/{id}/logs``
    Query log entries for the specific app node (exact match).

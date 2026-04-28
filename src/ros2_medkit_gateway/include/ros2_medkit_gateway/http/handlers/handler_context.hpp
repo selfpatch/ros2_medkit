@@ -25,6 +25,8 @@
 #include <string>
 #include <tl/expected.hpp>
 
+#include <vector>
+
 #include "ros2_medkit_gateway/auth/auth_config.hpp"
 #include "ros2_medkit_gateway/auth/auth_manager.hpp"
 #include "ros2_medkit_gateway/config.hpp"
@@ -32,6 +34,7 @@
 #include "ros2_medkit_gateway/http/http_utils.hpp"
 #include "ros2_medkit_gateway/models/entity_capabilities.hpp"
 #include "ros2_medkit_gateway/models/entity_types.hpp"
+#include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -315,6 +318,24 @@ class HandlerContext {
   static rclcpp::Logger logger() {
     return rclcpp::get_logger("rest_server");
   }
+
+  /**
+   * @brief Resolve a list of app IDs to their non-empty effective FQNs.
+   *
+   * Apps that are missing from the cache or that have an empty effective_fqn()
+   * are skipped silently. The returned vector preserves the input app_ids order
+   * (minus skipped entries) and may be empty.
+   *
+   * Used by log_handlers and bulkdata_handlers to aggregate per-component /
+   * per-function resource queries from the entity's hosted apps. Static + public
+   * to enable direct unit testing without standing up a full GatewayNode fixture.
+   *
+   * @param cache Entity cache to look up apps in
+   * @param app_ids App IDs to resolve
+   * @return Effective FQNs for the apps that resolved
+   */
+  static std::vector<std::string> resolve_app_host_fqns(const ThreadSafeEntityCache & cache,
+                                                        const std::vector<std::string> & app_ids);
 
  private:
   GatewayNode * node_;

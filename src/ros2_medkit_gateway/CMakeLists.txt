@@ -514,6 +514,7 @@ if(BUILD_TESTING)
   # Add bulk data handlers tests
   ament_add_gtest(test_bulkdata_handlers test/test_bulkdata_handlers.cpp)
   target_link_libraries(test_bulkdata_handlers gateway_lib)
+  medkit_set_test_domain(test_bulkdata_handlers)
 
   # Add subscription manager tests
   ament_add_gtest(test_subscription_manager test/test_subscription_manager.cpp)

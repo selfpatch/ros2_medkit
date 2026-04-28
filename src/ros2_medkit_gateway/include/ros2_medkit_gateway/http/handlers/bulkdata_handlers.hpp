@@ -17,6 +17,7 @@
 #include <httplib.h>
 
 #include <string>
+#include <vector>
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
@@ -111,20 +112,26 @@ class BulkDataHandlers {
    */
   static std::string get_rosbag_mimetype(const std::string & format);
 
- private:
-  HandlerContext & ctx_;
-
   /**
    * @brief Get source filters for rosbag queries based on entity type.
    *
-   * For apps/components/areas: returns the entity's FQN or namespace path.
-   * For functions: aggregates FQNs from all hosting apps (read-only
-   * aggregated view - upload/delete are blocked at the route level).
+   * - APP / AREA: returns the entity's FQN or namespace path (single filter).
+   * - FUNCTION: aggregates non-empty effective_fqn() values across all hosted apps
+   *   (no fallback - functions are pure aggregated views).
+   * - COMPONENT: aggregates from hosted apps; falls back to FQN/namespace_path only
+   *   when the component has no hosted apps (manifest deployments where the component
+   *   groups topics rather than nodes). This avoids the synthetic-component bug where
+   *   empty fqn + empty namespace_path produced zero source filters.
+   *
+   * Public to enable unit testing the entity-type branching directly.
    *
    * @param entity Entity information
    * @return Vector of source filter strings (empty if no valid filters)
    */
   std::vector<std::string> get_source_filters(const EntityInfo & entity) const;
+
+ private:
+  HandlerContext & ctx_;
 
   /**
    * @brief Stream file contents to HTTP response.

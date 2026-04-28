@@ -250,8 +250,14 @@ class TestLoggingApi(GatewayTestCase):
                 break
         self.assertIsNotNone(comp_id, 'No component hosts temp_sensor')
 
-        data = self.get_json(f'/components/{comp_id}/logs?severity=debug')
-        self.assertIn('items', data)
+        # Poll - /rosout buffer fills asynchronously after node startup, so
+        # the items list may be briefly empty. Without polling this assertion
+        # is timing-dependent in CI.
+        data = self.poll_endpoint_until(
+            f'/components/{comp_id}/logs?severity=debug',
+            condition=lambda d: d if d.get('items') else None,
+            timeout=15.0,
+        )
         # Items must be non-empty - the original bug was a silent empty list
         # for synthetic components, so app_count alone is not sufficient.
         self.assertGreater(len(data['items']), 0,

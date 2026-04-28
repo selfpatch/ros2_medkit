@@ -39,7 +39,6 @@
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::handlers;
-using json = nlohmann::json;
 
 // =============================================================================
 // HandlerContext static method tests (don't require GatewayNode)
@@ -931,6 +930,153 @@ TEST_F(AreaAggregationTest, AreaLogsReturnsAggregatedResult) {
   EXPECT_EQ(sources.size(), 2);
 }
 
+// =============================================================================
+// Component aggregation tests for synthetic / runtime-discovered components.
+//
+// Synthetic components have empty fqn AND empty namespace_path. The COMPONENT
+// branch in handle_get_logs must resolve hosted apps via the entity cache and
+// emit aggregation metadata; otherwise the response was silently empty for
+// every runtime-discovered component (the original bug fixed by this branch).
+// =============================================================================
+
+// Component with hosted apps but empty fqn/namespace_path returns aggregated
+// metadata + items list. With no log buffer entries the items list is empty,
+// but x-medkit must still report aggregation_level=component plus app_count
+// and aggregation_sources covering both hosted apps.
+TEST_F(AreaAggregationTest, ComponentLogsAggregatesFromHostedAppsForSyntheticComponent) {
+  auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
+
+  // Synthetic component: empty fqn AND empty namespace_path - mirrors what
+  // the runtime discovery strategy produces for components grouping nodes by
+  // namespace.
+  Component synthetic;
+  synthetic.id = "runtime_engine";
+  synthetic.name = "Runtime Engine";
+  synthetic.area = "powertrain";
+  synthetic.namespace_path = "";
+  synthetic.fqn = "";
+
+  // Synthetic components store runtime-discovered apps with bound_fqn populated
+  // by the discovery layer (manifest-only path uses ros_binding instead).
+  App app1;
+  app1.id = "temp_sensor";
+  app1.name = "Temperature Sensor";
+  app1.component_id = "runtime_engine";
+  app1.bound_fqn = "/powertrain/engine/temp_sensor";
+
+  App app2;
+  app2.id = "rpm_sensor";
+  app2.name = "RPM Sensor";
+  app2.component_id = "runtime_engine";
+  app2.bound_fqn = "/powertrain/engine/rpm_sensor";
+
+  Area area;
+  area.id = "powertrain";
+  area.name = "Powertrain";
+  area.namespace_path = "/powertrain";
+  cache.update_all({area}, {synthetic}, {app1, app2}, {});
+
+  auto res = client_->Get("/api/v1/components/runtime_engine/logs");
+  ASSERT_NE(res, nullptr) << "HTTP request failed";
+  EXPECT_EQ(res->status, 200);
+
+  auto body = json::parse(res->body);
+  ASSERT_TRUE(body.contains("items"));
+  EXPECT_TRUE(body["items"].is_array());
+
+  ASSERT_TRUE(body.contains("x-medkit"));
+  auto xmedkit = body["x-medkit"];
+  EXPECT_EQ(xmedkit["entity_id"], "runtime_engine");
+  EXPECT_EQ(xmedkit["aggregation_level"], "component");
+  EXPECT_TRUE(xmedkit["aggregated"].get<bool>());
+  EXPECT_EQ(xmedkit["app_count"], 2);
+
+  ASSERT_TRUE(xmedkit.contains("aggregation_sources"));
+  auto sources = xmedkit["aggregation_sources"];
+  ASSERT_EQ(sources.size(), 2);
+  std::set<std::string> source_set;
+  for (const auto & s : sources) {
+    source_set.insert(s.get<std::string>());
+  }
+  EXPECT_TRUE(source_set.count("/powertrain/engine/temp_sensor"));
+  EXPECT_TRUE(source_set.count("/powertrain/engine/rpm_sensor"));
+}
+
+// Manifest component without hosted apps (component groups topics rather than
+// nodes) falls through to the namespace-prefix path. Aggregation metadata
+// reports level=component + aggregated=true but omits app_count and
+// aggregation_sources because hosted-app aggregation was not active.
+TEST_F(AreaAggregationTest, ComponentLogsManifestOnlyFallsThroughToNamespacePrefix) {
+  auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
+
+  // Manifest component with non-empty fqn but no hosted apps.
+  Component manifest_comp;
+  manifest_comp.id = "topic_only_component";
+  manifest_comp.name = "Topic-Only Component";
+  manifest_comp.area = "powertrain";
+  manifest_comp.namespace_path = "/topics/group";
+  manifest_comp.fqn = "/topics/group";
+
+  Area area;
+  area.id = "powertrain";
+  area.name = "Powertrain";
+  area.namespace_path = "/powertrain";
+  cache.update_all({area}, {manifest_comp}, {}, {});
+
+  auto res = client_->Get("/api/v1/components/topic_only_component/logs");
+  ASSERT_NE(res, nullptr) << "HTTP request failed";
+  EXPECT_EQ(res->status, 200);
+
+  auto body = json::parse(res->body);
+  ASSERT_TRUE(body.contains("items"));
+  EXPECT_TRUE(body["items"].is_array());
+
+  ASSERT_TRUE(body.contains("x-medkit"));
+  auto xmedkit = body["x-medkit"];
+  EXPECT_EQ(xmedkit["aggregation_level"], "component");
+  EXPECT_TRUE(xmedkit["aggregated"].get<bool>());
+  // Hosted-app aggregation was not active, so these conditional fields must
+  // be omitted (per docs/api/rest.rst contract).
+  EXPECT_FALSE(xmedkit.contains("app_count"));
+  EXPECT_FALSE(xmedkit.contains("aggregation_sources"));
+}
+
+// Component without hosted apps AND without fqn / namespace_path returns an
+// empty items list - there is no source to query. Metadata still reports
+// aggregation_level=component (the handler classified it as a component
+// request) but no source metadata is emitted.
+TEST_F(AreaAggregationTest, ComponentLogsEmptyComponentReturnsEmptyItemsAndNoSources) {
+  auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
+
+  Component empty_comp;
+  empty_comp.id = "empty_runtime_comp";
+  empty_comp.name = "Empty Runtime Component";
+  empty_comp.area = "powertrain";
+  empty_comp.namespace_path = "";
+  empty_comp.fqn = "";
+
+  Area area;
+  area.id = "powertrain";
+  area.name = "Powertrain";
+  area.namespace_path = "/powertrain";
+  cache.update_all({area}, {empty_comp}, {}, {});
+
+  auto res = client_->Get("/api/v1/components/empty_runtime_comp/logs");
+  ASSERT_NE(res, nullptr) << "HTTP request failed";
+  EXPECT_EQ(res->status, 200);
+
+  auto body = json::parse(res->body);
+  ASSERT_TRUE(body.contains("items"));
+  EXPECT_TRUE(body["items"].is_array());
+  EXPECT_EQ(body["items"].size(), 0u);
+
+  ASSERT_TRUE(body.contains("x-medkit"));
+  auto xmedkit = body["x-medkit"];
+  EXPECT_EQ(xmedkit["aggregation_level"], "component");
+  EXPECT_FALSE(xmedkit.contains("app_count"));
+  EXPECT_FALSE(xmedkit.contains("aggregation_sources"));
+}
+
 // Area with no components falls through to namespace prefix matching for logs.
 // With no matching logs, returns empty items.
 TEST_F(AreaAggregationTest, AreaLogsWithNoComponentsFallsThrough) {
@@ -968,6 +1114,101 @@ TEST_F(AreaAggregationTest, AreaLogsWithNoComponentsFallsThrough) {
   auto body = json::parse(res->body);
   EXPECT_TRUE(body.contains("items"));
   EXPECT_TRUE(body["items"].is_array());
+}
+
+// =============================================================================
+// resolve_app_host_fqns tests (no GatewayNode required)
+//
+// Used by log_handlers and bulkdata_handlers to aggregate per-component /
+// per-function resource queries from the entity's hosted apps. These tests
+// pin the silent-skip semantics (missing apps, empty effective_fqn) that
+// downstream callers rely on for the "synthetic component" fallback.
+// =============================================================================
+
+namespace {
+
+App make_app_with_binding(const std::string & id, const std::string & node_name, const std::string & ns) {
+  App a;
+  a.id = id;
+  a.name = id;
+  App::RosBinding rb;
+  rb.node_name = node_name;
+  rb.namespace_pattern = ns;
+  a.ros_binding = rb;
+  return a;
+}
+
+}  // namespace
+
+TEST(ResolveAppHostFqnsTest, EmptyAppListReturnsEmpty) {
+  ThreadSafeEntityCache cache;
+  auto fqns = HandlerContext::resolve_app_host_fqns(cache, {});
+  EXPECT_TRUE(fqns.empty());
+}
+
+TEST(ResolveAppHostFqnsTest, ResolvesSingleAppByEffectiveFqn) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_app_with_binding("temp_sensor", "temp_sensor", "/powertrain/engine")});
+
+  auto fqns = HandlerContext::resolve_app_host_fqns(cache, {"temp_sensor"});
+  ASSERT_EQ(fqns.size(), 1u);
+  EXPECT_EQ(fqns[0], "/powertrain/engine/temp_sensor");
+}
+
+TEST(ResolveAppHostFqnsTest, ResolvesMultipleAppsPreservesInputOrder) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({
+      make_app_with_binding("temp_sensor", "temp_sensor", "/powertrain/engine"),
+      make_app_with_binding("rpm_sensor", "rpm_sensor", "/powertrain/engine"),
+      make_app_with_binding("lidar", "lidar_sensor", "/perception/lidar"),
+  });
+
+  auto fqns = HandlerContext::resolve_app_host_fqns(cache, {"temp_sensor", "lidar", "rpm_sensor"});
+  ASSERT_EQ(fqns.size(), 3u);
+  EXPECT_EQ(fqns[0], "/powertrain/engine/temp_sensor");
+  EXPECT_EQ(fqns[1], "/perception/lidar/lidar_sensor");
+  EXPECT_EQ(fqns[2], "/powertrain/engine/rpm_sensor");
+}
+
+TEST(ResolveAppHostFqnsTest, SkipsAppIdsMissingFromCache) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_app_with_binding("temp_sensor", "temp_sensor", "/powertrain/engine")});
+
+  auto fqns = HandlerContext::resolve_app_host_fqns(cache, {"missing_app", "temp_sensor", "also_missing"});
+  ASSERT_EQ(fqns.size(), 1u);
+  EXPECT_EQ(fqns[0], "/powertrain/engine/temp_sensor");
+}
+
+TEST(ResolveAppHostFqnsTest, SkipsAppsWithEmptyEffectiveFqn) {
+  // App without ros_binding and without bound_fqn yields empty effective_fqn().
+  ThreadSafeEntityCache cache;
+  App empty_fqn_app;
+  empty_fqn_app.id = "no_binding";
+  empty_fqn_app.name = "no_binding";
+  cache.update_apps({empty_fqn_app, make_app_with_binding("temp_sensor", "temp_sensor", "/powertrain/engine")});
+
+  auto fqns = HandlerContext::resolve_app_host_fqns(cache, {"no_binding", "temp_sensor"});
+  ASSERT_EQ(fqns.size(), 1u);
+  EXPECT_EQ(fqns[0], "/powertrain/engine/temp_sensor");
+}
+
+TEST(ResolveAppHostFqnsTest, AllAppsMissingReturnsEmpty) {
+  ThreadSafeEntityCache cache;
+  // Cache is empty - none of these IDs exist
+  auto fqns = HandlerContext::resolve_app_host_fqns(cache, {"a", "b", "c"});
+  EXPECT_TRUE(fqns.empty());
+}
+
+TEST(ResolveAppHostFqnsTest, PrefersBoundFqnOverRosBinding) {
+  // bound_fqn (set by runtime linking) wins over ros_binding-derived FQN.
+  ThreadSafeEntityCache cache;
+  App linked = make_app_with_binding("temp_sensor", "temp_sensor", "/powertrain/engine");
+  linked.bound_fqn = "/runtime/discovered/path";
+  cache.update_apps({linked});
+
+  auto fqns = HandlerContext::resolve_app_host_fqns(cache, {"temp_sensor"});
+  ASSERT_EQ(fqns.size(), 1u);
+  EXPECT_EQ(fqns[0], "/runtime/discovered/path");
 }
 
 int main(int argc, char ** argv) {
