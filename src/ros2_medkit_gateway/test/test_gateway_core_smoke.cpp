@@ -24,9 +24,12 @@
 #include "ros2_medkit_gateway/core/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
+#include "ros2_medkit_gateway/core/providers/host_info_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/log_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
+#include "ros2_medkit_gateway/core/providers/script_provider.hpp"
+#include "ros2_medkit_gateway/core/providers/update_provider.hpp"
 
 #include <gtest/gtest.h>
 
@@ -44,9 +47,12 @@ using ros2_medkit_gateway::Component;
 using ros2_medkit_gateway::DataProvider;
 using ros2_medkit_gateway::FaultProvider;
 using ros2_medkit_gateway::Function;
+using ros2_medkit_gateway::HostInfoProvider;
 using ros2_medkit_gateway::IntrospectionProvider;
 using ros2_medkit_gateway::LogProvider;
 using ros2_medkit_gateway::OperationProvider;
+using ros2_medkit_gateway::ScriptProvider;
+using ros2_medkit_gateway::UpdateProvider;
 
 static_assert(sizeof(Area) > 0);
 static_assert(sizeof(Component) > 0);
@@ -57,13 +63,16 @@ static_assert(std::is_abstract_v<OperationProvider>);
 static_assert(std::is_abstract_v<FaultProvider>);
 static_assert(std::is_abstract_v<LogProvider>);
 static_assert(std::is_abstract_v<IntrospectionProvider>);
+static_assert(std::is_abstract_v<ScriptProvider>);
+static_assert(std::is_abstract_v<UpdateProvider>);
+static_assert(sizeof(HostInfoProvider) > 0);
 
 }  // namespace
 
 TEST(GatewayCoreSmoke, HeadersCompileAndLinkWithoutRos) {
   // The mere fact that this translation unit compiles and links against
-  // gateway_core alone — with no ament_target_dependencies and no rclcpp
-  // on the link line — proves the neutral layer carries no ROS coupling.
+  // gateway_core alone - with no ament_target_dependencies and no rclcpp
+  // on the link line - proves the neutral layer carries no ROS coupling.
   // The static_asserts above pin the entity model and provider interface
   // contracts so the includes are exercised at compile time.
   SUCCEED();

@@ -14,15 +14,15 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
-#include "ros2_medkit_gateway/core/discovery/models/area.hpp"
-#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
-#include "ros2_medkit_gateway/core/discovery/models/function.hpp"
-
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/area.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/function.hpp"
 
 namespace ros2_medkit_gateway {
 

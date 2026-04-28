@@ -14,11 +14,11 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/core/log_types.hpp"
-
 #include <optional>
 #include <string>
 #include <vector>
+
+#include "ros2_medkit_gateway/core/log_types.hpp"
 
 namespace ros2_medkit_gateway {
 

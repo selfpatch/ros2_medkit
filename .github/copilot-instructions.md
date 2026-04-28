@@ -27,8 +27,8 @@ Multi-package colcon workspace under `src/`:
 
 The package is organised in two named layers under `src/ros2_medkit_gateway/`:
 
-- **`include/.../core/`** + **`src/core/`** — middleware-neutral business logic. Compiles into the `gateway_core` STATIC library with no ROS dependencies. Hosts the HTTP routing, request handlers, JWT auth, fault model, peer aggregation, manifest parser, entity cache, and the neutral managers (lock, bulk-data, subscription, script, update, plugin).
-- The remainder of `src/` — ROS adapter layer. Compiles into `gateway_ros2` (links `gateway_core` publicly). Hosts `gateway_node` (rclcpp::Node), the ROS-coupled managers (data access, operation, configuration, fault facade, log, trigger), `runtime_discovery`, `native_topic_sampler`, and ROS-specific provider implementations.
+- **`include/.../core/`** + **`src/core/`** - middleware-neutral business logic. Compiles into the `gateway_core` STATIC library with no ROS dependencies. Hosts the HTTP routing, request handlers, JWT auth, fault model, peer aggregation, manifest parser, entity cache, and the neutral managers (lock, bulk-data, subscription, script, update, plugin).
+- The remainder of `src/` - ROS adapter layer. Compiles into `gateway_ros2` (links `gateway_core` publicly). Hosts `gateway_node` (rclcpp::Node), the ROS-coupled managers (data access, operation, configuration, fault facade, log, trigger), `runtime_discovery`, `native_topic_sampler`, and ROS-specific provider implementations.
 
 ```
 GatewayNode (src/main.cpp + src/gateway_node.cpp)             [gateway_ros2]

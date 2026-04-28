@@ -1431,6 +1431,18 @@ curl --cacert ./certs/ca.crt https://localhost:8443/api/v1
 
 ## Architecture
 
+### Build Layers
+
+The package compiles into two layered static libraries with a strict dependency direction:
+
+- **`gateway_core`** - middleware-neutral business logic. Sources live under `src/core/` and headers under `include/ros2_medkit_gateway/core/`. Links only header-only and C-level externals (cpp-httplib, nlohmann/json, yaml-cpp, tl::expected, jwt-cpp, OpenSSL, SQLite, dl). Carries no rclcpp / rcl_interfaces / message-package dependency. Hosts the neutral HTTP request handlers, JWT authentication, fault model (debounce, storage, cache, correlation), peer aggregation, manifest parsing, the entity cache, the neutral managers (lock, bulk-data, subscription, script, update, plugin), and every provider interface contract.
+- **`gateway_ros2`** - ROS adapter layer. Compiles the remaining sources under `src/` and links `gateway_core` publicly via `medkit_target_dependencies`. Hosts `GatewayNode` (the `rclcpp::Node` entry point), the ROS-coupled managers (data access, operation, configuration, fault facade, log, trigger), runtime discovery, the native topic sampler, and the ROS-specific provider default implementations.
+
+The `gateway_node` executable and existing test targets link `gateway_ros2`, so they transitively get both layers from a single dependency. The neutral contract is enforced by two CTest checks:
+
+- `gateway_core_purity` (linter label) - greps `core/` for any ROS-package include and fails on any match.
+- `test_gateway_core_smoke` (unit label) - compiles a translation unit that includes a sampling of `core/` headers and links exclusively against `gateway_core` + GTest with no `ament_target_dependencies`. Build failure indicates a transitive ROS coupling that the grep guard might miss.
+
 ### Components
 
 - **Gateway Node**: Main ROS 2 node that runs the REST server

@@ -14,11 +14,16 @@
 
 #pragma once
 
-// Backwards-compatibility alias for the namespace transition. The neutral
-// core layer is migrating to namespace `medkit::`; existing call sites that
-// reference `ros2_medkit_gateway::` continue to compile via this alias.
-// Remove together with the final cleanup pass once all call sites have
-// migrated to the new namespace.
-
-namespace medkit {}
-namespace ros2_medkit_gateway = medkit;
+// This header is reserved for the namespace migration to medkit::.
+//
+// A namespace alias of the form
+//   namespace medkit {}
+//   namespace ros2_medkit_gateway = medkit;
+// would be ill-formed in any translation unit that subsequently opens
+// `namespace ros2_medkit_gateway { ... }` (which every gateway header
+// currently does). The migration to namespace medkit:: must therefore
+// happen file-by-file in a dedicated follow-up; this header will then
+// be repurposed to host the alias once all production code has been
+// converted.
+//
+// Until then, including this header is a no-op.
