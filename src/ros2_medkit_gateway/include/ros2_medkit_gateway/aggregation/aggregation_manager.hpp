@@ -25,8 +25,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "ros2_medkit_gateway/aggregation/classification.hpp"
-#include "ros2_medkit_gateway/aggregation/peer_client.hpp"
+#include "ros2_medkit_gateway/core/aggregation/classification.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_client.hpp"
 
 namespace ros2_medkit_gateway {
 

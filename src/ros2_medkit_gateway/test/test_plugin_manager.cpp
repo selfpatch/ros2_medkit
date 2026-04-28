@@ -19,9 +19,9 @@
 #include <chrono>
 #include <thread>
 
-#include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
 
 using namespace ros2_medkit_gateway;
 // json alias is already imported by the `using namespace` above (defined in

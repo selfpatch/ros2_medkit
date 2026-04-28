@@ -20,7 +20,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "ros2_medkit_gateway/aggregation/entity_merger.hpp"
+#include "ros2_medkit_gateway/core/aggregation/entity_merger.hpp"
 
 using namespace ros2_medkit_gateway;
 

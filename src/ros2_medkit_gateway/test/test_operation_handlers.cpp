@@ -36,9 +36,9 @@
 #include <thread>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/operation_handlers.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/handlers/operation_handlers.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::ActionGoalInfo;

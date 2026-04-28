@@ -15,8 +15,8 @@
 /// Test plugin that exports a wrong API version (PLUGIN_API_VERSION + 1).
 /// Used by test_plugin_loader to verify version mismatch rejection.
 
-#include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_types.hpp"
+#include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
 
 extern "C" GATEWAY_PLUGIN_EXPORT int plugin_api_version() {
   return ros2_medkit_gateway::PLUGIN_API_VERSION + 1;

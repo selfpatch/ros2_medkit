@@ -18,10 +18,10 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
-#include "ros2_medkit_gateway/models/entity_types.hpp"
 
 using json = nlohmann::json;
 

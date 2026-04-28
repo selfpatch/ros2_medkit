@@ -21,9 +21,9 @@
 #include <string>
 #include <thread>
 
-#include "ros2_medkit_gateway/config.hpp"
+#include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/docs_handlers.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/handlers/docs_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 #include "../src/openapi/route_registry.hpp"

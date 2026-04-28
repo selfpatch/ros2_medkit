@@ -19,10 +19,10 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
+#include "ros2_medkit_gateway/core/resource_sampler.hpp"
+#include "ros2_medkit_gateway/core/subscription_transport.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
-#include "ros2_medkit_gateway/resource_sampler.hpp"
-#include "ros2_medkit_gateway/subscription_manager.hpp"
-#include "ros2_medkit_gateway/subscription_transport.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {

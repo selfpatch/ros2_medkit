@@ -16,7 +16,7 @@
 
 #include <string>
 
-#include "ros2_medkit_gateway/aggregation/network_utils.hpp"
+#include "ros2_medkit_gateway/core/aggregation/network_utils.hpp"
 
 using namespace ros2_medkit_gateway;
 

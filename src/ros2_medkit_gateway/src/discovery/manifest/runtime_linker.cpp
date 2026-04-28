@@ -14,7 +14,7 @@
 
 #include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
 
-#include "ros2_medkit_gateway/discovery/merge_types.hpp"
+#include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 
 #include <algorithm>
 

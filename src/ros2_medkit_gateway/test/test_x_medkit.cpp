@@ -14,7 +14,7 @@
 
 #include <gtest/gtest.h>
 
-#include "ros2_medkit_gateway/http/x_medkit.hpp"
+#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
 
 using ros2_medkit_gateway::XMedkit;
 using json = nlohmann::json;

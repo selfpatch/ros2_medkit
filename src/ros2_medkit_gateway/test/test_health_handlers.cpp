@@ -25,8 +25,8 @@
 #include <unistd.h>
 
 #include "../src/openapi/route_registry.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/health_handlers.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/handlers/health_handlers.hpp"
 
 using namespace std::chrono_literals;
 

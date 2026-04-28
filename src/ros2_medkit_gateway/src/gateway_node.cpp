@@ -25,13 +25,13 @@
 #include <unordered_set>
 #include <vector>
 
-#include "ros2_medkit_gateway/aggregation/network_utils.hpp"
-#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
-#include "ros2_medkit_gateway/entity_validation.hpp"
+#include "ros2_medkit_gateway/core/aggregation/network_utils.hpp"
+#include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
+#include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
 
-#include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
-#include "ros2_medkit_gateway/sqlite_trigger_store.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
+#include "ros2_medkit_gateway/core/sqlite_trigger_store.hpp"
 
 using namespace std::chrono_literals;
 

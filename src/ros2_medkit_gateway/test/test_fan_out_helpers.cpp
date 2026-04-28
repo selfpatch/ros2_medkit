@@ -23,7 +23,7 @@
 #include <utility>
 #include <vector>
 
-#include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
+#include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 
 using namespace ros2_medkit_gateway;  // NOLINT(google-build-using-namespace)
 using nlohmann::json;

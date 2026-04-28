@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_loader.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
-#include "ros2_medkit_gateway/updates/update_provider.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_loader.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
+#include "ros2_medkit_gateway/core/providers/update_provider.hpp"
 
 #include <gtest/gtest.h>
 

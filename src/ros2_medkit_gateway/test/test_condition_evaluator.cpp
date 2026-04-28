@@ -18,7 +18,7 @@
 #include <memory>
 #include <optional>
 
-#include "ros2_medkit_gateway/condition_evaluator.hpp"
+#include "ros2_medkit_gateway/core/condition_evaluator.hpp"
 
 using namespace ros2_medkit_gateway;
 using json = nlohmann::json;

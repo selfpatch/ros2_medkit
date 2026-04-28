@@ -14,8 +14,8 @@
 
 #include <gtest/gtest.h>
 
-#include "ros2_medkit_gateway/auth/auth.hpp"
-#include "ros2_medkit_gateway/config.hpp"
+#include "ros2_medkit_gateway/core/auth/auth.hpp"
+#include "ros2_medkit_gateway/core/config.hpp"
 
 using namespace ros2_medkit_gateway;
 

@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
+#include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 
 using ros2_medkit_gateway::ComponentTopics;
 using ros2_medkit_gateway::ErrorInfo;

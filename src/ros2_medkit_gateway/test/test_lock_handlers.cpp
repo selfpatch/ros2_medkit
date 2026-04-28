@@ -28,11 +28,11 @@
 #include <regex>
 #include <string>
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/lock_handlers.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/handlers/lock_handlers.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
-#include "ros2_medkit_gateway/lock_manager.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::AuthConfig;

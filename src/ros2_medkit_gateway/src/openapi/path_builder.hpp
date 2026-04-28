@@ -18,8 +18,8 @@
 #include <string>
 #include <vector>
 
-#include "ros2_medkit_gateway/discovery/models/common.hpp"
-#include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/common.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 
 namespace ros2_medkit_gateway {
 namespace openapi {

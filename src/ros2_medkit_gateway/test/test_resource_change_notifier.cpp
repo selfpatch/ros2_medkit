@@ -26,7 +26,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ros2_medkit_gateway/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 
 using namespace ros2_medkit_gateway;
 

@@ -24,7 +24,7 @@
 #include "route_registry.hpp"
 #include "schema_builder.hpp"
 
-#include "ros2_medkit_gateway/models/entity_types.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
 
 namespace ros2_medkit_gateway {
 

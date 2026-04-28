@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-#include "ros2_medkit_gateway/aggregation/stream_proxy.hpp"
+#include "ros2_medkit_gateway/core/aggregation/stream_proxy.hpp"
 
 using namespace ros2_medkit_gateway;
 

@@ -22,9 +22,9 @@
 #include <regex>
 #include <string>
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/script_handlers.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/handlers/script_handlers.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::AuthConfig;

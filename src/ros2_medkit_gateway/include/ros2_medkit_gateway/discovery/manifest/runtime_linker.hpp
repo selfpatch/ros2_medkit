@@ -14,8 +14,8 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/discovery/manifest/manifest.hpp"
-#include "ros2_medkit_gateway/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/manifest/manifest.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 

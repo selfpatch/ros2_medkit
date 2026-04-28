@@ -14,7 +14,7 @@
 
 #include <gtest/gtest.h>
 
-#include "ros2_medkit_gateway/http/handlers/capability_builder.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/capability_builder.hpp"
 
 using namespace ros2_medkit_gateway::handlers;
 using Cap = CapabilityBuilder::Capability;

@@ -27,14 +27,14 @@
 
 #include <vector>
 
-#include "ros2_medkit_gateway/auth/auth_config.hpp"
-#include "ros2_medkit_gateway/auth/auth_manager.hpp"
-#include "ros2_medkit_gateway/config.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
-#include "ros2_medkit_gateway/models/entity_capabilities.hpp"
-#include "ros2_medkit_gateway/models/entity_types.hpp"
-#include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_config.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_manager.hpp"
+#include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/models/entity_capabilities.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 
 namespace ros2_medkit_gateway {
 

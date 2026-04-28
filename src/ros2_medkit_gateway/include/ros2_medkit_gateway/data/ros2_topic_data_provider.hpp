@@ -28,7 +28,7 @@
 
 #include <rclcpp/serialized_message.hpp>
 
-#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
+#include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_slot.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"

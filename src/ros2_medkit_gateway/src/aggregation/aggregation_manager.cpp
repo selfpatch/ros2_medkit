@@ -26,8 +26,8 @@
 
 #include <rclcpp/logging.hpp>
 
-#include "ros2_medkit_gateway/aggregation/entity_merger.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/aggregation/entity_merger.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
 
 namespace ros2_medkit_gateway {
 

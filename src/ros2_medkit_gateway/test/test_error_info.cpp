@@ -16,8 +16,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/models/error_info.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/models/error_info.hpp"
 
 using ros2_medkit_gateway::ErrorInfo;
 

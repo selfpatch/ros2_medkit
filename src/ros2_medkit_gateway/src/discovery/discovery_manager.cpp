@@ -14,10 +14,10 @@
 
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 
+#include "ros2_medkit_gateway/core/discovery/layers/manifest_layer.hpp"
+#include "ros2_medkit_gateway/core/discovery/layers/runtime_layer.hpp"
 #include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
-#include "ros2_medkit_gateway/discovery/layers/manifest_layer.hpp"
 #include "ros2_medkit_gateway/discovery/layers/plugin_layer.hpp"
-#include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
 #include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
 

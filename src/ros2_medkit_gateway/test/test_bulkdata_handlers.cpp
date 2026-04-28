@@ -18,14 +18,14 @@
 #include <set>
 #include <string>
 
-#include "ros2_medkit_gateway/bulk_data_store.hpp"
-#include "ros2_medkit_gateway/discovery/models/app.hpp"
-#include "ros2_medkit_gateway/discovery/models/component.hpp"
-#include "ros2_medkit_gateway/discovery/models/function.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/handlers/bulkdata_handlers.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
-#include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/bulkdata_handlers.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 
 using namespace ros2_medkit_gateway;
 using ros2_medkit_gateway::handlers::BulkDataHandlers;

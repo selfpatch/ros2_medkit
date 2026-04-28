@@ -27,15 +27,15 @@
 #include <unordered_map>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
-#include "ros2_medkit_gateway/config.hpp"
-#include "ros2_medkit_gateway/discovery/models/app.hpp"
-#include "ros2_medkit_gateway/discovery/models/area.hpp"
-#include "ros2_medkit_gateway/discovery/models/component.hpp"
-#include "ros2_medkit_gateway/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/area.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
-#include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::handlers;

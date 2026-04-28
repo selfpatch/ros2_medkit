@@ -19,8 +19,8 @@
 #include <unordered_set>
 #include <vector>
 
-#include "ros2_medkit_gateway/aggregation/classification.hpp"
-#include "ros2_medkit_gateway/discovery/models/component.hpp"
+#include "ros2_medkit_gateway/core/aggregation/classification.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 
 using namespace ros2_medkit_gateway;
 

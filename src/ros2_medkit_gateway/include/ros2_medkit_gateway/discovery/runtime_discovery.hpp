@@ -14,14 +14,14 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
-#include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
-#include "ros2_medkit_gateway/discovery/models/app.hpp"
-#include "ros2_medkit_gateway/discovery/models/area.hpp"
-#include "ros2_medkit_gateway/discovery/models/common.hpp"
-#include "ros2_medkit_gateway/discovery/models/component.hpp"
-#include "ros2_medkit_gateway/discovery/models/function.hpp"
-#include "ros2_medkit_gateway/type_introspection.hpp"
+#include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
+#include "ros2_medkit_gateway/core/discovery/discovery_strategy.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/area.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/common.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/type_introspection.hpp"
 
 #include <map>
 #include <optional>

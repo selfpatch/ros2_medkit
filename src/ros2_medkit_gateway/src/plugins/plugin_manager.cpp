@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 
 #include <dlfcn.h>
 #include <httplib.h>
 
 #include <rclcpp/rclcpp.hpp>
 
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_http_types.hpp"
 
 namespace ros2_medkit_gateway {
 

@@ -18,8 +18,8 @@
 #include <string>
 #include <vector>
 
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/handlers/trigger_handlers.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/trigger_handlers.hpp"
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::handlers;

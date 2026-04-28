@@ -14,8 +14,8 @@
 
 #include <gtest/gtest.h>
 
-#include "ros2_medkit_gateway/script_manager.hpp"
-#include "ros2_medkit_gateway/scripts/script_provider.hpp"
+#include "ros2_medkit_gateway/core/managers/script_manager.hpp"
+#include "ros2_medkit_gateway/core/providers/script_provider.hpp"
 
 using namespace ros2_medkit_gateway;
 

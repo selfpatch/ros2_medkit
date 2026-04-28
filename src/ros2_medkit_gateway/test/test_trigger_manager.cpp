@@ -20,10 +20,10 @@
 #include <thread>
 #include <vector>
 
-#include "ros2_medkit_gateway/condition_evaluator.hpp"
-#include "ros2_medkit_gateway/resource_change_notifier.hpp"
-#include "ros2_medkit_gateway/sqlite_trigger_store.hpp"
-#include "ros2_medkit_gateway/trigger_manager.hpp"
+#include "ros2_medkit_gateway/core/condition_evaluator.hpp"
+#include "ros2_medkit_gateway/core/managers/trigger_manager.hpp"
+#include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/core/sqlite_trigger_store.hpp"
 
 using namespace ros2_medkit_gateway;
 using json = nlohmann::json;

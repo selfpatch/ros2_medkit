@@ -24,14 +24,14 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/http/entity_path_utils.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/entity_path_utils.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/fan_out_helpers.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
-#include "ros2_medkit_gateway/http/x_medkit.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
-#include "ros2_medkit_gateway/providers/fault_provider.hpp"
 
 using json = nlohmann::json;
 

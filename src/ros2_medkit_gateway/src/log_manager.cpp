@@ -19,8 +19,8 @@
 #include <iomanip>
 #include <sstream>
 
-#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
-#include "ros2_medkit_gateway/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 
 namespace ros2_medkit_gateway {
 

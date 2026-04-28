@@ -18,7 +18,7 @@
 #include <string>
 #include <thread>
 
-#include "ros2_medkit_gateway/aggregation/mdns_discovery.hpp"
+#include "ros2_medkit_gateway/core/aggregation/mdns_discovery.hpp"
 
 using namespace ros2_medkit_gateway;
 

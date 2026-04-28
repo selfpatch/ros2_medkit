@@ -19,7 +19,7 @@
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
-#include "ros2_medkit_gateway/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 
 namespace ros2_medkit_gateway {

@@ -21,11 +21,11 @@
 #include <std_msgs/msg/string.hpp>
 #include <thread>
 
+#include "ros2_medkit_gateway/core/exceptions.hpp"
+#include "ros2_medkit_gateway/core/type_introspection.hpp"
 #include "ros2_medkit_gateway/data/ros2_topic_data_provider.hpp"
 #include "ros2_medkit_gateway/data_access_manager.hpp"
-#include "ros2_medkit_gateway/exceptions.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
-#include "ros2_medkit_gateway/type_introspection.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 
 using namespace ros2_medkit_gateway;

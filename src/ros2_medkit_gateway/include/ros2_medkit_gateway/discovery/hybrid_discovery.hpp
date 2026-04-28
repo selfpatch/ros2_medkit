@@ -14,8 +14,8 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/discovery/discovery_layer.hpp"
-#include "ros2_medkit_gateway/discovery/discovery_strategy.hpp"
+#include "ros2_medkit_gateway/core/discovery/discovery_layer.hpp"
+#include "ros2_medkit_gateway/core/discovery/discovery_strategy.hpp"
 #include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
 
 #include <rclcpp/rclcpp.hpp>

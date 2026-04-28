@@ -20,7 +20,7 @@
 #include <set>
 #include <sstream>
 
-#include "ros2_medkit_gateway/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/message_cleanup.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"

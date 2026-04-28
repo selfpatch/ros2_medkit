@@ -19,7 +19,7 @@
 #include <filesystem>
 #include <string>
 
-#include "ros2_medkit_gateway/sqlite_trigger_store.hpp"
+#include "ros2_medkit_gateway/core/sqlite_trigger_store.hpp"
 
 using namespace ros2_medkit_gateway;
 using json = nlohmann::json;

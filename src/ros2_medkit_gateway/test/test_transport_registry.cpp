@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-#include "ros2_medkit_gateway/subscription_transport.hpp"
+#include "ros2_medkit_gateway/core/subscription_transport.hpp"
 
 using namespace ros2_medkit_gateway;
 

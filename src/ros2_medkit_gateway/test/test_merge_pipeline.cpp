@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/discovery/discovery_layer.hpp"
-#include "ros2_medkit_gateway/discovery/layers/manifest_layer.hpp"
+#include "ros2_medkit_gateway/core/discovery/discovery_layer.hpp"
+#include "ros2_medkit_gateway/core/discovery/layers/manifest_layer.hpp"
+#include "ros2_medkit_gateway/core/discovery/layers/runtime_layer.hpp"
+#include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/discovery/layers/plugin_layer.hpp"
-#include "ros2_medkit_gateway/discovery/layers/runtime_layer.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
 #include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
-#include "ros2_medkit_gateway/discovery/merge_types.hpp"
 
 #include <gtest/gtest.h>
 

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
 
 #include <chrono>
 #include <cstring>
@@ -21,9 +21,9 @@
 
 #include <rclcpp/rclcpp.hpp>
 
-#include "ros2_medkit_gateway/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
 
 using json = nlohmann::json;
 

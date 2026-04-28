@@ -16,7 +16,7 @@
 /// Used by test_plugin_loader to verify missing factory symbol detection
 /// (separate from missing version symbol).
 
-#include "ros2_medkit_gateway/plugins/plugin_types.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
 
 extern "C" GATEWAY_PLUGIN_EXPORT int plugin_api_version() {
   return ros2_medkit_gateway::PLUGIN_API_VERSION;

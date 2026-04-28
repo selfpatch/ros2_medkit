@@ -24,7 +24,7 @@
 #include <fstream>
 #include <string>
 
-#include "ros2_medkit_gateway/discovery/manifest/manifest_parser.hpp"
+#include "ros2_medkit_gateway/core/discovery/manifest/manifest_parser.hpp"
 
 using ros2_medkit_gateway::discovery::ManifestConfig;
 using ros2_medkit_gateway::discovery::ManifestParser;
