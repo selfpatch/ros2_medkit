@@ -39,6 +39,9 @@
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::handlers;
+// json alias already imported via the `using namespace` above (defined in
+// core/auth/auth_models.hpp). A local `using json = nlohmann::json;` would
+// shadow it and trip clang-diagnostic-shadow under clang-tidy.
 
 // =============================================================================
 // HandlerContext static method tests (don't require GatewayNode)
