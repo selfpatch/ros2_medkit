@@ -14,13 +14,13 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/core/plugins/plugin_http_types.hpp"
-#include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
-
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
+
+#include "ros2_medkit_gateway/core/plugins/plugin_http_types.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
 
 namespace ros2_medkit_gateway {
 

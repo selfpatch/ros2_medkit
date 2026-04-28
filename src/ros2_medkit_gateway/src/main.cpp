@@ -62,8 +62,10 @@ ros2_medkit_gateway::Ros2TopicDataProvider::Config declare_data_provider_config(
 }  // namespace
 
 int main(int argc, char ** argv) {
+  bool ros_inited = false;
   try {
     rclcpp::init(argc, argv);
+    ros_inited = true;
 
     auto node = std::make_shared<ros2_medkit_gateway::GatewayNode>();
 
@@ -121,9 +123,15 @@ int main(int argc, char ** argv) {
     rclcpp::shutdown();
   } catch (const std::exception & ex) {
     fprintf(stderr, "[ros2_medkit_gateway] Fatal exception in main: %s\n", ex.what());
+    if (ros_inited && rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
     return 1;
   } catch (...) {
     fprintf(stderr, "[ros2_medkit_gateway] Fatal unknown exception in main\n");
+    if (ros_inited && rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
     return 1;
   }
   return 0;

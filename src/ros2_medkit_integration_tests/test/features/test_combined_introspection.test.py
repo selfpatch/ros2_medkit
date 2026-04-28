@@ -78,7 +78,7 @@ class TestCombinedIntrospection(GatewayTestCase):
 
         A freshly forked process can show RssAnon=0 in /proc/<pid>/status
         before any memory is touched, so a 200 response alone is not
-        sufficient — wait until rss_bytes > 0 to avoid a timing race
+        sufficient - wait until rss_bytes > 0 to avoid a timing race
         between process spawn and the first procfs sample.
         """
         start = time.monotonic()
@@ -88,7 +88,7 @@ class TestCombinedIntrospection(GatewayTestCase):
             try:
                 r = requests.get(
                     f'{self.BASE_URL}/apps/{app_id}/x-medkit-procfs',
-                    timeout=5,
+                    timeout=2,
                 )
                 last_status = r.status_code
                 if r.status_code == 200:
