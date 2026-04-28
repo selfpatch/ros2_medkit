@@ -16,8 +16,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -233,6 +235,65 @@ TEST_F(Ros2SubscriptionExecutorTest, RemoveGraphChangeStopsFiring) {
   executor_->remove_node(other_node);
 
   EXPECT_EQ(fired.load(), 0);
+}
+
+TEST_F(Ros2SubscriptionExecutorTest, RemoveGraphChangeWaitsForInFlightCallback) {
+  // Regression: snapshotted graph callbacks running on the worker thread
+  // could touch members of a freed consumer (heap-use-after-free seen by
+  // ASan in DataAccessManagerWithPublisherTest). remove_graph_change()
+  // now drains in-flight execution synchronously so the consumer's
+  // destructor can safely tear down state captured by the lambda.
+  std::mutex m;
+  std::condition_variable in_cb;
+  std::condition_variable cb_release;
+  std::atomic<bool> entered{false};
+  std::atomic<bool> exited{false};
+  bool release = false;
+
+  auto token = sub_exec_->on_graph_change([&] {
+    entered.store(true);
+    in_cb.notify_all();
+    std::unique_lock<std::mutex> lk(m);
+    cb_release.wait(lk, [&] {
+      return release;
+    });
+    exited.store(true);
+  });
+  ASSERT_LT(token, 16u);
+
+  auto other_node = std::make_shared<rclcpp::Node>("other_node_for_in_flight");
+  auto pub = other_node->create_publisher<std_msgs::msg::String>("/in_flight_topic", 10);
+  executor_->add_node(other_node);
+
+  {
+    std::unique_lock<std::mutex> lk(m);
+    in_cb.wait_for(lk, 3s, [&] {
+      return entered.load();
+    });
+  }
+  ASSERT_TRUE(entered.load()) << "Callback never started; cannot exercise drain";
+  EXPECT_FALSE(exited.load());
+
+  std::atomic<bool> remove_returned{false};
+  std::thread remover([&] {
+    sub_exec_->remove_graph_change(token);
+    remove_returned.store(true);
+  });
+
+  std::this_thread::sleep_for(150ms);
+  EXPECT_FALSE(remove_returned.load()) << "remove_graph_change did not wait for in-flight callback";
+
+  {
+    std::lock_guard<std::mutex> lk(m);
+    release = true;
+  }
+  cb_release.notify_all();
+
+  remover.join();
+  EXPECT_TRUE(exited.load());
+  EXPECT_TRUE(remove_returned.load());
+
+  executor_->remove_node(other_node);
 }
 
 TEST_F(Ros2SubscriptionExecutorTest, WatchdogDetectsStuckTask) {
