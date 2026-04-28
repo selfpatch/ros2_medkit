@@ -189,12 +189,19 @@ class Ros2SubscriptionExecutor final {
    * disappearing, types changing). Use to invalidate per-topic caches or evict stale
    * pool entries.
    *
-   * @warning A registered callback must NOT call remove_graph_change() on its own
-   *          token from inside the callback - graph_mtx_ is non-recursive and the
-   *          synchronous in-flight drain in remove_graph_change() would wait
-   *          indefinitely on the very call holding the slot's in_flight counter.
-   *          Drop the token through a separate task posted to the worker if
-   *          dynamic deregistration is needed.
+   * @warning DO NOT call remove_graph_change() on this token from inside the
+   *          callback body. The deadlock is concrete: remove_graph_change()
+   *          acquires graph_mtx_ and waits for graph_in_flight_[token] to
+   *          drain to zero, but the wrapper that decrements is the very call
+   *          frame that ran your callback. The worker thread is now blocked
+   *          on cv.wait, the decrement never runs, the wait never returns.
+   *          Symptom in production: hung worker thread, /health stops
+   *          updating, no log line. There is no runtime detection (would
+   *          need thread_local TLS, banned in code linked into the gateway
+   *          plugin MODULE; see CLAUDE.md). Workaround for dynamic
+   *          deregistration: have the callback hand the token to a
+   *          non-worker thread via a queue/promise, and call
+   *          remove_graph_change() from there.
    *
    * @return Opaque token in range [0, kMaxGraphListeners). `kMaxGraphListeners` if
    *         all slots are taken.

@@ -137,27 +137,60 @@ def _is_sse_endpoint(operation):
     return 'SSE' in summary or 'stream' in summary.lower()
 
 
+class _MissingEntityType(Exception):
+    """Raised when a path needs an entity type that was not discovered.
+
+    Substituting a placeholder (e.g. ``'test_entity'``) would yield a path
+    the gateway returns 404 for; the drift loop skips non-200 responses,
+    so the endpoint would silently exit unvalidated. Callers must catch
+    this and explicitly account for the skipped path.
+    """
+
+
 def _substitute_path_params(path, entity_map, resource_id='test_id'):
     def replacer(match):
         param = match.group(1)
         if param in _ENTITY_PARAM_MAP:
-            return entity_map.get(_ENTITY_PARAM_MAP[param], 'test_entity')
+            etype = _ENTITY_PARAM_MAP[param]
+            if etype not in entity_map:
+                raise _MissingEntityType(
+                    f'Path param {{{param}}} requires entity type '
+                    f'{etype!r} but none was discovered'
+                )
+            return entity_map[etype]
         return resource_id
 
     return re.sub(r'\{([^}]+)\}', replacer, path)
 
 
 class TestOpenApiResponseDrift(GatewayTestCase):
-    """Catches handler-vs-spec drift on GET response bodies."""
+    """Catches handler-vs-spec drift on GET response bodies.
+
+    Scope: GET endpoints declared at runtime under /docs only. POST/PUT/
+    DELETE request bodies and non-200 response shapes are out of scope;
+    extending coverage to all verbs is tracked under issue #338.
+    """
 
     MIN_EXPECTED_APPS = 2
     REQUIRED_APPS = {'temp_sensor', 'calibration'}
+    # Conservative lower bound on the number of paths a fully registered
+    # gateway exposes (currently ~50 with the test fixture). _fetch_spec
+    # polls until at least this many paths are present so a slow plugin
+    # registration cannot let the test read back a partial spec and
+    # silently skip the endpoints registered after the snapshot.
+    MIN_EXPECTED_PATHS = 30
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
 
-        # Discover real entity IDs to use in path substitution.
+        # Discover real entity IDs to use in path substitution. Each
+        # entity type may legitimately be empty in some fixture
+        # configurations (e.g. runtime_only mode without manifest-declared
+        # areas). Endpoints needing a type that was not discovered are
+        # skipped explicitly in the validation loop and reported in test
+        # output - no longer silently substituted with a placeholder that
+        # produces 404s the loop drops.
         cls._entity_map = {}
         for etype in ('areas', 'components', 'apps', 'functions'):
             resp = requests.get(f'{cls.BASE_URL}/{etype}', timeout=5)
@@ -198,7 +231,10 @@ class TestOpenApiResponseDrift(GatewayTestCase):
 
     def _fetch_spec(self):
         return self.poll_endpoint_until(
-            '/docs', lambda d: d if d.get('paths') else None
+            '/docs',
+            lambda d: d if (
+                d.get('paths') and len(d['paths']) >= self.MIN_EXPECTED_PATHS
+            ) else None,
         )
 
     def _validate_response(self, schema, body, schemas):
@@ -217,18 +253,27 @@ class TestOpenApiResponseDrift(GatewayTestCase):
         return 'test_id'
 
     def test_get_responses_match_declared_schema(self):
-        """Every 200 response must validate against its declared schema.
+        """GET 200 responses must validate against the declared schema.
 
         Iterates GET endpoints from /docs, fetches each, and validates
         bodies against the response schema declared for status 200. Schema
         drift (handler emits a field schema does not declare as required,
         or vice versa) raises an error.
 
+        Coverage limited to GET verbs; POST/PUT/DELETE request bodies and
+        non-200 response shapes are out of scope (tracked under issue
+        #338). Endpoints whose path placeholders need an entity type that
+        was not discovered (e.g. /functions/{function_id}/... when no
+        functions exist) are skipped explicitly with an entry in
+        ``skipped_for_missing_entity`` rather than substituted with a
+        bogus value that would silently 404 unvalidated.
+
         @verifies REQ_INTEROP_002
         """
         spec = self._fetch_spec()
         schemas = spec.get('components', {}).get('schemas', {})
         violations = []
+        skipped_for_missing_entity = []
         validated = 0
 
         for path, path_item in spec.get('paths', {}).items():
@@ -247,9 +292,13 @@ class TestOpenApiResponseDrift(GatewayTestCase):
             if not schema:
                 continue
 
-            uri = _substitute_path_params(
-                path, self._entity_map, self._resource_for_path(path)
-            )
+            try:
+                uri = _substitute_path_params(
+                    path, self._entity_map, self._resource_for_path(path)
+                )
+            except _MissingEntityType as exc:
+                skipped_for_missing_entity.append(f'{path}: {exc}')
+                continue
             resp = requests.get(f'{self.BASE_URL}{uri}', timeout=10)
 
             # Non-200 responses fall outside this drift check (handler may
@@ -278,6 +327,19 @@ class TestOpenApiResponseDrift(GatewayTestCase):
         self.assertGreater(
             validated, 0, 'No endpoints validated - test fixture broken?'
         )
+        # Surface paths skipped due to missing optional entity types
+        # (e.g. /functions/{function_id}/... when no functions were
+        # declared). The previous fallback substituted 'test_entity',
+        # which produced 404s the validation loop silently dropped -
+        # hiding entire entity types from the test. Print is captured
+        # in test output so the gap is visible without failing CI when
+        # the fixture legitimately omits an optional type.
+        if skipped_for_missing_entity:
+            print(
+                f'[drift] {len(skipped_for_missing_entity)} endpoint(s) '
+                f'unvalidated (missing optional entity type):\n'
+                + '\n'.join(f'  - {s}' for s in skipped_for_missing_entity)
+            )
         self.assertFalse(
             violations,
             f'{len(violations)} drift violation(s); validated {validated}:\n'
@@ -349,6 +411,37 @@ class TestOpenApiResponseDrift(GatewayTestCase):
             self.assertIn('x-medkit', param)
             self.assertEqual(param['x-medkit'].get('source'), 'temp_sensor')
             self.assertIn('node', param['x-medkit'])
+
+    def test_substitute_path_params_uses_discovered_entity_id(self):
+        """Helper resolves placeholders against the entity_map."""
+        uri = _substitute_path_params(
+            '/areas/{area_id}/components',
+            {'areas': 'my_area', 'components': 'my_comp'},
+            resource_id='resX',
+        )
+        self.assertEqual(uri, '/areas/my_area/components')
+
+    def test_substitute_path_params_resource_id_substituted(self):
+        """Non-entity placeholders use the resource_id argument."""
+        uri = _substitute_path_params(
+            '/updates/{id}/status', {}, resource_id='pkg-7'
+        )
+        self.assertEqual(uri, '/updates/pkg-7/status')
+
+    def test_substitute_path_params_raises_on_missing_entity_type(self):
+        """Missing entity type must raise rather than substitute a fake.
+
+        The previous fallback substituted 'test_entity' for unknown
+        types, producing 404s the validation loop silently dropped.
+        Now the helper forces callers to handle the missing type
+        explicitly (skip + report).
+        """
+        with self.assertRaises(_MissingEntityType):
+            _substitute_path_params('/functions/{function_id}/data', {})
+        with self.assertRaises(_MissingEntityType):
+            _substitute_path_params(
+                '/areas/{area_id}/components', {'components': 'c1'}
+            )
 
 
 @launch_testing.post_shutdown_test()
