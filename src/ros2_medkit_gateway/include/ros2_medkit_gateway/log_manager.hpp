@@ -78,6 +78,11 @@ class LogManager {
 
   ~LogManager();
 
+  LogManager(const LogManager &) = delete;
+  LogManager & operator=(const LogManager &) = delete;
+  LogManager(LogManager &&) = delete;
+  LogManager & operator=(LogManager &&) = delete;
+
   /**
    * @brief Query log entries for a set of node FQNs
    *

@@ -90,6 +90,11 @@ class SSEStreamProxy : public StreamProxy {
 
   ~SSEStreamProxy() override;
 
+  SSEStreamProxy(const SSEStreamProxy &) = delete;
+  SSEStreamProxy & operator=(const SSEStreamProxy &) = delete;
+  SSEStreamProxy(SSEStreamProxy &&) = delete;
+  SSEStreamProxy & operator=(SSEStreamProxy &&) = delete;
+
   void open() override;
   void close() override;
   bool is_connected() const override;

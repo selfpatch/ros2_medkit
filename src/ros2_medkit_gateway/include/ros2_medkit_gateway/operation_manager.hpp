@@ -104,6 +104,11 @@ class OperationManager {
 
   ~OperationManager();
 
+  OperationManager(const OperationManager &) = delete;
+  OperationManager & operator=(const OperationManager &) = delete;
+  OperationManager(OperationManager &&) = delete;
+  OperationManager & operator=(OperationManager &&) = delete;
+
   /// Explicitly release subscriptions, clients, and tracked goals.
   /// Call while executor is still running to allow safe callback cleanup.
   /// Called automatically by destructor, but GatewayNode calls it earlier
