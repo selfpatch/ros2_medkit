@@ -47,7 +47,7 @@ extern "C" int plugin_api_version();
 extern "C" GatewayPlugin * create_plugin();
 extern "C" IntrospectionProvider * get_introspection_provider(GatewayPlugin * plugin);
 
-// Stubs for PluginRequest/PluginResponse (implemented in gateway_lib, not linked into tests)
+// Stubs for PluginRequest/PluginResponse (implemented in gateway_core, not linked into tests)
 namespace ros2_medkit_gateway {
 PluginRequest::PluginRequest(const void * impl) : impl_(impl) {
 }

@@ -33,7 +33,7 @@
 
 using namespace ros2_medkit_gateway;
 
-// Stubs for PluginRequest/PluginResponse (defined in gateway_lib, not linked into plugin tests)
+// Stubs for PluginRequest/PluginResponse (defined in gateway_core, not linked into plugin tests)
 namespace ros2_medkit_gateway {
 PluginRequest::PluginRequest(const void * impl) : impl_(impl) {
 }
