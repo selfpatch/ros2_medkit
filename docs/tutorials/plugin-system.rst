@@ -77,7 +77,7 @@ Writing a Plugin
 
    #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
    #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
-   #include "ros2_medkit_gateway/updates/update_provider.hpp"
+   #include "ros2_medkit_gateway/core/providers/update_provider.hpp"
 
    using namespace ros2_medkit_gateway;
 
@@ -148,7 +148,7 @@ implements the provider interface, even if the class inherits from it.
 .. code-block:: cmake
 
    add_library(my_plugin MODULE src/my_plugin.cpp)
-   target_link_libraries(my_plugin gateway_lib)
+   target_link_libraries(my_plugin gateway_ros2)
 
 4. Install the ``.so`` and add its path to ``gateway_params.yaml``.
 
@@ -162,7 +162,7 @@ A self-contained plugin implementing UpdateProvider (copy-paste starting point):
    // my_ota_plugin.cpp
    #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
    #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
-   #include "ros2_medkit_gateway/updates/update_provider.hpp"
+   #include "ros2_medkit_gateway/core/providers/update_provider.hpp"
 
    #include <nlohmann/json.hpp>
 
@@ -566,7 +566,7 @@ execute, and control executions:
 .. code-block:: cpp
 
    #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-   #include "ros2_medkit_gateway/scripts/script_provider.hpp"
+   #include "ros2_medkit_gateway/core/providers/script_provider.hpp"
 
    using namespace ros2_medkit_gateway;
 

@@ -39,7 +39,7 @@
 using namespace std::chrono_literals;
 using namespace ros2_medkit_gateway;
 
-// Stubs for PluginRequest/PluginResponse (implemented in gateway_lib, not linked into tests).
+// Stubs for PluginRequest/PluginResponse (implemented in gateway_core, not linked into tests).
 // These wrap httplib::Request/Response directly so the route tests can use a real HTTP server.
 namespace ros2_medkit_gateway {
 

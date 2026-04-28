@@ -18,7 +18,7 @@ Codes are stable machine-readable identifiers: renaming a code is a
 breaking change for downstream consumers that key on the string.
 
 The canonical list of codes is maintained in
-``src/ros2_medkit_gateway/include/ros2_medkit_gateway/http/warning_codes.hpp``;
+``src/ros2_medkit_gateway/include/ros2_medkit_gateway/core/http/warning_codes.hpp``;
 this page mirrors it for API consumers.
 
 .. list-table::

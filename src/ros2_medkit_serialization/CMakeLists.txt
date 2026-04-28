@@ -61,7 +61,7 @@ set_source_files_properties(
 )
 
 # Enable PIC so this static library can be linked into shared objects
-# (e.g. test_gateway_plugin.so via gateway_lib.a)
+# (e.g. test_gateway_plugin.so via gateway_core.a / gateway_ros2.a)
 set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(${PROJECT_NAME} PUBLIC

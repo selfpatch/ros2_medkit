@@ -33,7 +33,8 @@ find_package(rclcpp REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 # MODULE target: loaded via dlopen at runtime by PluginManager.
-# Symbols from gateway_lib are resolved from the host process at runtime.
+# Symbols from gateway_ros2 (and gateway_core transitively) are resolved
+# from the host process at runtime.
 add_library(sovd_service_interface MODULE
   src/sovd_service_interface.cpp
   src/service_exports.cpp
