@@ -18,10 +18,10 @@
 #include <string>
 #include <vector>
 
-#include "ros2_medkit_gateway/models/aggregation_service.hpp"
-#include "ros2_medkit_gateway/models/entity_capabilities.hpp"
-#include "ros2_medkit_gateway/models/entity_types.hpp"
-#include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/models/aggregation_service.hpp"
+#include "ros2_medkit_gateway/core/models/entity_capabilities.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 
 using namespace ros2_medkit_gateway;
 // nlohmann::json is already aliased as 'json' in the ros2_medkit_gateway namespace

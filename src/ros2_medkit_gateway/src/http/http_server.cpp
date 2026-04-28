@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/http/http_server.hpp"
+#include "ros2_medkit_gateway/core/http/http_server.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 #include <stdexcept>

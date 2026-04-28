@@ -16,8 +16,8 @@
 
 #include <string>
 
-#include "ros2_medkit_gateway/http/handlers/sse_transport_provider.hpp"
-#include "ros2_medkit_gateway/subscription_manager.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
+#include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
 
 using namespace ros2_medkit_gateway;
 

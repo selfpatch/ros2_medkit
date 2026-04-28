@@ -16,8 +16,8 @@
 
 #include <gtest/gtest.h>
 
-#include "ros2_medkit_gateway/plugins/entity_change_scope.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/core/plugins/entity_change_scope.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
 
 using ros2_medkit_gateway::EntityChangeScope;
 

@@ -18,8 +18,8 @@
 #include <regex>
 #include <string>
 
+#include "ros2_medkit_gateway/core/plugins/plugin_http_types.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
 
 using namespace ros2_medkit_gateway;
 

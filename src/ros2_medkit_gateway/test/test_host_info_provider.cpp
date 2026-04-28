@@ -22,7 +22,7 @@
 #include <cctype>
 #include <string>
 
-#include "ros2_medkit_gateway/discovery/host_info_provider.hpp"
+#include "ros2_medkit_gateway/core/providers/host_info_provider.hpp"
 
 using ros2_medkit_gateway::HostInfoProvider;
 using ros2_medkit_gateway::json;

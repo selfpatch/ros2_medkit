@@ -23,8 +23,8 @@
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
+#include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
-#include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 
 namespace ros2_medkit_gateway {

@@ -20,8 +20,8 @@
 #include <rclcpp/generic_publisher.hpp>
 #include <sstream>
 
-#include "ros2_medkit_gateway/data/topic_data_provider.hpp"
-#include "ros2_medkit_gateway/exceptions.hpp"
+#include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
+#include "ros2_medkit_gateway/core/exceptions.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"
 
 namespace ros2_medkit_gateway {

@@ -18,7 +18,7 @@
 #include <thread>
 #include <vector>
 
-#include "ros2_medkit_gateway/subscription_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
 
 using namespace ros2_medkit_gateway;
 

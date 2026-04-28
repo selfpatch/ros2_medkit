@@ -27,12 +27,12 @@
 #include <thread>
 #include <unistd.h>
 
-#include "ros2_medkit_gateway/config.hpp"
+#include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/handlers/sse_fault_handler.hpp"
-#include "ros2_medkit_gateway/http/sse_client_tracker.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 
 using json = nlohmann::json;

@@ -28,10 +28,10 @@
 #include <thread>
 #include <unistd.h>
 
-#include "ros2_medkit_gateway/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
 
 using namespace std::chrono_literals;
 

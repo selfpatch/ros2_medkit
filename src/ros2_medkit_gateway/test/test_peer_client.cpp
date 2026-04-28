@@ -18,7 +18,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
-#include "ros2_medkit_gateway/aggregation/peer_client.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_client.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 using namespace ros2_medkit_gateway;

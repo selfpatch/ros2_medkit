@@ -20,10 +20,10 @@
 #include <cstring>
 #include <sstream>
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {

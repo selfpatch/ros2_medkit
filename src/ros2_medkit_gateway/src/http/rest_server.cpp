@@ -12,17 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/http/rest_server.hpp"
+#include "ros2_medkit_gateway/core/http/rest_server.hpp"
 
 #include <exception>
 #include <rclcpp/rclcpp.hpp>
 #include <stdexcept>
 #include <type_traits>
 
-#include "ros2_medkit_gateway/auth/auth_middleware.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_middleware.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/http/http_utils.hpp"
 
 #include "../openapi/route_registry.hpp"
 #include "../openapi/schema_builder.hpp"

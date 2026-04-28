@@ -21,11 +21,11 @@
 #include <mutex>
 #include <thread>
 
+#include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/providers/log_provider.hpp"
+#include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 #include "ros2_medkit_gateway/log_manager.hpp"
-#include "ros2_medkit_gateway/logs/log_provider.hpp"
-#include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
-#include "ros2_medkit_gateway/resource_change_notifier.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::LogConfig;

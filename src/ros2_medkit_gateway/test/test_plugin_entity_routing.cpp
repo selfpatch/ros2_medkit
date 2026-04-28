@@ -14,10 +14,10 @@
 
 #include <gtest/gtest.h>
 
-#include "ros2_medkit_gateway/plugins/plugin_manager.hpp"
-#include "ros2_medkit_gateway/providers/data_provider.hpp"
-#include "ros2_medkit_gateway/providers/fault_provider.hpp"
-#include "ros2_medkit_gateway/providers/operation_provider.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/providers/data_provider.hpp"
+#include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
+#include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
 
 using namespace ros2_medkit_gateway;
 // json alias already available via ros2_medkit_gateway namespace headers

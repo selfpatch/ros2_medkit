@@ -14,7 +14,7 @@
 
 #include <gtest/gtest.h>
 
-#include "ros2_medkit_gateway/http/entity_path_utils.hpp"
+#include "ros2_medkit_gateway/core/http/entity_path_utils.hpp"
 
 using namespace ros2_medkit_gateway;
 

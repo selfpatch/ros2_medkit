@@ -23,8 +23,8 @@
 
 #include <string>
 
-#include "ros2_medkit_gateway/discovery/manifest/manifest_parser.hpp"
-#include "ros2_medkit_gateway/discovery/manifest/manifest_validator.hpp"
+#include "ros2_medkit_gateway/core/discovery/manifest/manifest_parser.hpp"
+#include "ros2_medkit_gateway/core/discovery/manifest/manifest_validator.hpp"
 
 using ros2_medkit_gateway::discovery::ManifestParser;
 using ros2_medkit_gateway::discovery::ManifestValidator;

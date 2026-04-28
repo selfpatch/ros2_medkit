@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/script_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/script_manager.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 

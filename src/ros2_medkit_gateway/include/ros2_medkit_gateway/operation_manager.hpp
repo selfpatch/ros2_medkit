@@ -29,8 +29,8 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/compat/generic_client_compat.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/common.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
-#include "ros2_medkit_gateway/discovery/models/common.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/service_action_types.hpp"
 

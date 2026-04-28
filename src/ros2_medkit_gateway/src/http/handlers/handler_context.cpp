@@ -17,12 +17,12 @@
 #include <algorithm>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
-#include "ros2_medkit_gateway/entity_validation.hpp"
+#include "ros2_medkit_gateway/core/entity_validation.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/models/entity_capabilities.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/lock_manager.hpp"
-#include "ros2_medkit_gateway/models/entity_capabilities.hpp"
-#include "ros2_medkit_gateway/models/entity_types.hpp"
 
 using json = nlohmann::json;
 
