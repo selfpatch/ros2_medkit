@@ -539,10 +539,14 @@ std::string BulkDataHandlers::get_rosbag_mimetype(const std::string & format) {
 }
 
 std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo & entity) const {
-  if (entity.type == EntityType::FUNCTION) {
-    // Functions aggregate rosbags from all hosting apps
+  // FUNCTION and COMPONENT both aggregate rosbags from their hosting apps.
+  // Synthetic / runtime-discovered components have an empty fqn / namespace_path,
+  // so falling through to the bare-fqn path silently returned zero source filters
+  // and produced empty descriptor lists plus failed ownership checks on download.
+  if (entity.type == EntityType::FUNCTION || entity.type == EntityType::COMPONENT) {
     const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto host_app_ids = cache.get_apps_for_function(entity.id);
+    auto host_app_ids = (entity.type == EntityType::FUNCTION) ? cache.get_apps_for_function(entity.id)
+                                                              : cache.get_apps_for_component(entity.id);
     std::vector<std::string> filters;
     filters.reserve(host_app_ids.size());
     for (const auto & app_id : host_app_ids) {
@@ -554,7 +558,11 @@ std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo &
         }
       }
     }
-    return filters;
+    if (!filters.empty()) {
+      return filters;
+    }
+    // Manifest deployments where a component groups topics rather than nodes
+    // still need the namespace prefix path to work, so fall through.
   }
 
   // For other entity types, use FQN or namespace_path
