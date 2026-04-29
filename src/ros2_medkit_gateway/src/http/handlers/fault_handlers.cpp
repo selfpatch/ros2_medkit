@@ -213,7 +213,10 @@ json FaultHandlers::build_sovd_fault_response(const json & fault_json, const jso
         // This must match the download handler which looks up rosbags by fault_code,
         // and handle_list_descriptors which also uses fault_code as the descriptor ID.
         const std::string snap_fault_code = s.value("fault_code", fault_code);
-        snap["bulk_data_uri"] = entity_path + "/bulk-data/rosbags/" + snap_fault_code;
+        std::string bulk_data_uri = entity_path;
+        bulk_data_uri += "/bulk-data/rosbags/";
+        bulk_data_uri += snap_fault_code;
+        snap["bulk_data_uri"] = std::move(bulk_data_uri);
         if (s.contains("size_bytes")) {
           snap["size_bytes"] = s["size_bytes"];
         }

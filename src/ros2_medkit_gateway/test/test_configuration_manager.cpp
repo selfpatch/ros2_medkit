@@ -351,6 +351,7 @@ TEST_F(TestConfigurationManager, test_concurrent_queries_no_crash) {
   // (spin_mutex_ serializes ROS 2 IPC to prevent executor conflicts).
   std::vector<ParameterResult> results(3);
   std::vector<std::thread> threads;
+  threads.reserve(3);
   for (int i = 0; i < 3; ++i) {
     threads.emplace_back([this, i, &results]() {
       results[static_cast<size_t>(i)] = config_manager_->list_parameters("/concurrent_node_" + std::to_string(i));
@@ -426,6 +427,7 @@ TEST_F(TestConfigurationManager, test_concurrent_parameter_access) {
 
   // Access from multiple threads should be safe
   std::vector<std::thread> threads;
+  threads.reserve(3);
   std::atomic<int> success_count{0};
 
   for (int i = 0; i < 3; ++i) {
@@ -465,6 +467,7 @@ TEST_F(TestConfigurationManager, test_concurrent_parameter_operations_no_executo
   constexpr int kOpsPerThread = 5;
 
   std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
   std::atomic<int> success_count{0};
   std::atomic<int> exception_count{0};
   std::atomic<bool> start_flag{false};

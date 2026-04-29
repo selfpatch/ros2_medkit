@@ -155,7 +155,7 @@ class MockParameterTransport : public ParameterTransport {
     return r;
   }
 
-  bool is_node_available(const std::string &) const override {
+  bool is_node_available(const std::string & /*node_name*/) const override {
     return true;
   }
 
