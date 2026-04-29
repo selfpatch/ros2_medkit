@@ -150,7 +150,9 @@ target_precompile_headers(gateway_core PRIVATE
 add_library(gateway_ros2 STATIC
   src/aggregation/aggregation_manager.cpp
   src/data/ros2_topic_data_provider.cpp
+  src/ros2/conversions/fault_msg_conversions.cpp
   src/ros2/transports/ros2_action_transport.cpp
+  src/ros2/transports/ros2_fault_service_transport.cpp
   src/ros2/transports/ros2_parameter_transport.cpp
   src/ros2/transports/ros2_service_transport.cpp
   src/ros2/transports/ros2_topic_transport.cpp
@@ -165,7 +167,6 @@ add_library(gateway_ros2 STATIC
   src/discovery/manifest/runtime_linker.cpp
   src/discovery/merge_pipeline.cpp
   src/discovery/runtime_discovery.cpp
-  src/fault_manager.cpp
   src/fault_manager_paths.cpp
   src/gateway_node.cpp
   src/http/handlers/auth_handlers.cpp
@@ -417,6 +418,24 @@ if(BUILD_TESTING)
     COMMAND $<TARGET_FILE:test_configuration_manager_routing>
   )
   set_tests_properties(configuration_manager_routing PROPERTIES LABELS "unit")
+
+  # ─── FaultManager routing test (gateway_core only) ─────────────────────────
+  # Mock-transport coverage proving the manager body (eight SOVD operations,
+  # error_message propagation, JSON-shape contract for get_fault_with_env)
+  # compiles and links against gateway_core alone, with no rclcpp on the link
+  # line.
+  add_executable(test_fault_manager_routing test/test_fault_manager_routing.cpp)
+  target_link_libraries(test_fault_manager_routing
+    PRIVATE
+      gateway_core
+      GTest::gtest
+      GTest::gtest_main
+  )
+  add_test(
+    NAME fault_manager_routing
+    COMMAND $<TARGET_FILE:test_fault_manager_routing>
+  )
+  set_tests_properties(fault_manager_routing PROPERTIES LABELS "unit")
 
   # Add GTest
   find_package(ament_cmake_gtest REQUIRED)

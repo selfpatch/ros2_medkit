@@ -23,9 +23,7 @@ using json = nlohmann::json;
 
 /// Outcome of a fault-management operation that returns JSON. `data` carries
 /// the response body the handler will serve on success; remains empty on
-/// errors. The richer `FaultWithEnvResult`, which still exposes raw message
-/// types, lives alongside the FaultManager facade until the transport
-/// extraction lands.
+/// errors.
 struct FaultResult {
   bool success;
   json data;
@@ -34,10 +32,9 @@ struct FaultResult {
 
 /// Neutral outcome of `get_fault_with_env`. `data` carries
 /// `{ "fault": {...}, "environment_data": {...} }` already converted to JSON
-/// by the transport. The legacy `FaultWithEnvResult` (which exposes raw
-/// message types) still lives next to the FaultManager facade until a later
-/// phase reconciles the two; the transport port returns this neutral form so
-/// the interface compiles in the ROS-free build layer.
+/// by the transport. The handler post-processes rosbag snapshots to add the
+/// per-request `bulk_data_uri` (which depends on entity_path) and the
+/// freeze_frame snapshots to extract their primary value.
 struct FaultWithEnvJsonResult {
   bool success;
   std::string error_message;

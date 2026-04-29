@@ -27,6 +27,7 @@
 #include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_fault_service_transport.hpp"
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/get_rosbag.hpp"
@@ -125,7 +126,7 @@ TEST(FaultManagerPathsTest, BuildPathsFromNamespaceString) {
 
 // @verifies REQ_INTEROP_088
 TEST_F(FaultManagerTest, GetSnapshotsServiceNotAvailable) {
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   // Don't create a service, so it will timeout
   auto result = fault_manager.get_snapshots("TEST_FAULT");
@@ -154,7 +155,7 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithValidJson) {
       });
 
   start_spinning();
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("MOTOR_OVERHEAT");
 
@@ -187,7 +188,7 @@ TEST_F(FaultManagerTest, GetSnapshotsUsesConfiguredFaultManagerNamespace) {
       });
 
   start_spinning();
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("NAMESPACED_FAULT");
 
@@ -216,7 +217,7 @@ TEST_F(FaultManagerTest, InvalidFaultManagerNamespaceFallsBackToRootServicePath)
                                                      });
 
   start_spinning();
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("INVALID_NAMESPACE_FAULT");
 
@@ -237,7 +238,7 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithTopicFilter) {
       });
 
   start_spinning();
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   fault_manager.get_snapshots("TEST_FAULT", "/specific_topic");
 
@@ -254,7 +255,7 @@ TEST_F(FaultManagerTest, GetSnapshotsErrorResponse) {
                                                      });
 
   start_spinning();
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("NONEXISTENT_FAULT");
 
@@ -272,7 +273,7 @@ TEST_F(FaultManagerTest, GetSnapshotsInvalidJsonFallback) {
                                                      });
 
   start_spinning();
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("TEST_FAULT");
 
@@ -292,7 +293,7 @@ TEST_F(FaultManagerTest, GetSnapshotsEmptyResponse) {
                                                      });
 
   start_spinning();
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("TEST_FAULT");
 
@@ -305,7 +306,7 @@ TEST_F(FaultManagerTest, GetSnapshotsEmptyResponse) {
 
 // @verifies REQ_INTEROP_088
 TEST_F(FaultManagerTest, GetRosbagServiceNotAvailable) {
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   // Don't create a service, so it will timeout
   auto result = fault_manager.get_rosbag("TEST_FAULT");
@@ -330,7 +331,7 @@ TEST_F(FaultManagerTest, GetRosbagSuccess) {
       });
 
   start_spinning();
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_rosbag("TEST_ROSBAG_FAULT");
 
@@ -363,7 +364,7 @@ TEST_F(FaultManagerTest, GetRosbagUsesConfiguredFaultManagerNamespace) {
       });
 
   start_spinning();
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_rosbag("NAMESPACED_ROSBAG");
 
@@ -576,7 +577,7 @@ TEST_F(FaultManagerTest, GetRosbagNotFound) {
                                                   });
 
   start_spinning();
-  FaultManager fault_manager(node_.get());
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_rosbag("NONEXISTENT_FAULT");
 

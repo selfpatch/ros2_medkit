@@ -596,7 +596,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   parameter_transport_ = std::make_shared<ros2::Ros2ParameterTransport>(this, parameter_service_timeout_sec,
                                                                         parameter_service_negative_cache_sec);
   config_mgr_ = std::make_unique<ConfigurationManager>(parameter_transport_);
-  fault_mgr_ = std::make_unique<FaultManager>(this);
+  fault_service_transport_ = std::make_shared<ros2::Ros2FaultServiceTransport>(this);
+  fault_mgr_ = std::make_unique<FaultManager>(fault_service_transport_);
 
   // Initialize bulk data store
   auto bd_storage_dir = get_parameter("bulk_data.storage_dir").as_string();

@@ -50,6 +50,7 @@
 #include "ros2_medkit_gateway/log_manager.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_action_transport.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_fault_service_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_parameter_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_service_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_topic_transport.hpp"
@@ -271,6 +272,12 @@ class GatewayNode : public rclcpp::Node {
   // parameter-client cache + defaults cache + spin_mutex; the manager forwards
   // shutdown() into it before rclcpp::shutdown() runs.
   std::shared_ptr<ros2::Ros2ParameterTransport> parameter_transport_;
+
+  // Fault-service transport adapter shared with FaultManager. Owns the seven
+  // rclcpp service clients, the seven per-client mutexes, and the
+  // ros2_medkit_msgs <-> JSON conversion helpers that previously lived inside
+  // FaultManager.
+  std::shared_ptr<ros2::Ros2FaultServiceTransport> fault_service_transport_;
 
   // Managers
   std::unique_ptr<DiscoveryManager> discovery_mgr_;

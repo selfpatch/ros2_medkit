@@ -163,69 +163,91 @@ json extract_primary_value(const std::string & message_type, const json & full_d
 
 }  // namespace
 
-// Static method: Build SOVD-compliant fault response with environment data
-json FaultHandlers::build_sovd_fault_response(const ros2_medkit_msgs::msg::Fault & fault,
-                                              const ros2_medkit_msgs::msg::EnvironmentData & env_data,
+// Static method: Build SOVD-compliant fault response from transport-supplied JSON.
+//
+// The transport adapter performs ros2_medkit_msgs -> JSON translation; the
+// handler post-processes the intermediate snapshot shape (freeze_frame parse,
+// rosbag bulk_data_uri) using the entity_path it has at request time.
+json FaultHandlers::build_sovd_fault_response(const json & fault_json, const json & env_data_json,
                                               const std::string & entity_path) {
   json response;
 
+  const std::string fault_code = fault_json.value("fault_code", "");
+  const std::string status = fault_json.value("status", "");
+  const uint8_t severity = fault_json.value("severity", static_cast<uint8_t>(0));
+
   // === SOVD "item" structure ===
-  response["item"] = {{"code", fault.fault_code},
-                      {"fault_name", fault.description},
-                      {"severity", fault.severity},
-                      {"status", build_status_object(fault.status)}};
+  response["item"] = {{"code", fault_code},
+                      {"fault_name", fault_json.value("description", "")},
+                      {"severity", severity},
+                      {"status", build_status_object(status)}};
 
   // === SOVD "environment_data" ===
   json snapshots = json::array();
+  if (env_data_json.contains("snapshots") && env_data_json["snapshots"].is_array()) {
+    for (const auto & s : env_data_json["snapshots"]) {
+      json snap;
+      const std::string type = s.value("type", "");
+      snap["type"] = type;
+      snap["name"] = s.value("name", "");
 
-  for (const auto & s : env_data.snapshots) {
-    json snap;
-    snap["type"] = s.type;
-    snap["name"] = s.name;
-
-    if (s.type == "freeze_frame") {
-      // Parse JSON data and extract primary value
-      try {
-        json full_data = json::parse(s.data);
-        snap["data"] = extract_primary_value(s.message_type, full_data);
-        snap["x-medkit"] = {{"topic", s.topic},
-                            {"message_type", s.message_type},
-                            {"full_data", full_data},
-                            {"captured_at", to_iso8601_ns(s.captured_at_ns)}};
-      } catch (const json::exception & e) {
-        // Invalid JSON - include raw data
-        snap["data"] = s.data;
-        snap["x-medkit"] = {{"topic", s.topic}, {"message_type", s.message_type}, {"parse_error", e.what()}};
+      if (type == "freeze_frame") {
+        // Parse JSON data string and extract primary value.
+        const std::string raw_data = s.value("data", "");
+        const std::string topic = s.value("topic", "");
+        const std::string message_type = s.value("message_type", "");
+        const int64_t captured_at_ns = s.value("captured_at_ns", static_cast<int64_t>(0));
+        try {
+          json full_data = json::parse(raw_data);
+          snap["data"] = extract_primary_value(message_type, full_data);
+          snap["x-medkit"] = {{"topic", topic},
+                              {"message_type", message_type},
+                              {"full_data", full_data},
+                              {"captured_at", to_iso8601_ns(captured_at_ns)}};
+        } catch (const json::exception & e) {
+          snap["data"] = raw_data;
+          snap["x-medkit"] = {{"topic", topic}, {"message_type", message_type}, {"parse_error", e.what()}};
+        }
+      } else if (type == "rosbag") {
+        // Build absolute URI using entity path + fault_code as the bulk-data ID.
+        // This must match the download handler which looks up rosbags by fault_code,
+        // and handle_list_descriptors which also uses fault_code as the descriptor ID.
+        const std::string snap_fault_code = s.value("fault_code", fault_code);
+        snap["bulk_data_uri"] = entity_path + "/bulk-data/rosbags/" + snap_fault_code;
+        if (s.contains("size_bytes")) {
+          snap["size_bytes"] = s["size_bytes"];
+        }
+        if (s.contains("duration_sec")) {
+          snap["duration_sec"] = s["duration_sec"];
+        }
+        if (s.contains("format")) {
+          snap["format"] = s["format"];
+        }
       }
-    } else if (s.type == "rosbag") {
-      // Build absolute URI using entity path + fault_code as the bulk-data ID.
-      // This must match the download handler which looks up rosbags by fault_code,
-      // and handle_list_descriptors which also uses fault_code as the descriptor ID.
-      snap["bulk_data_uri"] = entity_path + "/bulk-data/rosbags/" + fault.fault_code;
-      snap["size_bytes"] = s.size_bytes;
-      snap["duration_sec"] = s.duration_sec;
-      snap["format"] = s.format;
-    }
 
-    snapshots.push_back(snap);
+      snapshots.push_back(snap);
+    }
   }
 
-  response["environment_data"] = {
-      {"extended_data_records",
-       {{"first_occurrence", to_iso8601_ns(env_data.extended_data_records.first_occurrence_ns)},
-        {"last_occurrence", to_iso8601_ns(env_data.extended_data_records.last_occurrence_ns)}}},
-      {"snapshots", snapshots}};
+  json env_obj;
+  if (env_data_json.contains("extended_data_records")) {
+    env_obj["extended_data_records"] = env_data_json["extended_data_records"];
+  } else {
+    env_obj["extended_data_records"] = {{"first_occurrence", ""}, {"last_occurrence", ""}};
+  }
+  env_obj["snapshots"] = snapshots;
+  response["environment_data"] = env_obj;
 
   // === x-medkit extensions ===
   json reporting_sources = json::array();
-  for (const auto & src : fault.reporting_sources) {
-    reporting_sources.push_back(src);
+  if (fault_json.contains("reporting_sources") && fault_json["reporting_sources"].is_array()) {
+    reporting_sources = fault_json["reporting_sources"];
   }
 
-  response["x-medkit"] = {{"occurrence_count", fault.occurrence_count},
+  response["x-medkit"] = {{"occurrence_count", fault_json.value("occurrence_count", static_cast<uint64_t>(0))},
                           {"reporting_sources", reporting_sources},
-                          {"severity_label", severity_to_label(fault.severity)},
-                          {"status_raw", fault.status}};
+                          {"severity_label", severity_to_label(severity)},
+                          {"status_raw", status}};
 
   return response;
 }
@@ -636,8 +658,11 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
     auto result = fault_mgr->get_fault_with_env(fault_code, namespace_path);
 
     if (result.success) {
-      // Build SOVD-compliant response with environment data
-      auto response = build_sovd_fault_response(result.fault, result.environment_data, entity_path_info->entity_path);
+      // Build SOVD-compliant response from the transport-supplied JSON shape.
+      // The transport handed back `result.data = { "fault": {...}, "environment_data": {...} }`.
+      const auto & fault_json = result.data.value("fault", json::object());
+      const auto & env_data_json = result.data.value("environment_data", json::object());
+      auto response = build_sovd_fault_response(fault_json, env_data_json, entity_path_info->entity_path);
 
       HandlerContext::send_json(res, response);
     } else {
