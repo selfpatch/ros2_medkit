@@ -15,10 +15,9 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
+#include <string>
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
-#include "ros2_medkit_msgs/msg/environment_data.hpp"
-#include "ros2_medkit_msgs/msg/fault.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -79,20 +78,31 @@ class FaultHandlers {
   void handle_clear_all_faults_global(const httplib::Request & req, httplib::Response & res);
 
   /**
-   * @brief Build SOVD-compliant fault response with environment data.
+   * @brief Build SOVD-compliant fault response from already-converted JSON.
    *
-   * Creates a response containing:
+   * Consumes the JSON shape returned by FaultManager::get_fault_with_env -
+   * `fault_json` is the per-fault flat representation (the FaultManager has
+   * already translated severity_label, status string, timestamps, etc.) and
+   * `env_data_json` carries `extended_data_records` plus a `snapshots` array
+   * with intermediate-shape entries (freeze_frame: type/name/data/topic/
+   * message_type/captured_at_ns; rosbag: type/name/fault_code/size_bytes/
+   * duration_sec/format).
+   *
+   * Builds the final SOVD response containing:
    * - "item" with fault details and SOVD status object
-   * - "environment_data" with extended_data_records and snapshots
+   * - "environment_data" with extended_data_records and snapshots; for
+   *   freeze_frame snapshots the handler parses "data", extracts the primary
+   *   value and packs the full payload into x-medkit; for rosbag snapshots
+   *   the handler appends `bulk_data_uri = entity_path + "/bulk-data/rosbags/" + fault_code`.
    * - "x-medkit" extensions with occurrence_count, severity_label, etc.
    *
-   * @param fault The fault message from fault_manager
-   * @param env_data Environment data with snapshots
-   * @param entity_path Entity path for bulk_data_uri generation (e.g., "/apps/motor")
+   * @param fault_json Per-fault JSON (as produced by the transport adapter).
+   * @param env_data_json Environment-data JSON (as produced by the transport).
+   * @param entity_path Entity path used to construct rosbag bulk_data_uri.
    * @return SOVD-compliant JSON response
    */
-  static nlohmann::json build_sovd_fault_response(const ros2_medkit_msgs::msg::Fault & fault,
-                                                  const ros2_medkit_msgs::msg::EnvironmentData & env_data,
+  static nlohmann::json build_sovd_fault_response(const nlohmann::json & fault_json,
+                                                  const nlohmann::json & env_data_json,
                                                   const std::string & entity_path);
 
  private:

@@ -14,8 +14,8 @@
 
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
 
-#include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
+#include "ros2_medkit_gateway/ros2/conversions/fault_msg_conversions.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -40,8 +40,8 @@ void TriggerFaultSubscriber::set_node_to_entity_resolver(NodeToEntityFn resolver
 }
 
 void TriggerFaultSubscriber::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
-  // Convert fault to JSON using the same method as SSEFaultHandler
-  nlohmann::json fault_json = FaultManager::fault_to_json(msg->fault);
+  // Convert fault to JSON using the same helper as SSEFaultHandler
+  nlohmann::json fault_json = ros2::conversions::fault_to_json(msg->fault);
   fault_json["event_type"] = msg->event_type;
 
   // Derive entity_id from reporting_sources (first source, if available).

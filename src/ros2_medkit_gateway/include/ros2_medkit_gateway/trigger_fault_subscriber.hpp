@@ -34,7 +34,7 @@ namespace ros2_medkit_gateway {
  *
  * Entity ID is derived from the first reporting source of the fault. The
  * fault_code is used as the resource_path. The full fault JSON (via
- * FaultManager::fault_to_json) is passed as the change value.
+ * ros2::conversions::fault_to_json) is passed as the change value.
  */
 class TriggerFaultSubscriber {
  public:

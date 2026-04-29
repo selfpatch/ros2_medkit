@@ -1,4 +1,4 @@
-// Copyright 2025 mfaferek93
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,26 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/fault_manager.hpp"
-#include "ros2_medkit_gateway/fault_manager_paths.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_fault_service_transport.hpp"
 
-#include <algorithm>
 #include <builtin_interfaces/msg/time.hpp>
 #include <chrono>
+#include <future>
 
-using namespace std::chrono_literals;
+#include "ros2_medkit_gateway/fault_manager_paths.hpp"
+#include "ros2_medkit_gateway/ros2/conversions/fault_msg_conversions.hpp"
+#include "ros2_medkit_msgs/msg/environment_data.hpp"
+#include "ros2_medkit_msgs/msg/fault.hpp"
 
-namespace ros2_medkit_gateway {
+namespace ros2_medkit_gateway::ros2 {
 
-FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
-  // Get configurable timeout. GatewayNode declares this parameter up front,
-  // but unit tests may construct FaultManager with a plain rclcpp::Node.
+Ros2FaultServiceTransport::Ros2FaultServiceTransport(rclcpp::Node * node) : node_(node) {
+  // Pick up configurable timeout. GatewayNode declares this parameter up front,
+  // but unit tests may construct the transport with a plain rclcpp::Node.
   if (!node_->get_parameter("fault_manager.service_timeout_sec", service_timeout_sec_)) {
     service_timeout_sec_ = 5.0;
   }
   fault_manager_base_path_ = build_fault_manager_base_path(node_);
 
-  // Create service clients for fault_manager services
   report_fault_client_ =
       node_->create_client<ros2_medkit_msgs::srv::ReportFault>(fault_manager_base_path_ + "/report_fault");
   get_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::GetFault>(fault_manager_base_path_ + "/get_fault");
@@ -45,63 +46,34 @@ FaultManager::FaultManager(rclcpp::Node * node) : node_(node) {
   list_rosbags_client_ =
       node_->create_client<ros2_medkit_msgs::srv::ListRosbags>(fault_manager_base_path_ + "/list_rosbags");
 
-  RCLCPP_INFO(node_->get_logger(), "FaultManager initialized (base_path=%s, timeout=%.1fs)",
+  RCLCPP_INFO(node_->get_logger(), "Ros2FaultServiceTransport initialized (base_path=%s, timeout=%.1fs)",
               fault_manager_base_path_.c_str(), service_timeout_sec_);
 }
 
-bool FaultManager::wait_for_services(std::chrono::duration<double> timeout) {
+Ros2FaultServiceTransport::~Ros2FaultServiceTransport() {
+  // Reset clients before implicit member destruction so any in-flight
+  // future-callback paths drop their references in a defined order.
+  report_fault_client_.reset();
+  get_fault_client_.reset();
+  list_faults_client_.reset();
+  clear_fault_client_.reset();
+  get_snapshots_client_.reset();
+  get_rosbag_client_.reset();
+  list_rosbags_client_.reset();
+}
+
+bool Ros2FaultServiceTransport::wait_for_services(std::chrono::duration<double> timeout) {
   return report_fault_client_->wait_for_service(timeout) && get_fault_client_->wait_for_service(timeout) &&
          list_faults_client_->wait_for_service(timeout) && clear_fault_client_->wait_for_service(timeout);
 }
 
-bool FaultManager::is_available() const {
+bool Ros2FaultServiceTransport::is_available() const {
   return report_fault_client_->service_is_ready() && get_fault_client_->service_is_ready() &&
          list_faults_client_->service_is_ready() && clear_fault_client_->service_is_ready();
 }
 
-/// Convert a ROS 2 Fault message to JSON for REST API responses.
-/// Timestamps are converted from builtin_interfaces::msg::Time (sec + nanosec) to seconds as double.
-/// A human-readable severity_label is added based on the severity level.
-json FaultManager::fault_to_json(const ros2_medkit_msgs::msg::Fault & fault) {
-  // Convert ROS 2 Time to seconds as double
-  auto to_seconds = [](const builtin_interfaces::msg::Time & t) {
-    return t.sec + static_cast<double>(t.nanosec) / 1e9;
-  };
-
-  json j;
-  j["fault_code"] = fault.fault_code;
-  j["severity"] = fault.severity;
-  j["description"] = fault.description;
-  j["first_occurred"] = to_seconds(fault.first_occurred);
-  j["last_occurred"] = to_seconds(fault.last_occurred);
-  j["occurrence_count"] = fault.occurrence_count;
-  j["status"] = fault.status;
-  j["reporting_sources"] = fault.reporting_sources;
-
-  // Add severity label for readability
-  switch (fault.severity) {
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_INFO:
-      j["severity_label"] = "INFO";
-      break;
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_WARN:
-      j["severity_label"] = "WARN";
-      break;
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR:
-      j["severity_label"] = "ERROR";
-      break;
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL:
-      j["severity_label"] = "CRITICAL";
-      break;
-    default:
-      j["severity_label"] = "UNKNOWN";
-      break;
-  }
-
-  return j;
-}
-
-FaultResult FaultManager::report_fault(const std::string & fault_code, uint8_t severity,
-                                       const std::string & description, const std::string & source_id) {
+FaultResult Ros2FaultServiceTransport::report_fault(const std::string & fault_code, uint8_t severity,
+                                                    const std::string & description, const std::string & source_id) {
   std::lock_guard<std::mutex> lock(report_mutex_);
   FaultResult result;
 
@@ -137,9 +109,9 @@ FaultResult FaultManager::report_fault(const std::string & fault_code, uint8_t s
   return result;
 }
 
-FaultResult FaultManager::list_faults(const std::string & source_id, bool include_prefailed, bool include_confirmed,
-                                      bool include_cleared, bool include_healed, bool include_muted,
-                                      bool include_clusters) {
+FaultResult Ros2FaultServiceTransport::list_faults(const std::string & source_id, bool include_prefailed,
+                                                   bool include_confirmed, bool include_cleared, bool include_healed,
+                                                   bool include_muted, bool include_clusters) {
   std::lock_guard<std::mutex> lock(list_mutex_);
   FaultResult result;
 
@@ -154,7 +126,6 @@ FaultResult FaultManager::list_faults(const std::string & source_id, bool includ
   request->filter_by_severity = false;
   request->severity = 0;
 
-  // Build status filter
   if (include_prefailed) {
     request->statuses.push_back(ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
   }
@@ -169,7 +140,6 @@ FaultResult FaultManager::list_faults(const std::string & source_id, bool includ
     request->statuses.push_back(ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED);
   }
 
-  // Correlation options
   request->include_muted = include_muted;
   request->include_clusters = include_clusters;
 
@@ -186,29 +156,24 @@ FaultResult FaultManager::list_faults(const std::string & source_id, bool includ
   // Filter by source_id if provided (uses prefix matching)
   json faults_array = json::array();
   for (const auto & fault : response->faults) {
-    // If source_id filter is provided, check if any reporting source starts with the filter
-    // This allows querying by namespace (e.g., "/perception/lidar" matches "/perception/lidar/lidar_sensor")
     if (!source_id.empty()) {
-      auto & sources = fault.reporting_sources;
+      const auto & sources = fault.reporting_sources;
       bool matches = false;
       for (const auto & src : sources) {
-        // Match if source starts with the filter (prefix match for namespace hierarchy)
         if (src.rfind(source_id, 0) == 0) {
           matches = true;
           break;
         }
       }
       if (!matches) {
-        continue;  // Skip faults not reported by this component/namespace
+        continue;
       }
     }
-    faults_array.push_back(fault_to_json(fault));
+    faults_array.push_back(conversions::fault_to_json(fault));
   }
 
   result.success = true;
   result.data = {{"faults", faults_array}, {"count", faults_array.size()}};
-
-  // Add correlation data (always include counts, details only if requested)
   result.data["muted_count"] = response->muted_count;
   result.data["cluster_count"] = response->cluster_count;
 
@@ -247,9 +212,10 @@ FaultResult FaultManager::list_faults(const std::string & source_id, bool includ
   return result;
 }
 
-FaultWithEnvResult FaultManager::get_fault_with_env(const std::string & fault_code, const std::string & source_id) {
+FaultWithEnvJsonResult Ros2FaultServiceTransport::get_fault_with_env(const std::string & fault_code,
+                                                                     const std::string & source_id) {
   std::lock_guard<std::mutex> lock(get_mutex_);
-  FaultWithEnvResult result;
+  FaultWithEnvJsonResult result;
 
   auto timeout = std::chrono::duration<double>(service_timeout_sec_);
   if (!get_fault_client_->wait_for_service(timeout)) {
@@ -270,37 +236,36 @@ FaultWithEnvResult FaultManager::get_fault_with_env(const std::string & fault_co
   }
 
   auto response = future.get();
-  result.success = response->success;
-
-  if (response->success) {
-    result.fault = response->fault;
-    result.environment_data = response->environment_data;
-
-    // Verify source_id if provided
-    if (!source_id.empty()) {
-      bool matches = false;
-      for (const auto & src : result.fault.reporting_sources) {
-        if (src.rfind(source_id, 0) == 0) {
-          matches = true;
-          break;
-        }
-      }
-      if (!matches) {
-        result.success = false;
-        result.error_message = "Fault not found for source: " + source_id;
-        result.fault = ros2_medkit_msgs::msg::Fault();
-        result.environment_data = ros2_medkit_msgs::msg::EnvironmentData();
-      }
-    }
-  } else {
+  if (!response->success) {
+    result.success = false;
     result.error_message = response->error_message;
+    return result;
   }
 
+  // Verify source_id if provided (prefix match against any reporting source).
+  if (!source_id.empty()) {
+    bool matches = false;
+    for (const auto & src : response->fault.reporting_sources) {
+      if (src.rfind(source_id, 0) == 0) {
+        matches = true;
+        break;
+      }
+    }
+    if (!matches) {
+      result.success = false;
+      result.error_message = "Fault not found for source: " + source_id;
+      return result;
+    }
+  }
+
+  result.success = true;
+  result.data = {{"fault", conversions::fault_to_json(response->fault)},
+                 {"environment_data", conversions::environment_data_to_json(response->environment_data)}};
   return result;
 }
 
-FaultResult FaultManager::get_fault(const std::string & fault_code, const std::string & source_id) {
-  // Use get_fault_with_env and convert to JSON
+FaultResult Ros2FaultServiceTransport::get_fault(const std::string & fault_code, const std::string & source_id) {
+  // Use get_fault_with_env and pull only the fault portion of the body.
   auto env_result = get_fault_with_env(fault_code, source_id);
 
   FaultResult result;
@@ -308,13 +273,13 @@ FaultResult FaultManager::get_fault(const std::string & fault_code, const std::s
   result.error_message = env_result.error_message;
 
   if (env_result.success) {
-    result.data = fault_to_json(env_result.fault);
+    result.data = env_result.data["fault"];
   }
 
   return result;
 }
 
-FaultResult FaultManager::clear_fault(const std::string & fault_code) {
+FaultResult Ros2FaultServiceTransport::clear_fault(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(clear_mutex_);
   FaultResult result;
 
@@ -343,7 +308,6 @@ FaultResult FaultManager::clear_fault(const std::string & fault_code) {
     result.error_message = response->message;
   }
 
-  // Include auto-cleared symptom codes if correlation is enabled
   if (!response->auto_cleared_codes.empty()) {
     result.data["auto_cleared_codes"] = response->auto_cleared_codes;
   }
@@ -351,7 +315,7 @@ FaultResult FaultManager::clear_fault(const std::string & fault_code) {
   return result;
 }
 
-FaultResult FaultManager::get_snapshots(const std::string & fault_code, const std::string & topic) {
+FaultResult Ros2FaultServiceTransport::get_snapshots(const std::string & fault_code, const std::string & topic) {
   std::lock_guard<std::mutex> lock(snapshots_mutex_);
   FaultResult result;
 
@@ -378,10 +342,9 @@ FaultResult FaultManager::get_snapshots(const std::string & fault_code, const st
   result.success = response->success;
 
   if (response->success) {
-    // Parse the JSON data from the service response
     try {
       result.data = json::parse(response->data);
-    } catch (const json::exception & e) {
+    } catch (const json::exception & /*e*/) {
       result.data = {{"raw_data", response->data}};
     }
   } else {
@@ -391,7 +354,7 @@ FaultResult FaultManager::get_snapshots(const std::string & fault_code, const st
   return result;
 }
 
-FaultResult FaultManager::get_rosbag(const std::string & fault_code) {
+FaultResult Ros2FaultServiceTransport::get_rosbag(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(rosbag_mutex_);
   FaultResult result;
 
@@ -428,7 +391,7 @@ FaultResult FaultManager::get_rosbag(const std::string & fault_code) {
   return result;
 }
 
-FaultResult FaultManager::list_rosbags(const std::string & entity_fqn) {
+FaultResult Ros2FaultServiceTransport::list_rosbags(const std::string & entity_fqn) {
   std::lock_guard<std::mutex> lock(list_rosbags_mutex_);
   FaultResult result;
 
@@ -470,4 +433,4 @@ FaultResult FaultManager::list_rosbags(const std::string & entity_fqn) {
   return result;
 }
 
-}  // namespace ros2_medkit_gateway
+}  // namespace ros2_medkit_gateway::ros2

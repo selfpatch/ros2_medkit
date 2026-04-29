@@ -21,9 +21,9 @@
 #include <sstream>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
-#include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/ros2/conversions/fault_msg_conversions.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -220,7 +220,7 @@ std::string SSEFaultHandler::format_sse_event(const ros2_medkit_msgs::msg::Fault
 
   nlohmann::json json_event;
   json_event["event_type"] = sanitized_event_type;
-  json_event["fault"] = FaultManager::fault_to_json(event.fault);
+  json_event["fault"] = ros2::conversions::fault_to_json(event.fault);
 
   // Convert timestamp to seconds with nanosecond precision
   double timestamp_sec = static_cast<double>(event.timestamp.sec) + static_cast<double>(event.timestamp.nanosec) * 1e-9;
