@@ -160,6 +160,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("logs.buffer_size",
                     200);  // Ring buffer capacity per node; entries exceeding this are dropped (oldest first)
 
+  // Topic-sample default timeout used by the data-access path.
+  declare_parameter("topic_sample_timeout_sec", 1.0);
+
   // TLS/HTTPS parameters
   declare_parameter("server.tls.enabled", false);
   declare_parameter("server.tls.cert_file", "");
@@ -559,7 +562,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     throw std::runtime_error("Discovery initialization failed");
   }
 
-  data_access_mgr_ = std::make_unique<DataAccessManager>(this);
+  const auto topic_sample_timeout_sec = get_parameter("topic_sample_timeout_sec").as_double();
+  topic_transport_ = std::make_shared<ros2::Ros2TopicTransport>(this, topic_sample_timeout_sec);
+  data_access_mgr_ = std::make_unique<DataAccessManager>(topic_transport_, topic_sample_timeout_sec);
   operation_mgr_ = std::make_unique<OperationManager>(this, discovery_mgr_.get());
   config_mgr_ = std::make_unique<ConfigurationManager>(this);
   fault_mgr_ = std::make_unique<FaultManager>(this);
@@ -1446,6 +1451,9 @@ void GatewayNode::set_topic_data_provider(std::shared_ptr<TopicDataProvider> pro
   topic_data_provider_ = std::move(provider);
   if (data_access_mgr_) {
     data_access_mgr_->set_topic_data_provider(topic_data_provider_.get());
+  }
+  if (topic_transport_) {
+    topic_transport_->set_data_provider(topic_data_provider_.get());
   }
   if (discovery_mgr_) {
     discovery_mgr_->set_topic_data_provider(topic_data_provider_.get());

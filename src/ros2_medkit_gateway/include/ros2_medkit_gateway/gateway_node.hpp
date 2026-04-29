@@ -49,6 +49,7 @@
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/log_manager.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_topic_transport.hpp"
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
 #include "ros2_medkit_gateway/trigger_topic_subscriber.hpp"
 
@@ -251,6 +252,11 @@ class GatewayNode : public rclcpp::Node {
   // is constructed). Owned via shared_ptr because the provider is handed out
   // as a raw TopicDataProvider* to DataAccessManager.
   std::shared_ptr<TopicDataProvider> topic_data_provider_;
+
+  // Topic transport adapter shared with DataAccessManager. Held here so the
+  // provider attach/detach hooks can forward into the adapter alongside the
+  // manager and discovery side updates.
+  std::shared_ptr<ros2::Ros2TopicTransport> topic_transport_;
 
   // Managers
   std::unique_ptr<DiscoveryManager> discovery_mgr_;

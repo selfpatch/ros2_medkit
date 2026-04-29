@@ -22,6 +22,8 @@
 
 namespace ros2_medkit_gateway {
 
+class TypeIntrospection;  // forward decl - defined in core/type_introspection.hpp.
+
 using json = nlohmann::json;
 
 /// Neutral result for a topic-sample call routed through the transport port.
@@ -68,6 +70,14 @@ class TopicTransport {
   /// Publisher and subscriber count for a topic. Implementations may return
   /// stale data if the underlying graph snapshot is cached.
   virtual std::pair<uint64_t, uint64_t> count_publishers_subscribers(const std::string & topic_name) const = 0;
+
+  /// Type-introspection helper used by handlers to enrich SOVD payloads with
+  /// schema and default-value templates. The TypeIntrospection backend is
+  /// rclcpp-coupled in the current implementation; the transport adapter owns
+  /// it so the manager body remains middleware-neutral. May return nullptr in
+  /// transports that do not support introspection (test mocks, alternative
+  /// middlewares).
+  virtual TypeIntrospection * get_type_introspection() const = 0;
 };
 
 }  // namespace ros2_medkit_gateway
