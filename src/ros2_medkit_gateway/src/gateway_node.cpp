@@ -142,7 +142,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Declare parameters with defaults
   declare_parameter("server.host", "127.0.0.1");
   declare_parameter("server.port", 8080);
-  declare_parameter("refresh_interval_ms", 10000);
+  // Safety-backstop refresh interval. Primary discovery refresh is driven
+  // by rclcpp graph events; this only controls the periodic forced
+  // refresh used when a graph event would otherwise be missed.
+  declare_parameter("refresh_interval_ms", 30000);
   declare_parameter("fault_manager.namespace", "");
   declare_parameter("fault_manager.service_timeout_sec", 5.0);
   declare_parameter("cors.allowed_origins", std::vector<std::string>{});
@@ -354,15 +357,19 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     RCLCPP_WARN(get_logger(), "Binding to 0.0.0.0 - REST API accessible from ALL network interfaces!");
   }
 
-  // Validate refresh interval
+  // Validate backstop interval. Discovery is primarily driven by rclcpp
+  // graph events polled every 100 ms; this value only governs the
+  // safety-backstop timer that periodically forces a refresh in case a
+  // graph event is missed.
   if (refresh_interval_ms_ < 100 || refresh_interval_ms_ > 60000) {
-    RCLCPP_WARN(get_logger(), "Invalid refresh interval %dms. Must be between 100-60000ms. Using default 10000ms.",
+    RCLCPP_WARN(get_logger(),
+                "Invalid backstop refresh interval %dms. Must be between 100-60000ms. Using default 30000ms.",
                 refresh_interval_ms_);
-    refresh_interval_ms_ = 10000;
+    refresh_interval_ms_ = 30000;
   }
 
   // Log configuration
-  RCLCPP_INFO(get_logger(), "Configuration: REST API at %s:%d, refresh interval: %dms", server_host_.c_str(),
+  RCLCPP_INFO(get_logger(), "Configuration: REST API at %s:%d, backstop refresh interval: %dms", server_host_.c_str(),
               server_port_, refresh_interval_ms_);
 
   if (cors_config_.enabled) {
@@ -1384,8 +1391,38 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Initial discovery
   refresh_cache();
 
-  // Setup periodic refresh with configurable interval
-  refresh_timer_ = create_wall_timer(std::chrono::milliseconds(refresh_interval_ms_), [this]() {
+  // Primary refresh trigger: ROS 2 graph events.
+  //
+  // `get_graph_event()` returns a shared rclcpp::Event the executor signals
+  // whenever the graph changes (node up/down, topic/service/action add or
+  // remove). We poll `check_and_clear()` every 100 ms and only run the
+  // (relatively expensive) `refresh_cache()` pipeline when the event has
+  // fired. On a stable graph this keeps idle CPU near zero.
+  //
+  // 100 ms is a deliberate balance: spawn-detection latency stays low
+  // (graph-event arrival + at most one tick), while the polling overhead is
+  // a single atomic check per tick.
+  graph_event_ = this->get_graph_event();
+  graph_check_timer_ = create_wall_timer(std::chrono::milliseconds(100), [this]() {
+    if (!graph_event_) {
+      return;
+    }
+    if (!graph_event_->check_and_clear()) {
+      return;
+    }
+    refresh_cache();
+
+    // Sweep triggers whose entities disappeared from discovery
+    if (trigger_mgr_) {
+      trigger_mgr_->sweep_orphaned_triggers();
+    }
+  });
+
+  // Safety backstop: unconditional refresh at the configured (low) cadence.
+  // Guarantees liveness if a graph event is ever missed for any reason
+  // (lost wakeup, rclcpp anomaly, etc.). Default 30 s is rare enough to be
+  // negligible on idle CPU yet bounded enough to recover quickly.
+  backstop_timer_ = create_wall_timer(std::chrono::milliseconds(refresh_interval_ms_), [this]() {
     refresh_cache();
 
     // Sweep triggers whose entities disappeared from discovery
