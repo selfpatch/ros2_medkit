@@ -565,7 +565,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   const auto topic_sample_timeout_sec = get_parameter("topic_sample_timeout_sec").as_double();
   topic_transport_ = std::make_shared<ros2::Ros2TopicTransport>(this, topic_sample_timeout_sec);
   data_access_mgr_ = std::make_unique<DataAccessManager>(topic_transport_, topic_sample_timeout_sec);
-  operation_mgr_ = std::make_unique<OperationManager>(this, discovery_mgr_.get());
+  service_transport_ = std::make_shared<ros2::Ros2ServiceTransport>(this);
+  action_transport_ = std::make_shared<ros2::Ros2ActionTransport>(this);
+  const auto service_call_timeout_sec =
+      static_cast<int>(declare_parameter<int64_t>("service_call_timeout_sec", static_cast<int64_t>(10)));
+  operation_mgr_ = std::make_unique<OperationManager>(service_transport_, action_transport_, discovery_mgr_.get(),
+                                                      service_call_timeout_sec);
   config_mgr_ = std::make_unique<ConfigurationManager>(this);
   fault_mgr_ = std::make_unique<FaultManager>(this);
 

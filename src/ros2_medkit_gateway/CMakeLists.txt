@@ -151,6 +151,8 @@ add_library(gateway_ros2 STATIC
   src/aggregation/aggregation_manager.cpp
   src/configuration_manager.cpp
   src/data/ros2_topic_data_provider.cpp
+  src/ros2/transports/ros2_action_transport.cpp
+  src/ros2/transports/ros2_service_transport.cpp
   src/ros2/transports/ros2_topic_transport.cpp
   src/default_script_provider.cpp
   src/discovery/discovery_manager.cpp
@@ -187,7 +189,6 @@ add_library(gateway_ros2 STATIC
   src/http/http_server.cpp
   src/http/rest_server.cpp
   src/log_manager.cpp
-  src/operation_manager.cpp
   src/openapi/capability_generator.cpp
   src/openapi/openapi_spec_builder.cpp
   src/openapi/path_builder.cpp
@@ -381,6 +382,23 @@ if(BUILD_TESTING)
     COMMAND $<TARGET_FILE:test_data_access_manager_routing>
   )
   set_tests_properties(data_access_manager_routing PROPERTIES LABELS "unit")
+
+  # ─── OperationManager routing test (gateway_core only) ─────────────────────
+  # Mock-transport coverage proving the manager body (service / action call
+  # routing, goal tracking, status callback wiring, cleanup) compiles and
+  # links against gateway_core alone, with no rclcpp on the link line.
+  add_executable(test_operation_manager_routing test/test_operation_manager_routing.cpp)
+  target_link_libraries(test_operation_manager_routing
+    PRIVATE
+      gateway_core
+      GTest::gtest
+      GTest::gtest_main
+  )
+  add_test(
+    NAME operation_manager_routing
+    COMMAND $<TARGET_FILE:test_operation_manager_routing>
+  )
+  set_tests_properties(operation_manager_routing PROPERTIES LABELS "unit")
 
   # Add GTest
   find_package(ament_cmake_gtest REQUIRED)

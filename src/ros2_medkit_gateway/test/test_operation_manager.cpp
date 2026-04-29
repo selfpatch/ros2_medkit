@@ -19,6 +19,8 @@
 
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_action_transport.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_service_transport.hpp"
 
 using namespace ros2_medkit_gateway;
 
@@ -33,22 +35,27 @@ class TestOperationManager : public ::testing::Test {
   }
 
   void SetUp() override {
-    // Use short timeout for tests to avoid long waits on nonexistent services
-    rclcpp::NodeOptions options;
-    options.parameter_overrides({rclcpp::Parameter("service_call_timeout_sec", static_cast<int64_t>(1))});
-    node_ = std::make_shared<rclcpp::Node>("test_operation_manager_node", options);
+    // Use short timeout for tests to avoid long waits on nonexistent services.
+    node_ = std::make_shared<rclcpp::Node>("test_operation_manager_node");
     discovery_manager_ = std::make_unique<DiscoveryManager>(node_.get());
-    operation_manager_ = std::make_unique<OperationManager>(node_.get(), discovery_manager_.get());
+    service_transport_ = std::make_shared<ros2::Ros2ServiceTransport>(node_.get());
+    action_transport_ = std::make_shared<ros2::Ros2ActionTransport>(node_.get());
+    operation_manager_ = std::make_unique<OperationManager>(service_transport_, action_transport_,
+                                                            discovery_manager_.get(), /*timeout=*/1);
   }
 
   void TearDown() override {
     operation_manager_.reset();
     discovery_manager_.reset();
+    service_transport_.reset();
+    action_transport_.reset();
     node_.reset();
   }
 
   std::shared_ptr<rclcpp::Node> node_;
   std::unique_ptr<DiscoveryManager> discovery_manager_;
+  std::shared_ptr<ros2::Ros2ServiceTransport> service_transport_;
+  std::shared_ptr<ros2::Ros2ActionTransport> action_transport_;
   std::unique_ptr<OperationManager> operation_manager_;
 };
 
