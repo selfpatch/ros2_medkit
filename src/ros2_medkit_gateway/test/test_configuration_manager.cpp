@@ -20,6 +20,7 @@
 #include <thread>
 
 #include "ros2_medkit_gateway/configuration_manager.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_parameter_transport.hpp"
 
 using namespace ros2_medkit_gateway;
 
@@ -38,9 +39,10 @@ class TestConfigurationManager : public ::testing::Test {
     // Use short timeout for tests to avoid long waits on nonexistent nodes
     rclcpp::NodeOptions options;
     options.allow_undeclared_parameters(false);
-    options.parameter_overrides({rclcpp::Parameter("parameter_service_timeout_sec", 0.1)});
     node_ = std::make_shared<rclcpp::Node>("test_config_manager_node", options);
-    config_manager_ = std::make_unique<ConfigurationManager>(node_.get());
+    // Short timeout (0.1s) for tests to avoid long waits on nonexistent nodes.
+    parameter_transport_ = std::make_shared<ros2::Ros2ParameterTransport>(node_.get(), 0.1, 60.0);
+    config_manager_ = std::make_unique<ConfigurationManager>(parameter_transport_);
 
     // Create and start executor in separate thread to avoid deadlocks
     executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
@@ -60,11 +62,13 @@ class TestConfigurationManager : public ::testing::Test {
     }
     executor_->remove_node(node_);
     config_manager_.reset();
+    parameter_transport_.reset();
     node_.reset();
     executor_.reset();
   }
 
   std::shared_ptr<rclcpp::Node> node_;
+  std::shared_ptr<ros2::Ros2ParameterTransport> parameter_transport_;
   std::unique_ptr<ConfigurationManager> config_manager_;
   std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
   std::thread spin_thread_;
