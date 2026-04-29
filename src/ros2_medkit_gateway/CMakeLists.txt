@@ -327,17 +327,23 @@ if(BUILD_TESTING)
   )
   ament_copyright(EXCLUDE ${VENDORED_FILES})
 
-  # Configure clang-format to only check our source files (not vendored)
-  find_package(ament_cmake_clang_format REQUIRED)
-  file(GLOB_RECURSE _format_files
-    "include/*.h" "include/*.hpp"
-    "src/*.cpp" "src/*.h" "src/*.hpp"
-    "test/*.cpp" "test/*.h" "test/*.hpp"
-  )
-  list(FILTER _format_files EXCLUDE REGEX ".*/vendored/.*")
-  ament_clang_format(${_format_files}
-    CONFIG_FILE "${ament_cmake_clang_format_CONFIG_FILE}"
-  )
+  # Configure clang-format to only check our source files (not vendored).
+  # ament_cmake_clang_format is intentionally only installed in the Jazzy
+  # quality job (ci.yml skips its rosdep key on Humble + Rolling), so use
+  # QUIET + FOUND check instead of REQUIRED to gracefully degrade on the
+  # build-and-test runners without breaking the build.
+  find_package(ament_cmake_clang_format QUIET)
+  if(ament_cmake_clang_format_FOUND)
+    file(GLOB_RECURSE _format_files
+      "include/*.h" "include/*.hpp"
+      "src/*.cpp" "src/*.h" "src/*.hpp"
+      "test/*.cpp" "test/*.h" "test/*.hpp"
+    )
+    list(FILTER _format_files EXCLUDE REGEX ".*/vendored/.*")
+    ament_clang_format(${_format_files}
+      CONFIG_FILE "${ament_cmake_clang_format_CONFIG_FILE}"
+    )
+  endif()
 
   ros2_medkit_clang_tidy(
     HEADER_FILTER "^${CMAKE_CURRENT_SOURCE_DIR}/(include|src|test)/"

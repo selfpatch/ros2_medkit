@@ -135,24 +135,30 @@ if(BUILD_TESTING)
   )
   ament_lint_auto_find_test_dependencies()
 
-  # Configure clang-format manually for non-vendored files only
-  find_package(ament_cmake_clang_format REQUIRED)
-  set(_clang_format_config "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-format")
-  ament_clang_format(
-    CONFIG_FILE "${_clang_format_config}"
-    "include/ros2_medkit_serialization/json_serializer.hpp"
-    "include/ros2_medkit_serialization/message_cleanup.hpp"
-    "include/ros2_medkit_serialization/serialization_error.hpp"
-    "include/ros2_medkit_serialization/service_action_types.hpp"
-    "include/ros2_medkit_serialization/type_cache.hpp"
-    "src/json_serializer.cpp"
-    "src/message_cleanup.cpp"
-    "src/service_action_types.cpp"
-    "src/type_cache.cpp"
-    "test/test_json_serializer.cpp"
-    "test/test_service_action_types.cpp"
-    "test/test_type_cache.cpp"
-  )
+  # Configure clang-format manually for non-vendored files only.
+  # ament_cmake_clang_format is intentionally only installed in the Jazzy
+  # quality job (ci.yml skips its rosdep key on Humble + Rolling), so use
+  # QUIET + FOUND check instead of REQUIRED to gracefully degrade on the
+  # build-and-test runners without breaking the build.
+  find_package(ament_cmake_clang_format QUIET)
+  if(ament_cmake_clang_format_FOUND)
+    set(_clang_format_config "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-format")
+    ament_clang_format(
+      CONFIG_FILE "${_clang_format_config}"
+      "include/ros2_medkit_serialization/json_serializer.hpp"
+      "include/ros2_medkit_serialization/message_cleanup.hpp"
+      "include/ros2_medkit_serialization/serialization_error.hpp"
+      "include/ros2_medkit_serialization/service_action_types.hpp"
+      "include/ros2_medkit_serialization/type_cache.hpp"
+      "src/json_serializer.cpp"
+      "src/message_cleanup.cpp"
+      "src/service_action_types.cpp"
+      "src/type_cache.cpp"
+      "test/test_json_serializer.cpp"
+      "test/test_service_action_types.cpp"
+      "test/test_type_cache.cpp"
+    )
+  endif()
 
   ros2_medkit_clang_tidy(
     HEADER_FILTER "^${CMAKE_CURRENT_SOURCE_DIR}/include/ros2_medkit_serialization/[^v].*"
