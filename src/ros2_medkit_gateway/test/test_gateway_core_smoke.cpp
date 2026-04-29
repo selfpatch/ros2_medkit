@@ -32,6 +32,7 @@
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/log_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/trigger_manager.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
@@ -88,6 +89,7 @@ using ros2_medkit_gateway::ServiceTransport;
 using ros2_medkit_gateway::TopicSubscriptionHandle;
 using ros2_medkit_gateway::TopicSubscriptionTransport;
 using ros2_medkit_gateway::TopicTransport;
+using ros2_medkit_gateway::TriggerManager;
 using ros2_medkit_gateway::UpdateProvider;
 
 static_assert(sizeof(Area) > 0);
@@ -99,6 +101,7 @@ static_assert(sizeof(DataAccessManager) > 0);
 static_assert(sizeof(FaultManager) > 0);
 static_assert(sizeof(LogManager) > 0);
 static_assert(sizeof(OperationManager) > 0);
+static_assert(sizeof(TriggerManager) > 0);
 static_assert(std::is_abstract_v<ServiceActionResolver>);
 static_assert(std::is_abstract_v<DataProvider>);
 static_assert(std::is_abstract_v<OperationProvider>);

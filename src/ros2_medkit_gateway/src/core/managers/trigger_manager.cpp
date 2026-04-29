@@ -20,8 +20,7 @@
 #include <sstream>
 #include <utility>
 
-#include "ros2_medkit_gateway/log_manager.hpp"
-#include "ros2_medkit_gateway/trigger_topic_subscriber.hpp"
+#include "ros2_medkit_gateway/core/managers/log_manager.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -30,8 +29,13 @@ namespace ros2_medkit_gateway {
 // ---------------------------------------------------------------------------
 
 TriggerManager::TriggerManager(ResourceChangeNotifier & notifier, ConditionRegistry & conditions, TriggerStore & store,
-                               const TriggerConfig & config)
-  : notifier_(notifier), conditions_(conditions), store_(store), config_(config) {
+                               const TriggerConfig & config,
+                               std::shared_ptr<TopicSubscriptionTransport> topic_transport)
+  : notifier_(notifier)
+  , conditions_(conditions)
+  , store_(store)
+  , config_(config)
+  , topic_transport_(std::move(topic_transport)) {
   // Subscribe to all resource changes (empty filter = catch-all)
   NotifierFilter filter;
   notifier_sub_id_ = notifier_.subscribe(filter, [this](const ResourceChange & change) {
@@ -55,6 +59,9 @@ void TriggerManager::shutdown() {
     state->active.store(false);
     state->cv.notify_all();
   }
+  // Drop every per-trigger subscription handle so the underlying transport
+  // tears down its rclcpp resources before the manager goes away.
+  topic_handles_.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -106,10 +113,6 @@ void TriggerManager::set_entity_children_fn(EntityChildrenFn fn) {
   entity_children_fn_ = std::move(fn);
 }
 
-void TriggerManager::set_topic_subscriber(TriggerTopicSubscriber * subscriber) {
-  topic_subscriber_ = subscriber;
-}
-
 void TriggerManager::set_log_manager(LogManager * log_manager) {
   log_manager_ = log_manager;
 }
@@ -126,7 +129,7 @@ void TriggerManager::retry_unresolved_triggers() {
 
   std::lock_guard<std::mutex> lock(triggers_mutex_);
 
-  if (unresolved_data_triggers_.empty() || !resolve_topic_fn_ || !topic_subscriber_) {
+  if (unresolved_data_triggers_.empty() || !resolve_topic_fn_ || !topic_transport_) {
     return;
   }
 
@@ -144,13 +147,24 @@ void TriggerManager::retry_unresolved_triggers() {
 
     std::string topic_name = resolve_topic_fn_(entry.entity_id, entry.resource_path);
     if (!topic_name.empty()) {
-      // Update the trigger's resolved_topic_name
+      // Update the trigger's resolved_topic_name + register a transport
+      // handle whose lifetime is tied to the trigger entry (cleared on
+      // remove()/cleanup_expired_trigger()).
       auto it = triggers_.find(entry.trigger_id);
       if (it != triggers_.end()) {
         std::lock_guard<std::mutex> state_lock(it->second->mtx);
         it->second->info.resolved_topic_name = topic_name;
       }
-      topic_subscriber_->subscribe(topic_name, entry.resource_path, entry.entity_id);
+      const std::string trigger_id = entry.trigger_id;
+      const std::string entity_id = entry.entity_id;
+      const std::string resource_path = entry.resource_path;
+      auto handle = topic_transport_->subscribe(
+          topic_name, /*msg_type=*/"", [this, entity_id, resource_path](const nlohmann::json & sample) {
+            notifier_.notify("data", entity_id, resource_path, sample, ChangeType::UPDATED);
+          });
+      if (handle) {
+        topic_handles_[trigger_id] = std::move(handle);
+      }
       resolved_indices.push_back(i);
     }
   }
@@ -312,9 +326,18 @@ tl::expected<TriggerInfo, TriggerCreateError> TriggerManager::create(const Trigg
   // Subscribe to topic for data triggers.
   // When resolved_topic_name is empty (topic not yet discoverable at creation time),
   // queue for deferred resolution - retry_unresolved_triggers() will pick it up.
-  if (topic_subscriber_ && req.collection == "data") {
+  if (topic_transport_ && req.collection == "data") {
     if (!req.resolved_topic_name.empty()) {
-      topic_subscriber_->subscribe(req.resolved_topic_name, req.resource_path, req.entity_id);
+      const std::string entity_id = req.entity_id;
+      const std::string resource_path = req.resource_path;
+      auto handle = topic_transport_->subscribe(
+          req.resolved_topic_name, /*msg_type=*/"", [this, entity_id, resource_path](const nlohmann::json & sample) {
+            notifier_.notify("data", entity_id, resource_path, sample, ChangeType::UPDATED);
+          });
+      if (handle) {
+        std::lock_guard<std::mutex> lock(triggers_mutex_);
+        topic_handles_[info_copy.id] = std::move(handle);
+      }
     } else if (!req.resource_path.empty()) {
       std::lock_guard<std::mutex> lock(triggers_mutex_);
       unresolved_data_triggers_.push_back(
@@ -387,9 +410,12 @@ bool TriggerManager::remove(const std::string & trigger_id) {
   std::shared_ptr<TriggerState> state;
   std::string collection;
   std::string entity_id;
-  std::string resolved_topic_name;
   bool persistent = false;
   OnRemovedCallback on_removed_copy;
+  // Capture the per-trigger transport handle here so its destructor
+  // (which unsubscribes from the underlying topic) runs after we drop
+  // triggers_mutex_, keeping the lock window short.
+  std::unique_ptr<TopicSubscriptionHandle> released_handle;
   {
     std::lock_guard<std::mutex> lock(triggers_mutex_);
     auto it = triggers_.find(trigger_id);
@@ -401,11 +427,15 @@ bool TriggerManager::remove(const std::string & trigger_id) {
       std::lock_guard<std::mutex> sub_lock(state->mtx);
       collection = state->info.collection;
       entity_id = state->info.entity_id;
-      resolved_topic_name = state->info.resolved_topic_name;
       persistent = state->info.persistent;
     }
     remove_from_dispatch_index(trigger_id, collection, entity_id);
     triggers_.erase(it);
+    auto h_it = topic_handles_.find(trigger_id);
+    if (h_it != topic_handles_.end()) {
+      released_handle = std::move(h_it->second);
+      topic_handles_.erase(h_it);
+    }
     on_removed_copy = on_removed_;  // Copy under lock to avoid data race
   }
 
@@ -413,10 +443,8 @@ bool TriggerManager::remove(const std::string & trigger_id) {
   state->active.store(false);
   state->cv.notify_all();
 
-  // Unsubscribe from topic for data triggers
-  if (topic_subscriber_ && collection == "data" && !resolved_topic_name.empty()) {
-    topic_subscriber_->unsubscribe(resolved_topic_name, entity_id);
-  }
+  // released_handle goes out of scope here, unsubscribing the topic for
+  // data triggers (no-op for non-data triggers, which never registered one).
 
   // Remove from persistent store if applicable (outside triggers_mutex_)
   if (persistent) {
@@ -466,21 +494,14 @@ void TriggerManager::cleanup_expired_trigger(const std::string & trigger_id,
   bool persistent = false;
   std::string collection;
   std::string entity_id;
-  std::string resolved_topic_name;
   {
     std::lock_guard<std::mutex> sub_lock(state->mtx);
     state->info.status = TriggerStatus::TERMINATED;
     persistent = state->info.persistent;
     collection = state->info.collection;
     entity_id = state->info.entity_id;
-    resolved_topic_name = state->info.resolved_topic_name;
   }
   state->cv.notify_all();
-
-  // Unsubscribe from topic for expired data triggers
-  if (topic_subscriber_ && collection == "data" && !resolved_topic_name.empty()) {
-    topic_subscriber_->unsubscribe(resolved_topic_name, entity_id);
-  }
 
   // Persist status change (outside all locks)
   if (persistent) {
@@ -489,14 +510,25 @@ void TriggerManager::cleanup_expired_trigger(const std::string & trigger_id,
     (void)store_.update(trigger_id, fields);
   }
 
-  // Remove from dispatch index and triggers map; capture callback under lock
+  // Remove from dispatch index, triggers map, and topic-handle map; the
+  // released handle's dtor unsubscribes the underlying topic. The unique_ptr
+  // is moved out from under the lock so the unsubscribe runs without holding
+  // triggers_mutex_, mirroring the remove() ordering.
   OnRemovedCallback on_removed_copy;
+  std::unique_ptr<TopicSubscriptionHandle> released_handle;
   {
     std::lock_guard<std::mutex> lock(triggers_mutex_);
     remove_from_dispatch_index(trigger_id, collection, entity_id);
     triggers_.erase(trigger_id);
+    auto h_it = topic_handles_.find(trigger_id);
+    if (h_it != topic_handles_.end()) {
+      released_handle = std::move(h_it->second);
+      topic_handles_.erase(h_it);
+    }
     on_removed_copy = on_removed_;
   }
+
+  // released_handle drops here -> transport unsubscribe.
 
   // Fire on_removed callback (I8 fix) - consistent with remove()
   if (on_removed_copy) {
@@ -620,9 +652,19 @@ void TriggerManager::load_persistent_triggers() {
 
     add_to_dispatch_index(state->info.id, state->info.collection, state->info.entity_id);
 
-    // Re-subscribe to topic for restored data triggers
-    if (topic_subscriber_ && state->info.collection == "data" && !state->info.resolved_topic_name.empty()) {
-      topic_subscriber_->subscribe(state->info.resolved_topic_name, state->info.resource_path, state->info.entity_id);
+    // Re-subscribe to topic for restored data triggers via the transport.
+    if (topic_transport_ && state->info.collection == "data" && !state->info.resolved_topic_name.empty()) {
+      const std::string trigger_id = state->info.id;
+      const std::string entity_id = state->info.entity_id;
+      const std::string resource_path = state->info.resource_path;
+      auto handle =
+          topic_transport_->subscribe(state->info.resolved_topic_name, /*msg_type=*/"",
+                                      [this, entity_id, resource_path](const nlohmann::json & sample) {
+                                        notifier_.notify("data", entity_id, resource_path, sample, ChangeType::UPDATED);
+                                      });
+      if (handle) {
+        topic_handles_[trigger_id] = std::move(handle);
+      }
     }
 
     triggers_[state->info.id] = std::move(state);

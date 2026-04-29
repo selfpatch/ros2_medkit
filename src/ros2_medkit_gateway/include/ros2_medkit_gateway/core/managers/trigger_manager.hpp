@@ -32,13 +32,13 @@
 
 #include "ros2_medkit_gateway/core/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/core/transports/topic_subscription_transport.hpp"
 #include "ros2_medkit_gateway/core/trigger_store.hpp"
 
 namespace ros2_medkit_gateway {
 
 // Forward declarations
 class LogManager;
-class TriggerTopicSubscriber;
 
 /// Error categories for trigger create/update operations.
 enum class TriggerError { ValidationError, CapacityExceeded, PersistenceError, NotFound };
@@ -81,8 +81,18 @@ struct TriggerConfig {
 /// matching and persistence via TriggerStore.
 class TriggerManager {
  public:
+  /// Construct the trigger manager.
+  ///
+  /// @param notifier      Resource-change notifier the manager subscribes to.
+  /// @param conditions    Registry of condition evaluators (OnChange, etc.).
+  /// @param store         Persistence store for trigger metadata + state.
+  /// @param config        Capacity + on-restart behaviour.
+  /// @param topic_transport Optional transport used to register data-trigger
+  ///                      topic subscriptions. When null the manager retains
+  ///                      its CRUD/dispatch behaviour but never subscribes
+  ///                      (useful in tests that don't need topic routing).
   TriggerManager(ResourceChangeNotifier & notifier, ConditionRegistry & conditions, TriggerStore & store,
-                 const TriggerConfig & config);
+                 const TriggerConfig & config, std::shared_ptr<TopicSubscriptionTransport> topic_transport = nullptr);
   ~TriggerManager();
 
   // Non-copyable, non-movable (owns trigger state and notifier subscription)
@@ -143,10 +153,6 @@ class TriggerManager {
   /// Set the entity hierarchy resolver. Called by GatewayNode after cache is available.
   void set_entity_children_fn(EntityChildrenFn fn);
 
-  /// Set the topic subscriber for data trigger subscriptions.
-  /// Called by GatewayNode after TriggerTopicSubscriber is created.
-  void set_topic_subscriber(TriggerTopicSubscriber * subscriber);
-
   /// Set the LogManager for trigger log_settings integration.
   /// Called by GatewayNode after both TriggerManager and LogManager are available.
   void set_log_manager(LogManager * log_manager);
@@ -159,7 +165,8 @@ class TriggerManager {
   void set_resolve_topic_fn(ResolveTopicFn fn);
 
   /// Retry resolving data triggers whose topic names were unknown at creation.
-  /// Called periodically by TriggerTopicSubscriber's retry timer.
+  /// Called periodically (today: from the rclcpp adapter's retry tick) so
+  /// that triggers stuck without a topic name get a chance to subscribe.
   void retry_unresolved_triggers();
 
   // --- Entity existence check (for orphan sweep) ----------------------------
@@ -254,8 +261,15 @@ class TriggerManager {
   mutable std::mutex hierarchy_mutex_;
   EntityChildrenFn entity_children_fn_;
 
-  // Data trigger topic subscriber (non-owning, optional)
-  TriggerTopicSubscriber * topic_subscriber_{nullptr};
+  // Data trigger topic transport (shared, optional). The adapter side owns
+  // the rclcpp resources; the manager only stores per-trigger handles.
+  std::shared_ptr<TopicSubscriptionTransport> topic_transport_;
+
+  // Per-trigger live subscription handles. Destruction of a handle
+  // unsubscribes the underlying topic; the manager removes entries from
+  // this map on remove()/cleanup_expired_trigger() so the dtor side-effect
+  // ties subscription lifetime to trigger lifetime. Guarded by triggers_mutex_.
+  std::unordered_map<std::string, std::unique_ptr<TopicSubscriptionHandle>> topic_handles_;
 
   // LogManager for log_settings integration (non-owning, optional)
   LogManager * log_manager_{nullptr};
