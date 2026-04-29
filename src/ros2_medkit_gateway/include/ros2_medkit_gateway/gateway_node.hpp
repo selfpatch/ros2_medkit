@@ -248,6 +248,10 @@ class GatewayNode : public rclcpp::Node {
   // Configuration parameters
   std::string server_host_;
   int server_port_;
+  // Safety-backstop refresh interval in milliseconds. The primary refresh
+  // trigger is the rclcpp graph event polled by `graph_check_timer_`; this
+  // value drives `backstop_timer_` which guarantees liveness if a graph
+  // event is ever missed (lost wakeup, rclcpp anomaly, etc.).
   int refresh_interval_ms_;
   bool filter_internal_nodes_{true};
   CorsConfig cors_config_;
@@ -330,8 +334,23 @@ class GatewayNode : public rclcpp::Node {
   // Cache with thread safety
   ThreadSafeEntityCache thread_safe_cache_;
 
-  // Timer for periodic refresh
-  rclcpp::TimerBase::SharedPtr refresh_timer_;
+  // Graph-change-driven discovery refresh.
+  //
+  // `graph_event_` is the rclcpp::Event signalled whenever the ROS 2 graph
+  // changes (node up/down, topic/service/action add or remove). It is a
+  // shared_ptr handed out by `rclcpp::Node::get_graph_event()`; the executor
+  // owns the underlying notification and we just poll-and-clear it.
+  //
+  // `graph_check_timer_` polls `graph_event_->check_and_clear()` at a fast
+  // cadence (100 ms) and runs `refresh_cache()` only when the event fires.
+  // On a stable graph this keeps idle CPU near zero.
+  //
+  // `backstop_timer_` runs `refresh_cache()` unconditionally at the slower
+  // `refresh_interval_ms_` cadence. Its sole purpose is liveness in the
+  // unlikely case a graph event is missed.
+  rclcpp::Event::SharedPtr graph_event_;
+  rclcpp::TimerBase::SharedPtr graph_check_timer_;
+  rclcpp::TimerBase::SharedPtr backstop_timer_;
 
   // Serializes `refresh_cache()` across the refresh timer, plugin
   // `notify_entities_changed` calls and any other caller. Required because

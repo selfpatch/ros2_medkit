@@ -223,7 +223,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'refresh_interval_ms',
             default_value='2000',
-            description='Cache refresh interval in milliseconds'
+            description=(
+                'Safety-backstop refresh interval in milliseconds. Primary '
+                'refresh is graph-event driven; this only controls the '
+                'periodic forced refresh.'
+            )
         ),
 
         DeclareLaunchArgument(
