@@ -30,6 +30,13 @@
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/script_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/update_provider.hpp"
+#include "ros2_medkit_gateway/core/transports/action_transport.hpp"
+#include "ros2_medkit_gateway/core/transports/fault_service_transport.hpp"
+#include "ros2_medkit_gateway/core/transports/log_source.hpp"
+#include "ros2_medkit_gateway/core/transports/parameter_transport.hpp"
+#include "ros2_medkit_gateway/core/transports/service_transport.hpp"
+#include "ros2_medkit_gateway/core/transports/topic_subscription_transport.hpp"
+#include "ros2_medkit_gateway/core/transports/topic_transport.hpp"
 
 #include <gtest/gtest.h>
 
@@ -41,17 +48,25 @@ namespace {
 // above are not flagged as unused. The translation unit must still link
 // against gateway_core alone, which proves the neutral-layer contract.
 
+using ros2_medkit_gateway::ActionTransport;
 using ros2_medkit_gateway::App;
 using ros2_medkit_gateway::Area;
 using ros2_medkit_gateway::Component;
 using ros2_medkit_gateway::DataProvider;
 using ros2_medkit_gateway::FaultProvider;
+using ros2_medkit_gateway::FaultServiceTransport;
 using ros2_medkit_gateway::Function;
 using ros2_medkit_gateway::HostInfoProvider;
 using ros2_medkit_gateway::IntrospectionProvider;
 using ros2_medkit_gateway::LogProvider;
+using ros2_medkit_gateway::LogSource;
 using ros2_medkit_gateway::OperationProvider;
+using ros2_medkit_gateway::ParameterTransport;
 using ros2_medkit_gateway::ScriptProvider;
+using ros2_medkit_gateway::ServiceTransport;
+using ros2_medkit_gateway::TopicSubscriptionHandle;
+using ros2_medkit_gateway::TopicSubscriptionTransport;
+using ros2_medkit_gateway::TopicTransport;
 using ros2_medkit_gateway::UpdateProvider;
 
 static_assert(sizeof(Area) > 0);
@@ -66,6 +81,16 @@ static_assert(std::is_abstract_v<IntrospectionProvider>);
 static_assert(std::is_abstract_v<ScriptProvider>);
 static_assert(std::is_abstract_v<UpdateProvider>);
 static_assert(sizeof(HostInfoProvider) > 0);
+static_assert(std::is_abstract_v<TopicTransport>);
+static_assert(std::is_abstract_v<ServiceTransport>);
+static_assert(std::is_abstract_v<ActionTransport>);
+static_assert(std::is_abstract_v<ParameterTransport>);
+static_assert(std::is_abstract_v<FaultServiceTransport>);
+static_assert(std::is_abstract_v<LogSource>);
+static_assert(std::is_abstract_v<TopicSubscriptionTransport>);
+// TopicSubscriptionHandle is a polymorphic RAII base (virtual destructor only)
+// rather than an abstract port - subclasses add the resource being managed.
+static_assert(sizeof(TopicSubscriptionHandle) > 0);
 
 }  // namespace
 
