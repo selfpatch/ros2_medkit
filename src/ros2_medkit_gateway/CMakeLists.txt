@@ -153,6 +153,7 @@ add_library(gateway_ros2 STATIC
   src/ros2/conversions/fault_msg_conversions.cpp
   src/ros2/transports/ros2_action_transport.cpp
   src/ros2/transports/ros2_fault_service_transport.cpp
+  src/ros2/transports/ros2_log_source.cpp
   src/ros2/transports/ros2_parameter_transport.cpp
   src/ros2/transports/ros2_service_transport.cpp
   src/ros2/transports/ros2_topic_transport.cpp
@@ -189,7 +190,6 @@ add_library(gateway_ros2 STATIC
   src/http/handlers/update_handlers.cpp
   src/http/http_server.cpp
   src/http/rest_server.cpp
-  src/log_manager.cpp
   src/openapi/capability_generator.cpp
   src/openapi/openapi_spec_builder.cpp
   src/openapi/path_builder.cpp
@@ -436,6 +436,24 @@ if(BUILD_TESTING)
     COMMAND $<TARGET_FILE:test_fault_manager_routing>
   )
   set_tests_properties(fault_manager_routing PROPERTIES LABELS "unit")
+
+  # ─── LogManager routing test (gateway_core only) ───────────────────────────
+  # Mock-source coverage proving the manager body (ring-buffer storage,
+  # plugin observer pattern, manages_ingestion short-circuit, severity
+  # filter, source teardown) compiles and links against gateway_core alone,
+  # with no rclcpp on the link line.
+  add_executable(test_log_manager_routing test/test_log_manager_routing.cpp)
+  target_link_libraries(test_log_manager_routing
+    PRIVATE
+      gateway_core
+      GTest::gtest
+      GTest::gtest_main
+  )
+  add_test(
+    NAME log_manager_routing
+    COMMAND $<TARGET_FILE:test_log_manager_routing>
+  )
+  set_tests_properties(log_manager_routing PROPERTIES LABELS "unit")
 
   # Add GTest
   find_package(ament_cmake_gtest REQUIRED)

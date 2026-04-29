@@ -708,7 +708,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     RCLCPP_WARN(get_logger(), "logs.buffer_size %" PRId64 " clamped to %" PRId64, raw_buffer_size, clamped);
   }
   auto log_buffer_size = static_cast<size_t>(clamped);
-  log_mgr_ = std::make_unique<LogManager>(this, plugin_mgr_.get(), log_buffer_size);
+  log_source_ = std::make_shared<ros2::Ros2LogSource>(this);
+  log_mgr_ = std::make_unique<LogManager>(log_source_, plugin_mgr_.get(), log_buffer_size);
 
   // Initialize update manager
   auto updates_enabled = get_parameter("updates.enabled").as_bool();

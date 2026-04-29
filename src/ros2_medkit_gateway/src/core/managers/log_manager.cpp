@@ -12,21 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/log_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/log_manager.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
+#include <utility>
 
-#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 
 namespace ros2_medkit_gateway {
 
 namespace {
-// Log level aliases matching rcl_interfaces::msg::Log constants
-using Log = rcl_interfaces::msg::Log;
+
+// SOVD log severity levels mirror the rcl_interfaces::msg::Log uint8 constants
+// (DEBUG=10, INFO=20, WARN=30, ERROR=40, FATAL=50). These are part of the
+// neutral data contract carried in LogEntry::level - the source adapter
+// performs the ROS-side mapping; the manager body operates on numeric levels
+// only.
+constexpr uint8_t kLevelDebug = 10;
+constexpr uint8_t kLevelInfo = 20;
+constexpr uint8_t kLevelWarn = 30;
+constexpr uint8_t kLevelError = 40;
+constexpr uint8_t kLevelFatal = 50;
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -35,15 +47,15 @@ using Log = rcl_interfaces::msg::Log;
 
 std::string LogManager::level_to_severity(uint8_t level) {
   switch (level) {
-    case Log::DEBUG:
+    case kLevelDebug:
       return "debug";
-    case Log::INFO:
+    case kLevelInfo:
       return "info";
-    case Log::WARN:
+    case kLevelWarn:
       return "warning";
-    case Log::ERROR:
+    case kLevelError:
       return "error";
-    case Log::FATAL:
+    case kLevelFatal:
       return "fatal";
     default:
       return "debug";
@@ -52,19 +64,19 @@ std::string LogManager::level_to_severity(uint8_t level) {
 
 uint8_t LogManager::severity_to_level(const std::string & severity) {
   if (severity == "debug") {
-    return Log::DEBUG;
+    return kLevelDebug;
   }
   if (severity == "info") {
-    return Log::INFO;
+    return kLevelInfo;
   }
   if (severity == "warning") {
-    return Log::WARN;
+    return kLevelWarn;
   }
   if (severity == "error") {
-    return Log::ERROR;
+    return kLevelError;
   }
   if (severity == "fatal") {
-    return Log::FATAL;
+    return kLevelFatal;
   }
   return 0;
 }
@@ -112,61 +124,61 @@ json LogManager::entry_to_json(const LogEntry & e) {
 }
 
 // ---------------------------------------------------------------------------
-// Constructor
+// Constructor / destructor
 // ---------------------------------------------------------------------------
 
-LogManager::LogManager(rclcpp::Node * node, PluginManager * plugin_mgr, size_t max_buffer_size)
-  : node_(node), plugin_mgr_(plugin_mgr), max_buffer_size_(max_buffer_size) {
+LogManager::LogManager(std::shared_ptr<LogSource> source, LogProviderRegistry * provider_registry,
+                       size_t max_buffer_size)
+  : source_(std::move(source)), provider_registry_(provider_registry), max_buffer_size_(max_buffer_size) {
   auto * provider = effective_provider();
   if (provider && provider->manages_ingestion()) {
-    RCLCPP_INFO(node_->get_logger(),
-                "LogManager: primary LogProvider manages ingestion - skipping /rosout subscription");
+    // Primary LogProvider owns the entire pipeline - never start the source,
+    // so no subscription is created.
     return;
   }
 
-  rosout_sub_ = node_->create_subscription<rcl_interfaces::msg::Log>(
-      "/rosout", rclcpp::QoS(100), [this](const rcl_interfaces::msg::Log::ConstSharedPtr & msg) {
-        on_rosout(msg);
-      });
-
-  RCLCPP_INFO(node_->get_logger(), "LogManager: subscribed to /rosout (buffer_size=%zu)", max_buffer_size_);
+  if (source_) {
+    source_->start([this](const LogEntry & entry) {
+      on_log_entry(entry);
+    });
+  }
 }
 
 LogManager::~LogManager() {
-  // Clear /rosout subscription before destruction to prevent callbacks on destroyed object
-  rosout_sub_.reset();
+  // Stop the source before any of our members destruct so no callback can
+  // fire on a half-destroyed manager. The source's stop() is idempotent and
+  // also runs from its own destructor; calling it here gives a deterministic
+  // teardown order regardless of how the shared_ptr's last reference drops.
+  if (source_) {
+    source_->stop();
+  }
 }
 
 // ---------------------------------------------------------------------------
-// /rosout callback
+// Source-emitted entry handler
 // ---------------------------------------------------------------------------
 
-void LogManager::on_rosout(const rcl_interfaces::msg::Log::ConstSharedPtr & msg) {
-  LogEntry entry;
+void LogManager::on_log_entry(const LogEntry & source_entry) {
+  // Stamp a monotonic id (the source emits entries without one; we are the
+  // single point of id assignment for both source-driven and programmatic
+  // injection paths).
+  LogEntry entry = source_entry;
   entry.id = next_id_.fetch_add(1, std::memory_order_relaxed);
-  entry.stamp_sec = msg->stamp.sec;
-  entry.stamp_nanosec = msg->stamp.nanosec;
-  entry.level = msg->level;
-  entry.name = msg->name;  // already without leading slash per rcl convention
-  entry.msg = msg->msg;
-  entry.function = msg->function;
-  entry.file = msg->file;
-  entry.line = msg->line;
 
-  // Notify all LogProvider observers — they may forward to OTel, DB, etc.
+  // Notify all LogProvider observers - they may forward to OTel, DB, etc.
   // Exceptions from plugins are caught to prevent a misbehaving plugin from
-  // crashing the gateway's ROS 2 subscription callback.
+  // crashing the source's delivery callback.
   bool suppress_buffer = false;
-  if (plugin_mgr_) {
-    for (auto * observer : plugin_mgr_->get_log_observers()) {
+  if (provider_registry_) {
+    for (auto * observer : provider_registry_->log_observers()) {
       try {
         if (observer->on_log_entry(entry)) {
           suppress_buffer = true;
         }
       } catch (const std::exception & e) {
-        RCLCPP_WARN(node_->get_logger(), "LogProvider::on_log_entry threw: %s", e.what());
+        std::cerr << "LogProvider::on_log_entry threw: " << e.what() << '\n';
       } catch (...) {
-        RCLCPP_WARN(node_->get_logger(), "LogProvider::on_log_entry threw unknown exception");
+        std::cerr << "LogProvider::on_log_entry threw unknown exception\n";
       }
     }
   }
@@ -186,7 +198,7 @@ void LogManager::on_rosout(const rcl_interfaces::msg::Log::ConstSharedPtr & msg)
     }
   }
 
-  // Notify triggers about the log event (resolve ROS node name to entity ID)
+  // Notify triggers about the log event (resolve logger name to entity ID)
   if (notifier_) {
     std::string entity_id;
 
@@ -218,7 +230,7 @@ void LogManager::on_rosout(const rcl_interfaces::msg::Log::ConstSharedPtr & msg)
 
 void LogManager::inject_entry_for_testing(LogEntry entry) {
   std::lock_guard<std::mutex> lock(buffers_mutex_);
-  // Respect buffer cap (same logic as on_rosout) for consistent test behavior
+  // Respect buffer cap (same logic as on_log_entry) for consistent test behavior
   if (buffers_.find(entry.name) == buffers_.end() && buffers_.size() >= max_buffer_size_ * 10) {
     return;  // Silently drop logs from new nodes beyond the cap
   }
@@ -237,7 +249,7 @@ void LogManager::add_log_entry(const std::string & entity_id, const std::string 
                                const nlohmann::json & metadata) {
   std::string normalized = normalize_fqn(entity_id);
 
-  // Build a LogEntry using the same structure as on_rosout()
+  // Build a LogEntry using the same structure as source-emitted entries.
   LogEntry entry;
   entry.id = next_id_.fetch_add(1, std::memory_order_relaxed);
 
@@ -251,7 +263,7 @@ void LogManager::add_log_entry(const std::string & entity_id, const std::string 
   entry.stamp_nanosec = static_cast<uint32_t>(nsecs.count());
   entry.level = severity_to_level(severity);
   if (entry.level == 0) {
-    entry.level = rcl_interfaces::msg::Log::INFO;  // fallback for invalid severity
+    entry.level = kLevelInfo;  // fallback for invalid severity
   }
   entry.name = normalized;
   entry.line = 0;
@@ -263,7 +275,7 @@ void LogManager::add_log_entry(const std::string & entity_id, const std::string 
     entry.msg = message;
   }
 
-  // Push to ring buffer (same path as on_rosout)
+  // Push to ring buffer (same path as source-emitted entries)
   {
     std::lock_guard<std::mutex> lock(buffers_mutex_);
     auto & buf = buffers_[entry.name];
@@ -296,8 +308,8 @@ void LogManager::set_node_to_entity_resolver(NodeToEntityFn resolver) {
 // ---------------------------------------------------------------------------
 
 LogProvider * LogManager::effective_provider() const {
-  if (plugin_mgr_) {
-    return plugin_mgr_->get_log_provider();
+  if (provider_registry_) {
+    return provider_registry_->primary_log_provider();
   }
   return nullptr;
 }
@@ -326,10 +338,10 @@ tl::expected<json, std::string> LogManager::get_logs(const std::vector<std::stri
       }
       return items;
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_logs threw: %s", e.what());
+      std::cerr << "LogProvider::get_logs threw: " << e.what() << '\n';
       return tl::make_unexpected(std::string("LogProvider plugin error: ") + e.what());
     } catch (...) {
-      RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_logs threw unknown exception");
+      std::cerr << "LogProvider::get_logs threw unknown exception\n";
       return tl::make_unexpected(std::string("LogProvider plugin error: unknown exception"));
     }
   }
@@ -419,10 +431,10 @@ tl::expected<LogConfig, std::string> LogManager::get_config(const std::string & 
     try {
       return provider->get_config(entity_id);
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_config threw: %s", e.what());
+      std::cerr << "LogProvider::get_config threw: " << e.what() << '\n';
       return tl::make_unexpected(std::string("LogProvider plugin error: ") + e.what());
     } catch (...) {
-      RCLCPP_ERROR(node_->get_logger(), "LogProvider::get_config threw unknown exception");
+      std::cerr << "LogProvider::get_config threw unknown exception\n";
       return tl::make_unexpected(std::string("LogProvider plugin error: unknown exception"));
     }
   }
@@ -449,10 +461,10 @@ std::string LogManager::update_config(const std::string & entity_id, const std::
     try {
       return provider->update_config(entity_id, severity_filter, max_entries);
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(node_->get_logger(), "LogProvider::update_config threw: %s", e.what());
+      std::cerr << "LogProvider::update_config threw: " << e.what() << '\n';
       return std::string("LogProvider plugin error: ") + e.what();
     } catch (...) {
-      RCLCPP_ERROR(node_->get_logger(), "LogProvider::update_config threw unknown exception");
+      std::cerr << "LogProvider::update_config threw unknown exception\n";
       return "LogProvider plugin error: unknown exception";
     }
   }

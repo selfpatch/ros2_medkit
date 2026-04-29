@@ -26,6 +26,7 @@
 #include "ros2_medkit_gateway/core/managers/configuration_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/log_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
@@ -66,6 +67,7 @@ using ros2_medkit_gateway::FaultServiceTransport;
 using ros2_medkit_gateway::Function;
 using ros2_medkit_gateway::HostInfoProvider;
 using ros2_medkit_gateway::IntrospectionProvider;
+using ros2_medkit_gateway::LogManager;
 using ros2_medkit_gateway::LogProvider;
 using ros2_medkit_gateway::LogSource;
 using ros2_medkit_gateway::OperationManager;
@@ -86,6 +88,7 @@ static_assert(sizeof(Function) > 0);
 static_assert(sizeof(ConfigurationManager) > 0);
 static_assert(sizeof(DataAccessManager) > 0);
 static_assert(sizeof(FaultManager) > 0);
+static_assert(sizeof(LogManager) > 0);
 static_assert(sizeof(OperationManager) > 0);
 static_assert(std::is_abstract_v<ServiceActionResolver>);
 static_assert(std::is_abstract_v<DataProvider>);
