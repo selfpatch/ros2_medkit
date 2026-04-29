@@ -277,8 +277,6 @@ class OperationHandlersFixtureTest : public ::testing::Test {
       executor_->spin();
     });
 
-    seed_component_cache();
-
     ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<OperationHandlers>(*ctx_);
 
@@ -287,6 +285,15 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     // (_cancel_goal, _get_result, _status). On slow CI runners under
     // parallel load, 200ms was insufficient.
     std::this_thread::sleep_for(1s);
+
+    // Seed the component cache AFTER discovery has settled. The gateway's
+    // graph-event-driven `refresh_cache()` fires whenever the executor
+    // observes a graph change (adding service_node_ / action_server_node_
+    // produces several such events), and each refresh pass calls
+    // `cache.update_all(...)` from the gateway's own discovery view -
+    // which would otherwise wipe a pre-spin seed. Seeding here guarantees
+    // the test's manually-injected entities are the latest write.
+    seed_component_cache();
   }
 
   void TearDown() override {

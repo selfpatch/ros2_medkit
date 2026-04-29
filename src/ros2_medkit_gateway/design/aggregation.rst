@@ -504,10 +504,11 @@ Health Monitoring
 ~~~~~~~~~~~~~~~~~
 
 ``AggregationManager`` calls ``check_all_health()`` during each entity cache
-refresh cycle (controlled by ``refresh_interval_ms``, default: 10000 ms). Each
-``PeerClient`` GETs ``/api/v1/health`` on its peer. If the health check fails,
-the peer is marked unhealthy and excluded from fan-out queries and entity
-fetching.
+refresh cycle. Refresh is primarily driven by rclcpp graph events (polled
+every 100 ms), with ``refresh_interval_ms`` (default: 30000 ms) providing a
+safety backstop for the case a graph event is missed. Each ``PeerClient``
+GETs ``/api/v1/health`` on its peer. If the health check fails, the peer is
+marked unhealthy and excluded from fan-out queries and entity fetching.
 
 When a peer recovers (health check succeeds again), it is automatically
 re-included.

@@ -53,7 +53,10 @@ def generate_launch_description():
 
     declare_refresh_arg = DeclareLaunchArgument(
         'refresh_interval_ms', default_value='2000',
-        description='Cache refresh interval in milliseconds')
+        description=(
+            'Safety-backstop refresh interval in milliseconds. Primary '
+            'refresh is graph-event driven (~100 ms latency); this only '
+            'controls the periodic forced refresh.'))
 
     # Build parameter overrides - only inject plugin path if found
     param_overrides = {

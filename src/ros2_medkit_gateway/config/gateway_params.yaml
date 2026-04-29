@@ -47,11 +47,18 @@ ros2_medkit_gateway:
         # TODO: Mutual TLS (client certificate verification) is not yet implemented
         # See: https://github.com/selfpatch/ros2_medkit/issues/XXX
 
-    # Cache refresh interval in milliseconds
-    # How often to discover ROS 2 nodes and update the cache
+    # Safety-backstop refresh interval in milliseconds.
+    #
+    # Primary discovery is driven by rclcpp graph events (polled every
+    # 100 ms): a refresh runs whenever a node, topic, service or action
+    # is added or removed, so on a stable graph this timer rarely fires.
+    # This value controls only the safety backstop that forces a refresh
+    # in the unlikely case a graph event is missed (lost wakeup, rclcpp
+    # anomaly, etc.).
+    #
     # Valid range: 100-60000 (0.1s to 60s)
-    # Default: 10000 (10 seconds) - optimized for developer experience
-    refresh_interval_ms: 10000
+    # Default: 30000 (30 seconds)
+    refresh_interval_ms: 30000
 
     # CORS Configuration
     # Cross-Origin Resource Sharing settings for browser-based clients
