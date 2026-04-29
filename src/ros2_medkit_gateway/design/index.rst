@@ -70,12 +70,16 @@ The following diagram shows the relationships between the main components of the
    note as N_layer_split
    This package compiles into two layered static libraries:
    * gateway_core - middleware-neutral business logic (handlers,
-     auth, fault model, aggregation, neutral managers, providers,
-     entity model). Does not link rclcpp.
-   * gateway_ros2 - ROS adapter classes (GatewayNode,
+     auth, fault model, aggregation, all SOVD managers including
      DataAccessManager, OperationManager, ConfigurationManager,
-     FaultManager, LogManager, TriggerManager, RuntimeDiscovery,
-     NativeTopicSampler, TypeIntrospection). Publicly links
+     FaultManager, LogManager, TriggerManager, providers, entity
+     model). Does not link rclcpp. Managers consume neutral
+     Transport interfaces (TopicTransport, ServiceTransport,
+     ActionTransport, ParameterTransport, FaultServiceTransport,
+     LogSource, TopicSubscriptionTransport).
+   * gateway_ros2 - ROS-binding adapters (GatewayNode plus the
+     Ros2*Transport implementations, TriggerTopicSubscriber,
+     Ros2RuntimeIntrospection, NativeTopicSampler). Publicly links
      gateway_core. Class associations on this diagram remain valid;
      the boundary affects build-time only.
    end note
@@ -317,8 +321,9 @@ The following diagram shows the relationships between the main components of the
        }
 
        class TriggerTopicSubscriber {
-           + subscribe_topic(): void
-           + unsubscribe_topic(): void
+           + subscribe(topic, type, handle_key, cb): void
+           + unsubscribe(handle_key): void
+           + set_retry_callback(cb): void
        }
 
        class EntityCache {
@@ -420,7 +425,7 @@ The following diagram shows the relationships between the main components of the
    TriggerManager --> ResourceChangeNotifier : subscribes to
    TriggerManager --> ConditionRegistry : evaluates with
    TriggerManager --> TriggerStore : persists via
-   TriggerManager --> TriggerTopicSubscriber : manages data subscriptions
+   TriggerManager --> "TopicSubscriptionTransport" : data subscriptions via transport
    SqliteTriggerStore .up.|> TriggerStore : implements
    ConditionRegistry o--> ConditionEvaluator : contains many
    RESTServer --> TriggerManager : uses
@@ -606,12 +611,16 @@ It consists of five main components:
    - Stores trigger metadata, condition parameters, and evaluator state (previous values)
    - Supports partial updates for status changes and lifetime extensions
 
-5. **TriggerTopicSubscriber** ``[gateway_ros2]`` - Manages ROS 2 topic subscriptions for data triggers.
+5. **TriggerTopicSubscriber** ``[gateway_ros2]`` - Generic per-handle subscription executor for data triggers.
 
-   - Creates ``rclcpp::GenericSubscription`` instances for monitored data topics
-   - Reference-counted: multiple triggers on the same topic share one subscription
-   - Publishes data changes to ``ResourceChangeNotifier`` for condition evaluation
-   - Automatically unsubscribes when the last trigger for a topic is removed
+   - Creates one ``rclcpp::GenericSubscription`` per ``handle_key`` provided by the caller
+   - Each trigger owns its own subscription handle - no reference-counting across triggers
+   - Wrapped by ``Ros2TopicSubscriptionTransport``, which exposes the neutral
+     ``TopicSubscriptionTransport`` interface to ``TriggerManager``
+   - Subscription lifetime is tied to the trigger entry: removing the trigger drops the
+     handle and tears down the underlying subscription
+   - Per-handle callbacks publish samples back to ``ResourceChangeNotifier`` for
+     condition evaluation
 
 Additional Design Documents
 ----------------------------
