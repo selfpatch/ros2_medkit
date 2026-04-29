@@ -63,7 +63,7 @@ class MockTopicTransport : public TopicTransport {
     return {sample_publishers_, 0};
   }
 
-  TypeIntrospection * get_type_introspection() const override {
+  ros2_medkit_serialization::TypeIntrospection * get_type_introspection() const override {
     return nullptr;
   }
 

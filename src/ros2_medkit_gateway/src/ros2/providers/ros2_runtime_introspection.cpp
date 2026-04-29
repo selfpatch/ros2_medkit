@@ -397,7 +397,7 @@ void Ros2RuntimeIntrospection::set_topic_data_provider(TopicDataProvider * provi
   topic_data_provider_ = provider;
 }
 
-void Ros2RuntimeIntrospection::set_type_introspection(TypeIntrospection * introspection) {
+void Ros2RuntimeIntrospection::set_type_introspection(ros2_medkit_serialization::TypeIntrospection * introspection) {
   type_introspection_ = introspection;
 }
 

@@ -35,11 +35,14 @@
 #include <string>
 #include <vector>
 
+namespace ros2_medkit_serialization {
+class TypeIntrospection;
+}  // namespace ros2_medkit_serialization
+
 namespace ros2_medkit_gateway {
 
 // Forward declarations
 class TopicDataProvider;
-class TypeIntrospection;
 class IntrospectionProvider;
 
 /**
@@ -306,7 +309,7 @@ class DiscoveryManager : public ServiceActionResolver {
    * @brief Set the type introspection for operation schema enrichment
    * @param introspection Pointer to TypeIntrospection (must outlive DiscoveryManager)
    */
-  void set_type_introspection(TypeIntrospection * introspection);
+  void set_type_introspection(ros2_medkit_serialization::TypeIntrospection * introspection);
 
   /**
    * @brief Refresh the cached topic map
