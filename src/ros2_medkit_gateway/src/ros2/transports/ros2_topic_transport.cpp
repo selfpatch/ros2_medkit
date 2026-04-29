@@ -30,7 +30,7 @@ namespace ros2_medkit_gateway::ros2 {
 Ros2TopicTransport::Ros2TopicTransport(rclcpp::Node * node, double default_sample_timeout_sec)
   : node_(node)
   , serializer_(std::make_shared<ros2_medkit_serialization::JsonSerializer>())
-  , type_introspection_(std::make_unique<TypeIntrospection>(""))
+  , type_introspection_(std::make_unique<ros2_medkit_serialization::TypeIntrospection>(""))
   , default_sample_timeout_sec_(default_sample_timeout_sec) {
   if (default_sample_timeout_sec_ < 0.1 || default_sample_timeout_sec_ > 30.0) {
     RCLCPP_WARN(node_->get_logger(),
@@ -155,7 +155,7 @@ TopicSample Ros2TopicTransport::sample(const std::string & topic_name, std::chro
 
   if (!res.message_type.empty()) {
     try {
-      TopicTypeInfo info = type_introspection_->get_type_info(res.message_type);
+      ros2_medkit_serialization::TopicTypeInfo info = type_introspection_->get_type_info(res.message_type);
       out.type_info = json{{"schema", info.schema}, {"default_value", info.default_value}};
     } catch (const std::exception & e) {
       RCLCPP_DEBUG(node_->get_logger(), "Could not get type info for '%s': %s", res.message_type.c_str(), e.what());

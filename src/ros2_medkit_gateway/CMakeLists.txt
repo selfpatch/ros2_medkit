@@ -203,7 +203,6 @@ add_library(gateway_ros2 STATIC
   src/ros2_common/ros2_subscription_slot.cpp
   src/script_manager.cpp
   src/trigger_fault_subscriber.cpp
-  src/type_introspection.cpp
 )
 
 # Private implementation headers for openapi module (shared by both layers)

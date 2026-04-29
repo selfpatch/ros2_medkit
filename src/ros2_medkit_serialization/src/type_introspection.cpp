@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/core/type_introspection.hpp"
+#include "ros2_medkit_serialization/type_introspection.hpp"
 
 #include <sstream>
 #include <stdexcept>
@@ -20,17 +20,17 @@
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/serialization_error.hpp"
 
-namespace ros2_medkit_gateway {
+namespace ros2_medkit_serialization {
 
 TypeIntrospection::TypeIntrospection(const std::string & /* scripts_path */)
-  : serializer_(std::make_shared<ros2_medkit_serialization::JsonSerializer>()) {
+  : serializer_(std::make_shared<JsonSerializer>()) {
   // scripts_path is deprecated and ignored - we use native serialization now
 }
 
 nlohmann::json TypeIntrospection::get_type_template(const std::string & type_name) {
   try {
     return serializer_->get_defaults(type_name);
-  } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
+  } catch (const TypeNotFoundError & e) {
     throw std::runtime_error("Unknown type: " + type_name + " (" + e.what() + ")");
   } catch (const std::exception & e) {
     throw std::runtime_error("Failed to get type template: " + std::string(e.what()));
@@ -40,7 +40,7 @@ nlohmann::json TypeIntrospection::get_type_template(const std::string & type_nam
 nlohmann::json TypeIntrospection::get_type_schema(const std::string & type_name) {
   try {
     return serializer_->get_schema(type_name);
-  } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
+  } catch (const TypeNotFoundError & e) {
     throw std::runtime_error("Unknown type: " + type_name + " (" + e.what() + ")");
   } catch (const std::exception & e) {
     throw std::runtime_error("Failed to get type schema: " + std::string(e.what()));
@@ -85,4 +85,4 @@ TopicTypeInfo TypeIntrospection::get_type_info(const std::string & type_name) {
   }
 }
 
-}  // namespace ros2_medkit_gateway
+}  // namespace ros2_medkit_serialization

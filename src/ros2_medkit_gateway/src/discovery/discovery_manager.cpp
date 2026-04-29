@@ -394,7 +394,7 @@ void DiscoveryManager::set_topic_data_provider(TopicDataProvider * provider) {
   runtime_introspection_->set_topic_data_provider(provider);
 }
 
-void DiscoveryManager::set_type_introspection(TypeIntrospection * introspection) {
+void DiscoveryManager::set_type_introspection(ros2_medkit_serialization::TypeIntrospection * introspection) {
   runtime_introspection_->set_type_introspection(introspection);
 }
 

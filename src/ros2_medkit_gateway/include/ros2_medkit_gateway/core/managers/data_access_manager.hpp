@@ -20,12 +20,15 @@
 
 #include "ros2_medkit_gateway/core/transports/topic_transport.hpp"
 
+namespace ros2_medkit_serialization {
+class TypeIntrospection;  // forward decl, defined in ros2_medkit_serialization/type_introspection.hpp
+}  // namespace ros2_medkit_serialization
+
 namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
 
 class TopicDataProvider;  // forward decl, see core/data/topic_data_provider.hpp
-class TypeIntrospection;  // forward decl, defined in core/type_introspection.hpp
 
 /**
  * @brief Application service for topic publish + sample.
@@ -95,7 +98,7 @@ class DataAccessManager {
    * implementation. May return nullptr for transports that do not support
    * introspection.
    */
-  TypeIntrospection * get_type_introspection() const {
+  ros2_medkit_serialization::TypeIntrospection * get_type_introspection() const {
     return transport_ ? transport_->get_type_introspection() : nullptr;
   }
 

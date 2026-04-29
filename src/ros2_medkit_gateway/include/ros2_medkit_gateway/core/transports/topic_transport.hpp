@@ -20,9 +20,11 @@
 #include <string>
 #include <utility>
 
-namespace ros2_medkit_gateway {
+namespace ros2_medkit_serialization {
+class TypeIntrospection;  // forward decl - defined in ros2_medkit_serialization/type_introspection.hpp.
+}  // namespace ros2_medkit_serialization
 
-class TypeIntrospection;  // forward decl - defined in core/type_introspection.hpp.
+namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
 
@@ -72,12 +74,12 @@ class TopicTransport {
   virtual std::pair<uint64_t, uint64_t> count_publishers_subscribers(const std::string & topic_name) const = 0;
 
   /// Type-introspection helper used by handlers to enrich SOVD payloads with
-  /// schema and default-value templates. The TypeIntrospection backend is
-  /// rclcpp-coupled in the current implementation; the transport adapter owns
-  /// it so the manager body remains middleware-neutral. May return nullptr in
-  /// transports that do not support introspection (test mocks, alternative
-  /// middlewares).
-  virtual TypeIntrospection * get_type_introspection() const = 0;
+  /// schema and default-value templates. The TypeIntrospection backend lives
+  /// in `ros2_medkit_serialization` alongside the rest of the rosidl glue;
+  /// transports own an instance so the manager body remains middleware-neutral.
+  /// May return nullptr in transports that do not support introspection (test
+  /// mocks, alternative middlewares).
+  virtual ros2_medkit_serialization::TypeIntrospection * get_type_introspection() const = 0;
 };
 
 }  // namespace ros2_medkit_gateway

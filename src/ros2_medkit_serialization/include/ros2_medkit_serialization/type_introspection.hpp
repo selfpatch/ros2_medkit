@@ -22,7 +22,7 @@
 
 #include "ros2_medkit_serialization/json_serializer.hpp"
 
-namespace ros2_medkit_gateway {
+namespace ros2_medkit_serialization {
 
 /**
  * @brief Information about a ROS 2 message type including schema and template
@@ -94,10 +94,10 @@ class TypeIntrospection {
 
  private:
   /// Native JSON serializer for type introspection
-  std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
+  std::shared_ptr<JsonSerializer> serializer_;
 
   std::unordered_map<std::string, TopicTypeInfo> type_cache_;  ///< Cache for type info
   mutable std::mutex cache_mutex_;                             ///< Mutex for thread-safe cache access
 };
 
-}  // namespace ros2_medkit_gateway
+}  // namespace ros2_medkit_serialization
