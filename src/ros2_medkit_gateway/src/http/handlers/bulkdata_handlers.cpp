@@ -539,10 +539,16 @@ std::string BulkDataHandlers::get_rosbag_mimetype(const std::string & format) {
 }
 
 std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo & entity) const {
+  return detail::compute_bulkdata_source_filters(ctx_.node()->get_thread_safe_cache(), entity);
+}
+
+namespace detail {
+
+std::vector<std::string> compute_bulkdata_source_filters(const ThreadSafeEntityCache & cache,
+                                                         const EntityInfo & entity) {
   if (entity.type == EntityType::FUNCTION) {
     // Functions are pure aggregated views over hosted apps - if no apps host the function,
     // there is nothing to query. No fall-through to fqn/namespace_path.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
     return HandlerContext::resolve_app_host_fqns(cache, cache.get_apps_for_function(entity.id));
   }
 
@@ -552,7 +558,6 @@ std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo &
     // empty descriptor lists plus failed ownership checks on download. Resolve hosted
     // apps first; manifest deployments where the component groups topics rather than
     // nodes still need the namespace prefix path, so fall through if no apps host it.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto filters = HandlerContext::resolve_app_host_fqns(cache, cache.get_apps_for_component(entity.id));
     if (!filters.empty()) {
       return filters;
@@ -567,6 +572,8 @@ std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo &
   }
   return {filter};
 }
+
+}  // namespace detail
 
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway

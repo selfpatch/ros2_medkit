@@ -112,26 +112,18 @@ class BulkDataHandlers {
    */
   static std::string get_rosbag_mimetype(const std::string & format);
 
+ private:
+  HandlerContext & ctx_;
+
   /**
    * @brief Get source filters for rosbag queries based on entity type.
    *
-   * - APP / AREA: returns the entity's FQN or namespace path (single filter).
-   * - FUNCTION: aggregates non-empty effective_fqn() values across all hosted apps
-   *   (no fallback - functions are pure aggregated views).
-   * - COMPONENT: aggregates from hosted apps; falls back to FQN/namespace_path only
-   *   when the component has no hosted apps (manifest deployments where the component
-   *   groups topics rather than nodes). This avoids the synthetic-component bug where
-   *   empty fqn + empty namespace_path produced zero source filters.
-   *
-   * Public to enable unit testing the entity-type branching directly.
-   *
-   * @param entity Entity information
-   * @return Vector of source filter strings (empty if no valid filters)
+   * Thin instance wrapper that fetches the cache from ctx_ and delegates to
+   * detail::compute_bulkdata_source_filters. The pure logic (entity-type
+   * branching) is unit-tested via the free function instead of the member
+   * to keep the handler's public surface unchanged.
    */
   std::vector<std::string> get_source_filters(const EntityInfo & entity) const;
-
- private:
-  HandlerContext & ctx_;
 
   /**
    * @brief Stream file contents to HTTP response.
@@ -154,6 +146,34 @@ class BulkDataHandlers {
    */
   static std::string resolve_rosbag_file_path(const std::string & path);
 };
+
+namespace detail {
+
+/**
+ * @brief Compute rosbag source filters for an entity based on its type.
+ *
+ * Pure helper that drives ``BulkDataHandlers::get_source_filters``. Lives in
+ * a ``detail`` namespace to signal "not part of the public API" while still
+ * being directly unit-testable without spinning up a ``GatewayNode``.
+ *
+ * - APP / AREA: returns the entity's FQN or namespace path (single filter).
+ * - FUNCTION: aggregates non-empty ``effective_fqn()`` values across all
+ *   hosted apps (no fallback - functions are pure aggregated views).
+ * - COMPONENT: aggregates from hosted apps; falls back to FQN/namespace_path
+ *   only when the component has no hosted apps (manifest deployments where
+ *   the component groups topics rather than nodes). This avoids the
+ *   synthetic-component bug where empty fqn + empty namespace_path produced
+ *   zero source filters.
+ *
+ * @param cache Entity cache to resolve hosted apps in (used for FUNCTION /
+ *              COMPONENT only)
+ * @param entity Entity information
+ * @return Vector of source filter strings (empty if no valid filters)
+ */
+std::vector<std::string> compute_bulkdata_source_filters(const ThreadSafeEntityCache & cache,
+                                                         const EntityInfo & entity);
+
+}  // namespace detail
 
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway

@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/http/handlers/log_handlers.hpp"
 
+#include <iterator>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
