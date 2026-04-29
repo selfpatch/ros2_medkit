@@ -83,13 +83,14 @@ jobs:
           apt-get install -y ros-${{ matrix.ros_distro }}-test-msgs libyaml-cpp-dev libssl-dev
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           rosdep update
-          # Only skip nav2_msgs because vda5050_agent declares it as a dep but
-          # the apt package is not available on all distros. We do NOT skip
-          # ament_cmake_clang_format or test_msgs here: upstream medkit
-          # packages (ros2_medkit_serialization, gateway) require them at
-          # configure time via find_package.
+          # Skip nav2_msgs (vda5050_agent declares it; not available on all
+          # distros) and the linter rosdep keys. The clang_format / clang_tidy
+          # keys are not registered for noble (Rolling), and the upstream
+          # medkit packages have already been switched to QUIET + FOUND for
+          # those find_package calls so the build degrades gracefully without
+          # the linter packages installed.
           rosdep install --from-paths src --ignore-src -y \
-            --skip-keys='nav2_msgs'
+            --skip-keys='nav2_msgs ament_cmake_clang_format ament_cmake_clang_tidy'
 
       - name: Build ros2_medkit_opcua (and upstream deps)
         env:
