@@ -21,7 +21,7 @@
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
-#include "ros2_medkit_gateway/core/type_introspection.hpp"
+#include "ros2_medkit_serialization/type_introspection.hpp"
 
 #include <map>
 #include <optional>
@@ -120,7 +120,7 @@ class Ros2RuntimeIntrospection : public IntrospectionProvider {
 
   /// Provide the type introspection used to enrich service/action schemas.
   /// Pointer must outlive this provider.
-  void set_type_introspection(TypeIntrospection * introspection);
+  void set_type_introspection(ros2_medkit_serialization::TypeIntrospection * introspection);
 
   /// Rebuild the cached `<node_fqn> -> ComponentTopics` map from the topic
   /// data provider. Called by the gateway's refresh path.
@@ -146,7 +146,7 @@ class Ros2RuntimeIntrospection : public IntrospectionProvider {
   rclcpp::Node * node_;
   RuntimeConfig config_;
   TopicDataProvider * topic_data_provider_{nullptr};
-  TypeIntrospection * type_introspection_{nullptr};
+  ros2_medkit_serialization::TypeIntrospection * type_introspection_{nullptr};
 
   std::vector<ServiceInfo> cached_services_;
   std::vector<ActionInfo> cached_actions_;

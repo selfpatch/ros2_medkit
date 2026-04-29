@@ -24,8 +24,8 @@
 #include <utility>
 
 #include "ros2_medkit_gateway/core/transports/topic_transport.hpp"
-#include "ros2_medkit_gateway/core/type_introspection.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
+#include "ros2_medkit_serialization/type_introspection.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -37,8 +37,9 @@ namespace ros2 {
  * @brief rclcpp adapter implementing the TopicTransport port.
  *
  * Owns the publisher cache, the JsonSerializer instance and the
- * TypeIntrospection helper that the manager previously held directly. The
- * sample path delegates to an attached TopicDataProvider; the adapter
+ * TypeIntrospection helper (lives in `ros2_medkit_serialization` alongside
+ * the rest of the rosidl glue) that the manager previously held directly.
+ * The sample path delegates to an attached TopicDataProvider; the adapter
  * itself does not maintain a sampling executor.
  */
 class Ros2TopicTransport : public TopicTransport {
@@ -74,7 +75,7 @@ class Ros2TopicTransport : public TopicTransport {
 
   std::pair<uint64_t, uint64_t> count_publishers_subscribers(const std::string & topic_name) const override;
 
-  TypeIntrospection * get_type_introspection() const override {
+  ros2_medkit_serialization::TypeIntrospection * get_type_introspection() const override {
     return type_introspection_.get();
   }
 
@@ -84,7 +85,7 @@ class Ros2TopicTransport : public TopicTransport {
 
   rclcpp::Node * node_;
   std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
-  std::unique_ptr<TypeIntrospection> type_introspection_;
+  std::unique_ptr<ros2_medkit_serialization::TypeIntrospection> type_introspection_;
 
   mutable std::shared_mutex publishers_mutex_;
   std::unordered_map<std::string, rclcpp::GenericPublisher::SharedPtr> publishers_;

@@ -24,6 +24,7 @@
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
+#include "ros2_medkit_serialization/type_introspection.hpp"
 
 using json = nlohmann::json;
 
