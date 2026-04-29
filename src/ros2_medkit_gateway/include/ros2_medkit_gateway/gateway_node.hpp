@@ -54,9 +54,10 @@
 #include "ros2_medkit_gateway/ros2/transports/ros2_log_source.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_parameter_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_service_transport.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_topic_subscription_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_topic_transport.hpp"
+#include "ros2_medkit_gateway/ros2/trigger_topic_subscriber.hpp"
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
-#include "ros2_medkit_gateway/trigger_topic_subscriber.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -314,6 +315,8 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<TriggerManager> trigger_mgr_;
   std::unique_ptr<TriggerFaultSubscriber> trigger_fault_subscriber_;
   std::unique_ptr<TriggerTopicSubscriber> trigger_topic_subscriber_;
+  // Adapter routing manager-side subscribe() calls onto trigger_topic_subscriber_.
+  std::shared_ptr<ros2::Ros2TopicSubscriptionTransport> trigger_topic_transport_;
 
   // Aggregation infrastructure (destroyed in order: mdns -> rest_server -> aggregation)
   // mDNS threads must stop before rest_server to avoid callbacks during shutdown.

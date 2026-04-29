@@ -870,8 +870,14 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     trigger_config.max_triggers = static_cast<int>(get_parameter("triggers.max_triggers").as_int());
     trigger_config.on_restart_behavior = get_parameter("triggers.on_restart_behavior").as_string();
 
+    // Subscribe to data topics for data triggers. The adapter is created
+    // before the trigger manager because the manager takes the transport
+    // by shared_ptr at construction time.
+    trigger_topic_subscriber_ = std::make_unique<TriggerTopicSubscriber>(this);
+    trigger_topic_transport_ = std::make_shared<ros2::Ros2TopicSubscriptionTransport>(trigger_topic_subscriber_.get());
+
     trigger_mgr_ = std::make_unique<TriggerManager>(*resource_change_notifier_, *condition_registry_, *trigger_store_,
-                                                    trigger_config);
+                                                    trigger_config, trigger_topic_transport_);
 
     // Set entity hierarchy resolver using thread-safe cache
     trigger_mgr_->set_entity_children_fn(
@@ -917,10 +923,6 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
     // Subscribe to fault events and forward to notifier
     trigger_fault_subscriber_ = std::make_unique<TriggerFaultSubscriber>(this, *resource_change_notifier_);
-
-    // Subscribe to data topics for data triggers
-    trigger_topic_subscriber_ = std::make_unique<TriggerTopicSubscriber>(this, *resource_change_notifier_);
-    trigger_mgr_->set_topic_subscriber(trigger_topic_subscriber_.get());
 
     // Wire deferred topic resolution: when a trigger's resource_path couldn't
     // be resolved to a ROS 2 topic at creation time, retry periodically using
