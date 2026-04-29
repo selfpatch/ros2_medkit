@@ -68,7 +68,8 @@ size_t filter_apps_by_namespace(std::vector<App> & apps, const GapFillConfig & c
 
 }  // namespace
 
-RuntimeLayer::RuntimeLayer(RuntimeDiscoveryStrategy * runtime_strategy) : runtime_strategy_(runtime_strategy) {
+RuntimeLayer::RuntimeLayer(ros2::Ros2RuntimeIntrospection * runtime_introspection)
+  : runtime_introspection_(runtime_introspection) {
   policies_ = {{FieldGroup::IDENTITY, MergePolicy::FALLBACK},
                {FieldGroup::HIERARCHY, MergePolicy::FALLBACK},
                {FieldGroup::LIVE_DATA, MergePolicy::AUTHORITATIVE},
@@ -80,7 +81,7 @@ LayerOutput RuntimeLayer::discover() {
   LayerOutput output;
   last_filtered_count_ = 0;
   linking_apps_.clear();
-  if (!runtime_strategy_) {
+  if (!runtime_introspection_) {
     return output;
   }
 
@@ -90,7 +91,7 @@ LayerOutput RuntimeLayer::discover() {
   // Discover apps once. Always save unfiltered apps for post-merge linking.
   // The linker needs all runtime apps to bind manifest apps to live nodes,
   // regardless of gap-fill settings.
-  auto apps = runtime_strategy_->discover_apps();
+  auto apps = runtime_introspection_->discover_apps();
   linking_apps_ = apps;
 
   if (gap_fill_config_.allow_heuristic_apps) {
@@ -100,7 +101,7 @@ LayerOutput RuntimeLayer::discover() {
 
   if (gap_fill_config_.allow_heuristic_functions) {
     // Use the pre-discovered apps to avoid redundant ROS 2 graph introspection
-    output.functions = runtime_strategy_->discover_functions(linking_apps_);
+    output.functions = runtime_introspection_->discover_functions(linking_apps_);
   }
 
   return output;
@@ -123,17 +124,17 @@ void RuntimeLayer::set_gap_fill_config(GapFillConfig config) {
 }
 
 std::vector<ServiceInfo> RuntimeLayer::discover_services() {
-  if (!runtime_strategy_) {
+  if (!runtime_introspection_) {
     return {};
   }
-  return runtime_strategy_->discover_services();
+  return runtime_introspection_->discover_services();
 }
 
 std::vector<ActionInfo> RuntimeLayer::discover_actions() {
-  if (!runtime_strategy_) {
+  if (!runtime_introspection_) {
     return {};
   }
-  return runtime_strategy_->discover_actions();
+  return runtime_introspection_->discover_actions();
 }
 
 }  // namespace discovery

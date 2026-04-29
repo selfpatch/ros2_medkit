@@ -109,7 +109,8 @@ The following diagram shows the relationships between the main components of the
            + get_name(): string
        }
 
-       class RuntimeDiscoveryStrategy {
+       class Ros2RuntimeIntrospection {
+           + introspect(IntrospectionInput): IntrospectionResult
            + discover_apps(): vector<App>
            + discover_functions(): vector<Function>
            - config_: RuntimeConfig
@@ -118,13 +119,6 @@ The following diagram shows the relationships between the main components of the
        class ManifestDiscoveryStrategy {
            + load_manifest(): void
            - manifest_: Manifest
-       }
-
-       class HybridDiscoveryStrategy {
-           - pipeline_: MergePipeline
-           + refresh(): void
-           + add_layer(): void
-           + get_merge_report(): MergeReport
        }
 
        class MergePipeline {
@@ -146,7 +140,7 @@ The following diagram shows the relationships between the main components of the
        }
 
        class RuntimeLayer {
-           - strategy_: RuntimeDiscoveryStrategy*
+           - runtime_introspection_: Ros2RuntimeIntrospection*
            - gap_fill_config_: GapFillConfig
        }
 
@@ -398,11 +392,9 @@ The following diagram shows the relationships between the main components of the
    DiscoveryManager ..> ActionInfo : creates
 
    ' Discovery strategy hierarchy
-   DiscoveryManager --> DiscoveryStrategy : uses
-   RuntimeDiscoveryStrategy .up.|> DiscoveryStrategy : implements
-   ManifestDiscoveryStrategy .up.|> DiscoveryStrategy : implements
-   HybridDiscoveryStrategy .up.|> DiscoveryStrategy : implements
-   HybridDiscoveryStrategy *--> MergePipeline : owns
+   DiscoveryManager *--> Ros2RuntimeIntrospection : owns
+   DiscoveryManager *--> MergePipeline : owns (hybrid mode)
+   Ros2RuntimeIntrospection .up.|> IntrospectionProvider : implements
 
    ' MergePipeline layer architecture
    MergePipeline o--> DiscoveryLayer : ordered layers
@@ -410,7 +402,7 @@ The following diagram shows the relationships between the main components of the
    ManifestLayer .up.|> DiscoveryLayer : implements
    RuntimeLayer .up.|> DiscoveryLayer : implements
    PluginLayer .up.|> DiscoveryLayer : implements
-   RuntimeLayer --> RuntimeDiscoveryStrategy : delegates
+   RuntimeLayer --> Ros2RuntimeIntrospection : delegates
 
    ' REST Server uses HTTP library
    RESTServer *--> HTTPLibServer : owns
@@ -461,17 +453,19 @@ Each entry below is tagged with the static library it compiles into:
 
    **Discovery Strategies:**
 
-   - **RuntimeDiscoveryStrategy** - Heuristic discovery via ROS 2 graph introspection
+   - **Ros2RuntimeIntrospection** - IntrospectionProvider wrapping ROS 2 graph queries
      - Maps nodes to Apps with ``source: "heuristic"``
      - Creates Functions from namespace grouping
      - Never creates Areas or Components (those come from manifest/HostInfoProvider)
+     - Same interface as plugin-provided IntrospectionProviders, so the merge pipeline
+       treats built-in graph queries identically to plugin contributions
    - **ManifestDiscoveryStrategy** - Static discovery from YAML manifest
      - Provides stable, semantic entity IDs
      - Supports offline detection of failed components
-   - **HybridDiscoveryStrategy** - Combines manifest + runtime via MergePipeline
-     - Delegates to ``MergePipeline`` which orchestrates ordered discovery layers
-     - Supports dynamic plugin layers added at runtime
-     - Thread-safe: mutex protects cached results, returns by value
+   - **Hybrid mode (DiscoveryManager + MergePipeline)** - Combines manifest + runtime + plugins
+     - DiscoveryManager constructs a ``MergePipeline`` with the configured layers
+     - Supports dynamic plugin layers added at runtime via ``add_plugin_layer()``
+     - Thread-safe: a mutex protects the cached merged result, all reads return by value
 
    **Merge Pipeline:**
 
@@ -489,7 +483,7 @@ Each entry below is tagged with the static library it compiles into:
 
    - ``ManifestLayer`` - Wraps ManifestManager; IDENTITY/HIERARCHY/METADATA are AUTHORITATIVE,
      LIVE_DATA is ENRICHMENT (runtime wins for topics/services), STATUS is FALLBACK
-   - ``RuntimeLayer`` - Wraps RuntimeDiscoveryStrategy; LIVE_DATA/STATUS are AUTHORITATIVE,
+   - ``RuntimeLayer`` - Wraps Ros2RuntimeIntrospection; LIVE_DATA/STATUS are AUTHORITATIVE,
      METADATA is ENRICHMENT, IDENTITY/HIERARCHY are FALLBACK.
      Supports ``GapFillConfig`` to control which heuristic entities are allowed when manifest is present
    - ``PluginLayer`` - Wraps IntrospectionProvider; all fields ENRICHMENT (plugins enrich, they don't override).

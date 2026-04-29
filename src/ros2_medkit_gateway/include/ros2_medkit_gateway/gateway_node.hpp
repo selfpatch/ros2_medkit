@@ -218,9 +218,10 @@ class GatewayNode : public rclcpp::Node {
    * indicated area / component. The entry point is safe to call from any
    * thread: refresh passes triggered by plugin notifications, the periodic
    * refresh timer, and startup are serialized by an internal mutex inside
-   * `refresh_cache()` because refresh touches discovery state (e.g.,
-   * `HybridDiscoveryStrategy::refresh()`) that itself assumes single-threaded
-   * execution - `ThreadSafeEntityCache`'s own mutex is not sufficient.
+   * `refresh_cache()` because refresh touches discovery state (e.g., the
+   * merge pipeline cached inside `DiscoveryManager`) that itself assumes
+   * single-threaded execution - `ThreadSafeEntityCache`'s own mutex is not
+   * sufficient.
    */
   void handle_entity_change_notification(const EntityChangeScope & scope);
 
@@ -335,10 +336,10 @@ class GatewayNode : public rclcpp::Node {
   // Serializes `refresh_cache()` across the refresh timer, plugin
   // `notify_entities_changed` calls and any other caller. Required because
   // the refresh pipeline touches discovery state that is not itself
-  // thread-safe (e.g., `HybridDiscoveryStrategy::refresh()`). Recursive so
-  // that `handle_entity_change_notification` can also cover the preceding
-  // `reload_manifest()` call without deadlocking when it subsequently
-  // invokes `refresh_cache()`.
+  // thread-safe (the merge pipeline cached inside `DiscoveryManager`).
+  // Recursive so that `handle_entity_change_notification` can also cover
+  // the preceding `reload_manifest()` call without deadlocking when it
+  // subsequently invokes `refresh_cache()`.
   std::recursive_mutex refresh_mutex_;
 
   // Timer for periodic cleanup of old action goals

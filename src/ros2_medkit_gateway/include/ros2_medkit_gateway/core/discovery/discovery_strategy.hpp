@@ -28,14 +28,11 @@ struct Function;
 namespace discovery {
 
 /**
- * @brief Interface for discovery strategies (Strategy Pattern)
+ * @brief Legacy interface for discovery strategies.
  *
- * Allows different discovery implementations:
- * - RuntimeDiscoveryStrategy: Discovers from ROS 2 graph (current behavior)
- * - ManifestDiscoveryStrategy: Discovers from YAML manifest (future)
- * - HybridDiscoveryStrategy: Combines both (future)
- *
- * @see RuntimeDiscoveryStrategy
+ * Discovery is now driven by IntrospectionProvider implementations composed
+ * inside DiscoveryManager's MergePipeline. This abstract base is kept for
+ * test doubles that still want a strategy-shaped seam.
  */
 class DiscoveryStrategy {
  public:
