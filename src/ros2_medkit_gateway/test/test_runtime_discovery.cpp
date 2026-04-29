@@ -19,9 +19,9 @@
 #include <rclcpp/rclcpp.hpp>
 #include <vector>
 
-#include "ros2_medkit_gateway/discovery/runtime_discovery.hpp"
+#include "ros2_medkit_gateway/ros2/providers/ros2_runtime_introspection.hpp"
 
-using ros2_medkit_gateway::discovery::RuntimeDiscoveryStrategy;
+using ros2_medkit_gateway::ros2::Ros2RuntimeIntrospection;
 
 // =============================================================================
 // Global rclcpp lifecycle - runs once for ALL test suites in this binary
@@ -40,7 +40,7 @@ class RclcppEnvironment : public ::testing::Environment {
 ::testing::Environment * const rclcpp_env = ::testing::AddGlobalTestEnvironment(new RclcppEnvironment);
 
 // =============================================================================
-// RuntimeDiscoveryStrategy - Function from namespace tests
+// Ros2RuntimeIntrospection - Function from namespace tests
 // =============================================================================
 
 class RuntimeDiscoveryTest : public ::testing::Test {
@@ -49,7 +49,7 @@ class RuntimeDiscoveryTest : public ::testing::Test {
     // Create node in a namespace to test namespace grouping
     rclcpp::NodeOptions options;
     node_ = std::make_shared<rclcpp::Node>("test_node", "/test_ns", options);
-    strategy_ = std::make_unique<RuntimeDiscoveryStrategy>(node_.get());
+    strategy_ = std::make_unique<Ros2RuntimeIntrospection>(node_.get());
   }
 
   void TearDown() override {
@@ -58,26 +58,19 @@ class RuntimeDiscoveryTest : public ::testing::Test {
   }
 
   std::shared_ptr<rclcpp::Node> node_;
-  std::unique_ptr<RuntimeDiscoveryStrategy> strategy_;
+  std::unique_ptr<Ros2RuntimeIntrospection> strategy_;
 };
 
 // -----------------------------------------------------------------------------
-// discover_areas() - always returns empty (Areas come from manifest only)
+// introspect() - never produces Areas or Components (they come from the
+// manifest layer or HostInfoProvider).
 // -----------------------------------------------------------------------------
 
-TEST_F(RuntimeDiscoveryTest, DiscoverAreas_AlwaysReturnsEmpty) {
-  auto areas = strategy_->discover_areas();
-  EXPECT_TRUE(areas.empty()) << "Areas should always be empty - Areas come from manifest only";
-}
-
-// -----------------------------------------------------------------------------
-// discover_components() - always returns empty (Components come from
-// HostInfoProvider or manifest)
-// -----------------------------------------------------------------------------
-
-TEST_F(RuntimeDiscoveryTest, DiscoverComponents_AlwaysReturnsEmpty) {
-  auto components = strategy_->discover_components();
-  EXPECT_TRUE(components.empty())
+TEST_F(RuntimeDiscoveryTest, Introspect_NeverProducesAreasOrComponents) {
+  ros2_medkit_gateway::IntrospectionInput input;
+  auto result = strategy_->introspect(input);
+  EXPECT_TRUE(result.new_entities.areas.empty()) << "Areas should always be empty - Areas come from manifest only";
+  EXPECT_TRUE(result.new_entities.components.empty())
       << "Components should always be empty - Components come from HostInfoProvider or manifest";
 }
 
@@ -112,7 +105,7 @@ TEST_F(RuntimeDiscoveryTest, DiscoverFunctions_DefaultCreatesFromNamespaces) {
 }
 
 TEST_F(RuntimeDiscoveryTest, DiscoverFunctions_ReturnsEmptyWhenDisabled) {
-  RuntimeDiscoveryStrategy::RuntimeConfig config;
+  Ros2RuntimeIntrospection::RuntimeConfig config;
   config.create_functions_from_namespaces = false;
   strategy_->set_config(config);
 
@@ -152,7 +145,7 @@ TEST_F(RuntimeDiscoveryTest, DiscoverFunctions_OnlyCreatesNonEmptyFunctions) {
 // -----------------------------------------------------------------------------
 
 TEST_F(RuntimeDiscoveryTest, DefaultConfig_HasCorrectDefaults) {
-  RuntimeDiscoveryStrategy::RuntimeConfig config;
+  Ros2RuntimeIntrospection::RuntimeConfig config;
   EXPECT_TRUE(config.create_functions_from_namespaces) << "create_functions_from_namespaces should default to true";
 }
 
@@ -168,7 +161,7 @@ class RuntimeDiscoveryMultiNsTest : public ::testing::Test {
     node_nav_ = std::make_shared<rclcpp::Node>("planner", "/navigation");
     // Create discovery node (the one that queries the graph)
     node_discovery_ = std::make_shared<rclcpp::Node>("discovery_node");
-    strategy_ = std::make_unique<RuntimeDiscoveryStrategy>(node_discovery_.get());
+    strategy_ = std::make_unique<Ros2RuntimeIntrospection>(node_discovery_.get());
   }
 
   void TearDown() override {
@@ -181,7 +174,7 @@ class RuntimeDiscoveryMultiNsTest : public ::testing::Test {
   std::shared_ptr<rclcpp::Node> node_sensors_;
   std::shared_ptr<rclcpp::Node> node_nav_;
   std::shared_ptr<rclcpp::Node> node_discovery_;
-  std::unique_ptr<RuntimeDiscoveryStrategy> strategy_;
+  std::unique_ptr<Ros2RuntimeIntrospection> strategy_;
 };
 
 // @verifies REQ_INTEROP_003
@@ -220,13 +213,10 @@ TEST_F(RuntimeDiscoveryMultiNsTest, DiscoverFunctions_GroupsByNamespace) {
   EXPECT_TRUE(found_root) << "Should create 'root' function from root namespace nodes";
 }
 
-TEST_F(RuntimeDiscoveryMultiNsTest, DiscoverAreas_AlwaysEmpty) {
-  auto areas = strategy_->discover_areas();
-  EXPECT_TRUE(areas.empty()) << "Areas should always be empty - Areas come from manifest only";
-}
-
-TEST_F(RuntimeDiscoveryMultiNsTest, DiscoverComponents_AlwaysEmpty) {
-  auto components = strategy_->discover_components();
-  EXPECT_TRUE(components.empty())
+TEST_F(RuntimeDiscoveryMultiNsTest, Introspect_AreasAndComponentsEmpty) {
+  ros2_medkit_gateway::IntrospectionInput input;
+  auto result = strategy_->introspect(input);
+  EXPECT_TRUE(result.new_entities.areas.empty()) << "Areas should always be empty - Areas come from manifest only";
+  EXPECT_TRUE(result.new_entities.components.empty())
       << "Components should always be empty - Components come from HostInfoProvider or manifest";
 }

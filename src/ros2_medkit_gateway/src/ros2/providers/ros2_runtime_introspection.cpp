@@ -1,4 +1,4 @@
-// Copyright 2025 selfpatch
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,36 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/discovery/runtime_discovery.hpp"
+#include "ros2_medkit_gateway/ros2/providers/ros2_runtime_introspection.hpp"
 
 #include <algorithm>
 #include <set>
 #include <unordered_map>
 
-namespace ros2_medkit_gateway {
-namespace discovery {
+namespace ros2_medkit_gateway::ros2 {
+
+namespace {
 
 /**
- * @brief Check if a service path matches an internal ROS2 service suffix.
+ * @brief Exact suffix match on a service path.
  *
- * Uses exact suffix matching to avoid false positives. For example,
- * "/my_node/get_parameters" is internal, but "/my_node/get_parameters_backup" is not.
- *
- * @param service_path The full service path (e.g., "/my_node/get_parameters")
- * @param suffix The suffix to match (e.g., "/get_parameters")
- * @return true if the service_path ends with the suffix
+ * Avoids false positives that a substring search would produce
+ * (e.g. "/my_node/get_parameters" is internal but
+ * "/my_node/get_parameters_backup" is not).
  */
-static bool matches_internal_suffix(const std::string & service_path, const std::string & suffix) {
+bool matches_internal_suffix(const std::string & service_path, const std::string & suffix) {
   if (service_path.length() < suffix.length()) {
     return false;
   }
   return service_path.compare(service_path.length() - suffix.length(), suffix.length(), suffix) == 0;
 }
 
-// Helper function to check if a service path is internal ROS2 infrastructure
-bool RuntimeDiscoveryStrategy::is_internal_service(const std::string & service_path) {
-  // Use exact suffix matching to avoid false positives
-  // e.g., "/my_node/get_parameters" is internal, but "/my_node/get_parameters_backup" is NOT
+}  // namespace
+
+bool Ros2RuntimeIntrospection::is_internal_service(const std::string & service_path) {
   return matches_internal_suffix(service_path, "/get_parameters") ||
          matches_internal_suffix(service_path, "/set_parameters") ||
          matches_internal_suffix(service_path, "/list_parameters") ||
@@ -49,39 +46,37 @@ bool RuntimeDiscoveryStrategy::is_internal_service(const std::string & service_p
          matches_internal_suffix(service_path, "/get_parameter_types") ||
          matches_internal_suffix(service_path, "/set_parameters_atomically") ||
          matches_internal_suffix(service_path, "/get_type_description") ||
-         service_path.find("/_action/") != std::string::npos;  // Action internal services
+         service_path.find("/_action/") != std::string::npos;
 }
 
-RuntimeDiscoveryStrategy::RuntimeDiscoveryStrategy(rclcpp::Node * node) : node_(node) {
+Ros2RuntimeIntrospection::Ros2RuntimeIntrospection(rclcpp::Node * node) : node_(node) {
 }
 
-void RuntimeDiscoveryStrategy::set_config(const RuntimeConfig & config) {
+void Ros2RuntimeIntrospection::set_config(const RuntimeConfig & config) {
   config_ = config;
-  RCLCPP_DEBUG(node_->get_logger(), "Runtime discovery config: functions_from_namespaces=%s",
+  RCLCPP_DEBUG(node_->get_logger(), "Runtime introspection config: functions_from_namespaces=%s",
                config_.create_functions_from_namespaces ? "true" : "false");
 }
 
-std::vector<Area> RuntimeDiscoveryStrategy::discover_areas() {
-  // Areas come from manifest only - runtime discovery never creates Areas.
-  return {};
+IntrospectionResult Ros2RuntimeIntrospection::introspect(const IntrospectionInput & /*input*/) {
+  IntrospectionResult result;
+  // Areas and Components are never produced by runtime introspection.
+  // Apps come from the live graph; Functions are derived from namespaces.
+  auto apps = discover_apps();
+  result.new_entities.functions = discover_functions(apps);
+  result.new_entities.apps = std::move(apps);
+  return result;
 }
 
-std::vector<Component> RuntimeDiscoveryStrategy::discover_components() {
-  // Components come from HostInfoProvider or manifest - runtime discovery never creates Components.
-  return {};
-}
-
-std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
+std::vector<App> Ros2RuntimeIntrospection::discover_apps() {
   std::vector<App> apps;
 
-  // Pre-build service info map for schema lookups
   std::unordered_map<std::string, ServiceInfo> service_info_map;
   auto all_services = discover_services();
   for (const auto & svc : all_services) {
     service_info_map[svc.full_path] = svc;
   }
 
-  // Pre-build action info map for schema lookups
   std::unordered_map<std::string, ActionInfo> action_info_map;
   auto all_actions = discover_actions();
   for (const auto & act : all_actions) {
@@ -102,19 +97,16 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
     return {};
   }
 
-  // Build topic map if not yet ready (first call or after manual refresh)
   if (topic_data_provider_ && !topic_map_ready_) {
     refresh_topic_map();
   }
 
-  // Deduplicate nodes - ROS 2 RMW can report duplicates for nodes with multiple interfaces
   std::set<std::string> seen_fqns;
 
-  // First pass: detect bare-name collisions across different namespaces so we
-  // can disambiguate IDs only when necessary (preserving backward compatibility
-  // for the common case where node names are unique).
-  // Count distinct namespaces per node name to avoid false positives from
-  // RMW duplicates (same FQN reported multiple times).
+  // Detect bare-name collisions across namespaces so IDs are only disambiguated
+  // when necessary (preserves backward compatibility for the common case where
+  // node names are unique). Count distinct namespaces per bare name to avoid
+  // false positives from RMW duplicates (same FQN reported multiple times).
   std::unordered_map<std::string, std::set<std::string>> name_namespaces;
   for (const auto & name_and_ns : names_and_namespaces) {
     name_namespaces[name_and_ns.first].insert(name_and_ns.second);
@@ -126,7 +118,6 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
 
     std::string fqn = (ns == "/") ? std::string("/").append(name) : std::string(ns).append("/").append(name);
 
-    // Skip duplicate nodes
     if (seen_fqns.count(fqn) > 0) {
       RCLCPP_DEBUG(node_->get_logger(), "Skipping duplicate node: %s", fqn.c_str());
       continue;
@@ -134,10 +125,6 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
     seen_fqns.insert(fqn);
 
     App app;
-    // When multiple namespaces contain nodes with the same bare name
-    // (e.g., /ns1/controller and /ns2/controller), include the namespace in the
-    // ID to avoid collisions. Otherwise, use the bare name for backward
-    // compatibility.
     if (name_namespaces[name].size() > 1 && ns != "/") {
       std::string ns_prefix = ns.substr(1);  // Remove leading '/'
       std::replace(ns_prefix.begin(), ns_prefix.end(), '/', '_');
@@ -154,7 +141,6 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
     app.is_online = true;
     app.bound_fqn = fqn;
 
-    // Introspect services and actions for this node
     try {
       auto node_services = node_->get_service_names_and_types_by_node(name, ns);
       for (const auto & [service_path, types] : node_services) {
@@ -196,7 +182,6 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
                    ns.c_str(), e.what());
     }
 
-    // Populate topics from cached map
     if (topic_data_provider_) {
       auto it = cached_topic_map_.find(fqn);
       if (it != cached_topic_map_.end()) {
@@ -211,20 +196,18 @@ std::vector<App> RuntimeDiscoveryStrategy::discover_apps() {
   return apps;
 }
 
-std::vector<Function> RuntimeDiscoveryStrategy::discover_functions() {
+std::vector<Function> Ros2RuntimeIntrospection::discover_functions() {
   if (!config_.create_functions_from_namespaces) {
     return {};
   }
-  // Discover apps fresh when called without pre-discovered apps
   return discover_functions(discover_apps());
 }
 
-std::vector<Function> RuntimeDiscoveryStrategy::discover_functions(const std::vector<App> & apps) {
+std::vector<Function> Ros2RuntimeIntrospection::discover_functions(const std::vector<App> & apps) {
   if (!config_.create_functions_from_namespaces) {
     return {};
   }
 
-  // Group apps by namespace (first segment), similar to discover_areas() logic
   std::map<std::string, std::vector<std::string>> ns_to_app_ids;
   for (const auto & app : apps) {
     std::string ns = "/";
@@ -237,7 +220,6 @@ std::vector<Function> RuntimeDiscoveryStrategy::discover_functions(const std::ve
     ns_to_app_ids[area].push_back(app.id);
   }
 
-  // Create Function entities from namespace groups
   std::vector<Function> functions;
   for (const auto & [ns_name, app_ids] : ns_to_app_ids) {
     if (app_ids.empty()) {
@@ -259,12 +241,11 @@ std::vector<Function> RuntimeDiscoveryStrategy::discover_functions(const std::ve
   return functions;
 }
 
-std::vector<ServiceInfo> RuntimeDiscoveryStrategy::discover_services() {
+std::vector<ServiceInfo> Ros2RuntimeIntrospection::discover_services() {
   std::vector<ServiceInfo> services;
 
-  // Use native rclcpp API to get service names and types. Swallow the
-  // "context invalid" throw that fires when the refresh timer races
-  // rclcpp::shutdown during SIGINT; callers already handle an empty list.
+  // Swallow the "context invalid" throw that fires when the refresh timer
+  // races rclcpp::shutdown during SIGINT; callers already handle an empty list.
   std::map<std::string, std::vector<std::string>> service_names_and_types;
   try {
     service_names_and_types = node_->get_service_names_and_types();
@@ -274,7 +255,6 @@ std::vector<ServiceInfo> RuntimeDiscoveryStrategy::discover_services() {
   }
 
   for (const auto & [service_path, types] : service_names_and_types) {
-    // Skip internal ROS2 services (parameter services, action internals, etc.)
     if (is_internal_service(service_path)) {
       continue;
     }
@@ -284,8 +264,7 @@ std::vector<ServiceInfo> RuntimeDiscoveryStrategy::discover_services() {
     info.name = extract_name_from_path(service_path);
     info.type = types.empty() ? "" : types[0];
 
-    // Enrich with schema info if TypeIntrospection is available
-    // Service types: pkg/srv/Type -> Request: pkg/srv/Type_Request, Response: pkg/srv/Type_Response
+    // Service types: pkg/srv/Type -> Request/Response companions.
     if (type_introspection_ && !info.type.empty()) {
       try {
         json type_info_json;
@@ -302,17 +281,16 @@ std::vector<ServiceInfo> RuntimeDiscoveryStrategy::discover_services() {
     services.push_back(info);
   }
 
-  // Update cache for find operations
   cached_services_ = services;
 
   return services;
 }
 
-std::vector<ActionInfo> RuntimeDiscoveryStrategy::discover_actions() {
+std::vector<ActionInfo> Ros2RuntimeIntrospection::discover_actions() {
   std::vector<ActionInfo> actions;
 
-  // Use native rclcpp API to get action names and types
-  // Note: This requires checking service endpoints for action patterns
+  // Actions are detected by looking for /_action/send_goal services (no native
+  // rclcpp API for action names).
   std::map<std::string, std::vector<std::string>> service_names_and_types;
   try {
     service_names_and_types = node_->get_service_names_and_types();
@@ -321,8 +299,6 @@ std::vector<ActionInfo> RuntimeDiscoveryStrategy::discover_actions() {
     return actions;
   }
 
-  // Actions expose services with /_action/send_goal, /_action/cancel_goal, /_action/get_result
-  // We detect actions by looking for /_action/send_goal services
   std::set<std::string> discovered_action_paths;
 
   for (const auto & [service_path, types] : service_names_and_types) {
@@ -330,7 +306,6 @@ std::vector<ActionInfo> RuntimeDiscoveryStrategy::discover_actions() {
     if (service_path.length() > action_suffix.length() &&
         service_path.compare(service_path.length() - action_suffix.length(), action_suffix.length(), action_suffix) ==
             0) {
-      // Extract action path by removing /_action/send_goal suffix
       std::string action_path = service_path.substr(0, service_path.length() - action_suffix.length());
 
       if (discovered_action_paths.count(action_path) == 0) {
@@ -340,9 +315,8 @@ std::vector<ActionInfo> RuntimeDiscoveryStrategy::discover_actions() {
         info.full_path = action_path;
         info.name = extract_name_from_path(action_path);
 
-        // Derive action type from send_goal service type
-        // Service type is like "example_interfaces/action/Fibonacci_SendGoal"
-        // We need to extract "example_interfaces/action/Fibonacci"
+        // Service type is like "example_interfaces/action/Fibonacci_SendGoal";
+        // strip the suffix to get "example_interfaces/action/Fibonacci".
         if (!types.empty()) {
           std::string srv_type = types[0];
           const std::string send_goal_suffix = "_SendGoal";
@@ -355,8 +329,7 @@ std::vector<ActionInfo> RuntimeDiscoveryStrategy::discover_actions() {
           }
         }
 
-        // Enrich with schema info if TypeIntrospection is available
-        // Action types: pkg/action/Type -> Goal: pkg/action/Type_Goal, etc.
+        // Action types: pkg/action/Type -> Goal/Result/Feedback companions.
         if (type_introspection_ && !info.type.empty()) {
           try {
             json type_info_json;
@@ -377,15 +350,13 @@ std::vector<ActionInfo> RuntimeDiscoveryStrategy::discover_actions() {
     }
   }
 
-  // Update cache for find operations
   cached_actions_ = actions;
 
   return actions;
 }
 
-std::optional<ServiceInfo> RuntimeDiscoveryStrategy::find_service(const std::string & component_ns,
+std::optional<ServiceInfo> Ros2RuntimeIntrospection::find_service(const std::string & component_ns,
                                                                   const std::string & operation_name) const {
-  // Construct expected service path
   std::string expected_path = component_ns;
   if (!expected_path.empty() && expected_path.back() != '/') {
     expected_path += "/";
@@ -394,7 +365,6 @@ std::optional<ServiceInfo> RuntimeDiscoveryStrategy::find_service(const std::str
 
   for (const auto & svc : cached_services_) {
     if (svc.full_path == expected_path || svc.name == operation_name) {
-      // Check if service belongs to the component namespace
       if (path_belongs_to_namespace(svc.full_path, component_ns)) {
         return svc;
       }
@@ -404,9 +374,8 @@ std::optional<ServiceInfo> RuntimeDiscoveryStrategy::find_service(const std::str
   return std::nullopt;
 }
 
-std::optional<ActionInfo> RuntimeDiscoveryStrategy::find_action(const std::string & component_ns,
+std::optional<ActionInfo> Ros2RuntimeIntrospection::find_action(const std::string & component_ns,
                                                                 const std::string & operation_name) const {
-  // Construct expected action path
   std::string expected_path = component_ns;
   if (!expected_path.empty() && expected_path.back() != '/') {
     expected_path += "/";
@@ -415,7 +384,6 @@ std::optional<ActionInfo> RuntimeDiscoveryStrategy::find_action(const std::strin
 
   for (const auto & act : cached_actions_) {
     if (act.full_path == expected_path || act.name == operation_name) {
-      // Check if action belongs to the component namespace
       if (path_belongs_to_namespace(act.full_path, component_ns)) {
         return act;
       }
@@ -425,15 +393,15 @@ std::optional<ActionInfo> RuntimeDiscoveryStrategy::find_action(const std::strin
   return std::nullopt;
 }
 
-void RuntimeDiscoveryStrategy::set_topic_data_provider(TopicDataProvider * provider) {
+void Ros2RuntimeIntrospection::set_topic_data_provider(TopicDataProvider * provider) {
   topic_data_provider_ = provider;
 }
 
-void RuntimeDiscoveryStrategy::set_type_introspection(TypeIntrospection * introspection) {
+void Ros2RuntimeIntrospection::set_type_introspection(ros2_medkit_serialization::TypeIntrospection * introspection) {
   type_introspection_ = introspection;
 }
 
-void RuntimeDiscoveryStrategy::refresh_topic_map() {
+void Ros2RuntimeIntrospection::refresh_topic_map() {
   if (!topic_data_provider_) {
     return;
   }
@@ -442,22 +410,20 @@ void RuntimeDiscoveryStrategy::refresh_topic_map() {
   RCLCPP_DEBUG(node_->get_logger(), "Topic map refreshed: %zu components", cached_topic_map_.size());
 }
 
-bool RuntimeDiscoveryStrategy::is_topic_map_ready() const {
+bool Ros2RuntimeIntrospection::is_topic_map_ready() const {
   return topic_map_ready_;
 }
 
-std::string RuntimeDiscoveryStrategy::extract_area_from_namespace(const std::string & ns) {
+std::string Ros2RuntimeIntrospection::extract_area_from_namespace(const std::string & ns) {
   if (ns == "/" || ns.empty()) {
     return "root";
   }
 
-  // Remove leading slash
   std::string cleaned = ns;
   if (cleaned[0] == '/') {
     cleaned = cleaned.substr(1);
   }
 
-  // Get first segment
   auto pos = cleaned.find('/');
   if (pos != std::string::npos) {
     return cleaned.substr(0, pos);
@@ -466,12 +432,11 @@ std::string RuntimeDiscoveryStrategy::extract_area_from_namespace(const std::str
   return cleaned;
 }
 
-std::string RuntimeDiscoveryStrategy::extract_name_from_path(const std::string & path) {
+std::string Ros2RuntimeIntrospection::extract_name_from_path(const std::string & path) {
   if (path.empty()) {
     return "";
   }
 
-  // Find last slash
   auto pos = path.rfind('/');
   if (pos != std::string::npos && pos < path.length() - 1) {
     return path.substr(pos + 1);
@@ -480,9 +445,8 @@ std::string RuntimeDiscoveryStrategy::extract_name_from_path(const std::string &
   return path;
 }
 
-bool RuntimeDiscoveryStrategy::path_belongs_to_namespace(const std::string & path, const std::string & ns) const {
+bool Ros2RuntimeIntrospection::path_belongs_to_namespace(const std::string & path, const std::string & ns) const {
   if (ns.empty() || ns == "/") {
-    // Root namespace - check if path has only one segment after leading slash
     if (path.empty() || path[0] != '/') {
       return false;
     }
@@ -490,17 +454,14 @@ bool RuntimeDiscoveryStrategy::path_belongs_to_namespace(const std::string & pat
     return without_leading.find('/') == std::string::npos;
   }
 
-  // Check if path starts with namespace
   if (path.length() <= ns.length()) {
     return false;
   }
 
-  // Path should start with ns and have exactly one more segment
   if (path.compare(0, ns.length(), ns) != 0) {
     return false;
   }
 
-  // Check that after namespace there's a slash and then the service/action name (no more slashes)
   if (path[ns.length()] != '/') {
     return false;
   }
@@ -509,5 +470,4 @@ bool RuntimeDiscoveryStrategy::path_belongs_to_namespace(const std::string & pat
   return remainder.find('/') == std::string::npos;
 }
 
-}  // namespace discovery
-}  // namespace ros2_medkit_gateway
+}  // namespace ros2_medkit_gateway::ros2

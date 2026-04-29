@@ -23,6 +23,7 @@
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/log_provider.hpp"
+#include "ros2_medkit_gateway/core/providers/log_provider_registry.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/script_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/update_provider.hpp"
@@ -60,10 +61,10 @@ namespace ros2_medkit_gateway {
  * non-owning provider pointers (e.g. UpdateManager). In GatewayNode, declare
  * plugin_mgr_ BEFORE update_mgr_ so that destruction order is safe.
  */
-class PluginManager {
+class PluginManager : public LogProviderRegistry {
  public:
   PluginManager() = default;
-  ~PluginManager();
+  ~PluginManager() override;
 
   // Non-copyable, non-movable (owns dlopen handles)
   PluginManager(const PluginManager &) = delete;
@@ -154,6 +155,17 @@ class PluginManager {
    * @brief Get all plugins implementing LogProvider (for observer notifications)
    */
   std::vector<LogProvider *> get_log_observers() const;
+
+  // LogProviderRegistry implementation - thin forwards over the existing
+  // get_log_provider / get_log_observers accessors. Keeps the LogManager
+  // dependency expressed via the neutral port so the manager body links
+  // against gateway_core alone.
+  LogProvider * primary_log_provider() const override {
+    return get_log_provider();
+  }
+  std::vector<LogProvider *> log_observers() const override {
+    return get_log_observers();
+  }
 
   /**
    * @brief Get all introspection providers with their plugin names

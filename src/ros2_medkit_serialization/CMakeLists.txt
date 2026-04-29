@@ -38,6 +38,7 @@ find_package(nlohmann_json REQUIRED)
 add_library(${PROJECT_NAME}
   src/json_serializer.cpp
   src/type_cache.cpp
+  src/type_introspection.cpp
   src/service_action_types.cpp
   src/message_cleanup.cpp
   # Vendored dynmsg sources (C++ API only)
@@ -145,13 +146,16 @@ if(BUILD_TESTING)
     "include/ros2_medkit_serialization/serialization_error.hpp"
     "include/ros2_medkit_serialization/service_action_types.hpp"
     "include/ros2_medkit_serialization/type_cache.hpp"
+    "include/ros2_medkit_serialization/type_introspection.hpp"
     "src/json_serializer.cpp"
     "src/message_cleanup.cpp"
     "src/service_action_types.cpp"
     "src/type_cache.cpp"
+    "src/type_introspection.cpp"
     "test/test_json_serializer.cpp"
     "test/test_service_action_types.cpp"
     "test/test_type_cache.cpp"
+    "test/test_type_introspection.cpp"
   )
 
   ros2_medkit_clang_tidy(
@@ -172,6 +176,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_service_action_types ${PROJECT_NAME})
   medkit_target_dependencies(test_service_action_types std_srvs)
 
+  ament_add_gtest(test_type_introspection test/test_type_introspection.cpp)
+  target_link_libraries(test_type_introspection ${PROJECT_NAME})
+  medkit_target_dependencies(test_type_introspection std_msgs)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     target_compile_options(test_type_cache PRIVATE --coverage -O0 -g)
@@ -180,6 +188,8 @@ if(BUILD_TESTING)
     target_link_options(test_json_serializer PRIVATE --coverage)
     target_compile_options(test_service_action_types PRIVATE --coverage -O0 -g)
     target_link_options(test_service_action_types PRIVATE --coverage)
+    target_compile_options(test_type_introspection PRIVATE --coverage -O0 -g)
+    target_link_options(test_type_introspection PRIVATE --coverage)
   endif()
   ros2_medkit_relax_vendor_warnings()
 endif()

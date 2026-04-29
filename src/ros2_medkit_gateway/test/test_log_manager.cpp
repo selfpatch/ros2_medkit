@@ -26,6 +26,7 @@
 #include "ros2_medkit_gateway/core/providers/log_provider.hpp"
 #include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 #include "ros2_medkit_gateway/log_manager.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_log_source.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::LogConfig;
@@ -168,7 +169,8 @@ class LogManagerBufferTest : public ::testing::Test {
     rclcpp::init(0, nullptr);
     node_ = std::make_shared<rclcpp::Node>("test_log_manager");
     // Small buffer size of 3 for easy eviction testing
-    mgr_ = std::make_unique<LogManager>(node_.get(), nullptr, /*max_buffer_size=*/3);
+    mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()),
+                                        nullptr, /*max_buffer_size=*/3);
   }
 
   void TearDown() override {
@@ -594,7 +596,8 @@ TEST_F(LogManagerIngestionTest, ManagesIngestionDelegatesToPlugin) {
   auto * raw = plugin.get();
   plugin_mgr_->add_plugin(std::move(plugin));
 
-  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+  mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()),
+                                      plugin_mgr_.get(), 10);
 
   auto result = mgr_->get_logs({"/my_node"}, false, "", "", "entity1");
   EXPECT_TRUE(raw->get_logs_called);
@@ -611,7 +614,8 @@ TEST_F(LogManagerIngestionTest, ManagesIngestionUpdateConfigDelegatesToPlugin) {
   auto * raw = plugin.get();
   plugin_mgr_->add_plugin(std::move(plugin));
 
-  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+  mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()),
+                                      plugin_mgr_.get(), 10);
 
   auto err = mgr_->update_config("entity1", std::string("error"), std::nullopt);
   EXPECT_TRUE(err.empty());
@@ -628,7 +632,8 @@ TEST_F(LogManagerIngestionTest, ManagesIngestionGetConfigDelegatesToPlugin) {
   raw->configs["entity1"] = LogConfig{"warning", 50};
   plugin_mgr_->add_plugin(std::move(plugin));
 
-  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+  mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()),
+                                      plugin_mgr_.get(), 10);
 
   auto cfg = mgr_->get_config("entity1");
   EXPECT_TRUE(raw->get_config_called);
@@ -645,7 +650,8 @@ TEST_F(LogManagerIngestionTest, ManagesIngestionLocalBufferBypassed) {
   plugin->canned_entries.clear();
   plugin_mgr_->add_plugin(std::move(plugin));
 
-  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+  mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()),
+                                      plugin_mgr_.get(), 10);
 
   // Inject entries into local buffer - these should be invisible because plugin owns queries
   mgr_->inject_entry_for_testing(make_entry(1, "my_node"));
@@ -664,7 +670,8 @@ TEST_F(LogManagerIngestionTest, DefaultManagesIngestionPreservesCurrentBehavior)
   auto * raw = plugin.get();
   plugin_mgr_->add_plugin(std::move(plugin));
 
-  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+  mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()),
+                                      plugin_mgr_.get(), 10);
 
   auto result = mgr_->get_logs({"/node1"}, false, "", "", "");
   // Passive plugin still receives get_logs() delegation
@@ -678,7 +685,8 @@ TEST_F(LogManagerIngestionTest, DefaultManagesIngestionPreservesCurrentBehavior)
 // @verifies REQ_INTEROP_061
 TEST_F(LogManagerIngestionTest, NoPluginPreservesDefaultBehavior) {
   // No plugin manager at all - ring buffer works as before
-  mgr_ = std::make_unique<LogManager>(node_.get(), nullptr, 10);
+  mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()), nullptr,
+                                      10);
 
   mgr_->inject_entry_for_testing(make_entry(1, "my_node"));
   mgr_->inject_entry_for_testing(make_entry(2, "my_node"));
@@ -697,7 +705,8 @@ TEST_F(LogManagerIngestionTest, ManagesIngestionStillValidatesBeforeDelegation) 
   auto * raw = plugin.get();
   plugin_mgr_->add_plugin(std::move(plugin));
 
-  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+  mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()),
+                                      plugin_mgr_.get(), 10);
 
   // LogManager validates severity before delegating - "verbose" is invalid
   auto err = mgr_->update_config("e", std::string("verbose"), std::nullopt);
@@ -714,7 +723,8 @@ TEST_F(LogManagerIngestionTest, ManagesIngestionStillValidatesBeforeDelegation) 
 TEST_F(LogManagerIngestionTest, PluginGetLogsThrowReturnsError) {
   plugin_mgr_ = std::make_unique<PluginManager>();
   plugin_mgr_->add_plugin(std::make_unique<MockThrowingLogPlugin>());
-  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+  mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()),
+                                      plugin_mgr_.get(), 10);
 
   auto result = mgr_->get_logs({"/node"}, false, "", "", "");
   ASSERT_FALSE(result.has_value());
@@ -725,7 +735,8 @@ TEST_F(LogManagerIngestionTest, PluginGetLogsThrowReturnsError) {
 TEST_F(LogManagerIngestionTest, PluginGetConfigThrowReturnsError) {
   plugin_mgr_ = std::make_unique<PluginManager>();
   plugin_mgr_->add_plugin(std::make_unique<MockThrowingLogPlugin>());
-  mgr_ = std::make_unique<LogManager>(node_.get(), plugin_mgr_.get(), 10);
+  mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()),
+                                      plugin_mgr_.get(), 10);
 
   auto result = mgr_->get_config("entity1");
   ASSERT_FALSE(result.has_value());
@@ -743,7 +754,8 @@ class LogManagerResolverTest : public ::testing::Test {
     rclcpp::init(0, nullptr);
     node_ = std::make_shared<rclcpp::Node>("test_log_resolver");
     notifier_ = std::make_unique<ros2_medkit_gateway::ResourceChangeNotifier>();
-    mgr_ = std::make_unique<LogManager>(node_.get(), nullptr, 10);
+    mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()),
+                                        nullptr, 10);
     mgr_->set_notifier(notifier_.get());
 
     // Subscribe to notifier to capture entity IDs
@@ -883,7 +895,8 @@ TEST_F(LogManagerBufferTest, BufferCapDropsNewNodesWhenFull) {
   // Buffer cap = size * 10 = 30 distinct nodes.
   // Create a fresh manager with buffer size 5 so cap = 50.
   mgr_.reset();
-  mgr_ = std::make_unique<LogManager>(node_.get(), nullptr, /*max_buffer_size=*/5);
+  mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()), nullptr,
+                                      /*max_buffer_size=*/5);
 
   // Fill to the cap: 50 distinct nodes
   for (int i = 0; i < 50; ++i) {

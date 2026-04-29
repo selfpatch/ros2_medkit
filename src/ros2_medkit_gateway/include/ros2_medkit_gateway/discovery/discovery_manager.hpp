@@ -15,30 +15,34 @@
 #pragma once
 
 #include "ros2_medkit_gateway/core/discovery/discovery_enums.hpp"
-#include "ros2_medkit_gateway/core/discovery/discovery_strategy.hpp"
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/common.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/discovery/service_action_resolver.hpp"
 #include "ros2_medkit_gateway/core/providers/host_info_provider.hpp"
-#include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
-#include "ros2_medkit_gateway/discovery/runtime_discovery.hpp"
+#include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
+#include "ros2_medkit_gateway/ros2/providers/ros2_runtime_introspection.hpp"
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <vector>
 
+namespace ros2_medkit_serialization {
+class TypeIntrospection;
+}  // namespace ros2_medkit_serialization
+
 namespace ros2_medkit_gateway {
 
 // Forward declarations
 class TopicDataProvider;
-class TypeIntrospection;
 class IntrospectionProvider;
 
 /**
@@ -112,25 +116,26 @@ struct DiscoveryConfig {
 };
 
 /**
- * @brief Orchestrates entity discovery using pluggable strategies
+ * @brief Orchestrates entity discovery using a configurable merge pipeline
  *
- * This class delegates discovery to strategy implementations based on
- * the configured mode:
- * - RUNTIME_ONLY: Uses RuntimeDiscoveryStrategy (traditional ROS graph)
- * - MANIFEST_ONLY: Uses manifest as sole source of truth
- * - HYBRID: Combines manifest definitions with runtime linking
+ * The discovery_mode parameter selects which layers the merge pipeline
+ * activates:
+ * - RUNTIME_ONLY: ROS 2 graph introspection only (no merge pipeline; the
+ *   built-in Ros2RuntimeIntrospection provider is queried directly)
+ * - MANIFEST_ONLY: Manifest as the sole source of truth
+ * - HYBRID: Manifest + runtime + plugin layers merged through the pipeline
  *
  * The DiscoveryManager provides a unified interface for discovering:
- * - Areas: Logical groupings (ROS 2 namespaces or manifest areas)
- * - Components: Software/hardware units (ROS 2 nodes)
- * - Apps: Software applications (manifest-defined)
- * - Functions: Functional groupings (manifest-defined)
+ * - Areas: Logical groupings (manifest-only)
+ * - Components: Software/hardware units (HostInfoProvider, manifest, plugins)
+ * - Apps: Software applications (manifest, runtime nodes, plugins)
+ * - Functions: Functional groupings (manifest, namespaces, plugins)
  *
- * @see discovery::RuntimeDiscoveryStrategy
- * @see discovery::HybridDiscoveryStrategy
+ * @see ros2::Ros2RuntimeIntrospection
+ * @see discovery::MergePipeline
  * @see discovery::ManifestManager
  */
-class DiscoveryManager {
+class DiscoveryManager : public ServiceActionResolver {
  public:
   /**
    * @brief Construct the discovery manager
@@ -282,7 +287,8 @@ class DiscoveryManager {
    * @param operation_name Service name
    * @return ServiceInfo if found, nullopt otherwise
    */
-  std::optional<ServiceInfo> find_service(const std::string & component_ns, const std::string & operation_name) const;
+  std::optional<ServiceInfo> find_service(const std::string & component_ns,
+                                          const std::string & operation_name) const override;
 
   /**
    * @brief Find an action by component namespace and operation name
@@ -290,7 +296,8 @@ class DiscoveryManager {
    * @param operation_name Action name
    * @return ActionInfo if found, nullopt otherwise
    */
-  std::optional<ActionInfo> find_action(const std::string & component_ns, const std::string & operation_name) const;
+  std::optional<ActionInfo> find_action(const std::string & component_ns,
+                                        const std::string & operation_name) const override;
 
   /**
    * @brief Set the topic sampler for component-topic mapping
@@ -302,7 +309,7 @@ class DiscoveryManager {
    * @brief Set the type introspection for operation schema enrichment
    * @param introspection Pointer to TypeIntrospection (must outlive DiscoveryManager)
    */
-  void set_type_introspection(TypeIntrospection * introspection);
+  void set_type_introspection(ros2_medkit_serialization::TypeIntrospection * introspection);
 
   /**
    * @brief Refresh the cached topic map
@@ -329,6 +336,15 @@ class DiscoveryManager {
    * @param provider Non-owning pointer to IntrospectionProvider
    */
   void add_plugin_layer(const std::string & plugin_name, IntrospectionProvider * provider);
+
+  /**
+   * @brief Register an introspection provider with the merge pipeline
+   *
+   * Equivalent to add_plugin_layer for shared-ownership providers; the manager
+   * keeps the provider alive for the lifetime of the pipeline. Only meaningful
+   * in HYBRID mode.
+   */
+  void register_introspection_provider(const std::string & name, std::shared_ptr<IntrospectionProvider> provider);
 
   /**
    * @brief Re-execute the merge pipeline (hybrid mode only)
@@ -368,8 +384,8 @@ class DiscoveryManager {
   }
 
   /**
-   * @brief Get the current discovery strategy name
-   * @return Strategy name (e.g., "runtime", "manifest", "hybrid")
+   * @brief Get a human-readable name for the active discovery configuration.
+   * @return One of "runtime", "manifest", "hybrid".
    */
   std::string get_strategy_name() const;
 
@@ -387,9 +403,21 @@ class DiscoveryManager {
 
  private:
   /**
-   * @brief Create and activate the appropriate strategy
+   * @brief Build the merge pipeline for the active discovery mode.
+   *
+   * No-op in RUNTIME_ONLY and MANIFEST_ONLY modes; in HYBRID mode wires
+   * ManifestLayer / RuntimeLayer based on per-layer enable flags.
    */
-  void create_strategy();
+  void build_pipeline();
+
+  /**
+   * @brief Re-execute the pipeline and cache the merged result.
+   *
+   * Only called in HYBRID mode. RUNTIME_ONLY and MANIFEST_ONLY modes serve
+   * entities directly from the runtime introspection provider or the
+   * manifest manager.
+   */
+  void run_pipeline();
 
   /**
    * @brief Apply user-configured merge policy overrides to a layer
@@ -403,13 +431,18 @@ class DiscoveryManager {
   // Host info provider (created when default_component_enabled is true)
   std::unique_ptr<HostInfoProvider> host_info_provider_;
 
-  // Strategies
-  std::unique_ptr<discovery::RuntimeDiscoveryStrategy> runtime_strategy_;
+  // ROS 2 graph adapter implementing IntrospectionProvider
+  std::unique_ptr<ros2::Ros2RuntimeIntrospection> runtime_introspection_;
   std::unique_ptr<discovery::ManifestManager> manifest_manager_;
-  std::unique_ptr<discovery::HybridDiscoveryStrategy> hybrid_strategy_;
 
-  // Active strategy pointer (points to one of the above)
-  discovery::DiscoveryStrategy * active_strategy_{nullptr};
+  // HYBRID mode pipeline + cached merged result.
+  std::unique_ptr<discovery::MergePipeline> pipeline_;
+  discovery::MergeResult cached_result_;
+  mutable std::mutex result_mutex_;
+
+  // Plugin providers registered through register_introspection_provider keep
+  // the IntrospectionProvider alive for the lifetime of the pipeline.
+  std::vector<std::shared_ptr<IntrospectionProvider>> owned_providers_;
 };
 
 }  // namespace ros2_medkit_gateway

@@ -1156,7 +1156,7 @@ The gateway can be configured via parameters in `config/gateway_params.yaml` or 
 | ---------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------- |
 | `server.host`                | string | `127.0.0.1` | Host to bind the REST server (`127.0.0.1` for localhost, `0.0.0.0` for all interfaces) |
 | `server.port`                | int    | `8080`      | Port for the REST API (range: 1024-65535)                                              |
-| `refresh_interval_ms`        | int    | `10000`     | Cache refresh interval in milliseconds (range: 100-60000)                              |
+| `refresh_interval_ms`        | int    | `30000`     | Safety-backstop refresh interval in milliseconds. Primary refresh is graph-event driven; this controls only the periodic forced refresh (range: 100-60000) |
 | `data_provider.max_parallel_samples` | int | `8` | Max concurrent topic samples when fetching data (range: 1-256)                                |
 | `topic_sample_timeout_sec`   | float  | `2.0`       | Timeout for sampling topics with active publishers (range: 0.1-30.0)                   |
 | `fault_manager.namespace`    | string | `""`        | Optional namespace prefix for fault manager services and events (for example `robot1`)  |
@@ -1405,7 +1405,7 @@ ros2 launch ros2_medkit_gateway gateway_https.launch.py min_tls_version:=1.3
 | `server_host`         | `127.0.0.1`                | Host to bind HTTPS server                        |
 | `server_port`         | `8443`                     | Port for HTTPS API                               |
 | `min_tls_version`     | `1.2`                      | Minimum TLS version (`1.2` or `1.3`)             |
-| `refresh_interval_ms` | `10000`                    | Cache refresh interval in milliseconds           |
+| `refresh_interval_ms` | `30000`                    | Safety-backstop refresh interval (graph events drive primary refresh) |
 
 **Usage with curl (self-signed certs):**
 ```bash

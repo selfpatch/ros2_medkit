@@ -49,8 +49,15 @@
 #include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/log_manager.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_action_transport.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_fault_service_transport.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_log_source.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_parameter_transport.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_service_transport.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_topic_subscription_transport.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_topic_transport.hpp"
+#include "ros2_medkit_gateway/ros2/trigger_topic_subscriber.hpp"
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
-#include "ros2_medkit_gateway/trigger_topic_subscriber.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -211,9 +218,10 @@ class GatewayNode : public rclcpp::Node {
    * indicated area / component. The entry point is safe to call from any
    * thread: refresh passes triggered by plugin notifications, the periodic
    * refresh timer, and startup are serialized by an internal mutex inside
-   * `refresh_cache()` because refresh touches discovery state (e.g.,
-   * `HybridDiscoveryStrategy::refresh()`) that itself assumes single-threaded
-   * execution - `ThreadSafeEntityCache`'s own mutex is not sufficient.
+   * `refresh_cache()` because refresh touches discovery state (e.g., the
+   * merge pipeline cached inside `DiscoveryManager`) that itself assumes
+   * single-threaded execution - `ThreadSafeEntityCache`'s own mutex is not
+   * sufficient.
    */
   void handle_entity_change_notification(const EntityChangeScope & scope);
 
@@ -240,6 +248,10 @@ class GatewayNode : public rclcpp::Node {
   // Configuration parameters
   std::string server_host_;
   int server_port_;
+  // Safety-backstop refresh interval in milliseconds. The primary refresh
+  // trigger is the rclcpp graph event polled by `graph_check_timer_`; this
+  // value drives `backstop_timer_` which guarantees liveness if a graph
+  // event is ever missed (lost wakeup, rclcpp anomaly, etc.).
   int refresh_interval_ms_;
   bool filter_internal_nodes_{true};
   CorsConfig cors_config_;
@@ -251,6 +263,33 @@ class GatewayNode : public rclcpp::Node {
   // is constructed). Owned via shared_ptr because the provider is handed out
   // as a raw TopicDataProvider* to DataAccessManager.
   std::shared_ptr<TopicDataProvider> topic_data_provider_;
+
+  // Topic transport adapter shared with DataAccessManager. Held here so the
+  // provider attach/detach hooks can forward into the adapter alongside the
+  // manager and discovery side updates.
+  std::shared_ptr<ros2::Ros2TopicTransport> topic_transport_;
+
+  // Service / action transport adapters shared with OperationManager. Held
+  // here so their lifetime matches the gateway's executor (transports own
+  // rclcpp clients + subscriptions and must outlive the manager).
+  std::shared_ptr<ros2::Ros2ServiceTransport> service_transport_;
+  std::shared_ptr<ros2::Ros2ActionTransport> action_transport_;
+
+  // Parameter transport adapter shared with ConfigurationManager. Owns the
+  // parameter-client cache + defaults cache + spin_mutex; the manager forwards
+  // shutdown() into it before rclcpp::shutdown() runs.
+  std::shared_ptr<ros2::Ros2ParameterTransport> parameter_transport_;
+
+  // Fault-service transport adapter shared with FaultManager. Owns the seven
+  // rclcpp service clients, the seven per-client mutexes, and the
+  // ros2_medkit_msgs <-> JSON conversion helpers that previously lived inside
+  // FaultManager.
+  std::shared_ptr<ros2::Ros2FaultServiceTransport> fault_service_transport_;
+
+  // /rosout source adapter shared with LogManager. Owns the
+  // rclcpp::Subscription<rcl_interfaces::msg::Log> + msg-to-LogEntry
+  // conversion that previously lived inside LogManager.
+  std::shared_ptr<ros2::Ros2LogSource> log_source_;
 
   // Managers
   std::unique_ptr<DiscoveryManager> discovery_mgr_;
@@ -281,6 +320,8 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<TriggerManager> trigger_mgr_;
   std::unique_ptr<TriggerFaultSubscriber> trigger_fault_subscriber_;
   std::unique_ptr<TriggerTopicSubscriber> trigger_topic_subscriber_;
+  // Adapter routing manager-side subscribe() calls onto trigger_topic_subscriber_.
+  std::shared_ptr<ros2::Ros2TopicSubscriptionTransport> trigger_topic_transport_;
 
   // Aggregation infrastructure (destroyed in order: mdns -> rest_server -> aggregation)
   // mDNS threads must stop before rest_server to avoid callbacks during shutdown.
@@ -293,16 +334,31 @@ class GatewayNode : public rclcpp::Node {
   // Cache with thread safety
   ThreadSafeEntityCache thread_safe_cache_;
 
-  // Timer for periodic refresh
-  rclcpp::TimerBase::SharedPtr refresh_timer_;
+  // Graph-change-driven discovery refresh.
+  //
+  // `graph_event_` is the rclcpp::Event signalled whenever the ROS 2 graph
+  // changes (node up/down, topic/service/action add or remove). It is a
+  // shared_ptr handed out by `rclcpp::Node::get_graph_event()`; the executor
+  // owns the underlying notification and we just poll-and-clear it.
+  //
+  // `graph_check_timer_` polls `graph_event_->check_and_clear()` at a fast
+  // cadence (100 ms) and runs `refresh_cache()` only when the event fires.
+  // On a stable graph this keeps idle CPU near zero.
+  //
+  // `backstop_timer_` runs `refresh_cache()` unconditionally at the slower
+  // `refresh_interval_ms_` cadence. Its sole purpose is liveness in the
+  // unlikely case a graph event is missed.
+  rclcpp::Event::SharedPtr graph_event_;
+  rclcpp::TimerBase::SharedPtr graph_check_timer_;
+  rclcpp::TimerBase::SharedPtr backstop_timer_;
 
   // Serializes `refresh_cache()` across the refresh timer, plugin
   // `notify_entities_changed` calls and any other caller. Required because
   // the refresh pipeline touches discovery state that is not itself
-  // thread-safe (e.g., `HybridDiscoveryStrategy::refresh()`). Recursive so
-  // that `handle_entity_change_notification` can also cover the preceding
-  // `reload_manifest()` call without deadlocking when it subsequently
-  // invokes `refresh_cache()`.
+  // thread-safe (the merge pipeline cached inside `DiscoveryManager`).
+  // Recursive so that `handle_entity_change_notification` can also cover
+  // the preceding `reload_manifest()` call without deadlocking when it
+  // subsequently invokes `refresh_cache()`.
   std::recursive_mutex refresh_mutex_;
 
   // Timer for periodic cleanup of old action goals

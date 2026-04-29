@@ -16,17 +16,15 @@
 
 #include "ros2_medkit_gateway/core/discovery/layers/manifest_layer.hpp"
 #include "ros2_medkit_gateway/core/discovery/layers/runtime_layer.hpp"
-#include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
 #include "ros2_medkit_gateway/discovery/layers/plugin_layer.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
-#include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
+
+#include <utility>
 
 namespace ros2_medkit_gateway {
 
 DiscoveryManager::DiscoveryManager(rclcpp::Node * node)
-  : node_(node), runtime_strategy_(std::make_unique<discovery::RuntimeDiscoveryStrategy>(node)) {
-  // Default to runtime strategy
-  active_strategy_ = runtime_strategy_.get();
+  : node_(node), runtime_introspection_(std::make_unique<ros2::Ros2RuntimeIntrospection>(node)) {
 }
 
 bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
@@ -59,7 +57,7 @@ bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
                     "No manifest_path set for hybrid mode. Falling back to runtime_only. "
                     "This fallback is deprecated and will be removed in a future release.");
         config_.mode = DiscoveryMode::RUNTIME_ONLY;
-        create_strategy();
+        build_pipeline();
         return true;
       }
       RCLCPP_ERROR(node_->get_logger(), "Manifest path required for %s mode. Set discovery.manifest_path.",
@@ -74,7 +72,7 @@ bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
                     "This fallback is deprecated and will be removed in a future release.");
         config_.mode = DiscoveryMode::RUNTIME_ONLY;
         manifest_manager_.reset();
-        create_strategy();
+        build_pipeline();
         return true;
       }
       RCLCPP_ERROR(node_->get_logger(), "Manifest load failed in %s mode. Cannot proceed.",
@@ -83,7 +81,7 @@ bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
     }
   }
 
-  create_strategy();
+  build_pipeline();
   return true;
 }
 
@@ -107,40 +105,38 @@ void DiscoveryManager::apply_layer_policy_overrides(const std::string & layer_na
   }
 }
 
-void DiscoveryManager::create_strategy() {
-  // Configure runtime strategy with runtime options
-  discovery::RuntimeDiscoveryStrategy::RuntimeConfig runtime_config;
+void DiscoveryManager::build_pipeline() {
+  // Configure runtime introspection (always-on adapter, used by all modes for
+  // service/action queries even when the merge pipeline is bypassed).
+  ros2::Ros2RuntimeIntrospection::RuntimeConfig runtime_config;
   runtime_config.create_functions_from_namespaces = config_.runtime.create_functions_from_namespaces;
-  runtime_strategy_->set_config(runtime_config);
+  runtime_introspection_->set_config(runtime_config);
 
   switch (config_.mode) {
     case DiscoveryMode::MANIFEST_ONLY:
-      // In MANIFEST_ONLY mode, entity structure comes from manifest (via manifest_manager_),
-      // NOT from the active_strategy_. The discover_*() methods check the mode and return
-      // manifest data directly. We still point active_strategy_ to runtime_strategy_ because:
-      // 1. It's used for service/action introspection when explicitly requested
-      // 2. It avoids creating a separate ManifestOnlyStrategy class
-      // 3. It provides a fallback if manifest is unavailable
-      active_strategy_ = runtime_strategy_.get();
+      // Manifest-only: entity structure comes from manifest_manager_; the
+      // pipeline is not used. Service/action queries still go through
+      // runtime_introspection_ directly.
       RCLCPP_INFO(node_->get_logger(), "Discovery mode: manifest_only");
+      pipeline_.reset();
       break;
 
     case DiscoveryMode::HYBRID: {
-      discovery::MergePipeline pipeline(node_->get_logger());
+      auto pipeline = std::make_unique<discovery::MergePipeline>(node_->get_logger());
 
       if (config_.manifest_enabled) {
         auto manifest_layer = std::make_unique<discovery::ManifestLayer>(manifest_manager_.get());
         apply_layer_policy_overrides("manifest", *manifest_layer);
-        pipeline.add_layer(std::move(manifest_layer));
+        pipeline->add_layer(std::move(manifest_layer));
       } else {
         RCLCPP_INFO(node_->get_logger(), "Manifest layer disabled in hybrid mode");
       }
 
       if (config_.runtime_enabled) {
-        auto runtime_layer = std::make_unique<discovery::RuntimeLayer>(runtime_strategy_.get());
+        auto runtime_layer = std::make_unique<discovery::RuntimeLayer>(runtime_introspection_.get());
         runtime_layer->set_gap_fill_config(config_.merge_pipeline.gap_fill);
         apply_layer_policy_overrides("runtime", *runtime_layer);
-        pipeline.add_layer(std::move(runtime_layer));
+        pipeline->add_layer(std::move(runtime_layer));
       } else {
         RCLCPP_INFO(node_->get_logger(), "Runtime layer disabled in hybrid mode");
       }
@@ -152,14 +148,14 @@ void DiscoveryManager::create_strategy() {
                     "Entity discovery relies entirely on plugins.");
       }
 
-      // RuntimeLinker only makes sense when runtime is enabled
+      // RuntimeLinker only makes sense when runtime is enabled.
       if (config_.runtime_enabled) {
         auto manifest_config = manifest_manager_ ? manifest_manager_->get_config() : discovery::ManifestConfig{};
-        pipeline.set_linker(std::make_unique<discovery::RuntimeLinker>(node_), manifest_config);
+        pipeline->set_linker(std::make_unique<discovery::RuntimeLinker>(node_), manifest_config);
       }
 
-      hybrid_strategy_ = std::make_unique<discovery::HybridDiscoveryStrategy>(node_, std::move(pipeline));
-      active_strategy_ = hybrid_strategy_.get();
+      pipeline_ = std::move(pipeline);
+      run_pipeline();
       RCLCPP_INFO(node_->get_logger(), "Discovery mode: hybrid (manifest=%s, runtime=%s)",
                   config_.manifest_enabled ? "on" : "off", config_.runtime_enabled ? "on" : "off");
       break;
@@ -167,18 +163,38 @@ void DiscoveryManager::create_strategy() {
 
     case DiscoveryMode::RUNTIME_ONLY:
     default:
-      active_strategy_ = runtime_strategy_.get();
       RCLCPP_INFO(node_->get_logger(), "Discovery mode: runtime_only (default_component=%s)",
                   host_info_provider_ ? "true" : "false");
+      pipeline_.reset();
       break;
   }
+}
+
+void DiscoveryManager::run_pipeline() {
+  if (!pipeline_) {
+    return;
+  }
+  // Execute pipeline WITHOUT lock - safe because the layers' add_layer() calls
+  // happen during initialization (build_pipeline + plugin setup) before the
+  // EntityCache timer starts, and run_pipeline() runs only on the gateway's
+  // single-threaded refresh path.
+  auto new_result = pipeline_->execute();
+
+  std::lock_guard<std::mutex> lock(result_mutex_);
+  cached_result_ = std::move(new_result);
+  RCLCPP_INFO(node_->get_logger(), "Hybrid discovery refreshed: %zu entities", cached_result_.report.total_entities);
 }
 
 std::vector<Area> DiscoveryManager::discover_areas() {
   if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_areas();
   }
-  return active_strategy_->discover_areas();
+  if (config_.mode == DiscoveryMode::HYBRID) {
+    std::lock_guard<std::mutex> lock(result_mutex_);
+    return cached_result_.areas;
+  }
+  // RUNTIME_ONLY: runtime introspection never produces Areas.
+  return {};
 }
 
 std::vector<Component> DiscoveryManager::discover_components() {
@@ -192,33 +208,46 @@ std::vector<Component> DiscoveryManager::discover_components() {
     return {host_info_provider_->get_default_component()};
   }
 
-  return active_strategy_->discover_components();
+  if (config_.mode == DiscoveryMode::HYBRID) {
+    std::lock_guard<std::mutex> lock(result_mutex_);
+    return cached_result_.components;
+  }
+
+  return {};
 }
 
 std::vector<App> DiscoveryManager::discover_apps() {
   if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_apps();
   }
-  return active_strategy_->discover_apps();
+  if (config_.mode == DiscoveryMode::HYBRID) {
+    std::lock_guard<std::mutex> lock(result_mutex_);
+    return cached_result_.apps;
+  }
+  return runtime_introspection_->discover_apps();
 }
 
 std::vector<Function> DiscoveryManager::discover_functions() {
   if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_functions();
   }
-  return active_strategy_->discover_functions();
+  if (config_.mode == DiscoveryMode::HYBRID) {
+    std::lock_guard<std::mutex> lock(result_mutex_);
+    return cached_result_.functions;
+  }
+  return runtime_introspection_->discover_functions();
 }
 
 std::vector<Function> DiscoveryManager::discover_functions(const std::vector<App> & apps) {
   if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_functions();
   }
-  // In RUNTIME_ONLY mode, delegate to the overload that accepts pre-discovered apps
-  if (config_.mode == DiscoveryMode::RUNTIME_ONLY && runtime_strategy_) {
-    return runtime_strategy_->discover_functions(apps);
+  if (config_.mode == DiscoveryMode::HYBRID) {
+    std::lock_guard<std::mutex> lock(result_mutex_);
+    return cached_result_.functions;
   }
-  // HYBRID mode uses cached pipeline results, so apps parameter is not needed
-  return active_strategy_->discover_functions();
+  // RUNTIME_ONLY: avoid redundant graph queries by reusing the apps vector.
+  return runtime_introspection_->discover_functions(apps);
 }
 
 std::optional<Area> DiscoveryManager::get_area(const std::string & id) {
@@ -344,54 +373,64 @@ std::vector<std::string> DiscoveryManager::get_hosts_for_function(const std::str
 }
 
 std::vector<ServiceInfo> DiscoveryManager::discover_services() {
-  return runtime_strategy_->discover_services();
+  return runtime_introspection_->discover_services();
 }
 
 std::vector<ActionInfo> DiscoveryManager::discover_actions() {
-  return runtime_strategy_->discover_actions();
+  return runtime_introspection_->discover_actions();
 }
 
 std::optional<ServiceInfo> DiscoveryManager::find_service(const std::string & component_ns,
                                                           const std::string & operation_name) const {
-  return runtime_strategy_->find_service(component_ns, operation_name);
+  return runtime_introspection_->find_service(component_ns, operation_name);
 }
 
 std::optional<ActionInfo> DiscoveryManager::find_action(const std::string & component_ns,
                                                         const std::string & operation_name) const {
-  return runtime_strategy_->find_action(component_ns, operation_name);
+  return runtime_introspection_->find_action(component_ns, operation_name);
 }
 
 void DiscoveryManager::set_topic_data_provider(TopicDataProvider * provider) {
-  runtime_strategy_->set_topic_data_provider(provider);
+  runtime_introspection_->set_topic_data_provider(provider);
 }
 
-void DiscoveryManager::set_type_introspection(TypeIntrospection * introspection) {
-  runtime_strategy_->set_type_introspection(introspection);
+void DiscoveryManager::set_type_introspection(ros2_medkit_serialization::TypeIntrospection * introspection) {
+  runtime_introspection_->set_type_introspection(introspection);
 }
 
 void DiscoveryManager::refresh_topic_map() {
-  runtime_strategy_->refresh_topic_map();
-  if (hybrid_strategy_) {
-    hybrid_strategy_->refresh();
+  runtime_introspection_->refresh_topic_map();
+  if (pipeline_) {
+    run_pipeline();
   }
 }
 
 bool DiscoveryManager::is_topic_map_ready() const {
-  return runtime_strategy_->is_topic_map_ready();
+  return runtime_introspection_->is_topic_map_ready();
 }
 
 void DiscoveryManager::add_plugin_layer(const std::string & plugin_name, IntrospectionProvider * provider) {
-  if (!hybrid_strategy_) {
+  if (!pipeline_) {
     RCLCPP_WARN(node_->get_logger(), "Cannot add plugin layer '%s': not in hybrid mode", plugin_name.c_str());
     return;
   }
-  hybrid_strategy_->add_layer(std::make_unique<discovery::PluginLayer>(plugin_name, provider));
+  pipeline_->add_layer(std::make_unique<discovery::PluginLayer>(plugin_name, provider));
   RCLCPP_INFO(node_->get_logger(), "Added plugin layer '%s' to merge pipeline", plugin_name.c_str());
 }
 
+void DiscoveryManager::register_introspection_provider(const std::string & name,
+                                                       std::shared_ptr<IntrospectionProvider> provider) {
+  if (!provider) {
+    return;
+  }
+  IntrospectionProvider * raw = provider.get();
+  owned_providers_.push_back(std::move(provider));
+  add_plugin_layer(name, raw);
+}
+
 void DiscoveryManager::refresh_pipeline() {
-  if (hybrid_strategy_) {
-    hybrid_strategy_->refresh();
+  if (pipeline_) {
+    run_pipeline();
   }
 }
 
@@ -400,24 +439,31 @@ discovery::ManifestManager * DiscoveryManager::get_manifest_manager() {
 }
 
 std::string DiscoveryManager::get_strategy_name() const {
-  if (active_strategy_) {
-    return active_strategy_->get_name();
+  switch (config_.mode) {
+    case DiscoveryMode::MANIFEST_ONLY:
+      return "manifest";
+    case DiscoveryMode::HYBRID:
+      return "hybrid";
+    case DiscoveryMode::RUNTIME_ONLY:
+    default:
+      return "runtime";
   }
-  return "unknown";
 }
 
 std::optional<discovery::MergeReport> DiscoveryManager::get_merge_report() const {
-  if (hybrid_strategy_) {
-    return hybrid_strategy_->get_merge_report();
+  if (!pipeline_) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  std::lock_guard<std::mutex> lock(result_mutex_);
+  return cached_result_.report;
 }
 
 std::optional<discovery::LinkingResult> DiscoveryManager::get_linking_result() const {
-  if (hybrid_strategy_) {
-    return hybrid_strategy_->get_linking_result();
+  if (!pipeline_) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  std::lock_guard<std::mutex> lock(result_mutex_);
+  return cached_result_.linking_result;
 }
 
 bool DiscoveryManager::has_host_info_provider() const {

@@ -16,7 +16,7 @@
 
 #include "ros2_medkit_gateway/core/discovery/discovery_layer.hpp"
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
-#include "ros2_medkit_gateway/discovery/runtime_discovery.hpp"
+#include "ros2_medkit_gateway/ros2/providers/ros2_runtime_introspection.hpp"
 
 #include <unordered_map>
 
@@ -24,14 +24,14 @@ namespace ros2_medkit_gateway {
 namespace discovery {
 
 /**
- * @brief Discovery layer wrapping RuntimeDiscoveryStrategy
+ * @brief Discovery layer wrapping the ROS 2 runtime IntrospectionProvider.
  *
  * Default policies: IDENTITY=FALLBACK, HIERARCHY=FALLBACK, LIVE_DATA=AUTH,
  * STATUS=AUTH, METADATA=ENRICH
  */
 class RuntimeLayer : public DiscoveryLayer {
  public:
-  explicit RuntimeLayer(RuntimeDiscoveryStrategy * runtime_strategy);
+  explicit RuntimeLayer(ros2::Ros2RuntimeIntrospection * runtime_introspection);
 
   std::string name() const override {
     return "runtime";
@@ -62,7 +62,7 @@ class RuntimeLayer : public DiscoveryLayer {
   std::vector<ActionInfo> discover_actions();
 
  private:
-  RuntimeDiscoveryStrategy * runtime_strategy_;
+  ros2::Ros2RuntimeIntrospection * runtime_introspection_;
   std::unordered_map<FieldGroup, MergePolicy> policies_;
   GapFillConfig gap_fill_config_;
   size_t last_filtered_count_{0};

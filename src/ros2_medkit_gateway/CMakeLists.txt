@@ -149,12 +149,19 @@ target_precompile_headers(gateway_core PRIVATE
 # transitively get both layers from a single dependency.
 add_library(gateway_ros2 STATIC
   src/aggregation/aggregation_manager.cpp
-  src/configuration_manager.cpp
-  src/data_access_manager.cpp
   src/data/ros2_topic_data_provider.cpp
+  src/ros2/conversions/fault_msg_conversions.cpp
+  src/ros2/providers/ros2_runtime_introspection.cpp
+  src/ros2/transports/ros2_action_transport.cpp
+  src/ros2/transports/ros2_fault_service_transport.cpp
+  src/ros2/transports/ros2_log_source.cpp
+  src/ros2/transports/ros2_parameter_transport.cpp
+  src/ros2/transports/ros2_service_transport.cpp
+  src/ros2/transports/ros2_topic_subscription_transport.cpp
+  src/ros2/transports/ros2_topic_transport.cpp
+  src/ros2/trigger_topic_subscriber.cpp
   src/default_script_provider.cpp
   src/discovery/discovery_manager.cpp
-  src/discovery/hybrid_discovery.cpp
   src/discovery/layers/manifest_layer.cpp
   src/discovery/layers/plugin_layer.cpp
   src/discovery/layers/runtime_layer.cpp
@@ -162,8 +169,6 @@ add_library(gateway_ros2 STATIC
   src/discovery/manifest/manifest_parser.cpp
   src/discovery/manifest/runtime_linker.cpp
   src/discovery/merge_pipeline.cpp
-  src/discovery/runtime_discovery.cpp
-  src/fault_manager.cpp
   src/fault_manager_paths.cpp
   src/gateway_node.cpp
   src/http/handlers/auth_handlers.cpp
@@ -186,8 +191,6 @@ add_library(gateway_ros2 STATIC
   src/http/handlers/update_handlers.cpp
   src/http/http_server.cpp
   src/http/rest_server.cpp
-  src/log_manager.cpp
-  src/operation_manager.cpp
   src/openapi/capability_generator.cpp
   src/openapi/openapi_spec_builder.cpp
   src/openapi/path_builder.cpp
@@ -200,9 +203,6 @@ add_library(gateway_ros2 STATIC
   src/ros2_common/ros2_subscription_slot.cpp
   src/script_manager.cpp
   src/trigger_fault_subscriber.cpp
-  src/trigger_manager.cpp
-  src/trigger_topic_subscriber.cpp
-  src/type_introspection.cpp
 )
 
 # Private implementation headers for openapi module (shared by both layers)
@@ -366,6 +366,112 @@ if(BUILD_TESTING)
   )
   set_tests_properties(gateway_core_smoke PROPERTIES LABELS "unit")
 
+  # ─── DataAccessManager routing test (gateway_core only) ────────────────────
+  # Mock-transport coverage proving the manager body compiles + links against
+  # gateway_core alone, with no rclcpp on the link line.
+  add_executable(test_data_access_manager_routing test/test_data_access_manager_routing.cpp)
+  target_link_libraries(test_data_access_manager_routing
+    PRIVATE
+      gateway_core
+      GTest::gtest
+      GTest::gtest_main
+  )
+  add_test(
+    NAME data_access_manager_routing
+    COMMAND $<TARGET_FILE:test_data_access_manager_routing>
+  )
+  set_tests_properties(data_access_manager_routing PROPERTIES LABELS "unit")
+
+  # ─── OperationManager routing test (gateway_core only) ─────────────────────
+  # Mock-transport coverage proving the manager body (service / action call
+  # routing, goal tracking, status callback wiring, cleanup) compiles and
+  # links against gateway_core alone, with no rclcpp on the link line.
+  add_executable(test_operation_manager_routing test/test_operation_manager_routing.cpp)
+  target_link_libraries(test_operation_manager_routing
+    PRIVATE
+      gateway_core
+      GTest::gtest
+      GTest::gtest_main
+  )
+  add_test(
+    NAME operation_manager_routing
+    COMMAND $<TARGET_FILE:test_operation_manager_routing>
+  )
+  set_tests_properties(operation_manager_routing PROPERTIES LABELS "unit")
+
+  # ─── ConfigurationManager routing test (gateway_core only) ─────────────────
+  # Mock-transport coverage proving the manager body (CRUD delegation,
+  # self-node short circuit, reset orchestration via cached defaults,
+  # shutdown idempotency, error code propagation) compiles and links against
+  # gateway_core alone, with no rclcpp on the link line.
+  add_executable(test_configuration_manager_routing test/test_configuration_manager_routing.cpp)
+  target_link_libraries(test_configuration_manager_routing
+    PRIVATE
+      gateway_core
+      GTest::gtest
+      GTest::gtest_main
+  )
+  add_test(
+    NAME configuration_manager_routing
+    COMMAND $<TARGET_FILE:test_configuration_manager_routing>
+  )
+  set_tests_properties(configuration_manager_routing PROPERTIES LABELS "unit")
+
+  # ─── FaultManager routing test (gateway_core only) ─────────────────────────
+  # Mock-transport coverage proving the manager body (eight SOVD operations,
+  # error_message propagation, JSON-shape contract for get_fault_with_env)
+  # compiles and links against gateway_core alone, with no rclcpp on the link
+  # line.
+  add_executable(test_fault_manager_routing test/test_fault_manager_routing.cpp)
+  target_link_libraries(test_fault_manager_routing
+    PRIVATE
+      gateway_core
+      GTest::gtest
+      GTest::gtest_main
+  )
+  add_test(
+    NAME fault_manager_routing
+    COMMAND $<TARGET_FILE:test_fault_manager_routing>
+  )
+  set_tests_properties(fault_manager_routing PROPERTIES LABELS "unit")
+
+  # ─── LogManager routing test (gateway_core only) ───────────────────────────
+  # Mock-source coverage proving the manager body (ring-buffer storage,
+  # plugin observer pattern, manages_ingestion short-circuit, severity
+  # filter, source teardown) compiles and links against gateway_core alone,
+  # with no rclcpp on the link line.
+  add_executable(test_log_manager_routing test/test_log_manager_routing.cpp)
+  target_link_libraries(test_log_manager_routing
+    PRIVATE
+      gateway_core
+      GTest::gtest
+      GTest::gtest_main
+  )
+  add_test(
+    NAME log_manager_routing
+    COMMAND $<TARGET_FILE:test_log_manager_routing>
+  )
+  set_tests_properties(log_manager_routing PROPERTIES LABELS "unit")
+
+  # ─── TriggerManager routing test (gateway_core only) ───────────────────────
+  # Mock-transport coverage proving the manager body (data-trigger subscribe
+  # routing, handle-destruction unsubscribe, sample callback dispatch into
+  # the resource-change notifier, orphan sweep, multi-trigger isolation,
+  # shutdown teardown) compiles and links against gateway_core alone, with
+  # no rclcpp on the link line.
+  add_executable(test_trigger_manager_routing test/test_trigger_manager_routing.cpp)
+  target_link_libraries(test_trigger_manager_routing
+    PRIVATE
+      gateway_core
+      GTest::gtest
+      GTest::gtest_main
+  )
+  add_test(
+    NAME trigger_manager_routing
+    COMMAND $<TARGET_FILE:test_trigger_manager_routing>
+  )
+  set_tests_properties(trigger_manager_routing PROPERTIES LABELS "unit")
+
   # Add GTest
   find_package(ament_cmake_gtest REQUIRED)
   find_package(rclcpp_action REQUIRED)
@@ -409,7 +515,7 @@ if(BUILD_TESTING)
   medkit_target_dependencies(test_discovery_manager std_msgs)
   medkit_set_test_domain(test_discovery_manager)
 
-  # Add RuntimeDiscoveryStrategy tests
+  # Add Ros2RuntimeIntrospection tests
   ament_add_gtest(test_runtime_discovery test/test_runtime_discovery.cpp)
   target_link_libraries(test_runtime_discovery gateway_ros2)
   medkit_set_test_domain(test_runtime_discovery)

@@ -70,12 +70,16 @@ The following diagram shows the relationships between the main components of the
    note as N_layer_split
    This package compiles into two layered static libraries:
    * gateway_core - middleware-neutral business logic (handlers,
-     auth, fault model, aggregation, neutral managers, providers,
-     entity model). Does not link rclcpp.
-   * gateway_ros2 - ROS adapter classes (GatewayNode,
+     auth, fault model, aggregation, all SOVD managers including
      DataAccessManager, OperationManager, ConfigurationManager,
-     FaultManager, LogManager, TriggerManager, RuntimeDiscovery,
-     NativeTopicSampler, TypeIntrospection). Publicly links
+     FaultManager, LogManager, TriggerManager, providers, entity
+     model). Does not link rclcpp. Managers consume neutral
+     Transport interfaces (TopicTransport, ServiceTransport,
+     ActionTransport, ParameterTransport, FaultServiceTransport,
+     LogSource, TopicSubscriptionTransport).
+   * gateway_ros2 - ROS-binding adapters (GatewayNode plus the
+     Ros2*Transport implementations, TriggerTopicSubscriber,
+     Ros2RuntimeIntrospection, NativeTopicSampler). Publicly links
      gateway_core. Class associations on this diagram remain valid;
      the boundary affects build-time only.
    end note
@@ -109,7 +113,8 @@ The following diagram shows the relationships between the main components of the
            + get_name(): string
        }
 
-       class RuntimeDiscoveryStrategy {
+       class Ros2RuntimeIntrospection {
+           + introspect(IntrospectionInput): IntrospectionResult
            + discover_apps(): vector<App>
            + discover_functions(): vector<Function>
            - config_: RuntimeConfig
@@ -118,13 +123,6 @@ The following diagram shows the relationships between the main components of the
        class ManifestDiscoveryStrategy {
            + load_manifest(): void
            - manifest_: Manifest
-       }
-
-       class HybridDiscoveryStrategy {
-           - pipeline_: MergePipeline
-           + refresh(): void
-           + add_layer(): void
-           + get_merge_report(): MergeReport
        }
 
        class MergePipeline {
@@ -146,7 +144,7 @@ The following diagram shows the relationships between the main components of the
        }
 
        class RuntimeLayer {
-           - strategy_: RuntimeDiscoveryStrategy*
+           - runtime_introspection_: Ros2RuntimeIntrospection*
            - gap_fill_config_: GapFillConfig
        }
 
@@ -323,8 +321,9 @@ The following diagram shows the relationships between the main components of the
        }
 
        class TriggerTopicSubscriber {
-           + subscribe_topic(): void
-           + unsubscribe_topic(): void
+           + subscribe(topic, type, handle_key, cb): void
+           + unsubscribe(handle_key): void
+           + set_retry_callback(cb): void
        }
 
        class EntityCache {
@@ -398,11 +397,9 @@ The following diagram shows the relationships between the main components of the
    DiscoveryManager ..> ActionInfo : creates
 
    ' Discovery strategy hierarchy
-   DiscoveryManager --> DiscoveryStrategy : uses
-   RuntimeDiscoveryStrategy .up.|> DiscoveryStrategy : implements
-   ManifestDiscoveryStrategy .up.|> DiscoveryStrategy : implements
-   HybridDiscoveryStrategy .up.|> DiscoveryStrategy : implements
-   HybridDiscoveryStrategy *--> MergePipeline : owns
+   DiscoveryManager *--> Ros2RuntimeIntrospection : owns
+   DiscoveryManager *--> MergePipeline : owns (hybrid mode)
+   Ros2RuntimeIntrospection .up.|> IntrospectionProvider : implements
 
    ' MergePipeline layer architecture
    MergePipeline o--> DiscoveryLayer : ordered layers
@@ -410,7 +407,7 @@ The following diagram shows the relationships between the main components of the
    ManifestLayer .up.|> DiscoveryLayer : implements
    RuntimeLayer .up.|> DiscoveryLayer : implements
    PluginLayer .up.|> DiscoveryLayer : implements
-   RuntimeLayer --> RuntimeDiscoveryStrategy : delegates
+   RuntimeLayer --> Ros2RuntimeIntrospection : delegates
 
    ' REST Server uses HTTP library
    RESTServer *--> HTTPLibServer : owns
@@ -428,7 +425,7 @@ The following diagram shows the relationships between the main components of the
    TriggerManager --> ResourceChangeNotifier : subscribes to
    TriggerManager --> ConditionRegistry : evaluates with
    TriggerManager --> TriggerStore : persists via
-   TriggerManager --> TriggerTopicSubscriber : manages data subscriptions
+   TriggerManager --> "TopicSubscriptionTransport" : data subscriptions via transport
    SqliteTriggerStore .up.|> TriggerStore : implements
    ConditionRegistry o--> ConditionEvaluator : contains many
    RESTServer --> TriggerManager : uses
@@ -461,17 +458,19 @@ Each entry below is tagged with the static library it compiles into:
 
    **Discovery Strategies:**
 
-   - **RuntimeDiscoveryStrategy** - Heuristic discovery via ROS 2 graph introspection
+   - **Ros2RuntimeIntrospection** - IntrospectionProvider wrapping ROS 2 graph queries
      - Maps nodes to Apps with ``source: "heuristic"``
      - Creates Functions from namespace grouping
      - Never creates Areas or Components (those come from manifest/HostInfoProvider)
+     - Same interface as plugin-provided IntrospectionProviders, so the merge pipeline
+       treats built-in graph queries identically to plugin contributions
    - **ManifestDiscoveryStrategy** - Static discovery from YAML manifest
      - Provides stable, semantic entity IDs
      - Supports offline detection of failed components
-   - **HybridDiscoveryStrategy** - Combines manifest + runtime via MergePipeline
-     - Delegates to ``MergePipeline`` which orchestrates ordered discovery layers
-     - Supports dynamic plugin layers added at runtime
-     - Thread-safe: mutex protects cached results, returns by value
+   - **Hybrid mode (DiscoveryManager + MergePipeline)** - Combines manifest + runtime + plugins
+     - DiscoveryManager constructs a ``MergePipeline`` with the configured layers
+     - Supports dynamic plugin layers added at runtime via ``add_plugin_layer()``
+     - Thread-safe: a mutex protects the cached merged result, all reads return by value
 
    **Merge Pipeline:**
 
@@ -489,7 +488,7 @@ Each entry below is tagged with the static library it compiles into:
 
    - ``ManifestLayer`` - Wraps ManifestManager; IDENTITY/HIERARCHY/METADATA are AUTHORITATIVE,
      LIVE_DATA is ENRICHMENT (runtime wins for topics/services), STATUS is FALLBACK
-   - ``RuntimeLayer`` - Wraps RuntimeDiscoveryStrategy; LIVE_DATA/STATUS are AUTHORITATIVE,
+   - ``RuntimeLayer`` - Wraps Ros2RuntimeIntrospection; LIVE_DATA/STATUS are AUTHORITATIVE,
      METADATA is ENRICHMENT, IDENTITY/HIERARCHY are FALLBACK.
      Supports ``GapFillConfig`` to control which heuristic entities are allowed when manifest is present
    - ``PluginLayer`` - Wraps IntrospectionProvider; all fields ENRICHMENT (plugins enrich, they don't override).
@@ -612,12 +611,16 @@ It consists of five main components:
    - Stores trigger metadata, condition parameters, and evaluator state (previous values)
    - Supports partial updates for status changes and lifetime extensions
 
-5. **TriggerTopicSubscriber** ``[gateway_ros2]`` - Manages ROS 2 topic subscriptions for data triggers.
+5. **TriggerTopicSubscriber** ``[gateway_ros2]`` - Generic per-handle subscription executor for data triggers.
 
-   - Creates ``rclcpp::GenericSubscription`` instances for monitored data topics
-   - Reference-counted: multiple triggers on the same topic share one subscription
-   - Publishes data changes to ``ResourceChangeNotifier`` for condition evaluation
-   - Automatically unsubscribes when the last trigger for a topic is removed
+   - Creates one ``rclcpp::GenericSubscription`` per ``handle_key`` provided by the caller
+   - Each trigger owns its own subscription handle - no reference-counting across triggers
+   - Wrapped by ``Ros2TopicSubscriptionTransport``, which exposes the neutral
+     ``TopicSubscriptionTransport`` interface to ``TriggerManager``
+   - Subscription lifetime is tied to the trigger entry: removing the trigger drops the
+     handle and tears down the underlying subscription
+   - Per-handle callbacks publish samples back to ``ResourceChangeNotifier`` for
+     condition evaluation
 
 Additional Design Documents
 ----------------------------

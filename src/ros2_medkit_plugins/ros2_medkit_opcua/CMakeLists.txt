@@ -145,12 +145,17 @@ if(BUILD_TESTING)
   include(ROS2MedkitTestDomain)
   medkit_init_test_domains(START 220 END 229)
 
+  # Each test connects to a non-existent OPC UA host and waits ~3.8s for the
+  # DNS / TCP failure path; with 13 tests in the suite the run requires ~90s.
+  # The default ament_add_gtest timeout (60s) is too tight, causing the runner
+  # to abort mid-suite and emit "missing_result" under heavy parallelism.
   ament_add_gtest(test_opcua_plugin
     test/test_opcua_plugin.cpp
     src/opcua_plugin.cpp
     src/opcua_client.cpp
     src/node_map.cpp
     src/opcua_poller.cpp
+    TIMEOUT 240
   )
   target_include_directories(test_opcua_plugin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include

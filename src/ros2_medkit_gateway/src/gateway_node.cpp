@@ -142,7 +142,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Declare parameters with defaults
   declare_parameter("server.host", "127.0.0.1");
   declare_parameter("server.port", 8080);
-  declare_parameter("refresh_interval_ms", 10000);
+  // Safety-backstop refresh interval. Primary discovery refresh is driven
+  // by rclcpp graph events; this only controls the periodic forced
+  // refresh used when a graph event would otherwise be missed.
+  declare_parameter("refresh_interval_ms", 30000);
   declare_parameter("fault_manager.namespace", "");
   declare_parameter("fault_manager.service_timeout_sec", 5.0);
   declare_parameter("cors.allowed_origins", std::vector<std::string>{});
@@ -159,6 +162,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Log management parameters
   declare_parameter("logs.buffer_size",
                     200);  // Ring buffer capacity per node; entries exceeding this are dropped (oldest first)
+
+  // Topic-sample default timeout used by the data-access path.
+  declare_parameter("topic_sample_timeout_sec", 1.0);
 
   // TLS/HTTPS parameters
   declare_parameter("server.tls.enabled", false);
@@ -351,15 +357,19 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     RCLCPP_WARN(get_logger(), "Binding to 0.0.0.0 - REST API accessible from ALL network interfaces!");
   }
 
-  // Validate refresh interval
+  // Validate backstop interval. Discovery is primarily driven by rclcpp
+  // graph events polled every 100 ms; this value only governs the
+  // safety-backstop timer that periodically forces a refresh in case a
+  // graph event is missed.
   if (refresh_interval_ms_ < 100 || refresh_interval_ms_ > 60000) {
-    RCLCPP_WARN(get_logger(), "Invalid refresh interval %dms. Must be between 100-60000ms. Using default 10000ms.",
+    RCLCPP_WARN(get_logger(),
+                "Invalid backstop refresh interval %dms. Must be between 100-60000ms. Using default 30000ms.",
                 refresh_interval_ms_);
-    refresh_interval_ms_ = 10000;
+    refresh_interval_ms_ = 30000;
   }
 
   // Log configuration
-  RCLCPP_INFO(get_logger(), "Configuration: REST API at %s:%d, refresh interval: %dms", server_host_.c_str(),
+  RCLCPP_INFO(get_logger(), "Configuration: REST API at %s:%d, backstop refresh interval: %dms", server_host_.c_str(),
               server_port_, refresh_interval_ms_);
 
   if (cors_config_.enabled) {
@@ -559,10 +569,42 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     throw std::runtime_error("Discovery initialization failed");
   }
 
-  data_access_mgr_ = std::make_unique<DataAccessManager>(this);
-  operation_mgr_ = std::make_unique<OperationManager>(this, discovery_mgr_.get());
-  config_mgr_ = std::make_unique<ConfigurationManager>(this);
-  fault_mgr_ = std::make_unique<FaultManager>(this);
+  const auto topic_sample_timeout_sec = get_parameter("topic_sample_timeout_sec").as_double();
+  topic_transport_ = std::make_shared<ros2::Ros2TopicTransport>(this, topic_sample_timeout_sec);
+  data_access_mgr_ = std::make_unique<DataAccessManager>(topic_transport_, topic_sample_timeout_sec);
+  service_transport_ = std::make_shared<ros2::Ros2ServiceTransport>(this);
+  action_transport_ = std::make_shared<ros2::Ros2ActionTransport>(this);
+  const auto service_call_timeout_sec =
+      static_cast<int>(declare_parameter<int64_t>("service_call_timeout_sec", static_cast<int64_t>(10)));
+  operation_mgr_ = std::make_unique<OperationManager>(service_transport_, action_transport_, discovery_mgr_.get(),
+                                                      service_call_timeout_sec);
+
+  // Declare parameter-service tuning parameters here (they used to be
+  // declared inside ConfigurationManager). The manager body is now neutral
+  // and the transport adapter receives the resolved values.
+  rcl_interfaces::msg::ParameterDescriptor param_timeout_desc;
+  param_timeout_desc.description = "Timeout for ROS 2 parameter service calls (configurations endpoint)";
+  rcl_interfaces::msg::FloatingPointRange param_timeout_range;
+  param_timeout_range.from_value = 0.1;
+  param_timeout_range.to_value = 10.0;
+  param_timeout_desc.floating_point_range.push_back(param_timeout_range);
+  const double parameter_service_timeout_sec =
+      declare_parameter("parameter_service_timeout_sec", 2.0, param_timeout_desc);
+
+  rcl_interfaces::msg::ParameterDescriptor param_cache_desc;
+  param_cache_desc.description = "Negative cache TTL for unavailable parameter services (0 = disabled)";
+  rcl_interfaces::msg::FloatingPointRange param_cache_range;
+  param_cache_range.from_value = 0.0;
+  param_cache_range.to_value = 3600.0;
+  param_cache_desc.floating_point_range.push_back(param_cache_range);
+  const double parameter_service_negative_cache_sec =
+      declare_parameter("parameter_service_negative_cache_sec", 60.0, param_cache_desc);
+
+  parameter_transport_ = std::make_shared<ros2::Ros2ParameterTransport>(this, parameter_service_timeout_sec,
+                                                                        parameter_service_negative_cache_sec);
+  config_mgr_ = std::make_unique<ConfigurationManager>(parameter_transport_);
+  fault_service_transport_ = std::make_shared<ros2::Ros2FaultServiceTransport>(this);
+  fault_mgr_ = std::make_unique<FaultManager>(fault_service_transport_);
 
   // Initialize bulk data store
   auto bd_storage_dir = get_parameter("bulk_data.storage_dir").as_string();
@@ -673,7 +715,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     RCLCPP_WARN(get_logger(), "logs.buffer_size %" PRId64 " clamped to %" PRId64, raw_buffer_size, clamped);
   }
   auto log_buffer_size = static_cast<size_t>(clamped);
-  log_mgr_ = std::make_unique<LogManager>(this, plugin_mgr_.get(), log_buffer_size);
+  log_source_ = std::make_shared<ros2::Ros2LogSource>(this);
+  log_mgr_ = std::make_unique<LogManager>(log_source_, plugin_mgr_.get(), log_buffer_size);
 
   // Initialize update manager
   auto updates_enabled = get_parameter("updates.enabled").as_bool();
@@ -834,8 +877,14 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     trigger_config.max_triggers = static_cast<int>(get_parameter("triggers.max_triggers").as_int());
     trigger_config.on_restart_behavior = get_parameter("triggers.on_restart_behavior").as_string();
 
+    // Subscribe to data topics for data triggers. The adapter is created
+    // before the trigger manager because the manager takes the transport
+    // by shared_ptr at construction time.
+    trigger_topic_subscriber_ = std::make_unique<TriggerTopicSubscriber>(this);
+    trigger_topic_transport_ = std::make_shared<ros2::Ros2TopicSubscriptionTransport>(trigger_topic_subscriber_.get());
+
     trigger_mgr_ = std::make_unique<TriggerManager>(*resource_change_notifier_, *condition_registry_, *trigger_store_,
-                                                    trigger_config);
+                                                    trigger_config, trigger_topic_transport_);
 
     // Set entity hierarchy resolver using thread-safe cache
     trigger_mgr_->set_entity_children_fn(
@@ -881,10 +930,6 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
     // Subscribe to fault events and forward to notifier
     trigger_fault_subscriber_ = std::make_unique<TriggerFaultSubscriber>(this, *resource_change_notifier_);
-
-    // Subscribe to data topics for data triggers
-    trigger_topic_subscriber_ = std::make_unique<TriggerTopicSubscriber>(this, *resource_change_notifier_);
-    trigger_mgr_->set_topic_subscriber(trigger_topic_subscriber_.get());
 
     // Wire deferred topic resolution: when a trigger's resource_path couldn't
     // be resolved to a ROS 2 topic at creation time, retry periodically using
@@ -1346,8 +1391,43 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Initial discovery
   refresh_cache();
 
-  // Setup periodic refresh with configurable interval
-  refresh_timer_ = create_wall_timer(std::chrono::milliseconds(refresh_interval_ms_), [this]() {
+  // Primary refresh trigger: ROS 2 graph events.
+  //
+  // `get_graph_event()` returns a shared rclcpp::Event the executor signals
+  // whenever the graph changes (node up/down, topic/service/action add or
+  // remove). We poll `check_and_clear()` every 100 ms and only run the
+  // (relatively expensive) `refresh_cache()` pipeline when the event has
+  // fired. On a stable graph this keeps idle CPU near zero.
+  //
+  // 100 ms is a deliberate balance: spawn-detection latency stays low
+  // (graph-event arrival + at most one tick), while the polling overhead is
+  // a single atomic check per tick.
+  graph_event_ = this->get_graph_event();
+  graph_check_timer_ = create_wall_timer(std::chrono::milliseconds(100), [this]() {
+    if (!graph_event_) {
+      return;
+    }
+    if (!graph_event_->check_and_clear()) {
+      return;
+    }
+    refresh_cache();
+    // Note: orphan-trigger sweep is deliberately NOT run from the graph-event
+    // path. Graph events fire on every node up/down at high frequency,
+    // including the cold-start window where DDS discovery has only seen a
+    // partial node set. Running the sweep there would treat
+    // not-yet-discovered entities as orphans and incorrectly remove
+    // restored persistent triggers. The backstop timer below runs at the
+    // configured (slower) refresh cadence, giving DDS time to converge
+    // before any orphan check.
+  });
+
+  // Safety backstop: unconditional refresh at the configured (low) cadence.
+  // Guarantees liveness if a graph event is ever missed for any reason
+  // (lost wakeup, rclcpp anomaly, etc.). Default 30 s is rare enough to be
+  // negligible on idle CPU yet bounded enough to recover quickly. This is
+  // also the only place we sweep orphan triggers, because by this cadence
+  // the entity cache is guaranteed to reflect a settled DDS view.
+  backstop_timer_ = create_wall_timer(std::chrono::milliseconds(refresh_interval_ms_), [this]() {
     refresh_cache();
 
     // Sweep triggers whose entities disappeared from discovery
@@ -1446,6 +1526,9 @@ void GatewayNode::set_topic_data_provider(std::shared_ptr<TopicDataProvider> pro
   topic_data_provider_ = std::move(provider);
   if (data_access_mgr_) {
     data_access_mgr_->set_topic_data_provider(topic_data_provider_.get());
+  }
+  if (topic_transport_) {
+    topic_transport_->set_data_provider(topic_data_provider_.get());
   }
   if (discovery_mgr_) {
     discovery_mgr_->set_topic_data_provider(topic_data_provider_.get());
@@ -1648,9 +1731,9 @@ void GatewayNode::trigger_reentrant_notification_for_testing(const EntityChangeS
 void GatewayNode::refresh_cache() {
   // Serialize refresh passes across the refresh timer, plugin
   // `notify_entities_changed` notifications, and any other caller. The
-  // discovery pipeline (e.g., HybridDiscoveryStrategy::refresh()) is not
-  // thread-safe on its own - holding this lock for the full pass is cheap
-  // compared with the network I/O the caller typically just performed.
+  // discovery pipeline cached inside DiscoveryManager is not thread-safe on
+  // its own - holding this lock for the full pass is cheap compared with
+  // the network I/O the caller typically just performed.
   std::lock_guard<std::recursive_mutex> refresh_lock(refresh_mutex_);
 
   // Mark the thread as "inside a refresh pass" so that a plugin calling
