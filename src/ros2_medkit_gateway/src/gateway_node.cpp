@@ -1411,17 +1411,22 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       return;
     }
     refresh_cache();
-
-    // Sweep triggers whose entities disappeared from discovery
-    if (trigger_mgr_) {
-      trigger_mgr_->sweep_orphaned_triggers();
-    }
+    // Note: orphan-trigger sweep is deliberately NOT run from the graph-event
+    // path. Graph events fire on every node up/down at high frequency,
+    // including the cold-start window where DDS discovery has only seen a
+    // partial node set. Running the sweep there would treat
+    // not-yet-discovered entities as orphans and incorrectly remove
+    // restored persistent triggers. The backstop timer below runs at the
+    // configured (slower) refresh cadence, giving DDS time to converge
+    // before any orphan check.
   });
 
   // Safety backstop: unconditional refresh at the configured (low) cadence.
   // Guarantees liveness if a graph event is ever missed for any reason
   // (lost wakeup, rclcpp anomaly, etc.). Default 30 s is rare enough to be
-  // negligible on idle CPU yet bounded enough to recover quickly.
+  // negligible on idle CPU yet bounded enough to recover quickly. This is
+  // also the only place we sweep orphan triggers, because by this cadence
+  // the entity cache is guaranteed to reflect a settled DDS view.
   backstop_timer_ = create_wall_timer(std::chrono::milliseconds(refresh_interval_ms_), [this]() {
     refresh_cache();
 
