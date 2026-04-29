@@ -59,7 +59,7 @@ class MockTopicTransport : public TopicTransport {
     return r;
   }
 
-  std::pair<uint64_t, uint64_t> count_publishers_subscribers(const std::string &) const override {
+  std::pair<uint64_t, uint64_t> count_publishers_subscribers(const std::string & /*topic*/) const override {
     return {sample_publishers_, 0};
   }
 

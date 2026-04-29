@@ -173,10 +173,12 @@ class MockActionTransport : public ActionTransport {
 class MockResolver : public ServiceActionResolver {
  public:
   MockResolver() = default;
-  std::optional<ServiceInfo> find_service(const std::string &, const std::string &) const override {
+  std::optional<ServiceInfo> find_service(const std::string & /*entity_id*/,
+                                          const std::string & /*operation_id*/) const override {
     return service_;
   }
-  std::optional<ActionInfo> find_action(const std::string &, const std::string &) const override {
+  std::optional<ActionInfo> find_action(const std::string & /*entity_id*/,
+                                        const std::string & /*operation_id*/) const override {
     return action_;
   }
 

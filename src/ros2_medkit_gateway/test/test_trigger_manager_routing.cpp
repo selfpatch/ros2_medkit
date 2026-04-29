@@ -270,7 +270,7 @@ TEST_F(TriggerManagerRoutingTest, OrphanedTriggerSweepUnsubscribes) {
   manager_->sweep_orphaned_triggers();
 
   EXPECT_EQ(transport_->alive_count(), 1u) << "Orphan sweep must unsubscribe gone_app's transport handle";
-  EXPECT_FALSE(manager_->list("gone_app").size());
+  EXPECT_TRUE(manager_->list("gone_app").empty());
   EXPECT_EQ(manager_->list("alive_app").size(), 1u);
 }
 

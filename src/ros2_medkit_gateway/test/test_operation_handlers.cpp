@@ -108,12 +108,17 @@ class TestLongCalibrationActionServer : public rclcpp::Node {
   using GoalHandleFibonacci = rclcpp_action::ServerGoalHandle<Fibonacci>;
 
   TestLongCalibrationActionServer() : rclcpp::Node("test_long_calibration_action", "/powertrain/engine") {
-    using namespace std::placeholders;
-
     action_server_ = rclcpp_action::create_server<Fibonacci>(
-        this, "long_calibration", std::bind(&TestLongCalibrationActionServer::handle_goal, this, _1, _2),
-        std::bind(&TestLongCalibrationActionServer::handle_cancel, this, _1),
-        std::bind(&TestLongCalibrationActionServer::handle_accepted, this, _1));
+        this, "long_calibration",
+        [this](const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const Fibonacci::Goal> goal) {
+          return handle_goal(uuid, goal);
+        },
+        [this](const std::shared_ptr<GoalHandleFibonacci> & goal_handle) {
+          return handle_cancel(goal_handle);
+        },
+        [this](const std::shared_ptr<GoalHandleFibonacci> & goal_handle) {
+          handle_accepted(goal_handle);
+        });
   }
 
   void prepare_shutdown() {
@@ -125,26 +130,26 @@ class TestLongCalibrationActionServer : public rclcpp::Node {
   }
 
  private:
-  rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID &,
-                                          std::shared_ptr<const Fibonacci::Goal> goal) {
+  rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID & /*uuid*/,
+                                          const std::shared_ptr<const Fibonacci::Goal> & goal) {
     if (goal->order > 50) {
       return rclcpp_action::GoalResponse::REJECT;
     }
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
-  rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<GoalHandleFibonacci>) {
+  rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<GoalHandleFibonacci> & /*goal_handle*/) {
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
-  void handle_accepted(const std::shared_ptr<GoalHandleFibonacci> goal_handle) {
+  void handle_accepted(const std::shared_ptr<GoalHandleFibonacci> & goal_handle) {
     if (execution_thread_.joinable()) {
       execution_thread_.join();
     }
     execution_thread_ = std::thread(&TestLongCalibrationActionServer::execute, this, goal_handle);
   }
 
-  void execute(const std::shared_ptr<GoalHandleFibonacci> goal_handle) {
+  void execute(const std::shared_ptr<GoalHandleFibonacci> & goal_handle) {
     auto feedback = std::make_shared<Fibonacci::Feedback>();
     auto result = std::make_shared<Fibonacci::Result>();
     const auto goal = goal_handle->get_goal();
@@ -261,8 +266,8 @@ class OperationHandlersFixtureTest : public ::testing::Test {
 
     service_node_ = std::make_shared<rclcpp::Node>("test_calibrate_service", "/powertrain/engine");
     trigger_service_ = service_node_->create_service<std_srvs::srv::Trigger>(
-        "calibrate", [](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
-                        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        "calibrate", [](const std::shared_ptr<std_srvs::srv::Trigger::Request> & /*request*/,
+                        const std::shared_ptr<std_srvs::srv::Trigger::Response> & response) {
           response->success = true;
           response->message = "calibration complete";
         });

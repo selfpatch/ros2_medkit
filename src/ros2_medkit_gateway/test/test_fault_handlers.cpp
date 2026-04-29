@@ -267,9 +267,9 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseExtendedDataRecords) {
 
   // Verify ISO 8601 format with milliseconds and Z suffix
   EXPECT_TRUE(first.find("2026") != std::string::npos);
-  EXPECT_TRUE(first.find("Z") != std::string::npos);
-  EXPECT_TRUE(first.find("T") != std::string::npos);
-  EXPECT_TRUE(last.find("Z") != std::string::npos);
+  EXPECT_TRUE(first.find('Z') != std::string::npos);
+  EXPECT_TRUE(first.find('T') != std::string::npos);
+  EXPECT_TRUE(last.find('Z') != std::string::npos);
 }
 
 // @verifies REQ_INTEROP_013
