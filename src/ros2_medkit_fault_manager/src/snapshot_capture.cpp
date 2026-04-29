@@ -40,6 +40,18 @@ struct LockedSubscriptionGuard {
   rclcpp::GenericSubscription::SharedPtr subscription;
   rclcpp::CallbackGroup::SharedPtr callback_group;
 
+  // Explicit constructor instead of relying on aggregate initialization:
+  // C++20 [dcl.init.aggr] disqualifies a class as an aggregate if it has
+  // any user-declared constructors, including ``= delete`` ones (the rule
+  // tightened from "user-provided" in C++17 to "user-declared" in C++20).
+  // Rolling's gcc 14 / libstdc++ enforces the C++20 wording even when
+  // CMAKE_CXX_STANDARD is 17, so brace-init ``LockedSubscriptionGuard{
+  // &mtx, sub, cg}`` would fail to find a matching constructor on rolling.
+  // An explicit constructor sidesteps the aggregate-init rules entirely.
+  LockedSubscriptionGuard(std::mutex * m, rclcpp::GenericSubscription::SharedPtr s, rclcpp::CallbackGroup::SharedPtr cg)
+    : mtx(m), subscription(std::move(s)), callback_group(std::move(cg)) {
+  }
+
   ~LockedSubscriptionGuard() {
     if (!subscription && !callback_group) {
       return;
