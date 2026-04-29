@@ -311,27 +311,6 @@ ServiceCallResult OperationManager::call_component_service(const std::string & c
 
 // ==================== ACTION OPERATIONS ====================
 
-std::string action_status_to_string(ActionGoalStatus status) {
-  switch (status) {
-    case ActionGoalStatus::UNKNOWN:
-      return "unknown";
-    case ActionGoalStatus::ACCEPTED:
-      return "accepted";
-    case ActionGoalStatus::EXECUTING:
-      return "executing";
-    case ActionGoalStatus::CANCELING:
-      return "canceling";
-    case ActionGoalStatus::SUCCEEDED:
-      return "succeeded";
-    case ActionGoalStatus::CANCELED:
-      return "canceled";
-    case ActionGoalStatus::ABORTED:
-      return "aborted";
-    default:
-      return "unknown";
-  }
-}
-
 std::array<uint8_t, 16> OperationManager::generate_uuid() {
   std::lock_guard<std::mutex> lock(rng_mutex_);
   std::array<uint8_t, 16> uuid;

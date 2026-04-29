@@ -30,6 +30,7 @@
 
 #include "ros2_medkit_gateway/compat/generic_client_compat.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/common.hpp"
+#include "ros2_medkit_gateway/core/operations/operation_types.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 #include "ros2_medkit_serialization/service_action_types.hpp"
@@ -39,62 +40,6 @@ namespace ros2_medkit_gateway {
 class ResourceChangeNotifier;
 
 using json = nlohmann::json;
-
-/// Result of a synchronous service call
-struct ServiceCallResult {
-  bool success;
-  json response;
-  std::string error_message;
-};
-
-/// Action goal status (matches ROS2 action_msgs/msg/GoalStatus)
-enum class ActionGoalStatus : int8_t {
-  UNKNOWN = 0,
-  ACCEPTED = 1,
-  EXECUTING = 2,
-  CANCELING = 3,
-  SUCCEEDED = 4,
-  CANCELED = 5,
-  ABORTED = 6
-};
-
-/// Convert status enum to string
-std::string action_status_to_string(ActionGoalStatus status);
-
-/// Result of sending an action goal
-struct ActionSendGoalResult {
-  bool success;
-  std::string goal_id;  // UUID hex string
-  bool goal_accepted;
-  std::string error_message;
-};
-
-/// Result of canceling an action goal
-struct ActionCancelResult {
-  bool success;
-  int8_t return_code;  // 0=accepted, 1=rejected, 2=unknown_id, 3=terminated
-  std::string error_message;
-};
-
-/// Result of getting action result
-struct ActionGetResultResult {
-  bool success;
-  ActionGoalStatus status;
-  json result;
-  std::string error_message;
-};
-
-/// Tracked action goal info (stored locally)
-struct ActionGoalInfo {
-  std::string goal_id;
-  std::string action_path;  // e.g., /powertrain/engine/long_calibration
-  std::string action_type;  // e.g., example_interfaces/action/Fibonacci
-  std::string entity_id;    // SOVD entity ID (e.g., engine) for trigger notifications
-  ActionGoalStatus status;
-  json last_feedback;
-  std::chrono::system_clock::time_point created_at;
-  std::chrono::system_clock::time_point last_update;
-};
 
 /// Manager for ROS2 operations (services and actions)
 /// Handles service calls synchronously and action calls asynchronously
