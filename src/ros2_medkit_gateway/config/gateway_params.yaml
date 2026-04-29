@@ -156,10 +156,14 @@ ros2_medkit_gateway:
     # Controls how ROS 2 graph entities are mapped to SOVD entities
     discovery:
       # Discovery mode
-      # Options:
-      #   - "runtime_only": Use ROS 2 graph introspection only (default)
-      #   - "manifest_only": Only expose manifest-declared entities
-      #   - "hybrid": Manifest as source of truth + runtime linking
+      # Selects which layers the merge pipeline activates:
+      #   - "runtime_only": Bypass the pipeline; ROS 2 graph introspection
+      #     drives entities directly (default).
+      #   - "manifest_only": Bypass the pipeline; manifest is the sole source
+      #     of truth.
+      #   - "hybrid": Run the merge pipeline with manifest + runtime + plugin
+      #     layers. Manifest is the source of truth; runtime data links to
+      #     manifest apps.
       mode: "runtime_only"
 
       # Path to manifest file (required for manifest_only and hybrid modes)

@@ -1689,9 +1689,9 @@ void GatewayNode::trigger_reentrant_notification_for_testing(const EntityChangeS
 void GatewayNode::refresh_cache() {
   // Serialize refresh passes across the refresh timer, plugin
   // `notify_entities_changed` notifications, and any other caller. The
-  // discovery pipeline (e.g., HybridDiscoveryStrategy::refresh()) is not
-  // thread-safe on its own - holding this lock for the full pass is cheap
-  // compared with the network I/O the caller typically just performed.
+  // discovery pipeline cached inside DiscoveryManager is not thread-safe on
+  // its own - holding this lock for the full pass is cheap compared with
+  // the network I/O the caller typically just performed.
   std::lock_guard<std::recursive_mutex> refresh_lock(refresh_mutex_);
 
   // Mark the thread as "inside a refresh pass" so that a plugin calling

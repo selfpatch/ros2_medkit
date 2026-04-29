@@ -151,6 +151,7 @@ add_library(gateway_ros2 STATIC
   src/aggregation/aggregation_manager.cpp
   src/data/ros2_topic_data_provider.cpp
   src/ros2/conversions/fault_msg_conversions.cpp
+  src/ros2/providers/ros2_runtime_introspection.cpp
   src/ros2/transports/ros2_action_transport.cpp
   src/ros2/transports/ros2_fault_service_transport.cpp
   src/ros2/transports/ros2_log_source.cpp
@@ -161,7 +162,6 @@ add_library(gateway_ros2 STATIC
   src/ros2/trigger_topic_subscriber.cpp
   src/default_script_provider.cpp
   src/discovery/discovery_manager.cpp
-  src/discovery/hybrid_discovery.cpp
   src/discovery/layers/manifest_layer.cpp
   src/discovery/layers/plugin_layer.cpp
   src/discovery/layers/runtime_layer.cpp
@@ -169,7 +169,6 @@ add_library(gateway_ros2 STATIC
   src/discovery/manifest/manifest_parser.cpp
   src/discovery/manifest/runtime_linker.cpp
   src/discovery/merge_pipeline.cpp
-  src/discovery/runtime_discovery.cpp
   src/fault_manager_paths.cpp
   src/gateway_node.cpp
   src/http/handlers/auth_handlers.cpp
@@ -517,7 +516,7 @@ if(BUILD_TESTING)
   medkit_target_dependencies(test_discovery_manager std_msgs)
   medkit_set_test_domain(test_discovery_manager)
 
-  # Add RuntimeDiscoveryStrategy tests
+  # Add Ros2RuntimeIntrospection tests
   ament_add_gtest(test_runtime_discovery test/test_runtime_discovery.cpp)
   target_link_libraries(test_runtime_discovery gateway_ros2)
   medkit_set_test_domain(test_runtime_discovery)
