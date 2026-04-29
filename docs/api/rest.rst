@@ -737,7 +737,8 @@ Logs Endpoints
 --------------
 
 Query and configure the /rosout ring buffer for an entity. Supported entity types:
-**areas** (namespace prefix match), **components** (namespace prefix match), **apps** (exact FQN match),
+**areas** (aggregated from hosted apps, namespace prefix fallback), **components** (aggregated from
+hosted apps, namespace prefix fallback for manifest-only deployments), **apps** (exact FQN match),
 and **functions** (aggregated from hosted apps).
 
 .. note::
@@ -748,7 +749,13 @@ and **functions** (aggregated from hosted apps).
    storage backend or take full ownership of the log pipeline (see plugin development docs).
 
 ``GET /api/v1/components/{id}/logs``
-   Query log entries for all nodes in the component namespace (prefix match).
+   Query log entries aggregated from the component's hosted apps. Resolves child apps via
+   the entity cache and queries each by exact FQN. Falls back to namespace prefix match only
+   when the component has no hosted apps but declares a non-empty namespace (manifest-only
+   deployments where the component groups topics rather than nodes). The response always
+   carries ``x-medkit.aggregation_level=component`` and ``aggregated=true``; the
+   ``app_count`` and ``aggregation_sources`` fields are populated only when hosted-app
+   aggregation is active and are omitted under the namespace-prefix fallback.
 
 ``GET /api/v1/apps/{id}/logs``
    Query log entries for the specific app node (exact match).

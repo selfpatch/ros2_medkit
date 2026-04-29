@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/http/handlers/log_handlers.hpp"
 
+#include <iterator>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -85,17 +86,7 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
     ext.add("aggregated", true);
 
     if (func && !func->hosts.empty()) {
-      std::vector<std::string> host_fqns;
-      for (const auto & app_id : func->hosts) {
-        auto app = cache.get_app(app_id);
-        if (!app) {
-          continue;
-        }
-        auto fqn = app->effective_fqn();
-        if (!fqn.empty()) {
-          host_fqns.push_back(std::move(fqn));
-        }
-      }
+      auto host_fqns = HandlerContext::resolve_app_host_fqns(cache, func->hosts);
 
       if (!host_fqns.empty()) {
         auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
@@ -128,17 +119,9 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
 
     std::vector<std::string> host_fqns;
     for (const auto & comp_id : comp_ids) {
-      auto app_ids = cache.get_apps_for_component(comp_id);
-      for (const auto & app_id : app_ids) {
-        auto app = cache.get_app(app_id);
-        if (!app) {
-          continue;
-        }
-        auto fqn = app->effective_fqn();
-        if (!fqn.empty()) {
-          host_fqns.push_back(std::move(fqn));
-        }
-      }
+      auto comp_fqns = HandlerContext::resolve_app_host_fqns(cache, cache.get_apps_for_component(comp_id));
+      host_fqns.insert(host_fqns.end(), std::make_move_iterator(comp_fqns.begin()),
+                       std::make_move_iterator(comp_fqns.end()));
     }
 
     json result;
@@ -177,11 +160,58 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
   }
 
   // -----------------------------------------------------------------------
-  // COMPONENT / APP - local query + fan-out to peers
+  // COMPONENT - aggregate from hosted apps' fqns (mirrors AREA / FUNCTION
+  // semantics) and fall through to the entity.fqn prefix path only when
+  // the component has no hosted apps. Synthetic / runtime-discovered
+  // components have an empty fqn, so the bare prefix-match query that
+  // worked for manifest components silently returned zero items even
+  // when the component grouped 20+ active nodes.
   // -----------------------------------------------------------------------
-  const bool prefix_match = (entity.type == EntityType::COMPONENT);
+  if (entity.type == EntityType::COMPONENT) {
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto host_fqns = HandlerContext::resolve_app_host_fqns(cache, cache.get_apps_for_component(entity_id));
 
-  auto logs = log_mgr->get_logs({entity.fqn}, prefix_match, min_severity, context_filter, entity_id);
+    json result;
+    result["items"] = json::array();
+    XMedkit ext;
+    ext.entity_id(entity_id);
+    ext.add("aggregation_level", "component");
+    ext.add("aggregated", true);
+
+    if (!host_fqns.empty()) {
+      auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
+      if (!logs) {
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
+        return;
+      }
+      result["items"] = std::move(*logs);
+      ext.add("app_count", host_fqns.size());
+      nlohmann::json comp_log_source_fqns = nlohmann::json::array();
+      for (const auto & fqn : host_fqns) {
+        comp_log_source_fqns.push_back(fqn);
+      }
+      ext.add("aggregation_sources", comp_log_source_fqns);
+    } else if (!entity.fqn.empty()) {
+      // Manifest component without hosted apps - keep the original
+      // namespace prefix path so manifest-only deployments still work.
+      auto logs = log_mgr->get_logs({entity.fqn}, true, min_severity, context_filter, entity_id);
+      if (!logs) {
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
+        return;
+      }
+      result["items"] = std::move(*logs);
+    }
+
+    merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
+    result["x-medkit"] = ext.build();
+    HandlerContext::send_json(res, result);
+    return;
+  }
+
+  // -----------------------------------------------------------------------
+  // APP - local query + fan-out to peers
+  // -----------------------------------------------------------------------
+  auto logs = log_mgr->get_logs({entity.fqn}, false, min_severity, context_filter, entity_id);
   if (!logs) {
     HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
     return;

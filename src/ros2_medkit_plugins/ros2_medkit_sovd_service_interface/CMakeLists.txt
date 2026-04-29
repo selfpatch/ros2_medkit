@@ -72,12 +72,17 @@ if(BUILD_TESTING)
   )
   ament_lint_auto_find_test_dependencies()
 
-  find_package(ament_cmake_clang_format REQUIRED)
-  file(GLOB_RECURSE _format_files
-    "src/*.hpp" "src/*.cpp" "test/*.cpp"
-  )
-  ament_clang_format(${_format_files}
-    CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../../.clang-format")
+  # ci.yml skips the ament_cmake_clang_format rosdep key on Humble + Rolling
+  # (linters only run in the Jazzy quality job), so QUIET + FOUND check
+  # avoids hard-failing on those runners.
+  find_package(ament_cmake_clang_format QUIET)
+  if(ament_cmake_clang_format_FOUND)
+    file(GLOB_RECURSE _format_files
+      "src/*.hpp" "src/*.cpp" "test/*.cpp"
+    )
+    ament_clang_format(${_format_files}
+      CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../../.clang-format")
+  endif()
 
   find_package(ament_cmake_gtest REQUIRED)
 

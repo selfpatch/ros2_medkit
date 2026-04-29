@@ -15,12 +15,19 @@
 #include <gtest/gtest.h>
 
 #include <nlohmann/json.hpp>
+#include <set>
+#include <string>
 
 #include "ros2_medkit_gateway/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/discovery/models/component.hpp"
+#include "ros2_medkit_gateway/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/bulkdata_handlers.hpp"
 #include "ros2_medkit_gateway/http/http_utils.hpp"
+#include "ros2_medkit_gateway/models/thread_safe_entity_cache.hpp"
 
+using namespace ros2_medkit_gateway;
 using ros2_medkit_gateway::handlers::BulkDataHandlers;
 
 class BulkDataHandlersTest : public ::testing::Test {
@@ -188,4 +195,159 @@ TEST_F(BulkDataHandlersTest, DescriptorToJsonWithoutDescription) {
 TEST_F(BulkDataHandlersTest, PayloadTooLargeErrorCodeDefined) {
   EXPECT_NE(ros2_medkit_gateway::ERR_PAYLOAD_TOO_LARGE, nullptr);
   EXPECT_STREQ(ros2_medkit_gateway::ERR_PAYLOAD_TOO_LARGE, "payload-too-large");
+}
+
+// =============================================================================
+// compute_bulkdata_source_filters tests
+//
+// Pin the entity-type branching that drives rosbag descriptor lookups + the
+// download ownership check. Crucial because synthetic / runtime-discovered
+// components have empty fqn AND empty namespace_path: without aggregation
+// from hosted apps the handler used to silently return zero source filters.
+//
+// Tested as a pure free function in detail:: against a directly-constructed
+// ThreadSafeEntityCache so no GatewayNode / DDS context is needed.
+// =============================================================================
+
+namespace {
+
+App make_test_app(const std::string & id, const std::string & node_name, const std::string & ns,
+                  const std::string & component_id) {
+  App a;
+  a.id = id;
+  a.name = id;
+  a.component_id = component_id;
+  App::RosBinding rb;
+  rb.node_name = node_name;
+  rb.namespace_pattern = ns;
+  a.ros_binding = rb;
+  return a;
+}
+
+EntityInfo make_entity_info(EntityType type, const std::string & id, const std::string & namespace_path,
+                            const std::string & fqn) {
+  EntityInfo info;
+  info.type = type;
+  info.id = id;
+  info.namespace_path = namespace_path;
+  info.fqn = fqn;
+  return info;
+}
+
+}  // namespace
+
+class BulkDataSourceFiltersTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    // Synthetic component: empty fqn AND empty namespace_path.
+    Component synthetic;
+    synthetic.id = "runtime_engine";
+    synthetic.name = "Runtime Engine";
+    synthetic.namespace_path = "";
+    synthetic.fqn = "";
+
+    // Manifest-only component: declares namespace but groups topics, not nodes.
+    Component manifest_only;
+    manifest_only.id = "topics_group";
+    manifest_only.name = "Topics Group";
+    manifest_only.namespace_path = "/topics/group";
+    manifest_only.fqn = "/topics/group";
+
+    auto app1 = make_test_app("temp_sensor", "temp_sensor", "/powertrain/engine", "runtime_engine");
+    auto app2 = make_test_app("rpm_sensor", "rpm_sensor", "/powertrain/engine", "runtime_engine");
+
+    Function func;
+    func.id = "powertrain_diag";
+    func.name = "Powertrain Diagnostics";
+    func.hosts = {"temp_sensor", "rpm_sensor"};
+
+    Function empty_func;
+    empty_func.id = "empty_func";
+    empty_func.name = "Empty Function";
+
+    cache_.update_all({}, {synthetic, manifest_only}, {app1, app2}, {func, empty_func});
+  }
+
+  ThreadSafeEntityCache cache_;
+};
+
+// COMPONENT with hosted apps - returns app effective FQNs (synthetic component
+// has empty fqn / namespace_path; without aggregation this would be {}).
+TEST_F(BulkDataSourceFiltersTest, ComponentWithHostedAppsReturnsAppFqns) {
+  auto entity = make_entity_info(EntityType::COMPONENT, "runtime_engine", "", "");
+  auto filters = handlers::detail::compute_bulkdata_source_filters(cache_, entity);
+  ASSERT_EQ(filters.size(), 2u);
+  std::set<std::string> as_set(filters.begin(), filters.end());
+  EXPECT_TRUE(as_set.count("/powertrain/engine/temp_sensor"));
+  EXPECT_TRUE(as_set.count("/powertrain/engine/rpm_sensor"));
+}
+
+// COMPONENT with no hosted apps but non-empty fqn falls through to fqn path
+// (manifest deployment grouping topics rather than nodes).
+TEST_F(BulkDataSourceFiltersTest, ComponentManifestOnlyFallsThroughToFqn) {
+  auto entity = make_entity_info(EntityType::COMPONENT, "topics_group", "/topics/group", "/topics/group");
+  auto filters = handlers::detail::compute_bulkdata_source_filters(cache_, entity);
+  ASSERT_EQ(filters.size(), 1u);
+  EXPECT_EQ(filters[0], "/topics/group");
+}
+
+// COMPONENT with no hosted apps AND no fqn / namespace_path returns empty -
+// nothing to query.
+TEST_F(BulkDataSourceFiltersTest, ComponentSyntheticWithoutAppsReturnsEmpty) {
+  auto entity = make_entity_info(EntityType::COMPONENT, "nonexistent_comp", "", "");
+  auto filters = handlers::detail::compute_bulkdata_source_filters(cache_, entity);
+  EXPECT_TRUE(filters.empty());
+}
+
+// FUNCTION with hosted apps - returns app effective FQNs. Crucially, FUNCTION
+// must NOT fall through to namespace_path/fqn even when the host list is
+// non-empty - functions are pure aggregated views.
+TEST_F(BulkDataSourceFiltersTest, FunctionWithHostsReturnsAppFqns) {
+  auto entity = make_entity_info(EntityType::FUNCTION, "powertrain_diag", "", "");
+  auto filters = handlers::detail::compute_bulkdata_source_filters(cache_, entity);
+  ASSERT_EQ(filters.size(), 2u);
+  std::set<std::string> as_set(filters.begin(), filters.end());
+  EXPECT_TRUE(as_set.count("/powertrain/engine/temp_sensor"));
+  EXPECT_TRUE(as_set.count("/powertrain/engine/rpm_sensor"));
+}
+
+// FUNCTION without hosted apps returns empty - no fall-through to fqn even if
+// the entity carried one (regression guard for the original FUNCTION semantics
+// after the COMPONENT/FUNCTION split).
+TEST_F(BulkDataSourceFiltersTest, FunctionWithoutHostsReturnsEmptyEvenIfFqnSet) {
+  auto entity = make_entity_info(EntityType::FUNCTION, "empty_func", "/some/ns", "/some/fqn");
+  auto filters = handlers::detail::compute_bulkdata_source_filters(cache_, entity);
+  EXPECT_TRUE(filters.empty());
+}
+
+// APP entity returns its own fqn as the single filter - no aggregation.
+TEST_F(BulkDataSourceFiltersTest, AppReturnsSingleFqnFilter) {
+  auto entity =
+      make_entity_info(EntityType::APP, "temp_sensor", "/powertrain/engine", "/powertrain/engine/temp_sensor");
+  auto filters = handlers::detail::compute_bulkdata_source_filters(cache_, entity);
+  ASSERT_EQ(filters.size(), 1u);
+  EXPECT_EQ(filters[0], "/powertrain/engine/temp_sensor");
+}
+
+// APP without fqn falls through to namespace_path filter.
+TEST_F(BulkDataSourceFiltersTest, AppWithEmptyFqnFallsThroughToNamespacePath) {
+  auto entity = make_entity_info(EntityType::APP, "some_app", "/the/namespace", "");
+  auto filters = handlers::detail::compute_bulkdata_source_filters(cache_, entity);
+  ASSERT_EQ(filters.size(), 1u);
+  EXPECT_EQ(filters[0], "/the/namespace");
+}
+
+// APP with neither fqn nor namespace_path returns empty.
+TEST_F(BulkDataSourceFiltersTest, AppWithEmptyFqnAndNamespaceReturnsEmpty) {
+  auto entity = make_entity_info(EntityType::APP, "some_app", "", "");
+  auto filters = handlers::detail::compute_bulkdata_source_filters(cache_, entity);
+  EXPECT_TRUE(filters.empty());
+}
+
+// AREA entity uses fqn directly - no aggregation in this helper.
+TEST_F(BulkDataSourceFiltersTest, AreaReturnsFqnAsFilter) {
+  auto entity = make_entity_info(EntityType::AREA, "powertrain", "/powertrain", "/powertrain");
+  auto filters = handlers::detail::compute_bulkdata_source_filters(cache_, entity);
+  ASSERT_EQ(filters.size(), 1u);
+  EXPECT_EQ(filters[0], "/powertrain");
 }

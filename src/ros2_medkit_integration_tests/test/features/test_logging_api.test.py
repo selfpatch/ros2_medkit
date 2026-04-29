@@ -229,6 +229,49 @@ class TestLoggingApi(GatewayTestCase):
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list)
 
+    def test_component_get_logs_aggregates_child_apps(self):
+        """GET /components/{id}/logs aggregates from hosted apps.
+
+        Synthetic / runtime-discovered components have an empty fqn, so
+        the legacy prefix-match path silently returned zero items. The
+        handler now mirrors the AREA / FUNCTION pattern: look up child
+        apps via the entity cache, build their host fqns, and merge.
+
+        # @verifies REQ_INTEROP_061
+        """
+        components = self.get_json('/components')['items']
+        self.assertGreater(len(components), 0, 'At least one component required')
+        # Pick the component that hosts temp_sensor (the only demo node).
+        comp_id = None
+        for c in components:
+            hosts = self.get_json(f"/components/{c['id']}/hosts").get('items', [])
+            if any(h.get('id') == 'temp_sensor' for h in hosts):
+                comp_id = c['id']
+                break
+        self.assertIsNotNone(comp_id, 'No component hosts temp_sensor')
+
+        # Poll - /rosout buffer fills asynchronously after node startup, so
+        # the items list may be briefly empty. Without polling this assertion
+        # is timing-dependent in CI.
+        data = self.poll_endpoint_until(
+            f'/components/{comp_id}/logs?severity=debug',
+            condition=lambda d: d if d.get('items') else None,
+            timeout=15.0,
+        )
+        # Items must be non-empty - the original bug was a silent empty list
+        # for synthetic components, so app_count alone is not sufficient.
+        self.assertGreater(len(data['items']), 0,
+                           'Component logs aggregation returned zero items')
+        ext = data.get('x-medkit', {})
+        self.assertEqual(ext.get('aggregation_level'), 'component')
+        self.assertEqual(ext.get('aggregated'), True)
+        self.assertGreaterEqual(ext.get('app_count', 0), 1)
+        sources = ext.get('aggregation_sources', [])
+        self.assertTrue(
+            any('temp_sensor' in src for src in sources),
+            f"Expected aggregation_sources to contain a temp_sensor fqn, got: {sources}",
+        )
+
     def test_component_get_logs_configuration_returns_200(self):
         """GET /components/{id}/logs/configuration returns 200 with config.
 

@@ -539,31 +539,41 @@ std::string BulkDataHandlers::get_rosbag_mimetype(const std::string & format) {
 }
 
 std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo & entity) const {
+  return detail::compute_bulkdata_source_filters(ctx_.node()->get_thread_safe_cache(), entity);
+}
+
+namespace detail {
+
+std::vector<std::string> compute_bulkdata_source_filters(const ThreadSafeEntityCache & cache,
+                                                         const EntityInfo & entity) {
   if (entity.type == EntityType::FUNCTION) {
-    // Functions aggregate rosbags from all hosting apps
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto host_app_ids = cache.get_apps_for_function(entity.id);
-    std::vector<std::string> filters;
-    filters.reserve(host_app_ids.size());
-    for (const auto & app_id : host_app_ids) {
-      auto app = cache.get_app(app_id);
-      if (app) {
-        auto fqn = app->effective_fqn();
-        if (!fqn.empty()) {
-          filters.push_back(fqn);
-        }
-      }
-    }
-    return filters;
+    // Functions are pure aggregated views over hosted apps - if no apps host the function,
+    // there is nothing to query. No fall-through to fqn/namespace_path.
+    return HandlerContext::resolve_app_host_fqns(cache, cache.get_apps_for_function(entity.id));
   }
 
-  // For other entity types, use FQN or namespace_path
+  if (entity.type == EntityType::COMPONENT) {
+    // Synthetic / runtime-discovered components have an empty fqn / namespace_path,
+    // so the bare-fqn path used to silently return zero source filters and produce
+    // empty descriptor lists plus failed ownership checks on download. Resolve hosted
+    // apps first; manifest deployments where the component groups topics rather than
+    // nodes still need the namespace prefix path, so fall through if no apps host it.
+    auto filters = HandlerContext::resolve_app_host_fqns(cache, cache.get_apps_for_component(entity.id));
+    if (!filters.empty()) {
+      return filters;
+    }
+    // fall through to fqn/namespace_path
+  }
+
+  // For other entity types and manifest-only components, use FQN or namespace_path
   std::string filter = entity.fqn.empty() ? entity.namespace_path : entity.fqn;
   if (filter.empty()) {
     return {};
   }
   return {filter};
 }
+
+}  // namespace detail
 
 }  // namespace handlers
 }  // namespace ros2_medkit_gateway
