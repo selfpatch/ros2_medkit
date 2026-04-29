@@ -32,4 +32,16 @@ struct FaultResult {
   std::string error_message;
 };
 
+/// Neutral outcome of `get_fault_with_env`. `data` carries
+/// `{ "fault": {...}, "environment_data": {...} }` already converted to JSON
+/// by the transport. The legacy `FaultWithEnvResult` (which exposes raw
+/// message types) still lives next to the FaultManager facade until a later
+/// phase reconciles the two; the transport port returns this neutral form so
+/// the interface compiles in the ROS-free build layer.
+struct FaultWithEnvJsonResult {
+  bool success;
+  std::string error_message;
+  json data;
+};
+
 }  // namespace ros2_medkit_gateway
