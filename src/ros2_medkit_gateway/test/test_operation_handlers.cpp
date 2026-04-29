@@ -110,7 +110,7 @@ class TestLongCalibrationActionServer : public rclcpp::Node {
   TestLongCalibrationActionServer() : rclcpp::Node("test_long_calibration_action", "/powertrain/engine") {
     action_server_ = rclcpp_action::create_server<Fibonacci>(
         this, "long_calibration",
-        [this](const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const Fibonacci::Goal> goal) {
+        [this](const rclcpp_action::GoalUUID & uuid, const std::shared_ptr<const Fibonacci::Goal> & goal) {
           return handle_goal(uuid, goal);
         },
         [this](const std::shared_ptr<GoalHandleFibonacci> & goal_handle) {
