@@ -51,6 +51,7 @@
 #include "ros2_medkit_gateway/operation_manager.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_action_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_fault_service_transport.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_log_source.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_parameter_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_service_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_topic_transport.hpp"
@@ -278,6 +279,11 @@ class GatewayNode : public rclcpp::Node {
   // ros2_medkit_msgs <-> JSON conversion helpers that previously lived inside
   // FaultManager.
   std::shared_ptr<ros2::Ros2FaultServiceTransport> fault_service_transport_;
+
+  // /rosout source adapter shared with LogManager. Owns the
+  // rclcpp::Subscription<rcl_interfaces::msg::Log> + msg-to-LogEntry
+  // conversion that previously lived inside LogManager.
+  std::shared_ptr<ros2::Ros2LogSource> log_source_;
 
   // Managers
   std::unique_ptr<DiscoveryManager> discovery_mgr_;
