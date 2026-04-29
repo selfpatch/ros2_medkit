@@ -17,7 +17,6 @@ jobs:
             os_image: ubuntu:jammy
           - ros_distro: rolling
             os_image: ubuntu:noble
-    continue-on-error: ${{ matrix.ros_distro == 'rolling' }}
     container:
       image: ${{ matrix.os_image }}
     timeout-minutes: 60
@@ -59,7 +58,13 @@ jobs:
           fi
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           rosdep update
-          rosdep install --from-paths src --ignore-src -y
+          # Linters (clang-tidy / clang-format) are gated to the Jazzy lint job
+          # in quality.yml, but multiple package.xml files still list them as
+          # <test_depend>. Their rosdep keys are not registered for noble
+          # (Rolling), which breaks rosdep install on that runner. Skip them
+          # on every distro this workflow targets - the linters never run here.
+          rosdep install --from-paths src --ignore-src -y \
+            --skip-keys "ament_cmake_clang_tidy ament_cmake_clang_format"
 
       - name: Build packages
         env:
