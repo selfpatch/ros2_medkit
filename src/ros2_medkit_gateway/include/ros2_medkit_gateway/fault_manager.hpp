@@ -31,16 +31,11 @@
 #include "ros2_medkit_msgs/srv/list_rosbags.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
+#include "ros2_medkit_gateway/core/faults/fault_types.hpp"
+
 namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
-
-/// Result of a fault operation
-struct FaultResult {
-  bool success;
-  json data;
-  std::string error_message;
-};
 
 /// Result of get_fault operation with full message types
 struct FaultWithEnvResult {
