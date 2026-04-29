@@ -25,6 +25,7 @@
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
@@ -58,6 +59,7 @@ using ros2_medkit_gateway::App;
 using ros2_medkit_gateway::Area;
 using ros2_medkit_gateway::BulkDataStore;
 using ros2_medkit_gateway::Component;
+using ros2_medkit_gateway::DataAccessManager;
 using ros2_medkit_gateway::DataProvider;
 using ros2_medkit_gateway::EntityMerger;
 using ros2_medkit_gateway::FaultProvider;
@@ -82,6 +84,7 @@ static_assert(sizeof(Area) > 0);
 static_assert(sizeof(Component) > 0);
 static_assert(sizeof(App) > 0);
 static_assert(sizeof(Function) > 0);
+static_assert(sizeof(DataAccessManager) > 0);
 static_assert(std::is_abstract_v<DataProvider>);
 static_assert(std::is_abstract_v<OperationProvider>);
 static_assert(std::is_abstract_v<FaultProvider>);
