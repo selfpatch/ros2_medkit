@@ -22,6 +22,7 @@
 #include "ros2_medkit_gateway/core/discovery/models/common.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/discovery/service_action_resolver.hpp"
 #include "ros2_medkit_gateway/core/providers/host_info_provider.hpp"
 #include "ros2_medkit_gateway/discovery/hybrid_discovery.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
@@ -130,7 +131,7 @@ struct DiscoveryConfig {
  * @see discovery::HybridDiscoveryStrategy
  * @see discovery::ManifestManager
  */
-class DiscoveryManager {
+class DiscoveryManager : public ServiceActionResolver {
  public:
   /**
    * @brief Construct the discovery manager
@@ -282,7 +283,8 @@ class DiscoveryManager {
    * @param operation_name Service name
    * @return ServiceInfo if found, nullopt otherwise
    */
-  std::optional<ServiceInfo> find_service(const std::string & component_ns, const std::string & operation_name) const;
+  std::optional<ServiceInfo> find_service(const std::string & component_ns,
+                                          const std::string & operation_name) const override;
 
   /**
    * @brief Find an action by component namespace and operation name
@@ -290,7 +292,8 @@ class DiscoveryManager {
    * @param operation_name Action name
    * @return ActionInfo if found, nullopt otherwise
    */
-  std::optional<ActionInfo> find_action(const std::string & component_ns, const std::string & operation_name) const;
+  std::optional<ActionInfo> find_action(const std::string & component_ns,
+                                        const std::string & operation_name) const override;
 
   /**
    * @brief Set the topic sampler for component-topic mapping

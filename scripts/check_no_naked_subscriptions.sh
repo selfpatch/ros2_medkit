@@ -47,7 +47,7 @@ ALLOWED_LEGACY_FILES=(
   "${GATEWAY_ROOT}/src/http/handlers/sse_fault_handler.cpp"        # faults provider follow-up
   "${GATEWAY_ROOT}/src/trigger_fault_subscriber.cpp"               # faults provider follow-up
   "${GATEWAY_ROOT}/src/trigger_topic_subscriber.cpp"               # data_stream provider follow-up
-  "${GATEWAY_ROOT}/src/operation_manager.cpp"                      # operations provider follow-up
+  "${GATEWAY_ROOT}/src/ros2/transports/ros2_action_transport.cpp"  # operations provider follow-up
   "${GATEWAY_ROOT}/src/log_manager.cpp"                            # logs provider follow-up
   "${FAULT_MANAGER_ROOT}/src/snapshot_capture.cpp"                 # uses LockedSubscriptionGuard (in-place serialisation)
   "${FAULT_MANAGER_ROOT}/include/ros2_medkit_fault_manager/snapshot_capture.hpp"  # comment references the guarded API
