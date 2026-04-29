@@ -571,7 +571,31 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       static_cast<int>(declare_parameter<int64_t>("service_call_timeout_sec", static_cast<int64_t>(10)));
   operation_mgr_ = std::make_unique<OperationManager>(service_transport_, action_transport_, discovery_mgr_.get(),
                                                       service_call_timeout_sec);
-  config_mgr_ = std::make_unique<ConfigurationManager>(this);
+
+  // Declare parameter-service tuning parameters here (they used to be
+  // declared inside ConfigurationManager). The manager body is now neutral
+  // and the transport adapter receives the resolved values.
+  rcl_interfaces::msg::ParameterDescriptor param_timeout_desc;
+  param_timeout_desc.description = "Timeout for ROS 2 parameter service calls (configurations endpoint)";
+  rcl_interfaces::msg::FloatingPointRange param_timeout_range;
+  param_timeout_range.from_value = 0.1;
+  param_timeout_range.to_value = 10.0;
+  param_timeout_desc.floating_point_range.push_back(param_timeout_range);
+  const double parameter_service_timeout_sec =
+      declare_parameter("parameter_service_timeout_sec", 2.0, param_timeout_desc);
+
+  rcl_interfaces::msg::ParameterDescriptor param_cache_desc;
+  param_cache_desc.description = "Negative cache TTL for unavailable parameter services (0 = disabled)";
+  rcl_interfaces::msg::FloatingPointRange param_cache_range;
+  param_cache_range.from_value = 0.0;
+  param_cache_range.to_value = 3600.0;
+  param_cache_desc.floating_point_range.push_back(param_cache_range);
+  const double parameter_service_negative_cache_sec =
+      declare_parameter("parameter_service_negative_cache_sec", 60.0, param_cache_desc);
+
+  parameter_transport_ = std::make_shared<ros2::Ros2ParameterTransport>(this, parameter_service_timeout_sec,
+                                                                        parameter_service_negative_cache_sec);
+  config_mgr_ = std::make_unique<ConfigurationManager>(parameter_transport_);
   fault_mgr_ = std::make_unique<FaultManager>(this);
 
   // Initialize bulk data store

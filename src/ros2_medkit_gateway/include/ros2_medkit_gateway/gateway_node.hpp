@@ -50,6 +50,7 @@
 #include "ros2_medkit_gateway/log_manager.hpp"
 #include "ros2_medkit_gateway/operation_manager.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_action_transport.hpp"
+#include "ros2_medkit_gateway/ros2/transports/ros2_parameter_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_service_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_topic_transport.hpp"
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
@@ -265,6 +266,11 @@ class GatewayNode : public rclcpp::Node {
   // rclcpp clients + subscriptions and must outlive the manager).
   std::shared_ptr<ros2::Ros2ServiceTransport> service_transport_;
   std::shared_ptr<ros2::Ros2ActionTransport> action_transport_;
+
+  // Parameter transport adapter shared with ConfigurationManager. Owns the
+  // parameter-client cache + defaults cache + spin_mutex; the manager forwards
+  // shutdown() into it before rclcpp::shutdown() runs.
+  std::shared_ptr<ros2::Ros2ParameterTransport> parameter_transport_;
 
   // Managers
   std::unique_ptr<DiscoveryManager> discovery_mgr_;

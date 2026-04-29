@@ -60,6 +60,22 @@ class ParameterTransport {
   virtual ParameterResult list_own_parameters() = 0;
   virtual ParameterResult get_own_parameter(const std::string & param_name) = 0;
 
+  /// Look up the cached default (initial) value for a single parameter.
+  /// On success, `result.data` is the JSON value of the default. The transport
+  /// owns the defaults cache; manager-level reset operations compose this with
+  /// `set_parameter` to perform the actual reset.
+  ///
+  /// Error codes follow the same contract as the rest of the surface:
+  ///   - NO_DEFAULTS_CACHED: nothing cached for `node_name` yet
+  ///   - NOT_FOUND:          the node has cached defaults but not for `param_name`
+  ///   - SERVICE_UNAVAILABLE / TIMEOUT / SHUT_DOWN: as per IPC reachability
+  virtual ParameterResult get_default(const std::string & node_name, const std::string & param_name) = 0;
+
+  /// List all cached default (initial) values for a node. On success,
+  /// `result.data` is a JSON array of `{"name", "value", "type"}` entries.
+  /// Used by `reset_all_parameters` to drive a chain of `set_parameter` calls.
+  virtual ParameterResult list_defaults(const std::string & node_name) = 0;
+
   /// Service availability check (same semantics as today's negative cache).
   virtual bool is_node_available(const std::string & node_name) const = 0;
 

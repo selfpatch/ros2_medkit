@@ -149,9 +149,9 @@ target_precompile_headers(gateway_core PRIVATE
 # transitively get both layers from a single dependency.
 add_library(gateway_ros2 STATIC
   src/aggregation/aggregation_manager.cpp
-  src/configuration_manager.cpp
   src/data/ros2_topic_data_provider.cpp
   src/ros2/transports/ros2_action_transport.cpp
+  src/ros2/transports/ros2_parameter_transport.cpp
   src/ros2/transports/ros2_service_transport.cpp
   src/ros2/transports/ros2_topic_transport.cpp
   src/default_script_provider.cpp
@@ -399,6 +399,24 @@ if(BUILD_TESTING)
     COMMAND $<TARGET_FILE:test_operation_manager_routing>
   )
   set_tests_properties(operation_manager_routing PROPERTIES LABELS "unit")
+
+  # ─── ConfigurationManager routing test (gateway_core only) ─────────────────
+  # Mock-transport coverage proving the manager body (CRUD delegation,
+  # self-node short circuit, reset orchestration via cached defaults,
+  # shutdown idempotency, error code propagation) compiles and links against
+  # gateway_core alone, with no rclcpp on the link line.
+  add_executable(test_configuration_manager_routing test/test_configuration_manager_routing.cpp)
+  target_link_libraries(test_configuration_manager_routing
+    PRIVATE
+      gateway_core
+      GTest::gtest
+      GTest::gtest_main
+  )
+  add_test(
+    NAME configuration_manager_routing
+    COMMAND $<TARGET_FILE:test_configuration_manager_routing>
+  )
+  set_tests_properties(configuration_manager_routing PROPERTIES LABELS "unit")
 
   # Add GTest
   find_package(ament_cmake_gtest REQUIRED)
