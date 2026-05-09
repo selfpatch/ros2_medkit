@@ -67,11 +67,22 @@ COPY src/ros2_medkit_diagnostic_bridge/ ${COLCON_WS}/src/ros2_medkit_diagnostic_
 COPY src/ros2_medkit_discovery_plugins/ ${COLCON_WS}/src/ros2_medkit_discovery_plugins/
 COPY src/ros2_medkit_plugins/ ${COLCON_WS}/src/ros2_medkit_plugins/
 
-# Install ROS dependencies and build (skip tests for smaller image)
+# Install ROS dependencies and build (skip tests for smaller image).
+#
+# apt-get update has to be re-run here: the previous RUN cleared
+# /var/lib/apt/lists, so without a fresh fetch rosdep's internal
+# apt-get install calls fail with "Unable to locate package" for anything
+# that wasn't pulled in by the first RUN's apt-get install (notably
+# python3-jsonschema, which the integration_tests package declares as a
+# test_depend and which rosdep tries to install even with BUILD_TESTING=OFF).
+# This was previously masked by Docker layer cache hits on CI; cold builds
+# always failed.
 RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    apt-get update && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
       --skip-keys='ament_cmake_clang_format ament_cmake_clang_tidy test_msgs sqlite3 libcpp-httplib-dev rosbag2_storage_mcap' && \
+    rm -rf /var/lib/apt/lists/* && \
     colcon build --cmake-args -DBUILD_TESTING=OFF"
 
 # ============================================================================
