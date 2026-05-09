@@ -324,7 +324,9 @@ class HandlerContext {
    *
    * Apps that are missing from the cache or that have an empty effective_fqn()
    * are skipped silently. The returned vector preserves the input app_ids order
-   * (minus skipped entries) and may be empty.
+   * (minus skipped entries) and may be empty. Apps whose effective_fqn() is
+   * already present in the result are skipped, so duplicates from manifest /
+   * runtime double-binds do not produce repeated downstream queries.
    *
    * Used by log_handlers and bulkdata_handlers to aggregate per-component /
    * per-function resource queries from the entity's hosted apps. Static + public

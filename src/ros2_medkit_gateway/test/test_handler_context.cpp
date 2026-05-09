@@ -1211,6 +1211,23 @@ TEST(ResolveAppHostFqnsTest, PrefersBoundFqnOverRosBinding) {
   EXPECT_EQ(fqns[0], "/runtime/discovered/path");
 }
 
+TEST(ResolveAppHostFqnsTest, DuplicateEffectiveFqnsAreDeduplicated) {
+  // Two app_ids resolving to the same effective_fqn (manifest + runtime
+  // double-bind, or two App entries pointing at the same ROS node) must
+  // produce exactly one filter. The first occurrence wins so first-seen
+  // ordering is preserved.
+  ThreadSafeEntityCache cache;
+  App primary = make_app_with_binding("primary", "temp_sensor", "/powertrain/engine");
+  App alias = make_app_with_binding("alias", "temp_sensor", "/powertrain/engine");
+  // alias.bound_fqn left unset; ros_binding-derived fqn matches primary.
+  cache.update_apps({primary, alias, make_app_with_binding("rpm_sensor", "rpm_sensor", "/powertrain/engine")});
+
+  auto fqns = HandlerContext::resolve_app_host_fqns(cache, {"primary", "alias", "rpm_sensor", "alias"});
+  ASSERT_EQ(fqns.size(), 2u);
+  EXPECT_EQ(fqns[0], "/powertrain/engine/temp_sensor");
+  EXPECT_EQ(fqns[1], "/powertrain/engine/rpm_sensor");
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

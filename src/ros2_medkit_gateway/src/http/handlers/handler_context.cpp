@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 #include <algorithm>
+#include <unordered_set>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/entity_validation.hpp"
@@ -348,15 +349,24 @@ void HandlerContext::send_json(httplib::Response & res, const json & data) {
 
 std::vector<std::string> HandlerContext::resolve_app_host_fqns(const ThreadSafeEntityCache & cache,
                                                                const std::vector<std::string> & app_ids) {
+  // Order-preserving dedup: two app_ids that resolve to the same effective_fqn
+  // (e.g. manifest + runtime double-bind to the same node) must not produce
+  // duplicate filters - downstream callers (LogManager::get_logs, bulkdata
+  // source filters) would either query twice and merge, or dedup silently;
+  // either way the duplicates are wasted CPU.
   std::vector<std::string> fqns;
   fqns.reserve(app_ids.size());
+  std::unordered_set<std::string> seen;
   for (const auto & app_id : app_ids) {
     auto app = cache.get_app(app_id);
     if (!app) {
       continue;
     }
     auto fqn = app->effective_fqn();
-    if (!fqn.empty()) {
+    if (fqn.empty()) {
+      continue;
+    }
+    if (seen.insert(fqn).second) {
       fqns.push_back(std::move(fqn));
     }
   }
