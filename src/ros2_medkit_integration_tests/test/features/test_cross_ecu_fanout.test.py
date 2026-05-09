@@ -478,9 +478,23 @@ class TestCrossEcuFanout(unittest.TestCase):
         Peer hosts lidar calibrate service (/perception/lidar/calibrate).
         Fan-out merges peer operations into the response.
         """
+        def _ready(d):
+            # Wait for both local and peer operations - accepting `d.get('items')`
+            # would return as soon as the local-only set appears and miss peer
+            # fan-out under sanitizer timing.
+            svc_paths = set()
+            for item in d.get('items', []):
+                ext = item.get('x-medkit', {})
+                svc = ext.get('ros2', {}).get('service', '')
+                if svc:
+                    svc_paths.add(svc)
+            has_local = any('/powertrain/engine/' in s for s in svc_paths)
+            has_peer = any('/perception/lidar/' in s for s in svc_paths)
+            return d if has_local and has_peer else None
+
         data = _poll_until(
             f'{PRIMARY_URL}{FUNC_ENDPOINT}/operations',
-            lambda d: d if d.get('items') else None,
+            _ready,
             timeout=30.0,
         )
         self.assertIsNotNone(
@@ -547,9 +561,22 @@ class TestCrossEcuFanout(unittest.TestCase):
         Peer hosts lidar_sensor (min_range, max_range, scan_frequency, etc.).
         Fan-out merges peer configuration items into the response.
         """
+        def _ready(d):
+            # Wait for both local and peer configurations - accepting
+            # `d.get('items')` would return on the local-only set before peer
+            # fan-out completes under sanitizer timing.
+            param_ids = {item.get('id', '') for item in d.get('items', [])}
+            has_local = any('temp_sensor' in pid for pid in param_ids)
+            has_peer = any(
+                'lidar_sensor' in pid or 'pressure_sensor' in pid
+                or 'actuator' in pid
+                for pid in param_ids
+            )
+            return d if has_local and has_peer else None
+
         data = _poll_until(
             f'{PRIMARY_URL}{FUNC_ENDPOINT}/configurations',
-            lambda d: d if d.get('items') else None,
+            _ready,
             timeout=30.0,
         )
         self.assertIsNotNone(
