@@ -212,6 +212,32 @@ nlohmann::json SchemaBuilder::log_entry_schema() {
           {"required", {"id", "timestamp", "severity", "message"}}};
 }
 
+nlohmann::json SchemaBuilder::log_entry_list_schema() {
+  // x-medkit aggregation metadata for /{entity}/logs responses.
+  // Emitted by LogHandlers::handle_get_logs on FUNCTION / AREA / COMPONENT
+  // entities. host_count is FUNCTION-only, component_count is AREA-only,
+  // app_count covers AREA and COMPONENT, aggregation_sources is present only
+  // when the host-fqn aggregation path produced filters. APP responses omit
+  // x-medkit unless peer aggregation contributes contributors.
+  nlohmann::json x_medkit_schema = {
+      {"type", "object"},
+      {"description", "Aggregation provenance and counts (x-medkit extension)"},
+      {"additionalProperties", true},
+      {"properties",
+       {{"entity_id", {{"type", "string"}}},
+        {"aggregation_level", {{"type", "string"}, {"enum", {"function", "area", "component"}}}},
+        {"aggregated", {{"type", "boolean"}}},
+        {"host_count", {{"type", "integer"}}},
+        {"component_count", {{"type", "integer"}}},
+        {"app_count", {{"type", "integer"}}},
+        {"aggregation_sources", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+        {"contributors", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+
+  return {{"type", "object"},
+          {"properties", {{"items", {{"type", "array"}, {"items", ref("LogEntry")}}}, {"x-medkit", x_medkit_schema}}},
+          {"required", {"items"}}};
+}
+
 nlohmann::json SchemaBuilder::health_schema() {
   nlohmann::json linking_schema = {{"type", "object"},
                                    {"properties",
@@ -657,7 +683,7 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
       {"ConfigurationDeleteMultiStatus", configuration_delete_multi_status_schema()},
       // Logs
       {"LogEntry", log_entry_schema()},
-      {"LogEntryList", items_wrapper_ref("LogEntry")},
+      {"LogEntryList", log_entry_list_schema()},
       {"LogConfiguration", log_configuration_schema()},
       // Server
       {"HealthStatus", health_schema()},

@@ -366,6 +366,37 @@ TEST(SchemaBuilderStaticTest, LogEntrySchema) {
   EXPECT_TRUE(schema["properties"]["context"]["properties"].contains("node"));
 }
 
+TEST(SchemaBuilderStaticTest, LogEntryListXMedkitDeclaresAggregationFields) {
+  // Regression: handle_get_logs emits aggregation_level, aggregated, app_count,
+  // host_count, component_count, aggregation_sources at the response wrapper's
+  // x-medkit object on FUNCTION / AREA / COMPONENT entities. Generated typed
+  // clients drop fields the schema does not declare, so each emitted field
+  // must be listed in log_entry_list_schema()'s x-medkit properties.
+  auto schema = SchemaBuilder::log_entry_list_schema();
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  ASSERT_TRUE(schema["properties"].contains("items"));
+  EXPECT_EQ(schema["properties"]["items"]["type"], "array");
+
+  ASSERT_TRUE(schema["properties"].contains("x-medkit"));
+  const auto & x_medkit = schema["properties"]["x-medkit"];
+  EXPECT_EQ(x_medkit.at("type"), "object");
+  ASSERT_TRUE(x_medkit.contains("properties"));
+  const auto & x_props = x_medkit.at("properties");
+  for (const char * field : {"entity_id", "aggregation_level", "aggregated", "host_count", "component_count",
+                             "app_count", "aggregation_sources", "contributors"}) {
+    ASSERT_TRUE(x_props.contains(field)) << "x-medkit missing declared field: " << field;
+  }
+  EXPECT_EQ(x_props.at("aggregation_level").at("type"), "string");
+  EXPECT_EQ(x_props.at("aggregated").at("type"), "boolean");
+  EXPECT_EQ(x_props.at("app_count").at("type"), "integer");
+  EXPECT_EQ(x_props.at("aggregation_sources").at("type"), "array");
+  EXPECT_EQ(x_props.at("aggregation_sources").at("items").at("type"), "string");
+
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "items"), required.end());
+}
+
 TEST(SchemaBuilderStaticTest, HealthSchema) {
   auto schema = SchemaBuilder::health_schema();
   EXPECT_EQ(schema["type"], "object");
