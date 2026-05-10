@@ -148,7 +148,26 @@ implements the provider interface, even if the class inherits from it.
 .. code-block:: cmake
 
    add_library(my_plugin MODULE src/my_plugin.cpp)
-   target_link_libraries(my_plugin gateway_ros2)
+
+   # Pull in include directories for the gateway plugin headers. Plugins
+   # do NOT link the gateway static libraries directly - PluginManager
+   # loads the plugin via dlopen and symbols from gateway_ros2 (and
+   # gateway_core transitively) resolve from the host gateway process at
+   # runtime.
+   medkit_target_dependencies(my_plugin
+     ros2_medkit_gateway
+   )
+
+   # Allow gateway-provided symbols to remain unresolved at link time;
+   # they bind to the host process when the plugin is loaded.
+   target_link_options(my_plugin PRIVATE
+     -Wl,--unresolved-symbols=ignore-all
+   )
+
+   # Link only third-party libraries the plugin needs at link time
+   # (e.g. nlohmann_json). Avoid target_link_libraries(my_plugin
+   # gateway_ros2) - it would embed gateway objects into the plugin .so
+   # and risk ODR / static-state duplication.
 
 4. Install the ``.so`` and add its path to ``gateway_params.yaml``.
 
