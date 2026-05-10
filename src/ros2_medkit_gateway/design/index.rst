@@ -462,8 +462,7 @@ Each entry below is tagged with the static library it compiles into:
      - Maps nodes to Apps with ``source: "heuristic"``
      - Creates Functions from namespace grouping
      - Never creates Areas or Components (those come from manifest/HostInfoProvider)
-     - Same interface as plugin-provided IntrospectionProviders, so the merge pipeline
-       treats built-in graph queries identically to plugin contributions
+     - Same interface as plugin-provided IntrospectionProviders, so the merge pipeline treats built-in graph queries identically to plugin contributions
    - **ManifestDiscoveryStrategy** - Static discovery from YAML manifest
      - Provides stable, semantic entity IDs
      - Supports offline detection of failed components
