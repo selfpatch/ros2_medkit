@@ -180,7 +180,7 @@ const nlohmann::json * find_node(const nlohmann::json & graph, const std::string
   return nullptr;
 }
 
-class FakePluginContext : public PluginContext {
+class FakePluginContext : public RosPluginContext {
  public:
   explicit FakePluginContext(std::unordered_map<std::string, PluginEntityInfo> entities, rclcpp::Node * node = nullptr)
     : node_(node), entities_(std::move(entities)) {

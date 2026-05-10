@@ -86,7 +86,7 @@ class ParameterBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin,
   double param_timeout_sec_{2.0};
 
   // State
-  ros2_medkit_gateway::PluginContext * ctx_{nullptr};
+  ros2_medkit_gateway::RosPluginContext * ctx_{nullptr};
   rclcpp::Node::SharedPtr param_node_;
   std::thread poll_thread_;
   std::atomic<bool> shutdown_requested_{false};

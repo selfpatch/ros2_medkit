@@ -64,7 +64,7 @@ void PluginResponse::send_error(int, const std::string &, const std::string &, c
 
 // -- FakePluginContext --
 
-class FakePluginContext : public PluginContext {
+class FakePluginContext : public RosPluginContext {
  public:
   std::unordered_map<std::string, PluginEntityInfo> entities;
   nlohmann::json all_faults = nlohmann::json::object();

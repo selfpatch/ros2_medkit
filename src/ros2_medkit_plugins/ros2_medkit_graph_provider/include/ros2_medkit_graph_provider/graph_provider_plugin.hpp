@@ -30,6 +30,7 @@
 namespace ros2_medkit_gateway {
 
 class PluginContext;
+class RosPluginContext;
 
 class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
  public:
@@ -88,7 +89,7 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
                                        const std::string & timestamp, bool include_stale_topics = true);
   void load_parameters();
 
-  PluginContext * ctx_{nullptr};
+  RosPluginContext * ctx_{nullptr};
   nlohmann::json plugin_config_;
 
   // Each mutex protects an independent cache/state bucket; no code path acquires more than one.

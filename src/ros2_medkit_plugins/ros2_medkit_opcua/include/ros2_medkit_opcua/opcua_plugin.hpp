@@ -128,7 +128,7 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   nlohmann::json build_data_response(const std::string & entity_id) const;
 
   std::atomic<bool> shutdown_requested_{false};
-  ros2_medkit_gateway::PluginContext * ctx_{nullptr};
+  ros2_medkit_gateway::RosPluginContext * ctx_{nullptr};
   OpcuaClientConfig client_config_;
   PollerConfig poller_config_;
   std::string node_map_path_;

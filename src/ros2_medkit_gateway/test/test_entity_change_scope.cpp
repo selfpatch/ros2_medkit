@@ -17,7 +17,7 @@
 #include <gtest/gtest.h>
 
 #include "ros2_medkit_gateway/core/plugins/entity_change_scope.hpp"
-#include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 
 using ros2_medkit_gateway::EntityChangeScope;
 
@@ -66,7 +66,7 @@ namespace {
 /// prove that `notify_entities_changed` has a usable default even when the
 /// plugin implementer touches nothing else, which is the whole point of the
 /// v6 -> v7 compatibility story.
-class BareContext : public ros2_medkit_gateway::PluginContext {
+class BareContext : public ros2_medkit_gateway::RosPluginContext {
  public:
   rclcpp::Node * node() const override {
     return nullptr;

@@ -37,6 +37,7 @@ using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::PluginEntityInfo;
 using ros2_medkit_gateway::PluginRequest;
 using ros2_medkit_gateway::PluginResponse;
+using ros2_medkit_gateway::RosPluginContext;
 using ros2_medkit_gateway::SovdEntityType;
 using ros2_medkit_param_beacon::ParameterClientInterface;
 using ::testing::_;
@@ -84,7 +85,7 @@ class MockParameterClient : public ParameterClientInterface {
   MOCK_METHOD(std::vector<rclcpp::Parameter>, get_parameters, (const std::vector<std::string> & names), (override));
 };
 
-class MockPluginContext : public PluginContext {
+class MockPluginContext : public RosPluginContext {
  public:
   explicit MockPluginContext(rclcpp::Node * node) : node_(node) {
   }

@@ -37,6 +37,7 @@ using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::PluginEntityInfo;
 using ros2_medkit_gateway::PluginRequest;
 using ros2_medkit_gateway::PluginResponse;
+using ros2_medkit_gateway::RosPluginContext;
 using ros2_medkit_gateway::SovdEntityType;
 
 // Extern "C" plugin exports (defined in topic_beacon_plugin.cpp, linked into test binary)
@@ -73,7 +74,7 @@ void PluginResponse::send_error(int /*status*/, const std::string & /*error_code
 
 // Minimal mock PluginContext for unit testing.
 // We only need node() and register_capability() to work.
-class MockPluginContext : public PluginContext {
+class MockPluginContext : public RosPluginContext {
  public:
   explicit MockPluginContext(rclcpp::Node * node) : node_(node) {
   }

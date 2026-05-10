@@ -23,7 +23,19 @@ CORE_DIRS=(
   "src/core"
 )
 
-FORBIDDEN_PATTERN='#include[[:space:]]*[<"](rclcpp|rcl_interfaces|rosidl|action_msgs|std_msgs|sensor_msgs|geometry_msgs|builtin_interfaces|ros2_medkit_msgs|rcutils|rmw)[/_]'
+# Denylist of ROS 2 include prefixes that must not appear in core/.
+# Covers:
+#   - core ROS client/runtime libraries: rclcpp, rcl_interfaces, rosidl,
+#     rcutils, rcpputils, rmw, ament_index_*, lifecycle_msgs.
+#   - generic message-package families: any *_msgs and any *_interfaces
+#     prefix (catches std_msgs, sensor_msgs, geometry_msgs, action_msgs,
+#     builtin_interfaces, ros2_medkit_msgs, lifecycle_msgs, nav_msgs,
+#     diagnostic_msgs, trajectory_msgs, visualization_msgs and any new
+#     sibling that lands in our deps later).
+#   - tf2 family and rosbag2 family.
+#   - plugin / class loader infrastructure: pluginlib, class_loader.
+# The pattern matches both "<ros_pkg/...>" and "\"ros_pkg/...\"" includes.
+FORBIDDEN_PATTERN='#include[[:space:]]*[<"]([a-zA-Z0-9_]+_msgs|[a-zA-Z0-9_]+_interfaces|rclcpp|rcl_interfaces|rosidl|action_msgs|std_msgs|sensor_msgs|geometry_msgs|builtin_interfaces|ros2_medkit_msgs|rcutils|rcpputils|rmw|ament_index_cpp|ament_index_python|tf2|tf2_ros|tf2_geometry_msgs|tf2_msgs|rosbag2_cpp|rosbag2_storage|rosbag2_transport|rosbag2_interfaces|pluginlib|class_loader|lifecycle_msgs)[/_]'
 
 violations=0
 for dir in "${CORE_DIRS[@]}"; do

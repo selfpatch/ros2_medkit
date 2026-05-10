@@ -102,7 +102,7 @@ void ParameterBeaconPlugin::configure(const nlohmann::json & config) {
 }
 
 void ParameterBeaconPlugin::set_context(PluginContext & context) {
-  ctx_ = &context;
+  ctx_ = as_ros_plugin_context(context);
 
   if (!store_) {
     store_ = std::make_unique<BeaconHintStore>();

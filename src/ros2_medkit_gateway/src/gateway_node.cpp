@@ -29,6 +29,7 @@
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
+#include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 
 #include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
 #include "ros2_medkit_gateway/core/sqlite_trigger_store.hpp"

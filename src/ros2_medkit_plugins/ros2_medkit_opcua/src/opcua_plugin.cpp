@@ -152,7 +152,7 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
 }
 
 void OpcuaPlugin::set_context(PluginContext & context) {
-  ctx_ = &context;
+  ctx_ = as_ros_plugin_context(context);
 
   // NOTE: capabilities (x-plc-data, x-plc-operations, x-plc-status) are
   // registered per entity in introspect() rather than type-level here, so

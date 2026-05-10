@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
@@ -33,7 +33,7 @@ namespace ros2_medkit_gateway {
 
 // ---- Concrete implementation ----
 
-class GatewayPluginContext : public PluginContext {
+class GatewayPluginContext : public RosPluginContext {
  public:
   GatewayPluginContext(GatewayNode * node, FaultManager * fault_manager, ResourceSamplerRegistry * sampler_registry)
     : node_(node), fault_manager_(fault_manager), sampler_registry_(sampler_registry) {
@@ -257,8 +257,8 @@ class GatewayPluginContext : public PluginContext {
   std::unordered_map<std::string, std::vector<std::string>> entity_capabilities_;
 };
 
-std::unique_ptr<PluginContext> make_gateway_plugin_context(GatewayNode * node, FaultManager * fault_manager,
-                                                           ResourceSamplerRegistry * sampler_registry) {
+std::unique_ptr<RosPluginContext> make_gateway_plugin_context(GatewayNode * node, FaultManager * fault_manager,
+                                                              ResourceSamplerRegistry * sampler_registry) {
   return std::make_unique<GatewayPluginContext>(node, fault_manager, sampler_registry);
 }
 

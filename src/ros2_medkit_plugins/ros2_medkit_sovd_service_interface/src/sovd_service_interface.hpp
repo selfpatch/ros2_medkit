@@ -57,7 +57,7 @@ class SovdServiceInterface : public GatewayPlugin {
   void handle_get_capabilities(const std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Request> request,
                                std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Response> response);
 
-  PluginContext * context_{nullptr};
+  RosPluginContext * context_{nullptr};
   std::string service_prefix_{"/medkit"};
   std::atomic<bool> shutdown_requested_{false};
 

@@ -62,7 +62,7 @@ void PluginResponse::send_error(int /*status*/, const std::string & /*error_code
 
 namespace {
 
-class FakePluginContext : public PluginContext {
+class FakePluginContext : public RosPluginContext {
  public:
   explicit FakePluginContext(rclcpp::Node * node) : node_(node) {
   }

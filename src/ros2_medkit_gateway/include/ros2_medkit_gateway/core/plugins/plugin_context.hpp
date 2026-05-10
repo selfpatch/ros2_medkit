@@ -30,10 +30,6 @@
 #include <unordered_map>
 #include <vector>
 
-namespace rclcpp {
-class Node;
-}
-
 namespace ros2_medkit_gateway {
 
 class ResourceSamplerRegistry;
@@ -53,10 +49,13 @@ struct PluginEntityInfo {
 };
 
 /**
- * @brief Context interface providing plugins access to gateway data and utilities
+ * @brief Middleware-neutral context interface for plugins.
  *
- * Passed to plugins during lifecycle via set_context(). Replaces the old set_node()
- * by providing both ROS 2 node access and gateway-level abstractions.
+ * Provides plugins read-only access to gateway state (entities, faults,
+ * locks) plus mutation hooks (capabilities, samplers, trigger registries)
+ * without exposing any ROS 2 type. ROS-specific access (the underlying
+ * rclcpp::Node *) lives on RosPluginContext, the derived interface in
+ * ros2_medkit_gateway/plugins/ros_plugin_context.hpp.
  *
  * @note This interface is versioned alongside PLUGIN_API_VERSION. New methods may
  * be added in future versions (entity data access, configuration queries, etc.).
@@ -68,11 +67,6 @@ struct PluginEntityInfo {
 class PluginContext {
  public:
   virtual ~PluginContext() = default;
-
-  // ---- ROS 2 access (replaces set_node) ----
-
-  /// Get ROS 2 node pointer for subscriptions, service clients, etc.
-  virtual rclcpp::Node * node() const = 0;
 
   // ---- Entity access (read-only) ----
 
@@ -270,13 +264,5 @@ class PluginContext {
   virtual void notify_entities_changed(const EntityChangeScope & /*scope*/) {
   }
 };
-
-// Forward declarations
-class GatewayNode;
-class FaultManager;
-
-/// Factory for creating the concrete gateway plugin context
-std::unique_ptr<PluginContext> make_gateway_plugin_context(GatewayNode * node, FaultManager * fault_manager,
-                                                           ResourceSamplerRegistry * sampler_registry = nullptr);
 
 }  // namespace ros2_medkit_gateway

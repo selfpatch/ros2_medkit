@@ -82,7 +82,7 @@ void TopicBeaconPlugin::configure(const nlohmann::json & config) {
 }
 
 void TopicBeaconPlugin::set_context(PluginContext & context) {
-  ctx_ = &context;
+  ctx_ = as_ros_plugin_context(context);
   auto node = ctx_->node();
 
   // Ensure store_ exists even if configure() was not called

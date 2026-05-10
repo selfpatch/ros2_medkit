@@ -55,9 +55,9 @@ void SovdServiceInterface::configure(const nlohmann::json & config) {
 }
 
 void SovdServiceInterface::set_context(PluginContext & context) {
-  context_ = &context;
+  context_ = as_ros_plugin_context(context);
 
-  auto * node = context.node();
+  auto * node = context_->node();
   if (!node) {
     log_error("No ROS 2 node available - cannot create service servers");
     return;

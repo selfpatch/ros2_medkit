@@ -14,6 +14,9 @@
 
 #pragma once
 
-// Backwards-compatibility shim - header moved to core/. Remove once all
-// downstream consumers have migrated to the new path.
+// Backwards-compatibility shim. The neutral PluginContext now lives under
+// core/plugins/, the ROS-aware RosPluginContext (with node() and the
+// make_gateway_plugin_context factory) lives next to this shim. Existing
+// plugin code that includes the legacy path continues to see both classes.
 #include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"

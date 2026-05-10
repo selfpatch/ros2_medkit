@@ -18,10 +18,15 @@
 // missing-symbol link error, catching leaks the grep-based purity check
 // might miss when an include is reached via a third-party header.
 
+#include "ros2_medkit_gateway/core/aggregation/entity_merger.hpp"
+#include "ros2_medkit_gateway/core/aggregation/network_utils.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/host_info_provider.hpp"
@@ -43,14 +48,18 @@ namespace {
 
 using ros2_medkit_gateway::App;
 using ros2_medkit_gateway::Area;
+using ros2_medkit_gateway::BulkDataStore;
 using ros2_medkit_gateway::Component;
 using ros2_medkit_gateway::DataProvider;
+using ros2_medkit_gateway::EntityMerger;
 using ros2_medkit_gateway::FaultProvider;
 using ros2_medkit_gateway::Function;
 using ros2_medkit_gateway::HostInfoProvider;
 using ros2_medkit_gateway::IntrospectionProvider;
+using ros2_medkit_gateway::LockManager;
 using ros2_medkit_gateway::LogProvider;
 using ros2_medkit_gateway::OperationProvider;
+using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::ScriptProvider;
 using ros2_medkit_gateway::UpdateProvider;
 
@@ -66,6 +75,18 @@ static_assert(std::is_abstract_v<IntrospectionProvider>);
 static_assert(std::is_abstract_v<ScriptProvider>);
 static_assert(std::is_abstract_v<UpdateProvider>);
 static_assert(sizeof(HostInfoProvider) > 0);
+
+// PluginContext after the split must be ROS-neutral - no rclcpp::Node
+// member, no rclcpp forward declaration. Catches the regression where
+// node() leaked back into the base class signature.
+static_assert(std::is_abstract_v<PluginContext>);
+
+// Pin a slice of the manager and aggregation surfaces. These do not yet
+// transitively touch rclcpp; if a refactor introduces such coupling, the
+// link line for this TU surfaces it before the grep linter runs.
+static_assert(sizeof(BulkDataStore) > 0);
+static_assert(sizeof(LockManager) > 0);
+static_assert(sizeof(EntityMerger) > 0);
 
 }  // namespace
 

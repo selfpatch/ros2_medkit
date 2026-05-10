@@ -97,7 +97,7 @@ class TopicBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin, public ros2
   void on_beacon(const ros2_medkit_msgs::msg::MedkitDiscoveryHint::SharedPtr & msg);
 
   std::string topic_{"/ros2_medkit/discovery"};
-  ros2_medkit_gateway::PluginContext * ctx_{nullptr};
+  ros2_medkit_gateway::RosPluginContext * ctx_{nullptr};
   rclcpp::Subscription<ros2_medkit_msgs::msg::MedkitDiscoveryHint>::SharedPtr subscription_;
   std::unique_ptr<ros2_medkit_beacon::BeaconHintStore> store_;
   ros2_medkit_beacon::BeaconEntityMapper mapper_;

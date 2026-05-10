@@ -42,10 +42,10 @@
 #include <string>
 
 #include "ros2_medkit_gateway/core/plugins/entity_change_scope.hpp"
-#include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 
 using namespace std::chrono_literals;
 
