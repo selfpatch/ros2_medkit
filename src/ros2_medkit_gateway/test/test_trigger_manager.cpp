@@ -26,7 +26,6 @@
 #include "ros2_medkit_gateway/core/sqlite_trigger_store.hpp"
 
 using namespace ros2_medkit_gateway;
-using json = nlohmann::json;
 
 // ===========================================================================
 // Test fixture
@@ -445,7 +444,7 @@ TEST_F(TriggerManagerTest, EventEnvelopeFormat) {
   EXPECT_TRUE((*event)["timestamp"].is_string());
   // Timestamp should be ISO 8601 format
   std::string ts = (*event)["timestamp"].get<std::string>();
-  EXPECT_NE(ts.find("T"), std::string::npos);
+  EXPECT_NE(ts.find('T'), std::string::npos);
 }
 
 // ===========================================================================
