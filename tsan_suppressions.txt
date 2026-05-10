@@ -29,8 +29,13 @@ race:rcutils_logging_*
 
 # cpp-httplib: data race in Server::stop() and create_server_socket()
 # on internal socket fd between listen and stop threads.
-# System-packaged libcpp-httplib.so, not our code.
+# System-packaged libcpp-httplib.so, not our code. The .so is shipped
+# stripped, so TSan stacks point at <null> in libcpp-httplib.so.0.14
+# instead of demangled httplib:: symbols; match by library name as well
+# so the stripped frames are also covered.
 race:httplib::*
+called_from_lib:libcpp-httplib.so.0.14
+called_from_lib:libcpp-httplib.so
 
 # rclcpp/glibc: unlock-of-unlocked-mutex in __gthread_mutex_unlock during
 # test teardown when executor threads race with node destruction.

@@ -360,6 +360,12 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     EXPECT_EQ(res.status, 202);
     auto body = parse_json(res);
     EXPECT_TRUE(body.contains("id"));
+
+    // Sending the action goal subscribes to feedback/result topics, which the
+    // gateway's graph-event-driven discovery picks up and uses to wipe the
+    // seeded cache with its own (empty) view. Re-seed so any subsequent
+    // handler call still sees the engine component.
+    seed_component_cache();
     return body["id"].get<std::string>();
   }
 
