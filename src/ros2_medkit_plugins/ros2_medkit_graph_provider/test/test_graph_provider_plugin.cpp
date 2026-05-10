@@ -88,7 +88,7 @@ static void register_plugin_routes(httplib::Server & server, const std::string &
     auto pattern = api_prefix + "/" + route.pattern;
     auto handler = route.handler;
     if (route.method == "GET") {
-      server.Get(pattern.c_str(), [handler](const httplib::Request & req, httplib::Response & res) {
+      server.Get(pattern, [handler](const httplib::Request & req, httplib::Response & res) {
         PluginRequest preq(&req);
         PluginResponse pres(&res);
         handler(preq, pres);
@@ -296,6 +296,13 @@ class FakePluginContext : public RosPluginContext {
 class LocalHttpServer {
  public:
   LocalHttpServer() = default;
+
+  // RAII cleanup: stop the listening thread on destruction. Owns a thread
+  // and a raw httplib::Server pointer, so copying/moving is unsafe.
+  LocalHttpServer(const LocalHttpServer &) = delete;
+  LocalHttpServer & operator=(const LocalHttpServer &) = delete;
+  LocalHttpServer(LocalHttpServer &&) = delete;
+  LocalHttpServer & operator=(LocalHttpServer &&) = delete;
 
   ~LocalHttpServer() {
     stop();
