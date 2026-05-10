@@ -54,10 +54,19 @@ for file in "$@"; do
     ABS_FILE="$(realpath "$file" 2>/dev/null || echo "$file")"
   fi
 
-  echo "clang-tidy: $file"
-  if ! clang-tidy -p "$(dirname "$COMPILE_DB")" --config-file="$CLANG_TIDY_CONFIG" "$ABS_FILE"; then
+  # Capture output: clang-tidy emits a "X warnings generated. Suppressed Y"
+  # summary plus source snippets on stderr even when every diagnostic is
+  # suppressed. Replaying that for every clean file overflows pre-commit's
+  # output buffer (BlockingIOError on sys.stdout.buffer.write). Keep stdout
+  # silent for clean runs and only print the captured output on failure.
+  output=$(clang-tidy -p "$(dirname "$COMPILE_DB")" --quiet --config-file="$CLANG_TIDY_CONFIG" "$ABS_FILE" 2>&1) || rc=$?
+  rc=${rc:-0}
+  if [ "$rc" -ne 0 ]; then
+    echo "clang-tidy: $file"
+    echo "$output"
     ERRORS=$((ERRORS + 1))
   fi
+  unset rc
 done
 
 if [ "$ERRORS" -gt 0 ]; then
