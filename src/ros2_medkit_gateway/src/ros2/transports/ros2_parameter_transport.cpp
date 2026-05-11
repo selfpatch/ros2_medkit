@@ -840,7 +840,15 @@ void Ros2ParameterTransport::cache_default_values(const std::string & node_name)
           if (!single_params.empty()) {
             parameters.push_back(single_params[0]);
           }
-        } catch (const std::exception &) {
+        } catch (const std::exception & e) {
+          // Log the per-parameter fetch failure rather than dropping it
+          // silently. A silent drop here surfaces later as
+          // NO_DEFAULTS_CACHED with no diagnostic for the operator.
+          if (node_) {
+            RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
+                                 "Failed to fetch default value for parameter '%s' on node '%s': %s", name.c_str(),
+                                 node_name.c_str(), e.what());
+          }
         }
       }
     }

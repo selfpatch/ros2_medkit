@@ -18,6 +18,7 @@
 #include <array>
 #include <chrono>
 #include <iomanip>
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <utility>
@@ -51,14 +52,22 @@ json uuid_hex_to_json_array(const std::string & uuid_hex) {
   return array;
 }
 
-/// Generate a version-4 random UUID. Uses a thread-local engine to avoid
-/// contention; each transport call needs only one UUID.
+/// Generate a version-4 random UUID. The engine is mutex-guarded rather
+/// than `thread_local`: this translation unit is part of `gateway_lib`,
+/// which is also linked into the `test_gateway_plugin.so` MODULE target,
+/// and TLS variables in MODULE binaries use initial-exec (TPOFF32) which
+/// is incompatible with shared objects. UUID generation is one-per-goal
+/// so the lock is uncontended in practice.
 std::array<uint8_t, 16> generate_uuid() {
-  thread_local std::mt19937 rng{std::random_device{}()};
+  static std::mutex rng_mutex;
+  static std::mt19937 rng{std::random_device{}()};
   std::array<uint8_t, 16> uuid;
-  std::uniform_int_distribution<int> dist(0, 255);
-  for (auto & byte : uuid) {
-    byte = static_cast<uint8_t>(dist(rng));
+  {
+    std::lock_guard<std::mutex> lock(rng_mutex);
+    std::uniform_int_distribution<int> dist(0, 255);
+    for (auto & byte : uuid) {
+      byte = static_cast<uint8_t>(dist(rng));
+    }
   }
   uuid[6] = (uuid[6] & 0x0f) | 0x40;  // version 4
   uuid[8] = (uuid[8] & 0x3f) | 0x80;  // variant bits

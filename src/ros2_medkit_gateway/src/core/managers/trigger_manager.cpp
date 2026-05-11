@@ -164,8 +164,15 @@ void TriggerManager::retry_unresolved_triggers() {
           });
       if (handle) {
         topic_handles_[trigger_id] = std::move(handle);
+        resolved_indices.push_back(i);
+      } else {
+        // Subscribe failed (rclcpp threw inside TriggerTopicSubscriber).
+        // Keep the trigger on the pending list so the next retry tick can
+        // try again; the subscriber has already logged the root cause.
+        // Without this guard the trigger would be marked resolved but
+        // never deliver samples.
+        // Index intentionally NOT added to resolved_indices.
       }
-      resolved_indices.push_back(i);
     }
   }
 
@@ -337,6 +344,17 @@ tl::expected<TriggerInfo, TriggerCreateError> TriggerManager::create(const Trigg
       if (handle) {
         std::lock_guard<std::mutex> lock(triggers_mutex_);
         topic_handles_[info_copy.id] = std::move(handle);
+      } else {
+        // Subscribe failed at trigger creation. Roll back the trigger we
+        // just added so the caller does not get a 201 for a trigger that
+        // will never deliver. The underlying TriggerTopicSubscriber has
+        // already logged the rclcpp failure.
+        {
+          std::lock_guard<std::mutex> lock(triggers_mutex_);
+          triggers_.erase(info_copy.id);
+        }
+        throw std::runtime_error("Failed to subscribe to topic '" + req.resolved_topic_name +
+                                 "' for data trigger; see gateway log for the rclcpp root cause");
       }
     } else if (!req.resource_path.empty()) {
       std::lock_guard<std::mutex> lock(triggers_mutex_);
@@ -664,6 +682,12 @@ void TriggerManager::load_persistent_triggers() {
                                       });
       if (handle) {
         topic_handles_[trigger_id] = std::move(handle);
+      } else {
+        // Subscribe failed during persistent-trigger restore (e.g. the
+        // topic disappeared between shutdown and restart, or rclcpp threw
+        // inside TriggerTopicSubscriber). Queue the trigger for retry on
+        // the next refresh tick instead of leaving it active-but-silent.
+        unresolved_data_triggers_.push_back({trigger_id, entity_id, resource_path, std::chrono::steady_clock::now()});
       }
     }
 

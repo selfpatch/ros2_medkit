@@ -14,9 +14,11 @@
 
 #include "ros2_medkit_gateway/ros2/transports/ros2_fault_service_transport.hpp"
 
+#include <algorithm>
 #include <builtin_interfaces/msg/time.hpp>
 #include <chrono>
 #include <future>
+#include <string>
 
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/ros2/conversions/fault_msg_conversions.hpp"
@@ -417,8 +419,25 @@ FaultResult Ros2FaultServiceTransport::list_rosbags(const std::string & entity_f
   result.success = response->success;
 
   if (response->success) {
+    // The response uses parallel arrays. Trust nothing about the remote
+    // service: a server bug or schema drift could ship arrays of different
+    // lengths, and indexing past end-of-vector is UB. Take the shortest
+    // length and surface the mismatch rather than silently truncate.
+    const size_t n = response->fault_codes.size();
+    const size_t shortest = std::min({n, response->file_paths.size(), response->formats.size(),
+                                      response->durations_sec.size(), response->sizes_bytes.size()});
+    if (shortest != n || response->file_paths.size() != n || response->formats.size() != n ||
+        response->durations_sec.size() != n || response->sizes_bytes.size() != n) {
+      result.success = false;
+      result.error_message = "ListRosbags response has mismatched array sizes (fault_codes=" + std::to_string(n) +
+                             ", file_paths=" + std::to_string(response->file_paths.size()) +
+                             ", formats=" + std::to_string(response->formats.size()) +
+                             ", durations_sec=" + std::to_string(response->durations_sec.size()) +
+                             ", sizes_bytes=" + std::to_string(response->sizes_bytes.size()) + ")";
+      return result;
+    }
     json rosbags = json::array();
-    for (size_t i = 0; i < response->fault_codes.size(); ++i) {
+    for (size_t i = 0; i < n; ++i) {
       rosbags.push_back({{"fault_code", response->fault_codes[i]},
                          {"file_path", response->file_paths[i]},
                          {"format", response->formats[i]},

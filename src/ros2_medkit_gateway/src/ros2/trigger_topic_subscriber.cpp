@@ -140,6 +140,10 @@ void TriggerTopicSubscriber::create_subscription_internal(const std::string & ha
     RCLCPP_ERROR(node_->get_logger(),
                  "TriggerTopicSubscriber: failed to create subscription for '%s' (handle '%s'): %s", topic_name.c_str(),
                  handle_key.c_str(), e.what());
+    // Propagate. The transport adapter wraps each subscribe in a try/catch
+    // and returns nullptr so the trigger manager rejects the trigger
+    // creation with a 5xx instead of returning 201 for a dead handle.
+    throw;
   }
 }
 

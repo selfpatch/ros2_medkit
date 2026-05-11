@@ -30,7 +30,14 @@ std::unique_ptr<TopicSubscriptionHandle> Ros2TopicSubscriptionTransport::subscri
                                                                                    const std::string & msg_type,
                                                                                    SampleCallback callback) {
   auto key = allocate_key();
-  subscriber_->subscribe(topic_path, msg_type, key, std::move(callback));
+  // TriggerTopicSubscriber::subscribe rethrows when the underlying rclcpp
+  // call fails. Return nullptr so callers (TriggerManager) can reject the
+  // trigger creation with a 5xx instead of bookkeeping a dead handle.
+  try {
+    subscriber_->subscribe(topic_path, msg_type, key, std::move(callback));
+  } catch (const std::exception &) {
+    return nullptr;
+  }
   return std::make_unique<Handle>(subscriber_, key);
 }
 
