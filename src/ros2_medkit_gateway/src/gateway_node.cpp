@@ -1477,6 +1477,16 @@ GatewayNode::~GatewayNode() {
   if (mdns_discovery_) {
     mdns_discovery_->stop();
   }
+  // 0b. Cancel in-flight peer HTTP calls so REST worker threads that are
+  //     mid-forward unblock promptly. Without this, stop_rest_server() below
+  //     waits for those workers to finish their full peer read timeout,
+  //     which under TSan / heavy load exceeds the launch_test SIGINT grace
+  //     window and forces a SIGKILL with non-zero exit. The handlers still
+  //     hold references to aggregation_mgr_, so we do not destroy it here
+  //     - only cancel its outbound calls.
+  if (aggregation_mgr_) {
+    aggregation_mgr_->shutdown();
+  }
   // 1. Stop REST server (kills HTTP connections, SSE streams exit)
   //    Handlers may reference aggregation_mgr_, so it must outlive the server.
   stop_rest_server();

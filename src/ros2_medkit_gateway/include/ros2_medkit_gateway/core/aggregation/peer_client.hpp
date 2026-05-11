@@ -22,6 +22,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <tl/expected.hpp>
+#include <unordered_set>
 #include <vector>
 
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
@@ -121,6 +122,18 @@ class PeerClient {
                                                                  const std::string & auth_header = "",
                                                                  const httplib::Headers & extra_headers = {});
 
+  /**
+   * @brief Cancel every in-flight HTTP call against this peer.
+   *
+   * Sets a shutdown flag (so subsequent forwards return 503 immediately
+   * without dialing the peer) and invokes ``stop()`` on every active
+   * ``httplib::Client`` registered by an in-flight forward / fetch / health
+   * call. This unblocks worker threads sitting in ``cli.Get/Post/...`` so
+   * gateway shutdown does not have to wait out the full peer read timeout.
+   * Idempotent. Safe to call from any thread.
+   */
+  void shutdown();
+
  private:
   /**
    * @brief Ensure the underlying HTTP client exists (lazy initialization)
@@ -129,14 +142,45 @@ class PeerClient {
    */
   void ensure_client();
 
+  /// RAII helper for per-call clients: registers itself with active_clients_
+  /// on construction and unregisters on destruction. shutdown() iterates
+  /// active_clients_ and calls stop() on each so blocked I/O unwinds.
+  class ScopedClient {
+   public:
+    ScopedClient(PeerClient & owner, const std::string & url, int timeout_ms);
+    ~ScopedClient();
+    ScopedClient(const ScopedClient &) = delete;
+    ScopedClient & operator=(const ScopedClient &) = delete;
+    ScopedClient(ScopedClient &&) = delete;
+    ScopedClient & operator=(ScopedClient &&) = delete;
+
+    httplib::Client & operator*() {
+      return cli_;
+    }
+    httplib::Client * operator->() {
+      return &cli_;
+    }
+
+   private:
+    PeerClient & owner_;
+    httplib::Client cli_;
+  };
+
+  void register_active(httplib::Client * cli);
+  void unregister_active(httplib::Client * cli);
+
   std::string url_;
   std::string name_;
   int timeout_ms_;
   bool forward_auth_;
   std::atomic<bool> healthy_{false};
+  std::atomic<bool> shutdown_requested_{false};
 
   std::mutex client_mutex_;
   std::unique_ptr<httplib::Client> client_;
+
+  std::mutex active_mutex_;
+  std::unordered_set<httplib::Client *> active_clients_;
 };
 
 }  // namespace ros2_medkit_gateway

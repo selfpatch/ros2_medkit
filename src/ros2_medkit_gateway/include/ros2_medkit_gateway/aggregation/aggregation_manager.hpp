@@ -113,6 +113,20 @@ class AggregationManager {
    */
   explicit AggregationManager(const AggregationConfig & config, rclcpp::Logger * logger = nullptr);
 
+  /**
+   * @brief Cancel every in-flight HTTP call to every peer.
+   *
+   * Calls ``PeerClient::shutdown()`` on every known peer (static + discovered).
+   * Each peer stops its active ``httplib::Client`` instances so worker threads
+   * blocked in cli.Get/Post return immediately with ``Error::Canceled`` instead
+   * of waiting out the full peer read timeout. Idempotent; safe to call from
+   * any thread. Called from ``GatewayNode::~GatewayNode`` before the REST
+   * server stop so worker threads can drain promptly even under sanitizer
+   * instrumentation, where the per-call read timeout otherwise exceeds the
+   * launch_test SIGINT->SIGKILL grace window.
+   */
+  void shutdown();
+
   /// Get the number of known peers (static + discovered)
   size_t peer_count() const;
 

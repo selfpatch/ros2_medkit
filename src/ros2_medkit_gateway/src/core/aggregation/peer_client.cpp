@@ -339,12 +339,15 @@ void PeerClient::check_health() {
 }
 
 tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
+  if (shutdown_requested_.load(std::memory_order_acquire)) {
+    return tl::unexpected<std::string>("Peer '" + name_ + "': fetch_entities skipped, shutdown in progress");
+  }
   // Use a dedicated client for this long-running operation (4 sequential HTTP
   // requests, up to 8s with 2s timeout) to avoid blocking health checks and
-  // forwarding on the shared client_mutex_.
-  httplib::Client cli(url_);
-  cli.set_connection_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
-  cli.set_read_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
+  // forwarding on the shared client_mutex_. ScopedClient registers with the
+  // active-client registry so shutdown() can stop() the in-flight call.
+  ScopedClient scoped(*this, url_, timeout_ms_);
+  auto & cli = *scoped;
 
   PeerEntities entities;
   const std::string peer_source = "peer:" + name_;
@@ -565,12 +568,19 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 }
 
 void PeerClient::forward_request(const httplib::Request & req, httplib::Response & res) {
+  if (shutdown_requested_.load(std::memory_order_acquire)) {
+    res.status = 503;
+    auto error_body =
+        make_error_body(ERR_VENDOR_ERROR, "Gateway shutting down; peer forward refused", ERR_X_MEDKIT_PEER_UNAVAILABLE);
+    res.set_content(error_body.dump(), "application/json");
+    return;
+  }
   // Create a dedicated client per forwarding call to avoid holding client_mutex_
   // during potentially long I/O operations. The shared client_ is reserved for
-  // short health checks only.
-  httplib::Client cli(url_);
-  cli.set_connection_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
-  cli.set_read_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
+  // short health checks only. ScopedClient registers with the active-client
+  // registry so shutdown() can stop() the in-flight call.
+  ScopedClient scoped(*this, url_, timeout_ms_);
+  auto & cli = *scoped;
 
   httplib::Headers headers;
   // Forward Authorization header only when explicitly enabled (forward_auth).
@@ -640,11 +650,15 @@ tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const
                                                                            const std::string & path,
                                                                            const std::string & auth_header,
                                                                            const httplib::Headers & extra_headers) {
+  if (shutdown_requested_.load(std::memory_order_acquire)) {
+    return tl::unexpected<std::string>("Peer '" + name_ + "': forward_and_get_json skipped, shutdown in progress");
+  }
   // Create a dedicated client per call to avoid holding client_mutex_ during I/O.
-  // The shared client_ is reserved for short health checks only.
-  httplib::Client cli(url_);
-  cli.set_connection_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
-  cli.set_read_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
+  // The shared client_ is reserved for short health checks only. ScopedClient
+  // registers with the active-client registry so shutdown() can stop() the
+  // in-flight call.
+  ScopedClient scoped(*this, url_, timeout_ms_);
+  auto & cli = *scoped;
 
   httplib::Headers headers;
   // Only forward auth header when forward_auth is enabled
@@ -727,6 +741,57 @@ tl::expected<nlohmann::json, std::string> PeerClient::forward_and_get_json(const
   }
 
   return parsed;
+}
+
+void PeerClient::shutdown() {
+  if (shutdown_requested_.exchange(true)) {
+    return;
+  }
+  // Snapshot active clients under the registry mutex so we do not hold it
+  // while calling stop() (each stop() may block momentarily on the socket
+  // close). Worker threads remove themselves on unwind.
+  std::vector<httplib::Client *> to_stop;
+  {
+    std::lock_guard<std::mutex> lock(active_mutex_);
+    to_stop.reserve(active_clients_.size());
+    for (auto * cli : active_clients_) {
+      to_stop.push_back(cli);
+    }
+  }
+  for (auto * cli : to_stop) {
+    cli->stop();
+  }
+  // Also stop the lazily-created health-check client.
+  std::lock_guard<std::mutex> lock(client_mutex_);
+  if (client_) {
+    client_->stop();
+  }
+}
+
+void PeerClient::register_active(httplib::Client * cli) {
+  std::lock_guard<std::mutex> lock(active_mutex_);
+  active_clients_.insert(cli);
+}
+
+void PeerClient::unregister_active(httplib::Client * cli) {
+  std::lock_guard<std::mutex> lock(active_mutex_);
+  active_clients_.erase(cli);
+}
+
+PeerClient::ScopedClient::ScopedClient(PeerClient & owner, const std::string & url, int timeout_ms)
+  : owner_(owner), cli_(url) {
+  cli_.set_connection_timeout(timeout_ms / 1000, (timeout_ms % 1000) * 1000);
+  cli_.set_read_timeout(timeout_ms / 1000, (timeout_ms % 1000) * 1000);
+  owner_.register_active(&cli_);
+  // If shutdown landed between the timeout setup and registration, pre-stop
+  // the client so the first Get/Post returns Error::Canceled immediately.
+  if (owner_.shutdown_requested_.load(std::memory_order_acquire)) {
+    cli_.stop();
+  }
+}
+
+PeerClient::ScopedClient::~ScopedClient() {
+  owner_.unregister_active(&cli_);
 }
 
 }  // namespace ros2_medkit_gateway

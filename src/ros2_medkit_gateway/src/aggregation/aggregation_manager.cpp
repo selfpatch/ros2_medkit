@@ -226,6 +226,24 @@ size_t AggregationManager::peer_count() const {
   return peers_.size();
 }
 
+void AggregationManager::shutdown() {
+  // Snapshot the peer list under the shared mutex so we do not hold it
+  // while each peer's PeerClient::shutdown() iterates its active-client
+  // set. Holding the aggregation mutex through that path could deadlock
+  // with add/remove_discovered_peer calls still racing through.
+  std::vector<std::shared_ptr<PeerClient>> peers_snapshot;
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    peers_snapshot.reserve(peers_.size());
+    for (auto & peer : peers_) {
+      peers_snapshot.push_back(peer);
+    }
+  }
+  for (auto & peer : peers_snapshot) {
+    peer->shutdown();
+  }
+}
+
 void AggregationManager::add_discovered_peer(const std::string & url, const std::string & name) {
   // Validate mDNS-discovered peer URLs (static config peers bypass this check)
   if (!is_valid_peer_url(url)) {
