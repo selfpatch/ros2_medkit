@@ -322,19 +322,30 @@ bool PeerClient::is_healthy() const {
 void PeerClient::ensure_client() {
   if (!client_) {
     client_ = std::make_unique<httplib::Client>(url_);
-    client_->set_connection_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
-    client_->set_read_timeout(timeout_ms_ / 1000, (timeout_ms_ % 1000) * 1000);
+    // Cap the health-check timeouts at 1s regardless of the configured
+    // forward timeout. Reasoning:
+    //   * cpp-httplib's Client::stop() called concurrently with an
+    //     in-flight Get() / Post() unlocks an internal mutex from a
+    //     thread that did not lock it; glibc + pthread debug mode
+    //     (Ubuntu Noble) treats that as fatal mutex misuse and aborts
+    //     with SIGABRT (TestShutdown.test_exit_codes saw exit code -6).
+    //     So we cannot use Client::stop() to interrupt the health check.
+    //   * Without an interrupt, the worst-case shutdown delay equals
+    //     the health-check read timeout. A 5s nominal timeout becomes
+    //     ~25s under TSan, exceeding the launch_test SIGINT->SIGKILL
+    //     grace and producing an exit code -9.
+    //   * Health checks should be fast by their nature; an unresponsive
+    //     peer is "unhealthy" whether we wait 1s or 5s. Capping at 1s
+    //     bounds shutdown delay to ~5s under TSan, well within the 15s
+    //     grace window, without affecting forward semantics (which still
+    //     use the configured timeout via ScopedClient).
+    int health_timeout_ms = std::min(timeout_ms_, 1000);
+    client_->set_connection_timeout(health_timeout_ms / 1000, (health_timeout_ms % 1000) * 1000);
+    client_->set_read_timeout(health_timeout_ms / 1000, (health_timeout_ms % 1000) * 1000);
     // Note: cpp-httplib Client does not expose set_payload_max_length (server-only).
     // Response size is enforced post-download in forward_request() and
     // forward_and_get_json() via MAX_PEER_RESPONSE_SIZE body length checks.
     // The read timeout provides a secondary defense against slow-drip attacks.
-    //
-    // Register with the active-client set so shutdown() can interrupt the
-    // in-flight Get(). The client lives for the rest of the PeerClient's
-    // lifetime so we never unregister it; the destruction order
-    // (active_clients_ cleared before client_ destroyed) keeps the
-    // dangling-pointer window closed.
-    register_active(client_.get());
   }
 }
 
