@@ -328,6 +328,13 @@ void PeerClient::ensure_client() {
     // Response size is enforced post-download in forward_request() and
     // forward_and_get_json() via MAX_PEER_RESPONSE_SIZE body length checks.
     // The read timeout provides a secondary defense against slow-drip attacks.
+    //
+    // Register with the active-client set so shutdown() can interrupt the
+    // in-flight Get(). The client lives for the rest of the PeerClient's
+    // lifetime so we never unregister it; the destruction order
+    // (active_clients_ cleared before client_ destroyed) keeps the
+    // dangling-pointer window closed.
+    register_active(client_.get());
   }
 }
 
