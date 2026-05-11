@@ -750,6 +750,17 @@ void PeerClient::shutdown() {
   // Snapshot active clients under the registry mutex so we do not hold it
   // while calling stop() (each stop() may block momentarily on the socket
   // close). Worker threads remove themselves on unwind.
+  //
+  // We deliberately do NOT stop the lazily-created health-check client_
+  // here. That client is exclusively used inside check_health() which
+  // holds client_mutex_ for the duration of a single short Get();
+  // calling stop() on it from another thread while check_health holds
+  // the same socket internals races with cpp-httplib's own socket_mutex_
+  // and TSan flags it as "unlock of an unlocked mutex (or by a wrong
+  // thread)". The health check is short-lived (single GET, short
+  // timeout) so blocking on it is bounded; the multi-second hang we
+  // are fixing came from in-flight forward_request / fetch_entities
+  // calls, which use ScopedClient and ARE in to_stop.
   std::vector<httplib::Client *> to_stop;
   {
     std::lock_guard<std::mutex> lock(active_mutex_);
@@ -760,11 +771,6 @@ void PeerClient::shutdown() {
   }
   for (auto * cli : to_stop) {
     cli->stop();
-  }
-  // Also stop the lazily-created health-check client.
-  std::lock_guard<std::mutex> lock(client_mutex_);
-  if (client_) {
-    client_->stop();
   }
 }
 
