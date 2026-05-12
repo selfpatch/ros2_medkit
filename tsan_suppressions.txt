@@ -41,14 +41,6 @@ called_from_lib:libcpp-httplib.so
 # test teardown when executor threads race with node destruction.
 mutex:__gthread_mutex_unlock
 
-# cpp-httplib: unlock-of-unlocked-mutex inside ClientImpl::stop() when
-# called concurrently with an in-flight Get/Post on a sibling thread.
-# Client::stop() is the upstream-documented way to interrupt a blocking
-# I/O call from another thread, so the API surface is supported; the
-# internal mutex sequencing tickles TSan even though the supported usage
-# is correct. TSan attributes the report to the caller of stop(), which
-# in our code is always PeerClient::shutdown.
-mutex:ros2_medkit_gateway::PeerClient::shutdown
 
 # rclcpp: lock-order-inversion in Context::add_on_shutdown_callback
 # during test TearDownTestSuite when rclcpp::shutdown() races with

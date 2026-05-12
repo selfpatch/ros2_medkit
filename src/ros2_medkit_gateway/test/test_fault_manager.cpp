@@ -24,8 +24,8 @@
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
 #include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
-#include "ros2_medkit_gateway/fault_manager.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_fault_service_transport.hpp"
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"

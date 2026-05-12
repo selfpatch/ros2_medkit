@@ -14,5 +14,7 @@
 
 #pragma once
 
+#pragma message("deprecated: include ros2_medkit_gateway/core/managers/data_access_manager.hpp instead")
+
 // Backwards-compatibility shim - header relocated to core/managers/.
 #include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"

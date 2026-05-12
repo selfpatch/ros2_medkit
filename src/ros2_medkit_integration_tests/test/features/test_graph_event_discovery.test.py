@@ -81,6 +81,13 @@ LATE_NODE_KEY = 'pressure_sensor'
 # graph-event poll fired the refresh.
 SPAWN_DETECTION_TIMEOUT = 5.0
 
+# Graph-event-driven detection should land in under a second; allow
+# generous CI jitter headroom but still well below the backstop. A
+# detection above this bound proves the backstop, not the graph event,
+# triggered the refresh - which is the regression this test exists to
+# catch.
+GRAPH_EVENT_MAX_LATENCY_SEC = 2.0
+
 # Initial discovery shares the budget with full gateway startup.
 INITIAL_DETECTION_TIMEOUT = 30.0
 
@@ -231,12 +238,11 @@ class TestGraphEventDiscovery(GatewayTestCase):
                 interval=0.1,
             )
             elapsed = time.monotonic() - spawn_time
-            backstop_sec = BACKSTOP_INTERVAL_MS / 1000.0
             self.assertLess(
-                elapsed, backstop_sec,
-                f'Spawn detection took {elapsed:.3f}s, which is at or above '
-                f'the {backstop_sec:.1f}s backstop - graph-event path is '
-                f'NOT driving the refresh.',
+                elapsed, GRAPH_EVENT_MAX_LATENCY_SEC,
+                f'Spawn detection took {elapsed:.3f}s - expected sub-second '
+                f'via graph-event poll, not backstop-driven '
+                f'({BACKSTOP_INTERVAL_MS}ms backstop configured)',
             )
             app_ids = [app.get('id', '') for app in data.get('items', [])]
             self.assertTrue(

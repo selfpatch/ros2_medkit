@@ -214,11 +214,28 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
 
   auto result = trigger_mgr_.create(create_req);
   if (!result) {
-    if (result.error().code == TriggerError::CapacityExceeded) {
-      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, result.error().message);
-    } else {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, result.error().message,
-                                 {{"parameter", "trigger_condition"}});
+    switch (result.error().code) {
+      case TriggerError::CapacityExceeded:
+      case TriggerError::PersistenceError:
+        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, result.error().message);
+        break;
+      case TriggerError::SubscribeFailed:
+        HandlerContext::send_error(res, 503, ERR_X_MEDKIT_SUBSCRIBE_FAILED, result.error().message);
+        break;
+      case TriggerError::NotFound:
+        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, result.error().message);
+        break;
+      case TriggerError::ValidationError:
+        HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, result.error().message,
+                                   {{"parameter", "trigger_condition"}});
+        break;
+      default:
+        // Defensive sentinel: a future TriggerError value that lands here was
+        // missed when the enum was extended. Return 500 with a stable error
+        // code so the omission is observable in tests instead of silently
+        // mapping to 400.
+        HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, result.error().message);
+        break;
     }
     return;
   }

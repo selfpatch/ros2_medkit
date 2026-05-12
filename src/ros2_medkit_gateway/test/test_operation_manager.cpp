@@ -17,8 +17,8 @@
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
 
+#include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
-#include "ros2_medkit_gateway/operation_manager.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_action_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_service_transport.hpp"
 

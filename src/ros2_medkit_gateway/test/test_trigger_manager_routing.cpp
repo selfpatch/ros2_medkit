@@ -84,14 +84,27 @@ class MockTopicSubscriptionTransport : public TopicSubscriptionTransport {
   std::unique_ptr<TopicSubscriptionHandle> subscribe(const std::string & topic_path, const std::string & msg_type,
                                                      SampleCallback callback) override {
     std::lock_guard<std::mutex> lock(mutex_);
+    subscribe_log_.emplace_back(std::string{}, topic_path);
+    if (fail_next_subscribe_) {
+      fail_next_subscribe_ = false;
+      // Mirror the real adapter's contract: a null handle signals failure.
+      return nullptr;
+    }
     auto key = "mock_" + std::to_string(next_id_++);
     Subscription entry;
     entry.topic_path = topic_path;
     entry.msg_type = msg_type;
     entry.callback = std::move(callback);
     subs_[key] = std::move(entry);
-    subscribe_log_.emplace_back(key, topic_path);
+    subscribe_log_.back().first = key;
     return std::make_unique<Handle>(this, key);
+  }
+
+  /// Test helper: force the next subscribe() call to return nullptr.
+  /// Resets after one use, mirroring rclcpp's "this particular create failed".
+  void fail_next_subscribe() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    fail_next_subscribe_ = true;
   }
 
   /// Test helper: emit a sample as if rclcpp had just delivered one.
@@ -164,6 +177,7 @@ class MockTopicSubscriptionTransport : public TopicSubscriptionTransport {
   std::unordered_map<std::string, Subscription> subs_;
   std::vector<std::pair<std::string, std::string>> subscribe_log_;  // (key, topic)
   uint64_t next_id_ = 1;
+  bool fail_next_subscribe_ = false;
 };
 
 // ----------------------------------------------------------------------------
@@ -297,6 +311,89 @@ TEST_F(TriggerManagerRoutingTest, ShutdownClearsAllSubscriptions) {
 
   manager_->shutdown();
   EXPECT_EQ(transport_->alive_count(), 0u) << "Manager shutdown must drop every transport handle";
+}
+
+TEST_F(TriggerManagerRoutingTest, CreateReturnsErrorWhenSubscribeReturnsNullHandle) {
+  // Force the next subscribe() call to fail with a null handle, mirroring
+  // what rclcpp does when GenericSubscription cannot be created. The manager
+  // must surface this as a TriggerError::SubscribeFailed - never throw.
+  transport_->fail_next_subscribe();
+
+  auto req = make_data_request("sensor_a", "/sensor_a/temperature", "/temperature");
+  auto result = manager_->create(req);
+
+  ASSERT_FALSE(result.has_value()) << "create() must not throw and must return an error variant";
+  EXPECT_EQ(result.error().code, TriggerError::SubscribeFailed);
+  EXPECT_NE(result.error().message.find("Failed to subscribe"), std::string::npos);
+
+  // Rollback contract: the trigger must not be visible to subsequent
+  // queries, and no transport handle should be left alive.
+  EXPECT_TRUE(manager_->list(req.entity_id).empty());
+  EXPECT_EQ(transport_->alive_count(), 0u);
+}
+
+TEST_F(TriggerManagerRoutingTest, RestoreQueuesPersistentTriggerOnSubscribeFailure) {
+  // Pre-populate the SQLite store with a persistent data trigger so that the
+  // fresh manager's load_persistent_triggers() call has something to restore.
+  TriggerInfo persisted;
+  persisted.id = "trig_restore_fail_1";
+  persisted.entity_id = "sensor_a";
+  persisted.entity_type = "apps";
+  persisted.resource_uri = "/api/v1/apps/sensor_a/data/temperature";
+  persisted.collection = "data";
+  persisted.resource_path = "/temperature";
+  persisted.resolved_topic_name = "/sensor_a/temperature";
+  persisted.path = "";
+  persisted.condition_type = "OnChange";
+  persisted.condition_params = nlohmann::json::object();
+  persisted.protocol = "sse";
+  persisted.multishot = true;
+  persisted.persistent = true;
+  persisted.status = TriggerStatus::ACTIVE;
+  persisted.created_at = std::chrono::system_clock::now();
+  ASSERT_TRUE(store_.save(persisted).has_value());
+
+  // Force the next subscribe() call (made by load_persistent_triggers() for
+  // the restored data trigger) to return a null handle, simulating the
+  // "topic disappeared between shutdown and restart" race that the production
+  // code path guards against by queuing the trigger onto
+  // unresolved_data_triggers_ for retry.
+  transport_->fail_next_subscribe();
+
+  // Build a fresh manager configured for restore. The default fixture manager
+  // uses on_restart_behavior=reset, which makes load_persistent_triggers() a
+  // no-op - we need restore semantics to exercise the failure path.
+  TriggerConfig restore_config;
+  restore_config.max_triggers = 50;
+  restore_config.on_restart_behavior = "restore";
+  auto restored_mgr = std::make_unique<TriggerManager>(notifier_, registry_, store_, restore_config, transport_);
+  restored_mgr->load_persistent_triggers();
+
+  // The trigger is visible in the manager despite the subscribe failure -
+  // load_persistent_triggers() must not silently drop persistent triggers.
+  auto triggers = restored_mgr->list("sensor_a");
+  ASSERT_EQ(triggers.size(), 1u);
+  EXPECT_EQ(triggers[0].id, "trig_restore_fail_1");
+
+  // The first failed subscribe is recorded. No alive handle yet.
+  const auto subscribes_after_fail = transport_->total_subscribes();
+  EXPECT_GE(subscribes_after_fail, 1u);
+  EXPECT_EQ(transport_->alive_count(), 0u);
+
+  // Now exercise the retry path. retry_unresolved_triggers() requires both a
+  // resolve_topic_fn_ and a non-empty resolved topic; provide a resolver that
+  // returns the persisted topic name so the manager can re-subscribe.
+  restored_mgr->set_resolve_topic_fn([](const std::string & entity_id, const std::string & resource_path) {
+    return "/" + entity_id + resource_path;
+  });
+  restored_mgr->retry_unresolved_triggers();
+
+  // The retry must have called subscribe() again. This time it succeeds and
+  // an alive handle backs the restored trigger.
+  EXPECT_GT(transport_->total_subscribes(), subscribes_after_fail);
+  EXPECT_EQ(transport_->alive_count(), 1u);
+
+  restored_mgr->shutdown();
 }
 
 TEST_F(TriggerManagerRoutingTest, NonDataTriggerDoesNotSubscribe) {

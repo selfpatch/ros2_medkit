@@ -167,6 +167,28 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Topic-sample default timeout used by the data-access path.
   declare_parameter("topic_sample_timeout_sec", 1.0);
 
+  // Parameter-service tuning consumed by Ros2ParameterTransport. Declared
+  // here alongside the rest of the gateway parameters; the transport reads
+  // the resolved values via get_parameter() at construction time.
+  {
+    rcl_interfaces::msg::ParameterDescriptor desc;
+    desc.description = "Timeout for ROS 2 parameter service calls (configurations endpoint)";
+    rcl_interfaces::msg::FloatingPointRange range;
+    range.from_value = 0.1;
+    range.to_value = 10.0;
+    desc.floating_point_range.push_back(range);
+    declare_parameter("parameter_service_timeout_sec", 2.0, desc);
+  }
+  {
+    rcl_interfaces::msg::ParameterDescriptor desc;
+    desc.description = "Negative cache TTL for unavailable parameter services (0 = disabled)";
+    rcl_interfaces::msg::FloatingPointRange range;
+    range.from_value = 0.0;
+    range.to_value = 3600.0;
+    desc.floating_point_range.push_back(range);
+    declare_parameter("parameter_service_negative_cache_sec", 60.0, desc);
+  }
+
   // TLS/HTTPS parameters
   declare_parameter("server.tls.enabled", false);
   declare_parameter("server.tls.cert_file", "");
@@ -580,27 +602,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   operation_mgr_ = std::make_unique<OperationManager>(service_transport_, action_transport_, discovery_mgr_.get(),
                                                       service_call_timeout_sec);
 
-  // Declare parameter-service tuning parameters here (they used to be
-  // declared inside ConfigurationManager). The manager body is now neutral
-  // and the transport adapter receives the resolved values.
-  rcl_interfaces::msg::ParameterDescriptor param_timeout_desc;
-  param_timeout_desc.description = "Timeout for ROS 2 parameter service calls (configurations endpoint)";
-  rcl_interfaces::msg::FloatingPointRange param_timeout_range;
-  param_timeout_range.from_value = 0.1;
-  param_timeout_range.to_value = 10.0;
-  param_timeout_desc.floating_point_range.push_back(param_timeout_range);
-  const double parameter_service_timeout_sec =
-      declare_parameter("parameter_service_timeout_sec", 2.0, param_timeout_desc);
-
-  rcl_interfaces::msg::ParameterDescriptor param_cache_desc;
-  param_cache_desc.description = "Negative cache TTL for unavailable parameter services (0 = disabled)";
-  rcl_interfaces::msg::FloatingPointRange param_cache_range;
-  param_cache_range.from_value = 0.0;
-  param_cache_range.to_value = 3600.0;
-  param_cache_desc.floating_point_range.push_back(param_cache_range);
-  const double parameter_service_negative_cache_sec =
-      declare_parameter("parameter_service_negative_cache_sec", 60.0, param_cache_desc);
-
+  // Parameter-service tuning parameters were declared at construction-time
+  // alongside the rest of the gateway parameters; resolve them here.
+  const double parameter_service_timeout_sec = get_parameter("parameter_service_timeout_sec").as_double();
+  const double parameter_service_negative_cache_sec = get_parameter("parameter_service_negative_cache_sec").as_double();
   parameter_transport_ = std::make_shared<ros2::Ros2ParameterTransport>(this, parameter_service_timeout_sec,
                                                                         parameter_service_negative_cache_sec);
   config_mgr_ = std::make_unique<ConfigurationManager>(parameter_transport_);
@@ -717,7 +722,17 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   }
   auto log_buffer_size = static_cast<size_t>(clamped);
   log_source_ = std::make_shared<ros2::Ros2LogSource>(this);
-  log_mgr_ = std::make_unique<LogManager>(log_source_, plugin_mgr_.get(), log_buffer_size);
+  // Inject a sink that forwards LogManager's neutral diagnostics back to the
+  // gateway's rclcpp logger so plugin-provider exceptions remain visible to
+  // /rosout, ros2 bag record --all, and any other standard observability path.
+  auto log_sink = [this](int level, std::string_view msg) {
+    if (level >= LogManager::kLogLevelError) {
+      RCLCPP_ERROR(get_logger(), "%.*s", static_cast<int>(msg.size()), msg.data());
+    } else {
+      RCLCPP_WARN(get_logger(), "%.*s", static_cast<int>(msg.size()), msg.data());
+    }
+  };
+  log_mgr_ = std::make_unique<LogManager>(log_source_, plugin_mgr_.get(), log_buffer_size, std::move(log_sink));
 
   // Initialize update manager
   auto updates_enabled = get_parameter("updates.enabled").as_bool();

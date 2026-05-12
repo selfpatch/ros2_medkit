@@ -18,7 +18,6 @@
 #include <chrono>
 #include <ctime>
 #include <iomanip>
-#include <iostream>
 #include <sstream>
 #include <utility>
 
@@ -128,8 +127,11 @@ json LogManager::entry_to_json(const LogEntry & e) {
 // ---------------------------------------------------------------------------
 
 LogManager::LogManager(std::shared_ptr<LogSource> source, LogProviderRegistry * provider_registry,
-                       size_t max_buffer_size)
-  : source_(std::move(source)), provider_registry_(provider_registry), max_buffer_size_(max_buffer_size) {
+                       size_t max_buffer_size, LogSink log_sink)
+  : source_(std::move(source))
+  , provider_registry_(provider_registry)
+  , max_buffer_size_(max_buffer_size)
+  , log_sink_(std::move(log_sink)) {
   auto * provider = effective_provider();
   if (provider && provider->manages_ingestion()) {
     // Primary LogProvider owns the entire pipeline - never start the source,
@@ -176,9 +178,9 @@ void LogManager::on_log_entry(const LogEntry & source_entry) {
           suppress_buffer = true;
         }
       } catch (const std::exception & e) {
-        std::cerr << "LogProvider::on_log_entry threw: " << e.what() << '\n';
+        emit(kLogLevelWarn, std::string("LogProvider::on_log_entry threw: ") + e.what());
       } catch (...) {
-        std::cerr << "LogProvider::on_log_entry threw unknown exception\n";
+        emit(kLogLevelWarn, "LogProvider::on_log_entry threw unknown exception");
       }
     }
   }
@@ -338,10 +340,10 @@ tl::expected<json, std::string> LogManager::get_logs(const std::vector<std::stri
       }
       return items;
     } catch (const std::exception & e) {
-      std::cerr << "LogProvider::get_logs threw: " << e.what() << '\n';
+      emit(kLogLevelError, std::string("LogProvider::get_logs threw: ") + e.what());
       return tl::make_unexpected(std::string("LogProvider plugin error: ") + e.what());
     } catch (...) {
-      std::cerr << "LogProvider::get_logs threw unknown exception\n";
+      emit(kLogLevelError, "LogProvider::get_logs threw unknown exception");
       return tl::make_unexpected(std::string("LogProvider plugin error: unknown exception"));
     }
   }
@@ -431,10 +433,10 @@ tl::expected<LogConfig, std::string> LogManager::get_config(const std::string & 
     try {
       return provider->get_config(entity_id);
     } catch (const std::exception & e) {
-      std::cerr << "LogProvider::get_config threw: " << e.what() << '\n';
+      emit(kLogLevelError, std::string("LogProvider::get_config threw: ") + e.what());
       return tl::make_unexpected(std::string("LogProvider plugin error: ") + e.what());
     } catch (...) {
-      std::cerr << "LogProvider::get_config threw unknown exception\n";
+      emit(kLogLevelError, "LogProvider::get_config threw unknown exception");
       return tl::make_unexpected(std::string("LogProvider plugin error: unknown exception"));
     }
   }
@@ -461,10 +463,10 @@ std::string LogManager::update_config(const std::string & entity_id, const std::
     try {
       return provider->update_config(entity_id, severity_filter, max_entries);
     } catch (const std::exception & e) {
-      std::cerr << "LogProvider::update_config threw: " << e.what() << '\n';
+      emit(kLogLevelError, std::string("LogProvider::update_config threw: ") + e.what());
       return std::string("LogProvider plugin error: ") + e.what();
     } catch (...) {
-      std::cerr << "LogProvider::update_config threw unknown exception\n";
+      emit(kLogLevelError, "LogProvider::update_config threw unknown exception");
       return "LogProvider plugin error: unknown exception";
     }
   }

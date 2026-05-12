@@ -19,7 +19,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <thread>
 
-#include "ros2_medkit_gateway/configuration_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/configuration_manager.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_parameter_transport.hpp"
 
 using namespace ros2_medkit_gateway;

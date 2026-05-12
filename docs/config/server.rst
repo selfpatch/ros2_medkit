@@ -255,10 +255,14 @@ Performance Tuning
      - Description
    * - ``refresh_interval_ms``
      - int
-     - ``10000``
-     - Cache refresh interval. How often to discover ROS 2 nodes. Range: 100-60000 (0.1s-60s).
+     - ``30000``
+     - Safety-backstop refresh interval (ms). Primary discovery is graph-event
+       driven (polled every 100 ms); this timer forces a full refresh only if
+       a graph event is missed. Range: 100-60000 (0.1s-60s).
 
-Lower values provide faster updates but increase CPU usage.
+Lower values shorten the worst-case recovery window if a graph event is missed
+but increase idle CPU. The default rarely fires on a stable graph because the
+graph-event poll handles node up/down events directly.
 
 Bulk Data Storage
 -----------------

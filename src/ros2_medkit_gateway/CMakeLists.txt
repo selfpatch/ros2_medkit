@@ -478,6 +478,27 @@ if(BUILD_TESTING)
   )
   set_tests_properties(trigger_manager_routing PROPERTIES LABELS "unit")
 
+  # ─── ServiceActionResolver abstract contract test (gateway_core only) ──────
+  # Standalone pin of the ServiceActionResolver interface contract: nullopt
+  # on miss, populated ServiceInfo/ActionInfo on hit, and orthogonal service
+  # vs. action namespaces. Until now the interface was only exercised
+  # transitively through OperationManager routing - this gives future
+  # implementors (e.g. an aggregation-aware resolver) an explicit, transport-
+  # neutral specification. Links against gateway_core alone, with no rclcpp.
+  add_executable(test_service_action_resolver_contract
+    test/test_service_action_resolver_contract.cpp)
+  target_link_libraries(test_service_action_resolver_contract
+    PRIVATE
+      gateway_core
+      GTest::gtest
+      GTest::gtest_main
+  )
+  add_test(
+    NAME service_action_resolver_contract
+    COMMAND $<TARGET_FILE:test_service_action_resolver_contract>
+  )
+  set_tests_properties(service_action_resolver_contract PROPERTIES LABELS "unit")
+
   # Add GTest
   find_package(ament_cmake_gtest REQUIRED)
   find_package(rclcpp_action REQUIRED)
@@ -561,6 +582,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_ros2_topic_data_provider gateway_ros2)
   medkit_target_dependencies(test_ros2_topic_data_provider rclcpp std_msgs)
   medkit_set_test_domain(test_ros2_topic_data_provider)
+
+  # Add Ros2LogSource tests (rclcpp required - publishes to /rosout)
+  ament_add_gtest(test_ros2_log_source test/test_ros2_log_source.cpp)
+  target_link_libraries(test_ros2_log_source gateway_ros2)
+  medkit_target_dependencies(test_ros2_log_source rclcpp rcl_interfaces)
+  medkit_set_test_domain(test_ros2_log_source)
 
   # Add discovery models tests
   ament_add_gtest(test_discovery_models test/test_discovery_models.cpp)
@@ -893,6 +920,7 @@ if(BUILD_TESTING)
       test_ros2_subscription_slot
       test_topic_data_provider_interface
       test_ros2_topic_data_provider
+      test_ros2_log_source
       test_discovery_models
       test_host_info_provider
       test_discovery_handlers

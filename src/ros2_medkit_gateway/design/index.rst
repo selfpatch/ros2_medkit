@@ -429,6 +429,53 @@ The following diagram shows the relationships between the main components of the
 
    @enduml
 
+Testing with Mock Transports
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Transport ports under ``core/transports/`` are abstract interfaces. A
+manager unit test injects a mock implementation and links only against
+``gateway_core`` + GTest, with no ``rclcpp`` on the link line. This is the
+pattern used by the ``test_*_manager_routing.cpp`` tests:
+
+.. code-block:: cpp
+
+   class MockTopicTransport : public TopicTransport {
+    public:
+     nlohmann::json publish(const std::string &, const std::string &,
+                            const nlohmann::json &,
+                            std::chrono::duration<double>) override {
+       return nlohmann::json::object();
+     }
+     TopicSample sample(const std::string & topic,
+                        std::chrono::duration<double>) override {
+       TopicSample s;
+       s.success = true;
+       s.status = "data";
+       s.topic = topic;
+       s.data = next_sample_;
+       return s;
+     }
+     std::pair<uint64_t, uint64_t>
+     count_publishers_subscribers(const std::string &) const override {
+       return {1, 0};
+     }
+     ros2_medkit_serialization::TypeIntrospection *
+     get_type_introspection() const override { return nullptr; }
+
+     nlohmann::json next_sample_ = nlohmann::json::object();
+   };
+
+   TEST(DataAccessManagerRouting, ReadRoutesThroughTransport) {
+     MockTopicTransport transport;
+     transport.next_sample_["value"] = 42;
+     DataAccessManager mgr(&transport, /* other neutral deps */);
+
+     auto result = mgr.get_topic_sample_with_fallback("/sensor", "");
+     ASSERT_EQ(result["data"]["value"], 42);
+   }
+
+The mock is purely C++; no ROS context, executor, or domain ID is needed.
+
 Main Components
 ---------------
 

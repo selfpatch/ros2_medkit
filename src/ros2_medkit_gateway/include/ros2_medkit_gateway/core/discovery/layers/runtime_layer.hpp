@@ -16,9 +16,12 @@
 
 #include "ros2_medkit_gateway/core/discovery/discovery_layer.hpp"
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
-#include "ros2_medkit_gateway/ros2/providers/ros2_runtime_introspection.hpp"
 
 #include <unordered_map>
+
+namespace ros2_medkit_gateway::ros2 {
+class Ros2RuntimeIntrospection;
+}  // namespace ros2_medkit_gateway::ros2
 
 namespace ros2_medkit_gateway {
 namespace discovery {

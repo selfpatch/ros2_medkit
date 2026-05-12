@@ -77,6 +77,16 @@ class TopicTransport {
   /// schema and default-value templates. The TypeIntrospection backend lives
   /// in `ros2_medkit_serialization` alongside the rest of the rosidl glue;
   /// transports own an instance so the manager body remains middleware-neutral.
+  ///
+  /// **Layering note**: this is the one place where `gateway_core`'s public
+  /// surface references a type defined in `ros2_medkit_serialization`. The
+  /// dependency is intentional: `TypeIntrospection` is already
+  /// middleware-agnostic (it operates on rosidl typesupport, not on rclcpp),
+  /// and inventing a `core::serialization::TypeIntrospection` wrapper would
+  /// duplicate the existing abstraction without changing the dependency graph.
+  /// A mock transport that does not need schema introspection simply returns
+  /// `nullptr` here.
+  ///
   /// May return nullptr in transports that do not support introspection (test
   /// mocks, alternative middlewares).
   virtual ros2_medkit_serialization::TypeIntrospection * get_type_introspection() const = 0;

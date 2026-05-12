@@ -24,6 +24,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tl/expected.hpp>
 #include <unordered_map>
 #include <vector>
@@ -68,6 +69,17 @@ class LogManager {
   /// Default maximum number of entries retained per node in the ring buffer
   static constexpr size_t kDefaultBufferSize = 200;
 
+  /// Severity used by the LogManager's log_sink callback. Numeric values
+  /// match rcl/rcutils log levels (30=WARN, 40=ERROR) so an adapter can
+  /// forward to RCLCPP_* macros without translation.
+  static constexpr int kLogLevelWarn = 30;
+  static constexpr int kLogLevelError = 40;
+
+  /// Sink for internal diagnostics (plugin provider exceptions, etc.).
+  /// Keeps LogManager middleware-neutral while preserving observability
+  /// when the gateway adapter forwards to /rosout. May be null in tests.
+  using LogSink = std::function<void(int level, std::string_view message)>;
+
   /**
    * @brief Construct LogManager
    *
@@ -81,9 +93,12 @@ class LogManager {
    *                           (typically the PluginManager). May be nullptr -
    *                           equivalent to "no plugins registered".
    * @param max_buffer_size    Ring buffer size per node (override for unit testing)
+   * @param log_sink           Callback for internal diagnostics. The gateway
+   *                           passes an adapter that forwards to RCLCPP_WARN/ERROR;
+   *                           unit tests may capture calls or pass nullptr.
    */
   explicit LogManager(std::shared_ptr<LogSource> source, LogProviderRegistry * provider_registry = nullptr,
-                      size_t max_buffer_size = kDefaultBufferSize);
+                      size_t max_buffer_size = kDefaultBufferSize, LogSink log_sink = nullptr);
 
   ~LogManager();
 
@@ -184,6 +199,14 @@ class LogManager {
   /// Get the effective LogProvider: plugin if registered, else nullptr (use local buffer)
   LogProvider * effective_provider() const;
 
+  /// Forward an internal diagnostic to the injected log_sink (if any).
+  /// No-op when the sink is null, keeping unit tests free of /rosout coupling.
+  void emit(int level, std::string_view msg) const {
+    if (log_sink_) {
+      log_sink_(level, msg);
+    }
+  }
+
   std::shared_ptr<LogSource> source_;
   LogProviderRegistry * provider_registry_;
   ResourceChangeNotifier * notifier_ = nullptr;
@@ -191,6 +214,7 @@ class LogManager {
   /// After that, only read from source callbacks (no mutex needed).
   NodeToEntityFn node_to_entity_resolver_;
   size_t max_buffer_size_;
+  LogSink log_sink_;
 
   // Ring buffers keyed by normalized node name (no leading '/')
   // e.g. "powertrain/engine/temp_sensor" -> deque<LogEntry>

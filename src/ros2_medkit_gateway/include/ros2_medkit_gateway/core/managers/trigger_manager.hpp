@@ -41,7 +41,7 @@ namespace ros2_medkit_gateway {
 class LogManager;
 
 /// Error categories for trigger create/update operations.
-enum class TriggerError { ValidationError, CapacityExceeded, PersistenceError, NotFound };
+enum class TriggerError { ValidationError, CapacityExceeded, PersistenceError, NotFound, SubscribeFailed };
 
 /// Typed error returned by TriggerManager::create() and update().
 struct TriggerCreateError {

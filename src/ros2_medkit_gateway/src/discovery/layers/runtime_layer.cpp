@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/core/discovery/layers/runtime_layer.hpp"
 
+#include "ros2_medkit_gateway/ros2/providers/ros2_runtime_introspection.hpp"
+
 #include <algorithm>
 #include <utility>
 

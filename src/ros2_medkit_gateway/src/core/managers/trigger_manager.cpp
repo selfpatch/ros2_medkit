@@ -348,13 +348,19 @@ tl::expected<TriggerInfo, TriggerCreateError> TriggerManager::create(const Trigg
         // Subscribe failed at trigger creation. Roll back the trigger we
         // just added so the caller does not get a 201 for a trigger that
         // will never deliver. The underlying TriggerTopicSubscriber has
-        // already logged the rclcpp failure.
+        // already logged the rclcpp failure. Persisted records are also
+        // rolled back so a restart does not resurrect a doomed trigger.
         {
           std::lock_guard<std::mutex> lock(triggers_mutex_);
+          remove_from_dispatch_index(info_copy.id, info_copy.collection, info_copy.entity_id);
           triggers_.erase(info_copy.id);
         }
-        throw std::runtime_error("Failed to subscribe to topic '" + req.resolved_topic_name +
-                                 "' for data trigger; see gateway log for the rclcpp root cause");
+        if (req.persistent) {
+          (void)store_.remove(info_copy.id);
+        }
+        return tl::make_unexpected(TriggerCreateError{
+            TriggerError::SubscribeFailed, "Failed to subscribe to topic '" + req.resolved_topic_name +
+                                               "' for data trigger; see gateway log for the rclcpp root cause"});
       }
     } else if (!req.resource_path.empty()) {
       std::lock_guard<std::mutex> lock(triggers_mutex_);

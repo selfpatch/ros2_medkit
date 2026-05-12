@@ -14,5 +14,7 @@
 
 #pragma once
 
+#pragma message("deprecated: include ros2_medkit_gateway/ros2/trigger_topic_subscriber.hpp instead")
+
 // Backwards-compatibility shim - header relocated to ros2/.
 #include "ros2_medkit_gateway/ros2/trigger_topic_subscriber.hpp"

@@ -197,11 +197,16 @@ Optimize with:
 
 **High CPU usage**
 
-Reduce cache refresh rate:
+Discovery is graph-event driven (polled every 100 ms), so a stable graph
+already incurs near-zero refresh overhead. On a graph with frequent node
+churn that does not need to be reflected immediately, raise the safety-backstop
+interval above the default ``30000`` to reduce the worst-case forced refresh
+rate:
 
 .. code-block:: yaml
 
-   refresh_interval_ms: 30000  # 30 seconds instead of default 10s
+   refresh_interval_ms: 60000  # Raise from default 30s if recovery from a
+                                # missed graph event can tolerate longer delay.
 
 FAQ
 ---

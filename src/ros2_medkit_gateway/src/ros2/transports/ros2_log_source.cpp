@@ -46,15 +46,6 @@ void Ros2LogSource::start(EntryCallback callback) {
           return;
         }
 
-        EntryCallback cb;
-        {
-          std::lock_guard<std::mutex> cb_lock(mutex_);
-          cb = callback_;
-        }
-        if (!cb) {
-          return;
-        }
-
         LogEntry entry;
         // The manager assigns the monotonic id; the source leaves it unset.
         entry.id = 0;
@@ -67,7 +58,16 @@ void Ros2LogSource::start(EntryCallback callback) {
         entry.file = msg->file;
         entry.line = msg->line;
 
-        cb(entry);
+        // Hold the lock through dispatch so stop() can't null callback_ and
+        // return while we still have a copy in flight. This honours the
+        // LogSource contract: "after stop() returns, callback is guaranteed
+        // not to fire again". Callbacks are fast (log buffer push); the lock
+        // span is bounded.
+        std::lock_guard<std::mutex> cb_lock(mutex_);
+        if (!callback_ || shutdown_requested_.load(std::memory_order_acquire)) {
+          return;
+        }
+        callback_(entry);
       });
 }
 

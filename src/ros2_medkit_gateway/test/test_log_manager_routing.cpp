@@ -24,7 +24,9 @@
 #include <atomic>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -162,6 +164,35 @@ class MockObserverProvider : public LogProvider {
   int calls_ = 0;
   std::string last_name_;
   std::string last_msg_;
+};
+
+/// LogProvider that throws std::runtime_error from every provider method.
+/// Used to exercise the LogManager's exception handlers and verify that
+/// diagnostics flow through the injected log_sink (not std::cerr).
+class ThrowingLogProvider : public LogProvider {
+ public:
+  bool manages_ingestion() const override {
+    return false;
+  }
+
+  std::vector<LogEntry> get_logs(const std::vector<std::string> & /*node_fqns*/, bool /*prefix_match*/,
+                                 const std::string & /*min_severity*/, const std::string & /*context_filter*/,
+                                 const std::string & /*entity_id*/) override {
+    throw std::runtime_error("boom-get_logs");
+  }
+
+  LogConfig get_config(const std::string & /*entity_id*/) const override {
+    throw std::runtime_error("boom-get_config");
+  }
+
+  std::string update_config(const std::string & /*entity_id*/, const std::optional<std::string> & /*severity_filter*/,
+                            const std::optional<size_t> & /*max_entries*/) override {
+    throw std::runtime_error("boom-update_config");
+  }
+
+  bool on_log_entry(const LogEntry & /*entry*/) override {
+    throw std::runtime_error("boom-on_log_entry");
+  }
 };
 
 /// Trivial LogProviderRegistry adapter: holds a primary provider + a flat
@@ -307,6 +338,119 @@ TEST(LogManagerRouting, ShutdownStopsSource) {
   // Manager destructor must call source->stop() so the adapter can release
   // its rclcpp subscription deterministically.
   EXPECT_GE(source->stop_calls(), 1);
+}
+
+// ============================================================
+// log_sink callback tests (provider exceptions -> observability sink)
+// ============================================================
+
+TEST(LogManagerRouting, ProviderGetLogsExceptionRoutedToLogSink) {
+  ThrowingLogProvider throwing_provider;
+  MockProviderRegistry registry;
+  registry.set_primary(&throwing_provider);
+
+  std::vector<std::pair<int, std::string>> sink_calls;
+  auto sink = [&sink_calls](int level, std::string_view msg) {
+    sink_calls.emplace_back(level, std::string(msg));
+  };
+
+  auto source = std::make_shared<MockLogSource>();
+  LogManager manager(source, &registry, /*max_buffer_size=*/10, sink);
+
+  auto result = manager.get_logs({"/my_node"}, /*prefix_match=*/false, "", "", "");
+  EXPECT_FALSE(result.has_value());
+
+  ASSERT_FALSE(sink_calls.empty());
+  EXPECT_EQ(sink_calls[0].first, LogManager::kLogLevelError);
+  EXPECT_NE(sink_calls[0].second.find("LogProvider::get_logs threw"), std::string::npos);
+  EXPECT_NE(sink_calls[0].second.find("boom-get_logs"), std::string::npos);
+}
+
+TEST(LogManagerRouting, ProviderGetConfigExceptionRoutedToLogSink) {
+  ThrowingLogProvider throwing_provider;
+  MockProviderRegistry registry;
+  registry.set_primary(&throwing_provider);
+
+  std::vector<std::pair<int, std::string>> sink_calls;
+  auto sink = [&sink_calls](int level, std::string_view msg) {
+    sink_calls.emplace_back(level, std::string(msg));
+  };
+
+  auto source = std::make_shared<MockLogSource>();
+  LogManager manager(source, &registry, /*max_buffer_size=*/10, sink);
+
+  auto result = manager.get_config("entity1");
+  EXPECT_FALSE(result.has_value());
+
+  ASSERT_FALSE(sink_calls.empty());
+  EXPECT_EQ(sink_calls[0].first, LogManager::kLogLevelError);
+  EXPECT_NE(sink_calls[0].second.find("LogProvider::get_config threw"), std::string::npos);
+}
+
+TEST(LogManagerRouting, ProviderUpdateConfigExceptionRoutedToLogSink) {
+  ThrowingLogProvider throwing_provider;
+  MockProviderRegistry registry;
+  registry.set_primary(&throwing_provider);
+
+  std::vector<std::pair<int, std::string>> sink_calls;
+  auto sink = [&sink_calls](int level, std::string_view msg) {
+    sink_calls.emplace_back(level, std::string(msg));
+  };
+
+  auto source = std::make_shared<MockLogSource>();
+  LogManager manager(source, &registry, /*max_buffer_size=*/10, sink);
+
+  std::string err = manager.update_config("entity1", std::optional<std::string>("warning"), std::nullopt);
+  EXPECT_NE(err.find("LogProvider plugin error"), std::string::npos);
+
+  ASSERT_FALSE(sink_calls.empty());
+  EXPECT_EQ(sink_calls[0].first, LogManager::kLogLevelError);
+  EXPECT_NE(sink_calls[0].second.find("LogProvider::update_config threw"), std::string::npos);
+}
+
+TEST(LogManagerRouting, ProviderOnLogEntryExceptionRoutedToLogSinkAsWarn) {
+  ThrowingLogProvider throwing_provider;
+  MockProviderRegistry registry;
+  registry.add_observer(&throwing_provider);
+
+  std::vector<std::pair<int, std::string>> sink_calls;
+  auto sink = [&sink_calls](int level, std::string_view msg) {
+    sink_calls.emplace_back(level, std::string(msg));
+  };
+
+  auto source = std::make_shared<MockLogSource>();
+  LogManager manager(source, &registry, /*max_buffer_size=*/10, sink);
+
+  ASSERT_TRUE(source->emit(make_entry("my_node", /*level=*/20, "hi")));
+
+  ASSERT_FALSE(sink_calls.empty());
+  EXPECT_EQ(sink_calls[0].first, LogManager::kLogLevelWarn);
+  EXPECT_NE(sink_calls[0].second.find("LogProvider::on_log_entry threw"), std::string::npos);
+  EXPECT_NE(sink_calls[0].second.find("boom-on_log_entry"), std::string::npos);
+}
+
+TEST(LogManagerRouting, NullLogSinkIsSafe) {
+  ThrowingLogProvider throwing_provider;
+  MockProviderRegistry registry;
+  registry.set_primary(&throwing_provider);
+  registry.add_observer(&throwing_provider);
+
+  auto source = std::make_shared<MockLogSource>();
+  // No sink passed - falls back to the default nullptr, which must be a no-op
+  // rather than a crash. This preserves call sites that don't yet wire a sink.
+  LogManager manager(source, &registry, /*max_buffer_size=*/10);
+
+  // Trigger all exception paths; expect no crash and well-formed error results.
+  auto get_result = manager.get_logs({"/my_node"}, /*prefix_match=*/false, "", "", "");
+  EXPECT_FALSE(get_result.has_value());
+
+  auto cfg_result = manager.get_config("entity1");
+  EXPECT_FALSE(cfg_result.has_value());
+
+  std::string err = manager.update_config("entity1", std::optional<std::string>("warning"), std::nullopt);
+  EXPECT_NE(err.find("LogProvider plugin error"), std::string::npos);
+
+  ASSERT_TRUE(source->emit(make_entry("my_node", /*level=*/20, "hi")));
 }
 
 }  // namespace ros2_medkit_gateway

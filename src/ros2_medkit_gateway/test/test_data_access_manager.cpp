@@ -22,8 +22,8 @@
 #include <thread>
 
 #include "ros2_medkit_gateway/core/exceptions.hpp"
+#include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/data/ros2_topic_data_provider.hpp"
-#include "ros2_medkit_gateway/data_access_manager.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_topic_transport.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"

@@ -20,6 +20,7 @@
 
 #include "ros2_medkit_gateway/core/aggregation/entity_merger.hpp"
 #include "ros2_medkit_gateway/core/aggregation/network_utils.hpp"
+#include "ros2_medkit_gateway/core/discovery/layers/runtime_layer.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
@@ -91,6 +92,7 @@ using ros2_medkit_gateway::TopicSubscriptionTransport;
 using ros2_medkit_gateway::TopicTransport;
 using ros2_medkit_gateway::TriggerManager;
 using ros2_medkit_gateway::UpdateProvider;
+using ros2_medkit_gateway::discovery::RuntimeLayer;
 
 static_assert(sizeof(Area) > 0);
 static_assert(sizeof(Component) > 0);
@@ -133,6 +135,13 @@ static_assert(std::is_abstract_v<PluginContext>);
 static_assert(sizeof(BulkDataStore) > 0);
 static_assert(sizeof(LockManager) > 0);
 static_assert(sizeof(EntityMerger) > 0);
+
+// RuntimeLayer lives under core/discovery/layers/ and must stay
+// rclcpp-free. The ros2::Ros2RuntimeIntrospection collaborator is only
+// referenced via pointer in the header, so a forward declaration is
+// sufficient. If a future change pulls the full header back in, this
+// translation unit's link step will surface the rclcpp transitive leak.
+static_assert(sizeof(RuntimeLayer) > 0);
 
 }  // namespace
 

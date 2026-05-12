@@ -25,6 +25,13 @@ namespace ros2_medkit_gateway {
 /// neutral LogEntry, normalising logger name (no leading slash) and SOVD
 /// severity. Manager keeps the ring-buffer storage; the source merely
 /// produces entries.
+///
+/// **Naming note**: this port is named `LogSource` rather than `LogTransport`
+/// (which would match the rest of `core/transports/`) because it is a one-way
+/// event emitter - the manager subscribes via a callback rather than driving
+/// requests through a bidirectional channel. The asymmetry is intentional;
+/// renaming to `LogTransport` was considered and rejected to preserve the
+/// "passive source" semantics the rcl_interfaces/Log subscription captures.
 class LogSource {
  public:
   using EntryCallback = std::function<void(const LogEntry & entry)>;
