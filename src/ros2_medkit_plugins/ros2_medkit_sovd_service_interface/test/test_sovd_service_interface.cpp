@@ -23,12 +23,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include "ros2_medkit_gateway/discovery/models/app.hpp"
-#include "ros2_medkit_gateway/discovery/models/area.hpp"
-#include "ros2_medkit_gateway/discovery/models/component.hpp"
-#include "ros2_medkit_gateway/discovery/models/function.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/area.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_http_types.hpp"
+#include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 #include "sovd_service_interface.hpp"
 
 using namespace ros2_medkit_gateway;

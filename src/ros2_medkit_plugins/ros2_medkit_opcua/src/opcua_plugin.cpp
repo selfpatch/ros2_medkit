@@ -20,7 +20,7 @@
 #include <ros2_medkit_msgs/srv/clear_fault.hpp>
 #include <ros2_medkit_msgs/srv/report_fault.hpp>
 
-#include <ros2_medkit_gateway/http/error_codes.hpp>
+#include <ros2_medkit_gateway/core/http/error_codes.hpp>
 
 #include <algorithm>
 #include <cctype>

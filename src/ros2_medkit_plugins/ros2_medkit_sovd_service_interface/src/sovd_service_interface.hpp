@@ -20,8 +20,8 @@
 
 #include <rclcpp/rclcpp.hpp>
 
-#include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 #include "ros2_medkit_msgs/msg/entity_info.hpp"
 #include "ros2_medkit_msgs/srv/get_capabilities.hpp"
 #include "ros2_medkit_msgs/srv/get_entity_data.hpp"

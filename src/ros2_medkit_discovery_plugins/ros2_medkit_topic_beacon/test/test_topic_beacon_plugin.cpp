@@ -24,7 +24,7 @@
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 
-#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_http_types.hpp"
 #include "ros2_medkit_topic_beacon/topic_beacon_plugin.hpp"
 
 using ros2_medkit_beacon::BeaconHint;

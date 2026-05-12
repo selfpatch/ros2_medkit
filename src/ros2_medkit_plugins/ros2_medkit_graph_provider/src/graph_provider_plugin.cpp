@@ -24,8 +24,8 @@
 #include <set>
 #include <utility>
 
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 
 namespace ros2_medkit_gateway {
 

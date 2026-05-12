@@ -18,13 +18,13 @@
 #include "ros2_medkit_opcua/opcua_client.hpp"
 #include "ros2_medkit_opcua/opcua_poller.hpp"
 
-#include <ros2_medkit_gateway/discovery/introspection_provider.hpp>
-#include <ros2_medkit_gateway/plugins/gateway_plugin.hpp>
-#include <ros2_medkit_gateway/plugins/plugin_context.hpp>
-#include <ros2_medkit_gateway/plugins/plugin_http_types.hpp>
-#include <ros2_medkit_gateway/providers/data_provider.hpp>
-#include <ros2_medkit_gateway/providers/fault_provider.hpp>
-#include <ros2_medkit_gateway/providers/operation_provider.hpp>
+#include <ros2_medkit_gateway/core/plugins/gateway_plugin.hpp>
+#include <ros2_medkit_gateway/core/plugins/plugin_http_types.hpp>
+#include <ros2_medkit_gateway/core/providers/data_provider.hpp>
+#include <ros2_medkit_gateway/core/providers/fault_provider.hpp>
+#include <ros2_medkit_gateway/core/providers/introspection_provider.hpp>
+#include <ros2_medkit_gateway/core/providers/operation_provider.hpp>
+#include <ros2_medkit_gateway/plugins/ros_plugin_context.hpp>
 
 #include <atomic>
 #include <memory>

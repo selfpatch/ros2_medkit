@@ -75,8 +75,8 @@ Writing a Plugin
 
 .. code-block:: cpp
 
-   #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-   #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
+   #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
+   #include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
    #include "ros2_medkit_gateway/core/providers/update_provider.hpp"
 
    using namespace ros2_medkit_gateway;
@@ -179,8 +179,8 @@ A self-contained plugin implementing UpdateProvider (copy-paste starting point):
 .. code-block:: cpp
 
    // my_ota_plugin.cpp
-   #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-   #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
+   #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
+   #include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
    #include "ros2_medkit_gateway/core/providers/update_provider.hpp"
 
    #include <nlohmann/json.hpp>
@@ -512,8 +512,8 @@ subscribes to ``/ros2_medkit/discovery``, stores incoming
 
 .. code-block:: cpp
 
-   #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-   #include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
+   #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
+   #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
 
    using namespace ros2_medkit_gateway;
 
@@ -584,7 +584,7 @@ execute, and control executions:
 
 .. code-block:: cpp
 
-   #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
+   #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
    #include "ros2_medkit_gateway/core/providers/script_provider.hpp"
 
    using namespace ros2_medkit_gateway;
@@ -701,10 +701,10 @@ via ``DataProvider``. OperationProvider and FaultProvider follow the same patter
 
 .. code-block:: cpp
 
-   #include "ros2_medkit_gateway/plugins/gateway_plugin.hpp"
-   #include "ros2_medkit_gateway/plugins/plugin_types.hpp"
-   #include "ros2_medkit_gateway/discovery/introspection_provider.hpp"
-   #include "ros2_medkit_gateway/providers/data_provider.hpp"
+   #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
+   #include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
+   #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
+   #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 
    using namespace ros2_medkit_gateway;
 

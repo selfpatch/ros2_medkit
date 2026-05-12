@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/plugins/plugin_types.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
 #include "ros2_medkit_opcua/opcua_plugin.hpp"
 
 using namespace ros2_medkit_gateway;

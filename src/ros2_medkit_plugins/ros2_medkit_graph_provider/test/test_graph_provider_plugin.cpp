@@ -30,10 +30,10 @@
 #include <utility>
 #include <vector>
 
-#include "ros2_medkit_gateway/discovery/models/app.hpp"
-#include "ros2_medkit_gateway/discovery/models/function.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_http_types.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_http_types.hpp"
+#include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 #include "ros2_medkit_graph_provider/graph_provider_plugin.hpp"
 
 using namespace std::chrono_literals;

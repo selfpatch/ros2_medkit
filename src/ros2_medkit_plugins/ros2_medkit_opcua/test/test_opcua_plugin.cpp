@@ -28,8 +28,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "ros2_medkit_gateway/http/error_codes.hpp"
-#include "ros2_medkit_gateway/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 
 // -- Stub PluginRequest/PluginResponse (same pattern as graph_provider test) --
 
