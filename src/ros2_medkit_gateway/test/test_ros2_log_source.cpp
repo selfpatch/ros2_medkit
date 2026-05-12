@@ -103,4 +103,35 @@ TEST_F(Ros2LogSourceTest, NoCallbackFiresAfterStopReturns) {
       << "Ros2LogSource::stop() contract violated: callback fired after stop() returned";
 }
 
+// Regression guard: start() must clear the shutdown latch left behind by a
+// prior stop(). Without this reset, the subscription lambda short-circuits
+// forever after the first stop()/start() cycle, breaking the documented
+// idempotent start/stop contract.
+TEST_F(Ros2LogSourceTest, RestartResetsShutdownLatch) {
+  std::atomic<int> callback_count{0};
+  Ros2LogSource source(node_.get());
+
+  source.start([&callback_count](const LogEntry &) {
+    ++callback_count;
+  });
+  source.stop();
+
+  source.start([&callback_count](const LogEntry &) {
+    ++callback_count;
+  });
+
+  auto pub = node_->create_publisher<rcl_interfaces::msg::Log>("/rosout", 100);
+  rcl_interfaces::msg::Log msg;
+  msg.level = rcl_interfaces::msg::Log::INFO;
+  msg.name = "test";
+  msg.msg = "after restart";
+  pub->publish(msg);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  EXPECT_GT(callback_count.load(), 0)
+      << "Ros2LogSource::start() did not reset shutdown_requested_ after a prior stop()";
+
+  source.stop();
+}
+
 }  // namespace ros2_medkit_gateway::ros2

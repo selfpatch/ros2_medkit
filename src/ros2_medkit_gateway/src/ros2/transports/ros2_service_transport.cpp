@@ -77,7 +77,12 @@ ServiceCallResult Ros2ServiceTransport::call(const std::string & service_path, c
   try {
     auto client = get_or_create_client(service_path, service_type);
 
-    if (!client->wait_for_service(std::chrono::seconds(5))) {
+    // Bound the availability wait by the caller-provided timeout so a missing
+    // service fails within the caller's budget rather than the previous
+    // hardcoded 5 s. The async call below has its own independent timeout
+    // via future.wait_for().
+    const auto wait_timeout = std::chrono::duration_cast<std::chrono::nanoseconds>(timeout);
+    if (!client->wait_for_service(wait_timeout)) {
       result.success = false;
       result.error_message = "Service not available: " + service_path;
       return result;

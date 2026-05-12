@@ -171,7 +171,12 @@ ActionSendGoalResult Ros2ActionTransport::send_goal(const std::string & action_p
 
     auto & clients = get_or_create_clients(action_path, action_type);
 
-    if (!clients.send_goal_client->wait_for_service(std::chrono::seconds(5))) {
+    // Bound the availability wait by the caller-provided timeout so a missing
+    // action server fails within the caller's budget rather than the previous
+    // hardcoded 5 s. The async send_goal below has its own timeout via
+    // future.wait_for().
+    const auto wait_timeout = std::chrono::duration_cast<std::chrono::nanoseconds>(timeout);
+    if (!clients.send_goal_client->wait_for_service(wait_timeout)) {
       result.error_message = "Action server not available: " + action_path;
       return result;
     }

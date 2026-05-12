@@ -32,6 +32,11 @@ Ros2LogSource::~Ros2LogSource() {
 
 void Ros2LogSource::start(EntryCallback callback) {
   std::lock_guard<std::mutex> lock(mutex_);
+  // Clear the shutdown latch before installing the callback so the
+  // subscription lambda does not short-circuit after a stop()/start() cycle.
+  // The lambda reads shutdown_requested_ outside the mutex, so order matters:
+  // release the new false here, then publish the callback under the lock.
+  shutdown_requested_.store(false, std::memory_order_release);
   callback_ = std::move(callback);
 
   if (rosout_sub_) {
