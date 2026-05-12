@@ -52,11 +52,12 @@ def generate_launch_description():
         description='Port for REST API')
 
     declare_refresh_arg = DeclareLaunchArgument(
-        'refresh_interval_ms', default_value='2000',
+        'refresh_interval_ms', default_value='30000',
         description=(
             'Safety-backstop refresh interval in milliseconds. Primary '
             'refresh is graph-event driven (~100 ms latency); this only '
-            'controls the periodic forced refresh.'))
+            'controls the periodic forced refresh. Must match the default '
+            'in config/gateway_params.yaml.'))
 
     # Build parameter overrides - only inject plugin path if found
     param_overrides = {

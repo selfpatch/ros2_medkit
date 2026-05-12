@@ -344,6 +344,42 @@ TEST(LogManagerRouting, ShutdownStopsSource) {
 // log_sink callback tests (provider exceptions -> observability sink)
 // ============================================================
 
+TEST(LogManagerRoutingTest, NewNodeBeyondCapLogsOnceAndIncrementsCounter) {
+  // Buffer cap = max_buffer_size_ * 10. With max=2, cap=20 distinct nodes.
+  std::vector<std::pair<int, std::string>> sink_calls;
+  auto sink = [&sink_calls](int level, std::string_view msg) {
+    sink_calls.emplace_back(level, std::string(msg));
+  };
+
+  auto source = std::make_shared<MockLogSource>();
+  LogManager manager(source, /*plugin_mgr=*/nullptr, /*max_buffer_size=*/2, sink);
+
+  // Fill exactly to the distinct-node cap (20).
+  for (int i = 0; i < 20; ++i) {
+    ASSERT_TRUE(source->emit(make_entry("node_" + std::to_string(i), /*level=*/20, "in-cap")));
+  }
+  // dropped_entries_count() must still be zero - we are at the cap, not over.
+  EXPECT_EQ(manager.dropped_entries_count(), 0u);
+  EXPECT_TRUE(sink_calls.empty());
+
+  // Push two entries from a brand-new node beyond the cap -> first emits a
+  // WARN, second only increments the counter.
+  ASSERT_TRUE(source->emit(make_entry("over_cap_node", /*level=*/20, "msg-1")));
+  ASSERT_TRUE(source->emit(make_entry("over_cap_node", /*level=*/20, "msg-2")));
+
+  EXPECT_EQ(manager.dropped_entries_count(), 2u);
+  ASSERT_EQ(sink_calls.size(), 1u);
+  EXPECT_EQ(sink_calls[0].first, LogManager::kLogLevelWarn);
+  EXPECT_NE(sink_calls[0].second.find("over_cap_node"), std::string::npos);
+  EXPECT_NE(sink_calls[0].second.find("buffer cap reached"), std::string::npos);
+
+  // A second new-node-beyond-cap WARNs once for that node too.
+  ASSERT_TRUE(source->emit(make_entry("another_over_cap_node", /*level=*/20, "msg-x")));
+  EXPECT_EQ(manager.dropped_entries_count(), 3u);
+  ASSERT_EQ(sink_calls.size(), 2u);
+  EXPECT_NE(sink_calls[1].second.find("another_over_cap_node"), std::string::npos);
+}
+
 TEST(LogManagerRouting, ProviderGetLogsExceptionRoutedToLogSink) {
   ThrowingLogProvider throwing_provider;
   MockProviderRegistry registry;

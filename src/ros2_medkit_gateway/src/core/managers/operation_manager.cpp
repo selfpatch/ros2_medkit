@@ -32,14 +32,27 @@ namespace {
 /// UUID hex string length (16 bytes = 32 hex characters).
 constexpr size_t kUuidHexLength = 32;
 
+/// Multiplier applied to max_age before force-evicting a non-terminal goal
+/// whose last_update has stopped advancing. Two times the normal expiry gives
+/// well-behaved action servers ample headroom to publish a terminal state
+/// while still bounding tracked_goals_ when an action server crashes.
+constexpr int kStuckGoalAgeMultiplier = 2;
+
+bool is_terminal_status(ActionGoalStatus status) {
+  return status == ActionGoalStatus::SUCCEEDED || status == ActionGoalStatus::CANCELED ||
+         status == ActionGoalStatus::ABORTED;
+}
+
 }  // namespace
 
 OperationManager::OperationManager(std::shared_ptr<ServiceTransport> service_transport,
                                    std::shared_ptr<ActionTransport> action_transport, ServiceActionResolver * resolver,
-                                   int service_call_timeout_sec)
+                                   int service_call_timeout_sec, LogSink log_sink)
   : service_transport_(std::move(service_transport))
   , action_transport_(std::move(action_transport))
   , resolver_(resolver)
+  // notifier_ defaults to nullptr (initialized in-class)
+  , log_sink_(std::move(log_sink))
   , rng_(std::random_device{}())
   , service_call_timeout_sec_(service_call_timeout_sec) {
 }
@@ -192,6 +205,11 @@ std::string OperationManager::uuid_bytes_to_hex(const std::array<uint8_t, 16> & 
     ss << std::setw(2) << static_cast<int>(byte);
   }
   return ss.str();
+}
+
+void OperationManager::inject_tracked_goal_for_testing(ActionGoalInfo info) {
+  std::lock_guard<std::mutex> lock(goals_mutex_);
+  tracked_goals_[info.goal_id] = std::move(info);
 }
 
 void OperationManager::track_goal(const std::string & goal_id, const std::string & action_path,
@@ -396,23 +414,44 @@ void OperationManager::update_goal_feedback(const std::string & goal_id, const j
 
 void OperationManager::cleanup_old_goals(std::chrono::seconds max_age) {
   std::set<std::string> actions_to_check;
+  // Goals whose status never reached a terminal state but whose last_update
+  // has frozen for an excessive period (e.g. action server crashed). Collected
+  // under the mutex and logged after release to avoid holding the lock across
+  // RCLCPP_WARN, which can take a non-trivial amount of time.
+  std::vector<std::pair<std::string, ActionGoalStatus>> stuck_evictions;
 
   {
     std::lock_guard<std::mutex> lock(goals_mutex_);
     auto now = std::chrono::system_clock::now();
+    const auto stuck_age = max_age * kStuckGoalAgeMultiplier;
 
     for (auto it = tracked_goals_.begin(); it != tracked_goals_.end();) {
-      if (it->second.status == ActionGoalStatus::SUCCEEDED || it->second.status == ActionGoalStatus::CANCELED ||
-          it->second.status == ActionGoalStatus::ABORTED) {
-        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - it->second.last_update);
+      const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - it->second.last_update);
+
+      if (is_terminal_status(it->second.status)) {
         if (age > max_age) {
           actions_to_check.insert(it->second.action_path);
           it = tracked_goals_.erase(it);
           continue;
         }
+      } else if (age > stuck_age) {
+        // Non-terminal goal that has gone silent past 2x max_age - assume
+        // the action server crashed without publishing a terminal state.
+        // Force-evict to keep tracked_goals_ bounded.
+        stuck_evictions.emplace_back(it->first, it->second.status);
+        actions_to_check.insert(it->second.action_path);
+        it = tracked_goals_.erase(it);
+        continue;
       }
       ++it;
     }
+  }
+
+  for (const auto & [goal_id, status] : stuck_evictions) {
+    std::ostringstream msg;
+    msg << "Evicting stuck action goal '" << goal_id << "' (status=" << action_status_to_string(status)
+        << ") - last_update older than " << kStuckGoalAgeMultiplier << "x max_age";
+    emit_log(kLogLevelWarn, msg.str());
   }
 
   for (const auto & action_path : actions_to_check) {

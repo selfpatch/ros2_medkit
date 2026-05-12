@@ -115,19 +115,22 @@ std::string to_iso8601_ns(int64_t ns) {
   return ros2_medkit_gateway::format_timestamp_ns(ns);
 }
 
-/// Map fault severity level to human-readable label
+/// Map fault severity level to human-readable label.
+/// Values mirror ros2_medkit_msgs/msg/Fault.msg SEVERITY_* constants:
+///   SEVERITY_INFO = 0
+///   SEVERITY_WARN = 1
+///   SEVERITY_ERROR = 2
+///   SEVERITY_CRITICAL = 3
 std::string severity_to_label(uint8_t severity) {
   switch (severity) {
     case 0:
-      return "DEBUG";
-    case 1:
       return "INFO";
-    case 2:
+    case 1:
       return "WARN";
-    case 3:
+    case 2:
       return "ERROR";
-    case 4:
-      return "FATAL";
+    case 3:
+      return "CRITICAL";
     default:
       return "UNKNOWN";
   }
@@ -188,10 +191,14 @@ json FaultHandlers::build_sovd_fault_response(const json & fault_json, const jso
     for (const auto & s : env_data_json["snapshots"]) {
       json snap;
       const std::string type = s.value("type", "");
+      // Prefer the explicit "snapshot_type" discriminator emitted by the
+      // conversion layer; fall back to "type" for backward compatibility with
+      // older transports that did not yet emit it.
+      const std::string snapshot_type = s.value("snapshot_type", type);
       snap["type"] = type;
       snap["name"] = s.value("name", "");
 
-      if (type == "freeze_frame") {
+      if (snapshot_type == "freeze_frame") {
         // Parse JSON data string and extract primary value.
         const std::string raw_data = s.value("data", "");
         const std::string topic = s.value("topic", "");
@@ -208,11 +215,23 @@ json FaultHandlers::build_sovd_fault_response(const json & fault_json, const jso
           snap["data"] = raw_data;
           snap["x-medkit"] = {{"topic", topic}, {"message_type", message_type}, {"parse_error", e.what()}};
         }
-      } else if (type == "rosbag") {
+      } else if (snapshot_type == "rosbag") {
         // Build absolute URI using entity path + fault_code as the bulk-data ID.
         // This must match the download handler which looks up rosbags by fault_code,
         // and handle_list_descriptors which also uses fault_code as the descriptor ID.
-        const std::string snap_fault_code = s.value("fault_code", fault_code);
+        // A malformed rosbag snapshot missing fault_code is a transport-side
+        // bug: we still fall back to the parent fault's code to preserve a
+        // usable bulk-data URI, but we log a WARN so operators notice.
+        std::string snap_fault_code;
+        if (s.contains("fault_code") && s["fault_code"].is_string()) {
+          snap_fault_code = s["fault_code"].get<std::string>();
+        } else {
+          RCLCPP_WARN(HandlerContext::logger(),
+                      "Rosbag snapshot missing 'fault_code' field; falling back to parent fault code '%s' for entity "
+                      "'%s'",
+                      fault_code.c_str(), entity_path.c_str());
+          snap_fault_code = fault_code;
+        }
         std::string bulk_data_uri = entity_path;
         bulk_data_uri += "/bulk-data/rosbags/";
         bulk_data_uri += snap_fault_code;

@@ -190,7 +190,14 @@ void LogManager::on_log_entry(const LogEntry & source_entry) {
     // Cap the number of distinct node buffers to prevent unbounded growth.
     // Uses max_buffer_size_ * 10 as the cap (e.g., 200 entries -> 2000 distinct nodes).
     if (buffers_.find(entry.name) == buffers_.end() && buffers_.size() >= max_buffer_size_ * 10) {
-      // Silently drop logs from new nodes beyond the cap
+      // New-node entry rejected: log once per node (rate-limited), then
+      // increment a total counter so callers can surface buffer pressure via
+      // dropped_entries_count().
+      ++dropped_total_;
+      if (dropped_nodes_.insert(entry.name).second) {
+        emit(kLogLevelWarn, std::string("LogManager: dropping log entries from new node '") + entry.name +
+                                "' - distinct-node buffer cap reached (" + std::to_string(max_buffer_size_ * 10) + ")");
+      }
     } else {
       auto & buf = buffers_[entry.name];
       buf.push_back(entry);
@@ -234,13 +241,23 @@ void LogManager::inject_entry_for_testing(LogEntry entry) {
   std::lock_guard<std::mutex> lock(buffers_mutex_);
   // Respect buffer cap (same logic as on_log_entry) for consistent test behavior
   if (buffers_.find(entry.name) == buffers_.end() && buffers_.size() >= max_buffer_size_ * 10) {
-    return;  // Silently drop logs from new nodes beyond the cap
+    ++dropped_total_;
+    if (dropped_nodes_.insert(entry.name).second) {
+      emit(kLogLevelWarn, std::string("LogManager: dropping log entries from new node '") + entry.name +
+                              "' - distinct-node buffer cap reached (" + std::to_string(max_buffer_size_ * 10) + ")");
+    }
+    return;
   }
   auto & buf = buffers_[entry.name];
   buf.push_back(std::move(entry));
   if (buf.size() > max_buffer_size_) {
     buf.pop_front();
   }
+}
+
+std::size_t LogManager::dropped_entries_count() const noexcept {
+  std::lock_guard<std::mutex> lock(buffers_mutex_);
+  return dropped_total_;
 }
 
 // ---------------------------------------------------------------------------

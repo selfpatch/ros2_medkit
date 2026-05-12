@@ -86,6 +86,7 @@ void SSEFaultHandler::request_shutdown() {
 void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
   uint64_t event_id = next_event_id_.fetch_add(1);
 
+  std::size_t dropped_this_call = 0;
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
 
@@ -95,6 +96,20 @@ void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::Co
     // Trim old events if buffer is full
     while (event_queue_.size() > kMaxBufferedEvents) {
       event_queue_.pop_front();
+      ++dropped_this_call;
+    }
+  }
+
+  // Surface SSE backpressure without spamming the log: every kDropLogEveryN
+  // drops emit one WARN with the running total. dropped_events_ remains
+  // queryable for tests / future metrics endpoints.
+  if (dropped_this_call > 0) {
+    const auto total = dropped_events_.fetch_add(dropped_this_call) + dropped_this_call;
+    if ((total / kDropLogEveryN) > ((total - dropped_this_call) / kDropLogEveryN)) {
+      RCLCPP_WARN(HandlerContext::logger(),
+                  "SSE fault event buffer overflow: %zu events dropped total "
+                  "(buffer cap=%zu, slow or disconnected clients)",
+                  total, kMaxBufferedEvents);
     }
   }
 

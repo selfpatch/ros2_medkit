@@ -47,8 +47,8 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseBasicFields) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "TEST_FAULT";
   fault.description = "Test fault description";
-  fault.severity = 3;          // ERROR
-  fault.status = "CONFIRMED";  // Active/confirmed fault
+  fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;  // ERROR (2)
+  fault.status = "CONFIRMED";                                     // Active/confirmed fault
   fault.occurrence_count = 5;
   fault.reporting_sources = {"/powertrain/motor_controller"};
 
@@ -62,7 +62,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseBasicFields) {
   // Verify item structure
   EXPECT_EQ(response["item"]["code"], "TEST_FAULT");
   EXPECT_EQ(response["item"]["fault_name"], "Test fault description");
-  EXPECT_EQ(response["item"]["severity"], 3);
+  EXPECT_EQ(response["item"]["severity"], ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR);
 
   // Verify status object
   auto status = response["item"]["status"];
@@ -102,6 +102,36 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseWithFreezeFrame) {
   EXPECT_DOUBLE_EQ(snap["data"].get<double>(), 85.5);  // Primary value extracted
   EXPECT_EQ(snap["x-medkit"]["topic"], "/motor/temperature");
   EXPECT_EQ(snap["x-medkit"]["message_type"], "sensor_msgs/msg/Temperature");
+}
+
+// Conversion layer must emit an explicit "snapshot_type" discriminator so
+// downstream consumers (handler, SSE, MCP) can dispatch on a single key
+// regardless of which optional payload fields are present.
+TEST_F(FaultHandlersTest, EnvironmentDataToJsonEmitsSnapshotTypeDiscriminator) {
+  ros2_medkit_msgs::msg::EnvironmentData env_data;
+
+  ros2_medkit_msgs::msg::Snapshot freeze_frame;
+  freeze_frame.type = "freeze_frame";
+  freeze_frame.name = "temperature";
+  freeze_frame.data = R"({"temperature": 85.5})";
+  freeze_frame.topic = "/motor/temperature";
+  freeze_frame.message_type = "sensor_msgs/msg/Temperature";
+  env_data.snapshots.push_back(freeze_frame);
+
+  ros2_medkit_msgs::msg::Snapshot rosbag;
+  rosbag.type = "rosbag";
+  rosbag.name = "fault_recording";
+  rosbag.bulk_data_id = "ROSBAG_X";
+  rosbag.size_bytes = 1234;
+  rosbag.duration_sec = 1.0;
+  rosbag.format = "mcap";
+  env_data.snapshots.push_back(rosbag);
+
+  auto j = env_json(env_data);
+  ASSERT_TRUE(j.contains("snapshots"));
+  ASSERT_EQ(j["snapshots"].size(), 2u);
+  EXPECT_EQ(j["snapshots"][0]["snapshot_type"], "freeze_frame");
+  EXPECT_EQ(j["snapshots"][1]["snapshot_type"], "rosbag");
 }
 
 // @verifies REQ_INTEROP_013
@@ -182,45 +212,40 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseStatusPassive) {
 }
 
 // @verifies REQ_INTEROP_013
+// Severity labels must mirror ros2_medkit_msgs/msg/Fault.msg constants:
+// SEVERITY_INFO=0, SEVERITY_WARN=1, SEVERITY_ERROR=2, SEVERITY_CRITICAL=3.
 TEST_F(FaultHandlersTest, BuildSovdFaultResponseSeverityLabels) {
   ros2_medkit_msgs::msg::EnvironmentData env_data;
 
-  // Test DEBUG (0)
+  // Test INFO (0)
   {
     ros2_medkit_msgs::msg::Fault fault;
-    fault.severity = 0;
-    auto response = FaultHandlers::build_sovd_fault_response(fault_json(fault), env_json(env_data), "/apps/test");
-    EXPECT_EQ(response["x-medkit"]["severity_label"], "DEBUG");
-  }
-  // Test INFO (1)
-  {
-    ros2_medkit_msgs::msg::Fault fault;
-    fault.severity = 1;
+    fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_INFO;
     auto response = FaultHandlers::build_sovd_fault_response(fault_json(fault), env_json(env_data), "/apps/test");
     EXPECT_EQ(response["x-medkit"]["severity_label"], "INFO");
   }
-  // Test WARN (2)
+  // Test WARN (1)
   {
     ros2_medkit_msgs::msg::Fault fault;
-    fault.severity = 2;
+    fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_WARN;
     auto response = FaultHandlers::build_sovd_fault_response(fault_json(fault), env_json(env_data), "/apps/test");
     EXPECT_EQ(response["x-medkit"]["severity_label"], "WARN");
   }
-  // Test ERROR (3)
+  // Test ERROR (2)
   {
     ros2_medkit_msgs::msg::Fault fault;
-    fault.severity = 3;
+    fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;
     auto response = FaultHandlers::build_sovd_fault_response(fault_json(fault), env_json(env_data), "/apps/test");
     EXPECT_EQ(response["x-medkit"]["severity_label"], "ERROR");
   }
-  // Test FATAL (4)
+  // Test CRITICAL (3)
   {
     ros2_medkit_msgs::msg::Fault fault;
-    fault.severity = 4;
+    fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL;
     auto response = FaultHandlers::build_sovd_fault_response(fault_json(fault), env_json(env_data), "/apps/test");
-    EXPECT_EQ(response["x-medkit"]["severity_label"], "FATAL");
+    EXPECT_EQ(response["x-medkit"]["severity_label"], "CRITICAL");
   }
-  // Test UNKNOWN (255)
+  // Test UNKNOWN (255) - any value outside the SEVERITY_* range
   {
     ros2_medkit_msgs::msg::Fault fault;
     fault.severity = 255;

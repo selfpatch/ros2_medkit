@@ -27,6 +27,7 @@
 #include <string_view>
 #include <tl/expected.hpp>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ros2_medkit_gateway/core/log_types.hpp"
@@ -190,6 +191,18 @@ class LogManager {
    */
   void inject_entry_for_testing(LogEntry entry);
 
+  /**
+   * @brief Total number of log entries dropped because the per-node-buffer cap
+   *        (max_buffer_size_ * 10) was exceeded.
+   *
+   * Each "new node beyond the cap" entry counts as one drop. Per-node
+   * ring-buffer pops (oldest entries replaced inside an existing buffer) are
+   * NOT counted here - this counter tracks only entries fully rejected from
+   * being buffered. Used by tests and (eventually) a /server-info or
+   * /diagnostics endpoint to surface buffer pressure.
+   */
+  std::size_t dropped_entries_count() const noexcept;
+
  private:
   /// Entry point invoked for every LogEntry produced by the source. Performs
   /// observer notification, ring-buffer storage, and trigger-side notifier
@@ -219,6 +232,13 @@ class LogManager {
   // Ring buffers keyed by normalized node name (no leading '/')
   // e.g. "powertrain/engine/temp_sensor" -> deque<LogEntry>
   std::unordered_map<std::string, std::deque<LogEntry>> buffers_;
+  // Set of node names for which we've already emitted a "buffer cap exceeded"
+  // WARN. Subsequent drops for the same node only bump dropped_total_, so we
+  // never spam the log sink. Guarded by buffers_mutex_.
+  std::unordered_set<std::string> dropped_nodes_;
+  // Total number of entries that were rejected because adding a new node
+  // would exceed the buffer cap. Guarded by buffers_mutex_.
+  std::size_t dropped_total_{0};
   mutable std::mutex buffers_mutex_;
 
   // Per-entity configuration keyed by entity_id

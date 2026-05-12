@@ -131,11 +131,21 @@ class SSEFaultHandler {
   /// Shutdown flag for clean termination
   std::atomic<bool> shutdown_flag_{false};
 
+  /// Total number of buffered fault events dropped because the buffer was at
+  /// kMaxBufferedEvents and a new event arrived. Surfaced via WARN logs at a
+  /// fixed cadence (kDropLogEveryN) so operators notice client lag without
+  /// flooding the logger.
+  std::atomic<std::size_t> dropped_events_{0};
+
   /// Keepalive interval used by the streaming loop
   std::chrono::milliseconds keepalive_interval_;
 
   /// Maximum events to buffer (for reconnecting clients)
   static constexpr size_t kMaxBufferedEvents = 100;
+
+  /// Emit a WARN log every Nth dropped event to keep observability without
+  /// log spam under sustained backpressure.
+  static constexpr std::size_t kDropLogEveryN = 10;
 
   /// Keepalive interval in seconds
   static constexpr int kKeepaliveIntervalSec = 30;

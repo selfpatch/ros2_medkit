@@ -254,6 +254,43 @@ TEST_F(TestOperationManager, test_cleanup_old_goals_with_zero_timeout) {
   EXPECT_TRUE(operation_manager_->list_tracked_goals().empty());
 }
 
+TEST_F(TestOperationManager, test_cleanup_old_goals_evicts_stuck_non_terminal) {
+  // A goal stuck in ACCEPTED/EXECUTING past 2x max_age must be force-evicted
+  // to prevent unbounded tracked_goals_ growth when the action server crashes
+  // without publishing a terminal status.
+  ActionGoalInfo stuck;
+  stuck.goal_id = "stuck_goal_id_00000000000000000000";
+  stuck.action_path = "/test/stuck_action";
+  stuck.action_type = "example_interfaces/action/Fibonacci";
+  stuck.entity_id = "test_entity";
+  stuck.status = ActionGoalStatus::ACCEPTED;
+  // last_update is more than 2x max_age in the past.
+  const auto max_age = std::chrono::seconds(10);
+  const auto now = std::chrono::system_clock::now();
+  stuck.created_at = now - std::chrono::seconds(30);
+  stuck.last_update = now - std::chrono::seconds(25);  // > 2 * 10s
+  operation_manager_->inject_tracked_goal_for_testing(stuck);
+
+  // A fresh (non-terminal) goal must NOT be evicted by the same call.
+  ActionGoalInfo fresh;
+  fresh.goal_id = "fresh_goal_id_000000000000000000000";
+  fresh.action_path = "/test/fresh_action";
+  fresh.action_type = "example_interfaces/action/Fibonacci";
+  fresh.entity_id = "test_entity";
+  fresh.status = ActionGoalStatus::EXECUTING;
+  fresh.created_at = now;
+  fresh.last_update = now;
+  operation_manager_->inject_tracked_goal_for_testing(fresh);
+
+  ASSERT_EQ(operation_manager_->list_tracked_goals().size(), 2u);
+
+  operation_manager_->cleanup_old_goals(max_age);
+
+  auto remaining = operation_manager_->list_tracked_goals();
+  ASSERT_EQ(remaining.size(), 1u);
+  EXPECT_EQ(remaining[0].goal_id, fresh.goal_id);
+}
+
 TEST_F(TestOperationManager, test_update_goal_status_nonexistent) {
   // Updating a nonexistent goal should not throw
   EXPECT_NO_THROW(operation_manager_->update_goal_status("nonexistent_goal", ActionGoalStatus::SUCCEEDED));

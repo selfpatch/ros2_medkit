@@ -74,11 +74,13 @@ nlohmann::json environment_data_to_json(const ros2_medkit_msgs::msg::Environment
       // via "message_type") so the handler can extract the primary value
       // without re-parsing. We pass the raw string + message_type so the
       // handler keeps full control over primary-field extraction.
+      snap["snapshot_type"] = "freeze_frame";
       snap["data"] = s.data;
       snap["topic"] = s.topic;
       snap["message_type"] = s.message_type;
       snap["captured_at_ns"] = s.captured_at_ns;
     } else if (s.type == "rosbag") {
+      snap["snapshot_type"] = "rosbag";
       snap["fault_code"] = s.bulk_data_id;
       snap["size_bytes"] = s.size_bytes;
       snap["duration_sec"] = s.duration_sec;

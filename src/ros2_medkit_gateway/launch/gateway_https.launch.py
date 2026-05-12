@@ -222,11 +222,12 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             'refresh_interval_ms',
-            default_value='2000',
+            default_value='30000',
             description=(
                 'Safety-backstop refresh interval in milliseconds. Primary '
                 'refresh is graph-event driven; this only controls the '
-                'periodic forced refresh.'
+                'periodic forced refresh. Must match the default in '
+                'config/gateway_params.yaml.'
             )
         ),
 

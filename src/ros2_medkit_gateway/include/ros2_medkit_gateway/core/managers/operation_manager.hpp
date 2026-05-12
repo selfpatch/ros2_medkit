@@ -17,6 +17,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -24,6 +25,7 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ros2_medkit_gateway/core/discovery/service_action_resolver.hpp"
@@ -46,6 +48,19 @@ using json = nlohmann::json;
  */
 class OperationManager {
  public:
+  /// Severity used by the OperationManager's log_sink callback. Numeric values
+  /// match rcl/rcutils log levels (30=WARN, 40=ERROR) so an adapter can
+  /// forward to RCLCPP_* macros without translation. Mirrors LogManager's
+  /// kLogLevelWarn / kLogLevelError contract.
+  static constexpr int kLogLevelWarn = 30;
+  static constexpr int kLogLevelError = 40;
+
+  /// Sink for internal diagnostics (stuck-goal eviction, etc.). Keeps
+  /// OperationManager middleware-neutral while preserving observability when
+  /// the gateway adapter forwards to /rosout. May be null - the sink is then
+  /// a no-op, which is the production behaviour today.
+  using LogSink = std::function<void(int level, std::string_view message)>;
+
   /**
    * @param service_transport Concrete ServiceTransport adapter (typically Ros2ServiceTransport).
    * @param action_transport Concrete ActionTransport adapter (typically Ros2ActionTransport).
@@ -53,10 +68,12 @@ class OperationManager {
    *                 Must outlive this manager. May be nullptr in tests that do not exercise
    *                 the component-name resolution paths.
    * @param service_call_timeout_sec Timeout in seconds applied to every service / action call.
+   * @param log_sink Optional sink for internal diagnostics. Pass nullptr to silence
+   *                 stuck-goal eviction warnings (default).
    */
   OperationManager(std::shared_ptr<ServiceTransport> service_transport,
                    std::shared_ptr<ActionTransport> action_transport, ServiceActionResolver * resolver,
-                   int service_call_timeout_sec = 10);
+                   int service_call_timeout_sec = 10, LogSink log_sink = nullptr);
 
   ~OperationManager();
 
@@ -143,6 +160,12 @@ class OperationManager {
   /// Unsubscribe from action status updates. Idempotent.
   void unsubscribe_from_action_status(const std::string & action_path);
 
+  /// Test-only helper: inject a fully-formed ActionGoalInfo directly into the
+  /// tracking map. Used by unit tests to exercise paths (e.g. stuck-goal
+  /// eviction) without driving real action server traffic. Not part of the
+  /// production API.
+  void inject_tracked_goal_for_testing(ActionGoalInfo info);
+
  private:
   /// Convert UUID hex string to JSON array of byte values.
   static json uuid_hex_to_json_array(const std::string & uuid_hex);
@@ -164,10 +187,18 @@ class OperationManager {
   /// the tracking map, firing the resource-change notifier on transitions.
   void on_status_callback(const std::string & action_path, const std::string & goal_id, ActionGoalStatus status);
 
+  /// Forward an internal diagnostic to the injected log_sink (if any).
+  void emit_log(int level, std::string_view msg) const {
+    if (log_sink_) {
+      log_sink_(level, msg);
+    }
+  }
+
   std::shared_ptr<ServiceTransport> service_transport_;
   std::shared_ptr<ActionTransport> action_transport_;
   ServiceActionResolver * resolver_;
   ResourceChangeNotifier * notifier_ = nullptr;
+  LogSink log_sink_;
 
   /// RNG for UUID generation. Guarded by rng_mutex_.
   std::mutex rng_mutex_;

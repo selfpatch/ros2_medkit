@@ -41,6 +41,14 @@ json DataAccessManager::get_topic_sample_with_fallback(const std::string & topic
 }
 
 json DataAccessManager::get_topic_sample_native(const std::string & topic_name, double timeout_sec) {
+  // Topic-sample responses always carry a wall-clock timestamp in nanoseconds
+  // since epoch, regardless of whether the response is "data" or
+  // "metadata_only". This keeps the SOVD contract consistent so downstream
+  // consumers (web UI, MCP, FCE) can rely on a single canonical timestamp
+  // field with a single unit.
+  const int64_t timestamp_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
   // Fast path: when no publishers are present, return metadata-only without
   // engaging the transport. This mirrors the legacy behaviour of returning
   // a metadata frame for idle topics rather than throwing.
@@ -51,6 +59,7 @@ json DataAccessManager::get_topic_sample_native(const std::string & topic_name, 
     out["status"] = "metadata_only";
     out["publisher_count"] = pubs;
     out["subscriber_count"] = subs;
+    out["timestamp"] = timestamp_ns;
     return out;
   }
 
@@ -61,6 +70,7 @@ json DataAccessManager::get_topic_sample_native(const std::string & topic_name, 
   out["status"] = sample.status;
   out["publisher_count"] = sample.publisher_count;
   out["subscriber_count"] = sample.subscriber_count;
+  out["timestamp"] = timestamp_ns;
   if (!sample.type.empty()) {
     out["type"] = sample.type;
     if (!sample.type_info.empty() && !sample.type_info.is_null()) {
@@ -69,9 +79,6 @@ json DataAccessManager::get_topic_sample_native(const std::string & topic_name, 
   }
   if (sample.status == "data" && !sample.data.is_null()) {
     out["data"] = sample.data;
-    out["timestamp"] =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-            .count();
   }
   if (!sample.success && !sample.error_message.empty()) {
     out["error"] = sample.error_message;

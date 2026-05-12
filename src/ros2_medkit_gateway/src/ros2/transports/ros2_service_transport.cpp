@@ -117,8 +117,10 @@ ServiceCallResult Ros2ServiceTransport::call(const std::string & service_path, c
       client->remove_pending_request(future_and_id.request_id);
       ros2_medkit_serialization::destroy_ros_message(&ros_request);
       result.success = false;
-      result.error_message =
-          "Service call timed out (" + std::to_string(static_cast<int>(timeout.count())) + "s): " + service_path;
+      // Format the wait budget with millisecond precision so a sub-second
+      // timeout (e.g. 0.1s) is not silently rendered as "0s".
+      const auto timeout_ms = std::chrono::duration_cast<std::chrono::milliseconds>(timeout_secs).count();
+      result.error_message = "Service call timed out (" + std::to_string(timeout_ms) + "ms): " + service_path;
       return result;
     }
 

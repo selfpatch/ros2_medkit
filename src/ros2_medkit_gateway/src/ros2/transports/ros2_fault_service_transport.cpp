@@ -346,7 +346,11 @@ FaultResult Ros2FaultServiceTransport::get_snapshots(const std::string & fault_c
   if (response->success) {
     try {
       result.data = json::parse(response->data);
-    } catch (const json::exception & /*e*/) {
+    } catch (const json::exception & e) {
+      RCLCPP_WARN(node_->get_logger(),
+                  "Ros2FaultServiceTransport::get_snapshots: failed to parse JSON response for fault_code='%s' "
+                  "topic='%s': %s; falling back to raw_data wrapper",
+                  fault_code.c_str(), topic.c_str(), e.what());
       result.data = {{"raw_data", response->data}};
     }
   } else {
