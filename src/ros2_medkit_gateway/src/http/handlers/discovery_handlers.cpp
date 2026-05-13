@@ -995,6 +995,7 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     links.self("/api/v1/apps/" + app.id).collection("/api/v1/apps");
     if (!app.component_id.empty()) {
       links.add("is-located-on", "/api/v1/components/" + app.component_id);
+      links.add("belongs-to", base_uri + "/belongs-to");
     }
     response["_links"] = links.build();
 

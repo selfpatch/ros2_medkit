@@ -603,6 +603,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetAppReturnsLinksAndCapabilities) {
   EXPECT_EQ(body["depends-on"], "/api/v1/apps/mapper/depends-on");
   EXPECT_EQ(body["_links"]["self"], "/api/v1/apps/mapper");
   EXPECT_EQ(body["_links"]["is-located-on"], "/api/v1/components/lidar_unit");
+  EXPECT_EQ(body["_links"]["belongs-to"], "/api/v1/apps/mapper/belongs-to");
   EXPECT_EQ(body["_links"]["depends-on"][0], "/api/v1/apps/planner");
   EXPECT_EQ(body["_links"]["depends-on"][1], "/api/v1/apps/ghost_app");
   EXPECT_EQ(body["x-medkit"]["source"], "manifest");
