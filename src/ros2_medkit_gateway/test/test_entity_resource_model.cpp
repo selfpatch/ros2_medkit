@@ -171,9 +171,13 @@ TEST(EntityCapabilities, ComponentSupportsOperations) {
 TEST(EntityCapabilities, AppSupportsIsLocatedOn) {
   auto caps = EntityCapabilities::for_type(SovdEntityType::APP);
   EXPECT_TRUE(caps.supports_resource("is-located-on"));
-  EXPECT_TRUE(caps.supports_resource("belongs-to"));
   EXPECT_TRUE(caps.supports_collection(ResourceCollection::OPERATIONS));
   EXPECT_FALSE(caps.supports_resource("hosts"));  // Apps don't host anything
+}
+
+TEST(EntityCapabilities, AppSupportsBelongsTo) {
+  auto caps = EntityCapabilities::for_type(SovdEntityType::APP);
+  EXPECT_TRUE(caps.supports_resource("belongs-to"));
 }
 
 TEST(EntityCapabilities, FunctionAggregatesCollections) {

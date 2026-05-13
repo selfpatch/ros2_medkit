@@ -316,8 +316,16 @@ TEST_F(TriggerManagerTest, LifetimeExpiry) {
 
   EXPECT_TRUE(manager_->is_active(created->id));
 
-  // Sleep past expiry with margin for CPU contention during parallel testing
-  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  // Poll for expiry: finishes quickly on a fast machine but tolerates
+  // scheduler stalls under parallel test load. Deadline is well past the
+  // 1 s lifetime so a busy CI runner does not race the check.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5000);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (!manager_->is_active(created->id)) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
 
   EXPECT_FALSE(manager_->is_active(created->id));
 }
