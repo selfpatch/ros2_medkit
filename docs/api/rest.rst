@@ -277,6 +277,40 @@ Apps
 
    Unknown apps return ``404 App not found`` with ``parameters.app_id``.
 
+``GET /api/v1/apps/{app_id}/belongs-to``
+   Return the area that contains this app via its parent component.
+
+   The response follows the standard ``items`` wrapper and returns:
+
+   - ``0`` items when the app has no associated host component
+   - ``0`` items when the parent component has no assigned area
+   - ``1`` item when the area is resolved
+   - ``1`` item with ``x-medkit.missing=true`` when the parent component references
+     an area that cannot currently be resolved
+
+   **Example Response:**
+
+   .. code-block:: json
+
+      {
+        "items": [
+          {
+            "id": "engine",
+            "name": "Engine",
+            "href": "/api/v1/areas/engine"
+          }
+        ],
+        "x-medkit": {
+          "total_count": 1
+        },
+        "_links": {
+          "self": "/api/v1/apps/engine-temp-sensor/belongs-to",
+          "app": "/api/v1/apps/engine-temp-sensor"
+        }
+      }
+
+   Unknown apps return ``404 App not found`` with ``parameters.app_id``.
+
 Functions
 ~~~~~~~~~
 

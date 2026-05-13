@@ -599,6 +599,7 @@ TEST_F(DiscoveryHandlersFixtureTest, GetAppReturnsLinksAndCapabilities) {
 
   auto body = parse_json(res);
   EXPECT_EQ(body["is-located-on"], "/api/v1/components/lidar_unit");
+  EXPECT_EQ(body["belongs-to"], "/api/v1/apps/mapper/belongs-to");
   EXPECT_EQ(body["depends-on"], "/api/v1/apps/mapper/depends-on");
   EXPECT_EQ(body["_links"]["self"], "/api/v1/apps/mapper");
   EXPECT_EQ(body["_links"]["is-located-on"], "/api/v1/components/lidar_unit");
@@ -685,6 +686,112 @@ TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnUnknownAppReturns404) {
   httplib::Response res;
 
   handlers_->handle_app_is_located_on(req, res);
+
+  EXPECT_EQ(res.status, 404);
+}
+
+// @verifies REQ_INTEROP_106
+TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsParentArea) {
+  auto req = make_request_with_match("/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
+  httplib::Response res;
+
+  handlers_->handle_app_belongs_to(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 1);
+  EXPECT_EQ(body["items"][0]["id"], "sensors");
+  EXPECT_EQ(body["items"][0]["name"], "Sensors");
+  EXPECT_EQ(body["items"][0]["href"], "/api/v1/areas/sensors");
+  EXPECT_EQ(body["x-medkit"]["total_count"], 1);
+  EXPECT_EQ(body["_links"]["self"], "/api/v1/apps/mapper/belongs-to");
+  EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/mapper");
+}
+
+// @verifies REQ_INTEROP_106
+TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsEmptyWhenAppHasNoComponent) {
+  auto req = make_request_with_match("/api/v1/apps/standalone/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
+  httplib::Response res;
+
+  handlers_->handle_app_belongs_to(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_TRUE(body["items"].empty());
+  EXPECT_EQ(body["x-medkit"]["total_count"], 0);
+  EXPECT_EQ(body["_links"]["self"], "/api/v1/apps/standalone/belongs-to");
+  EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/standalone");
+}
+
+// @verifies REQ_INTEROP_106
+TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsEmptyWhenComponentHasNoArea) {
+  // Strip the parent component's area assignment so the chain App->Component->Area breaks.
+  auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
+  auto components = cache.get_components();
+  bool updated = false;
+  for (auto & comp : components) {
+    if (comp.id == "lidar_unit") {
+      comp.area.clear();
+      updated = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(updated);
+  cache.update_components(components);
+
+  auto req = make_request_with_match("/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
+  httplib::Response res;
+
+  handlers_->handle_app_belongs_to(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_TRUE(body["items"].empty());
+  EXPECT_EQ(body["x-medkit"]["total_count"], 0);
+}
+
+// @verifies REQ_INTEROP_106
+TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsMissingItemWhenAreaUnresolved) {
+  // Reassign the parent component to an area id that does not exist in the catalogue.
+  auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
+  auto components = cache.get_components();
+  bool updated = false;
+  for (auto & comp : components) {
+    if (comp.id == "lidar_unit") {
+      comp.area = "ghost_area";
+      updated = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(updated);
+  cache.update_components(components);
+
+  auto req = make_request_with_match("/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
+  httplib::Response res;
+
+  handlers_->handle_app_belongs_to(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 1);
+  EXPECT_EQ(body["items"][0]["id"], "ghost_area");
+  EXPECT_EQ(body["items"][0]["name"], "ghost_area");
+  EXPECT_EQ(body["items"][0]["href"], "/api/v1/areas/ghost_area");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["missing"], true);
+}
+
+// @verifies REQ_INTEROP_106
+TEST_F(DiscoveryHandlersValidationTest, AppBelongsToInvalidIdReturns400) {
+  auto req = make_request_with_match("/api/v1/apps/bad/id/belongs-to", R"(/api/v1/apps/(.+)/belongs-to)");
+  httplib::Response res;
+
+  handlers_.handle_app_belongs_to(req, res);
+
+  EXPECT_EQ(res.status, 400);
+}
+
+// @verifies REQ_INTEROP_106
+TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToUnknownAppReturns404) {
+  auto req = make_request_with_match("/api/v1/apps/unknown/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
+  httplib::Response res;
+
+  handlers_->handle_app_belongs_to(req, res);
 
   EXPECT_EQ(res.status, 404);
 }

@@ -84,3 +84,13 @@ Discovery
    :tags: Discovery
 
    The endpoint shall return the component that hosts the addressed application.
+
+.. req:: GET /apps/{id}/belongs-to
+   :id: REQ_INTEROP_106
+   :status: verified
+   :tags: Discovery
+
+   The endpoint shall return the area that contains the addressed application,
+   resolved transitively via the app's parent component and that component's
+   area assignment. The response uses the standard ``items`` wrapper and
+   contains zero or one element.

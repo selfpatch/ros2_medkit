@@ -1131,6 +1131,18 @@ void RESTServer::setup_routes() {
           .response(200, "Host component(s)", SB::ref("EntityList"))
           .operation_id("getAppHost");
 
+      reg.get(entity_path + "/belongs-to",
+              [this](auto & req, auto & res) {
+                discovery_handlers_->handle_app_belongs_to(req, res);
+              })
+          .tag("Discovery")
+          .summary("Get app parent area")
+          .description(
+              "Returns the area this app belongs to via its parent component, as a 0-or-1 element "
+              "collection.")
+          .response(200, "Parent area", SB::ref("EntityList"))
+          .operation_id("getAppArea");
+
       reg.get(entity_path + "/depends-on",
               [this](auto & req, auto & res) {
                 discovery_handlers_->handle_app_depends_on(req, res);

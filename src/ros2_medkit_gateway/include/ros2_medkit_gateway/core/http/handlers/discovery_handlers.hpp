@@ -130,6 +130,12 @@ class DiscoveryHandlers {
    */
   void handle_app_is_located_on(const httplib::Request & req, httplib::Response & res);
 
+  /**
+   * @brief Handle GET /apps/{app-id}/belongs-to - get parent area via component.
+   * @verifies REQ_INTEROP_106
+   */
+  void handle_app_belongs_to(const httplib::Request & req, httplib::Response & res);
+
   // =========================================================================
   // Function endpoints
   // =========================================================================
