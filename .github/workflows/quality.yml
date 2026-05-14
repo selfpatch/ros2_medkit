@@ -229,13 +229,10 @@ jobs:
     steps:
       - name: Free disk space
         run: |
+          # Host paths are no-ops inside the container - safe to keep
+          # for the case where the workflow is run without `container:`.
           rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
           apt-get clean
-          # Container-level cleanup so the ASan build (large debug-info
-          # binaries) has room on the overlay filesystem. The host /
-          # is only ~14 GB on github-hosted runners.
-          rm -rf /var/cache/apt/* /var/lib/apt/lists/* || true
-          rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/* || true
           df -h /
 
       - name: Install Git
