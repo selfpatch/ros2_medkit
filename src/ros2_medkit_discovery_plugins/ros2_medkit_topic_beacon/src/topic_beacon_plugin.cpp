@@ -32,8 +32,14 @@ using ros2_medkit_gateway::PLUGIN_API_VERSION;
 using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::SovdEntityType;
 
-TopicBeaconPlugin::~TopicBeaconPlugin() {
-  shutdown();
+TopicBeaconPlugin::~TopicBeaconPlugin() noexcept {
+  // On Rolling, ~rclcpp::Subscription can throw graph_listener::NodeNotFoundError
+  // once rclcpp::shutdown() has invalidated the context. An exception
+  // escaping a destructor calls std::terminate(), so swallow it here.
+  try {
+    shutdown();
+  } catch (...) {
+  }
 }
 
 std::string TopicBeaconPlugin::name() const {
@@ -107,7 +113,13 @@ void TopicBeaconPlugin::shutdown() {
   if (shutdown_requested_.exchange(true)) {
     return;
   }
-  subscription_.reset();
+  // ~rclcpp::Subscription can throw on Rolling when the rclcpp context
+  // was torn down before us; swallow so plugin_manager shutdown and the
+  // plugin destructor calling back into us do not abort the process.
+  try {
+    subscription_.reset();
+  } catch (...) {
+  }
 }
 
 std::vector<GatewayPlugin::PluginRoute> TopicBeaconPlugin::get_routes() {

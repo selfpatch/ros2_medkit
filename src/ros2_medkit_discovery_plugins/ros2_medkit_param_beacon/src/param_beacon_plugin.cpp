@@ -34,8 +34,14 @@ using ros2_medkit_gateway::PLUGIN_API_VERSION;
 using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::SovdEntityType;
 
-ParameterBeaconPlugin::~ParameterBeaconPlugin() {
-  shutdown();
+ParameterBeaconPlugin::~ParameterBeaconPlugin() noexcept {
+  // On Rolling, ~rclcpp::Node can throw graph_listener::NodeNotFoundError
+  // once rclcpp::shutdown() has invalidated the context. An exception
+  // escaping a destructor calls std::terminate(), so swallow it here.
+  try {
+    shutdown();
+  } catch (...) {
+  }
 }
 
 std::string ParameterBeaconPlugin::name() const {
@@ -151,7 +157,14 @@ void ParameterBeaconPlugin::shutdown() {
     backoff_counts_.clear();
     skip_remaining_.clear();
   }
-  param_node_.reset();
+  // ~rclcpp::Node can throw graph_listener::NodeNotFoundError on Rolling
+  // when the context was already torn down by rclcpp::shutdown(). Swallow
+  // it so the plugin_manager shutdown sequence (and the plugin destructor
+  // that calls back into us) does not abort the process.
+  try {
+    param_node_.reset();
+  } catch (...) {
+  }
 }
 
 std::vector<GatewayPlugin::PluginRoute> ParameterBeaconPlugin::get_routes() {

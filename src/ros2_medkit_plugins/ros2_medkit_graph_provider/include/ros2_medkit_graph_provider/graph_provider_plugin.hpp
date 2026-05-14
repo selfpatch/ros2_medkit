@@ -55,7 +55,7 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   };
 
   GraphProviderPlugin() = default;
-  ~GraphProviderPlugin() override;
+  ~GraphProviderPlugin() noexcept override;
 
   std::string name() const override;
   void configure(const nlohmann::json & config) override;

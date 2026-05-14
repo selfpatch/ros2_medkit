@@ -317,15 +317,28 @@ nlohmann::json build_graph_document_for_apps(const std::string & function_id,
 
 }  // namespace
 
-GraphProviderPlugin::~GraphProviderPlugin() {
-  shutdown();
+GraphProviderPlugin::~GraphProviderPlugin() noexcept {
+  // On Rolling, destroying rclcpp resources (Subscription, Node) after
+  // rclcpp::shutdown() has invalidated the context can throw
+  // graph_listener::NodeNotFoundError. An exception escaping a destructor
+  // calls std::terminate(), so swallow it here.
+  try {
+    shutdown();
+  } catch (...) {
+  }
 }
 
 void GraphProviderPlugin::shutdown() {
   if (shutdown_requested_.exchange(true)) {
     return;
   }
-  diagnostics_sub_.reset();
+  // ~rclcpp::Subscription can throw on Rolling when the rclcpp context
+  // was torn down before us; swallow so plugin_manager shutdown and the
+  // plugin destructor calling back into us do not abort the process.
+  try {
+    diagnostics_sub_.reset();
+  } catch (...) {
+  }
 }
 
 std::string GraphProviderPlugin::name() const {
