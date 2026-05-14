@@ -1052,28 +1052,33 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
       return;
     }
 
-    // Local entity: fetch full App model for relationship data.
+    // Atomic snapshot keeps the app + every dependency resolved in the same
+    // cache generation; a writer refresh between per-dependency lookups could
+    // otherwise yield a mix from N different generations.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto app_opt = cache.get_app(app_id);
-    if (!app_opt) {
+    auto snapshot = cache.get_app_with_dependencies(app_id);
+    if (!snapshot.app) {
       auto discovery = ctx_.node()->get_discovery_manager();
-      app_opt = discovery->get_app(app_id);
+      snapshot.app = discovery->get_app(app_id);
+      if (snapshot.app) {
+        snapshot.dependencies.reserve(snapshot.app->depends_on.size());
+        for (const auto & dep_id : snapshot.app->depends_on) {
+          snapshot.dependencies.emplace_back(dep_id, discovery->get_app(dep_id));
+        }
+      }
     }
 
-    if (!app_opt) {
+    if (!snapshot.app) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
       return;
     }
 
-    const auto & app = *app_opt;
-
     json items = json::array();
-    for (const auto & dep_id : app.depends_on) {
+    for (const auto & [dep_id, dep_opt] : snapshot.dependencies) {
       json item;
       item["id"] = dep_id;
       item["href"] = "/api/v1/apps/" + dep_id;
 
-      auto dep_opt = cache.get_app(dep_id);
       if (dep_opt) {
         item["name"] = dep_opt->name.empty() ? dep_id : dep_opt->name;
 

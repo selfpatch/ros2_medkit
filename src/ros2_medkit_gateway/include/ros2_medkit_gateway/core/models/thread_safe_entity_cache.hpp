@@ -230,6 +230,24 @@ class ThreadSafeEntityCache {
   };
   AppLinksSnapshot get_app_with_links(const std::string & id) const;
 
+  /// Atomic snapshot of an App together with its declared `depends_on` apps.
+  ///
+  /// `handle_app_depends_on` iterates `app.depends_on` and resolves each id
+  /// via `get_app()` - one shared_lock per dependency. A writer refresh can
+  /// land between the app fetch and any of the per-dependency fetches, so a
+  /// 5-dependency app can return 5 apps from 5 different cache generations.
+  /// This helper takes a single shared_lock and returns the app together
+  /// with every dependency resolved in the same generation.
+  ///
+  /// `app` is empty if `app_id` is not in the cache. `dependencies` lists
+  /// every entry in `app->depends_on` in declaration order; the optional is
+  /// empty when the referenced dependency cannot be resolved (broken ref).
+  struct AppDependenciesSnapshot {
+    std::optional<App> app;
+    std::vector<std::pair<std::string, std::optional<App>>> dependencies;
+  };
+  AppDependenciesSnapshot get_app_with_dependencies(const std::string & id) const;
+
   // --- Check existence (O(1)) ---
   bool has_area(const std::string & id) const;
   bool has_component(const std::string & id) const;
