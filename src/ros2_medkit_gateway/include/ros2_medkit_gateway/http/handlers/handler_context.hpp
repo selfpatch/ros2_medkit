@@ -348,10 +348,14 @@ class HandlerContext {
    * never expose faults reported from outside the addressed entity.
    *
    * Mapping per entity type:
-   * - App: the app's `effective_fqn()` (single entry, or empty set if unbound)
+   * - App: the app's `effective_fqn()` (single entry, or empty set if unbound
+   *   or if `ros_binding.namespace_pattern` is a wildcard - by design
+   *   `effective_fqn()` returns "" for those, so the scope filter treats them
+   *   as having no addressable node and any fault read becomes a 404)
    * - Component: `effective_fqn()` of every hosted app via `get_apps_for_component()`
    * - Area: `effective_fqn()` of every app in every component under the area
-   * - Function: `node_fqn` of every entry in the function's aggregation configuration
+   * - Function: non-empty `node_fqn` of every entry in the function's aggregation
+   *   configuration (entries with empty `node_fqn` are skipped)
    * - Unknown: empty set
    *
    * An empty result means "no apps are in scope" and callers must treat any

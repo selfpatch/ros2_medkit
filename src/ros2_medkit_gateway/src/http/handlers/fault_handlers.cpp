@@ -595,20 +595,27 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       return;
     }
 
-    // For Apps, use namespace_path filtering
-    std::string namespace_path = entity_info.namespace_path;
-    auto result =
-        fault_mgr->list_faults(namespace_path, filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                               filter.include_healed, include_muted, include_clusters);
+    // For Apps, scope by the app's effective FQN set. We can't reuse the
+    // transport-level prefix filter (`list_faults(namespace_path, ...)`)
+    // because an App with a wildcard `ros_binding.namespace_pattern` produces
+    // an empty effective_fqn, the transport silently disables the filter, and
+    // every fault in the system would be returned. Same bug class as #395 for
+    // Components - fix it the same way.
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto app_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+    auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
+                                         filter.include_healed, include_muted, include_clusters);
 
     if (result.success) {
+      json filtered_faults = filter_faults_by_sources(result.data["faults"], app_fqns);
+
       // Format: items array at top level
-      json response = {{"items", result.data["faults"]}};
+      json response = {{"items", filtered_faults}};
 
       // x-medkit extension for ros2_medkit-specific fields
       XMedkit ext;
       ext.entity_id(entity_id);
-      ext.add("source_id", namespace_path);
+      ext.add("source_id", entity_info.namespace_path);
 
       // Include detailed correlation data if requested and present
       if (result.data.contains("muted_faults")) {
@@ -1006,14 +1013,20 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
       faults_to_clear = filter_faults_by_sources(result.data["faults"], app_fqns);
 
     } else {
-      // Apps: use namespace_path filtering directly
-      auto result = fault_mgr->list_faults(entity_info.namespace_path);
+      // Apps: scope by the app's effective FQN. Cannot use the transport-level
+      // prefix filter (`list_faults(namespace_path)`) directly because Apps
+      // with a wildcard `ros_binding.namespace_pattern` produce an empty
+      // effective_fqn, the transport silently disables filtering, and we
+      // would clear every fault in the system. Same bug class as #395.
+      auto result = fault_mgr->list_faults("");
       if (!result.success) {
         HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
                                    {{"details", result.error_message}, {entity_info.id_field, entity_id}});
         return;
       }
-      faults_to_clear = result.data["faults"];
+      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      auto app_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+      faults_to_clear = filter_faults_by_sources(result.data["faults"], app_fqns);
     }
 
     // Clear each matching fault

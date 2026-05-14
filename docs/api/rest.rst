@@ -750,11 +750,17 @@ Query and manage faults.
    - ``freeze_frame``: Topic data captured at fault confirmation
    - ``rosbag``: Recording file available via bulk-data endpoint
 
+   **Response codes:**
+
+   - **200:** Fault details
+   - **404:** Fault not found, or reported by an app outside this entity's scope
+   - **503:** Fault manager unavailable
+
 ``DELETE /api/v1/components/{id}/faults/{fault_code}``
    Clear a fault.
 
    - **204:** Fault cleared
-   - **404:** Fault not found
+   - **404:** Fault not found, or reported by an app outside this entity's scope
 
 ``DELETE /api/v1/components/{id}/faults``
    Clear all faults for an entity.
