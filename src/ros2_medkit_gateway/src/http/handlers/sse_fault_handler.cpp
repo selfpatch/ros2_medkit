@@ -86,12 +86,17 @@ void SSEFaultHandler::request_shutdown() {
 void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
   uint64_t event_id = next_event_id_.fetch_add(1);
 
+  // Snapshot entity context before acquiring the queue lock so cache state
+  // is pinned to the fault arrival timestamp and the formatting path stays
+  // lock-free with respect to the cache.
+  auto entity = resolve_entity_context(msg->fault);
+
   std::size_t dropped_this_call = 0;
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
 
-    // Add event to queue
-    event_queue_.emplace_back(event_id, *msg);
+    // Add event to queue with resolved entity context
+    event_queue_.push_back(QueuedEvent{event_id, *msg, std::move(entity)});
 
     // Trim old events if buffer is full
     while (event_queue_.size() > kMaxBufferedEvents) {
@@ -156,13 +161,13 @@ void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Respo
         // First, send any buffered events the client missed (for reconnection)
         {
           std::lock_guard<std::mutex> lock(queue_mutex_);
-          for (const auto & [id, event] : event_queue_) {
-            if (id > last_event_id) {
-              std::string sse_msg = format_sse_event(event, id);
+          for (const auto & queued : event_queue_) {
+            if (queued.id > last_event_id) {
+              std::string sse_msg = format_sse_event(queued);
               if (!sink.write(sse_msg.data(), sse_msg.size())) {
                 return false;  // Client disconnected
               }
-              last_event_id = id;
+              last_event_id = queued.id;
             }
           }
         }
@@ -198,15 +203,15 @@ void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Respo
 
           // Check for new events
           bool found_new = false;
-          for (const auto & [id, event] : event_queue_) {
-            if (id > last_event_id) {
-              std::string sse_msg = format_sse_event(event, id);
+          for (const auto & queued : event_queue_) {
+            if (queued.id > last_event_id) {
+              std::string sse_msg = format_sse_event(queued);
               lock.unlock();
               if (!sink.write(sse_msg.data(), sse_msg.size())) {
                 return false;  // Client disconnected
               }
               lock.lock();
-              last_event_id = id;
+              last_event_id = queued.id;
               found_new = true;
             }
           }
@@ -230,23 +235,88 @@ size_t SSEFaultHandler::connected_clients() const {
   return client_tracker_->connected_clients();
 }
 
-std::string SSEFaultHandler::format_sse_event(const ros2_medkit_msgs::msg::FaultEvent & event, uint64_t event_id) {
-  const auto sanitized_event_type = sanitize_sse_event_type(event.event_type);
+std::string SSEFaultHandler::format_sse_event(const QueuedEvent & queued) {
+  const auto sanitized_event_type = sanitize_sse_event_type(queued.event.event_type);
 
   nlohmann::json json_event;
   json_event["event_type"] = sanitized_event_type;
-  json_event["fault"] = ros2::conversions::fault_to_json(event.fault);
+  json_event["fault"] = ros2::conversions::fault_to_json(queued.event.fault);
 
   // Convert timestamp to seconds with nanosecond precision
-  double timestamp_sec = static_cast<double>(event.timestamp.sec) + static_cast<double>(event.timestamp.nanosec) * 1e-9;
+  double timestamp_sec =
+      static_cast<double>(queued.event.timestamp.sec) + static_cast<double>(queued.event.timestamp.nanosec) * 1e-9;
   json_event["timestamp"] = timestamp_sec;
 
+  // SOVD payload extension: nest ``entity_type`` / ``entity_id`` under the
+  // ``x-medkit`` response-extension object so global-stream consumers can
+  // hit ``/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}``
+  // directly instead of HEAD-probing every entity. Flat ``x-medkit-*``
+  // names are reserved for endpoint paths (``/x-medkit-graph``) and error
+  // codes, not payload fields.
+  if (queued.entity) {
+    json_event["x-medkit"] = {{"entity_type", queued.entity->type}, {"entity_id", queued.entity->id}};
+  }
+
   std::ostringstream sse;
-  sse << "id: " << event_id << "\n";
+  sse << "id: " << queued.id << "\n";
   sse << "event: " << sanitized_event_type << "\n";
   sse << "data: " << json_event.dump() << "\n\n";
 
   return sse.str();
+}
+
+std::optional<SSEFaultHandler::EntityContext>
+SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fault) const {
+  if (fault.reporting_sources.empty()) {
+    return std::nullopt;
+  }
+  const auto & raw_fqn = fault.reporting_sources.front();
+  if (raw_fqn.empty()) {
+    return std::nullopt;
+  }
+
+  const auto & cache = ctx_.node()->get_thread_safe_cache();
+
+  // Manifest / hybrid mode: the linking step populated node_to_app with the
+  // ROS FQN -> manifest app id mapping. Try both FQN forms (with and without
+  // the leading '/'), mirroring gateway_node's node_resolver lambda.
+  std::string entity_id = cache.resolve_node_to_app(raw_fqn);
+  if (entity_id.empty() && raw_fqn.front() == '/') {
+    entity_id = cache.resolve_node_to_app(raw_fqn.substr(1));
+  }
+
+  // Runtime fallback: synthetic apps are created with id = ROS node name
+  // (the FQN's last segment) when there is no namespace collision, or
+  // ``<ns_prefix>_<name>`` (slashes in the namespace replaced with '_') when
+  // multiple nodes share the same name. See ros2_runtime_introspection.cpp.
+  // Only accept a candidate that actually exists as an App in the cache so
+  // we never point consumers at a 404.
+  if (entity_id.empty()) {
+    auto last_slash = raw_fqn.rfind('/');
+    auto name = (last_slash != std::string::npos) ? raw_fqn.substr(last_slash + 1) : raw_fqn;
+    if (!name.empty() && cache.has_app(name)) {
+      entity_id = std::move(name);
+    } else if (last_slash != std::string::npos && last_slash > 0) {
+      // Try the collision-disambiguated form: ns prefix (sans leading '/'),
+      // slashes replaced with '_', then '_' + name.
+      auto ns_prefix = raw_fqn.substr(1, last_slash - 1);
+      std::replace(ns_prefix.begin(), ns_prefix.end(), '/', '_');
+      auto namespaced = ns_prefix + "_" + name;
+      if (cache.has_app(namespaced)) {
+        entity_id = std::move(namespaced);
+      }
+    }
+  }
+
+  if (entity_id.empty()) {
+    RCLCPP_DEBUG(HandlerContext::logger(),
+                 "SSE fault event: no entity match for reporting source '%s' (fault_code='%s'); "
+                 "omitting x-medkit extension",
+                 raw_fqn.c_str(), fault.fault_code.c_str());
+    return std::nullopt;
+  }
+
+  return EntityContext{"apps", std::move(entity_id)};
 }
 
 }  // namespace handlers

@@ -2372,7 +2372,12 @@ Other extensions beyond SOVD:
 
 - Vendor extension fields using ``x-medkit`` prefix (per SOVD extension mechanism)
 - ``DELETE /faults`` - Clear all faults globally
-- ``GET /faults/stream`` - SSE real-time fault notifications
+- ``GET /faults/stream`` - SSE real-time fault notifications. Each event payload carries an
+  optional ``x-medkit`` SOVD payload-extension object with ``entity_type`` and ``entity_id``
+  fields when the gateway can resolve the fault's first reporting source back to an entity,
+  so consumers can hit ``/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}`` directly
+  without enumerating entities. Resolution is snapshotted at event arrival; the entire
+  ``x-medkit`` object is omitted when no entity can be resolved.
 - ``/health`` - Health check with discovery pipeline diagnostics
 - ``/version-info`` - Gateway version information
 - ``/docs`` - OpenAPI capability description
