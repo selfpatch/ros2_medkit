@@ -982,6 +982,16 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::DATA, Cap::OPERATIONS, Cap::CONFIGURATIONS,       Cap::FAULTS,
                              Cap::LOGS, Cap::BULK_DATA,  Cap::CYCLIC_SUBSCRIPTIONS, Cap::TRIGGERS};
+    // Relationship endpoints are gated the same way as the top-level URI keys
+    // above so the three advertising surfaces (top-level URIs, `_links`,
+    // `capabilities` array) describe the same set of available collections.
+    if (!app.component_id.empty()) {
+      caps.push_back(Cap::IS_LOCATED_ON);
+      caps.push_back(Cap::BELONGS_TO);
+    }
+    if (!app.depends_on.empty()) {
+      caps.push_back(Cap::DEPENDS_ON);
+    }
     if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
       caps.push_back(Cap::SCRIPTS);
     }
@@ -1034,14 +1044,15 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
 
     std::string app_id = req.matches[1];
 
-    auto validation_result = ctx_.validate_entity_id(app_id);
-    if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid app ID",
-                                 {{"details", validation_result.error()}, {"app_id", app_id}});
+    // validate_entity_for_route forwards the request to the owning peer when
+    // the app is remote (aggregation setup) - validate_entity_id alone would
+    // resolve locally only and return 404 for remote apps.
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, app_id);
+    if (!entity_opt) {
       return;
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Local entity: fetch full App model for relationship data.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto app_opt = cache.get_app(app_id);
     if (!app_opt) {
@@ -1109,49 +1120,62 @@ void DiscoveryHandlers::handle_app_belongs_to(const httplib::Request & req, http
 
     std::string app_id = req.matches[1];
 
-    auto validation_result = ctx_.validate_entity_id(app_id);
-    if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid app ID",
-                                 {{"details", validation_result.error()}, {"app_id", app_id}});
+    // Forward to peer if app is remote (aggregation setup); locally
+    // resolved entity falls through to the cache/discovery lookup below.
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, app_id);
+    if (!entity_opt) {
       return;
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Atomic snapshot avoids a mixed-generation view of App -> Component ->
+    // Area across concurrent cache refreshes. Fall back to the discovery
+    // manager (no atomic guarantee, but rare path) when the app is not in
+    // the cache.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto app_opt = cache.get_app(app_id);
-    if (!app_opt) {
+    auto snapshot = cache.get_app_with_links(app_id);
+    if (!snapshot.app) {
       auto discovery = ctx_.node()->get_discovery_manager();
-      app_opt = discovery->get_app(app_id);
+      snapshot.app = discovery->get_app(app_id);
+      if (snapshot.app && !snapshot.app->component_id.empty()) {
+        snapshot.component = discovery->get_component(snapshot.app->component_id);
+        if (snapshot.component && !snapshot.component->area.empty()) {
+          snapshot.area = discovery->get_area(snapshot.component->area);
+        }
+      }
     }
 
-    if (!app_opt) {
+    if (!snapshot.app) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
       return;
     }
 
     json items = json::array();
-    const auto & app = *app_opt;
+    const auto & app = *snapshot.app;
 
     if (!app.component_id.empty()) {
-      auto component_opt = cache.get_component(app.component_id);
-      if (!component_opt) {
-        auto discovery = ctx_.node()->get_discovery_manager();
-        component_opt = discovery->get_component(app.component_id);
-      }
-
-      if (component_opt && !component_opt->area.empty()) {
-        const auto & area_id = component_opt->area;
+      if (!snapshot.component) {
+        // Mirror handle_app_is_located_on: surface broken parent reference
+        // with x-medkit.missing=true so HATEOAS clients can distinguish
+        // 'no parent area' from 'manifest broken, component gone'.
+        json item;
+        item["id"] = "";
+        item["name"] = "<unknown area>";
+        item["href"] = "";
+        XMedkit ext;
+        ext.add("missing", true);
+        ext.add("unresolved_component", app.component_id);
+        item["x-medkit"] = ext.build();
+        items.push_back(item);
+        RCLCPP_WARN(HandlerContext::logger(), "App '%s' belongs-to unresolvable: parent component '%s' is unknown",
+                    app_id.c_str(), app.component_id.c_str());
+      } else if (!snapshot.component->area.empty()) {
+        const auto & area_id = snapshot.component->area;
         json item;
         item["id"] = area_id;
         item["href"] = "/api/v1/areas/" + area_id;
 
-        auto area_opt = cache.get_area(area_id);
-        if (!area_opt) {
-          auto discovery = ctx_.node()->get_discovery_manager();
-          area_opt = discovery->get_area(area_id);
-        }
-        if (area_opt) {
-          item["name"] = area_opt->name.empty() ? area_id : area_opt->name;
+        if (snapshot.area) {
+          item["name"] = snapshot.area->name.empty() ? area_id : snapshot.area->name;
         } else {
           item["name"] = area_id;
           XMedkit ext;
@@ -1162,6 +1186,9 @@ void DiscoveryHandlers::handle_app_belongs_to(const httplib::Request & req, http
         }
         items.push_back(item);
       }
+      // If component resolves but has no area_id assigned, items stays
+      // empty - that is a legitimate manifest configuration (component
+      // without parent area), not a broken reference.
     }
 
     json response;
@@ -1192,40 +1219,39 @@ void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, h
 
     std::string app_id = req.matches[1];
 
-    auto validation_result = ctx_.validate_entity_id(app_id);
-    if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid app ID",
-                                 {{"details", validation_result.error()}, {"app_id", app_id}});
+    // Forward to peer if app is remote (aggregation setup).
+    auto entity_opt = ctx_.validate_entity_for_route(req, res, app_id);
+    if (!entity_opt) {
       return;
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Atomic snapshot keeps app -> component consistent across a concurrent
+    // cache refresh. Fall back to discovery manager when the app is not in
+    // the cache.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto app_opt = cache.get_app(app_id);
-    if (!app_opt) {
+    auto snapshot = cache.get_app_with_links(app_id);
+    if (!snapshot.app) {
       auto discovery = ctx_.node()->get_discovery_manager();
-      app_opt = discovery->get_app(app_id);
+      snapshot.app = discovery->get_app(app_id);
+      if (snapshot.app && !snapshot.app->component_id.empty()) {
+        snapshot.component = discovery->get_component(snapshot.app->component_id);
+      }
     }
 
-    if (!app_opt) {
+    if (!snapshot.app) {
       HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
       return;
     }
 
     json items = json::array();
-    const auto & app = *app_opt;
+    const auto & app = *snapshot.app;
 
     if (!app.component_id.empty()) {
-      auto component_opt = cache.get_component(app.component_id);
-      if (!component_opt) {
-        auto discovery = ctx_.node()->get_discovery_manager();
-        component_opt = discovery->get_component(app.component_id);
-      }
-      if (component_opt) {
+      if (snapshot.component) {
         json item;
-        item["id"] = component_opt->id;
-        item["name"] = component_opt->name.empty() ? component_opt->id : component_opt->name;
-        item["href"] = "/api/v1/components/" + component_opt->id;
+        item["id"] = snapshot.component->id;
+        item["name"] = snapshot.component->name.empty() ? snapshot.component->id : snapshot.component->name;
+        item["href"] = "/api/v1/components/" + snapshot.component->id;
         items.push_back(item);
       } else {
         json item;

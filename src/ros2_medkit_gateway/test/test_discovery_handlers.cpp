@@ -723,6 +723,39 @@ TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsEmptyWhenAppHasNoCompone
 }
 
 // @verifies REQ_INTEROP_106
+TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsMissingItemWhenParentComponentUnresolved) {
+  // Mirror of AppIsLocatedOnReturnsMissingItemWhenHostComponentUnresolved: surface a broken
+  // parent reference instead of silently returning items=[]. Lets HATEOAS clients tell
+  // 'app has no parent area' from 'manifest broken, component gone'.
+  auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
+  auto apps = cache.get_apps();
+  ASSERT_FALSE(apps.empty());
+
+  bool updated = false;
+  for (auto & app : apps) {
+    if (app.id == "mapper") {
+      app.component_id = "ghost_component";
+      updated = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(updated);
+  cache.update_apps(apps);
+
+  auto req = make_request_with_match("/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
+  httplib::Response res;
+
+  handlers_->handle_app_belongs_to(req, res);
+
+  auto body = parse_json(res);
+  ASSERT_EQ(body["items"].size(), 1);
+  EXPECT_EQ(body["items"][0]["x-medkit"]["missing"], true);
+  EXPECT_EQ(body["items"][0]["x-medkit"]["unresolved_component"], "ghost_component");
+  EXPECT_EQ(body["items"][0]["href"], "");
+  EXPECT_EQ(body["x-medkit"]["total_count"], 1);
+}
+
+// @verifies REQ_INTEROP_106
 TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsEmptyWhenComponentHasNoArea) {
   // Strip the parent component's area assignment so the chain App->Component->Area breaks.
   auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
